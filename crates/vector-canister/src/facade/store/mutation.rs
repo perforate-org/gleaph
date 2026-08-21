@@ -1,8 +1,9 @@
 //! `vector_upsert` / `vector_remove` over the degenerate `ivf_flat` page store.
 //!
-//! Idempotence is decided **only** by `mutation_id` against the retained subject clock
-//! (`VECTOR_SUBJECT_TO_ID`), never by comparing stored bytes — except the single
-//! same-version-different-payload conflict guard on a live row. See ADR 0031 Slice 2.
+//! Ordering uses `mutation_id` against the retained subject clock (`VECTOR_SUBJECT_TO_ID`): older
+//! stamps are ignored; a same-stamp upsert compares the canonical stored payload (matching bytes
+//! are idempotent and different bytes reject with `MutationStampConflict`); newer stamps apply.
+//! A remove for an absent subject writes a deleted subject clock. See ADR 0031 Slice 2.
 
 use super::rebuild::rebuild_state_of;
 use super::search::{assign_partition, normalize_f32, read_centroids_at};
@@ -27,7 +28,7 @@ use crate::records::{
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
-    VectorSubject, quantize_f32_to_i8,
+    VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError, quantize_f32_to_i8,
 };
 use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
 
@@ -43,6 +44,10 @@ thread_local! {
     /// branch of mutation and rebuild subject-link commits, otherwise only reachable by exhausting
     /// stable memory.
     static FAIL_SUBJECT_INSERT_AFTER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    /// Test-only typed-batch seam: lets the next `k` typed subject commits succeed and reports
+    /// subject-table pressure on the following commit (then disarms).
+    static FAIL_TYPED_SUBJECT_TABLE_PRESSURE_AFTER: std::cell::Cell<Option<u32>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Arms the [`insert_subject_entry`](VectorCanisterStore::insert_subject_entry) failure seam: `skip`
@@ -54,8 +59,28 @@ pub(crate) fn arm_subject_insert_failure(skip: u32) {
 }
 
 #[cfg(test)]
+pub(crate) fn arm_typed_subject_table_pressure(skip: u32) {
+    FAIL_TYPED_SUBJECT_TABLE_PRESSURE_AFTER.with(|c| c.set(Some(skip)));
+}
+
+#[cfg(test)]
 fn take_injected_subject_insert_failure() -> bool {
     FAIL_SUBJECT_INSERT_AFTER.with(|c| match c.get() {
+        Some(0) => {
+            c.set(None);
+            true
+        }
+        Some(k) => {
+            c.set(Some(k - 1));
+            false
+        }
+        None => false,
+    })
+}
+
+#[cfg(test)]
+fn take_injected_typed_subject_table_pressure() -> bool {
+    FAIL_TYPED_SUBJECT_TABLE_PRESSURE_AFTER.with(|c| match c.get() {
         Some(0) => {
             c.set(None);
             true
@@ -107,6 +132,54 @@ enum RebuildMutationMode {
     /// `current_slot_for(active)`. State-changing mutations collapse the touched subject
     /// (`slot = target, shadow = None`); pure idempotent no-ops are left to cleanup.
     Cleaning,
+}
+
+enum VectorSyncBatchFlushError {
+    Operation {
+        index: usize,
+        error: VectorSyncBatchOutcomeOperationError,
+    },
+}
+
+/// Read-only subject state used by typed-batch preflight. The durable row is not mutated until the
+/// whole request has passed this pass; subsequent operations update this copy so an ordered request
+/// with repeated subjects is checked using the same clocks and payloads it will observe at commit.
+struct PreflightSubjectState {
+    stamp: u64,
+    deleted: bool,
+    stored_bytes: Option<Vec<u8>>,
+}
+
+fn typed_batch_outcome_for_error(
+    applied: usize,
+    error: VectorSyncBatchOutcomeOperationError,
+) -> Result<VectorSyncBatchOutcome, VectorSyncBatchOutcomeOperationError> {
+    let applied = u32::try_from(applied).expect("typed vector batch exceeds u32");
+    match error {
+        VectorSyncBatchOutcomeOperationError::TablePressure => {
+            Ok(VectorSyncBatchOutcome::Terminal {
+                applied,
+                failed_index: applied,
+                error: VectorSyncTerminalError::IndexDefinitionTablePressure,
+            })
+        }
+        VectorSyncBatchOutcomeOperationError::SubjectTablePressure => {
+            Ok(VectorSyncBatchOutcome::Terminal {
+                applied,
+                failed_index: applied,
+                error: VectorSyncTerminalError::SubjectTablePressure,
+            })
+        }
+        VectorSyncBatchOutcomeOperationError::StoreUnavailable
+        | VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable
+            if applied > 0 =>
+        {
+            Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                VectorCanisterError::StableGrowFailed,
+            ))
+        }
+        other => Err(other),
+    }
 }
 
 /// Resolves the per-op rebuild mutation mode from the durable rebuild state.
@@ -256,6 +329,35 @@ impl VectorCanisterStore {
         }
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _create_scope = bench_scope("sync_def_create");
+        let def = self.lazy_definition_for_outcome(encoding, dims, metric)?;
+        definition_store::insert(index_id, def)
+            .map(|_| ())
+            .map_err(|error| match error {
+                DefinitionStoreError::TablePressure => {
+                    VectorSyncBatchOutcomeOperationError::TablePressure
+                }
+                DefinitionStoreError::Unavailable(_) | DefinitionStoreError::Mutation(_) => {
+                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
+                }
+                #[cfg(any(test, feature = "canbench"))]
+                DefinitionStoreError::Reset(_) => {
+                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
+                }
+            })?;
+        IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
+        Ok(def)
+    }
+
+    /// Builds the lazy definition without touching the definition store. Typed-batch preflight uses
+    /// this to validate every operation before the first chunk can create a definition or append a
+    /// row; the write path reuses the same constructor so width and page-capacity rules stay one
+    /// source of truth.
+    fn lazy_definition_for_outcome(
+        &self,
+        encoding: VectorEncoding,
+        dims: u16,
+        metric: VectorMetric,
+    ) -> Result<VectorIndexDef, VectorSyncBatchOutcomeOperationError> {
         // The encoding record is the single source of width truth (ADR 0064 §8): it validates the
         // (encoding, dims, metric) combination and derives the stored stride before any def or row
         // is written. `dimension_mismatch` maps any invalid combination (wire-unchanged).
@@ -273,7 +375,7 @@ impl VectorCanisterStore {
             run_capacity,
         )
         .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
-        let def = VectorIndexDef {
+        Ok(VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
             encoding,
             dims,
@@ -286,23 +388,163 @@ impl VectorCanisterStore {
             run_capacity,
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
+        })
+    }
+
+    /// Validates all deterministic typed-batch failures without mutating stable state. The commit
+    /// driver may acknowledge a terminal table-pressure row after a prefix, but a fatal validation
+    /// error must be returned before any earlier chunk can be committed or hidden by an outer error.
+    pub(crate) fn preflight_vector_sync_batch(
+        &self,
+        caller: Principal,
+        operations: &[VectorEmbeddingSyncOp],
+    ) -> Result<(), VectorSyncBatchOutcomeOperationError> {
+        let mut planned_defs: Vec<(u32, VectorIndexDef)> = Vec::new();
+        let mut subjects: Vec<(SubjectKey, PreflightSubjectState)> = Vec::new();
+
+        for op in operations {
+            self.assert_caller_owns_subject(caller, op.subject.shard_id())
+                .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
+
+            let key = SubjectKey::new(op.index_id, op.subject);
+            if op.remove {
+                // Remove has no lazy definition, but it still needs a readable definition/subject
+                // store before writes begin. A missing definition remains a valid tombstone path.
+                definition_store::get(op.index_id)
+                    .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?;
+                let state = self.preflight_subject_state(key, &mut subjects)?;
+                if let Some(index) = state {
+                    let state = &mut subjects[index].1;
+                    if op.mutation_id > state.stamp {
+                        state.stamp = op.mutation_id;
+                        state.deleted = true;
+                        state.stored_bytes = None;
+                    } else if op.mutation_id == state.stamp && !state.deleted {
+                        state.deleted = true;
+                        state.stored_bytes = None;
+                    }
+                } else {
+                    subjects.push((
+                        key,
+                        PreflightSubjectState {
+                            stamp: op.mutation_id,
+                            deleted: true,
+                            stored_bytes: None,
+                        },
+                    ));
+                }
+                continue;
+            }
+
+            if op.bytes.len() != op.dims as usize * 4 {
+                return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                    VectorCanisterError::ByteWidthMismatch,
+                ));
+            }
+
+            let def = if let Some(def) = definition_store::get(op.index_id)
+                .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
+            {
+                def
+            } else if let Some((_, def)) = planned_defs
+                .iter()
+                .find(|(index_id, _)| *index_id == op.index_id)
+            {
+                *def
+            } else {
+                let def = self.lazy_definition_for_outcome(op.encoding, op.dims, op.metric)?;
+                planned_defs.push((op.index_id, def));
+                def
+            };
+
+            if def.metric != op.metric {
+                return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                    VectorCanisterError::MetricMismatch,
+                ));
+            }
+            if def.encoding != op.encoding || def.dims != op.dims {
+                return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                    VectorCanisterError::DimensionMismatch,
+                ));
+            }
+            let expected = prepare_for_metric(&def, &op.bytes)
+                .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?
+                .0;
+
+            let state = self.preflight_subject_state(key, &mut subjects)?;
+            let Some(index) = state else {
+                subjects.push((
+                    key,
+                    PreflightSubjectState {
+                        stamp: op.mutation_id,
+                        deleted: false,
+                        stored_bytes: Some(expected),
+                    },
+                ));
+                continue;
+            };
+            let state = &mut subjects[index].1;
+
+            match op.mutation_id.cmp(&state.stamp) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    state.stamp = op.mutation_id;
+                    state.deleted = false;
+                    state.stored_bytes = Some(expected);
+                }
+                std::cmp::Ordering::Equal if state.deleted => {}
+                std::cmp::Ordering::Equal => {
+                    let same = state.stored_bytes.as_deref().is_some_and(|stored| {
+                        stored.get(..expected.len()) == Some(expected.as_slice())
+                    });
+                    if !same {
+                        return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                            VectorCanisterError::MutationStampConflict,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Loads a subject state once and keeps it in the in-memory preflight simulation. Stable-store
+    /// read failures are availability errors, never post-commit fatal results.
+    fn preflight_subject_state(
+        &self,
+        key: SubjectKey,
+        subjects: &mut Vec<(SubjectKey, PreflightSubjectState)>,
+    ) -> Result<Option<usize>, VectorSyncBatchOutcomeOperationError> {
+        if let Some(index) = subjects.iter().position(|(subject, _)| *subject == key) {
+            return Ok(Some(index));
+        }
+        let Some(entry) = subject_store::get(&key)
+            .map_err(|_| VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable)?
+        else {
+            return Ok(None);
         };
-        definition_store::insert(index_id, def)
-            .map(|_| ())
-            .map_err(|error| match error {
-                DefinitionStoreError::TablePressure => {
-                    VectorSyncBatchOutcomeOperationError::TablePressure
-                }
-                DefinitionStoreError::Unavailable(_) | DefinitionStoreError::Mutation(_) => {
-                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
-                }
-                #[cfg(any(test, feature = "canbench"))]
-                DefinitionStoreError::Reset(_) => {
-                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
-                }
-            })?;
-        IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
-        Ok(def)
+        let stored_bytes = if entry.deleted {
+            None
+        } else {
+            let slot = entry
+                .current_slot_for(
+                    definition_store::get(key.index_id)
+                        .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
+                        .map(|def| def.active_index_version)
+                        .unwrap_or(INITIAL_INDEX_VERSION),
+                )
+                .or(entry.slot);
+            slot.and_then(|slot| self.read_slot_bytes(key.index_id, slot))
+        };
+        subjects.push((
+            key,
+            PreflightSubjectState {
+                stamp: entry.stamp,
+                deleted: entry.deleted,
+                stored_bytes,
+            },
+        ));
+        Ok(Some(subjects.len() - 1))
     }
 
     /// Applies one operation for the additive typed batch endpoint.
@@ -461,6 +703,38 @@ impl VectorCanisterStore {
         subject_store::insert(key, entry)
             .map(|_| ())
             .map_err(super::legacy_subject_store_error)
+    }
+
+    /// Commits a subject entry for the typed batch path while preserving table pressure as a
+    /// terminal item result. Other failures remain fatal because the page rows have already been
+    /// appended and cannot be acknowledged through the outcome envelope.
+    fn insert_subject_entry_for_typed_batch(
+        &self,
+        key: SubjectKey,
+        entry: FixedSubjectMapEntry,
+    ) -> Result<(), VectorSyncBatchOutcomeOperationError> {
+        #[cfg(test)]
+        if take_injected_typed_subject_table_pressure() {
+            return Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure);
+        }
+        #[cfg(test)]
+        if take_injected_subject_insert_failure() {
+            return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                VectorCanisterError::StableGrowFailed,
+            ));
+        }
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("sync_subject_insert");
+        subject_store::insert(key, entry)
+            .map(|_| ())
+            .map_err(|error| match error {
+                SubjectStoreError::TablePressure => {
+                    VectorSyncBatchOutcomeOperationError::SubjectTablePressure
+                }
+                _ => VectorSyncBatchOutcomeOperationError::Fatal(
+                    VectorCanisterError::StableGrowFailed,
+                ),
+            })
     }
 
     /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
@@ -873,189 +1147,294 @@ impl VectorCanisterStore {
         }
     }
 
-    /// Applies a chunk of `vector_sync_batch` operations. Within a degenerate `nlist == 1` index in
-    /// `ActiveOnly` mode, consecutive batchable upserts (fresh subjects, or live subjects with a newer
-    /// stamp — a live `Greater` update) with distinct subjects are grouped into runs and each run is
-    /// appended in one batched page-store call (amortizing the per-row page-directory commit) before
-    /// its subject entries are committed per row. Ops that are not batchable (remove, a different
-    /// index, a stale/equal/resurrect stamp, a subject already seen in the current run, `nlist > 1`, or
-    /// dual-write) are processed per-row via `vector_upsert` / `vector_remove`.
-    ///
-    /// Write-then-commit holds on each batched run: a failed subject-map commit at op `k` tombstones
-    /// the old slots of ops `0..k-1` (whose commits succeeded) and the new slots of ops `k..n` (whose
-    /// commits did not), so no live orphan is left and the residual is tombstoned dead rows. Returns the
-    /// number of ops applied (always `chunk.len()` on success).
-    pub fn vector_sync_batch_chunk(
+    /// Applies one bounded typed synchronization chunk. Fresh upserts and live newer-stamp
+    /// upserts in the same active degenerate index are appended through the page-store batch
+    /// primitive; every other operation keeps the single-operation path and its exact ordering
+    /// rules. A table-pressure failure is returned as a terminal outcome after the committed
+    /// prefix, while all other failures remain unavailable or fatal.
+    pub(crate) fn vector_sync_batch_outcome_chunk(
         &self,
         caller: Principal,
         chunk: &[VectorEmbeddingSyncOp],
-    ) -> Result<u32, VectorCanisterError> {
-        let first = &chunk[0];
-        let def =
-            self.ensure_def_for_upsert(first.index_id, first.encoding, first.dims, first.metric)?;
-        let mode = rebuild_mutation_mode(first.index_id);
-
-        // Non-degenerate or dual-writing indexes cannot batch any op: process the whole chunk per-row.
-        if def.nlist > 1 || !matches!(mode, RebuildMutationMode::ActiveOnly) {
-            for op in chunk {
-                if op.remove {
-                    self.vector_remove(caller, op)?;
-                } else {
-                    self.vector_upsert(caller, op)?;
-                }
-            }
-            return Ok(chunk.len() as u32);
+    ) -> Result<VectorSyncBatchOutcome, VectorSyncBatchOutcomeOperationError> {
+        if chunk.is_empty() {
+            return Ok(VectorSyncBatchOutcome::Progress { applied: 0 });
         }
 
-        let active = def.active_index_version;
-        let mut applied = 0u32;
+        let mut applied = 0usize;
         let mut run_rows: Vec<(VectorSubject, Vec<u8>, [u8; 8])> = Vec::new();
         let mut run_ops: Vec<&VectorEmbeddingSyncOp> = Vec::new();
         let mut run_keys: Vec<SubjectKey> = Vec::new();
         let mut run_old_slots: Vec<Option<SlotRef>> = Vec::new();
-        let mut run_subjects: Vec<SubjectKey> = Vec::new();
+        let mut run_index = None;
+        let mut run_active = None;
+        let mut run_def = None;
+        let mut cached_index = None;
+        let mut cached_def = None;
 
-        // Flush the current run: batch-append its rows, commit subject entries, then tombstone the
-        // superseded old slots (live Greater) only after all commits succeed (write-then-commit).
-        let flush = |run_rows: &mut Vec<(VectorSubject, Vec<u8>, [u8; 8])>,
-                     run_ops: &mut Vec<&VectorEmbeddingSyncOp>,
-                     run_keys: &mut Vec<SubjectKey>,
-                     run_old_slots: &mut Vec<Option<SlotRef>>|
-         -> Result<(), VectorCanisterError> {
+        let flush_run = |run_rows: &mut Vec<(VectorSubject, Vec<u8>, [u8; 8])>,
+                         run_ops: &mut Vec<&VectorEmbeddingSyncOp>,
+                         run_keys: &mut Vec<SubjectKey>,
+                         run_old_slots: &mut Vec<Option<SlotRef>>,
+                         run_index: &mut Option<u32>,
+                         run_active: &mut Option<u64>,
+                         run_def: &mut Option<VectorIndexDef>|
+         -> Result<usize, VectorSyncBatchFlushError> {
             if run_ops.is_empty() {
-                return Ok(());
+                return Ok(0);
             }
+            let index_id = (*run_index).expect("batched run index");
+            let active = (*run_active).expect("batched run active version");
+            let def = run_def.as_ref().expect("batched run definition");
+            let run_len = run_ops.len();
             let row_refs: Vec<(VectorSubject, &[u8], [u8; 8])> = run_rows
                 .iter()
-                .map(|(s, b, a)| (*s, b.as_slice(), *a))
+                .map(|(subject, bytes, aux)| (*subject, bytes.as_slice(), *aux))
                 .collect();
-            let slots = self.append_slot_batch(
-                first.index_id,
-                active,
-                DEGENERATE_PARTITION_ID,
-                &def,
-                &row_refs,
-            )?;
-            for (i, op) in run_ops.iter().enumerate() {
-                if let Err(err) = self.insert_subject_entry(
-                    run_keys[i],
-                    FixedSubjectMapEntry {
-                        stamp: op.mutation_id,
-                        deleted: false,
-                        slot: Some(slots[i]),
-                        shadow_slot: None,
-                    },
-                ) {
-                    // Ops 0..i-1 committed: tombstone their old slots (write-then-commit allows this).
-                    for old in run_old_slots[..i].iter().flatten() {
-                        self.tombstone_slot(first.index_id, *old);
+            let slots = self
+                .append_slot_batch(index_id, active, DEGENERATE_PARTITION_ID, def, &row_refs)
+                .map_err(|error| VectorSyncBatchFlushError::Operation {
+                    index: 0,
+                    error: VectorSyncBatchOutcomeOperationError::Fatal(error),
+                })?;
+
+            for (index, operation) in run_ops.iter().enumerate() {
+                let entry = FixedSubjectMapEntry {
+                    stamp: operation.mutation_id,
+                    deleted: false,
+                    slot: Some(slots[index]),
+                    shadow_slot: None,
+                };
+                if let Err(error) =
+                    self.insert_subject_entry_for_typed_batch(run_keys[index], entry)
+                {
+                    // The rows for committed operations stay live; their superseded rows can now
+                    // be tombstoned. The failed operation and suffix have no subject-map entry,
+                    // so only their newly appended rows must be tombstoned.
+                    for old in run_old_slots[..index].iter().flatten() {
+                        self.tombstone_slot(index_id, *old);
                     }
-                    // Ops i..n did not commit: tombstone their new slots (dead rows).
-                    for slot in &slots[i..] {
-                        self.tombstone_slot(first.index_id, *slot);
+                    for slot in &slots[index..] {
+                        self.tombstone_slot(index_id, *slot);
                     }
-                    return Err(err);
+                    return Err(VectorSyncBatchFlushError::Operation { index, error });
                 }
             }
-            // All commits succeeded: tombstone the superseded old slots.
             for old in run_old_slots.iter().flatten() {
-                self.tombstone_slot(first.index_id, *old);
+                self.tombstone_slot(index_id, *old);
             }
-            Ok(())
+            run_rows.clear();
+            run_ops.clear();
+            run_keys.clear();
+            run_old_slots.clear();
+            *run_index = None;
+            *run_active = None;
+            *run_def = None;
+            Ok(run_len)
         };
 
-        for op in chunk {
-            if op.remove || op.index_id != first.index_id {
-                // Flush the current run, then process this op per-row.
-                flush(
+        macro_rules! flush_run {
+            () => {
+                flush_run(
                     &mut run_rows,
                     &mut run_ops,
                     &mut run_keys,
                     &mut run_old_slots,
-                )?;
-                applied = applied.saturating_add(run_ops.len() as u32);
-                run_rows.clear();
-                run_ops.clear();
-                run_keys.clear();
-                run_old_slots.clear();
-                run_subjects.clear();
-                if op.remove {
-                    self.vector_remove(caller, op)?;
-                } else {
-                    self.vector_upsert(caller, op)?;
-                }
-                applied = applied.saturating_add(1);
-                continue;
-            }
-            self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
-            if op.encoding != def.encoding || op.dims != def.dims {
-                return Err(VectorCanisterError::DimensionMismatch);
-            }
-            if op.bytes.len() != op.dims as usize * 4 {
-                return Err(VectorCanisterError::ByteWidthMismatch);
-            }
-            let key = SubjectKey::new(op.index_id, op.subject);
-            if run_subjects.contains(&key) {
-                // Repeated subject in the run: classification is order-dependent, flush and per-row.
-                flush(
-                    &mut run_rows,
-                    &mut run_ops,
-                    &mut run_keys,
-                    &mut run_old_slots,
-                )?;
-                applied = applied.saturating_add(run_ops.len() as u32);
-                run_rows.clear();
-                run_ops.clear();
-                run_keys.clear();
-                run_old_slots.clear();
-                run_subjects.clear();
-                self.vector_upsert(caller, op)?;
-                applied = applied.saturating_add(1);
-                continue;
-            }
-            let existing = subject_store::get(&key).map_err(super::legacy_subject_store_error)?;
-            // Classify: fresh (no entry) or live Greater (newer stamp on a live subject) are batchable.
-            let old_active_slot = match &existing {
-                None => None,
-                Some(entry) => {
-                    if op.mutation_id > entry.stamp && !entry.deleted {
-                        entry.current_slot_for(active)
-                    } else {
-                        // Not batchable (Less, Equal, resurrect, stale): flush and process per-row.
-                        flush(
-                            &mut run_rows,
-                            &mut run_ops,
-                            &mut run_keys,
-                            &mut run_old_slots,
-                        )?;
-                        applied = applied.saturating_add(run_ops.len() as u32);
-                        run_rows.clear();
-                        run_ops.clear();
-                        run_keys.clear();
-                        run_old_slots.clear();
-                        run_subjects.clear();
-                        self.vector_upsert(caller, op)?;
-                        applied = applied.saturating_add(1);
-                        continue;
+                    &mut run_index,
+                    &mut run_active,
+                    &mut run_def,
+                )
+            };
+        }
+
+        for operation in chunk {
+            if operation.remove {
+                match flush_run!() {
+                    Ok(run_len) => applied += run_len,
+                    Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                        return typed_batch_outcome_for_error(applied + index, error);
                     }
                 }
+                match self.vector_sync_batch_outcome_apply_one(caller, operation) {
+                    Ok(()) => applied += 1,
+                    Err(error) => return typed_batch_outcome_for_error(applied, error),
+                }
+                continue;
+            }
+
+            self.assert_caller_owns_subject(caller, operation.subject.shard_id())
+                .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
+            if operation.bytes.len() != operation.dims as usize * 4 {
+                match flush_run!() {
+                    Ok(_) => {}
+                    Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                        return typed_batch_outcome_for_error(applied + index, error);
+                    }
+                }
+                return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                    VectorCanisterError::ByteWidthMismatch,
+                ));
+            }
+
+            let def = if cached_index == Some(operation.index_id)
+                && cached_def.is_some_and(|def: VectorIndexDef| {
+                    def.encoding == operation.encoding
+                        && def.dims == operation.dims
+                        && def.metric == operation.metric
+                }) {
+                cached_def.expect("cached vector definition")
+            } else {
+                let def = match self.ensure_def_for_outcome(
+                    operation.index_id,
+                    operation.encoding,
+                    operation.dims,
+                    operation.metric,
+                ) {
+                    Ok(def) => def,
+                    Err(error) => {
+                        match flush_run!() {
+                            Ok(run_len) => applied += run_len,
+                            Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                                return typed_batch_outcome_for_error(applied + index, error);
+                            }
+                        }
+                        return typed_batch_outcome_for_error(applied, error);
+                    }
+                };
+                cached_index = Some(operation.index_id);
+                cached_def = Some(def);
+                def
             };
-            let (stored, aux) = prepare_for_metric(&def, &op.bytes)?;
-            run_rows.push((op.subject, stored, aux));
-            run_ops.push(op);
+
+            if operation.encoding != def.encoding
+                || operation.dims != def.dims
+                || def.nlist > 1
+                || !matches!(
+                    rebuild_mutation_mode(operation.index_id),
+                    RebuildMutationMode::ActiveOnly
+                )
+            {
+                match flush_run!() {
+                    Ok(run_len) => applied += run_len,
+                    Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                        return typed_batch_outcome_for_error(applied + index, error);
+                    }
+                }
+                match self.vector_sync_batch_outcome_apply_one(caller, operation) {
+                    Ok(()) => applied += 1,
+                    Err(error) => return typed_batch_outcome_for_error(applied, error),
+                }
+                continue;
+            }
+
+            if run_index.is_some_and(|index_id| index_id != operation.index_id) {
+                match flush_run!() {
+                    Ok(run_len) => applied += run_len,
+                    Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                        return typed_batch_outcome_for_error(applied + index, error);
+                    }
+                }
+            }
+
+            let key = SubjectKey::new(operation.index_id, operation.subject);
+            if run_keys.contains(&key) {
+                match flush_run!() {
+                    Ok(run_len) => applied += run_len,
+                    Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                        return typed_batch_outcome_for_error(applied + index, error);
+                    }
+                }
+                match self.vector_sync_batch_outcome_apply_one(caller, operation) {
+                    Ok(()) => applied += 1,
+                    Err(error) => return typed_batch_outcome_for_error(applied, error),
+                }
+                continue;
+            }
+
+            let existing = match subject_store::get(&key) {
+                Ok(existing) => existing,
+                Err(SubjectStoreError::TablePressure) => {
+                    match flush_run!() {
+                        Ok(run_len) => applied += run_len,
+                        Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                            return typed_batch_outcome_for_error(applied + index, error);
+                        }
+                    }
+                    return Ok(VectorSyncBatchOutcome::Terminal {
+                        applied: u32::try_from(applied).expect("typed vector batch exceeds u32"),
+                        failed_index: u32::try_from(applied)
+                            .expect("typed vector batch exceeds u32"),
+                        error: VectorSyncTerminalError::SubjectTablePressure,
+                    });
+                }
+                Err(_) => {
+                    match flush_run!() {
+                        Ok(run_len) => applied += run_len,
+                        Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                            return typed_batch_outcome_for_error(applied + index, error);
+                        }
+                    }
+                    return typed_batch_outcome_for_error(
+                        applied,
+                        VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable,
+                    );
+                }
+            };
+
+            let old_active_slot = match existing {
+                None => None,
+                Some(entry) if operation.mutation_id > entry.stamp && !entry.deleted => {
+                    entry.current_slot_for(def.active_index_version)
+                }
+                Some(_) => {
+                    match flush_run!() {
+                        Ok(run_len) => applied += run_len,
+                        Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                            return typed_batch_outcome_for_error(applied + index, error);
+                        }
+                    }
+                    match self.vector_sync_batch_outcome_apply_one(caller, operation) {
+                        Ok(()) => applied += 1,
+                        Err(error) => return typed_batch_outcome_for_error(applied, error),
+                    }
+                    continue;
+                }
+            };
+
+            let (stored, aux) = match prepare_for_metric(&def, &operation.bytes) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    match flush_run!() {
+                        Ok(_) => {}
+                        Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                            return typed_batch_outcome_for_error(applied + index, error);
+                        }
+                    }
+                    return Err(VectorSyncBatchOutcomeOperationError::Fatal(error));
+                }
+            };
+
+            if run_index.is_none() {
+                run_index = Some(operation.index_id);
+                run_active = Some(def.active_index_version);
+                run_def = Some(def);
+            }
+            run_rows.push((operation.subject, stored, aux));
+            run_ops.push(operation);
             run_keys.push(key);
             run_old_slots.push(old_active_slot);
-            run_subjects.push(key);
         }
-        flush(
-            &mut run_rows,
-            &mut run_ops,
-            &mut run_keys,
-            &mut run_old_slots,
-        )?;
-        applied = applied.saturating_add(run_ops.len() as u32);
 
-        Ok(applied)
+        match flush_run!() {
+            Ok(run_len) => applied += run_len,
+            Err(VectorSyncBatchFlushError::Operation { index, error }) => {
+                return typed_batch_outcome_for_error(applied + index, error);
+            }
+        }
+
+        Ok(VectorSyncBatchOutcome::Progress {
+            applied: u32::try_from(applied).expect("typed vector batch exceeds u32"),
+        })
     }
 
     // --- Test-only inspection / setup helpers ---

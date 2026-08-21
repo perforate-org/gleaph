@@ -135,6 +135,9 @@ pub(crate) const ROUTER_INDEX_CATALOG_EPOCH: MemoryId = MemoryId::new(51);
 // --- catalog: opaque vector physical id allocation (ADR 0065) ---
 const ROUTER_NEXT_VECTOR_INDEX_ID: MemoryId = MemoryId::new(52);
 
+// --- direct vector-ingestion durable suffix ---
+pub(crate) const ROUTER_VECTOR_INGEST_OUTBOX: MemoryId = MemoryId::new(53);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -272,6 +275,8 @@ pub(crate) type StableVectorIndexMap = BTreeMap<VectorIndexKey, VectorIndexDefRe
 pub(crate) type StableVectorIndexIdAllocator = Cell<u32, Memory>;
 pub(crate) type StableVectorMaintenancePolicyMap =
     BTreeMap<VectorIndexKey, VectorMaintenancePolicyRecord, Memory>;
+pub(crate) type StableVectorIngestOutboxMap =
+    BTreeMap<u64, super::vector_ingest_outbox::VectorIngestOutboxState, Memory>;
 
 // --- provisioning (ADR 0035 Slice 1) ---
 pub(crate) type StableProvisioningRequestMap =
@@ -360,6 +365,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_SCHEMA_MIGRATIONS, 16),
     (ROUTER_INDEX_CATALOG_EPOCH, 1),
     (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
+    (ROUTER_VECTOR_INGEST_OUTBOX, 16),
 ];
 
 thread_local! {
@@ -528,6 +534,10 @@ pub(crate) fn init_next_vector_index_id() -> StableVectorIndexIdAllocator {
     )
 }
 
+pub(crate) fn init_vector_ingest_outbox() -> StableVectorIngestOutboxMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_INGEST_OUTBOX)))
+}
+
 pub(crate) fn init_vector_maintenance_policies() -> StableVectorMaintenancePolicyMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_MAINTENANCE_POLICIES)))
 }
@@ -613,60 +623,78 @@ pub(crate) fn init_edge_backfill_state() -> StableEdgeBackfillStateMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ic_stable_structures::VectorMemory;
+    use candid::Principal;
+    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::vector_index::{
+        VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+    };
     use std::collections::HashSet;
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 53);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 54);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=52)
+                (0..=53)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 53);
-        for id in 0..=52 {
+        assert_eq!(ids.len(), 54);
+        for id in 0..=53 {
             assert!(ids.contains(&id));
         }
     }
 
     #[test]
-    fn vector_index_allocator_region_reopens_and_is_separate_from_epoch() {
-        let backing = VectorMemory::default();
-        let manager = MemoryManager::init_with_policies(
-            backing.clone(),
-            ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
-            &[
-                (ROUTER_INDEX_CATALOG_EPOCH, 1),
-                (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
-            ],
-        );
-        let mut epoch = Cell::init(manager.get(ROUTER_INDEX_CATALOG_EPOCH), 0u64);
-        let mut vector_id = Cell::init(manager.get(ROUTER_NEXT_VECTOR_INDEX_ID), 1u32);
-        epoch.set(73);
-        vector_id.set(41);
-        drop(epoch);
-        drop(vector_id);
-        drop(manager);
+    fn production_vector_regions_reopen_through_production_helpers() {
+        let _guard = super::super::vector_ingest_outbox::test_lock();
+        let mut allocator = init_next_vector_index_id();
+        let mut outbox = init_vector_ingest_outbox();
+        let previous_allocator = *allocator.get();
+        let previous_outbox: Vec<_> = outbox
+            .iter()
+            .map(|entry| (*entry.key(), entry.value()))
+            .collect();
 
-        let reopened = MemoryManager::init_with_policies(
-            backing,
-            ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
-            &[
-                (ROUTER_INDEX_CATALOG_EPOCH, 1),
-                (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
-            ],
-        );
-        let epoch = Cell::init(reopened.get(ROUTER_INDEX_CATALOG_EPOCH), 0u64);
-        let vector_id = Cell::init(reopened.get(ROUTER_NEXT_VECTOR_INDEX_ID), 1u32);
-        assert_eq!(*epoch.get(), 73, "epoch region must retain its own u64");
-        assert_eq!(
-            *vector_id.get(),
-            41,
-            "vector allocator region 52 must reopen its persisted u32"
-        );
+        let mutation_id = 9_000_000_001;
+        let state = super::super::vector_ingest_outbox::VectorIngestOutboxState {
+            vector_target: Principal::from_slice(&[9; 29]),
+            operation: VectorEmbeddingSyncOp {
+                index_id: 7,
+                embedding_name_id: 3,
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(2),
+                    vertex_id: 42,
+                },
+                mutation_id,
+                encoding: VectorEncoding::F32,
+                dims: 1,
+                metric: VectorMetric::L2Squared,
+                bytes: vec![42, 0, 0, 0],
+                remove: false,
+            },
+        };
+        outbox.clear_new();
+        allocator.set(4_100_000_007);
+        outbox.insert(mutation_id, state.clone());
+        drop(outbox);
+        drop(allocator);
+
+        let reopened_allocator = init_next_vector_index_id();
+        let reopened_outbox = init_vector_ingest_outbox();
+        assert_eq!(*reopened_allocator.get(), 4_100_000_007);
+        assert_eq!(reopened_outbox.get(&mutation_id), Some(state));
+        drop(reopened_outbox);
+        drop(reopened_allocator);
+
+        let mut restored_outbox = init_vector_ingest_outbox();
+        restored_outbox.clear_new();
+        for (key, value) in previous_outbox {
+            restored_outbox.insert(key, value);
+        }
+        let mut restored_allocator = init_next_vector_index_id();
+        restored_allocator.set(previous_allocator);
     }
 }

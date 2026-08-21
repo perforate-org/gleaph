@@ -401,23 +401,22 @@ impl IndexedEmbeddingCatalog {
     }
 }
 
-/// Router → graph shard: one bounded canonical vertex-embedding ingestion request.
+/// Router → graph shard: one bounded vertex-embedding validation stamp request.
 ///
-/// The Router resolves the opaque graph-scoped vertex id and the embedding definition before
-/// dispatching; the graph shard only sees the local vertex id and the authoritative
-/// [`IndexedEmbeddingSpec`]. The canonical byte encoding happens inside the graph-owned write
-/// boundary. `mutation_id` is the Router-issued per-shard mutation sequence (ADR 0064 §5/§6): the
-/// graph consumes it for the vector dispatch stamp without a DML mutation.
+/// The Router resolves the opaque graph-scoped vertex id and embedding definition, and validates
+/// the caller-provided values before dispatching. The graph shard sees only the local vertex id,
+/// authoritative `IndexedEmbeddingSpec`, and Router-issued stamp; embedding bytes never cross
+/// this boundary. `mutation_id` is the Router-issued per-shard mutation sequence (ADR 0064
+/// §5/§6): Graph validates and returns it without a DML mutation.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct VertexEmbeddingIngestionArgs {
     pub local_vertex_id: crate::federation::LocalVertexId,
     pub spec: IndexedEmbeddingSpec,
-    pub values: Vec<f32>,
-    /// Router-issued per-shard mutation sequence; the graph uses it as the vector dispatch stamp.
+    /// Router-issued per-shard mutation sequence validated by Graph and used to order Vector writes.
     pub mutation_id: u64,
 }
 
-/// Outcome of the derived vector-index projection after a canonical embedding commit.
+/// Outcome of Router delivery to the vector canister after Graph metadata validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VertexEmbeddingProjectionOutcome {
     /// The derived vector canister accepted the upsert in this message.
@@ -430,10 +429,10 @@ pub enum VertexEmbeddingProjectionOutcome {
 
 /// Result of [`VertexEmbeddingIngestionArgs`].
 ///
-/// `embedding_version` is the Router-issued `mutation_id` stamp consumed by the graph (the graph no
-/// longer stores an embedding version). The `projection_outcome` distinguishes a fully applied derived
-/// projection from a durable deferred repair so callers do not blindly retry a write that has already
-/// committed.
+/// `embedding_version` is the Router-issued `mutation_id` validated by the graph; the graph does not
+/// store embedding values or versions. `Applied` means the vector canister committed the operation.
+/// `DeferredForRepair` means the Router durably owns the pending delivery, not that the vector value
+/// is already present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VertexEmbeddingIngestionResult {
     pub embedding_version: u64,

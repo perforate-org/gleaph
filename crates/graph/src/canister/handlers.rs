@@ -1890,11 +1890,10 @@ pub fn index_export_page(
     crate::index::canonical_export::export_page(request)
 }
 
-/// Router → graph (ADR 0064 §6): validate an embedding ingestion and consume a `mutation_id` without
-/// a DML mutation or canonical write. The Router then sends the bytes + stamp to the vector canister.
-/// This is the stamp-separated ingest path: the graph holds no bytes transiently, and the phantom
-/// stamp (a `mutation_id` with no accompanying DML) must not disturb the graph's existing
-/// `mutation_id` consumers (idempotency records, mutation journal, outbox/derived-index watermarks).
+/// Router → graph (ADR 0064 §6): validate vertex/embedding metadata for a Router-issued
+/// `mutation_id` without a DML mutation or canonical write. The Router sends the embedding bytes
+/// directly to the vector canister. Graph receives no values and does not update its idempotency
+/// records, mutation journal, outbox, or derived-index watermarks.
 pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, String> {
     let store = GraphStore::new();
     let vertex_id = ic_stable_lara::VertexId::from(args.local_vertex_id);
@@ -1905,21 +1904,12 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
     if vertex.is_tombstone() {
         return Err(format!("vertex {} is tombstoned", args.local_vertex_id));
     }
-    if args.values.len() != args.spec.dims as usize {
-        return Err(format!(
-            "vector length {} does not match dims {}",
-            args.values.len(),
-            args.spec.dims
-        ));
-    }
-    if args.values.iter().copied().any(|v| !v.is_finite()) {
-        return Err("vector values must be finite".to_string());
-    }
     if args.spec.embedding_name_id == 0 {
         return Err("embedding name id 0 is reserved".to_string());
     }
-    // Model Y: the stored encoding may be F32 or I8; `args.values` are always canonical F32. The
-    // vector canister quantizes internally; this gate only rejects unsupported encodings.
+    // Model Y: the stored encoding may be F32 or I8; Router sends canonical F32 bytes directly to
+    // the vector canister. The vector canister quantizes internally; this gate only rejects
+    // unsupported encodings in the metadata stamp.
     if !matches!(
         args.spec.encoding,
         gleaph_graph_kernel::vector_index::VectorEncoding::F32
@@ -1944,8 +1934,7 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
             args.local_vertex_id, args.spec.embedding_name_id
         ));
     }
-    // Consume the mutation_id as a phantom stamp: no DML mutation, no canonical write, no journal
-    // entry, no outbox/derived-index watermark advance. The vector canister orders by this stamp.
+    // Return the validated mutation_id without changing Graph state. Vector orders by this stamp.
     Ok(args.mutation_id)
 }
 
@@ -4329,7 +4318,7 @@ mod vertex_embedding_ingestion_tests {
     }
 
     #[test]
-    fn stamp_embedding_consumes_mutation_id_without_disturbing_consumers() {
+    fn stamp_embedding_returns_validated_mutation_id_without_graph_side_effects() {
         setup_routing();
         let vid = insert_vertex();
         clear_journals();
@@ -4345,7 +4334,6 @@ mod vertex_embedding_ingestion_tests {
         let stamp = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(1, 2),
-            values: vec![1.0, 2.0],
             mutation_id: 42,
         }))
         .expect("stamp");
@@ -4372,7 +4360,6 @@ mod vertex_embedding_ingestion_tests {
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(1, 2),
-            values: vec![1.0, 2.0],
             mutation_id: 42,
         }))
         .expect_err("vertex without the required label rejected");
@@ -4390,7 +4377,6 @@ mod vertex_embedding_ingestion_tests {
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: 9999,
             spec: spec(1, 2),
-            values: vec![1.0, 2.0],
             mutation_id: 1,
         }))
         .expect_err("missing vertex rejected");
@@ -4399,35 +4385,30 @@ mod vertex_embedding_ingestion_tests {
     }
 
     #[test]
-    fn stamp_embedding_rejects_dimension_mismatch() {
+    fn stamp_embedding_rejects_tombstoned_vertex_without_side_effects() {
         setup_routing();
+        let store = GraphStore::new();
         let vid = insert_vertex();
+        store.delete_vertex(vid).expect("tombstone vertex");
         clear_journals();
-        let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
-            local_vertex_id: local_vertex_id_raw(vid),
-            spec: spec(1, 2),
-            values: vec![1.0, 2.0, 3.0],
-            mutation_id: 1,
-        }))
-        .expect_err("dimension mismatch rejected");
-        assert!(err.contains("vector length"), "unexpected error: {err}");
-        assert!(GraphStore::new().repair_journal_is_empty());
-    }
 
-    #[test]
-    fn stamp_embedding_rejects_non_finite_value() {
-        setup_routing();
-        let vid = insert_vertex();
-        clear_journals();
+        let journal_before = store.repair_journal_peek(usize::MAX);
+        let outbox_before = store.derived_index_outbox_len();
+        let pending_before = crate::index::vector_pending::pending_snapshot();
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(1, 2),
-            values: vec![1.0, f32::NAN],
             mutation_id: 1,
         }))
-        .expect_err("non-finite rejected");
-        assert!(err.contains("finite"), "unexpected error: {err}");
-        assert!(GraphStore::new().repair_journal_is_empty());
+        .expect_err("tombstoned vertex rejected");
+
+        assert!(err.contains("tombstoned"), "unexpected error: {err}");
+        assert_eq!(store.repair_journal_peek(usize::MAX), journal_before);
+        assert_eq!(store.derived_index_outbox_len(), outbox_before);
+        assert_eq!(
+            crate::index::vector_pending::pending_snapshot(),
+            pending_before
+        );
     }
 
     #[test]
@@ -4438,7 +4419,6 @@ mod vertex_embedding_ingestion_tests {
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(0, 2),
-            values: vec![1.0, 2.0],
             mutation_id: 1,
         }))
         .expect_err("reserved name rejected");

@@ -22,6 +22,7 @@ pub(crate) mod schema_migration;
 pub(crate) mod unique_effect_pending;
 pub(crate) mod vector_activation;
 pub(crate) mod vector_index_catalog;
+pub(crate) mod vector_ingest_outbox;
 pub(crate) mod vector_maintenance_policy;
 
 thread_local! {
@@ -138,6 +139,12 @@ thread_local! {
     pub(crate) static ROUTER_VECTOR_DISPATCH_ACTIVATION:
         RefCell<memory::StableVectorDispatchActivation> =
         RefCell::new(memory::init_vector_dispatch_activation());
+
+    /// `mutation_id → one pending direct-ingestion operation and its exact Vector target`. Rows
+    /// are retried by the Router recovery lane until the exact operation is acknowledged.
+    pub(crate) static ROUTER_VECTOR_INGEST_OUTBOX:
+        RefCell<memory::StableVectorIngestOutboxMap> =
+        RefCell::new(memory::init_vector_ingest_outbox());
 
     /// `(graph_id, index_id) → vector maintenance policy` (ADR 0031 Slice 10). Router-owned SSOT for
     /// maintenance thresholds + per-step budgets; default absent/disabled.

@@ -43,7 +43,8 @@ pub(crate) const VECTOR_ROW_SLAB: MemoryId = MemoryId::new(13);
 // page-health scan execution state (cursor + merged counters). Stable execution state — it must
 // survive upgrade and is cleared only on canister init/reset.
 const VECTOR_MAINTENANCE_STATE: MemoryId = MemoryId::new(14);
-// ADR 0064 §5: per-shard watermark pair bounding the subject map (graph_watermark, router_watermark).
+// ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the production Router
+// watermark remains zero, so tombstone deletion is paused.
 const VECTOR_SHARD_WATERMARKS: MemoryId = MemoryId::new(15);
 // ADR 0064 §5: durable GC resume cursor (last examined SubjectKey) so a bounded GC step never
 // starves deleted entries that sort after a long run of live entries.

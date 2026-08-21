@@ -178,8 +178,9 @@ fn reset_backfill_claim(args: types::AdminResetBackfillClaimArgs) -> Result<(), 
 
 // --- Vector wiring (ADR 0031 Slice 3/4) ---
 
-/// Set (or replace) the single dispatch target of a vector index (ADR 0031 Slice 3;
-/// `authorize_index_ddl`). Slice 3 stores the target as inspect-only metadata.
+/// Assign the single dispatch target of a vector index (ADR 0031 Slice 3; `authorize_index_ddl`).
+/// Assignment is immutable after the first successful set; Slice 3 stores the target as
+/// inspect-only metadata.
 #[update]
 fn set_vector_index_target(args: types::SetVectorIndexTargetArgs) -> Result<(), RouterError> {
     use crate::facade::stable::vector_index_catalog::{self, VectorIndexTarget};

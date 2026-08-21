@@ -16,6 +16,7 @@ use super::super::stable::{
 use super::registry_invariants::check_registry_invariants;
 use crate::facade::auth;
 use crate::facade::stable::constraint_catalog;
+use crate::facade::stable::{vector_index_catalog, vector_ingest_outbox};
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::index_sync;
 use crate::state::RouterError;
@@ -196,7 +197,7 @@ fn ensure_graph_registration_slot_available(
 }
 
 impl RouterStore {
-    fn purge_graph_vocabulary_partitions(graph_id: GraphId) {
+    fn purge_graph_vocabulary_partitions(graph_id: GraphId) -> Result<(), RouterError> {
         ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
@@ -206,7 +207,7 @@ impl RouterStore {
         super::super::stable::constraint_catalog::purge_graph_constraints(graph_id);
         super::super::stable::reservation_catalog::purge_graph_reservations(graph_id);
         super::super::stable::unique_effect_pending::purge_graph(graph_id);
-        super::super::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id);
+        super::super::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id)?;
         super::super::stable::vector_maintenance_policy::purge_graph_policies(graph_id);
         super::super::stable::embedding_name_catalog::purge_graph_embedding_names(graph_id);
         super::super::stable::ROUTER_CONSTRAINT_NAME_CATALOG
@@ -249,6 +250,7 @@ impl RouterStore {
                 map.remove(&key);
             }
         });
+        Ok(())
     }
 
     /// Atomically interns the graph name and inserts the registry entry.
@@ -316,6 +318,13 @@ impl RouterStore {
         let entry = ROUTER_SHARDS
             .with_borrow(|s| s.get(&key))
             .ok_or(RouterError::ShardNotRegistered)?;
+        if let Some(vector_canister) = entry.vector_canister
+            && vector_ingest_outbox::has_pending_for_target_shard(vector_canister, shard_id)
+        {
+            return Err(RouterError::Conflict(format!(
+                "cannot unregister shard {shard_id:?} while direct vector-ingest work targets {vector_canister}"
+            )));
+        }
 
         ROUTER_SHARDS.with_borrow_mut(|s| {
             s.remove(&key);
@@ -479,17 +488,45 @@ impl RouterStore {
     /// Slice 4). The final step of the vector attach handshake; the `vector_index_attached` bit is
     /// the registry-side proxy for "graph-local routing set *and* shard attached to the vector
     /// canister", mirroring `index_attached`.
-    fn commit_set_shard_vector_attached(
+    fn commit_claim_shard_vector_target(
         graph_id: GraphId,
         shard_id: ShardId,
         vector_canister: Principal,
-        vector_index_attached: bool,
     ) -> Result<(), RouterError> {
         let key = GraphShardKey::new(graph_id, shard_id);
         ROUTER_SHARDS.with_borrow_mut(|shards| {
             let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
-            entry.vector_canister = Some(vector_canister);
-            entry.vector_index_attached = vector_index_attached;
+            match entry.vector_canister {
+                None => {
+                    entry.vector_canister = Some(vector_canister);
+                    entry.vector_index_attached = false;
+                    shards.insert(key, entry);
+                    Ok(())
+                }
+                Some(current) if current == vector_canister => Ok(()),
+                Some(current) => Err(RouterError::Conflict(format!(
+                    "shard {shard_id:?} already claims vector target {current}, not {vector_canister}"
+                ))),
+            }
+        })?;
+        Self::verify_registry_invariants_after_commit()
+    }
+
+    fn commit_set_shard_vector_attached(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        vector_canister: Principal,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            if entry.vector_canister != Some(vector_canister) {
+                return Err(RouterError::Conflict(format!(
+                    "shard {shard_id:?} vector target is {:?}, not {vector_canister}",
+                    entry.vector_canister
+                )));
+            }
+            entry.vector_index_attached = true;
             shards.insert(key, entry);
             Ok::<(), RouterError>(())
         })?;
@@ -504,8 +541,11 @@ impl RouterStore {
         vector_canister: Principal,
         graph_canister: Principal,
     ) -> Result<(), RouterError> {
+        // The durable shard claim is made by `admin_attach_vector_index_shard` before entering this
+        // async handshake. This call only updates the graph-local route and then performs the
+        // remote attach; a failed await therefore leaves an exact, retryable target claim.
         // Step 1: make the shard's *local* routing carry the target before anything observes it as
-        // ready. If this fails we never recorded readiness, so there is nothing to roll back.
+        // ready.
         vector_sync::admin_set_graph_vector_canister(graph_canister, vector_canister)
             .await
             .map_err(RouterError::Internal)?;
@@ -522,8 +562,9 @@ impl RouterStore {
         )
         .await
         .map_err(RouterError::Internal)?;
-        // Step 3: only now flip the durable readiness bit; the predicate gates dispatch on it.
-        Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister, true)
+        // Step 3: only now flip the durable readiness bit; the predicate gates dispatch on it. The
+        // target is not rewritten here, so an A/B attach race cannot overwrite the durable claim.
+        Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister)
     }
 
     async fn complete_shard_vector_attach(
@@ -536,7 +577,7 @@ impl RouterStore {
         #[cfg(feature = "pocket-ic-e2e")]
         {
             let _ = graph_canister;
-            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister, true)
+            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister)
         }
 
         #[cfg(not(feature = "pocket-ic-e2e"))]
@@ -563,6 +604,18 @@ impl RouterStore {
         }
         validate_metadata_name(&args.logical_graph_name)?;
         let graph_id = resolve_registered_graph_id(&args.logical_graph_name)?;
+        let definition_target =
+            vector_index_catalog::graph_single_target(graph_id).ok_or_else(|| {
+                RouterError::Conflict(
+                    "vector index definition target must be assigned before shard attach".into(),
+                )
+            })?;
+        if definition_target != args.vector_canister {
+            return Err(RouterError::Conflict(format!(
+                "vector shard attach target {requested} does not match immutable definition target {definition_target}",
+                requested = args.vector_canister
+            )));
+        }
         let entry =
             lookup_shard_entry(graph_id, args.shard_id).ok_or(RouterError::ShardNotRegistered)?;
         // A shard must be index-attached (i.e. fully registered) before it can host a derived index.
@@ -590,6 +643,10 @@ impl RouterStore {
         if entry.vector_index_attached && entry.vector_canister == Some(args.vector_canister) {
             return Ok(());
         }
+        // Claim the exact definition target in the existing durable shard row before the first
+        // await. A second concurrent request therefore observes the claim synchronously and can
+        // only replay the same target; a different target is rejected without any remote call.
+        Self::commit_claim_shard_vector_target(graph_id, args.shard_id, args.vector_canister)?;
         self.complete_shard_vector_attach(
             graph_id,
             args.shard_id,
@@ -1055,6 +1112,12 @@ impl RouterStore {
                 "graph `{logical_graph_name}` still has registered shards"
             )));
         }
+        if vector_ingest_outbox::has_pending() {
+            return Err(RouterError::Conflict(
+                "cannot purge graph catalogs while direct vector-ingest work remains pending"
+                    .into(),
+            ));
+        }
         ROUTER_GRAPHS.with_borrow_mut(|g| {
             g.remove(&graph_id);
         });
@@ -1064,7 +1127,7 @@ impl RouterStore {
         ROUTER_GRAPH_CATALOG.with_borrow_mut(|catalog| {
             let _ = catalog.remove_by_name(logical_graph_name);
         });
-        Self::purge_graph_vocabulary_partitions(graph_id);
+        Self::purge_graph_vocabulary_partitions(graph_id)?;
         Self::verify_registry_invariants_after_commit()
     }
 
@@ -1237,6 +1300,13 @@ impl RouterStore {
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
         let entry =
             lookup_shard_entry(graph_id, shard_id).ok_or(RouterError::ShardNotRegistered)?;
+        if let Some(vector_canister) = entry.vector_canister
+            && vector_ingest_outbox::has_pending_for_target_shard(vector_canister, shard_id)
+        {
+            return Err(RouterError::Conflict(format!(
+                "cannot unregister shard {shard_id:?} while direct vector-ingest work targets {vector_canister}"
+            )));
+        }
         let graph_name = graph_catalog::graph_name(entry.graph_id).unwrap_or_default();
         let departing_graph = entry.graph_canister;
         let _siblings: Vec<Principal> = self
@@ -1247,13 +1317,9 @@ impl RouterStore {
             .collect();
 
         Self::commit_set_shard_index_attached(graph_id, shard_id, false)?;
-
-        // Clear Router-side vector readiness before any remote teardown. The target remains in the
-        // row while the bounded owner purge runs, so a failed call can be retried without losing
-        // the exact Vector canister identity.
-        if let Some(vector_canister) = entry.vector_canister {
-            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister, false)?;
-        }
+        // Keep the exact Vector target and attachment identity in the row until the remote detach
+        // reaches EOF. The shard is already non-live through `index_attached = false`, while a
+        // failed bounded purge must retain enough identity for an exact retry.
 
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {

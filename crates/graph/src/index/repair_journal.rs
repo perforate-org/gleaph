@@ -10,9 +10,10 @@
 //!
 //! Vector ops (ADR 0031) are not replayed verbatim. Because the graph no longer stores embedding
 //! bytes (ADR 0064 §1), the drain cannot re-derive the canonical state; each vector entry is
-//! delivered as-is and the vector canister's `mutation_id` fence (`stamp <= clock`) makes a stale
-//! replay a no-op. A vector entry with no configured vector client is skipped (left durable) so it
-//! never wedges the property repairs queued after it.
+//! delivered as-is. The vector canister ignores older stamps, treats a same-stamp upsert as
+//! idempotent only when its canonical payload matches, rejects a different same-stamp payload, and
+//! writes a tombstone clock for a remove on a missing subject. A vector entry with no configured
+//! vector client is skipped (left durable) so it never wedges the property repairs queued after it.
 
 use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
 use crate::facade::{GraphStore, RepairPostingOp};
@@ -220,82 +221,73 @@ async fn drain_queue(
             let Some(vx) = vector else {
                 continue;
             };
-            if vx.supports_sync_batch() {
-                let mut reconciled = Vec::with_capacity(group.len());
-                for (_, op) in &group {
-                    match op {
-                        RepairPostingOp::VectorEmbedding { op } => {
-                            reconciled.push(reconcile_vector_op(op).await?);
-                        }
-                        _ => unreachable!("vector group contains property entry"),
+            let mut reconciled = Vec::with_capacity(group.len());
+            for (_, op) in &group {
+                match op {
+                    RepairPostingOp::VectorEmbedding { op } => {
+                        reconciled.push(reconcile_vector_op(op).await?);
                     }
+                    _ => unreachable!("vector group contains property entry"),
                 }
-                let mut group_offset = 0usize;
-                while group_offset < group.len() {
-                    let reconciled_prefix = vector_batch_prefix(&reconciled[group_offset..])?;
-                    let submitted_group = &group[group_offset..group_offset + reconciled_prefix];
-                    let submitted = if matches!(queue, DurableQueue::DerivedIndexOutbox) {
-                        let pending = store.derived_index_outbox_peek(reconciled_prefix);
-                        if pending.len() != reconciled_prefix
-                            || pending.iter().zip(submitted_group).any(
-                                |((pending_seq, _), (submitted_seq, _))| {
-                                    pending_seq != submitted_seq
-                                },
-                            )
-                        {
-                            return Err(PlanQueryError::UnsupportedOp(
-                                "invalid vector outbox identity",
-                            ));
-                        }
-                        Some(pending)
-                    } else {
-                        None
-                    };
-                    let outcome = vx
-                        .vector_sync_batch_outcome(
-                            reconciled[group_offset..group_offset + reconciled_prefix].to_vec(),
+            }
+            let mut group_offset = 0usize;
+            while group_offset < group.len() {
+                let reconciled_prefix = vector_batch_prefix(&reconciled[group_offset..])?;
+                let submitted_group = &group[group_offset..group_offset + reconciled_prefix];
+                let submitted = if matches!(queue, DurableQueue::DerivedIndexOutbox) {
+                    let pending = store.derived_index_outbox_peek(reconciled_prefix);
+                    if pending.len() != reconciled_prefix
+                        || pending.iter().zip(submitted_group).any(
+                            |((pending_seq, _), (submitted_seq, _))| pending_seq != submitted_seq,
                         )
-                        .await?;
-                    outcome.validate(reconciled_prefix).map_err(|_| {
-                        PlanQueryError::UnsupportedOp("invalid vector repair outcome")
-                    })?;
-                    let applied = match outcome {
-                        VectorSyncBatchOutcome::Progress { applied }
-                        | VectorSyncBatchOutcome::Terminal { applied, .. } => applied as usize,
-                    };
-                    if matches!(outcome, VectorSyncBatchOutcome::Progress { applied: 0 }) {
+                    {
                         return Err(PlanQueryError::UnsupportedOp(
-                            "vector repair outcome made no progress",
+                            "invalid vector outbox identity",
                         ));
                     }
-                    if matches!(queue, DurableQueue::DerivedIndexOutbox) {
-                        store
-                            .derived_index_outbox_apply_vector_outcome(
-                                submitted.as_deref().expect("outbox submission captured"),
-                                outcome,
-                            )
-                            .map_err(|_| {
-                                PlanQueryError::UnsupportedOp("invalid vector outbox identity")
-                            })?;
-                    } else {
-                        if matches!(outcome, VectorSyncBatchOutcome::Terminal { .. }) {
-                            return Err(PlanQueryError::UnsupportedOp(
-                                "repair journal cannot quarantine a terminal vector item",
-                            ));
-                        }
-                        for (seq, _) in &submitted_group[..applied] {
-                            remove_from_queue(&store, queue, *seq);
-                        }
-                    }
-                    group_offset += applied;
+                    Some(pending)
+                } else {
+                    None
+                };
+                let outcome = vx
+                    .vector_sync_batch_outcome(
+                        reconciled[group_offset..group_offset + reconciled_prefix].to_vec(),
+                    )
+                    .await?;
+                outcome
+                    .validate(reconciled_prefix)
+                    .map_err(|_| PlanQueryError::UnsupportedOp("invalid vector repair outcome"))?;
+                let applied = match outcome {
+                    VectorSyncBatchOutcome::Progress { applied }
+                    | VectorSyncBatchOutcome::Terminal { applied, .. } => applied as usize,
+                };
+                if matches!(outcome, VectorSyncBatchOutcome::Progress { applied: 0 }) {
+                    return Err(PlanQueryError::UnsupportedOp(
+                        "vector repair outcome made no progress",
+                    ));
+                }
+                if matches!(queue, DurableQueue::DerivedIndexOutbox) {
+                    store
+                        .derived_index_outbox_apply_vector_outcome(
+                            submitted.as_deref().expect("outbox submission captured"),
+                            outcome,
+                        )
+                        .map_err(|_| {
+                            PlanQueryError::UnsupportedOp("invalid vector outbox identity")
+                        })?;
+                } else {
                     if matches!(outcome, VectorSyncBatchOutcome::Terminal { .. }) {
-                        break;
+                        return Err(PlanQueryError::UnsupportedOp(
+                            "repair journal cannot quarantine a terminal vector item",
+                        ));
+                    }
+                    for (seq, _) in &submitted_group[..applied] {
+                        remove_from_queue(&store, queue, *seq);
                     }
                 }
-            } else {
-                for (seq, op) in group {
-                    apply(ix, Some(vx), shard_id, &op).await?;
-                    remove_from_queue(&store, queue, seq);
+                group_offset += applied;
+                if matches!(outcome, VectorSyncBatchOutcome::Terminal { .. }) {
+                    break;
                 }
             }
             continue;
@@ -507,12 +499,22 @@ async fn apply(
                 return Ok(ApplyOutcome::Skipped);
             };
             let reconciled = reconcile_vector_op(op).await?;
-            if vx.supports_sync_batch() {
-                vx.vector_sync_batch(vec![reconciled]).await?;
-            } else if reconciled.remove {
-                vx.vector_remove(reconciled).await?;
-            } else {
-                vx.vector_upsert(reconciled).await?;
+            let outcome = vx.vector_sync_batch_outcome(vec![reconciled]).await?;
+            outcome
+                .validate(1)
+                .map_err(|_| PlanQueryError::UnsupportedOp("invalid vector repair outcome"))?;
+            match outcome {
+                VectorSyncBatchOutcome::Progress { applied: 1 } => {}
+                VectorSyncBatchOutcome::Progress { .. } => {
+                    return Err(PlanQueryError::UnsupportedOp(
+                        "vector repair outcome made no progress",
+                    ));
+                }
+                VectorSyncBatchOutcome::Terminal { .. } => {
+                    return Err(PlanQueryError::UnsupportedOp(
+                        "repair journal cannot quarantine a terminal vector item",
+                    ));
+                }
             }
             Ok(ApplyOutcome::Applied)
         }
@@ -521,8 +523,10 @@ async fn apply(
 
 /// Reconciles a journaled vector op for delivery. The graph no longer stores embedding bytes (ADR
 /// 0064 §1), so it cannot re-derive the canonical state; the op is delivered as-is. The vector
-/// canister's `mutation_id` fence (`stamp <= clock`) makes a stale replay a no-op, so no
-/// reconciliation is required for idempotence or ordering.
+/// canister's `mutation_id` fence handles ordering at delivery: older stamps are ignored, matching
+/// same-stamp upserts are idempotent, conflicting same-stamp upserts reject, and remove-on-missing
+/// writes a tombstone clock. No payload reconciliation is possible here because Graph no longer
+/// owns the embedding bytes.
 async fn reconcile_vector_op(
     op: &VectorEmbeddingSyncOp,
 ) -> Result<VectorEmbeddingSyncOp, PlanQueryError> {
@@ -540,7 +544,7 @@ mod tests {
         IndexIntersectionRequest, IndexMaintenancePhase, PhysicalIndexId, PostingHit,
         PostingRangeRequest,
     };
-    use gleaph_graph_kernel::vector_index::VectorMetric;
+    use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorMetric};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// Index mock that fails the Nth `posting_insert_at` (1-based) and counts
@@ -853,6 +857,22 @@ mod tests {
 
     #[async_trait(?Send)]
     impl VectorCanisterLookup for RecordingVectorCanister {
+        async fn vector_sync_batch_outcome(
+            &self,
+            operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+            for operation in operations.iter().cloned() {
+                if operation.remove {
+                    self.vector_remove(operation).await?;
+                } else {
+                    self.vector_upsert(operation).await?;
+                }
+            }
+            Ok(VectorSyncBatchOutcome::Progress {
+                applied: operations.len() as u32,
+            })
+        }
+
         async fn vector_upsert(
             &self,
             op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
@@ -880,6 +900,26 @@ mod tests {
         batch_limit: usize,
     }
 
+    struct ScriptedVectorCanister {
+        fail_on_call: Option<usize>,
+        batches: std::sync::Mutex<Vec<Vec<VectorEmbeddingSyncOp>>>,
+    }
+
+    impl ScriptedVectorCanister {
+        fn new(fail_on_call: Option<usize>) -> Self {
+            Self {
+                fail_on_call,
+                batches: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn batches(&self) -> Vec<Vec<VectorEmbeddingSyncOp>> {
+            self.batches.lock().unwrap().clone()
+        }
+    }
+
+    struct MalformedTerminalVectorCanister;
+
     struct TerminalThenProgressVectorCanister {
         batch_calls: AtomicUsize,
         seen_vertices: std::sync::Mutex<Vec<Vec<u32>>>,
@@ -887,10 +927,6 @@ mod tests {
 
     #[async_trait(?Send)]
     impl VectorCanisterLookup for TerminalThenProgressVectorCanister {
-        fn supports_sync_batch(&self) -> bool {
-            true
-        }
-
         async fn vector_sync_batch_outcome(
             &self,
             operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
@@ -940,16 +976,12 @@ mod tests {
 
     #[async_trait(?Send)]
     impl VectorCanisterLookup for TransportFailureVectorCanister {
-        fn supports_sync_batch(&self) -> bool {
-            true
-        }
-
         async fn vector_sync_batch_outcome(
             &self,
             _operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
         ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
             Err(PlanQueryError::FederatedIndexCall {
-                op: "vector_sync_batch",
+                op: "vector_sync_batch_outcome",
                 detail: "test transport failure".into(),
             })
         }
@@ -971,21 +1003,14 @@ mod tests {
 
     #[async_trait(?Send)]
     impl VectorCanisterLookup for PartialVectorCanister {
-        fn supports_sync_batch(&self) -> bool {
-            true
-        }
-
-        async fn vector_sync_batch(
+        async fn vector_sync_batch_outcome(
             &self,
             operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
-        ) -> Result<gleaph_graph_kernel::vector_index::VectorSyncBatchProgress, PlanQueryError>
-        {
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
             self.batch_calls.fetch_add(1, Ordering::SeqCst);
             let applied = self.batch_limit.min(operations.len());
-            Ok(gleaph_graph_kernel::vector_index::VectorSyncBatchProgress {
+            Ok(VectorSyncBatchOutcome::Progress {
                 applied: applied as u32,
-                next_index: (applied < operations.len()).then_some(applied as u32),
-                instruction_budget_exhausted: applied < operations.len(),
             })
         }
 
@@ -993,14 +1018,69 @@ mod tests {
             &self,
             _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
         ) -> Result<(), PlanQueryError> {
-            unreachable!("partial vector test uses vector_sync_batch")
+            unreachable!("partial vector test uses vector_sync_batch_outcome")
         }
 
         async fn vector_remove(
             &self,
             _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
         ) -> Result<(), PlanQueryError> {
-            unreachable!("partial vector test uses vector_sync_batch")
+            unreachable!("partial vector test uses vector_sync_batch_outcome")
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl VectorCanisterLookup for ScriptedVectorCanister {
+        async fn vector_sync_batch_outcome(
+            &self,
+            operations: Vec<VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+            let call = {
+                let mut batches = self.batches.lock().unwrap();
+                let call = batches.len();
+                batches.push(operations.clone());
+                call
+            };
+            if self.fail_on_call == Some(call) {
+                return Err(PlanQueryError::FederatedIndexCall {
+                    op: "vector_sync_batch_outcome",
+                    detail: "scripted transport failure".into(),
+                });
+            }
+            Ok(VectorSyncBatchOutcome::Progress {
+                applied: operations.len() as u32,
+            })
+        }
+
+        async fn vector_upsert(&self, _op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
+            unreachable!("scripted vector test uses vector_sync_batch_outcome")
+        }
+
+        async fn vector_remove(&self, _op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
+            unreachable!("scripted vector test uses vector_sync_batch_outcome")
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl VectorCanisterLookup for MalformedTerminalVectorCanister {
+        async fn vector_sync_batch_outcome(
+            &self,
+            _operations: Vec<VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+            Ok(VectorSyncBatchOutcome::Terminal {
+                applied: 1,
+                failed_index: 0,
+                error:
+                    gleaph_graph_kernel::vector_index::VectorSyncTerminalError::SubjectTablePressure,
+            })
+        }
+
+        async fn vector_upsert(&self, _op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
+            unreachable!("malformed vector test uses vector_sync_batch_outcome")
+        }
+
+        async fn vector_remove(&self, _op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
+            unreachable!("malformed vector test uses vector_sync_batch_outcome")
         }
     }
 
@@ -1016,11 +1096,11 @@ mod tests {
                     shard_id: ShardId::new(0),
                     vertex_id,
                 },
-                mutation_id: 1,
+                mutation_id: 1_000 + u64::from(vertex_id),
                 encoding: VectorEncoding::F32,
                 dims: 1,
                 metric: VectorMetric::L2Squared,
-                bytes: vec![0, 0, 0, 0],
+                bytes: vec![0xa0, vertex_id as u8, 0x5a, 0xff - vertex_id as u8],
                 remove: false,
             },
         }
@@ -1038,11 +1118,39 @@ mod tests {
                     shard_id: ShardId::new(0),
                     vertex_id,
                 },
-                mutation_id: 1,
+                mutation_id: 2_000 + u64::from(vertex_id),
                 encoding: VectorEncoding::F32,
                 dims: 1,
                 metric: VectorMetric::Cosine,
-                bytes: vec![0, 0, 0, 0],
+                bytes: vec![0xc0, vertex_id as u8, 0x3c, 0xff - vertex_id as u8],
+                remove: false,
+            },
+        }
+    }
+
+    fn large_vector_upsert_op(vertex_id: u32) -> RepairPostingOp {
+        use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorSubject};
+        const BYTES: usize = 64 * 1024;
+        let mut bytes = vec![0xa5; BYTES];
+        bytes[..4].copy_from_slice(&[
+            vertex_id as u8,
+            vertex_id.wrapping_add(1) as u8,
+            vertex_id.wrapping_add(2) as u8,
+            0x5a,
+        ]);
+        RepairPostingOp::VectorEmbedding {
+            op: VectorEmbeddingSyncOp {
+                index_id: 1,
+                embedding_name_id: 1,
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id,
+                },
+                mutation_id: 10_000 + u64::from(vertex_id),
+                encoding: VectorEncoding::F32,
+                dims: (BYTES / 4) as u16,
+                metric: VectorMetric::L2Squared,
+                bytes,
                 remove: false,
             },
         }
@@ -1064,6 +1172,102 @@ mod tests {
                 .expect("vector drain succeeds");
             assert_eq!(vector.batch_calls.load(Ordering::SeqCst), 3);
             assert!(graph.derived_index_outbox_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_outbox_adaptively_splits_and_replays_exact_suffix_after_later_failure() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(17, (0..32).map(large_vector_upsert_op));
+            let before = graph.derived_index_outbox_peek(usize::MAX);
+            let expected_ops: Vec<_> = before
+                .iter()
+                .map(|(_, entry)| match &entry.op {
+                    crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp::Ordinary(
+                        RepairPostingOp::VectorEmbedding { op },
+                    ) => op.clone(),
+                    _ => panic!("adaptive vector fixture must contain only vector operations"),
+                })
+                .collect();
+
+            let failing = ScriptedVectorCanister::new(Some(1));
+            let error =
+                pollster::block_on(drain_outbox_once(&CountingIndex::batch(), Some(&failing)))
+                    .expect_err("the second fitted vector call fails");
+            assert!(error.to_string().contains("scripted transport failure"));
+
+            let failed_batches = failing.batches();
+            assert!(
+                failed_batches.len() >= 2,
+                "adaptive sizing must issue multiple calls"
+            );
+            let first_batch_len = failed_batches[0].len();
+            assert!(
+                first_batch_len < expected_ops.len(),
+                "the large fixture must not fit in one vector request"
+            );
+            assert_eq!(failed_batches[0], expected_ops[..first_batch_len]);
+
+            let retained = graph.derived_index_outbox_peek(usize::MAX);
+            assert_eq!(
+                retained,
+                before[first_batch_len..],
+                "only the exact unacknowledged durable suffix remains"
+            );
+
+            let replay = ScriptedVectorCanister::new(None);
+            pollster::block_on(drain_outbox_once(&CountingIndex::batch(), Some(&replay)))
+                .expect("the retained suffix replays");
+            let replayed_ops: Vec<_> = replay.batches().into_iter().flatten().collect();
+            let expected_suffix_ops: Vec<_> = retained
+                .iter()
+                .map(|(_, entry)| match &entry.op {
+                    crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp::Ordinary(
+                        RepairPostingOp::VectorEmbedding { op },
+                    ) => op.clone(),
+                    _ => panic!("retained fixture must contain only vector operations"),
+                })
+                .collect();
+            assert_eq!(replayed_ops, expected_suffix_ops);
+            assert!(graph.derived_index_outbox_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_outbox_malformed_terminal_leaves_full_durable_state_unchanged() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(17, [vector_upsert_op(1), vector_upsert_op(2)]);
+            graph.repair_journal_append(19, [vertex_insert(3)]);
+            let before = (
+                graph.derived_index_outbox_peek(usize::MAX),
+                graph.derived_index_outbox_len(),
+                graph.derived_index_outbox_pending_is_empty(),
+                graph.repair_journal_peek(usize::MAX),
+                graph.repair_journal_len(),
+                graph.index_pending_min_mutation_id(),
+                graph.index_sync_status(),
+            );
+
+            let error = pollster::block_on(drain_outbox_once(
+                &CountingIndex::batch(),
+                Some(&MalformedTerminalVectorCanister),
+            ))
+            .expect_err("malformed terminal outcome must fail closed");
+            assert!(matches!(
+                error,
+                PlanQueryError::UnsupportedOp("invalid vector repair outcome")
+            ));
+
+            let after = (
+                graph.derived_index_outbox_peek(usize::MAX),
+                graph.derived_index_outbox_len(),
+                graph.derived_index_outbox_pending_is_empty(),
+                graph.repair_journal_peek(usize::MAX),
+                graph.repair_journal_len(),
+                graph.index_pending_min_mutation_id(),
+                graph.index_sync_status(),
+            );
+            assert_eq!(after, before);
         });
     }
 
@@ -1140,7 +1344,7 @@ mod tests {
             assert_eq!(vector.removes.load(Ordering::SeqCst), 0);
             assert_eq!(
                 vector.last_upsert_mutation_id.load(Ordering::SeqCst),
-                1,
+                1_002,
                 "drain preserves the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());
@@ -1160,7 +1364,7 @@ mod tests {
             assert_eq!(vector.removes.load(Ordering::SeqCst), 0);
             assert_eq!(
                 vector.last_upsert_mutation_id.load(Ordering::SeqCst),
-                1,
+                1_005,
                 "drain preserves the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());

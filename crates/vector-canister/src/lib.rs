@@ -37,8 +37,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchProgress,
-    VectorSyncBatchUnavailable,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -87,20 +86,6 @@ fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {
     canister::vector_remove(op)
 }
 
-#[update]
-fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchProgress {
-    let request_bytes = Encode!(&(&operations,)).expect("vector_sync_batch request encoding");
-    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        ic_cdk::trap("vector_sync_batch request exceeds the safe payload limit");
-    }
-    match canister::vector_sync_batch(operations) {
-        Ok(progress) => progress,
-        Err(error) => ic_cdk::trap(error.to_string()),
-    }
-}
-
-/// Additive typed synchronization surface. The legacy `vector_sync_batch` return shape remains
-/// unchanged for Router callers that still decode `VectorSyncBatchProgress`.
 #[update]
 fn vector_sync_batch_outcome(
     operations: Vec<VectorEmbeddingSyncOp>,

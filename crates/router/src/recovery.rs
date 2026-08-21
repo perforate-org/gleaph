@@ -33,13 +33,18 @@ const RECLAIM_SCAN_BUDGET: usize = 8;
 #[cfg(target_family = "wasm")]
 const EFFECT_SCAN_BUDGET: usize = 8;
 
+/// Direct vector-ingestion outbox rows examined per recovery tick. Each target group issues one
+/// bounded typed batch call; stable rows remain pending until that exact target acknowledges them.
+#[cfg(target_family = "wasm")]
+const VECTOR_INGEST_OUTBOX_SCAN_BUDGET: usize = 16;
+
 /// Constraint records examined per tick by the ADR 0030 slice-9 drop-drain driver (Driver 3). Small
 /// budget: each `Dropping` constraint can purge a reservation page and page each shard's outbox.
 #[cfg(target_family = "wasm")]
 const CONSTRAINT_DROP_SCAN_BUDGET: usize = 8;
 
 /// Delay between ticks while a lap is still in progress (more keyspace to scan).
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
 const RECOVERY_FLOOR_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
 
 /// Delay before starting a fresh lap when the previous lap still found recoverable sagas
@@ -48,14 +53,80 @@ const RECOVERY_FLOOR_DELAY: core::time::Duration = core::time::Duration::from_se
 #[cfg(target_family = "wasm")]
 const RECOVERY_RELAXED_DELAY: core::time::Duration = core::time::Duration::from_secs(30);
 
+#[cfg(any(target_family = "wasm", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryArmAction {
+    Schedule,
+    Latched,
+    AlreadyScheduled,
+}
+
+/// Owns the recovery timer's logical lifecycle independently of its `TimerId` handle. The same
+/// transition is used by the wasm timer and the native unit seam, so tests cover append-after-idle
+/// and append-while-running behavior without sleeping for an IC timer.
+#[cfg(any(target_family = "wasm", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RecoverySchedulerState {
+    timer_armed: bool,
+    running: bool,
+    arm_requested: bool,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+impl RecoverySchedulerState {
+    fn request_arm(&mut self) -> RecoveryArmAction {
+        if self.running {
+            self.arm_requested = true;
+            RecoveryArmAction::Latched
+        } else if self.timer_armed {
+            RecoveryArmAction::AlreadyScheduled
+        } else {
+            self.timer_armed = true;
+            RecoveryArmAction::Schedule
+        }
+    }
+
+    fn begin_pass(&mut self) {
+        assert!(!self.running, "recovery pass already running");
+        self.timer_armed = false;
+        self.running = true;
+    }
+
+    fn finish_pass(
+        &mut self,
+        pass_next: Option<core::time::Duration>,
+    ) -> Option<core::time::Duration> {
+        assert!(self.running, "recovery pass is not running");
+        self.running = false;
+        let arm_requested = std::mem::take(&mut self.arm_requested);
+        let next = recovery_schedule_delay(pass_next, arm_requested);
+        self.timer_armed = next.is_some();
+        next
+    }
+
+    #[cfg(all(feature = "pocket-ic-e2e", target_family = "wasm"))]
+    fn disarm(&mut self) {
+        self.timer_armed = false;
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+thread_local! {
+    /// Logical timer/running/lost-wake owner. The actual `TimerId` remains separate because it is
+    /// needed only to cancel a scheduled IC timer.
+    static RECOVERY_SCHEDULER: std::cell::RefCell<RecoverySchedulerState> =
+        const { std::cell::RefCell::new(RecoverySchedulerState {
+            timer_armed: false,
+            running: false,
+            arm_requested: false,
+        }) };
+}
+
 #[cfg(target_family = "wasm")]
 thread_local! {
     /// The single in-flight recovery timer, or `None` when idle. Rebuilt after upgrade.
     static RECOVERY_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
         const { std::cell::RefCell::new(None) };
-    /// `true` while an async tick is in flight; keeps a concurrent [`arm_if_needed`] from
-    /// scheduling an overlapping pass during the tick's awaits.
-    static RECOVERY_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Round-robin scan cursor over the client-mutation journal. `None` starts a fresh lap.
     static RECOVERY_CURSOR: std::cell::RefCell<
         Option<crate::facade::stable::label_stats::ClientMutationKey>,
@@ -84,6 +155,12 @@ thread_local! {
     /// reset only when a fresh lap begins). When no driver has urgent work, the timer still re-arms
     /// for this deadline so an all-quarantined keyspace is re-checked rather than going dark.
     static EFFECT_LAP_WAKE_NS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// Round-robin scan cursor for Router-owned direct vector-ingestion suffixes.
+    static VECTOR_INGEST_OUTBOX_CURSOR: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+    /// `true` if the direct vector-ingestion outbox lap found pending work on any page.
+    static VECTOR_INGEST_OUTBOX_LAP_FOUND: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
     /// Round-robin scan cursor for the ADR 0030 slice-9 drop-drain driver (Driver 3) over the
     /// constraint catalog. Independent of the other cursors; `None` starts a fresh drop-drain lap.
     static CONSTRAINT_DROP_CURSOR: std::cell::RefCell<
@@ -103,20 +180,21 @@ thread_local! {
 /// self-guarding; safe to call from every mutation site and from lifecycle hooks. A no-op
 /// on non-wasm builds, where there is no timer runtime.
 pub(crate) fn arm_if_needed() {
-    #[cfg(target_family = "wasm")]
+    #[cfg(any(target_family = "wasm", test))]
     {
-        #[cfg(feature = "pocket-ic-e2e")]
+        #[cfg(all(feature = "pocket-ic-e2e", target_family = "wasm"))]
         if TEST_RECOVERY_PAUSED.with(std::cell::Cell::get) {
             return;
         }
-        if RECOVERY_RUNNING.with(std::cell::Cell::get) {
-            return;
-        }
-        RECOVERY_TIMER.with_borrow_mut(|slot| {
-            if slot.is_none() {
-                *slot = Some(schedule(RECOVERY_FLOOR_DELAY));
+
+        let action = RECOVERY_SCHEDULER.with_borrow_mut(|scheduler| scheduler.request_arm());
+        if action == RecoveryArmAction::Schedule {
+            #[cfg(target_family = "wasm")]
+            {
+                let timer_id = schedule(RECOVERY_FLOOR_DELAY);
+                RECOVERY_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));
             }
-        });
+        }
     }
 }
 
@@ -126,6 +204,7 @@ pub(crate) fn arm_if_needed() {
 #[cfg(all(feature = "pocket-ic-e2e", target_family = "wasm"))]
 pub(crate) fn test_pause_for_exact_bulk_gc() {
     TEST_RECOVERY_PAUSED.with(|paused| paused.set(true));
+    RECOVERY_SCHEDULER.with_borrow_mut(RecoverySchedulerState::disarm);
     RECOVERY_TIMER.with_borrow_mut(|slot| {
         if let Some(timer_id) = slot.take() {
             ic_cdk_timers::clear_timer(timer_id);
@@ -153,19 +232,29 @@ fn schedule_migratory(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
     ic_cdk_timers::set_timer(delay, on_tick_migratory())
 }
 
+/// Selects the next recovery delay after a pass. A durable arm request raised while the pass was
+/// awaiting a remote call takes priority so work arriving after the scan cannot lose its wake-up.
+#[cfg(any(target_family = "wasm", test))]
+fn recovery_schedule_delay(
+    pass_next: Option<core::time::Duration>,
+    arm_requested: bool,
+) -> Option<core::time::Duration> {
+    arm_requested.then_some(RECOVERY_FLOOR_DELAY).or(pass_next)
+}
+
 /// Runs one bounded recovery pass, then reschedules per the lap state.
 #[cfg(target_family = "wasm")]
 async fn on_tick() {
     RECOVERY_TIMER.with_borrow_mut(|slot| *slot = None);
-    #[cfg(feature = "pocket-ic-e2e")]
+    #[cfg(all(feature = "pocket-ic-e2e", target_family = "wasm"))]
     if TEST_RECOVERY_PAUSED.with(std::cell::Cell::get) {
         return;
     }
-    RECOVERY_RUNNING.with(|r| r.set(true));
+    RECOVERY_SCHEDULER.with_borrow_mut(RecoverySchedulerState::begin_pass);
 
     let next = run_recovery_pass().await;
 
-    RECOVERY_RUNNING.with(|r| r.set(false));
+    let next = RECOVERY_SCHEDULER.with_borrow_mut(|scheduler| scheduler.finish_pass(next));
     if let Some(delay) = next {
         let id = schedule(delay);
         RECOVERY_TIMER.with_borrow_mut(|slot| *slot = Some(id));
@@ -247,6 +336,24 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     let effect_next = effect_outcome.next_cursor;
     EFFECT_CURSOR.with_borrow_mut(|c| *c = effect_next);
 
+    // Direct vector-ingestion suffixes use the same bounded recovery timer and post-upgrade lane.
+    // The durable row captures the exact target, so this pass never re-resolves a target from the
+    // mutable Router catalog after an await.
+    let vector_outbox_start = VECTOR_INGEST_OUTBOX_CURSOR.get();
+    if vector_outbox_start.is_none() {
+        VECTOR_INGEST_OUTBOX_LAP_FOUND.with(|f| f.set(false));
+    }
+    let vector_outbox_outcome = crate::facade::stable::vector_ingest_outbox::run_recovery_pass(
+        vector_outbox_start,
+        VECTOR_INGEST_OUTBOX_SCAN_BUDGET,
+    )
+    .await;
+    if vector_outbox_outcome.found {
+        VECTOR_INGEST_OUTBOX_LAP_FOUND.with(|f| f.set(true));
+    }
+    let vector_outbox_next = vector_outbox_outcome.next_cursor;
+    VECTOR_INGEST_OUTBOX_CURSOR.set(vector_outbox_next);
+
     // ADR 0030 slice 9: drive a bounded slice of the constraint catalog through the drop-drain
     // driver (Driver 3) on the same tick, with its own round-robin cursor. Best-effort: a constraint
     // whose reservations/effects have not fully drained is held for the next lap.
@@ -276,6 +383,7 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
         || next_cursor.is_some()
         || reclaim_next.is_some()
         || effect_next.is_some()
+        || vector_outbox_next.is_some()
         || drop_next.is_some()
     {
         // Mid-lap on any driver: keep scanning promptly.
@@ -286,6 +394,7 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     if RECOVERY_LAP_FOUND.with(std::cell::Cell::get)
         || RECLAIM_LAP_FOUND.with(std::cell::Cell::get)
         || EFFECT_LAP_FOUND.with(std::cell::Cell::get)
+        || VECTOR_INGEST_OUTBOX_LAP_FOUND.with(std::cell::Cell::get)
         || CONSTRAINT_DROP_LAP_FOUND.with(std::cell::Cell::get)
     {
         return Some(RECOVERY_RELAXED_DELAY);
@@ -299,4 +408,114 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     }
     // Nothing outstanding: stop and let the next mutation re-arm.
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RECOVERY_FLOOR_DELAY, RECOVERY_SCHEDULER, RecoverySchedulerState, arm_if_needed,
+        recovery_schedule_delay,
+    };
+    use crate::facade::stable::vector_ingest_outbox;
+    use candid::Principal;
+    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::vector_index::{
+        VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+    };
+
+    fn operation(mutation_id: u64, vertex_id: u32) -> VectorEmbeddingSyncOp {
+        VectorEmbeddingSyncOp {
+            index_id: 7,
+            embedding_name_id: 3,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(2),
+                vertex_id,
+            },
+            mutation_id,
+            encoding: VectorEncoding::F32,
+            dims: 1,
+            metric: VectorMetric::L2Squared,
+            bytes: vec![vertex_id as u8, 0, 0, 0],
+            remove: false,
+        }
+    }
+
+    #[test]
+    fn arm_requested_preserves_wake_after_empty_pass() {
+        assert_eq!(
+            recovery_schedule_delay(None, true),
+            Some(RECOVERY_FLOOR_DELAY),
+            "an arm request raised during the pass must schedule the floor delay"
+        );
+        assert_eq!(
+            recovery_schedule_delay(None, false),
+            None,
+            "an empty pass without a concurrent arm request must stop"
+        );
+    }
+
+    #[test]
+    fn append_after_idle_arms_and_running_append_latches_next_pass() {
+        let _guard = vector_ingest_outbox::test_lock();
+        vector_ingest_outbox::clear_for_test();
+        RECOVERY_SCHEDULER
+            .with_borrow_mut(|scheduler| *scheduler = RecoverySchedulerState::default());
+
+        let target = Principal::from_slice(&[7; 29]);
+        let first = (101, target, operation(101, 1));
+        vector_ingest_outbox::append_pending(std::slice::from_ref(&first))
+            .expect("append durable work while recovery is idle");
+
+        // The production direct-ingestion owner calls arm_if_needed immediately after this append.
+        arm_if_needed();
+        assert_eq!(
+            RECOVERY_SCHEDULER.with_borrow(|scheduler| *scheduler),
+            RecoverySchedulerState {
+                timer_armed: true,
+                running: false,
+                arm_requested: false,
+            }
+        );
+        arm_if_needed();
+        assert_eq!(
+            RECOVERY_SCHEDULER.with_borrow(|scheduler| *scheduler),
+            RecoverySchedulerState {
+                timer_armed: true,
+                running: false,
+                arm_requested: false,
+            },
+            "a second arm while idle must not schedule another pass"
+        );
+
+        RECOVERY_SCHEDULER.with_borrow_mut(RecoverySchedulerState::begin_pass);
+        let second = (102, target, operation(102, 2));
+        vector_ingest_outbox::append_pending(std::slice::from_ref(&second))
+            .expect("append durable work while recovery is running");
+        arm_if_needed();
+        assert_eq!(
+            RECOVERY_SCHEDULER.with_borrow(|scheduler| *scheduler),
+            RecoverySchedulerState {
+                timer_armed: false,
+                running: true,
+                arm_requested: true,
+            },
+            "an append during the await must latch a follow-up pass"
+        );
+
+        let next = RECOVERY_SCHEDULER.with_borrow_mut(|scheduler| scheduler.finish_pass(None));
+        assert_eq!(next, Some(RECOVERY_FLOOR_DELAY));
+        assert_eq!(
+            RECOVERY_SCHEDULER.with_borrow(|scheduler| *scheduler),
+            RecoverySchedulerState {
+                timer_armed: true,
+                running: false,
+                arm_requested: false,
+            },
+            "an empty pass must preserve the latched wake"
+        );
+
+        vector_ingest_outbox::clear_for_test();
+        RECOVERY_SCHEDULER
+            .with_borrow_mut(|scheduler| *scheduler = RecoverySchedulerState::default());
+    }
 }

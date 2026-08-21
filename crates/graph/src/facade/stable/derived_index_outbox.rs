@@ -347,11 +347,11 @@ mod tests {
                     shard_id: ShardId::new(0),
                     vertex_id,
                 },
-                mutation_id: 11,
+                mutation_id: 100 + u64::from(vertex_id),
                 encoding: VectorEncoding::F32,
                 dims: 1,
                 metric: VectorMetric::L2Squared,
-                bytes: vec![0; 4],
+                bytes: vec![0xa0, vertex_id as u8, 0x5a, 0xff - vertex_id as u8],
                 remove: false,
             },
         }
@@ -393,7 +393,8 @@ mod tests {
 
     #[test]
     fn terminal_outcome_removes_prefix_quarantines_failure_and_leaves_suffix_pending() {
-        let mut outbox = DerivedIndexOutbox::init(VectorMemory::default());
+        let memory = VectorMemory::default();
+        let mut outbox = DerivedIndexOutbox::init(memory.clone());
         outbox.append_all(
             11,
             [
@@ -416,15 +417,40 @@ mod tests {
             )
             .expect("valid terminal transition");
 
+        let expected_quarantined = DerivedIndexOutboxState::Quarantined {
+            entry: submitted[2].1.clone(),
+            reason: DerivedIndexQuarantineReason::IndexDefinitionTablePressure,
+        };
+        assert_eq!(outbox.map.get(&2), Some(expected_quarantined.clone()));
+        assert_eq!(
+            outbox.get(2),
+            Some(submitted[2].1.clone()),
+            "the quarantined row retains its complete target, operation, and payload"
+        );
         assert_eq!(outbox.peek(10), vec![(3, submitted[3].1.clone())]);
         assert_eq!(outbox.len(), 2, "quarantine remains durable and observable");
-        assert!(matches!(
-            outbox.map.get(&2),
-            Some(DerivedIndexOutboxState::Quarantined {
-                reason: DerivedIndexQuarantineReason::IndexDefinitionTablePressure,
-                ..
-            })
-        ));
+
+        let durable_rows: Vec<_> = outbox
+            .map
+            .iter()
+            .map(|row| (*row.key(), row.value()))
+            .collect();
+        let reopened = DerivedIndexOutbox::init(memory);
+        assert_eq!(
+            reopened
+                .map
+                .iter()
+                .map(|row| (*row.key(), row.value()))
+                .collect::<Vec<_>>(),
+            durable_rows,
+            "terminal retention survives stable reopen without changing any row"
+        );
+        assert_eq!(reopened.map.get(&2), Some(expected_quarantined));
+        assert_eq!(
+            reopened.peek(10),
+            vec![(3, submitted[3].1.clone())],
+            "the exact unacknowledged suffix survives stable reopen"
+        );
     }
 
     #[test]

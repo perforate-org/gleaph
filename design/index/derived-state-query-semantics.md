@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
-Last updated: 2026-08-20
-Anchor timestamp: 2026-08-20 19:49:32 UTC +0000
+Last updated: 2026-08-21
+Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
 ## Status
 
@@ -202,7 +202,7 @@ See also [label-index.md](label-index.md) path **B** and
 
 ### Upgrade / ephemeral loss
 
-Pending queues and router ephemeral planner catalogs are lost on upgrade ([stable-memory-inventory.md](../storage/stable-memory-inventory.md)). Stable backfill cursors and projection cursors survive on router; graph delta log survives on shard.
+Heap-only pending queues and router ephemeral planner catalogs are lost on upgrade ([stable-memory-inventory.md](../storage/stable-memory-inventory.md)). The Router direct-vector-ingestion outbox is stable and re-armed after `post_upgrade`; its recovery contract is documented in [vector-index.md](vector-index.md). Stable backfill cursors and projection cursors survive on router; graph delta log survives on shard.
 
 **Query behavior:** Run label stats projection and posting backfill after upgrade when index or
 count completeness is required.
@@ -226,7 +226,7 @@ The implementation-gap ledger is the status authority for the following
 observations. These links do not amend the query contracts above.
 
 - [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Resolved in this patch**: exact MemoryId 52 Graph-owned floor plus the passing outbox-only stopped-index Graph-upgrade barrier regression.
-- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-reports-deferredforrepair-without-a-durable-suffix-owner) — **Open**: Router direct vector-ingest suffix durability.
+- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-reports-deferredforrepair-without-a-durable-suffix-owner) — **Resolved (targeted gate complete)**: the Router outbox, focused unit coverage, and targeted PocketIC lifecycle gate pass. The gate manually drives the Graph/Router timer seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent replay; it does not prove autonomous timer firing or deferred watermark/tombstone GC completion.
 - [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Resolved in `d700331c`**: exact completed-receipt adoption and trigger-aware `Absent` handling; focused Router and PocketIC reconciliation filters passed, while the later full PocketIC target remained non-terminal because of an unrelated HTTP-adapter failure.
 
 ## Related documents

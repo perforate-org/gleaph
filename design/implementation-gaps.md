@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 02:41:52 UTC +0000
+Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
 ## Status
 
@@ -76,32 +76,63 @@ defect from being rediscovered without its prior reasoning.
   Graph benchmark persistence and final plan/scope gates are recorded in Plan 0263.
 - **Impact:** A token can be treated as graph-index satisfied while its first delivery remains
   durable but unapplied, allowing an index-backed read to miss canonical state.
-- **Next decision:** Keep the separate Vector Index acknowledgement/watermark/GC contract and
+- **Next decision:** Keep the separate Vector Index acknowledgement/watermark/tombstone-retention contract and
   index-build generation visibility contract in their later slices; do not infer either from this
   ordinary Graph-owned floor.
 
-### GAP-2026-08-20-002 — Router direct vector ingestion reports DeferredForRepair without a durable suffix owner
+### GAP-2026-08-20-002 — Router direct vector ingestion durable suffix ownership
 
-- **Status:** Open
+- **Status:** Resolved (implementation and targeted PocketIC evidence complete)
 - **Severity:** P0 durable derived-state contract
 - **Owner:** Router direct vector-ingestion API and its durable replay boundary
-- **Observed behavior:** VertexEmbeddingProjectionOutcome::DeferredForRepair promises that the full
-  idempotent batch was durably journaled and will converge automatically. The direct Router path
-  calls Graph stamp_embedding, which creates no mutation-journal or outbox work, then maps every
-  Vector batch suffix after progress.applied to DeferredForRepair. The suffix bytes and retry
-  identity remain only in the Router call's heap vector.
-- **Expected or needed behavior:** Every DeferredForRepair result must have a durable owner that
+- **Contract:** Every DeferredForRepair result must have a durable owner that
   can replay the exact suffix after return, trap, or upgrade, or the public API must expose an
   explicit caller-owned retry outcome instead.
-- **Evidence:** crates/graph-kernel/src/vector_index.rs
-  (VertexEmbeddingProjectionOutcome); crates/router/src/api/control.rs
-  (ingest_vertex_embeddings); crates/graph/src/canister/handlers.rs::stamp_embedding; and
-  crates/vector-canister/src/canister.rs::vector_sync_batch.
-- **Impact:** A partial Vector batch can promise automatic convergence while no durable component
-  retains the deferred payload.
-- **Next decision:** Decide whether Router, Graph, or an explicit client retry contract owns the
-  suffix. Add deterministic partial-progress plus upgrade/retry coverage before a payload-bearing
-  Quint model.
+- **Implementation:** After **all successful Graph stamps** for a request, Router synchronously
+  revalidates the current live shard, exact attached target, and immutable definition, then appends
+  every exact operation to the canonical `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) before the first
+  typed-only `vector_sync_batch_outcome` await. Each row stores its nonzero `mutation_id`, immutable
+  Vector target, and complete operation bytes as `Pending`.
+  `Progress { applied }` removes only the exact committed prefix; `Terminal` removes that prefix
+  while retaining the failed row and later suffix as `Pending`/`DeferredForRepair`; transport,
+  typed-unavailable, or malformed replies leave the submitted rows pending. The Router recovery
+  timer scans at most 16 rows per tick, groups by the persisted target, and `post_upgrade` re-arms
+  the timer so replay uses the exact target and bytes. `arm_if_needed` latches work arriving while a
+  pass awaits a remote call and re-arms the floor delay after an empty pass, preventing a lost wake.
+  Batch requests adaptively fit complete Candid prefixes below the 2 MiB hard ceiling, targeting the
+  ceiling minus 500 KiB headroom. The outbox is capped at 1,024 rows; the typed Vector driver
+  processes internal chunks of at most 32 rows.
+- **Evidence:** `crates/router/src/facade/stable/vector_ingest_outbox.rs::{append_pending,
+  apply_outcome,run_recovery_pass}`; `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
+  `crates/router/src/recovery.rs`; `crates/router/src/vector_sync.rs`; and
+  `crates/vector-canister/src/canister.rs::vector_sync_batch_outcome`. Focused Router outbox tests
+  cover stable reopen, exact-prefix replay, malformed-outcome no-change, retained terminal/suffix,
+  immutable-target retry, and capacity/row-encoding preflight:
+  `append_uses_one_stable_owner_and_reopens`,
+  `progress_removes_only_exact_applied_prefix_and_replay_is_idempotent`,
+  `malformed_outcome_leaves_rows_unchanged`,
+  `terminal_removes_prefix_and_retains_failed_and_suffix_as_pending`,
+  `recovery_transport_retains_exact_id_target_and_payload_for_retry`, and
+  `append_capacity_and_row_encoding_are_preflighted_without_partial_write`.
+  The atomic live-target/definition revalidation and scheduler latch tests are
+  `vector_outbox_append_revalidates_live_target_and_definition_atomically`,
+  `append_after_idle_arms_and_running_append_latches_next_pass`, and
+  `arm_if_needed_arms_idle_and_latches_running_request`.
+- **Validation status:** The exact combined PocketIC lifecycle test passed with one test and four
+  filtered: `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
+  (1 passed, 0 failed, 4 filtered, 17.95s). Code inspection confirms that this combined test covers
+  Router upgrade, Vector reopen/rebind, manually driven Graph/Router recovery-timer seams, exact GQL
+  search, and idempotent replay. The focused Router outbox, revalidation, lost-wake, and adaptive-sizing
+  unit tests are present in the live tree. This targeted test does not prove autonomous wall-clock
+  timer firing or deferred watermark/tombstone GC completion.
+- **Impact:** The durable suffix owner now matches the `DeferredForRepair` contract and survives
+  return, transport failure, and trap boundaries; the stable reopen test, immutable target, lost-wake
+  arm latch, `post_upgrade` timer hook, and combined PocketIC lifecycle test cover the intended
+  manually driven recovery path. The public operation remains at-least-once retry/convergence with no finite-time
+  guarantee; it does not promise client-level exactly-once semantics.
+- **Next decision:** Keep the direct-ingestion outbox contract separate from the broader Vector
+  watermark/tombstone-retention and full vector redesign work; do not infer client-level exactly-once semantics from
+  the durable replay boundary.
 
 ### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
 
@@ -700,27 +731,32 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 - **Status:** Resolved by plan 0048 implementation
 - **Severity:** P1 product gap
-- **Owner:** Router authorization/resolution + Graph canonical embedding store
+- **Owner:** Router authorization/resolution + Graph validation boundary + Vector durable store
 - **Observed behavior:** before plan 0048, there was no canister API for an application or deployment
   tool to write a canonical vertex embedding. Vector-index fixtures and demos had to seed the
   derived `graph-vector-index` canister directly, bypassing Graph canonical ownership and the
   Router embedding-name catalog.
 - **Expected or needed behavior:** an authorized caller should submit only graph name, opaque encoded
-  vertex id, registered embedding name, and finite F32 values to Router; Router should resolve
-  ownership and dispatch a single canonical write to the Graph shard; Graph should commit the
-  canonical bytes/version and drive derived convergence; the result must distinguish a fully
-  applied projection from a durable deferred repair.
-- **Resolution:** plan 0048 adds the Router admin endpoint `admin_ingest_vertex_embedding` and the
-  Router-only Graph endpoint `admin_ingest_vertex_embedding`. Router validates the encoded id, live
-  shard, and registered vector definition before dispatch; Graph verifies vertex existence, commits
-  canonical bytes through `set_vertex_embedding`, attempts `vector_pending` delivery, and returns
-  `VertexEmbeddingIngestionResult { embedding_version, projection_outcome }`. Invalid inputs fail
-  closed before any Graph call; projection failure defers to the existing repair journal while
-  keeping the canonical write.
-- **Evidence:** `crates/router/src/canister.rs::resolve_vertex_embedding_ingestion` unit tests;
-  `crates/graph/src/canister/handlers.rs::vertex_embedding_ingestion_tests` unit tests;
-  `crates/pocket-ic-tests/tests/adr0031_vertex_embedding_ingestion.rs` PocketIC contract proving
-  canonical ingestion reaches Router vector search without direct vector-canister seeding.
+  vertex id, registered embedding name, and finite F32 values to the typed Router endpoint; Router
+  should validate the value dimension/finiteness before stamp allocation and the Graph await, Graph
+  should validate vertex/tombstone/label and payload-independent embedding metadata, and Router
+  should persist an exact Vector target/operation before the first Vector await while distinguishing
+  an acknowledged prefix from a durable deferred suffix.
+- **Resolution:** The typed Router `ingest_vertex_embeddings` flow validates the encoded id, live
+  shard, registered
+  vector definition, value dimension, and finiteness before allocating a stamp or calling Graph;
+  Graph `stamp_embedding` validates existence/tombstone state, required labels, and
+  payload-independent embedding metadata/encoding, then returns a Router-issued stamp without
+  embedding-byte or journal writes. After all successful
+  stamps, Router atomically revalidates lifecycle/target/definition and persists each complete
+  operation in `ROUTER_VECTOR_INGEST_OUTBOX` before the first `vector_sync_batch_outcome` await.
+  Failed terminal/suffix rows remain `Pending` and are retried at-least-once; no finite-time or
+  client-level exactly-once guarantee is implied.
+- **Evidence:** `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
+  `crates/graph/src/canister/handlers.rs::stamp_embedding`; and the focused Router/Vector unit
+  coverage. The targeted PocketIC lifecycle gate for the current lane passes as recorded in
+  GAP-2026-08-20-002; it manually drives recovery seams and does not prove autonomous timer firing
+  or deferred watermark/tombstone GC completion.
 - **Related contracts:** [ADR 0031](./adr/0031-vertex-embedding-store-and-derived-vector-index.md),
   [design/index/vector-index.md](./index/vector-index.md),
   [design/execution/pipeline.md](./execution/pipeline.md)

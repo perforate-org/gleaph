@@ -533,11 +533,12 @@ impl Storable for DeletedSubjectKey {
     }
 }
 
-/// Per-shard watermark pair bounding the subject map (ADR 0064 §5).
+/// Per-shard watermark pair used for conservative tombstone GC (ADR 0064 §5).
 ///
 /// `graph_watermark` is the highest graph→vector acked stamp; `router_watermark` is the highest
 /// Router→vector acked stamp. A deleted subject-map entry with `stamp <= min(both)` for its shard is
-/// unreachable (no stale replay can arrive) and is GC'd.
+/// unreachable (no stale replay can arrive) and is GC'd. The production Router watermark remains
+/// zero, so tombstone deletion is currently paused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ShardWatermarks {
     pub graph_watermark: u64,

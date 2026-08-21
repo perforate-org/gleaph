@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 12:40:56 UTC +0000
+Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
 ## Purpose
 
@@ -272,10 +272,12 @@ Internal bindings may stay lazy until output:
 ## Direct vertex embedding ingestion
 
 The Router-admin endpoint `ingest_vertex_embeddings` resolves the opaque encoded vertex id, the
-registered embedding definition, and the target Graph/Vector canisters. It allocates a nonzero
-Router stamp for each item and calls Graph `stamp_embedding`, which validates vertex existence,
-label membership, dimensions, finiteness, and encoding. This Graph call is validation-only: it
-does not write embedding bytes, a mutation-journal row, a derived-index outbox row, or a watermark.
+registered embedding definition, and the target Graph/Vector canisters. It validates each value
+vector's dimension and finiteness before allocating a nonzero Router stamp or making a Graph call,
+then sends only metadata and the stamp to Graph. Graph `stamp_embedding` validates vertex
+existence/tombstone state, required label membership, and payload-independent embedding
+metadata/encoding. This Graph call is validation-only: it does not write embedding bytes, a
+mutation-journal row, a derived-index outbox row, or a watermark.
 
 After **all successful Graph stamps for the request** are collected, the Router builds the complete
 `VectorEmbeddingSyncOp` values with the canonical F32 wire bytes, subject, definition, stamp, and

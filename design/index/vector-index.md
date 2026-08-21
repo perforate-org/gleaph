@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 12:40:56 UTC +0000
+Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
 ## Status
 
@@ -130,11 +130,12 @@ Router ── Pending {mutation_id, exact target, VectorEmbeddingSyncOp} ──�
 Router ── VectorEmbeddingSyncOp {index_id, subject, stamp, encoding, dims, metric, bytes} ─▶ Vector
 ```
 
-- The Router allocates a nonzero stamp from its durable mutation counter and sends it with the
-  request. The graph validates vertex existence, label membership against the injected mapping, and
-  dims/encoding, then returns that stamp. For this direct-ingest path the stamp is validation-only:
-  Graph writes no canonical embedding bytes, mutation journal row, derived-index outbox row, or
-  watermark.
+- The Router validates every public value vector's dimension and finiteness before allocating a
+  nonzero stamp from its durable mutation counter or making the Graph call. It sends only metadata
+  and that stamp to Graph. Graph validates vertex/tombstone state, label membership against the
+  injected mapping, and payload-independent embedding metadata/encoding, then returns the stamp.
+  For this direct-ingest path the stamp is validation-only: Graph writes no canonical embedding
+  bytes, mutation journal row, derived-index outbox row, or watermark.
 - After **all successful Graph stamps for the request** are collected, Router synchronously
   revalidates every operation against the current live shard row, exact attached target, and current
   immutable vector definition, then persists each exact operation and its exact Vector target in

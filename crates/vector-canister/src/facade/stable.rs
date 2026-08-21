@@ -136,7 +136,8 @@ thread_local! {
     pub(crate) static VECTOR_MAINTENANCE_STATE: RefCell<memory::StableMaintenanceStateMap> =
         RefCell::new(memory::init_maintenance_state());
 
-    // ADR 0064 §5: per-shard watermark pair bounding the subject map.
+    // ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the production Router
+    // watermark remains zero, so tombstone deletion is paused.
     pub(crate) static VECTOR_SHARD_WATERMARKS: RefCell<memory::StableShardWatermarksMap> =
         RefCell::new(memory::init_shard_watermarks());
 

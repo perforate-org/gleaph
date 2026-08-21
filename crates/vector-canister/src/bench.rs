@@ -27,7 +27,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceStepRequest,
-    VectorMetric, VectorRebuildPhase, VectorSearchRequest, VectorSubject, VectorSyncBatchProgress,
+    VectorMetric, VectorRebuildPhase, VectorSearchRequest, VectorSubject, VectorSyncBatchOutcome,
+    VectorSyncBatchUnavailable, VectorSyncTerminalError,
 };
 use std::cell::Cell;
 use std::hint::black_box;
@@ -1034,16 +1035,16 @@ filtered_search_bench!(bench_filtered_search_d768_c128_k10, 768, 128, 10);
 filtered_search_bench!(bench_filtered_search_d768_c1024_k10, 768, 1024, 10);
 filtered_search_bench!(bench_filtered_search_d768_c4096_k10, 768, 4096, 10);
 
-// --- `vector_sync_batch` loop acceptance (GAP-2026-07-17-001) ---
+// --- `vector_sync_batch_outcome` admission (GAP-2026-07-17-001) ---
 //
-// The canister `vector_sync_batch` loop (vector-canister/src/canister.rs) applies each
-// operation with an instruction-budget exhausted check that reserves
+// The canister `vector_sync_batch_outcome` driver applies each operation with an
+// instruction-budget exhausted check that reserves
 // `VECTOR_BATCH_RESERVE_INSTRUCTIONS` (100M) below `VECTOR_BATCH_MAX_INSTRUCTIONS` (32B). These
-// benches mirror that loop with the authorized attached-shard caller (a canbench query caller is
-// not an attached shard) to measure the representative and adversarial per-operation cost plus
-// the exhausted-check overhead. The measured maximum single-operation cost must stay far below
-// the 100M reserve, and the response-construction bench bounds the tail the ceiling leaves below
-// the 40B platform limit.
+// benches exercise that typed driver with the authorized attached-shard caller (a canbench query
+// caller is not an attached shard) to measure representative and adversarial per-operation cost
+// plus the exhausted-check overhead. The response-construction bench below measures both
+// reachable public `Result` envelopes; it does not by itself establish an instruction or payload
+// ceiling.
 
 thread_local! {
     static SYNC_BENCH_SEQ: Cell<u32> = const { Cell::new(0) };
@@ -1075,7 +1076,7 @@ fn sync_ops(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
 
 /// A batch mixing existing-subject Greater updates (first `count/2` ops on pre-seeded subjects
 /// `0..count/2`) with fresh upserts (last `count/2` ops on subjects `count..count+count/2`). Exercises
-/// the run-splitting path: the existing ops are processed per-row while the fresh ops form a batched run.
+/// the canonical typed driver's per-operation path across existing and fresh subjects.
 fn sync_ops_mixed(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
     (0..count)
         .map(|index| {
@@ -1102,85 +1103,89 @@ fn sync_ops_mixed(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
         .collect()
 }
 
-fn sync_batch_round(
-    store: &VectorCanisterStore,
+fn sync_batch_outcome_round(
     caller: Principal,
     ops: &[VectorEmbeddingSyncOp],
-) -> u32 {
-    let baseline = crate::canister::instruction_counter();
-    let mut applied = 0u32;
-    // Mirror the canister `vector_sync_batch` loop: process in bounded chunks, checking the
-    // instruction budget at each chunk boundary, and dispatch each chunk through the batched
-    // `vector_sync_batch_chunk` path (which falls back to per-row for non-fresh mixes).
-    const CHUNK: usize = 32;
-    while (applied as usize) < ops.len() {
-        let exhausted = crate::canister::instruction_counter()
-            .saturating_sub(baseline)
-            .saturating_add(crate::canister::VECTOR_BATCH_RESERVE_INSTRUCTIONS)
-            >= crate::canister::VECTOR_BATCH_MAX_INSTRUCTIONS;
-        if exhausted {
-            break;
-        }
-        let end = ((applied as usize) + CHUNK).min(ops.len());
-        let chunk = &ops[applied as usize..end];
-        let applied_in_chunk = store
-            .vector_sync_batch_chunk(caller, chunk)
-            .expect("vector sync batch chunk");
-        applied = applied.saturating_add(applied_in_chunk);
-        if applied_in_chunk == 0 {
-            break;
-        }
-    }
-    applied
+) -> VectorSyncBatchOutcome {
+    crate::canister::vector_sync_batch_outcome_for_caller(caller, ops)
+        .expect("vector sync batch outcome")
 }
 
-/// The `vector_sync_batch` loop processing 256 upserts of 8-dimensional embeddings
+fn assert_sync_batch_progress(caller: Principal, ops: &[VectorEmbeddingSyncOp]) {
+    assert_eq!(
+        sync_batch_outcome_round(caller, ops),
+        VectorSyncBatchOutcome::Progress { applied: 256 },
+        "typed sync benchmark fixture must apply the complete batch"
+    );
+}
+
+/// The `vector_sync_batch_outcome` driver processing 256 upserts of 8-dimensional embeddings
 /// (representative per-operation cost).
 #[bench(raw)]
-fn bench_vector_sync_batch_256() -> canbench_rs::BenchResult {
-    let store = setup_search_store(8, 0);
+fn bench_vector_sync_batch_outcome_256() -> canbench_rs::BenchResult {
     let ops = sync_ops(256, 8);
+    let _validation_store = setup_search_store(8, 0);
+    assert_sync_batch_progress(shard_owner(), &ops);
+    let store = setup_search_store(8, 0);
     canbench_rs::bench_fn(|| {
-        let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
-        black_box(applied)
+        black_box(&store);
+        let outcome = sync_batch_outcome_round(shard_owner(), black_box(&ops));
+        black_box(outcome)
     })
 }
 
 /// Adversarial: 256 upserts of 768-dimensional embeddings (3072 bytes each) — the maximum
 /// single-operation cost the 100M reserve must cover.
 #[bench(raw)]
-fn bench_vector_sync_batch_256_768_dims() -> canbench_rs::BenchResult {
-    let store = setup_search_store(768, 0);
+fn bench_vector_sync_batch_outcome_256_768_dims() -> canbench_rs::BenchResult {
     let ops = sync_ops(256, 768);
+    let _validation_store = setup_search_store(768, 0);
+    assert_sync_batch_progress(shard_owner(), &ops);
+    let store = setup_search_store(768, 0);
     canbench_rs::bench_fn(|| {
-        let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
-        black_box(applied)
+        black_box(&store);
+        let outcome = sync_batch_outcome_round(shard_owner(), black_box(&ops));
+        black_box(outcome)
     })
 }
 
-/// Mixed batch: 128 existing-subject Greater updates + 128 fresh upserts. Measures the run-splitting
-/// path (existing ops per-row, fresh run batched) versus the all-or-nothing per-row fallback.
+/// Mixed batch: 128 existing-subject Greater updates + 128 fresh upserts. Measures the canonical
+/// typed driver's per-operation path across both subject states.
 #[bench(raw)]
-fn bench_vector_sync_batch_256_768_dims_mixed() -> canbench_rs::BenchResult {
-    let store = setup_search_store(768, 128); // pre-seed 128 subjects
+fn bench_vector_sync_batch_outcome_256_768_dims_mixed() -> canbench_rs::BenchResult {
     let ops = sync_ops_mixed(256, 768);
+    let _validation_store = setup_search_store(768, 128); // pre-seed 128 subjects
+    assert_sync_batch_progress(shard_owner(), &ops);
+    let store = setup_search_store(768, 128); // pre-seed 128 subjects
     canbench_rs::bench_fn(|| {
-        let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
-        black_box(applied)
+        black_box(&store);
+        let outcome = sync_batch_outcome_round(shard_owner(), black_box(&ops));
+        black_box(outcome)
     })
 }
 
-/// Response construction: `VectorSyncBatchProgress` encode — the tail the 32B ceiling leaves
-/// below the 40B platform limit.
+/// Response construction: measure both public typed `Result` envelopes reachable from the driver.
 #[bench(raw)]
-fn bench_vector_sync_batch_progress_encode() -> canbench_rs::BenchResult {
-    let progress = VectorSyncBatchProgress {
-        applied: 256,
-        next_index: None,
-        instruction_budget_exhausted: false,
-    };
+fn bench_vector_sync_batch_outcome_encode() -> canbench_rs::BenchResult {
+    let responses: [Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable>; 2] = [
+        Ok(VectorSyncBatchOutcome::Progress { applied: 256 }),
+        Ok(VectorSyncBatchOutcome::Terminal {
+            applied: 33,
+            failed_index: 33,
+            error: VectorSyncTerminalError::SubjectTablePressure,
+        }),
+    ];
+    for response in &responses {
+        response
+            .as_ref()
+            .expect("reachable typed response")
+            .validate(256)
+            .expect("valid typed response envelope");
+        Encode!(response).expect("encode sync outcome response");
+    }
     canbench_rs::bench_fn(|| {
-        let encoded = Encode!(black_box(&progress)).expect("encode sync progress");
-        black_box(encoded)
+        let progress = Encode!(black_box(&responses[0])).expect("encode progress response");
+        let terminal = Encode!(black_box(&responses[1])).expect("encode terminal response");
+        black_box((progress, terminal))
     })
 }

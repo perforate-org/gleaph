@@ -5,7 +5,8 @@
 //! only dispatches **removes** for DML-driven deletions (vertex delete, label loss), gated by the
 //! ephemeral router-sourced catalog ([`crate::index::vector_catalog_context`]). Because the graph
 //! cannot enumerate a vertex's embeddings, it over-notifies by dispatching a remove for every indexed
-//! name; `remove-on-missing-row` is a safe no-op on the vector canister.
+//! name; a remove for a missing subject writes a deleted subject clock without creating a live
+//! row, so over-notification remains safe and stale replays stay fenced.
 
 use crate::facade::GraphStore;
 use crate::index::vector_pending;

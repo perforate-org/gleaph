@@ -1,8 +1,6 @@
 //! Canister request handlers for `gleaph-vector-canister`.
 
-use crate::facade::{
-    VectorCanisterStore, VectorSyncBatchOutcomeOperationError, advance_watermark, gc_subjects_step,
-};
+use crate::facade::{VectorCanisterStore, VectorSyncBatchOutcomeOperationError};
 use crate::init::VectorCanisterInitArgs;
 use crate::state::VectorCanisterError;
 use candid::Principal;
@@ -13,13 +11,13 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchProgress,
-    VectorSyncBatchUnavailable, VectorSyncTerminalError,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
 };
 use ic_cdk::api::msg_caller;
 
 pub(crate) const VECTOR_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
 pub(crate) const VECTOR_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
+const VECTOR_SYNC_BATCH_CHUNK: usize = 32;
 
 /// Upper bound on subject-map entries a single GC step examines (ADR 0064 §5). Bounds the per-message
 /// GC work so a large subject map cannot force an O(N) scan in one message.
@@ -34,6 +32,30 @@ pub(crate) fn instruction_counter() -> u64 {
     #[cfg(not(target_family = "wasm"))]
     {
         0
+    }
+}
+
+/// Advances an attached Graph's watermark and runs bounded subject GC for exactly the committed
+/// prefix. Router direct-ingest calls have no contiguous watermark owner and skip both actions.
+///
+/// A batch may stop before the submitted suffix (for example at the instruction budget or a
+/// typed terminal admission result). Advancing from the full request would make the suffix appear
+/// durable and could collect deleted subject clocks before their operations are applied.
+pub(crate) fn advance_watermark_and_gc_for_applied_prefix(
+    caller: Principal,
+    operations: &[VectorEmbeddingSyncOp],
+    applied: u32,
+) {
+    let applied = usize::try_from(applied).expect("vector sync applied count exceeds usize");
+    assert!(
+        applied <= operations.len(),
+        "vector sync applied count exceeds submitted operation count"
+    );
+    if applied == 0 {
+        return;
+    }
+    if crate::facade::advance_watermark(caller, &operations[..applied]) {
+        crate::facade::gc_subjects_step(GC_SUBJECTS_BUDGET);
     }
 }
 
@@ -84,48 +106,6 @@ pub(crate) fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanis
     VectorCanisterStore::new().vector_remove(msg_caller(), &op)
 }
 
-pub(crate) fn vector_sync_batch(
-    operations: Vec<VectorEmbeddingSyncOp>,
-) -> Result<VectorSyncBatchProgress, VectorCanisterError> {
-    let caller = msg_caller();
-    let store = VectorCanisterStore::new();
-    let baseline = instruction_counter();
-    let mut applied = 0u32;
-    // Process the batch in bounded chunks so the per-op instruction-budget check becomes a per-chunk
-    // check with a valid resume point (`next_index` is a chunk boundary). A chunk is small enough
-    // that its append+commit stays far below the 100M reserve.
-    const CHUNK: usize = 32;
-    while (applied as usize) < operations.len() {
-        let exhausted = instruction_counter()
-            .saturating_sub(baseline)
-            .saturating_add(VECTOR_BATCH_RESERVE_INSTRUCTIONS)
-            >= VECTOR_BATCH_MAX_INSTRUCTIONS;
-        if exhausted {
-            return Ok(VectorSyncBatchProgress {
-                applied,
-                next_index: Some(applied),
-                instruction_budget_exhausted: true,
-            });
-        }
-        let end = ((applied as usize) + CHUNK).min(operations.len());
-        let chunk = &operations[applied as usize..end];
-        let applied_in_chunk = store.vector_sync_batch_chunk(caller, chunk)?;
-        applied = applied.saturating_add(applied_in_chunk);
-        if applied_in_chunk == 0 {
-            break; // safety: never spin on a no-progress chunk
-        }
-    }
-    // ADR 0064 §5: advance the caller's watermark to the max stamp in the batch, then run a bounded
-    // GC step to drop deleted subject-map entries below the cutoff.
-    crate::facade::advance_watermark(caller, &operations);
-    crate::facade::gc_subjects_step(GC_SUBJECTS_BUDGET);
-    Ok(VectorSyncBatchProgress {
-        applied,
-        next_index: None,
-        instruction_budget_exhausted: false,
-    })
-}
-
 /// Failure that cannot be represented as a committed typed batch outcome.
 ///
 /// The public wrapper projects `StoreUnavailable` to the outer Candid error only before any
@@ -138,21 +118,37 @@ pub(crate) enum VectorSyncBatchOutcomeDriverError {
     Fatal(VectorCanisterError),
 }
 
-/// Per-operation typed batch driver used by the additive endpoint and unit tests.
-///
-/// Unlike the legacy chunked handler, every operation first obtains definition admission before
-/// row/page/subject mutations. This makes `TablePressure` an exact terminal index and preserves
-/// an acknowledged prefix only for that explicit terminal condition.
+/// Typed batch driver used by the additive endpoint and unit tests. Each bounded chunk uses the
+/// page-store batch append for compatible upserts while preserving the exact outcome prefix across
+/// chunk boundaries.
 pub(crate) fn vector_sync_batch_outcome_for_caller(
     caller: Principal,
     operations: &[VectorEmbeddingSyncOp],
 ) -> Result<VectorSyncBatchOutcome, VectorSyncBatchOutcomeDriverError> {
     let store = VectorCanisterStore::new();
     let baseline = instruction_counter();
+
+    match store.preflight_vector_sync_batch(caller, operations) {
+        Ok(()) => {}
+        Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) => {
+            return Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable);
+        }
+        Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) => {
+            return Err(VectorSyncBatchOutcomeDriverError::SubjectStoreUnavailable);
+        }
+        Err(VectorSyncBatchOutcomeOperationError::Fatal(error)) => {
+            return Err(VectorSyncBatchOutcomeDriverError::Fatal(error));
+        }
+        Err(VectorSyncBatchOutcomeOperationError::TablePressure)
+        | Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
+            unreachable!("typed batch preflight does not admit a terminal pressure result")
+        }
+    }
+
     let mut applied = 0u32;
 
-    for operation in operations {
-        // Always attempt the first operation: Graph treats a zero-progress nonempty response as
+    while (applied as usize) < operations.len() {
+        // Always attempt the first chunk: Graph treats a zero-progress nonempty response as
         // malformed, while a terminal pressure at position zero remains explicit and valid.
         let exhausted = applied > 0
             && instruction_counter()
@@ -163,46 +159,22 @@ pub(crate) fn vector_sync_batch_outcome_for_caller(
             break;
         }
 
-        match store.vector_sync_batch_outcome_apply_one(caller, operation) {
-            Ok(()) => {
-                applied = applied
-                    .checked_add(1)
-                    .expect("vector sync batch outcome exceeds u32");
-            }
-            Err(VectorSyncBatchOutcomeOperationError::TablePressure) => {
-                if applied > 0 {
-                    advance_watermark(caller, &operations[..applied as usize]);
-                    gc_subjects_step(GC_SUBJECTS_BUDGET);
-                }
-                return Ok(VectorSyncBatchOutcome::Terminal {
-                    applied,
-                    failed_index: applied,
-                    error: VectorSyncTerminalError::IndexDefinitionTablePressure,
-                });
-            }
-            Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
-                if applied > 0 {
-                    advance_watermark(caller, &operations[..applied as usize]);
-                    gc_subjects_step(GC_SUBJECTS_BUDGET);
-                }
-                return Ok(VectorSyncBatchOutcome::Terminal {
-                    applied,
-                    failed_index: applied,
-                    error: VectorSyncTerminalError::SubjectTablePressure,
-                });
-            }
+        let offset = applied as usize;
+        let end = offset
+            .checked_add(VECTOR_SYNC_BATCH_CHUNK)
+            .unwrap_or(operations.len())
+            .min(operations.len());
+        let chunk = &operations[offset..end];
+        let outcome = match store.vector_sync_batch_outcome_chunk(caller, chunk) {
+            Ok(outcome) => outcome,
             Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) if applied == 0 => {
                 return Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable);
-            }
-            Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) => {
-                return Err(VectorSyncBatchOutcomeDriverError::Fatal(
-                    VectorCanisterError::StableGrowFailed,
-                ));
             }
             Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) if applied == 0 => {
                 return Err(VectorSyncBatchOutcomeDriverError::SubjectStoreUnavailable);
             }
-            Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) => {
+            Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable)
+            | Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) => {
                 return Err(VectorSyncBatchOutcomeDriverError::Fatal(
                     VectorCanisterError::StableGrowFailed,
                 ));
@@ -210,12 +182,48 @@ pub(crate) fn vector_sync_batch_outcome_for_caller(
             Err(VectorSyncBatchOutcomeOperationError::Fatal(error)) => {
                 return Err(VectorSyncBatchOutcomeDriverError::Fatal(error));
             }
+            Err(VectorSyncBatchOutcomeOperationError::TablePressure)
+            | Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
+                unreachable!("typed batch chunk converts pressure to a terminal outcome")
+            }
+        };
+
+        match outcome {
+            VectorSyncBatchOutcome::Progress {
+                applied: chunk_applied,
+            } => {
+                assert_eq!(
+                    usize::try_from(chunk_applied).expect("chunk applied count exceeds usize"),
+                    chunk.len(),
+                    "typed batch chunk must make progress across its complete prefix"
+                );
+                applied = applied
+                    .checked_add(chunk_applied)
+                    .expect("vector sync batch outcome exceeds u32");
+            }
+            VectorSyncBatchOutcome::Terminal {
+                applied: chunk_applied,
+                failed_index,
+                error,
+            } => {
+                let applied_total = applied
+                    .checked_add(chunk_applied)
+                    .expect("vector sync batch applied count exceeds u32");
+                let failed_total = applied
+                    .checked_add(failed_index)
+                    .expect("vector sync batch failed index exceeds u32");
+                advance_watermark_and_gc_for_applied_prefix(caller, operations, applied_total);
+                return Ok(VectorSyncBatchOutcome::Terminal {
+                    applied: applied_total,
+                    failed_index: failed_total,
+                    error,
+                });
+            }
         }
     }
 
     if applied > 0 {
-        advance_watermark(caller, &operations[..applied as usize]);
-        gc_subjects_step(GC_SUBJECTS_BUDGET);
+        advance_watermark_and_gc_for_applied_prefix(caller, operations, applied);
     }
     Ok(VectorSyncBatchOutcome::Progress { applied })
 }

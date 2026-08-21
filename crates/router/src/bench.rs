@@ -17,6 +17,7 @@ fn router_stable_reopen_round() {
     black_box(memory::init_shards());
     black_box(memory::init_shard_by_graph());
     black_box(memory::init_shards_by_graph_id());
+    black_box(memory::init_graph_runtime_config());
     // idempotency / prepared queries
     black_box(memory::init_mutation_counter());
     black_box(memory::init_mutation_by_client_key());
@@ -39,6 +40,8 @@ fn router_stable_reopen_round() {
     black_box(memory::init_unique_effect_pending());
     black_box(memory::init_embedding_name_catalog());
     black_box(memory::init_vector_indexes());
+    black_box(memory::init_next_vector_index_id());
+    black_box(memory::init_vector_ingest_outbox());
     black_box(memory::init_vector_dispatch_activation());
     black_box(memory::init_vector_maintenance_policies());
     // provisioning

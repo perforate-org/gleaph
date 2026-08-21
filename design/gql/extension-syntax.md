@@ -1,7 +1,7 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 12:16:53 UTC +0000
+Last updated: 2026-08-21
+Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
 ## Status
 
@@ -374,9 +374,10 @@ INDEX` contract.
 
 Embeddings are derived model outputs, not edge inline properties and not ordinary variable-size
 property-store values. Under ADR 0064, the vector canister owns the only durable embedding-byte copy;
-Router owns definition metadata and Graph supplies vertex/label facts without becoming a byte store.
-The current stamp request still carries values through Graph for validation, so the metadata-only stamp
-boundary remains a prerequisite rather than an implemented guarantee.
+Router owns definition metadata and validates public value dimensions/finiteness, while Graph supplies
+vertex/label facts and validates payload-independent embedding metadata without becoming a byte store.
+The stamp request carries metadata and the Router-issued stamp only; Router sends embedding bytes
+directly to the vector canister.
 
 Possible later standalone schema shape:
 

@@ -111,10 +111,12 @@ documented).
   is idempotent only when its canonical payload matches and rejects a different payload; a remove
   on a missing row writes a deleted subject clock. The stamp remains comparable with Graph DML
   stamps where those operations emit vector removes.
-- `stamp_embedding` validates the Graph vertex/labels/dimensions/encoding and returns the supplied
-  stamp without an accompanying DML mutation, canonical write, mutation-journal entry,
-  derived-index outbox row, or watermark advance. The Router owns the direct-ingest durable suffix
-  so this validation-only stamp cannot be mistaken for a completed Vector projection.
+- Router validates each public embedding's dimension and finiteness before allocating its stamp or
+  making the Graph call. `stamp_embedding` then validates the Graph vertex/tombstone, required
+  labels, and payload-independent embedding metadata/encoding, returning the supplied stamp without
+  an accompanying DML mutation, canonical write, mutation-journal entry, derived-index outbox row,
+  or watermark advance. The Router owns the direct-ingest durable suffix so this validation-only
+  stamp cannot be mistaken for a completed Vector projection.
 - The subject map is the only store that would otherwise grow monotonically (deleted clocks).
   The attached Graph shard advances `graph_watermark` only for its contiguous applied prefix.
   Router direct-ingestion delivery does not advance `router_watermark`: the current path has no
@@ -127,16 +129,17 @@ documented).
 ### 6. Stamp-separated ingest
 
 ```text
-Router ── metadata + Router-issued stamp ─▶ Graph  (validate existence/labels/dims; return stamp)
+Router ── metadata + Router-issued stamp ─▶ Graph  (validate existence/labels/encoding; return stamp)
 Graph  ── VertexEmbeddingStamp {mutation_id} ────────────────────────────────────▶ Router
 Router ── Pending {mutation_id, exact target, exact op} ──────────────────────────▶ stable outbox
 Router ── exact pending prefix ────────────────────────────────────────────────────▶ Vector
 ```
 
 Bytes cross the subnet **once**, never through the graph; the graph holds no bytes even transiently.
-`stamp_embedding` is validation-only in this path: it checks vertex/label/dimension/encoding validity
-and returns the Router-issued stamp without a Graph journal, derived-index outbox, or watermark write.
-After **all successful Graph stamps for the request** are collected, the Router synchronously
+`stamp_embedding` is validation-only in this path: Router has already checked value dimension and
+finiteness, while Graph checks vertex/tombstone state, required labels, and payload-independent
+embedding metadata/encoding. Graph returns the Router-issued stamp without a Graph journal,
+derived-index outbox, or watermark write. After **all successful Graph stamps for the request** are collected, the Router synchronously
 revalidates every operation against the current live shard row, exact attached target, and current
 immutable definition, then appends the exact `(mutation_id, vector target, VectorEmbeddingSyncOp)`
 rows to `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) in one owner operation **before the first

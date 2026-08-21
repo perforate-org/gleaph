@@ -7,7 +7,7 @@
 //! ([`admin_attach_shard_to_vector`]), and only then flips its durable `vector_index_attached`
 //! registry bit. This mirrors the property-index attach in [`crate::index_sync`].
 
-use candid::Principal;
+use candid::{Encode, Principal};
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
@@ -17,8 +17,9 @@ use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabStats,
-    VectorSlabStatsStep, VectorSyncBatchProgress,
+    VectorSlabStatsStep, VectorSyncBatchOutcome,
 };
+use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 
 // The attach-handshake helpers below are only driven by `finish_shard_vector_attach`, which is itself
 // `#[cfg(not(pocket-ic-e2e))]` (the e2e harness drives the handshake legs from the test instead). The
@@ -138,34 +139,193 @@ pub async fn vector_search(
     Ok(VectorSearchResult { hits: Vec::new() })
 }
 
-/// Router → vector canister: persist embedding bytes + stamp (ADR 0064 §6). The Router holds the op
-/// durably in its request records and delivers bytes + stamp directly to the vector canister; the
-/// canister orders by `mutation_id` (`stamp <= clock`).
+/// Router → vector canister: persist embedding bytes + stamp (ADR 0064 §6). The Router owns each
+/// operation in the direct-ingestion outbox before this call; the typed result identifies the exact
+/// committed prefix or terminal row.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(dead_code, reason = "driven by the Router canister batch path")
+)]
+fn vector_sync_batch_prefix_len(
+    operations: &[gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp],
+    offset: usize,
+    hint: Option<SizeHint>,
+) -> Result<(usize, SizeHint), String> {
+    let remaining = operations.len().saturating_sub(offset);
+    let fitted = adaptive_fitting_prefix(
+        remaining,
+        hint,
+        SizingPolicy::inter_canister(),
+        |count| {
+            Encode!(&(operations[offset..offset + count].to_vec(),))
+                .map(|encoded| encoded.len())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|error| match error {
+        FitError::Measure(detail) => {
+            format!("vector sync batch encode probe failed: {detail}")
+        }
+        FitError::NoEntryFits {
+            encoded_bytes,
+            hard_limit_bytes,
+        } => format!(
+            "single Vector batch operation is {encoded_bytes} bytes, above the safe limit of {hard_limit_bytes}"
+        ),
+    })?
+    .ok_or_else(|| "empty Vector sync batch".to_string())?;
+    Ok((fitted.entry_count, SizeHint::new(fitted.entry_count)))
+}
+
 #[cfg(target_family = "wasm")]
-pub async fn vector_sync_batch(
+async fn vector_sync_batch_outcome_once(
     vector_canister: Principal,
     operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
-) -> Result<VectorSyncBatchProgress, String> {
+) -> Result<VectorSyncBatchOutcome, String> {
     use ic_cdk::call::Call;
 
-    Call::bounded_wait(vector_canister, "vector_sync_batch")
+    Call::bounded_wait(vector_canister, "vector_sync_batch_outcome")
         .with_args(&(operations,))
         .await
-        .map_err(|e| format!("vector vector_sync_batch call failed: {e}"))?
-        .candid::<VectorSyncBatchProgress>()
-        .map_err(|e| format!("vector vector_sync_batch decode failed: {e}"))
+        .map_err(|e| format!("vector vector_sync_batch_outcome call failed: {e}"))?
+        .candid::<Result<
+            VectorSyncBatchOutcome,
+            gleaph_graph_kernel::vector_index::VectorSyncBatchUnavailable,
+        >>()
+        .map_err(|e| format!("vector vector_sync_batch_outcome decode failed: {e}"))?
+        .map_err(|e| format!("vector vector_sync_batch_outcome unavailable: {e:?}"))
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn vector_sync_batch_outcome(
+    vector_canister: Principal,
+    operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+) -> Result<VectorSyncBatchOutcome, String> {
+    if operations.is_empty() {
+        return Err("vector sync batch requires at least one operation".to_string());
+    }
+
+    let mut offset = 0usize;
+    let mut size_hint = None;
+    while offset < operations.len() {
+        let (chunk_len, next_hint) = vector_sync_batch_prefix_len(&operations, offset, size_hint)?;
+        size_hint = Some(next_hint);
+        let end = offset
+            .checked_add(chunk_len)
+            .ok_or_else(|| "vector sync batch chunk length overflow".to_string())?;
+        let outcome =
+            vector_sync_batch_outcome_once(vector_canister, operations[offset..end].to_vec())
+                .await?;
+        outcome
+            .validate(chunk_len)
+            .map_err(|error| format!("invalid vector sync batch outcome: {error}"))?;
+
+        match outcome {
+            VectorSyncBatchOutcome::Progress { applied } => {
+                let applied = usize::try_from(applied)
+                    .map_err(|_| "vector sync batch applied count overflows usize".to_string())?;
+                if applied == 0 {
+                    return Err(
+                        "vector sync batch returned zero progress for a nonempty batch".to_string(),
+                    );
+                }
+                offset = offset
+                    .checked_add(applied)
+                    .ok_or_else(|| "vector sync batch applied count overflow".to_string())?;
+                if applied < chunk_len {
+                    return Ok(VectorSyncBatchOutcome::Progress {
+                        applied: u32::try_from(offset).map_err(|_| {
+                            "vector sync batch applied count exceeds u32".to_string()
+                        })?,
+                    });
+                }
+            }
+            VectorSyncBatchOutcome::Terminal {
+                applied,
+                failed_index,
+                error,
+            } => {
+                let applied = usize::try_from(applied)
+                    .map_err(|_| "vector sync batch applied count overflows usize".to_string())?;
+                let failed_index = usize::try_from(failed_index)
+                    .map_err(|_| "vector sync batch failed index overflows usize".to_string())?;
+                let applied_total = offset
+                    .checked_add(applied)
+                    .ok_or_else(|| "vector sync batch applied count overflow".to_string())?;
+                let failed_total = offset
+                    .checked_add(failed_index)
+                    .ok_or_else(|| "vector sync batch failed index overflow".to_string())?;
+                return Ok(VectorSyncBatchOutcome::Terminal {
+                    applied: u32::try_from(applied_total)
+                        .map_err(|_| "vector sync batch applied count exceeds u32".to_string())?,
+                    failed_index: u32::try_from(failed_total)
+                        .map_err(|_| "vector sync batch failed index exceeds u32".to_string())?,
+                    error,
+                });
+            }
+        }
+    }
+
+    Ok(VectorSyncBatchOutcome::Progress {
+        applied: u32::try_from(offset)
+            .map_err(|_| "vector sync batch applied count exceeds u32".to_string())?,
+    })
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub async fn vector_sync_batch(
+pub async fn vector_sync_batch_outcome(
     _vector_canister: Principal,
     _operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
-) -> Result<VectorSyncBatchProgress, String> {
-    Ok(VectorSyncBatchProgress {
-        applied: 0,
-        next_index: None,
-        instruction_budget_exhausted: false,
-    })
+) -> Result<VectorSyncBatchOutcome, String> {
+    Err("vector vector_sync_batch_outcome is unavailable in native builds".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric, VectorSubject};
+
+    fn operation(bytes_len: usize) -> gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
+        gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
+            index_id: 7,
+            embedding_name_id: 3,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(2),
+                vertex_id: 9,
+            },
+            mutation_id: 41,
+            encoding: VectorEncoding::F32,
+            dims: u16::try_from(bytes_len / 4).unwrap_or(u16::MAX),
+            metric: VectorMetric::L2Squared,
+            bytes: vec![0; bytes_len],
+            remove: false,
+        }
+    }
+
+    #[test]
+    fn vector_batch_chunk_probe_measures_the_complete_candid_request() {
+        let op = operation(gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
+        let encoded = Encode!(&(vec![op.clone()],)).expect("encode vector request");
+        assert!(
+            encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        );
+        let error = vector_sync_batch_prefix_len(std::slice::from_ref(&op), 0, None)
+            .expect_err("oversized single vector operation");
+        assert!(error.contains("single Vector batch operation"));
+    }
+
+    #[test]
+    fn vector_batch_chunk_probe_keeps_operation_order_in_each_prefix() {
+        let operations = vec![operation(1_000_000), operation(1_000_000)];
+        let (chunk_len, hint) =
+            vector_sync_batch_prefix_len(&operations, 0, None).expect("fit first vector prefix");
+        assert_eq!(chunk_len, 1);
+        assert_eq!(hint, SizeHint::new(1));
+        let (next_len, _) = vector_sync_batch_prefix_len(&operations, chunk_len, Some(hint))
+            .expect("fit second vector prefix");
+        assert_eq!(next_len, 1);
+    }
 }
 
 // --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface ---

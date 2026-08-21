@@ -419,8 +419,9 @@ pub(crate) fn register_vector_index(
     Ok(true)
 }
 
-/// Set (or replace) the single target of an existing definition and recompute its activation state
-/// through the fail-closed gate. Rejects an anonymous principal.
+/// Assign the single target of an existing definition and recompute its activation state through
+/// the fail-closed gate. Assignment is immutable: an unset target may be assigned once, an exact
+/// replay is idempotent, and a different target is rejected. Rejects an anonymous principal.
 pub(crate) fn set_vector_index_target(
     graph_id: GraphId,
     index_id: u32,
@@ -428,8 +429,17 @@ pub(crate) fn set_vector_index_target(
 ) -> Result<(), RouterError> {
     let target = reject_anonymous(target)?;
     let key = VectorIndexKey::new(graph_id, index_id);
-    if !ROUTER_VECTOR_INDEXES.with_borrow(|map| map.contains_key(&key)) {
-        return Err(RouterError::NotFound(format!("vector index {index_id}")));
+    let current = ROUTER_VECTOR_INDEXES
+        .with_borrow(|map| map.get(&key))
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {index_id}")))?;
+    match current.target.map(|current| current.canister) {
+        None => {}
+        Some(current) if current == target.canister => return Ok(()),
+        Some(current) => {
+            return Err(RouterError::Conflict(format!(
+                "vector index {index_id} target is immutable; already assigned to {current}"
+            )));
+        }
     }
     // One vector-index target per graph (ADR 0031 Slice 4): a target differing from any *other*
     // def's already-set target is a misrouting hazard. Checked before the mutation (and after the
@@ -466,7 +476,7 @@ pub(crate) fn set_vector_index_activation_state_for_test(
 
 /// Reject a `requested` target that differs from any *other* definition's already-set target in the
 /// graph (one vector-index target per graph; ADR 0031 Slice 4). `exclude_index_id` skips the
-/// definition being registered/retargeted so re-setting the same def's target is a no-op.
+/// definition being registered or assigned so an exact target replay remains idempotent.
 fn ensure_target_consistent(
     graph_id: GraphId,
     exclude_index_id: u32,
@@ -656,7 +666,13 @@ pub(crate) fn to_indexed_embedding_catalog(
     IndexedEmbeddingCatalog { embeddings }
 }
 
-pub(crate) fn purge_graph_vector_indexes(graph_id: GraphId) {
+pub(crate) fn purge_graph_vector_indexes(graph_id: GraphId) -> Result<(), RouterError> {
+    if super::vector_ingest_outbox::has_pending() {
+        return Err(RouterError::Conflict(
+            "cannot purge vector-index definitions while direct vector-ingest work remains pending"
+                .into(),
+        ));
+    }
     ROUTER_VECTOR_INDEXES.with_borrow_mut(|map| {
         let start = VectorIndexKey::new(graph_id, 0);
         let keys: Vec<_> = map
@@ -667,6 +683,7 @@ pub(crate) fn purge_graph_vector_indexes(graph_id: GraphId) {
             map.remove(&key);
         }
     });
+    Ok(())
 }
 
 /// Exclusive upper bound of one graph's `VectorIndexKey` range. `graph_id` is the most-significant
@@ -872,23 +889,94 @@ mod tests {
     }
 
     #[test]
-    fn set_target_transitions_to_blocked() {
+    fn target_assignment_sets_unset_target() {
         let graph = GraphId::from_raw(920_003);
         assert!(sample_def(graph, 1, None));
-        set_vector_index_target(
-            graph,
-            1,
-            VectorIndexTarget {
-                canister: Principal::management_canister(),
-            },
-        )
-        .expect("set target");
+        let target = VectorIndexTarget {
+            canister: Principal::management_canister(),
+        };
+        set_vector_index_target(graph, 1, target).expect("set target");
         let def = get_vector_index(graph, 1).expect("def");
         assert_eq!(
             def.activation_state,
             VectorIndexActivationState::DispatchBlocked
         );
-        assert!(def.target.is_some());
+        assert_eq!(def.target, Some(target));
+    }
+
+    #[test]
+    fn target_assignment_same_target_is_idempotent() {
+        let graph = GraphId::from_raw(920_005);
+        let target = VectorIndexTarget {
+            canister: Principal::from_slice(&[5u8; 29]),
+        };
+        assert!(sample_def(graph, 1, Some(target)));
+        let before = get_vector_index(graph, 1).expect("definition before replay");
+
+        set_vector_index_target(graph, 1, target).expect("same target replay");
+
+        assert_eq!(
+            get_vector_index(graph, 1).expect("definition after replay"),
+            before,
+            "an exact target replay must preserve the complete catalog row"
+        );
+    }
+
+    #[test]
+    fn target_assignment_different_target_rejects_without_mutation() {
+        let _guard = super::super::vector_ingest_outbox::test_lock();
+        let graph = GraphId::from_raw(920_006);
+        let current_target = VectorIndexTarget {
+            canister: Principal::from_slice(&[5u8; 29]),
+        };
+        let replacement_target = VectorIndexTarget {
+            canister: Principal::from_slice(&[6u8; 29]),
+        };
+        assert!(sample_def(graph, 1, Some(current_target)));
+        let before = get_vector_index(graph, 1).expect("definition before conflict");
+
+        let operation = gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
+            index_id: 1,
+            embedding_name_id: 1,
+            subject: gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(1),
+                vertex_id: 1,
+            },
+            mutation_id: 1,
+            encoding: VectorEncoding::F32,
+            dims: 1,
+            metric: VectorMetric::L2Squared,
+            bytes: vec![0, 0, 0, 0],
+            remove: false,
+        };
+        super::super::vector_ingest_outbox::append_pending(&[(
+            operation.mutation_id,
+            current_target.canister,
+            operation,
+        )])
+        .expect("append pending ingestion");
+        let pending_before = super::super::vector_ingest_outbox::scan(None, 16).0;
+
+        let error = set_vector_index_target(graph, 1, replacement_target)
+            .expect_err("a different target must be rejected");
+        assert_eq!(
+            error,
+            RouterError::Conflict(format!(
+                "vector index 1 target is immutable; already assigned to {}",
+                current_target.canister
+            ))
+        );
+        assert_eq!(
+            get_vector_index(graph, 1).expect("definition remains after rejected assignment"),
+            before,
+            "a rejected target assignment must preserve the complete catalog row"
+        );
+        assert_eq!(
+            super::super::vector_ingest_outbox::scan(None, 16).0,
+            pending_before,
+            "a rejected target assignment must preserve pending outbox state"
+        );
+        super::super::ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| table.clear_new());
     }
 
     #[test]
@@ -1072,10 +1160,44 @@ mod tests {
         assert!(listed.iter().any(|d| d.index_id == 1));
         assert!(listed.iter().any(|d| d.index_id == 2));
 
-        purge_graph_vector_indexes(graph);
+        purge_graph_vector_indexes(graph).expect("purge vector indexes");
         assert!(list_vector_indexes(graph).is_empty());
         // A different graph is untouched.
         assert_eq!(list_vector_indexes(other).len(), 1);
+    }
+
+    #[test]
+    fn purge_rejects_pending_direct_vector_work_before_catalog_mutation() {
+        let _guard = super::super::vector_ingest_outbox::test_lock();
+        let graph = GraphId::from_raw(920_008);
+        assert!(sample_def(graph, 1, None));
+        let before = list_vector_indexes(graph);
+        let operation = gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
+            index_id: 1,
+            embedding_name_id: before[0].embedding_name_id.raw(),
+            subject: gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vertex_id: 1,
+            },
+            mutation_id: 1,
+            encoding: VectorEncoding::F32,
+            dims: 16,
+            metric: VectorMetric::L2Squared,
+            bytes: vec![0; 16 * 4],
+            remove: false,
+        };
+        super::super::vector_ingest_outbox::append_pending(&[(
+            1,
+            Principal::from_slice(&[9; 29]),
+            operation,
+        )])
+        .expect("pending vector work");
+
+        let err = purge_graph_vector_indexes(graph)
+            .expect_err("pending vector work must block catalog purge");
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        assert_eq!(list_vector_indexes(graph), before);
+        super::super::ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| table.clear_new());
     }
 
     #[test]
@@ -1219,7 +1341,7 @@ mod tests {
         assert!(sample_def(graph, 1, None));
         assert!(sample_def(graph, 2, None));
         assert_eq!(list_vector_indexes(graph).len(), 2);
-        purge_graph_vector_indexes(graph);
+        purge_graph_vector_indexes(graph).expect("purge vector indexes");
         assert!(list_vector_indexes(graph).is_empty());
     }
 }

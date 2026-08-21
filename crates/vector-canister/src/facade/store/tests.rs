@@ -3,8 +3,11 @@
 use super::VectorCanisterStore;
 use crate::facade::stable::definition_store;
 use crate::facade::stable::memory::{ActiveShardDetach, VectorIndexOwnershipConfig};
-use crate::facade::stable::{OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG};
+use crate::facade::stable::{
+    OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG, VECTOR_GC_CURSOR, VECTOR_SHARD_WATERMARKS,
+};
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
+use crate::records::ShardWatermarks;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachPhase, ShardId};
@@ -118,6 +121,545 @@ fn typed_sync_unavailable_before_first_operation_is_outer_error_without_write() 
             .is_none()
     );
     definition_store::reopen_for_test().expect("restore exact-open definition owner");
+}
+
+#[test]
+fn typed_sync_replay_after_discarded_success_is_canonical_noop() {
+    let store = fresh_store();
+    let op = upsert_op(46, 1, 0xA6);
+
+    // The caller loses the first successful response and retries the exact wire operation.
+    let _discarded = crate::canister::vector_sync_batch_outcome_for_caller(
+        shard_canister(),
+        std::slice::from_ref(&op),
+    )
+    .expect("initial typed sync");
+    let before_entry = store
+        .subject_entry_for_test(INDEX_ID, subject(46))
+        .expect("live subject entry");
+    let before_slot = before_entry.slot.expect("live subject slot");
+    let before_bytes = store
+        .read_slot_bytes(INDEX_ID, before_slot)
+        .expect("canonical vector bytes");
+    let before_head = store
+        .partition_head_for_test(INDEX_ID, 1)
+        .expect("partition head");
+    let before_stats = store
+        .admin_vector_slab_stats(router(), Some(INDEX_ID))
+        .expect("slab stats");
+
+    let replay = crate::canister::vector_sync_batch_outcome_for_caller(
+        shard_canister(),
+        std::slice::from_ref(&op),
+    )
+    .expect("replayed typed sync");
+    assert_eq!(
+        replay,
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 1 }
+    );
+    replay.validate(1).expect("valid replay outcome");
+
+    assert_eq!(
+        store.subject_entry_for_test(INDEX_ID, subject(46)),
+        Some(before_entry),
+        "replay preserves the canonical subject clock and slot"
+    );
+    assert_eq!(
+        store.read_slot_bytes(INDEX_ID, before_slot),
+        Some(before_bytes),
+        "replay preserves canonical vector bytes"
+    );
+    assert_eq!(
+        store.partition_head_for_test(INDEX_ID, 1),
+        Some(before_head),
+        "replay does not allocate another slot"
+    );
+    assert_eq!(
+        store.admin_vector_slab_stats(router(), Some(INDEX_ID)),
+        Ok(before_stats),
+        "replay preserves physical allocation and row counters"
+    );
+}
+
+#[test]
+fn typed_batch_watermark_uses_applied_prefix() {
+    let store = fresh_store();
+    VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
+    store
+        .vector_upsert(shard_canister(), &upsert_op(100, 1, 0xA5))
+        .expect("create first deleted subject definition");
+    store
+        .vector_remove(shard_canister(), &remove_op(100, 2))
+        .expect("write first deleted subject clock");
+    store
+        .vector_upsert(shard_canister(), &upsert_op(101, 39, 0xA6))
+        .expect("create second deleted subject definition");
+    store
+        .vector_remove(shard_canister(), &remove_op(101, 40))
+        .expect("write second deleted subject clock");
+    // Seed the independent Router acknowledgement floor so the Graph-owned prefix test can make
+    // one tombstone eligible while retaining the later tombstone.
+    VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+        watermarks.insert(
+            ShardId::new(0),
+            ShardWatermarks {
+                graph_watermark: 0,
+                router_watermark: 100,
+            },
+        );
+    });
+
+    let mut operations: Vec<_> = (0..32)
+        .map(|vertex_id| upsert_op(vertex_id, u64::from(vertex_id) + 1, 0xA7))
+        .collect();
+    operations.push(upsert_op(32, 100, 0xA8));
+
+    // Submit only the committed prefix. A later request carrying stamp 100 must not be able to
+    // advance the Graph watermark or collect deleted clocks before that suffix is admitted.
+    let progress =
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations[..32])
+            .expect("typed batch progress");
+    assert_eq!(
+        progress,
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 32 }
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(31))
+            .is_some()
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(32))
+            .is_none()
+    );
+
+    let watermarks_before_suffix = VECTOR_SHARD_WATERMARKS
+        .with_borrow(|watermarks| watermarks.get(&ShardId::new(0)).expect("watermark record"));
+    assert_eq!(watermarks_before_suffix.graph_watermark, 32);
+    assert_eq!(watermarks_before_suffix.router_watermark, 100);
+
+    let watermarks = VECTOR_SHARD_WATERMARKS
+        .with_borrow(|watermarks| watermarks.get(&ShardId::new(0)).expect("watermark record"));
+    assert_eq!(watermarks.graph_watermark, 32);
+    assert_eq!(watermarks.router_watermark, 100);
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(100))
+            .is_none(),
+        "GC removes the tombstone below the applied Graph watermark"
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(101))
+            .expect("later deleted subject clock")
+            .deleted,
+        "the unapplied suffix must not make the later tombstone GC-eligible"
+    );
+}
+
+#[test]
+fn typed_batch_replay_preserves_all_canonical_rows_and_page_allocation() {
+    let store = fresh_store();
+    let operations = vec![
+        upsert_op(110, 1, 0xA1),
+        upsert_op(111, 1, 0xA2),
+        upsert_op(112, 1, 0xA3),
+    ];
+
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("initial typed batch"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 3 }
+    );
+    let before_entries: Vec<_> = operations
+        .iter()
+        .map(|op| {
+            store
+                .subject_entry_for_test(INDEX_ID, op.subject)
+                .expect("initial subject entry")
+        })
+        .collect();
+    let before_head = store
+        .partition_head_for_test(INDEX_ID, 1)
+        .expect("initial partition head");
+    let before_stats = store
+        .admin_vector_slab_stats(router(), Some(INDEX_ID))
+        .expect("initial slab stats");
+
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("same-ID replay"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 3 }
+    );
+    let after_entries: Vec<_> = operations
+        .iter()
+        .map(|op| {
+            store
+                .subject_entry_for_test(INDEX_ID, op.subject)
+                .expect("replayed subject entry")
+        })
+        .collect();
+
+    assert_eq!(after_entries, before_entries);
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("replayed partition head"),
+        before_head
+    );
+    assert_eq!(
+        store.admin_vector_slab_stats(router(), Some(INDEX_ID)),
+        Ok(before_stats)
+    );
+}
+
+#[test]
+fn typed_batch_preserves_order_when_a_subject_repeats() {
+    let store = fresh_store();
+    let operations = vec![upsert_op(113, 1, 0xB1), upsert_op(113, 2, 0xB2)];
+
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("ordered typed batch"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 2 }
+    );
+    let entry = store
+        .subject_entry_for_test(INDEX_ID, subject(113))
+        .expect("final subject entry");
+    assert_eq!(entry.stamp, 2);
+    assert!(!entry.deleted);
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("final partition head")
+            .live_len,
+        1,
+        "the first row is tombstoned before the ordered update becomes live"
+    );
+}
+
+#[test]
+fn typed_batch_batches_live_updates_with_fresh_rows() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(114, 1, 0xC1))
+        .expect("seed live subject");
+    let old_slot = store
+        .subject_entry_for_test(INDEX_ID, subject(114))
+        .expect("seed entry")
+        .slot
+        .expect("seed slot");
+
+    let operations = vec![
+        upsert_op(114, 2, 0xC2),
+        upsert_op(115, 1, 0xC3),
+        upsert_op(116, 1, 0xC4),
+    ];
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("mixed typed batch"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 3 }
+    );
+
+    let updated = store
+        .subject_entry_for_test(INDEX_ID, subject(114))
+        .expect("updated entry");
+    assert_eq!(updated.stamp, 2);
+    assert_ne!(updated.slot.expect("updated slot"), old_slot);
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("mixed partition head")
+            .live_len,
+        3
+    );
+}
+
+#[test]
+fn typed_batch_rejects_dimension_mismatch_without_appending_the_bad_row() {
+    let store = fresh_store();
+    let mut operations: Vec<_> = (0..64)
+        .map(|index| upsert_op(120 + index, u64::from(index) + 1, index as u8))
+        .collect();
+    let wrong_dims = &mut operations[33];
+    wrong_dims.dims = DIMS + 1;
+    wrong_dims.bytes = vec![0xC3; wrong_dims.dims as usize * 4];
+
+    assert!(matches!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations),
+        Err(crate::canister::VectorSyncBatchOutcomeDriverError::Fatal(
+            VectorCanisterError::DimensionMismatch
+        ))
+    ));
+    assert!(store.def_for_test(INDEX_ID).is_none());
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(120))
+            .is_none(),
+        "fatal validation must complete before any earlier chunk can commit"
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(153))
+            .is_none()
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(183))
+            .is_none(),
+        "the suffix is not attempted after a fatal operation"
+    );
+    assert!(store.partition_head_for_test(INDEX_ID, 1).is_none());
+}
+
+#[test]
+fn typed_batch_terminal_in_second_chunk_reports_global_prefix_and_replays_safely() {
+    let store = fresh_store();
+    let operations: Vec<_> = (0..68)
+        .map(|index| upsert_op(200 + index, u64::from(index) + 1, index as u8))
+        .collect();
+
+    // The first 32-row chunk and the first row of chunk two commit. The next subject-map commit
+    // reports terminal pressure, so both public indices must be global (33/33), not chunk-local
+    // (1/1). The suffix is retained for an exact replay.
+    crate::facade::store::mutation::arm_typed_subject_table_pressure(33);
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("typed terminal outcome"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Terminal {
+            applied: 33,
+            failed_index: 33,
+            error: gleaph_graph_kernel::vector_index::VectorSyncTerminalError::SubjectTablePressure,
+        }
+    );
+
+    for (index, operation) in operations.iter().enumerate() {
+        let entry = store.subject_entry_for_test(INDEX_ID, operation.subject);
+        if index < 33 {
+            let entry = entry.expect("committed prefix subject");
+            assert!(!entry.deleted, "committed prefix remains live at {index}");
+        } else {
+            assert!(
+                entry.is_none(),
+                "failed/suffix subject is not acknowledged at {index}"
+            );
+        }
+    }
+    let terminal_stats = store
+        .admin_vector_slab_stats(router(), Some(INDEX_ID))
+        .expect("terminal slab stats");
+    assert_eq!(terminal_stats.scope.physical_live_row_count, 33);
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("terminal partition head")
+            .live_len,
+        33
+    );
+    let prefix_entries: Vec<_> = operations[..33]
+        .iter()
+        .map(|operation| {
+            store
+                .subject_entry_for_test(INDEX_ID, operation.subject)
+                .expect("prefix entry")
+        })
+        .collect();
+
+    // The failed operation and suffix are replayed with their original IDs. The acknowledged
+    // prefix must remain byte-for-byte canonical and must not allocate duplicate live rows.
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("exact suffix replay"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 68 }
+    );
+    let replayed_prefix: Vec<_> = operations[..33]
+        .iter()
+        .map(|operation| {
+            store
+                .subject_entry_for_test(INDEX_ID, operation.subject)
+                .expect("replayed prefix entry")
+        })
+        .collect();
+    assert_eq!(replayed_prefix, prefix_entries);
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("replayed partition head")
+            .live_len,
+        68
+    );
+    let replay_stats = store
+        .admin_vector_slab_stats(router(), Some(INDEX_ID))
+        .expect("replayed slab stats");
+    assert_eq!(replay_stats.scope.physical_live_row_count, 68);
+    assert_eq!(
+        replay_stats.scope.row_count,
+        terminal_stats.scope.row_count + 35,
+        "replay appends only the 35 unacknowledged operations"
+    );
+}
+
+#[test]
+fn typed_batch_terminal_pressure_acknowledges_only_the_committed_prefix() {
+    let store = fresh_store();
+    let operations = vec![
+        upsert_op(117, 1, 0xD1),
+        upsert_op(118, 1, 0xD2),
+        upsert_op(119, 1, 0xD3),
+    ];
+    crate::facade::store::mutation::arm_typed_subject_table_pressure(1);
+
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("typed terminal outcome"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Terminal {
+            applied: 1,
+            failed_index: 1,
+            error: gleaph_graph_kernel::vector_index::VectorSyncTerminalError::SubjectTablePressure,
+        }
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(117))
+            .is_some()
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(118))
+            .is_none()
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(119))
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("terminal partition head")
+            .live_len,
+        1
+    );
+
+    // Retrying the exact request converges the failed suffix without duplicating the acknowledged
+    // first row.
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
+            .expect("terminal suffix retry"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 3 }
+    );
+    assert_eq!(
+        store
+            .partition_head_for_test(INDEX_ID, 1)
+            .expect("replayed partition head")
+            .live_len,
+        3
+    );
+}
+
+#[test]
+fn typed_batch_zero_prefix_terminal_does_not_run_graph_gc() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(123, 1, 0xD0))
+        .expect("seed deleted clock");
+    store
+        .vector_remove(shard_canister(), &remove_op(123, 2))
+        .expect("seed deleted clock");
+    VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
+    VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+        watermarks.insert(
+            ShardId::new(0),
+            ShardWatermarks {
+                graph_watermark: 100,
+                router_watermark: 100,
+            },
+        );
+    });
+
+    crate::facade::store::mutation::arm_typed_subject_table_pressure(0);
+    let pressure_op = upsert_op(124, 1, 0xD1);
+    assert_eq!(
+        crate::canister::vector_sync_batch_outcome_for_caller(
+            shard_canister(),
+            std::slice::from_ref(&pressure_op),
+        )
+        .expect("zero-prefix terminal outcome"),
+        gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Terminal {
+            applied: 0,
+            failed_index: 0,
+            error: gleaph_graph_kernel::vector_index::VectorSyncTerminalError::SubjectTablePressure,
+        }
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(123))
+            .expect("deleted clock")
+            .deleted,
+        "a zero-length committed prefix must not trigger Graph GC"
+    );
+}
+
+#[test]
+fn router_direct_ingest_does_not_own_watermark_or_gc_tombstone() {
+    let store = fresh_store();
+    VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
+    VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+        watermarks.insert(ShardId::new(0), ShardWatermarks::default());
+    });
+
+    // Router m10 applies a vector, but the response is lost. A later Router request cannot prove
+    // that this stamp is part of a contiguous acknowledged prefix.
+    let m10 = upsert_op(7, 10, 0xA0);
+    let _lost_response =
+        crate::canister::vector_sync_batch_outcome_for_caller(router(), std::slice::from_ref(&m10))
+            .expect("Router m10 apply");
+    assert_eq!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(7))
+            .expect("m10 subject")
+            .stamp,
+        10
+    );
+
+    // Graph m11 tombstones the m10 subject. The Graph watermark is valid, but the Router floor is
+    // still zero because the Router did not acknowledge a contiguous prefix.
+    let m11 = remove_op(7, 11);
+    crate::canister::vector_sync_batch_outcome_for_caller(
+        shard_canister(),
+        std::slice::from_ref(&m11),
+    )
+    .expect("Graph m11 delete");
+
+    // A newer Router m12 operation for another subject must not convert the lost m10 response into
+    // a Router watermark or make the m11 tombstone GC-eligible.
+    let m12 = upsert_op(8, 12, 0xA2);
+    crate::canister::vector_sync_batch_outcome_for_caller(router(), std::slice::from_ref(&m12))
+        .expect("Router m12 apply");
+
+    let watermarks = VECTOR_SHARD_WATERMARKS
+        .with_borrow(|watermarks| watermarks.get(&ShardId::new(0)).expect("watermark record"));
+    assert_eq!(watermarks.graph_watermark, 11);
+    assert_eq!(watermarks.router_watermark, 0);
+    assert_eq!(crate::facade::gc_subjects_step(20_000), 0);
+    let tombstone = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .expect("m11 tombstone retained");
+    assert!(tombstone.deleted);
+    assert_eq!(tombstone.stamp, 11);
+    assert_eq!(tombstone.slot, None);
+
+    // Replay of the lost Router m10 response is fenced by the retained m11 clock and cannot
+    // resurrect the subject.
+    crate::canister::vector_sync_batch_outcome_for_caller(router(), std::slice::from_ref(&m10))
+        .expect("stale Router m10 replay");
+    let replayed = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .expect("tombstone after stale replay");
+    assert!(replayed.deleted);
+    assert_eq!(replayed.stamp, 11);
+    assert_eq!(replayed.slot, None);
 }
 
 #[test]
@@ -438,190 +980,6 @@ fn vector_upsert_rejects_remove_flag() {
 }
 
 #[test]
-fn vector_sync_batch_chunk_all_fresh_upserts() {
-    let store = fresh_store();
-    let ops = vec![
-        upsert_op(1, 1, 0xAA),
-        upsert_op(2, 1, 0xBB),
-        upsert_op(3, 1, 0xCC),
-    ];
-    let applied = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap();
-    assert_eq!(applied, 3);
-    for vid in 1..=3 {
-        let entry = store
-            .subject_entry_for_test(INDEX_ID, subject(vid))
-            .unwrap();
-        assert!(!entry.deleted);
-        assert_eq!(entry.stamp, 1);
-        assert!(entry.slot.is_some());
-    }
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 3, "all three fresh rows are live");
-}
-
-#[test]
-fn vector_sync_batch_chunk_mixed_falls_back_per_row() {
-    let store = fresh_store();
-    // Pre-insert subject 1 so the batch is not all-fresh and must fall back to per-row.
-    store
-        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
-        .unwrap();
-    let ops = vec![upsert_op(1, 2, 0xBB), upsert_op(2, 1, 0xCC)];
-    let applied = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap();
-    assert_eq!(applied, 2);
-    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert_eq!(e1.stamp, 2, "existing subject updated via Greater path");
-    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
-    assert_eq!(e2.stamp, 1, "fresh subject inserted");
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 2);
-}
-
-#[test]
-fn vector_sync_batch_chunk_remove_falls_back_per_row() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
-        .unwrap();
-    let ops = vec![remove_op(1, 2)];
-    let applied = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap();
-    assert_eq!(applied, 1);
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert!(entry.deleted);
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 0);
-}
-
-#[test]
-fn vector_sync_batch_chunk_subject_commit_failure_tombstones() {
-    let store = fresh_store();
-    let ops = vec![
-        upsert_op(1, 1, 0xAA),
-        upsert_op(2, 1, 0xBB),
-        upsert_op(3, 1, 0xCC),
-    ];
-    // Force the 2nd subject-map insert (op index 1) to fail after the batched append.
-    crate::facade::store::mutation::arm_subject_insert_failure(1);
-    let err = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap_err();
-    assert_eq!(err, VectorCanisterError::StableGrowFailed);
-    // Op 0 committed (live); ops 1..2 tombstoned (dead rows, no subject entry).
-    let e0 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert!(!e0.deleted);
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(2)).is_none());
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(3)).is_none());
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 1, "only op 0 is live; ops 1..2 tombstoned");
-}
-
-#[test]
-fn vector_sync_batch_chunk_batches_runs_around_non_fresh() {
-    let store = fresh_store();
-    // Pre-insert subject 2 so the middle op is non-fresh and forces a run flush.
-    store
-        .vector_upsert(shard_canister(), &upsert_op(2, 1, 0xAA))
-        .unwrap();
-    let ops = vec![
-        upsert_op(1, 1, 0xBB),
-        upsert_op(2, 2, 0xCC),
-        upsert_op(3, 1, 0xDD),
-    ];
-    let applied = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap();
-    assert_eq!(applied, 3);
-    // Subjects 1 and 3 are fresh (batched); subject 2 updated via the per-row Greater path.
-    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert_eq!(e1.stamp, 1);
-    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
-    assert_eq!(e2.stamp, 2);
-    let e3 = store.subject_entry_for_test(INDEX_ID, subject(3)).unwrap();
-    assert_eq!(e3.stamp, 1);
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 3);
-}
-
-#[test]
-fn vector_sync_batch_chunk_same_subject_flushes_run() {
-    let store = fresh_store();
-    // Two ops for the same subject in one chunk: the first is fresh, the second must be a Greater
-    // update (flush the run, process per-row) so the first slot is tombstoned, not orphaned.
-    let ops = vec![upsert_op(1, 1, 0xAA), upsert_op(1, 2, 0xBB)];
-    let applied = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap();
-    assert_eq!(applied, 2);
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert_eq!(entry.stamp, 2);
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 1, "first slot tombstoned, second live");
-}
-
-#[test]
-fn vector_sync_batch_chunk_batches_live_greater_updates() {
-    let store = fresh_store();
-    // Pre-insert subjects 1 and 2.
-    store
-        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(2, 1, 0xBB))
-        .unwrap();
-    // Batch: live Greater updates for subjects 1 and 2 (newer stamp) plus a fresh subject 3.
-    let ops = vec![
-        upsert_op(1, 2, 0xCC),
-        upsert_op(2, 2, 0xDD),
-        upsert_op(3, 1, 0xEE),
-    ];
-    let applied = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap();
-    assert_eq!(applied, 3);
-    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert_eq!(e1.stamp, 2);
-    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
-    assert_eq!(e2.stamp, 2);
-    let e3 = store.subject_entry_for_test(INDEX_ID, subject(3)).unwrap();
-    assert_eq!(e3.stamp, 1);
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 3, "updates in place + one fresh");
-}
-
-#[test]
-fn vector_sync_batch_chunk_greater_commit_failure_tombstones_committed_old_slots() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(2, 1, 0xBB))
-        .unwrap();
-    // Batch: Greater update for subject 1, then Greater update for subject 2 (fails).
-    let ops = vec![upsert_op(1, 2, 0xCC), upsert_op(2, 2, 0xDD)];
-    // Force the 2nd subject-map insert (op index 1) to fail after the batched append.
-    crate::facade::store::mutation::arm_subject_insert_failure(1);
-    let err = store
-        .vector_sync_batch_chunk(shard_canister(), &ops)
-        .unwrap_err();
-    assert_eq!(err, VectorCanisterError::StableGrowFailed);
-    // Subject 1 committed (stamp 2, new slot live, old slot tombstoned).
-    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
-    assert_eq!(e1.stamp, 2);
-    // Subject 2's commit failed: its entry still points at the old slot (stamp 1, live).
-    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
-    assert_eq!(e2.stamp, 1);
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 2, "subject 1 new live, subject 2 old live");
-}
-
-#[test]
 fn vector_remove_rejects_insert_flag() {
     let store = fresh_store();
     let mut op = remove_op(7, 1);
@@ -660,7 +1018,7 @@ fn mutation_auth_rejects_unattached_and_cross_shard() {
 fn router_can_persist_any_shard_subject() {
     let store = fresh_store();
     // The Router is the trusted coordinator (ADR 0064 §6): it persists ops for any shard, so it must
-    // not be rejected as an unattached caller. This is the path `vector_sync_batch` exercises.
+    // not be rejected as an unattached caller. This is the path the typed batch endpoint exercises.
     store
         .vector_upsert(router(), &upsert_op(7, 1, 0xAA))
         .expect("Router upsert for shard 0");

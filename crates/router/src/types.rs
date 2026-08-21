@@ -1600,7 +1600,8 @@ pub struct RegisterVectorIndexArgs {
     pub if_not_exists: bool,
 }
 
-/// Admin: set (or replace) the single dispatch target of an existing vector index (ADR 0031 Slice 3).
+/// Admin: assign the single dispatch target of an existing vector index (ADR 0031 Slice 3).
+/// Replaying the same target is idempotent; a different target is rejected.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SetVectorIndexTargetArgs {
     pub logical_graph_name: String,
@@ -1662,7 +1663,7 @@ pub struct RouterVectorSearchRequest {
 /// Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
 /// (plan 0048). The caller supplies only the logical graph name, the opaque encoded vertex id,
 /// the registered embedding name, and the vector values; Router resolves ownership and the
-/// definition and dispatches a single canonical write.
+/// definition, asks Graph to validate vertex metadata, and delivers the values to Vector.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AdminIngestVertexEmbeddingArgs {
     pub logical_graph_name: String,
@@ -1681,7 +1682,7 @@ pub struct AdminIngestVertexEmbeddingBatchItem {
 
 /// Admin: ingest many finite F32 vertex embeddings through Router into the owning Graph shard(s)
 /// via the Router-initiated two-call flow (ADR 0064 §6): Router → Graph `stamp_embedding` (validate
-/// + consume a `mutation_id`, no byte storage), then Router → Vector (bytes + stamp).
+/// vertex metadata against a `mutation_id`, no byte storage), then Router → Vector (bytes + stamp).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AdminIngestVertexEmbeddingBatchArgs {
     pub logical_graph_name: String,

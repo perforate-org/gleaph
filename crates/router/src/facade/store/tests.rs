@@ -754,7 +754,9 @@ fn unregister_shard_with_vector_target_removes_vector_readiness_row() {
     ))
     .expect("register shard");
 
+    let graph_id = tenant_main_graph_id();
     let vector_canister = graph_principal(7);
+    graph_type_catalog_vocabulary::register_vector_def(graph_id, 1, vector_canister);
     futures::executor::block_on(store.admin_attach_vector_index_shard(
         admin,
         AdminAttachVectorIndexShardArgs {
@@ -765,7 +767,6 @@ fn unregister_shard_with_vector_target_removes_vector_readiness_row() {
     ))
     .expect("attach vector target");
 
-    let graph_id = tenant_main_graph_id();
     ROUTER_SHARDS.with_borrow(|shards| {
         let entry = shards
             .get(&GraphShardKey::new(graph_id, ShardId::new(0)))
@@ -5282,14 +5283,16 @@ pub(crate) mod graph_type_catalog_vocabulary {
 
         // A shard attached to a canister that is *not* the def target must not be ready (the
         // misrouting hole): point the def at a different canister and readiness drops.
-        crate::facade::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id);
+        crate::facade::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id)
+            .expect("purge vector definitions");
         register_vector_def(graph_id, 2, graph_principal(8));
         assert!(
             !store.graph_vector_dispatch_ready(graph_id),
             "shard attached to a non-target canister must not satisfy readiness"
         );
         // Realign the def target with the shard's attachment and readiness returns.
-        crate::facade::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id);
+        crate::facade::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id)
+            .expect("purge vector definitions");
         register_vector_def(graph_id, 3, graph_principal(7));
         assert!(store.graph_vector_dispatch_ready(graph_id));
 
@@ -5303,7 +5306,8 @@ pub(crate) mod graph_type_catalog_vocabulary {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::from_slice(&[1; 29]);
-        let _graph_id = setup_one_shard_graph(&store, admin);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        register_vector_def(graph_id, 1, graph_principal(7));
 
         let attach = |target: Principal| {
             futures::executor::block_on(store.admin_attach_vector_index_shard(
@@ -5362,6 +5366,351 @@ pub(crate) mod graph_type_catalog_vocabulary {
         ))
         .expect_err("anonymous target rejected");
         assert!(matches!(err, RouterError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn vector_attach_requires_definition_target_and_preserves_claim_on_replay_conflict() {
+        use crate::facade::stable::ROUTER_SHARDS;
+        use gleaph_graph_kernel::federation::GraphShardKey;
+
+        let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let target_a = graph_principal(7);
+        let target_b = graph_principal(8);
+
+        let attach = |target: Principal| {
+            futures::executor::block_on(store.admin_attach_vector_index_shard(
+                admin,
+                AdminAttachVectorIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id: ShardId::new(0),
+                    vector_canister: target,
+                },
+            ))
+        };
+
+        let err = attach(target_a).expect_err("attach-first must fail without a definition target");
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        let key = GraphShardKey::new(graph_id, ShardId::new(0));
+        let before_definition = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .expect("shard row");
+        assert_eq!(before_definition.vector_canister, None);
+        assert!(!before_definition.vector_index_attached);
+
+        register_vector_def(graph_id, 1, target_a);
+        let err = attach(target_b).expect_err("a different immutable definition target must fail");
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        let after_mismatch = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .expect("shard row after mismatch");
+        assert_eq!(after_mismatch.vector_canister, None);
+        assert!(!after_mismatch.vector_index_attached);
+
+        attach(target_a).expect("exact definition target attach");
+        attach(target_a).expect("exact target replay");
+        let attached = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .expect("attached shard row");
+        assert_eq!(attached.vector_canister, Some(target_a));
+        assert!(attached.vector_index_attached);
+
+        // Model an in-flight same-target claim whose remote await has not completed. A conflicting
+        // target must not overwrite that durable claim or start a remote attach.
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).expect("shard row");
+            entry.vector_index_attached = false;
+            shards.insert(key, entry);
+        });
+        let err = attach(target_b).expect_err("A/B attach race must preserve target A");
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        let claimed = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .expect("claimed shard row");
+        assert_eq!(claimed.vector_canister, Some(target_a));
+        assert!(!claimed.vector_index_attached);
+    }
+
+    #[test]
+    fn unregister_rejects_exact_pending_vector_work_without_lifecycle_mutation() {
+        use crate::facade::stable::{ROUTER_SHARDS, vector_index_catalog, vector_ingest_outbox};
+        use gleaph_graph_kernel::federation::GraphShardKey;
+        use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
+
+        let _guard = vector_ingest_outbox::test_lock();
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let target = graph_principal(7);
+        register_vector_def(graph_id, 1, target);
+        futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_canister: target,
+            },
+        ))
+        .expect("attach vector target");
+
+        let definition = vector_index_catalog::get_vector_index(graph_id, 1).expect("definition");
+        let operation = VectorEmbeddingSyncOp {
+            index_id: 1,
+            embedding_name_id: definition.embedding_name_id.raw(),
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 17,
+            },
+            mutation_id: 71,
+            encoding: definition.encoding,
+            dims: definition.dims,
+            metric: definition.metric,
+            bytes: vec![0; usize::from(definition.dims) * 4],
+            remove: false,
+        };
+        vector_ingest_outbox::append_pending(&[(71, target, operation)])
+            .expect("seed exact pending vector work");
+        let key = GraphShardKey::new(graph_id, ShardId::new(0));
+        let before = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .expect("shard before unregister");
+        let pending_before = vector_ingest_outbox::scan(None, 16).0;
+
+        let err = futures::executor::block_on(store.admin_unregister_shard(
+            admin,
+            "tenant.main",
+            ShardId::new(0),
+        ))
+        .expect_err("pending exact vector work must block unregister");
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        assert_eq!(
+            ROUTER_SHARDS.with_borrow(|shards| shards.get(&key)),
+            Some(before),
+            "pending rejection must leave live/target/attachment identity unchanged"
+        );
+        assert_eq!(vector_ingest_outbox::scan(None, 16).0, pending_before);
+    }
+
+    #[test]
+    fn vector_outbox_append_revalidates_live_target_and_definition_atomically() {
+        use crate::facade::stable::{
+            ROUTER_SHARDS, ROUTER_VECTOR_INDEXES, vector_index_catalog, vector_ingest_outbox,
+        };
+        use gleaph_graph_kernel::entry::EmbeddingNameId;
+        use gleaph_graph_kernel::federation::GraphShardKey;
+        use gleaph_graph_kernel::vector_index::{
+            VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+        };
+
+        let _guard = vector_ingest_outbox::test_lock();
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let target = graph_principal(7);
+        register_vector_def(graph_id, 1, target);
+        futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_canister: target,
+            },
+        ))
+        .expect("attach vector target");
+
+        let definition = vector_index_catalog::get_vector_index(graph_id, 1).expect("definition");
+        let operation = |mutation_id| VectorEmbeddingSyncOp {
+            index_id: 1,
+            embedding_name_id: definition.embedding_name_id.raw(),
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 17,
+            },
+            mutation_id,
+            encoding: definition.encoding,
+            dims: definition.dims,
+            metric: definition.metric,
+            bytes: vec![0; usize::from(definition.dims) * 4],
+            remove: false,
+        };
+        vector_ingest_outbox::append_pending_for_graph(graph_id, &[(81, target, operation(81))])
+            .expect("valid live target and definition are accepted");
+        let before_rejection = vector_ingest_outbox::scan(None, 16).0;
+
+        let key = GraphShardKey::new(graph_id, ShardId::new(0));
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).expect("shard row");
+            entry.index_attached = false;
+            shards.insert(key, entry);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(82, target, operation(82))],
+        )
+        .expect_err("a stale non-live shard must be rejected before append");
+        assert!(err.contains("no longer live"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "revalidation rejection must not partially append"
+        );
+
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).expect("shard row");
+            entry.index_attached = true;
+            shards.insert(key, entry);
+        });
+
+        let target_b = graph_principal(8);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).expect("shard row");
+            entry.vector_canister = Some(target_b);
+            entry.vector_index_attached = true;
+            shards.insert(key, entry);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(83, target, operation(83))],
+        )
+        .expect_err("an attached target mismatch must be rejected before append");
+        assert!(err.contains("not attached to exact target"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "attached-target rejection must leave the full outbox unchanged"
+        );
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).expect("shard row");
+            entry.vector_canister = Some(target);
+            entry.vector_index_attached = true;
+            shards.insert(key, entry);
+        });
+
+        let definition_key = vector_index_catalog::VectorIndexKey::new(graph_id, 1);
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.target = Some(vector_index_catalog::VectorIndexTarget { canister: target_b });
+            definitions.insert(definition_key, current);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(84, target, operation(84))],
+        )
+        .expect_err("a definition target mismatch must be rejected before append");
+        assert!(err.contains("target changed"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "definition-target rejection must leave the full outbox unchanged"
+        );
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.target = Some(vector_index_catalog::VectorIndexTarget { canister: target });
+            definitions.insert(definition_key, current);
+        });
+
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.embedding_name_id =
+                EmbeddingNameId::from_raw(definition.embedding_name_id.raw() ^ 1);
+            definitions.insert(definition_key, current);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(85, target, operation(85))],
+        )
+        .expect_err("an embedding-name mismatch must be rejected before append");
+        assert!(err.contains("does not match current definition"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "embedding-name revalidation must leave the full outbox unchanged"
+        );
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.embedding_name_id = definition.embedding_name_id;
+            definitions.insert(definition_key, current);
+        });
+
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.encoding = VectorEncoding::I8;
+            definitions.insert(definition_key, current);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(86, target, operation(86))],
+        )
+        .expect_err("an encoding mismatch must be rejected before append");
+        assert!(err.contains("does not match current definition"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "encoding revalidation must leave the full outbox unchanged"
+        );
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.encoding = definition.encoding;
+            definitions.insert(definition_key, current);
+        });
+
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.dims = definition.dims.saturating_add(1);
+            definitions.insert(definition_key, current);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(87, target, operation(87))],
+        )
+        .expect_err("a definition shape mismatch must be rejected before append");
+        assert!(err.contains("does not match current definition"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "definition-shape rejection must leave the full outbox unchanged"
+        );
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.dims = definition.dims;
+            definitions.insert(definition_key, current);
+        });
+
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.metric = VectorMetric::Cosine;
+            definitions.insert(definition_key, current);
+        });
+        let err = vector_ingest_outbox::append_pending_for_graph(
+            graph_id,
+            &[(88, target, operation(88))],
+        )
+        .expect_err("a metric mismatch must be rejected before append");
+        assert!(err.contains("does not match current definition"), "{err}");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            before_rejection,
+            "metric revalidation must leave the full outbox unchanged"
+        );
+        ROUTER_VECTOR_INDEXES.with_borrow_mut(|definitions| {
+            let mut current = definitions.get(&definition_key).expect("vector definition");
+            current.metric = definition.metric;
+            definitions.insert(definition_key, current);
+        });
+
+        vector_ingest_outbox::append_pending_for_graph(graph_id, &[(89, target, operation(89))])
+            .expect("the exact live target and definition must be accepted");
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 16).0,
+            vec![(81, target, operation(81)), (89, target, operation(89)),],
+            "an exact live match appends only after every revalidation passes"
+        );
+        vector_ingest_outbox::clear_for_test();
     }
 }
 

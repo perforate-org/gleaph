@@ -13,7 +13,7 @@
 use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::vector_lookup::VectorCanisterLookup;
 use crate::plan::PlanQueryError;
-use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
+use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSyncBatchOutcome};
 use std::cell::RefCell;
 
 thread_local! {
@@ -96,53 +96,54 @@ pub(crate) async fn flush_pending(
         ));
     };
 
-    if vx.supports_sync_batch() {
-        let mut offset = 0usize;
-        while offset < ops.len() {
-            let progress = match vx.vector_sync_batch(ops[offset..].to_vec()).await {
-                Ok(progress) => progress,
-                Err(primary) => {
+    let mut offset = 0usize;
+    while offset < ops.len() {
+        let remaining = ops.len() - offset;
+        let outcome = match vx.vector_sync_batch_outcome(ops[offset..].to_vec()).await {
+            Ok(outcome) => {
+                if let Err(detail) = outcome.validate(remaining) {
                     return Err(journal_and_defer(
                         &ops[offset..],
                         mutation_id,
-                        primary.to_string(),
+                        format!("invalid vector batch outcome: {detail}"),
                     ));
                 }
-            };
-            let advanced = usize::try_from(progress.applied).unwrap_or(0);
-            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+                outcome
+            }
+            Err(primary) => {
+                // A transport or availability error makes the committed prefix ambiguous, so
+                // retain the complete submitted suffix for idempotent replay.
                 return Err(journal_and_defer(
                     &ops[offset..],
                     mutation_id,
-                    "vector batch made invalid progress".into(),
+                    primary.to_string(),
                 ));
             }
-            offset = offset.saturating_add(advanced);
-            if progress.next_index.is_none() {
-                return if offset == ops.len() {
-                    Ok(())
-                } else {
-                    Err(journal_and_defer(
+        };
+
+        let applied = match outcome {
+            VectorSyncBatchOutcome::Progress { applied } => {
+                let applied = applied as usize;
+                if applied == 0 {
+                    return Err(journal_and_defer(
                         &ops[offset..],
                         mutation_id,
-                        "vector batch returned an invalid terminal progress".into(),
-                    ))
-                };
+                        "vector batch made no progress".into(),
+                    ));
+                }
+                applied
             }
-        }
-        return Ok(());
-    }
-
-    for op in &ops {
-        let result = if op.remove {
-            vx.vector_remove(op.clone()).await
-        } else {
-            vx.vector_upsert(op.clone()).await
+            VectorSyncBatchOutcome::Terminal { applied, .. } => {
+                let applied = applied as usize;
+                offset += applied;
+                return Err(journal_and_defer(
+                    &ops[offset..],
+                    mutation_id,
+                    "vector batch reached terminal admission result".into(),
+                ));
+            }
         };
-        if let Err(primary) = result {
-            // No compensation: re-applying the already-delivered prefix is an idempotent no-op.
-            return Err(journal_and_defer(&ops, mutation_id, primary.to_string()));
-        }
+        offset += applied;
     }
     Ok(())
 }
@@ -161,6 +162,7 @@ mod tests {
         fail_after: usize,
         upserts: AtomicUsize,
         removes: AtomicUsize,
+        seen: std::sync::Mutex<Vec<VectorEmbeddingSyncOp>>,
     }
 
     impl FlakyVectorCanister {
@@ -169,12 +171,30 @@ mod tests {
                 fail_after,
                 upserts: AtomicUsize::new(0),
                 removes: AtomicUsize::new(0),
+                seen: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
 
     #[async_trait(?Send)]
     impl VectorCanisterLookup for FlakyVectorCanister {
+        async fn vector_sync_batch_outcome(
+            &self,
+            operations: Vec<VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+            self.seen.lock().unwrap().extend(operations.iter().cloned());
+            for operation in operations.iter().cloned() {
+                if operation.remove {
+                    self.vector_remove(operation).await?;
+                } else {
+                    self.vector_upsert(operation).await?;
+                }
+            }
+            Ok(VectorSyncBatchOutcome::Progress {
+                applied: operations.len() as u32,
+            })
+        }
+
         async fn vector_upsert(&self, _op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
             let n = self.upserts.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.fail_after {
@@ -201,7 +221,7 @@ mod tests {
             encoding: VectorEncoding::F32,
             dims: 1,
             metric: VectorMetric::L2Squared,
-            bytes: vec![0, 0, 0, 0],
+            bytes: vec![0xa0, vertex_id as u8, version as u8, 0x5a],
             remove: false,
         }
     }
@@ -247,9 +267,11 @@ mod tests {
     fn flush_delivers_all_ops_in_order() {
         with_routing(|graph| {
             let vx = FlakyVectorCanister::new(0);
-            PENDING.with(|p| p.borrow_mut().extend([upsert_op(1, 1), upsert_op(2, 1)]));
+            let expected = [upsert_op(1, 11), upsert_op(2, 12)];
+            PENDING.with(|p| p.borrow_mut().extend(expected.clone()));
             pollster::block_on(flush_pending(Some(&vx), None)).expect("flush succeeds");
             assert_eq!(vx.upserts.load(Ordering::SeqCst), 2);
+            assert_eq!(*vx.seen.lock().unwrap(), expected);
             assert!(graph.repair_journal_is_empty());
         });
     }
@@ -258,12 +280,14 @@ mod tests {
     fn partial_failure_journals_whole_batch_without_compensation() {
         with_routing(|graph| {
             let vx = FlakyVectorCanister::new(2);
-            PENDING.with(|p| p.borrow_mut().extend([upsert_op(1, 1), upsert_op(2, 1)]));
+            let expected = [upsert_op(1, 21), upsert_op(2, 22)];
+            PENDING.with(|p| p.borrow_mut().extend(expected.clone()));
             let err = pollster::block_on(flush_pending(Some(&vx), Some(42)))
                 .expect_err("second upsert fails");
             assert!(matches!(err, PlanQueryError::IndexFlushDeferred { .. }));
             // No compensating removes were issued.
             assert_eq!(vx.removes.load(Ordering::SeqCst), 0);
+            assert_eq!(*vx.seen.lock().unwrap(), expected);
             let journaled: Vec<RepairPostingOp> = graph
                 .repair_journal_peek(16)
                 .into_iter()
@@ -273,10 +297,10 @@ mod tests {
                 journaled,
                 vec![
                     RepairPostingOp::VectorEmbedding {
-                        op: upsert_op(1, 1)
+                        op: expected[0].clone()
                     },
                     RepairPostingOp::VectorEmbedding {
-                        op: upsert_op(2, 1)
+                        op: expected[1].clone()
                     },
                 ]
             );

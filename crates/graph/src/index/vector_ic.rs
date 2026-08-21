@@ -9,8 +9,7 @@ use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    VectorCanisterError, VectorEmbeddingSyncOp, VectorSyncBatchOutcome, VectorSyncBatchProgress,
-    VectorSyncBatchUnavailable,
+    VectorCanisterError, VectorEmbeddingSyncOp, VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -62,24 +61,6 @@ fn validate_vector_sync_batch_outcome_reply(
 
 #[async_trait(?Send)]
 impl VectorCanisterLookup for IcVectorCanisterClient {
-    fn supports_sync_batch(&self) -> bool {
-        true
-    }
-
-    async fn vector_sync_batch(
-        &self,
-        operations: Vec<VectorEmbeddingSyncOp>,
-    ) -> Result<VectorSyncBatchProgress, PlanQueryError> {
-        let progress: VectorSyncBatchProgress =
-            Call::bounded_wait(self.vector_principal, "vector_sync_batch")
-                .with_args(&(operations,))
-                .await
-                .map_err(|e| ic_wait_err("vector_sync_batch", e))?
-                .candid()
-                .map_err(|_| ic_candid_decode_err("vector_sync_batch"))?;
-        Ok(progress)
-    }
-
     async fn vector_sync_batch_outcome(
         &self,
         operations: Vec<VectorEmbeddingSyncOp>,

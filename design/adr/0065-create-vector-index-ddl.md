@@ -3,7 +3,7 @@
 Date: 2026-08-11
 Status: proposed contract (v1 parser, Router registration, logical-index-name resolution, and migration-path provisioning landed; focused PocketIC ingress E2E passed; activated ANN success and `DROP VECTOR INDEX` deferred)
 Last revised: 2026-08-21
-Anchor timestamp: 2026-08-11 12:16:53 UTC +0000
+Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
 ## Context
 
@@ -41,9 +41,10 @@ direct `vector_search` now resolve the logical name; ingestion continues to iden
 field represented by `ON d.embedding`.
 
 The active vector redesign also makes the vector canister the only durable owner of embedding bytes.
-The current stamp request still carries `values: Vec<f32>` through Graph for validation before the
-Router forwards bytes to the vector canister. That byte-path mismatch is a prerequisite defect and is
-not hidden by this DDL design.
+The stamp request now carries metadata and the Router-issued stamp only. Router validates public
+value dimensions and finiteness before allocation or the Graph call; Graph validates vertex state,
+required labels, and payload-independent embedding metadata/encoding before returning the stamp.
+Router then forwards the bytes directly to the vector canister.
 
 ## Problem
 
@@ -192,10 +193,9 @@ compatibility reader; any production migration remains a later gate.
 ### Explicit non-goals
 
 This decision does not implement `DROP VECTOR INDEX`, rebuild, health, multi-label/fan-out indexes,
-a standalone embedding-schema catalog, vector-canister provisioning, Graph backfill, or the
-metadata-only stamp fix. Those are later slices and must not be implied by a successful CREATE
-response. In particular, the stamp request must stop carrying embedding bytes through Graph before
-the ADR 0064 ownership contract can be declared complete.
+a standalone embedding-schema catalog, vector-canister provisioning, or Graph backfill. The
+metadata-only stamp boundary is implemented by ADR 0064; a successful CREATE response still must
+not imply any of these deferred capabilities.
 
 ## Consequences
 
@@ -229,8 +229,7 @@ Accepted costs:
 5. Change GQL/direct search resolution to logical index names and add focused unit, Router, and
    PocketIC tests for authorization, invalid-input side effects, exact replay/conflict, activation
    blocking, and create-then-search resolution.
-6. Only after this slice is reviewed, design DROP/remote cleanup and the metadata-only stamp request
-   as separate boundaries.
+6. Only after this slice is reviewed, design DROP and remote cleanup as separate boundaries.
 
 ## Design Documentation Impact
 

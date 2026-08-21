@@ -1164,6 +1164,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Cell<u32> next never-issued opaque vector-index id; monotonic, globally collision-checked against legacy caller-assigned ids, and never rewound or reused (ADR 0065)",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_VECTOR_INGEST_OUTBOX",
+            53,
+            StableMemoryClass::Canonical,
+            "direct vector ingestion",
+            "mutation_id → one exact Vector target and VectorEmbeddingSyncOp; pending suffixes are retried by Router recovery; terminal outcomes retain the failed row and later suffix as Pending",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1527,9 +1535,9 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             15,
             StableMemoryClass::Maintenance,
             "per-shard watermark pair",
-            "shard_id → ShardWatermarks { graph_watermark, router_watermark }: highest graph→vector and \
-             Router→vector acked stamps bounding the subject map (ADR 0064 §5). A deleted subject-map \
-             entry with stamp <= min(both) for its shard is unreachable and GC'd. Operational \
+            "shard_id → ShardWatermarks { graph_watermark, router_watermark }: progress used for \
+             conservative tombstone GC (ADR 0064 §5). The production Router watermark remains zero, \
+             so tombstone deletion is paused; no subject-map growth bound is claimed. Operational \
              bookkeeping, not a query-facing index or canonical fact: it carries no rebuild path",
             RebuildPath::None,
         ),
@@ -1760,8 +1768,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 53);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(52));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 54);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(53));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[20].symbol,
             "ROUTER_NEXT_PHYSICAL_INDEX_ID"
@@ -1816,6 +1824,14 @@ mod tests {
         );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[52].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[53].symbol,
+            "ROUTER_VECTOR_INGEST_OUTBOX"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[53].class,
             StableMemoryClass::Canonical
         );
     }
@@ -2020,7 +2036,8 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[14].rebuild,
             RebuildPath::None
         ));
-        // ADR 0064 §5: per-shard watermark pair bounding the subject map.
+        // ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the production
+        // Router watermark remains zero, so tombstone deletion is paused.
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[15].symbol,
             "VECTOR_SHARD_WATERMARKS"

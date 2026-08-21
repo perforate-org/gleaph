@@ -1,16 +1,16 @@
 //! Per-shard watermark advance and subject-map GC (ADR 0064 §5).
 //!
-//! The subject map (`VECTOR_SUBJECT_TO_ID`) is the only store that would otherwise grow monotonically
-//! with cumulative ever-ingested subjects (deleted clocks are retained for the mutation-ordering
-//! fence). Two per-shard watermarks bound it:
+//! The subject map (`VECTOR_SUBJECT_TO_ID`) retains deleted clocks for the mutation-ordering fence.
+//! Two per-shard watermarks are maintained for conservative tombstone GC:
 //!
-//! - `graph_watermark`: highest graph→vector acked stamp (advanced by the graph shard's
-//!   `vector_sync_batch`).
-//! - `router_watermark`: highest Router→vector acked stamp (advanced by the Router's
-//!   `vector_sync_batch`).
+//! - `graph_watermark`: highest graph→vector acked stamp (advanced by the graph shard's typed
+//!   `vector_sync_batch_outcome` endpoint).
+//! - `router_watermark`: a contiguous Router-owned acknowledgement floor. Direct Router vector
+//!   ingestion does not advance this field because a later request cannot prove that an earlier
+//!   response was observed; it therefore remains zero on the current production path.
 //!
-//! A deleted entry with `stamp <= min(both)` for its shard is unreachable (no stale replay can arrive)
-//! and is GC'd. The subject map therefore stays at `≈ N + recently deleted`.
+//! Because the Router watermark remains zero, `min(graph_watermark, router_watermark)` remains zero
+//! and tombstone deletion is paused in production. No bounded subject-map growth claim is made.
 
 use crate::facade::stable::subject_store;
 use crate::facade::stable::{
@@ -22,45 +22,42 @@ use candid::Principal;
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use std::ops::Bound;
 
-/// Advances the caller's watermark for the shards touched by `ops` to the max stamp in the batch.
+/// Advances an attached Graph's watermark for its own shard to the max stamp in `ops`.
 ///
-/// The caller is either the Router (advances each touched shard's `router_watermark`) or an attached
-/// graph shard (advances its own shard's `graph_watermark`). The mutation path has already validated
-/// the caller against the shard catalog, so an unknown caller is a no-op here.
-pub(crate) fn advance_watermark(caller: Principal, ops: &[VectorEmbeddingSyncOp]) {
+/// Router-originated direct ingestion and unresolved callers do not own a contiguous acknowledgement
+/// floor, so they return `false` without changing watermarks. The boolean tells the caller whether a
+/// bounded GC step is safe for this authorized Graph path.
+pub(crate) fn advance_watermark(caller: Principal, ops: &[VectorEmbeddingSyncOp]) -> bool {
     let router = VECTOR_INDEX_ROUTER.with_borrow(|r| *r.get());
-    let is_router = caller == router;
-    let caller_shard = if is_router {
-        None
-    } else {
-        SHARD_CANISTER_CATALOG.with_borrow(|c| c.shard_for_canister(caller))
+    if caller == router {
+        return false;
+    }
+    let Some(caller_shard) =
+        SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(caller))
+    else {
+        return false;
     };
+    if ops.iter().any(|op| op.subject.shard_id() != caller_shard) {
+        return false;
+    }
 
     for op in ops {
-        let shard = if is_router {
-            op.subject.shard_id()
-        } else {
-            // A graph shard only sends ops for its own shard; fall back to the op's shard if the
-            // caller's shard is somehow unresolved.
-            caller_shard.unwrap_or_else(|| op.subject.shard_id())
-        };
+        let shard = caller_shard;
         VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
             let mut wm = watermarks.get(&shard).unwrap_or_default();
-            if is_router {
-                wm.router_watermark = wm.router_watermark.max(op.mutation_id);
-            } else {
-                wm.graph_watermark = wm.graph_watermark.max(op.mutation_id);
-            }
+            wm.graph_watermark = wm.graph_watermark.max(op.mutation_id);
             watermarks.insert(shard, wm);
         });
     }
+    true
 }
 
 /// Removes up to `budget` deleted subject-map entries whose `stamp <= min(graph_watermark,
 /// router_watermark)` for their shard. Returns the number of entries removed.
 ///
 /// Live entries and deleted entries above the cutoff are retained. A shard with no watermark record
-/// has a cutoff of `0`, so nothing is GC-eligible until both watermarks advance.
+/// has a cutoff of `0`, so nothing is GC-eligible until both watermarks advance; the current Router
+/// watermark of `0` therefore pauses tombstone deletion.
 ///
 /// The scan walks `VECTOR_DELETED_SUBJECTS` (the deleted-subjects list, keyed by `(shard, stamp,
 /// subject)`) rather than the subject map, because the subject map's slot order is unstable under
@@ -143,6 +140,8 @@ mod tests {
             })
             .expect("init");
         store.attach_single_shard_for_test(router(), ShardId::new(0), shard_canister());
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| watermarks.clear_new());
+        VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
         store
     }
 
@@ -201,12 +200,23 @@ mod tests {
     }
 
     #[test]
-    fn router_advances_router_watermark() {
+    fn router_does_not_advance_router_watermark() {
         fresh_store();
-        advance_watermark(router(), &[upsert_op(7, 5), upsert_op(8, 9)]);
+        assert!(!advance_watermark(
+            router(),
+            &[upsert_op(7, 5), upsert_op(8, 9)]
+        ));
         let wm = watermarks(ShardId::new(0));
         assert_eq!(wm.graph_watermark, 0);
-        assert_eq!(wm.router_watermark, 9);
+        assert_eq!(wm.router_watermark, 0);
+    }
+
+    #[test]
+    fn unresolved_caller_does_not_advance_any_watermark() {
+        fresh_store();
+        let stranger = Principal::from_slice(&[2]);
+        assert!(!advance_watermark(stranger, &[upsert_op(7, 9)]));
+        assert_eq!(watermarks(ShardId::new(0)), ShardWatermarks::default());
     }
 
     #[test]
@@ -228,9 +238,19 @@ mod tests {
             .expect("remove");
         assert!(subject_entry(7).expect("clock").deleted);
 
-        // Advance both watermarks past the deleted stamp (2).
+        // The Graph watermark advances through the owner boundary. Seed the independent Router
+        // acknowledgement floor directly so this unit exercises GC without granting direct Router
+        // ingestion watermark ownership.
         advance_watermark(shard_canister(), &[upsert_op(7, 5)]);
-        advance_watermark(router(), &[upsert_op(7, 5)]);
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(
+                ShardId::new(0),
+                ShardWatermarks {
+                    graph_watermark: 5,
+                    router_watermark: 5,
+                },
+            );
+        });
         assert_eq!(gc_subjects_step(100), 1);
         assert!(subject_entry(7).is_none(), "deleted entry GC'd");
     }
@@ -242,7 +262,15 @@ mod tests {
             .vector_upsert(shard_canister(), &upsert_op(7, 1))
             .expect("upsert");
         advance_watermark(shard_canister(), &[upsert_op(7, 5)]);
-        advance_watermark(router(), &[upsert_op(7, 5)]);
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(
+                ShardId::new(0),
+                ShardWatermarks {
+                    graph_watermark: 5,
+                    router_watermark: 5,
+                },
+            );
+        });
         assert_eq!(gc_subjects_step(100), 0);
         let entry = subject_entry(7).expect("live entry retained");
         assert!(!entry.deleted);
@@ -288,7 +316,15 @@ mod tests {
                 .expect("remove");
         }
         advance_watermark(shard_canister(), &[upsert_op(0, 5)]);
-        advance_watermark(router(), &[upsert_op(0, 5)]);
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(
+                ShardId::new(0),
+                ShardWatermarks {
+                    graph_watermark: 5,
+                    router_watermark: 5,
+                },
+            );
+        });
         // Budget 3 examines only the first 3 entries; all are deleted and below cutoff.
         assert_eq!(gc_subjects_step(3), 3);
     }

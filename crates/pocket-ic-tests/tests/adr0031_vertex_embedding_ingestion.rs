@@ -1,9 +1,10 @@
 //! PocketIC contract for plan 0048 canonical vertex-embedding ingestion through Router.
 //!
 //! Proves that an authorized caller can write one finite F32 embedding via Router using only the
-//! graph name, opaque encoded vertex id, embedding name, and values; that Graph owns the canonical
-//! bytes/version; that the derived vector-index converges without direct vector-canister seeding;
-//! and that invalid inputs fail closed before any Graph call.
+//! graph name, opaque encoded vertex id, embedding name, and values; that the vector canister owns
+//! the only durable embedding bytes; that Graph validates the metadata stamp and canonical vertex
+//! facts; that the derived vector-index converges without direct vector-canister seeding; and that
+//! invalid inputs fail closed before any Graph call.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -13,13 +14,13 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
-    VectorSyncBatchOutcome, VectorSyncBatchProgress, VectorSyncBatchUnavailable,
-    VertexEmbeddingProjectionOutcome,
+    VectorSyncBatchOutcome, VectorSyncBatchUnavailable, VertexEmbeddingProjectionOutcome,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, drain_maintenance_via_timer, e2e_insert_vertex_with_label,
     ensure_user_graph_type, gql_mutate_as_admin, gql_query_with_params_as_admin,
-    install_single_shard_federation, install_vector_canister, user_vertex_label_id, wasm_bytes,
+    install_single_shard_federation, install_vector_canister, run_router_recovery_timer,
+    user_vertex_label_id, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingBatchArgs,
@@ -390,7 +391,7 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
 }
 
 #[test]
-fn graph_delete_drains_vector_remove_through_typed_batch_and_legacy_batch_remains_callable() {
+fn graph_delete_drains_vector_remove_through_typed_batch() {
     let env = install_single_shard_federation();
     let vector = install_vector_canister(&env.pic, env.router);
     ensure_user_graph_type(&env);
@@ -406,13 +407,13 @@ fn graph_delete_drains_vector_remove_through_typed_batch_and_legacy_batch_remain
     assert_eq!(
         result.projection_outcome,
         VertexEmbeddingProjectionOutcome::Applied,
-        "the legacy Router batch path seeds one searchable vector"
+        "the typed Router batch path seeds one searchable vector"
     );
     assert_eq!(router_vector_hit_count(&env, 6.0), 1);
 
-    // Preserve the legacy wire contract independently of Router ingestion. This stale remove is an
-    // idempotent no-op, but the Graph caller must still receive the original progress shape.
-    let legacy_noop = VectorEmbeddingSyncOp {
+    // Preserve the typed wire contract independently of Router ingestion. This stale remove is an
+    // idempotent no-op, but the Graph caller must still receive a valid typed progress outcome.
+    let stale_noop = VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: VectorSubject::Vertex {
@@ -431,22 +432,18 @@ fn graph_delete_drains_vector_remove_through_typed_batch_and_legacy_batch_remain
         .update_call(
             vector,
             env.graph_source,
-            "vector_sync_batch",
-            Encode!(&vec![legacy_noop]).expect("encode legacy vector batch"),
+            "vector_sync_batch_outcome",
+            Encode!(&vec![stale_noop]).expect("encode typed vector batch"),
         )
-        .expect("legacy vector batch call");
-    assert_eq!(
-        Decode!(&bytes, VectorSyncBatchProgress).expect("decode legacy vector batch progress"),
-        VectorSyncBatchProgress {
-            applied: 1,
-            next_index: None,
-            instruction_budget_exhausted: false,
-        }
-    );
+        .expect("typed vector batch call");
+    let outcome: Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable> =
+        Decode!(&bytes, Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable>)
+            .expect("decode typed vector batch outcome");
+    assert_eq!(outcome, Ok(VectorSyncBatchOutcome::Progress { applied: 1 }));
     assert_eq!(
         router_vector_hit_count(&env, 6.0),
         1,
-        "the stale legacy replay must not remove the current vector"
+        "the stale replay must not remove the current vector"
     );
 
     // Graph DML queues the derived remove in its durable outbox. The synchronous outbox drain uses
@@ -470,7 +467,7 @@ fn graph_delete_drains_vector_remove_through_typed_batch_and_legacy_batch_remain
 }
 
 #[test]
-fn unavailable_vector_owner_keeps_graph_delete_outbox_until_upgrade_rebind() {
+fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes() {
     let env = install_single_shard_federation();
     let vector = install_vector_canister(&env.pic, env.router);
     ensure_user_graph_type(&env);
@@ -552,6 +549,90 @@ fn unavailable_vector_owner_keeps_graph_delete_outbox_until_upgrade_rebind() {
     drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(graph_derived_index_outbox_len(&env), 0);
     assert_eq!(router_vector_hit_count(&env, 6.0), 0);
+
+    // Let the ordinary Router recovery timer finish its idle lap before creating direct-ingest
+    // work. This keeps the upgrade boundary below about the exact pending row, rather than a
+    // concurrently scheduled older recovery pass.
+    run_router_recovery_timer(&env);
+
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let expected_id = vertex_element_id(&env);
+    e2e_unbind_vector_definition_store(&env, vector);
+
+    // Graph stamp allocation is canonical even while Vector is unavailable. The returned deferred
+    // result identifies the committed version; the exact subject is asserted by the search after
+    // the durable Router outbox replays.
+    let deferred = ingest(
+        &env,
+        encode_vertex(&env, inserted.local_vertex_id),
+        vec![7.0; DIMS as usize],
+    );
+    assert!(deferred.embedding_version > 0);
+    assert_eq!(
+        deferred.projection_outcome,
+        VertexEmbeddingProjectionOutcome::DeferredForRepair,
+        "unavailable Vector must defer the direct-ingest projection"
+    );
+
+    // Both the Router-owned operation and its exact Vector target must survive the Router upgrade.
+    env.pic
+        .upgrade_canister(
+            env.router,
+            wasm_bytes("ROUTER_WASM"),
+            Encode!(&()).expect("encode router upgrade args"),
+            None,
+        )
+        .expect("upgrade router with pending direct-ingest outbox");
+    env.pic
+        .upgrade_canister(
+            vector,
+            wasm_bytes("VECTOR_INDEX_WASM"),
+            Encode!(&()).expect("encode vector upgrade args"),
+            None,
+        )
+        .expect("rebind vector definition store");
+
+    run_router_recovery_timer(&env);
+
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN ELEMENT_ID(d) AS d_id, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(7.0)),
+    )])
+    .expect("encode direct-ingest replay params");
+    let gql = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        gql.row_count, 1,
+        "replayed direct ingestion returns one row"
+    );
+    let rows_blob = gql.rows_blob.expect("replayed direct-ingest rows blob");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode replayed direct-ingest rows");
+    assert_eq!(wire.rows.len(), 1);
+    let columns: std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue> =
+        wire.rows[0].columns.clone().into_iter().collect();
+    assert_eq!(
+        columns.get("d_id").expect("d_id column"),
+        &expected_id,
+        "replay must target the exact stamped vertex subject"
+    );
+    let distance = match columns.get("distance").expect("distance column") {
+        gleaph_gql_ic::GqlWireValue::Float64(d) => *d,
+        other => panic!("distance must be Float64, got {other:?}"),
+    };
+    assert!(
+        (distance - 0.0f64).abs() < 1e-6,
+        "replayed exact match distance must be zero"
+    );
+
+    // A later idle lap must not duplicate or corrupt the idempotent vector row.
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        router_vector_hit_count(&env, 7.0),
+        1,
+        "replaying an already acknowledged direct-ingest row must remain one exact hit"
+    );
 }
 
 #[test]
