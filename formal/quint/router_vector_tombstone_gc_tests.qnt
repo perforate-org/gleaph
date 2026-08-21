@@ -4,27 +4,33 @@ module routerVectorTombstoneGcTests {
   run frozenPolicyRetainsFenceAcrossLostResponseReplay = {
     initWithPolicy(Frozen)
       .then(admitRouterOperation(M10_UPSERT))
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
-      .then(loseAppliedResponse)
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M10_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(loseVectorResponse)
       .then(applyGraphRemoveM11)
       .then(admitRouterOperation(M12_UPSERT))
-      .then(dispatchRouterOperation(M12_UPSERT))
-      .then(vectorApply)
-      .then(observeAppliedResponse)
+      .then(dispatchGraph(M12_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M12_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(observeVectorResponse)
       .expect(and {
         vectorState.targetClock == Deleted(11),
-        vectorState.graphWatermark == 11,
-        vectorState.routerWatermark == 0,
-        routerState.outstanding.contains(M10_UPSERT),
+        vectorState.primaryGraphWatermark == 11,
+        vectorState.primaryRouterWatermark == 0,
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingVector),
         protocolSafety,
       })
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
-      .then(loseAppliedResponse)
+      .then(dispatchVectorBatch(List(M10_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(loseVectorResponse)
       .expect(and {
         vectorState.targetClock == Deleted(11),
-        routerState.outstanding.contains(M10_UPSERT),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingVector),
         noUnsafeFenceCollection,
         noStaleResurrection,
         protocolSafety,
@@ -34,21 +40,28 @@ module routerVectorTombstoneGcTests {
   run maxAcknowledgedCollectsFenceAndResurrectsStaleUpsert = {
     initWithPolicy(MaxAcknowledged)
       .then(admitRouterOperation(M10_UPSERT))
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
-      .then(loseAppliedResponse)
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M10_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(loseVectorResponse)
       .then(applyGraphRemoveM11)
       .then(admitRouterOperation(M12_UPSERT))
-      .then(dispatchRouterOperation(M12_UPSERT))
-      .then(vectorApply)
-      .then(observeAppliedResponse)
-      .then(publishRouterFrontier)
+      .then(dispatchGraph(M12_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M12_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(observeVectorResponse)
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .then(applyRouterFrontierMessage)
       .expect(and {
-        vectorState.graphWatermark == 11,
-        vectorState.routerWatermark == 12,
-        gcCutoff(vectorState) == 11,
+        vectorState.primaryGraphWatermark == 11,
+        vectorState.primaryRouterWatermark == 12,
+        gcCutoff(vectorState, PrimaryLane) == 11,
         vectorState.targetClock == Deleted(11),
-        routerState.outstanding.contains(M10_UPSERT),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingVector),
         not(frontierDoesNotPassOutstanding),
         not(protocolSafety),
       })
@@ -59,8 +72,8 @@ module routerVectorTombstoneGcTests {
         not(noUnsafeFenceCollection),
         not(protocolSafety),
       })
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
+      .then(dispatchVectorBatch(List(M10_UPSERT)))
+      .then(applyVectorPrefix(1))
       .expect(and {
         vectorState.targetClock == Live(10),
         staleResurrectionWitness,
@@ -72,30 +85,39 @@ module routerVectorTombstoneGcTests {
   run contiguousFrontierBlocksGcUntilLostResponseIsResolved = {
     initWithPolicy(Contiguous)
       .then(admitRouterOperation(M10_UPSERT))
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
-      .then(loseAppliedResponse)
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M10_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(loseVectorResponse)
       .then(applyGraphRemoveM11)
       .then(admitRouterOperation(M12_UPSERT))
-      .then(dispatchRouterOperation(M12_UPSERT))
-      .then(vectorApply)
-      .then(observeAppliedResponse)
-      .then(publishRouterFrontier)
+      .then(dispatchGraph(M12_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M12_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(observeVectorResponse)
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .then(applyRouterFrontierMessage)
       .expect(and {
-        vectorState.graphWatermark == 11,
-        vectorState.routerWatermark == 9,
-        gcCutoff(vectorState) == 9,
+        vectorState.primaryGraphWatermark == 11,
+        vectorState.primaryRouterWatermark == 9,
+        gcCutoff(vectorState, PrimaryLane) == 9,
         vectorState.targetClock == Deleted(11),
-        routerState.outstanding.contains(M10_UPSERT),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingVector),
         protocolSafety,
       })
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
-      .then(observeAppliedResponse)
-      .then(publishRouterFrontier)
+      .then(observeFrontierResponse)
+      .then(dispatchVectorBatch(List(M10_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(observeVectorResponse)
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .then(applyRouterFrontierMessage)
       .expect(and {
-        vectorState.routerWatermark == 12,
-        not(routerState.outstanding.contains(M10_UPSERT)),
+        vectorState.primaryRouterWatermark == 12,
+        not(hasIntent(routerState, M10_UPSERT)),
         vectorState.targetClock == Deleted(11),
         protocolSafety,
       })
@@ -108,44 +130,139 @@ module routerVectorTombstoneGcTests {
       })
   }
 
-  run restartPreservesDurableIntentAndVectorClock = {
+  run restartBeforeGraphResponsePreservesExactIntent = {
     initWithPolicy(Contiguous)
       .then(admitRouterOperation(M10_UPSERT))
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
+      .then(dispatchGraph(M10_UPSERT))
       .then(restart)
       .expect(and {
-        transport == TransportIdle,
-        routerState.issued.contains(M10_UPSERT),
-        routerState.outstanding.contains(M10_UPSERT),
-        vectorState.targetClock == Live(10),
+        graphTransport == GraphIdle,
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        routerState.allocatedThrough == 10,
         restartWitness,
         protocolSafety,
       })
-      .then(applyGraphRemoveM11)
-      .then(dispatchRouterOperation(M10_UPSERT))
-      .then(vectorApply)
-      .then(observeAppliedResponse)
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
       .expect(and {
-        vectorState.targetClock == Deleted(11),
-        routerState.settled.contains(M10_UPSERT),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingVector),
+        not(hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph)),
         protocolSafety,
       })
   }
 
-  run frontierFunctionsDistinguishHoleFromHigherAcknowledgement = {
+  run lostGraphResponseRetainsGraphPendingIntent = {
+    initWithPolicy(Contiguous)
+      .then(admitRouterOperation(M10_UPSERT))
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(loseGraphResponse)
+      .expect(and {
+        graphTransport == GraphIdle,
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        graphResponseLossWitness,
+        protocolSafety,
+      })
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .expect(and {
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingVector),
+        protocolSafety,
+      })
+  }
+
+  run graphRejectionResolvesIntentAndReleasesFrontier = {
+    initWithPolicy(Contiguous)
+      .then(admitRouterOperation(M10_UPSERT))
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphReject)
+      .then(observeGraphReject)
+      .expect(and {
+        not(hasIntent(routerState, M10_UPSERT)),
+        routerState.allocatedThrough == 10,
+        contiguousFrontier(routerState, PrimaryLane) == 10,
+        graphRejectionResolvedWitness,
+        protocolSafety,
+      })
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .then(applyRouterFrontierMessage)
+      .expect(and {
+        vectorState.primaryRouterWatermark == 10,
+        vectorState.targetClock == Missing,
+        protocolSafety,
+      })
+  }
+
+  run partialVectorPrefixRetainsExactSuffix = {
+    initWithPolicy(Contiguous)
+      .then(admitRouterOperation(M10_UPSERT))
+      .then(dispatchGraph(M10_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(applyGraphRemoveM11)
+      .then(admitRouterOperation(M12_UPSERT))
+      .then(dispatchGraph(M12_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M10_UPSERT, M12_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(observeVectorResponse)
+      .expect(and {
+        not(hasIntent(routerState, M10_UPSERT)),
+        hasIntentInPhase(routerState, M12_UPSERT, AwaitingVector),
+        routerState.primaryMaxAcknowledged == 10,
+        contiguousFrontier(routerState, PrimaryLane) == 11,
+        vectorState.targetClock == Deleted(11),
+        vectorState.otherClock == Missing,
+        partialPrefixRetainedWitness,
+        protocolSafety,
+      })
+  }
+
+  run unrelatedGapAndOtherLaneDoNotCrossBlock = {
     initWithPolicy(Contiguous)
       .then(admitRouterOperation(M10_UPSERT))
       .then(applyGraphRemoveM11)
       .then(admitRouterOperation(M12_UPSERT))
-      .then(dispatchRouterOperation(M12_UPSERT))
-      .then(vectorApply)
-      .then(observeAppliedResponse)
+      .then(allocateUnrelatedM13)
+      .then(admitRouterOperation(M14_SECONDARY_UPSERT))
+      .then(dispatchGraph(M14_SECONDARY_UPSERT))
+      .then(graphAccept)
+      .then(observeGraphAccept)
+      .then(dispatchVectorBatch(List(M14_SECONDARY_UPSERT)))
+      .then(applyVectorPrefix(1))
+      .then(observeVectorResponse)
       .expect(and {
-        maxAcknowledgedFrontier(routerState) == 12,
-        contiguousFrontier(routerState) == 9,
-        containsStamp(routerState.outstanding, 10),
-        containsStamp(routerState.settled, 12),
+        routerState.allocatedThrough == 14,
+        contiguousFrontier(routerState, PrimaryLane) == 9,
+        contiguousFrontier(routerState, SecondaryLane) == 14,
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        hasIntentInPhase(routerState, M12_UPSERT, AwaitingGraph),
+        not(hasIntent(routerState, M14_SECONDARY_UPSERT)),
+        protocolSafety,
+      })
+      .then(dispatchRouterFrontier(SecondaryLane))
+      .then(applyRouterFrontierMessage)
+      .expect(and {
+        vectorState.primaryRouterWatermark == 0,
+        vectorState.secondaryRouterWatermark == 14,
+        laneIsolationWitness,
+        protocolSafety,
+      })
+  }
+
+  run lostFrontierResponsePreservesAppliedWatermark = {
+    initWithPolicy(Contiguous)
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .then(applyRouterFrontierMessage)
+      .then(loseFrontierResponse)
+      .expect(and {
+        frontierTransport == FrontierIdle,
+        vectorState.primaryRouterWatermark == 9,
+        frontierResponseLossWitness,
+        protocolSafety,
       })
   }
 }
