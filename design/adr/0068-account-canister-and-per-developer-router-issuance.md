@@ -2,8 +2,8 @@
 
 Date: 2026-08-14
 Status: proposed
-Last revised: 2026-08-21 16:47:02 UTC +0000
-Anchor timestamp: 2026-08-21 16:47:02 UTC +0000
+Last revised: 2026-08-21 18:13:59 UTC +0000
+Anchor timestamp: 2026-08-21 18:13:59 UTC +0000
 
 ## Context
 
@@ -243,9 +243,10 @@ the account↔Router mapping exist. The following are implemented:
 - `gleaph network start` auto-registers the caller's Personal account unless `--no-auto-register`.
 
 The **end-to-end** provisioned Router issuance (a live Release/artifact install through
-`accept_envelope` producing a running Router, then the bootstrap `complete_bootstrap` handover) is
-**not yet exercised in a PocketIC runtime** and remains the primary validation gap. The design
-contract is fixed in
+`accept_envelope` producing a running Router that responds to queries) is validated in
+`crates/pocket-ic-tests/tests/adr0068_router_issuance.rs`: the test publishes the real Router
+artifact, activates a release, drives `authorize_router_issuance`, and asserts the issued Router
+answers `whoami`. The design contract is fixed in
 [`design/architecture/account-and-provisioning.md`](../architecture/account-and-provisioning.md).
 
 ## Cross-links
