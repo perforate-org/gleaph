@@ -6,12 +6,6 @@ Read and write Figma `.fig` binary files directly using `openfig-core` and `zstd
 Parse VARIABLE nodes, sync design tokens bidirectionally with JSON, and re-encode
 modified `.fig` files without REST API round-trips.
 
-## supervisor-integrity
-
-Supervise Gleaph work from current-state inspection and bounded planning through delegated
-implementation, independent final approval, safe commits, pane resets, and continuous improvement
-of the smallest owning workflow skill.
-
 ## architecture-integrity
 
 Review encapsulation, separation of concerns, invariants, consistency, fitness for purpose, SSOT, DRY, and module boundaries.
