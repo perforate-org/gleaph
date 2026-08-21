@@ -142,20 +142,6 @@ for PocketIC, full-workspace tests, or canbench.
 - Never claim completion based only on `--no-run`, successful compilation, or a background/delegated
   process that has not returned a result. Distinguish build verification from runtime verification.
 
-### herdr plan / implementation / review workflow
-
-When `HERDR_ENV=1`, read and use `.agents/skills/herdr-workflow/SKILL.md` for the repository-specific
-plan → implementation → iterative review → validation → final approval → commit → reset workflow.
-The primary/coordinator or any pane explicitly supervising that role must also use
-`.agents/skills/supervisor-integrity/SKILL.md` for current-state recovery, scope and prerequisite
-decisions, independent final inspection, commit authorization, and cross-stage workflow improvement.
-Routine pane routing, checkpoints, plan/review iterations, validation dispatch, and skill learning
-belong to the designated supervisor and related panes directly; the primary must not be used as a
-message relay. Until the user explicitly grants mature-supervisor authority, the primary retains only
-the final independent approval and safe-commit gate plus genuine architecture/scope escalations.
-Use the global `herdr` skill for CLI mechanics. Keep detailed herdr coordination policy in that skill,
-not in `AGENTS.md` or unrelated implementation/review/validation skills.
-
 ## Format, Test, and Benchmark
 
 After completing a meaningful code change, explicitly run formatting, tests, and relevant benchmarks.
