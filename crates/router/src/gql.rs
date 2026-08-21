@@ -813,6 +813,17 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
             )
             .await?,
         )),
+        IndexAnchor::Range(probe) => Ok(SeedHits::Vertices(
+            index
+                .lookup_range(
+                    probe.physical_index_id,
+                    probe.property_id,
+                    probe
+                        .bound
+                        .to_posting_range_request(probe.bound_bytes.clone()),
+                )
+                .await?,
+        )),
         IndexAnchor::Intersection { specs, .. } => {
             let result = index
                 .lookup_intersection(IndexIntersectionRequest {
@@ -2963,6 +2974,33 @@ async fn run_gql_unchecked(
     authorize_adhoc_gql(&caller, flags)?;
     check_adhoc_execution_path(entrypoint, mode, flags, force)?;
 
+    let tx = program
+        .transaction_activity
+        .as_ref()
+        .ok_or_else(|| RouterError::InvalidArgument("missing transaction".into()))?;
+    let block = tx
+        .body
+        .as_ref()
+        .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
+
+    // Catalog DDL only (ADR 0070): a pure `CREATE GRAPH`/`CREATE GRAPH TYPE` program must not
+    // require a resolvable graph context — the very first `CREATE GRAPH` runs while no home graph
+    // exists. Unregistered names are provisioned through the shared admission flow first; the
+    // binding is then written at the newly allocated `GraphId`. Pre-registered names skip
+    // provisioning inside the bridge and keep the binding-only path.
+    if crate::facade::stable::graph_type_catalog::block_is_catalog_ddl_only(block) {
+        gleaph_gql::validate::validate(&program)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        for stmt in block.iter_statements() {
+            if let gleaph_gql::ast::Statement::CreateGraph(create) = stmt {
+                let graph_name = gleaph_graph_catalog::object_name_key(&create.name);
+                crate::provisioning::graph::create_graph_admission(caller, &graph_name).await?;
+            }
+        }
+        crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(block, query)?;
+        return Ok(GqlQueryResult::row_count_only(0));
+    }
+
     let store = RouterStore::new();
     let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
     let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
@@ -3024,17 +3062,13 @@ async fn run_gql_unchecked(
     let tx = program
         .transaction_activity
         .as_ref()
-        .ok_or_else(|| RouterError::InvalidArgument("missing transaction".into()))?;
-    let block = tx
-        .body
-        .as_ref()
-        .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
+        .expect("transaction extracted above");
+    let block = tx.body.as_ref().expect("statement block extracted above");
 
+    // Mixed programs (catalog DDL plus data statements) keep the context-resolved path; their
+    // schema bindings are committed before planning/dispatch. Pure DDL returned above.
     if crate::facade::stable::graph_type_catalog::block_has_catalog_ddl(block) {
         crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(block, query)?;
-        if crate::facade::stable::graph_type_catalog::block_is_catalog_ddl_only(block) {
-            return Ok(GqlQueryResult::row_count_only(0));
-        }
     }
 
     let dispatch = crate::use_graph::resolve_ingress_dispatch(
@@ -7645,6 +7679,17 @@ mod tests {
             Box::pin(async move { result })
         }
 
+        fn lookup_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            self.calls.set(self.calls.get() + 1);
+            let result = self.results.borrow_mut().remove(0);
+            Box::pin(async move { result })
+        }
+
         fn lookup_intersection(
             &self,
             _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
@@ -7761,6 +7806,15 @@ mod tests {
             _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
         }
@@ -7976,6 +8030,15 @@ mod tests {
             self.equal_calls.set(self.equal_calls.get() + 1);
             let hits = self.equal_hits.clone();
             Box::pin(async move { Ok(hits) })
+        }
+
+        fn lookup_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
         }
 
         fn lookup_intersection(

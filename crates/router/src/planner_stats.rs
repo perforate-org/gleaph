@@ -221,8 +221,12 @@ impl GraphStats for RouterGraphStats {
         self.is_named_property_indexed(IndexedPropertyKind::Vertex, property)
     }
 
-    fn is_vertex_property_range_indexed(&self, _property: &str) -> bool {
-        false
+    /// Every Active vertex named index is order-preserving encoded and range-capable
+    /// through `lookup_range` (vector indexes are a separate mechanism and never appear
+    /// as `IndexedPropertyKind::Vertex` named-index rows), so range capability mirrors
+    /// equality membership from the same catalog projection.
+    fn is_vertex_property_range_indexed(&self, property: &str) -> bool {
+        self.is_named_property_indexed(IndexedPropertyKind::Vertex, property)
     }
 
     fn is_edge_property_indexed(&self, property: &str) -> bool {
@@ -308,6 +312,30 @@ mod tests {
         );
         assert!(stats.is_vertex_property_indexed("region"));
         assert!(!stats.is_vertex_property_indexed("missing"));
+    }
+
+    #[test]
+    fn adapter_resolves_range_capability_via_catalog() {
+        let store = RouterStore::new();
+        let admin = Principal::from_slice(&[1; 29]);
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            provision_canister: None,
+        });
+        crate::facade::auth::grant_admins(&[admin]);
+        crate::facade::store::catalog_test_support::register_graph(&store, admin, TEST_GRAPH);
+        let graph_id = store.resolve_graph_id(TEST_GRAPH).expect("test graph");
+        let property_id = crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, TEST_GRAPH, "age",
+        );
+        let stats = RouterGraphStats::from_property_ids(
+            graph_id,
+            [property_id].into_iter().collect(),
+            BTreeSet::new(),
+        );
+        assert!(stats.is_vertex_property_range_indexed("age"));
+        assert!(!stats.is_vertex_property_range_indexed("missing"));
     }
 
     #[test]

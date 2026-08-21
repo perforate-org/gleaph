@@ -12,9 +12,10 @@ use gleaph_graph_kernel::index::{
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
     LookupEqualBatchRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupValuePostingCountPageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS,
-    PhysicalIndexId, PostingHit, ValuePostingCount, ValuePostingCountPage,
+    LookupPropertyIntersectionPageRequest, LookupRangePageRequest,
+    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
+    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PhysicalIndexId, PostingHit, PostingRangeRequest,
+    ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -139,6 +140,35 @@ async fn collect_equal_hits_paged(
                 physical_index_id,
                 property_id,
                 value: value.clone(),
+                after,
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        hits.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(hits)
+}
+
+/// Collect all range hits for `(physical_index_id, property_id, range)` on one index canister by
+/// paging (no full-bucket heap materialization).
+async fn collect_range_hits_paged(
+    client: &RouterIndexClient,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    range: PostingRangeRequest,
+) -> Result<Vec<PostingHit>, String> {
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page = client
+            .lookup_range_page(LookupRangePageRequest {
+                physical_index_id,
+                property_id,
+                range: range.clone(),
                 after,
                 limit: INDEX_LOOKUP_PAGE_LIMIT,
             })
@@ -423,6 +453,14 @@ pub(crate) trait IndexLookup {
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
 
+    /// Collect every posting whose encoded key satisfies the ordered range request.
+    fn lookup_range(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        range: PostingRangeRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
+
     fn lookup_intersection(
         &self,
         req: IndexIntersectionRequest,
@@ -508,6 +546,20 @@ impl IndexLookup for RouterIndexClient {
             physical_index_id,
             property_id,
             value,
+        ))
+    }
+
+    fn lookup_range(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        range: PostingRangeRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        Box::pin(collect_range_hits_paged(
+            self,
+            physical_index_id,
+            property_id,
+            range,
         ))
     }
 
@@ -619,6 +671,30 @@ impl IndexLookup for RouterIndexLookup {
                         physical_index_id,
                         property_id,
                         value.clone(),
+                    )
+                    .await?,
+                );
+            }
+            Ok(merge_posting_hits(self.retain_live_vertex_hits(merged)))
+        })
+    }
+
+    fn lookup_range(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        range: PostingRangeRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        let targets = self.targets.clone();
+        Box::pin(async move {
+            let mut merged = Vec::new();
+            for principal in targets {
+                merged.extend(
+                    collect_range_hits_paged(
+                        &RouterIndexClient::new(principal),
+                        physical_index_id,
+                        property_id,
+                        range.clone(),
                     )
                     .await?,
                 );

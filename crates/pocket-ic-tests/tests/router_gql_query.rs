@@ -188,6 +188,82 @@ fn single_shard_vertex_index_lifecycle() {
     assert_missing_index_drop_error(&env);
 }
 
+/// Normal `MATCH` planning must select the active vertex range index for one-sided
+/// and two-sided range predicates (GAP-2026-07-29-002). Exact per-age membership
+/// proves index-backed range execution end to end; the residual filter is what keeps
+/// any cross-type overscan harmless.
+#[test]
+fn single_shard_vertex_index_match_range() {
+    let env = install_single_shard_federation();
+    let age = ensure_property(&env, "age");
+
+    // Create before inserts so every vertex is posted into the range index.
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "match_range_create_age",
+    );
+
+    const AGE_A: i64 = 10;
+    const AGE_B: i64 = 20;
+    const AGE_C: i64 = 30;
+    const AGE_D: i64 = 40;
+    let mut id_by_age = std::collections::BTreeMap::<i64, GlobalVertexId>::new();
+    for value in [AGE_A, AGE_B, AGE_C, AGE_D] {
+        let inserted = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), value);
+        id_by_age.insert(value, inserted.global_vertex_id);
+    }
+
+    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
+        &env.pic,
+        env.admin,
+        env.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+    );
+    let assert_range_matches = |query: String, expected_ages: &[i64], context: &str| {
+        let result = gql_query_as_admin(&env, &query);
+        let got: std::collections::BTreeSet<GlobalVertexId> =
+            vertex_ids_from_result(&result, "id", &encoding_key)
+                .into_iter()
+                .collect();
+        let expected: std::collections::BTreeSet<GlobalVertexId> =
+            expected_ages.iter().map(|age| id_by_age[age]).collect();
+        assert_eq!(got.len(), expected.len(), "{context}: row count");
+        assert_eq!(got, expected, "{context}: exact membership");
+    };
+
+    // One-sided bounds in both directions.
+    assert_range_matches(
+        format!("MATCH (n) WHERE n.age >= {AGE_C} RETURN ELEMENT_ID(n) AS id"),
+        &[AGE_C, AGE_D],
+        "Ge one-sided range",
+    );
+    assert_range_matches(
+        format!("MATCH (n) WHERE n.age > {AGE_C} RETURN ELEMENT_ID(n) AS id"),
+        &[AGE_D],
+        "Gt one-sided range",
+    );
+    assert_range_matches(
+        format!("MATCH (n) WHERE n.age <= {AGE_B} RETURN ELEMENT_ID(n) AS id"),
+        &[AGE_A, AGE_B],
+        "Le one-sided range",
+    );
+    assert_range_matches(
+        format!("MATCH (n) WHERE n.age < {AGE_B} RETURN ELEMENT_ID(n) AS id"),
+        &[AGE_A],
+        "Lt one-sided range",
+    );
+
+    // Two-sided AND form.
+    assert_range_matches(
+        format!("MATCH (n) WHERE n.age >= {AGE_B} AND n.age <= {AGE_C} RETURN ELEMENT_ID(n) AS id"),
+        &[AGE_B, AGE_C],
+        "two-sided range conjunction",
+    );
+}
+
 fn assert_indexed_equality_lookup(
     env: &gleaph_pocket_ic_tests::FederationEnv,
     property_name: &str,

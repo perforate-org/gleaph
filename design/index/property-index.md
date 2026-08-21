@@ -20,12 +20,13 @@ compound reads avoid a Router-to-index round trip for equality and range filter
 pages.
 
 The range storage primitive is implemented with ordered posting scans
-(`StableBTreeMap::range()`), and Router `SEARCH ... WHERE` uses the paginated
-vertex range endpoints. This does not mean all range query surfaces are
-implemented: normal `MATCH` planner selection still needs the Router's range
-capability projection, and edge postings currently expose equality but not a
-corresponding range endpoint. See [implementation-gaps.md](../implementation-gaps.md)
-GAP-2026-07-29-002 and GAP-2026-07-29-003.
+(`StableBTreeMap::range()`), Router `SEARCH ... WHERE` uses the paginated
+vertex range endpoints, and normal `MATCH` planning selects range anchors
+through the same Active vertex catalog projection as equality, with the Router
+seeding graph shards via `IndexAnchor::Range` (GAP-2026-07-29-002, closed
+2026-08-21). Edge postings currently expose equality but not a corresponding
+range endpoint. See [implementation-gaps.md](../implementation-gaps.md)
+GAP-2026-07-29-003.
 
 The compound intersection reads `lookup_intersection_page_for_label` and
 `lookup_range_intersection_page_for_label` apply the same label sieve after the

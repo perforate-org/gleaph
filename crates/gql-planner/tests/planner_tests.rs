@@ -2159,6 +2159,134 @@ fn test_conditional_index_scan() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// MATCH vertex range pushdown (GAP-2026-07-29-002)
+// ════════════════════════════════════════════════════════════════════════════════
+
+fn range_pushdown_stats() -> TableStats {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    stats
+        .range_indexed_vertex_properties
+        .insert("age".to_string());
+    stats.indexed_vertex_properties.insert("uid".to_string());
+    stats
+}
+
+fn is_predicate_on(expr: &Expr, var: &str, property: &str, op: CmpOp) -> bool {
+    let ExprKind::Compare { left, op: cmp, .. } = &expr.kind else {
+        return false;
+    };
+    if *cmp != op {
+        return false;
+    }
+    let ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &left.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, ExprKind::Variable(name) if name == var) && prop == property
+}
+
+#[test]
+fn match_range_anchor_emits_index_scan_and_retains_residual_filter() {
+    let stats = range_pushdown_stats();
+    let plan = plan_query_with_stats("MATCH (n:User) WHERE n.age >= 18 RETURN n", &stats);
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, cmp: CmpOp::Ge, value: ScanValue::Literal(_), .. }
+                if &**property == "age"
+        )),
+        "expected range IndexScan on age, got: {:?}",
+        plan.ops
+    );
+    let anchor = plan
+        .annotations
+        .optimizer
+        .anchor
+        .expect("range anchor should be selected");
+    assert!(
+        matches!(
+            anchor.source,
+            AnchorSource::PropertyRange { ref property, .. } if &**property == "age"
+        ),
+        "unexpected anchor source: {:?}",
+        anchor.source
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_predicate_on(p, "n", "age", CmpOp::Ge))
+        )),
+        "original range predicate must remain as a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn match_equality_anchor_wins_over_range_anchor() {
+    let stats = range_pushdown_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.uid = 'alice' AND n.age >= 18 RETURN n",
+        &stats,
+    );
+
+    let anchor = plan.annotations.optimizer.anchor.expect("anchor expected");
+    assert!(
+        matches!(
+            anchor.source,
+            AnchorSource::PropertyEquality { ref property } if &**property == "uid"
+        ),
+        "equality must outrank range in anchor selection, got: {:?}",
+        anchor.source
+    );
+}
+
+#[test]
+fn match_unindexed_range_predicate_does_not_emit_index_scan() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    // `age` is deliberately absent from every index set.
+
+    let plan = plan_query_with_stats("MATCH (n:User) WHERE n.age >= 18 RETURN n", &stats);
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "unindexed range must not emit IndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn optional_match_conditional_candidate_uses_range_cmp() {
+    let mut stats = range_pushdown_stats();
+    // Keep only the range capability so the conditional candidate path is the sole option.
+    stats.indexed_vertex_properties.clear();
+
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE $age IS NULL OR n.age >= $age RETURN n",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::ConditionalIndexScan { candidates, .. }
+                if candidates.iter().any(|c| &*c.property == "age" && c.cmp == CmpOp::Ge)
+        )),
+        "expected ConditionalIndexScan candidate with non-Eq cmp, got: {:?}",
+        plan.ops
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // Join ordering
 // ════════════════════════════════════════════════════════════════════════════════
 

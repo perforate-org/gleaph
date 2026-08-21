@@ -18,7 +18,8 @@ use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_graph_kernel::entry::{GraphId, PropertyId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexEqualSpec, PhysicalIndexId, PostingHit, validate_index_value_key_bytes,
+    EdgePostingHit, IndexEqualSpec, PhysicalIndexId, PostingHit, PostingRangeRequest,
+    validate_index_value_key_bytes,
 };
 use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
 
@@ -35,6 +36,8 @@ pub enum IndexAnchor {
     Equal(SeedProbe),
     /// Leading `EdgeIndexScan` (`lookup_edge_equal`).
     EdgeEqual(EdgeSeedProbe),
+    /// Single range `IndexScan` bound (`lookup_range`, one-sided only).
+    Range(RangeSeedProbe),
     /// Multiple equality arms (`lookup_intersection`).
     Intersection {
         variable: String,
@@ -58,6 +61,7 @@ impl IndexAnchor {
         match self {
             Self::Equal(probe) => probe.variable.as_str(),
             Self::EdgeEqual(probe) => probe.variable.as_str(),
+            Self::Range(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
             Self::Label { variable, .. } => variable.as_str(),
             Self::LabelIntersection { variable, .. } => variable.as_str(),
@@ -183,6 +187,62 @@ pub struct SeedProbe {
     pub payload_bytes: Vec<u8>,
 }
 
+/// One-sided ordered range bound carried by a range seed probe.
+///
+/// A dedicated enum (instead of [`CmpOp`]) keeps `Eq`/`Ne` out of the probe's valid
+/// state space and preserves `Hash` on anchor cache keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SeedRangeBound {
+    /// Strictly below the encoded bound.
+    Lt,
+    /// At or below the encoded bound.
+    Le,
+    /// Strictly above the encoded bound.
+    Gt,
+    /// At or above the encoded bound.
+    Ge,
+}
+
+impl SeedRangeBound {
+    /// `Some` only for one-sided comparisons; `Eq` and `Ne` are not range bounds.
+    pub fn try_from_cmp(cmp: CmpOp) -> Option<Self> {
+        match cmp {
+            CmpOp::Lt => Some(Self::Lt),
+            CmpOp::Le => Some(Self::Le),
+            CmpOp::Gt => Some(Self::Gt),
+            CmpOp::Ge => Some(Self::Ge),
+            CmpOp::Eq | CmpOp::Ne => None,
+        }
+    }
+
+    /// Storage primitive for this bound over the given encoded key bytes.
+    pub fn to_posting_range_request(self, bound_bytes: Vec<u8>) -> PostingRangeRequest {
+        match self {
+            Self::Lt => PostingRangeRequest::Lt(bound_bytes),
+            Self::Le => PostingRangeRequest::Le(bound_bytes),
+            Self::Gt => PostingRangeRequest::Gt(bound_bytes),
+            Self::Ge => PostingRangeRequest::Ge(bound_bytes),
+        }
+    }
+}
+
+/// Ordered range `IndexScan` anchor (`lookup_range`, one-sided bound).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RangeSeedProbe {
+    /// GQL variable to seed.
+    pub variable: String,
+    /// Property name from the plan (router catalog lookup).
+    pub property: String,
+    /// Interned property id for index canister calls.
+    pub property_id: u32,
+    /// Router-owned physical posting namespace selected from one Active catalog row.
+    pub physical_index_id: PhysicalIndexId,
+    /// Encoded bound bytes (`value_to_index_key_bytes` encoding).
+    pub bound_bytes: Vec<u8>,
+    /// Bound comparison direction.
+    pub bound: SeedRangeBound,
+}
+
 /// Equality `EdgeIndexScan` anchor (`lookup_edge_equal`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeSeedProbe {
@@ -208,7 +268,8 @@ impl SeedProbe {
         Ok(
             match IndexAnchor::from_plans(plans, parameters, store, graph_id)? {
                 Some(IndexAnchor::Equal(probe)) => Some(probe),
-                Some(IndexAnchor::Intersection { .. })
+                Some(IndexAnchor::Range(_))
+                | Some(IndexAnchor::Intersection { .. })
                 | Some(IndexAnchor::EdgeEqual(_))
                 | Some(IndexAnchor::Label { .. })
                 | Some(IndexAnchor::LabelIntersection { .. })
@@ -525,6 +586,29 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                     equal_anchor(store, graph_id, params, variable, property.as_ref(), value)?,
                 );
             }
+            PlanOp::IndexScan {
+                variable,
+                property,
+                value,
+                cmp,
+                ..
+            } if matches!(cmp, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) => {
+                if !record_bound_var(&mut bound_var, variable)? {
+                    break;
+                }
+                push_unique_anchor(
+                    &mut anchors,
+                    range_anchor(
+                        store,
+                        graph_id,
+                        params,
+                        variable.as_ref(),
+                        property.as_ref(),
+                        value,
+                        *cmp,
+                    )?,
+                );
+            }
             PlanOp::IndexIntersection {
                 variable, scans, ..
             } if scans.len() >= 2 && scans.iter().all(|scan| scan.cmp == CmpOp::Eq) => {
@@ -714,6 +798,42 @@ fn equal_anchor(
         property_id,
         physical_index_id,
         payload_bytes,
+    }))
+}
+
+/// Build a range anchor from a leading non-Eq `IndexScan` bound.
+fn range_anchor(
+    store: &RouterStore,
+    graph_id: GraphId,
+    params: &BTreeMap<String, Value>,
+    variable: &str,
+    property: &str,
+    value: &ScanValue,
+    cmp: CmpOp,
+) -> Result<IndexAnchor, RouterError> {
+    let Some(bound) = SeedRangeBound::try_from_cmp(cmp) else {
+        return Err(RouterError::InvalidArgument(format!(
+            "range seed anchor requires a one-sided comparison, got {cmp:?}"
+        )));
+    };
+    let bound_bytes = resolve_scan_value(value, params)?
+        .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+    let property_id = store
+        .lookup_property_id(graph_id, property)
+        .map_err(|_| RouterError::NotFound(format!("property {property}")))?
+        .raw();
+    let physical_index_id = indexed_catalog::active_vertex_physical_index(
+        graph_id,
+        None,
+        PropertyId::from_raw(property_id),
+    )?;
+    Ok(IndexAnchor::Range(RangeSeedProbe {
+        variable: variable.to_string(),
+        property: property.to_string(),
+        property_id,
+        physical_index_id,
+        bound_bytes,
+        bound,
     }))
 }
 
@@ -935,6 +1055,23 @@ fn extract_from_op(
                 physical_index_id,
                 payload_bytes,
             })))
+        }
+        PlanOp::IndexScan {
+            variable,
+            property,
+            value,
+            cmp,
+            ..
+        } if matches!(cmp, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) => {
+            Ok(Some(range_anchor(
+                store,
+                graph_id,
+                parameters,
+                variable.as_ref(),
+                property.as_ref(),
+                value,
+                *cmp,
+            )?))
         }
         PlanOp::EdgeIndexScan {
             variable,

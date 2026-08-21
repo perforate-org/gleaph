@@ -47,6 +47,28 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-08-21-001 — Anchored multi-DML roll-forward saga fails to converge on both shards
+
+- **Status:** Open (failing at clean HEAD `7a75e9fd6`; verified 2026-08-21)
+- **Severity:** P1 DML correctness signal
+- **Owner:** Router anchored DML dispatch / roll-forward saga and Graph shard-local bundle execution
+- **Observed behavior:** In
+  `crates/pocket-ic-tests/tests/router_gql_query.rs`, three consolidated contracts fail at HEAD:
+  `router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga` (:535),
+  `router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry`,
+  `router_recovers_non_terminal_federated_saga_via_idempotent_retry`. The two-shard bundle reports
+  `Completed`, but the post-commit read `MATCH (n {age: 6}) RETURN n` returns 0 rows instead of the
+  expected 2, so the SET did not survive on either shard despite the completed phase.
+- **Expected or needed behavior:** A `Completed` roll-forward saga must leave both shards'
+  anchor vertices updated; the read-back equality anchor must observe both.
+- **Evidence:** Reproduced on a clean worktree of `7a75e9fd6` (no working-tree changes), so the
+  failure predates concurrent in-flight edits. Single-shard anchored bundles
+  (`router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard`) pass.
+- **Impact:** Cross-shard anchored multi-DML writes are reported committed without observable
+  effect; idempotent-retry recovery contracts built on this path cannot be trusted until fixed.
+- **Next decision:** Bisect the commit that regressed shard-local SET application inside the
+  roll-forward segment, then restore convergence or fail the phase closed.
+
 ### GAP-2026-08-20-001 — AtLeast graph-index barrier ignores pending first-delivery outbox work
 
 - **Status:** Resolved (commit pending; fix is in this patch)
@@ -874,8 +896,9 @@ duplicate its state machine or ownership rules.
 | Priority | Work item                                                                                  | Current status                                                                               |
 | -------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
 | P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — GAP-2026-07-29-006; ADR 0059 production driver implemented, E2E validation pending |
-| P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | Planned/Open — GAP-2026-07-29-002, GAP-2026-07-29-004                                        |
+| P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | GAP-2026-07-29-004 open; GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Open — GAP-2026-07-29-003                                                                    |
+| P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Open — GAP-2026-08-21-001 (failing at HEAD)                                                  |
 | P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Planned — GAP-2026-07-29-005                                                                 |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
@@ -917,24 +940,28 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-002 — Normal `MATCH` planning does not select vertex range indexes
 
-- **Status:** Open
+- **Status:** Closed — implemented (2026-08-21)
 - **Severity:** P1 query capability
 - **Owner:** Router catalog projection and GQL planner statistics boundary
 - **Observed behavior:** The graph-index range API and `SEARCH` range path are present, but
-  `RouterGraphStats::is_vertex_property_range_indexed` returns `false` unconditionally. The normal
-  `MATCH ... WHERE` planner therefore cannot use a vertex range index through its planner-statistics
-  contract.
-- **Expected or needed behavior:** The Router should project the active range-capable vertex
-  properties into planner statistics, while retaining the existing fail-closed behavior for
-  properties without an active index.
-- **Evidence:** `crates/router/src/planner_stats.rs::is_vertex_property_range_indexed` and
-  `crates/router/src/index_client.rs::lookup_range_page`; the latter is already used by
-  `crates/router/src/gql_search.rs`.
-- **Impact:** A range index may exist and be queryable through `SEARCH`, yet ordinary MATCH planning
-  falls back to non-index execution or rejects the index-backed path.
-- **Next decision:** Add range capability to the Router's active catalog projection and planner
-  selection, then cover bounded one-sided and two-sided MATCH predicates with planner and execution
-  tests. Keep the `StableBTreeMap::range()` storage primitive unchanged.
+  `RouterGraphStats::is_vertex_property_range_indexed` returned `false` unconditionally, so the
+  normal `MATCH ... WHERE` planner could not use a vertex range index through its
+  planner-statistics contract. Fixing only the stats gate surfaced the second half: the Router
+  seed-anchor model had no range variant, so a leading non-Eq `IndexScan` reached graph shards
+  with no index client and failed at runtime.
+- **Implemented behavior:** Both halves are wired. The Router projects range capability from the
+  same Active vertex catalog membership as equality (`planner_stats.rs`, fail-closed for
+  unindexed properties); anchor selection lowers one-sided MATCH range predicates to
+  `IndexScan` with the original predicate retained as a residual `PropertyFilter`; the Router
+  seed model gained `IndexAnchor::Range` (`seed.rs::RangeSeedProbe` with `SeedRangeBound`)
+  extracted from leading non-Eq `IndexScan` ops and resolved through the new
+  `IndexLookup::lookup_range` paginated collector; Graph already skips any seeded leading scan op.
+- **Evidence:** `crates/router/src/planner_stats.rs`, `crates/router/src/seed.rs`,
+  `crates/router/src/index_lookup.rs`; planner contracts in
+  `crates/gql-planner/tests/planner_tests.rs::match_range_anchor_*`; runtime contract
+  `crates/pocket-ic-tests/tests/router_gql_query.rs::single_shard_vertex_index_match_range`.
+- **Next decision:** None open for vertex MATCH ranges; two-sided bounds ride the same anchor via
+  residual conjunction, and cross-type overscan clamping is a later performance refinement.
 
 ### GAP-2026-07-29-003 — Edge range index has no query/planner path
 
