@@ -151,6 +151,9 @@ DROP GRAPH g      →  lookup_graph_id("g")?  →  binding_map.remove(&graph_id)
 3. `CREATE GRAPH g …` — writes schema binding at **`GraphId` for `g`**
 
 This ADR does **not** auto-register federation canisters from catalog DDL alone.
+Superseded for `CREATE GRAPH` by [ADR 0070](0070-create-graph-provisions-shards-and-sets-home.md):
+a `CREATE GRAPH` naming an unregistered graph runs the provisioning admission first and then writes
+the binding at the newly allocated `GraphId`; a pre-registered name keeps this binding-only path.
 
 #### 2.2 Lookup at plan / validate time
 

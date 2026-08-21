@@ -16,6 +16,7 @@ pub(crate) mod provisioning;
 mod registry;
 mod registry_invariants;
 mod schema_migration;
+pub(crate) use registry::any_home_graph_exists;
 pub(crate) use schema_migration::real_index_migration_driver;
 pub(crate) mod uniqueness;
 

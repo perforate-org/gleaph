@@ -47,6 +47,17 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-08-21-002 — Deferred Provision→Router outbound ack holds bootstrap intent locks across a deployment's graph bootstraps
+
+- **Status:** Open (interaction surfaced by ADR 0070 implementation, 2026-08-21)
+- **Severity:** P2 provisioning lifecycle
+- **Owner:** Provision outbound ack dispatch (ADR 0035 records the cross-canister `router_ack` call as deferred to a later slice); affected surface is Router `provision_graph_flow` intent locks
+- **Observed behavior:** After a successful `CREATE GRAPH` bootstrap, the Router-side request record stays `AwaitingAck` and its `(deployment_id, GraphShard(0))` intent lock stays held because no Provision→Router ack ever arrives. A second `CREATE GRAPH` by the same caller principal fails with `Conflict("provisioning intent already locked")` indefinitely (`adr0070_create_graph_provisioning.rs` first exercised this as an infinite retry).
+- **Expected or needed behavior:** Once the job reaches terminal completion on the Provision side, the symmetric lock release must follow (ADR 0035 Slice 6 releases locks only inside `commit_ack` / `clear_intent_locks_for_record`), so sequential graph bootstraps under one deployment converge.
+- **Evidence:** `crates/router/src/facade/store/provisioning.rs::release_intent_locks_owned_by` is only reachable from `commit_ack`; no sender of Provision's `router_ack` ingress exists in the workspace.
+- **Impact:** One graph per deployment principal until the ack loop ships. The knowledge demo creates exactly one graph per project and is unaffected; multi-graph projects must bind additional deployments (the pattern the ADR 0070 E2E uses for its second creator).
+- **Next decision:** Implement the ADR 0035 later-slice outbound ack (heartbeat or post-register send), then re-run the ADR 0070 E2E with both graphs created by one caller.
+
 ### GAP-2026-08-21-001 — Anchored multi-DML roll-forward saga fails to converge on both shards
 
 - **Status:** Open (failing at clean HEAD `7a75e9fd6`; verified 2026-08-21)

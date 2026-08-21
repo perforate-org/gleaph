@@ -121,6 +121,47 @@ pub(crate) async fn provision_graph_flow(
     Ok(response)
 }
 
+/// ADR 0070: GQL `CREATE GRAPH` admission bridge.
+///
+/// A pre-registered graph name takes the binding-only catalog path (unchanged). An unregistered
+/// name is provisioned through the shared admission flow — one indexless `GraphShard(0)` bootstrap
+/// (ADR 0054), owned by the caller, whose registration marks it home when no home exists yet — so
+/// the subsequent schema-binding write lands on a resolvable `GraphId`. Dev mode (no provisioner
+/// configured) fails closed: shards must be registered explicitly via `register_graph`.
+pub(crate) async fn create_graph_admission(
+    caller: Principal,
+    graph_name: &str,
+) -> Result<(), RouterError> {
+    if crate::facade::stable::graph_catalog::lookup_graph_id(graph_name).is_some() {
+        return Ok(());
+    }
+    if crate::provisioning::config::get().is_none() {
+        return Err(RouterError::NotImplemented(
+            "CREATE GRAPH for an unregistered graph requires a configured provision canister; register shards via register_graph in dev mode".to_owned(),
+        ));
+    }
+    let args = types::ProvisionGraphArgs {
+        deployment_id: caller.to_text(),
+        graph_name: graph_name.to_owned(),
+        requested_resources: vec![
+            gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
+                logical_resource: LogicalResource::GraphShard(
+                    gleaph_graph_kernel::federation::ShardId::new(0),
+                ),
+            },
+        ],
+        authorized_caller: caller,
+        release_id: "default".to_owned(),
+        owner: caller,
+        admins: std::collections::BTreeSet::new(),
+    };
+    match provision_graph_flow(caller, args).await? {
+        types::ProvisionGraphResponse::Accepted { .. }
+        | types::ProvisionGraphResponse::Replay { .. }
+        | types::ProvisionGraphResponse::Completed { .. } => Ok(()),
+    }
+}
+
 /// Dispatches the outbound `accept_envelope` send according to the `InsertionOutcome`.
 ///
 /// Four branches:
@@ -265,7 +306,10 @@ async fn register_provisioned_graph(
         version: 1,
         updated_at_ns: crate::facade::store::ic_time_ns(),
         provisioning_state: ProvisioningState::None,
-        is_home: false,
+        // ADR 0070: the first registered graph claims the single global home slot. If a home
+        // appears between this check and the commit, `admin_register_graph_with_random_key`
+        // re-runs the same check after its random-entropy await and fails closed with a conflict.
+        is_home: !crate::facade::store::any_home_graph_exists(),
     };
     store
         .admin_register_graph_with_random_key(caller, entry, &args.graph_name)
@@ -318,7 +362,11 @@ fn build_install_args(args: &types::ProvisionGraphArgs) -> Vec<Vec<u8>> {
                     logical_graph_name: Some(args.graph_name.clone()),
                     router_canister: Some(router_principal),
                     shard_id: Some(shard_id),
-                    index_canister: None,
+                    // ADR 0054: an indexless bootstrap shard carries the anonymous index target.
+                    // The graph canister's wasm init requires router/shard/index to be set
+                    // together, so absence of an index canister is expressed as `anonymous`,
+                    // matching the shard registry's indexless representation.
+                    index_canister: Some(Principal::anonymous()),
                 };
                 Encode!(&init).expect("encode GraphInitArgs")
             }
@@ -617,6 +665,47 @@ mod tests {
     }
 
     #[test]
+    fn admission_short_circuits_registered_name_without_provisioner() {
+        futures::executor::block_on(async {
+            let store = crate::facade::store::RouterStore::new();
+            store.init_from_args(&crate::facade::store::tests::test_init_args());
+            let caller = Principal::from_slice(&[7; 29]);
+            crate::facade::auth::grant_admins(&[caller]);
+            crate::facade::store::tests::register_test_graph(&store, caller, "tenant.existing");
+
+            // A pre-registered name must take the binding-only path: no provisioner configured,
+            // yet the bridge succeeds because no provisioning is needed.
+            crate::provisioning::graph::create_graph_admission(caller, "tenant.existing")
+                .await
+                .expect("registered name skips provisioning");
+        });
+    }
+
+    #[test]
+    fn admission_fails_closed_for_unregistered_name_without_provisioner() {
+        futures::executor::block_on(async {
+            let store = crate::facade::store::RouterStore::new();
+            store.init_from_args(&crate::facade::store::tests::test_init_args());
+            let caller = Principal::from_slice(&[8; 29]);
+            crate::facade::auth::grant_admins(&[caller]);
+
+            let error =
+                crate::provisioning::graph::create_graph_admission(caller, "tenant.unregistered")
+                    .await
+                    .expect_err("dev mode must fail closed");
+            assert!(
+                matches!(error, RouterError::NotImplemented(ref message) if message.contains("provision canister")),
+                "expected NotImplemented provisioner error, got {error:?}"
+            );
+            assert!(
+                crate::facade::stable::graph_catalog::lookup_graph_id("tenant.unregistered")
+                    .is_none(),
+                "failed admission must not leave a registered graph"
+            );
+        });
+    }
+
+    #[test]
     fn register_provisioned_graph_indexless_commits_graph_and_shard() {
         futures::executor::block_on(async {
             use gleaph_graph_kernel::provisioning::wire::CreatedResource;
@@ -648,6 +737,12 @@ mod tests {
             register_provisioned_graph(admin, &args, &created)
                 .await
                 .expect("register provisioned graph");
+
+            // ADR 0070: the first graph bootstrap claims the single global home slot.
+            assert!(
+                crate::facade::store::any_home_graph_exists(),
+                "first provisioned registration must set is_home"
+            );
 
             let graph_id =
                 crate::facade::stable::graph_catalog::lookup_graph_id("tenant.provisioned")

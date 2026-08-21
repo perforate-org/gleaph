@@ -37,6 +37,9 @@ impl<M: Memory> StableGraphMetadata<M> {
 pub struct FederationRouting {
     pub router_canister: Principal,
     pub shard_id: ShardId,
+    /// The shard's property-index target. `Principal::anonymous()` is the indexless sentinel
+    /// (ADR 0054): the shard runs without an index canister until the Router retrofits an attach,
+    /// mirroring the Router shard registry's indexless representation.
     pub index_canister: Principal,
     /// Derived vector canister (ADR 0031). `None` on shards with no vector index attached;
     /// the Router owns target selection (no `VectorSyncSpec` is persisted here). When `Some`, it
@@ -48,8 +51,9 @@ pub struct FederationRouting {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphMetadataError {
     InvalidLogicalGraphName(String),
-    /// A federation-routing principal (`router_canister` or `index_canister`) was the anonymous
-    /// principal, which can never be a trusted federation identity.
+    /// The federation-routing `router_canister` (or the derived `vector_canister`) was the
+    /// anonymous principal, which can never be a trusted federation identity. An anonymous
+    /// `index_canister` is legal: it is the indexless sentinel (ADR 0054).
     AnonymousFederationPrincipal(&'static str),
     /// A federation-routing mutation (e.g. setting the derived vector-index target, ADR 0031
     /// Slice 4) was attempted on a graph that has no federation routing configured.
@@ -92,11 +96,8 @@ impl GraphMetadataV1 {
                     "router_canister",
                 ));
             }
-            if routing.index_canister == Principal::anonymous() {
-                return Err(GraphMetadataError::AnonymousFederationPrincipal(
-                    "index_canister",
-                ));
-            }
+            // An anonymous `index_canister` is the indexless sentinel (ADR 0054) and is stored
+            // verbatim; index reads on such a shard have no target until the Router attaches one.
             if routing.vector_canister == Some(Principal::anonymous()) {
                 return Err(GraphMetadataError::AnonymousFederationPrincipal(
                     "vector_canister",
@@ -225,20 +226,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_anonymous_index_canister() {
+    fn validate_accepts_anonymous_index_canister_as_indexless_sentinel() {
         let mut metadata = GraphMetadata::default();
         metadata.set_federation_routing(Some(FederationRouting {
             router_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
+            // ADR 0054: an indexless shard stores the anonymous index sentinel.
             index_canister: Principal::anonymous(),
             vector_canister: None,
         }));
-        assert_eq!(
-            metadata.validate_for_store(),
-            Err(GraphMetadataError::AnonymousFederationPrincipal(
-                "index_canister"
-            ))
-        );
+        metadata
+            .validate_for_store()
+            .expect("anonymous index_canister is the legal indexless sentinel");
     }
 
     #[test]

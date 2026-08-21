@@ -3919,6 +3919,7 @@ dependencies = [
  "gleaph-gql-ic",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "gleaph-migration-api",
  "gleaph-prepared-api",
  "gleaph-provision",
  "gleaph-router",

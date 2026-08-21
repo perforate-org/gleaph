@@ -1,8 +1,8 @@
 # 0054. Provisioned logical-graph topology and on-demand resource activation
 
 Date: 2026-07-29
-Status: proposed
-Last revised: 2026-07-29 23:18:48 UTC +0000
+Status: accepted (indexless bootstrap representation implemented; retrofit attach path exercised by the ADR 0070 E2E)
+Last revised: 2026-08-21 21:40:00 UTC +0000
 
 ## Context
 
@@ -190,3 +190,22 @@ The following gaps must be closed before this ADR can describe the implemented d
 - [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md) — graph-local shards and Property Index cluster routing.
 - [ADR 0031](0031-vertex-embedding-store-and-derived-vector-index.md) — derived Vector Index direction.
 - [Property Index design](../index/property-index.md) — existing posting and attach contracts.
+
+## Implementation note (2026-08-21): the anonymous index sentinel is now end-to-end
+
+`Principal::anonymous()` is the canonical "no index canister" representation across the stack:
+
+- Router shard registry stores `anonymous` for indexless shards (existing).
+- The graph shard's persisted `FederationRouting.index_canister` now accepts `anonymous` as the
+  indexless sentinel (previously rejected as untrusted; only `router_canister` and a present
+  `vector_canister` remain forbidden-anonymous). This is what lets a provisioned bootstrap install
+  a Graph shard before any index exists: the Router's `build_install_args` sends
+  `GraphInitArgs.index_canister = Some(anonymous)`, matching the wasm init requirement that
+  router/shard/index be set together.
+- Index lookups treat an indexless shard as "no target": `RouterIndexLookup::from_shards` skips
+  such shards, so scans run without an index while index-satisfied operations fail with an
+  explicit no-index error.
+- Label-anchored MATCH queries are served by the attached Property Index postings, so a provisioned
+  graph becomes query-ready after its first `CREATE INDEX` provisions and retrofit-attaches an
+  index canister (`attach_provisioned_index_canisters`). The ADR 0070 PocketIC E2E exercises this
+  full bootstrap → indexless shard → provision index → query chain.

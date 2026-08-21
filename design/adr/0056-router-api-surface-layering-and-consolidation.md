@@ -230,6 +230,11 @@ Implemented behavior:
 - `unregister_graph` is unchanged for now; symmetric Provision teardown notification is a future
   lifecycle slice (ADR 0037).
 
+ADR 0070 supersedes the public-surface role of `register_graph`: GQL `CREATE GRAPH` is now the
+developer-facing graph-creation entry (it bridges to `provision_graph_flow` for unregistered
+names and claims the home slot on first creation). `register_graph` / `provision_graph` remain as
+internal admission seams; no new Candid surface was added.
+
 ### 7. `list_graphs` / `get_graph` / `get_graph_health` return types
 
 View types live in `crates/router/src/types.rs` (they are Router surface views, not domain types;

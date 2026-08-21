@@ -268,10 +268,11 @@ impl RouterIndexLookup {
             .map_err(|e| e.to_string())?;
         let mut shard_index = BTreeMap::new();
         for entry in shards {
-            let principal = store
-                .graph_index_canister_for_shard(graph_id, entry.shard_id)
-                .map_err(|e| e.to_string())?;
-            shard_index.insert(entry.shard_id, principal);
+            // ADR 0054: an indexless shard contributes no lookup target. Index-satisfied
+            // operations fail later with an explicit no-index error; scans run without one.
+            if let Some(principal) = store.index_target_for_shard(graph_id, entry.shard_id) {
+                shard_index.insert(entry.shard_id, principal);
+            }
         }
         Ok(Self {
             targets,

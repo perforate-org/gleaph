@@ -43,6 +43,12 @@ impl RouterStore {
         if gleaph_index_ddl::try_parse(&inner.statement).is_some() {
             return index::apply_index_migration(self, caller, args, driver).await;
         }
+        // ADR 0070: a `CREATE GRAPH` statement naming an unregistered graph provisions its shard
+        // through the shared admission flow before the synchronous co-write below binds the schema
+        // at the newly allocated `GraphId`. Pre-registered names skip provisioning inside the
+        // bridge; a replayed migration re-enters the bridge but short-circuits on the registered
+        // name without any remote effect.
+        self::preprovision_unregistered_create_graphs(caller, &inner.statement).await?;
         self.admin_apply_schema_migration(caller, args)
     }
 
@@ -223,6 +229,25 @@ impl RouterStore {
             },
         ))
     }
+}
+
+/// Provision every `CREATE GRAPH` statement in the migration whose property-graph name is not yet
+/// federation-registered (ADR 0070). Runs before any catalog or ledger write; the provisioning
+/// request store owns idempotency of the remote issuance.
+async fn preprovision_unregistered_create_graphs(
+    caller: Principal,
+    statement: &str,
+) -> Result<(), RouterError> {
+    // Authorize before any remote side effect; the synchronous co-write re-checks below.
+    crate::facade::auth::require_admin(&caller)?;
+    let block = parse_and_validate_statement(statement)?;
+    for stmt in block.iter_statements() {
+        if let Statement::CreateGraph(create) = stmt {
+            let graph_name = gleaph_graph_catalog::object_name_key(&create.name);
+            crate::provisioning::graph::create_graph_admission(caller, &graph_name).await?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_apply_args(args: &ApplySchemaMigrationArgsV1) -> Result<(), RouterError> {
@@ -1106,6 +1131,56 @@ mod tests {
             ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.len()),
             1
         );
+    }
+
+    #[test]
+    fn unregistered_create_graph_migration_fails_closed_without_provisioner() {
+        struct NoopDriver;
+        impl index::IndexMigrationDriver for NoopDriver {
+            fn drive(
+                &self,
+                _request: index::IndexMigrationStepRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<
+                                index::IndexMigrationStepResponse,
+                                index::IndexMigrationDriveError,
+                            >,
+                        > + '_,
+                >,
+            > {
+                unreachable!("graph migration does not drive a property-index step")
+            }
+        }
+
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([31; 32]);
+        auth::grant_admin(admin);
+
+        // ADR 0070: without a configured provisioner the bridge must fail closed before any
+        // catalog or ledger write; no graph may be registered as a side effect.
+        let error = futures::executor::block_on(store.admin_apply_schema_migration_control(
+            admin,
+            migration_args(
+                "000001_graph",
+                None,
+                "CREATE GRAPH TYPE g_type { NODE Person } NEXT CREATE GRAPH fresh_graph TYPED g_type",
+            ),
+            &NoopDriver,
+        ))
+        .expect_err("dev mode has no provisioner");
+        assert!(
+            matches!(error, RouterError::NotImplemented(ref message) if message.contains("provision canister")),
+            "expected NotImplemented provisioner error, got {error:?}"
+        );
+        assert_eq!(
+            ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.len()),
+            0,
+            "rejected migration must not append a ledger record"
+        );
+        assert!(lookup_graph_id("fresh_graph").is_none());
     }
 
     #[test]

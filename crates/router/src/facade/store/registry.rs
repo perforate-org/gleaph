@@ -169,6 +169,12 @@ fn rollback_failed_shard_registration(
     reconcile_index_cluster_after_shard_removal(graph_id)
 }
 
+/// Whether any registered graph is marked home (ADR 0070). Global, not caller-scoped: there is at
+/// most one home graph per Router, so the first created graph claims it.
+pub(crate) fn any_home_graph_exists() -> bool {
+    ROUTER_GRAPHS.with_borrow(|graphs| graphs.iter().any(|lazy| lazy.value().is_home))
+}
+
 fn ensure_graph_registration_slot_available(
     graph_name: &str,
     is_home: bool,
@@ -1005,21 +1011,28 @@ impl RouterStore {
         graph_id: GraphId,
         shard_id: ShardId,
     ) -> Result<Principal, RouterError> {
-        let runtime = ROUTER_GRAPH_RUNTIME_CONFIG
-            .with_borrow(|cfg| cfg.get(&graph_id))
-            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))?;
-        let group_index = shard_group_index(shard_id, runtime.index_group_size)?;
-        let index_canister = crate::index_route::index_canister_for_graph_shard(
+        self.index_target_for_shard(graph_id, shard_id)
+            .ok_or_else(|| {
+                RouterError::InvalidArgument(format!(
+                    "missing/invalid index cluster entry for graph {graph_id} shard {shard_id}"
+                ))
+            })
+    }
+
+    /// Resolves the shard's index target, or `None` when the shard is indexless (ADR 0054
+    /// anonymous sentinel) or has no runtime config.
+    pub fn index_target_for_shard(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+    ) -> Option<Principal> {
+        let runtime = ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow(|cfg| cfg.get(&graph_id))?;
+        let _group_index = shard_group_index(shard_id, runtime.index_group_size).ok()?;
+        crate::index_route::index_canister_for_graph_shard(
             shard_id,
             runtime.index_group_size,
             &runtime.index_cluster,
         )
-        .ok_or_else(|| {
-            RouterError::InvalidArgument(format!(
-                "missing/invalid index cluster entry for graph {graph_id} group {group_index}"
-            ))
-        })?;
-        Ok(index_canister)
     }
 
     /// The graph's full `index_cluster` (group ordinal → canister principal).
