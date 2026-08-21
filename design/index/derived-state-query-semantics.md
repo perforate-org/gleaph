@@ -222,12 +222,12 @@ count completeness is required.
 
 ## Implementation-gap traceability (non-normative)
 
-The implementation-gap ledger is the status authority for the following open
+The implementation-gap ledger is the status authority for the following
 observations. These links do not amend the query contracts above.
 
 - [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Resolved in this patch**: exact MemoryId 52 Graph-owned floor plus the passing outbox-only stopped-index Graph-upgrade barrier regression.
 - [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-reports-deferredforrepair-without-a-durable-suffix-owner) — **Open**: Router direct vector-ingest suffix durability.
-- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
+- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Resolved in `d700331c`**: exact completed-receipt adoption and trigger-aware `Absent` handling; focused Router and PocketIC reconciliation filters passed, while the later full PocketIC target remained non-terminal because of an unrelated HTTP-adapter failure.
 
 ## Related documents
 

@@ -1,9 +1,10 @@
 # Quint protocol pilot
 
-Status: **Experimental, non-blocking**. This directory contains a bounded
-auxiliary specification for one Router, one Graph shard, and one Property
-Index. ADRs and production tests remain normative; this model does not replace
-Rust, PocketIC, Lean, or ADR validation.
+Status: **Experimental, non-blocking**. This directory contains bounded
+auxiliary specifications for the Router–Graph–Property Index projection and
+the Router–Graph `CanonicalPending` exact-replay boundary. ADRs and production
+tests remain normative; these models do not replace Rust, PocketIC, Lean, or
+ADR validation.
 
 ## Current model
 
@@ -40,6 +41,7 @@ slice and must not duplicate those sources of truth.
 
 | Classification | Meaning and required next evidence |
 | --- | --- |
+| **Adopted / experimental** | The bounded artifact is accepted for its declared non-blocking scope; it remains non-normative and supplies neither a CI gate nor a proof. |
 | **Modeled / experimental** | A bounded Quint artifact exists; its bounds, unrun checks, and abstractions remain part of its result. |
 | **Quint candidate** | Multi-owner state, fault ordering, or replay merits a finite state-machine review after the production contract is settled. |
 | **Rust-test-first** | A focused owner-local Rust or PocketIC regression can discriminate the behavior before a model adds useful evidence. |
@@ -53,7 +55,7 @@ slice and must not duplicate those sources of truth.
 | Boundary | Classification | Exact live traceability | Required next evidence |
 | --- | --- | --- |
 | Router–Graph–Property Index durable projection | **Modeled / experimental** | The tables below map the bounded two-mutation model to ADRs 0023/0024/0029, Graph outbox/repair owners, and twelve scenarios. | Preserve revise: no current Quint verify result and focused Rust/PocketIC comparisons remain not run. |
-| Router atomic_insert response loss while CanonicalPending | **Quint candidate + design/implementation prerequisite** | ADR 0029 §2 and ADR 0049 §1558–1579 require exact journal reconciliation; ordered recovery branches in crates/router/src/gql.rs record an explicit-retry diagnostic instead. | GAP-2026-08-20-003: add a Graph-receipt/Router-receipt fault seam and focused PocketIC regression before the Draft Plan 0260 lifecycle model. Plan 0260 is not implementation evidence. |
+| Router atomic_insert response loss while CanonicalPending | **Adopted / experimental** | ADR 0029 §2 and ADR 0049 §1558–1579 require exact journal reconciliation; the bounded model maps the implemented exact-receipt, explicit-`Absent`, background-query-only, and conflict boundaries. Commit `d700331c` plus the focused Rust/PocketIC comparisons are production evidence; this model remains non-normative. | Keep the one-request/one-shard boundary and record bounded formal results separately. Do not add CI or extend this slice to projection, retirement, routing/catalog mutation, or multi-shard behavior. |
 | ReadMode::AtLeast versus first-delivery outbox work | **Covered** | DerivedIndexOutbox and RepairJournal remain distinct owners; Graph MemoryId 52 stores one fixed key per qualifying source row and exposes their exact ordinary floor. Exact Graph owner tests plus the passing stopped-index/Graph-upgrade PocketIC lifecycle protect the contract. | No production prerequisite remains. Preserve `durableQueue` as a conceptual FIFO abstraction; keep this pilot `revise` until its independent formal gates are rerun. |
 | Router direct vector-ingest partial suffix | **Design/implementation prerequisite; Rust/PocketIC first** | DeferredForRepair promises durable automatic repair, but Router maps an unpersisted Vector suffix to it after Graph stamp_embedding creates no journal or outbox work. | GAP-2026-08-20-002: assign a durable suffix owner or change the public retry contract, then test partial progress plus upgrade/retry. |
 | Router shard identity across unregister/re-register | **Design/implementation prerequisite; later Quint candidate** | GlobalVertexId has only ShardId plus local id while the live catalog can reuse a numeric shard id. | GAP-2026-08-20-006: select never-reuse, incarnation, or equivalent principal-pinning semantics before stale-delivery tests. |
@@ -66,7 +68,169 @@ slice and must not duplicate those sources of truth.
 | duplicate index-build pull | **Covered** | Direct exact-replay and conflict coverage protects duplicate build pulls. | No new gap or Quint slice absent an ADR change or contradicting regression. |
 | idle-pending restart | **Model-only / excluded** | The bounded model omits idle-pending restart as an unobservable safety stutter. | No production or ledger claim; keep the transition excluded until a concrete observable behavior is selected. |
 
-## Traceability
+## Router CanonicalPending exact-replay slice
+
+Status: **Adopted as experimental, non-blocking**. This is a separate fixed
+Client/Router/Graph model for one admitted ordered `atomic_insert`, one target,
+and one Graph shard. It is deliberately not a projection, retirement, routing,
+catalog, or multi-shard model. The production contract remains owned by ADRs
+0029/0049 and the Rust/PocketIC comparisons recorded below.
+
+### State and ownership map
+
+| Quint symbol | Durable or volatile owner | Contract and live anchor |
+| --- | --- | --- |
+| `routerRecord` | Durable Router phase, immutable target, and optional receipt | ADR 0029 §2; `crates/router/src/facade/stable/label_stats.rs` request identity/target records and `crates/router/src/gql.rs` reconciliation arms |
+| `graphJournal` | Durable Graph exact completed journal receipt | ADR 0029 §1 and ADR 0049 §1558–1573; `crates/graph-kernel/src/plan_exec.rs` journal identity/completion and ordered Graph handlers |
+| `canonicalEffectCount` | Durable Graph canonical-effect count (bounded abstraction) | ADR 0029 §1; Graph ordered batch execution in `crates/graph/src/canister/handlers.rs` |
+| `graphDispatchCount` | Model-visible dispatch accounting for at-most-once and no-background-dispatch checks | Model-only diagnostic; compared with Router/PocketIC focused reconciliation tests |
+| `admissionTargetSnapshot` | Model-only immutable copy of the target at admission | Independent before-image used by `immutableStoredTarget`; no production state analogue |
+| `transport` | Volatile request/response availability | ADR 0049 §1558–1569; Graph response-loss seam in `crates/graph/src/test_fault.rs` |
+| `journalFence` | Durable last journal observation that gates redispatch | ADR 0029 §2 and ADR 0049 §1561–1579; Router trigger-aware reconciliation in `crates/router/src/gql.rs` |
+| `lastAction` | Model-only witness/diagnostic instrumentation | Sensitive preservation actions carry one `OwnerSnapshot` before-image; no production state analogue |
+
+### Actions and source map
+
+| Quint action | Required transition | Exact live owner or model boundary |
+| --- | --- | --- |
+| `init` | Establish empty Router/Graph owners and idle transport | Model-only initial state |
+| `admitPending` | Persist the immutable family, fingerprints, mutation id, shard, and request token before dispatch | Router admission in `crates/router/src/gql.rs` and stable request types in `crates/router/src/facade/stable/label_stats.rs` |
+| `dispatchCanonical` | Dispatch exactly the stored target/request identity | ADR 0049 §1462–1478; ordered dispatch helpers in `crates/router/src/gql.rs` |
+| `graphCommit` | Atomically create one canonical effect and its exact completed Graph journal receipt, then expose the response | ADR 0029 §39–48/§413–415; ordered Graph handlers and `crates/graph-kernel/src/plan_exec.rs` |
+| `loseCanonicalResponse` | Remove only the volatile Graph-to-Router response | ADR 0049 §1558–1565; `crates/graph/src/test_fault.rs` and focused PocketIC tests |
+| `persistCanonicalResponse` | Persist `CanonicalCommitted` from the ordinary canonical response path | Model-only separation of normal response persistence from journal-query adoption; live Router record completion helpers in `crates/router/src/gql.rs` |
+| `queryJournal` | Query the exact stored Graph identity under explicit retry or background recovery | ADR 0029 §218–224; `reconcile_ordered_canonical_pending` in `crates/router/src/gql.rs` |
+| `journalRespond` | Expose bounded exact/absent/error/non-exact journal evidence without canonical execution | Model-only semantic evidence boundary over Graph journal lookup |
+| `adoptExactReceipt` | Accept only exact `Active` + `Completed` evidence and persist `CanonicalCommitted` | ADR 0049 §1561–1573; exact receipt and Router commit helpers in `crates/router/src/gql.rs` |
+| `explicitAbsentRedispatch` | Redispatch the same stored request only after explicit `Absent` | ADR 0049 §1561–1575; trigger-aware reconciliation in `crates/router/src/gql.rs` |
+| `observeBackgroundAbsent` | Keep pending and perform no canonical dispatch after background `Absent` | ADR 0029 §218–224; Router recovery path in `crates/router/src/gql.rs` |
+| `observeQueryError` | Keep pending after query error with only diagnostic instrumentation | Model-only bounded error branch; live non-exact fail-closed branch |
+| `rejectNonExactEvidence` | Keep target/phase/receipt/effect count unchanged for all non-exact evidence | ADR 0049 §1570–1579; focused Router reject test |
+| `duplicateGraphDispatch` | Re-enter Graph with the same identity to exercise journal-first replay without a second effect | Model-only Graph replay boundary; exact replay semantics in ADR 0029 §414–416 |
+| `restart` | Clear volatile transport only and preserve both durable owners | ADR 0029 §199–224; focused Router/PocketIC recovery comparisons |
+| `exactReplay` | Return the stored receipt for the same key/family/fingerprint without a new effect | ADR 0029 §414–416; `respond_from_existing_ordered_atomic_insert` |
+| `rejectConflict` | Keep all durable state/effect counts unchanged for a conflicting family or fingerprint | ADR 0049 §1544–1556; existing conflict handling |
+
+The model-only `persistCanonicalResponse`, `journalRespond`, and
+`duplicateGraphDispatch` actions keep ordinary response persistence, journal
+query/adoption, and Graph journal-first replay distinct. They do not add
+production APIs or claim that the model has a one-to-one wire transition.
+`OwnerSnapshot` exists only inside sensitive `lastAction` variants so the
+preservation invariants compare the resulting Router/Graph owners with the
+actual pre-action values instead of inferring history from a tag.
+
+### Model-only instrumentation and helper traceability
+
+| Quint symbol | Role in this bounded model | Classification |
+| --- | --- | --- |
+| `admissionTargetSnapshot` | Captures the admitted target independently so `immutableStoredTarget` compares two state owners instead of recomputing the target from `routerRecord`. | Model-only immutable-identity witness; no production state analogue. |
+| `OwnerSnapshot` | Stores one exact pre-action Router/Graph owner image for preservation-sensitive actions. | Model-only diagnostic type; it is carried by `lastAction`, not production durable state. |
+| `ActionTag` snapshot payloads | `ObserveBackgroundAbsentAction`, `ObserveQueryErrorAction`, `RejectNonExactEvidenceAction`, `RestartAction`, `ExactReplayAction`, and `RejectConflictAction` each carry one `OwnerSnapshot`; the remaining tags are payload-free. | Model-only historical instrumentation; no production callback or message is implied. |
+| `phaseOf` | Derives the bounded `RouterPhase` from `routerRecord` for `phaseMonotonicity`. | Pure model helper; `routerRecord` remains the source of truth. |
+| `currentOwners` | Captures the current durable-owner values immediately before a sensitive action updates `lastAction`. | Model-only before-image value. |
+| `coreOwnersMatch` | Compares Router record, Graph journal, effect count, dispatch count, and admission target with a before-image while allowing the journal fence to record an observation. | Model-only invariant helper. |
+| `allOwnersMatch` | Extends `coreOwnersMatch` with exact journal-fence equality for restart, replay, and conflict actions. | Model-only invariant helper. |
+
+### Invariants, deterministic scenarios, and witnesses
+
+`protocolSafety` is exactly the conjunction of: `canonicalApplyAtMostOnce`,
+`canonicalJournalAtomicity`, `immutableStoredTarget`,
+`exactReceiptJustification`, `phaseMonotonicity`,
+`backgroundNeverCanonicalDispatches`, `explicitRedispatchRequiresAbsent`,
+`nonExactEvidenceFailsClosed`, `restartPreservesDurableOwners`, and
+`replayAndConflictIsolation`.
+
+`immutableStoredTarget` compares the live record with the independent
+admission snapshot. The background, non-exact/query-error, restart, replay,
+and conflict invariants compare exact Router record, Graph journal, effect and
+dispatch counts, admission target, and—where it must not change—the journal
+fence with the corresponding action's model-only before-image.
+
+The test module contains exactly these ten anchored scenarios:
+
+```text
+lostResponseExplicitRetryAdoptsExactReceipt
+lostResponseBackgroundRecoveryAdoptsExactReceipt
+explicitAbsentRedispatchesStoredRequest
+backgroundAbsentNeverRedispatches
+nonExactEvidenceStaysPending
+queryErrorStaysPending
+restartPreservesPendingAndJournal
+duplicateGraphDispatchAppliesOnce
+exactCommittedReplayReturnsStoredReceipt
+conflictingFingerprintOrFamilyFailsClosed
+```
+
+The sampled model exposes these positive witnesses:
+
+```text
+admitWitness dispatchWitness graphCommitWitness
+canonicalResponseLossWitness journalQueryWitness exactReceiptAdoptionWitness
+explicitAbsentRedispatchWitness backgroundAbsentWitness nonExactEvidenceWitness
+restartWitness exactReplayWitness conflictWitness
+```
+
+### Reproducible validation and bounded results
+
+The exact formal commands are:
+
+```sh
+quint --version
+quint typecheck formal/quint/router_atomic_insert.qnt
+quint typecheck formal/quint/router_atomic_insert_tests.qnt
+QUINT_HOME=/private/tmp/gleaph-quint-home quint test \
+  formal/quint/router_atomic_insert_tests.qnt \
+  --main=routerAtomicInsertTests \
+  --match='^(lostResponseExplicitRetryAdoptsExactReceipt|lostResponseBackgroundRecoveryAdoptsExactReceipt|explicitAbsentRedispatchesStoredRequest|backgroundAbsentNeverRedispatches|nonExactEvidenceStaysPending|queryErrorStaysPending|restartPreservesPendingAndJournal|duplicateGraphDispatchAppliesOnce|exactCommittedReplayReturnsStoredReceipt|conflictingFingerprintOrFamilyFailsClosed)$' \
+  --seed=0x260
+QUINT_HOME=/private/tmp/gleaph-quint-home quint run \
+  formal/quint/router_atomic_insert.qnt \
+  --main=routerAtomicInsert --invariant=protocolSafety \
+  --max-steps=20 --max-samples=10000 --seed=0x260 --backend=typescript \
+  --witnesses admitWitness dispatchWitness graphCommitWitness \
+  canonicalResponseLossWitness journalQueryWitness exactReceiptAdoptionWitness \
+  explicitAbsentRedispatchWitness backgroundAbsentWitness nonExactEvidenceWitness \
+  restartWitness exactReplayWitness conflictWitness
+```
+
+Validation anchor: `2026-08-21 07:49:55 UTC +0000`. The installed CLI was
+`quint 0.32.0`. The main and test modules typechecked in `0.834s` and `0.973s`.
+The exact anchored suite selected and passed 10 tests in `404ms`. The bounded
+TypeScript run explored 10,000 traces through depth 20 in `24.201s`, found no
+`protocolSafety` counterexample in that sample, and reached every witness:
+
+| Witness | Count |
+| --- | ---: |
+| `admitWitness` | 10000 |
+| `dispatchWitness` | 9998 |
+| `graphCommitWitness` | 5182 |
+| `canonicalResponseLossWitness` | 2002 |
+| `journalQueryWitness` | 8054 |
+| `exactReceiptAdoptionWitness` | 319 |
+| `explicitAbsentRedispatchWitness` | 397 |
+| `backgroundAbsentWitness` | 380 |
+| `nonExactEvidenceWitness` | 5763 |
+| `restartWitness` | 8109 |
+| `exactReplayWitness` | 2410 |
+| `conflictWitness` | 9939 |
+
+The production comparisons were run separately:
+
+```sh
+cargo test -p gleaph-router --lib canonical_pending_reconciliation
+cargo test -p gleaph-pocket-ic-tests --test adr0057_atomic_insert \
+  atomic_insert_canonical_pending_reconciliation
+```
+
+The Router filter selected and passed exactly four tests (`792` filtered out),
+and the PocketIC filter selected and passed exactly two tests (`13` filtered
+out). These are implementation comparisons, not proof supplied by the Quint
+model. The unfiltered `adr0057_atomic_insert` target was not rerun; its earlier
+14-pass/1-failure HTTP-adapter result remains non-terminal. `quint verify` was
+intentionally not run. Sampled execution is not exhaustive verification or a
+liveness proof.
+
+## Router–Graph–Property Index projection traceability
 
 The following tables are exhaustive for the model's declared `var`, `action`,
 and safety-value symbols. An entry marked **model-only** is an intentional
@@ -146,7 +310,7 @@ name and is not presented as live behavior.
 If an implementation or ADR changes, update this table and the model together.
 Do not silently strengthen a contract in Quint.
 
-## Deterministic coverage
+### Deterministic coverage
 
 The test module contains exactly 12 anchored tests:
 
@@ -169,7 +333,7 @@ The model exposes 12 action witnesses for dispatch, commit, completion,
 delivery, recovery, apply, rejection, both response-loss paths, restart,
 rejection observation, and acknowledgement.
 
-## Reproducible commands
+### Reproducible commands
 
 The pilot uses the installed CLI (`quint 0.32.0`) without adding a workspace
 dependency or changing `pnpm-lock.yaml`:
@@ -242,14 +406,19 @@ current model repair. The commands above are reproducibility instructions,
 not pass evidence; the adoption gate remains incomplete for this comparison
 surface, and no Rust/PocketIC pass is claimed here.
 
-## Adoption decision
+### Adoption decision
 
-Decision: **`revise`**. The pilot remains experimental and non-blocking. The
-corrected model has a useful executable boundary, and its post-repair
-typecheck, exact anchored tests, and bounded simulation pass. The production prerequisite for the
-AtLeast floor is implemented as the exact MemoryId 52 fixed index and covered by Graph owner tests;
-the stopped-index PocketIC lifecycle passes across Graph upgrade and later drain. The independent
-formal gates and the smaller Router `atomic_insert` slice remain incomplete. Do not add a CI gate or
-broaden the protocol model until those prerequisites are complete.
+The Router–Graph–Property Index projection pilot remains **`revise`**, experimental,
+and non-blocking. Its repaired model has passing typecheck, exact scenarios, and
+10,000-sample evidence, but its current production-comparison surface was not rerun
+and it has no current `quint verify` result. Its validation evidence anchor remains
+`2026-08-19 21:19:37 UTC +0000`.
 
-Validation evidence anchor from the OS: `2026-08-19 21:19:37 UTC +0000`.
+The separate Router–Graph `CanonicalPending` slice is **`adopt as
+experimental/non-blocking`** for exactly its one-request, one-shard boundary. Both
+modules typecheck, all 10 deterministic scenarios pass, the 10,000-sample run
+reaches all 12 witnesses without a sampled `protocolSafety` counterexample, and the
+focused Router and PocketIC comparisons pass 4/4 and 2/2. This decision adds no CI
+gate and is not exhaustive verification, a liveness proof, or adoption of the
+projection, retirement, routing/catalog, multi-shard, or other excluded behaviors.
+The CanonicalPending evidence anchor is `2026-08-21 07:49:55 UTC +0000`.

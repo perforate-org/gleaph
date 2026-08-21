@@ -477,12 +477,12 @@ The phased implementation and acceptance gates are defined in
 
 ## Implementation-gap traceability (non-normative)
 
-The implementation-gap ledger is the status authority for the following open
+The implementation-gap ledger is the status authority for the following
 observations. These links do not amend this ADR's atomicity, retry, lifecycle,
 or read-consistency decisions.
 
 - [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Resolved in this patch**: exact MemoryId 52 Graph-owned outbox/repair floor, owner regressions, and the passing stopped-index Graph-upgrade lifecycle regression.
-- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
+- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Resolved in `d700331c`**: exact completed-receipt adoption, explicit-`Absent` same-key redispatch, and query-only background recovery; the focused Router and PocketIC reconciliation filters passed, while the later full PocketIC target remained non-terminal because of an unrelated HTTP-adapter failure.
 - [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: Router shard incarnation and lifecycle fencing.
 
 ## Related decisions

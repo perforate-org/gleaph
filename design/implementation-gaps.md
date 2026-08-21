@@ -105,7 +105,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
 
-- **Status:** Resolved (commit pending; fix is in this patch)
+- **Status:** Resolved in `d700331c33a8cdae7524e76bcb4e9ddcd5cdb600`
 - **Severity:** P1 Router exact-replay recovery
 - **Owner:** Router ordered atomic_insert lifecycle and exact Graph journal reconciliation
 - **Observed behavior (before fix):** ADR 0049 requires a same-key retry after a Graph success /
@@ -147,7 +147,8 @@ defect from being rediscovered without its prior reasoning.
   incomplete at 14 passed / 1 failed because the unrelated
   `atomic_insert_rejects_missing_catalog_name_before_reservation` test hit a PocketIC HTTP
   adapter startup timeout (`IncompleteMessage`). No benchmark was run because this slice does not
-  change a performance-sensitive algorithm. No commit exists yet.
+  change a performance-sensitive algorithm. The recovery fix was committed as
+  `d700331c33a8cdae7524e76bcb4e9ddcd5cdb600`.
 - **Impact (before fix):** A committed canonical effect could remain non-terminal despite the
   exact durable Graph receipt needed to reconcile it.
 - **Next decision:** None for this recovery contract. Plan 0260 remains a later, non-blocking

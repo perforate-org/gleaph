@@ -2772,11 +2772,11 @@ and split invariant ownership. Rejected.
 
 ## Implementation-gap traceability (non-normative)
 
-The implementation-gap ledger is the status authority for this open
-observation. This link does not amend the ordered atomic-insert contract or its
+The implementation-gap ledger is the status authority for this observation.
+This link does not amend the ordered atomic-insert contract or its
 retry semantics.
 
-- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
+- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Resolved in `d700331c`**: exact completed-receipt adoption, explicit-`Absent` same-key redispatch, and query-only background recovery; the focused Router and PocketIC reconciliation filters passed, while the later full PocketIC target remained non-terminal because of an unrelated HTTP-adapter failure.
 
 ## Related
 
