@@ -188,6 +188,61 @@ fn bench_lara_free_span_store_reopen_4096() -> canbench_rs::BenchResult {
     bench_reopen(helper::LARGE_N)
 }
 
+/// Scale probes for the declared reopen-validation ceiling
+/// (GAP-2026-07-11-005). Before measurement, the accepted thresholds are:
+///
+/// - **Supported fragmentation level:** 262,144 non-coalescing active free
+///   spans per `FreeSpanStore` (every release stays a separate span, which is
+///   the most fragmented shape for a given span count).
+/// - **Reopen instruction ceiling:** at most 1.0B wasm instructions per
+///   `FreeSpanStore` reopen at that level — about 2.5% of the 40B update-call
+///   trap ceiling (`gleaph-instruction-budget::MAX_UPDATE_CALL_INSTRUCTIONS`,
+///   ADR 0042/0060). The labeled graph preflight opens three such stores
+///   (buckets, edges, inline-property values), so its worst-case validation
+///   share is 3.0B, inside the 5B update headroom.
+/// - **Transient heap ceiling:** at most 8 MiB — analytically the exact-capacity
+///   `(start_slot, SpanId)` pair buffer is 16 B × 262,144 = 4 MiB and the paged
+///   map's free-page set is page-count-bounded (~8 B × ~512 pages), well under
+///   this limit.
+///
+/// The 16k/64k/256k points expose the `O(active log active)` sort growth beyond
+/// the 4,096 baseline. Exceeding the instruction ceiling means the sorted-merge
+/// validator must be redesigned (bounded incremental validation, persisted
+/// validation summaries with generation fencing, or a hard fragmentation cap)
+/// before any production durable-upgrade claim; it does not permit weakening
+/// the fail-closed bijection contract.
+fn bench_reopen_scale(n: u64) -> canbench_rs::BenchResult {
+    let (store_mem, by_start_mem) = populate_store(n).into_memories();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_free_span_store_reopen");
+        let reopened = FreeSpanStore::init(store_mem.clone(), by_start_mem.clone())
+            .expect("reopen free span store");
+        black_box(reopened.len());
+    })
+}
+
+const REOPEN_SCALE_MEDIUM: u64 = 16_384;
+const REOPEN_SCALE_LARGE: u64 = 65_536;
+const REOPEN_SCALE_DECLARED_MAX: u64 = 262_144;
+
+#[bench(raw)]
+fn bench_lara_free_span_store_reopen_16384() -> canbench_rs::BenchResult {
+    bench_reopen_scale(REOPEN_SCALE_MEDIUM)
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_reopen_65536() -> canbench_rs::BenchResult {
+    bench_reopen_scale(REOPEN_SCALE_LARGE)
+}
+
+/// The declared maximum supported fragmentation level. This result is the
+/// release gate: if it exceeds 1.0B instructions, upgrade preflight needs a
+/// validator redesign rather than a higher threshold.
+#[bench(raw)]
+fn bench_lara_free_span_store_reopen_262144() -> canbench_rs::BenchResult {
+    bench_reopen_scale(REOPEN_SCALE_DECLARED_MAX)
+}
+
 /// Measures release-time coalescing of adjacent free spans in the current
 /// store. This protects predecessor/successor lookup plus replacement of
 /// neighboring records with a merged reusable range.
