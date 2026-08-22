@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 19:14:24 UTC +0000
+Anchor timestamp: 2026-08-22 19:58:00 UTC +0000
 
 ## Status
 
@@ -1200,20 +1200,33 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-005 — Vertex nested-record indexes are not yet symmetrical with edge INLINE fields
 
-- **Status:** Planned
+- **Status:** In progress (domain decision recorded in
+  [ADR 0073](adr/0073-vertex-nested-property-indexes-share-dotted-path-domain.md), 2026-08-22:
+  vertex nested leaves share the edge dotted-path leaf domain — Router-interned leaf
+  `PropertyId`, membership `field_path`, one sortable key encoding, and the existing
+  old-key/new-key transition contract; list/container leaves stay unindexable. The ADR names
+  four implementation slices: kernel+DDL schema, Graph mutation dispatch, backfill extension,
+  planner anchors.)
 - **Severity:** P2 query capability
-- **Owner:** Vertex property storage, planner property-path resolution, and property-index backfill
+- **Owner:** Vertex property storage, planner property-path resolution, and property-index
+  backfill; decision owned by ADR 0073
 - **Observed behavior:** Edge INLINE struct leaf paths can be indexed, while the corresponding
   vertex nested-record field path is not a generally supported indexed property domain.
-- **Expected or needed behavior:** A declared vertex index on a bounded nested field must use one
-  canonical dotted path, validate the record shape, and maintain/backfill the leaf posting with the
-  same old-key/new-key semantics.
-- **Evidence:** Current inline field dispatch in `crates/graph/src/property/inline_dispatch.rs` and
-  the vertex property index/backfill paths in `crates/graph/src/index/`.
-- **Impact:** `COST BY v.stats.field` and vertex nested-field range/equality planning cannot rely on
-  the same index contract as edge inline fields.
-- **Next decision:** Decide whether vertex nested fields share the edge dotted-path encoding or use a
-  separate record-index key domain; record/list values remain out of scope until that choice is made.
+  `IndexedVertexMembership` carries no `field_path` and vertex dispatch/backfill resolve flat
+  properties only.
+- **Expected or needed behavior:** A declared vertex index on a bounded nested field must use
+  one canonical dotted path, validate the record shape at DDL time with fail-closed absence
+  semantics at mutation time, and maintain/backfill the leaf posting with the same
+  old-key/new-key semantics as every other domain.
+- **Evidence:** `crates/graph/src/index/catalog_context.rs::vertex_index_memberships_for_labels`
+  resolves `(labels, property_id)` only;
+  `crates/graph-kernel/src/index.rs::IndexedVertexMembership`; flat-only
+  `crates/graph/src/index/vertex_property_backfill.rs`; transition SSOT
+  `crates/graph/src/property/change.rs::index_ops_for_value_change`.
+- **Impact:** `COST BY v.stats.field` and vertex nested-field range/equality planning cannot
+  rely on the same index contract as edge inline fields.
+- **Next decision:** Implement ADR 0073 slice 1 (kernel membership + registration args gain
+  `field_path`; Router DDL interns leaf identities), then slices 2–4 in dependency order.
 
 ### GAP-2026-07-29-006 — Index activation convergence gate lacks production driver/E2E completion
 
