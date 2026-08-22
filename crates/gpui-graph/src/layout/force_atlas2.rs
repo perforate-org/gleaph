@@ -26,18 +26,29 @@
 //! because it only wins on densely clustered topologies (§37). Both paths
 //! apply FA2 degree mass (degree + 1).
 //!
+//! Execution model: every force phase and the movement pass are data-parallel
+//! per node (rayon). Workers never share accumulators — grid repulsion scans
+//! each node's own 3×3 neighborhood single-sided, Barnes-Hut resolves one root
+//! descent per node with thread-local stacks, and attraction gathers each
+//! node's incident pulls through a CSR adjacency refreshed whenever the
+//! projection's topology revision changes. A qualifying pair's arithmetic may
+//! be evaluated twice (once per endpoint); that buys race-free parallel writes
+//! without per-thread force buffers or atomics.
+//!
 //! Numerical note: the force model computes through [`f32::algebraic_*`]
 //! arithmetic (see the component-wise helpers below), which permits
 //! reassociation, FMA contraction, and reciprocal-multiply. Results are not
-//! bit-reproducible across runs, compiler versions, or platforms; that is
+//! bit-reproducible across runs (parallel workers also reduce forces in
+//! nondeterministic order), compiler versions, or platforms; that is
 //! acceptable here because this is an animated simulation whose tests assert
 //! convergence, never exact coordinates. The algebraic helpers must stay out
 //! of hit-testing, paint geometry, and viewport math, where epsilon
 //! comparisons rely on stable operation-by-operation precision.
 
 use glam::Vec2;
+use rayon::prelude::*;
 
-use super::graph::{LayoutGraph, LayoutIndex, LayoutState};
+use super::graph::{LayoutGraph, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
 
 /// Maximum per-iteration displacement (world units) a node may move. The FA2
@@ -104,7 +115,9 @@ fn cell_key(cx: i32, cy: i32) -> u64 {
 }
 
 /// Neighbor offsets that visit each adjacent cell pair exactly once: together
-/// with their negations they cover all eight Moore directions.
+/// with their negations they cover all eight Moore directions. Test-only since
+/// the parallel pass scans per node instead of enumerating pairs.
+#[cfg(test)]
 const FORWARD_STENCIL: [(i32, i32); 4] = [(1, 0), (1, 1), (0, 1), (1, -1)];
 
 /// A uniform spatial hash over node positions, rebuilt every iteration into
@@ -175,6 +188,9 @@ impl RepulsionGrid {
     }
 
     /// Visit every unordered pair of nodes whose cells are adjacent or equal.
+    /// Test-only oracle for [`Self::accumulate_node`]: the engine's parallel
+    /// pass scans per node instead of enumerating pairs.
+    #[cfg(test)]
     fn for_each_pair(&self, visit: &mut impl FnMut(usize, usize)) {
         for ci in 0..self.cells.len() {
             let cx = (self.cells[ci] >> 32) as u32 as i32;
@@ -196,6 +212,51 @@ impl RepulsionGrid {
                 }
             }
         }
+    }
+
+    /// Accumulate the repulsion received by node `i` alone, scanning only the
+    /// cells adjacent to — and including — `i`'s own cell. Single-sided mirror
+    /// of [`Self::for_each_pair`]: exactly the same neighbor pairs contribute
+    /// with the same saturated-magnitude impulse, but each worker touches only
+    /// its own accumulator, so the pass parallelizes without races at the cost
+    /// of evaluating each qualifying pair twice (once per endpoint).
+    fn accumulate_node(
+        &self,
+        i: usize,
+        positions: &[Vec2],
+        masses: &[f32],
+        scaling: f32,
+        radius: f32,
+    ) -> Vec2 {
+        let p = positions[i];
+        let cx = (p.x / self.cell_size).floor() as i32;
+        let cy = (p.y / self.cell_size).floor() as i32;
+        let mut acc = Vec2::ZERO;
+        for dy in -1..=1i32 {
+            for dx in -1..=1i32 {
+                let range = self.cell_entries(cx + dx, cy + dy);
+                for entry in &self.entries[range] {
+                    let j = *entry as usize;
+                    if j == i {
+                        continue;
+                    }
+                    // Force on `i` points away from `j`, matching the pair
+                    // walk's `i`-side accumulation.
+                    let delta = algebraic_sub(positions[i], positions[j]);
+                    let dist = delta.length();
+                    if dist == 0.0 || dist > radius {
+                        continue;
+                    }
+                    let eff = dist.max(MIN_DISTANCE);
+                    let strength = scaling
+                        .algebraic_mul(masses[i])
+                        .algebraic_mul(masses[j])
+                        .algebraic_div(eff.algebraic_mul(eff));
+                    acc = algebraic_add(acc, algebraic_mul_scalar(delta, strength / dist));
+                }
+            }
+        }
+        acc
     }
 }
 
@@ -372,11 +433,74 @@ impl BhTree {
         }
     }
 
-    /// Accumulate approximate repulsion into `forces` for every node using
-    /// the θ opening criterion: a cell is merged into its center of mass when
-    /// `side / distance < theta`, otherwise its quadrants are opened. Cells
-    /// containing the query point always fail the criterion for theta ≤ 1 and
-    /// are resolved down to exact chains, so self-interaction never occurs.
+    /// Approximate repulsion received by node `i`: walk the quadtree from the
+    /// root with the θ opening criterion, merging a cell into its center of
+    /// mass when `side / distance < theta`, otherwise opening its quadrants.
+    /// Cells containing the query point always fail the criterion for theta ≤ 1
+    /// and are resolved down to exact chains, so self-interaction never occurs.
+    /// `stack` is caller-provided scratch so parallel workers never share
+    /// traversal state.
+    fn node_repulsion(
+        &self,
+        i: usize,
+        positions: &[Vec2],
+        masses: &[f32],
+        theta: f32,
+        scaling: f32,
+        stack: &mut Vec<usize>,
+    ) -> Vec2 {
+        let mut acc = Vec2::ZERO;
+        if self.cells.is_empty() {
+            return acc;
+        }
+        stack.clear();
+        stack.push(0);
+        while let Some(c) = stack.pop() {
+            let cell = &self.cells[c];
+            if cell.mass <= 0.0 {
+                continue;
+            }
+            // Leaves resolve exactly through their point chains.
+            if cell.head != NO_INDEX {
+                let mut p = cell.head;
+                while p != NO_INDEX {
+                    acc = algebraic_add(
+                        acc,
+                        self.pair_repulsion(i, p as usize, positions, masses, scaling),
+                    );
+                    p = self.next_same[p as usize];
+                }
+                continue;
+            }
+            let delta = algebraic_sub(cell.com, positions[i]);
+            // No floor here: the opening criterion must see the true
+            // distance so a cell containing the query node always fails
+            // the theta test (its com lies within the cell).
+            let dist = delta.length();
+            let side = cell.half * 2.0;
+            if side < theta * dist {
+                // Far enough: merge the whole subtree into its center of
+                // mass. The floor saturates the magnitude only; direction
+                // and criterion keep the true distance, so overlapping
+                // clusters still push apart instead of going weightless.
+                let eff = dist.max(MIN_DISTANCE);
+                let strength =
+                    scaling.algebraic_mul(masses[i]).algebraic_mul(cell.mass) / (eff * eff);
+                acc = algebraic_add(acc, algebraic_mul_scalar(delta, strength / dist));
+            } else {
+                for &child in &cell.children {
+                    if child != NO_INDEX {
+                        stack.push(child as usize);
+                    }
+                }
+            }
+        }
+        acc
+    }
+
+    /// Serial wrapper over [`Self::node_repulsion`] for the brute-force test
+    /// oracle; the engine drives it through rayon instead.
+    #[cfg(test)]
     fn accumulate(
         &self,
         positions: &[Vec2],
@@ -389,75 +513,39 @@ impl BhTree {
             return;
         }
         let mut stack: Vec<usize> = Vec::new();
-        for i in 0..positions.len() {
-            stack.push(0);
-            while let Some(c) = stack.pop() {
-                let cell = &self.cells[c];
-                if cell.mass <= 0.0 {
-                    continue;
-                }
-                // Leaves resolve exactly through their point chains.
-                if cell.head != NO_INDEX {
-                    let mut p = cell.head;
-                    while p != NO_INDEX {
-                        self.apply_pair(i, p as usize, positions, masses, scaling, forces);
-                        p = self.next_same[p as usize];
-                    }
-                    continue;
-                }
-                let delta = algebraic_sub(cell.com, positions[i]);
-                // No floor here: the opening criterion must see the true
-                // distance so a cell containing the query node always fails
-                // the theta test (its com lies within the cell).
-                let dist = delta.length();
-                let side = cell.half * 2.0;
-                if side < theta * dist {
-                    // Far enough: merge the whole subtree into its center of
-                    // mass. The floor saturates the magnitude only; direction
-                    // and criterion keep the true distance, so overlapping
-                    // clusters still push apart instead of going weightless.
-                    let eff = dist.max(MIN_DISTANCE);
-                    let strength =
-                        scaling.algebraic_mul(masses[i]).algebraic_mul(cell.mass) / (eff * eff);
-                    forces[i] =
-                        algebraic_add(forces[i], algebraic_mul_scalar(delta, strength / dist));
-                } else {
-                    for &child in &cell.children {
-                        if child != NO_INDEX {
-                            stack.push(child as usize);
-                        }
-                    }
-                }
-            }
+        for (i, force) in forces.iter_mut().enumerate() {
+            *force = algebraic_add(
+                *force,
+                self.node_repulsion(i, positions, masses, theta, scaling, &mut stack),
+            );
         }
     }
 
     /// Exact repulsion impulse received by node `i` from node `j`.
-    fn apply_pair(
+    fn pair_repulsion(
         &self,
         i: usize,
         j: usize,
         positions: &[Vec2],
         masses: &[f32],
         scaling: f32,
-        forces: &mut [Vec2],
-    ) {
+    ) -> Vec2 {
         if j == i {
-            return;
+            return Vec2::ZERO;
         }
         let delta = algebraic_sub(positions[j], positions[i]);
         let dist = delta.length();
         if dist == 0.0 {
             // Exact coincidence has no separation direction; the reference
             // implementation skips such pairs too.
-            return;
+            return Vec2::ZERO;
         }
         // The floor saturates the `1/d²` magnitude only; direction stays the
         // true separation, so overlapped pairs keep pushing apart instead of
         // going weightless below one world unit.
         let eff = dist.max(MIN_DISTANCE);
         let strength = scaling.algebraic_mul(masses[i]).algebraic_mul(masses[j]) / (eff * eff);
-        forces[i] = algebraic_add(forces[i], algebraic_mul_scalar(delta, strength / dist));
+        algebraic_mul_scalar(delta, strength / dist)
     }
 }
 
@@ -516,6 +604,16 @@ pub struct ForceAtlas2 {
     /// Global cooling multiplier in `(0, 1]` applied to every movement;
     /// decays each iteration and resets on rebuild (§37).
     cooling: f32,
+    /// CSR adjacency over the projection's edges for gather-based attraction:
+    /// `attr_targets[attr_offsets[i]..attr_offsets[i+1]]` holds one entry per
+    /// incident edge endpoint of node `i`, so duplicate edges pull twice just
+    /// as they did in the edge-list walk this replaces.
+    attr_offsets: Vec<u32>,
+    attr_targets: Vec<u32>,
+    /// Topology revision the current attraction adjacency was built from;
+    /// `u64::MAX` until the first build so an initial revision of 0 still
+    /// triggers it.
+    attr_revision: u64,
 }
 
 impl Default for ForceAtlas2 {
@@ -536,6 +634,9 @@ impl Default for ForceAtlas2 {
             theta: 1.0,
             masses: Vec::new(),
             cooling: 1.0,
+            attr_offsets: Vec::new(),
+            attr_targets: Vec::new(),
+            attr_revision: u64::MAX,
         }
     }
 }
@@ -620,6 +721,7 @@ impl LayoutEngine for ForceAtlas2 {
             self.masses[edge.target.0 as usize] += 1.0;
         }
         self.tree.next_same.resize(n, NO_INDEX);
+        self.refresh_attraction_adjacency(graph);
         let _ = state;
     }
 
@@ -644,6 +746,10 @@ impl LayoutEngine for ForceAtlas2 {
             self.masses.clear();
             self.masses.resize(n, 1.0);
         }
+        // Same staleness guard for the attraction adjacency: incremental
+        // topology updates may arrive without an engine rebuild, so the CSR
+        // is refreshed by revision check rather than trusted from rebuild.
+        self.refresh_attraction_adjacency(graph);
 
         let mut last_displacement = 0.0f32;
         for _ in 0..budget.max_iterations {
@@ -666,72 +772,105 @@ impl LayoutEngine for ForceAtlas2 {
 }
 
 impl ForceAtlas2 {
+    /// Rebuild the attraction adjacency when the projection changed. Every
+    /// `step` pays only an O(1) revision-and-length check, so incremental
+    /// topology updates that arrive without [`LayoutEngine::rebuild`] stay
+    /// correct; the O(E) rebuild itself runs only on actual changes.
+    fn refresh_attraction_adjacency(&mut self, graph: &LayoutGraph) {
+        let n = graph.node_count();
+        let endpoints = 2 * graph.edge_count();
+        if self.attr_revision == graph.topology_revision
+            && self.attr_offsets.len() == n + 1
+            && self.attr_targets.len() == endpoints
+        {
+            return;
+        }
+        let mut offsets = vec![0u32; n + 1];
+        for edge in &graph.edges {
+            offsets[edge.source.0 as usize + 1] += 1;
+            offsets[edge.target.0 as usize + 1] += 1;
+        }
+        for window in 1..=n {
+            offsets[window] += offsets[window - 1];
+        }
+        let mut targets = vec![0u32; endpoints];
+        let mut cursor = offsets[..n].to_vec();
+        for edge in &graph.edges {
+            targets[cursor[edge.source.0 as usize] as usize] = edge.target.0;
+            cursor[edge.source.0 as usize] += 1;
+            targets[cursor[edge.target.0 as usize] as usize] = edge.source.0;
+            cursor[edge.target.0 as usize] += 1;
+        }
+        self.attr_offsets = offsets;
+        self.attr_targets = targets;
+        self.attr_revision = graph.topology_revision;
+    }
+
     /// Run a single force-model iteration, returning total displacement.
-    fn iterate(&mut self, graph: &LayoutGraph, state: &mut LayoutState) -> f32 {
+    ///
+    /// The projection is read only through engine-owned adjacency and buffers,
+    /// so the graph argument is unused here; `step` refreshes the attraction
+    /// adjacency against its revision.
+    fn iterate(&mut self, _graph: &LayoutGraph, state: &mut LayoutState) -> f32 {
         let forces = &mut self.forces;
         forces.fill(Vec2::ZERO);
 
         // Repulsion: below the Barnes-Hut threshold, nodes repel within
         // `repulsion_radius` through the exact CSR grid (O(N·k)); at or above
         // it, the quadtree approximates all-pairs long-range repulsion in
-        // O(N·log N). Both apply FA2 degree mass.
+        // O(N·log N). Both apply FA2 degree mass. Both run one worker task
+        // per node over disjoint accumulators.
         let n = state.positions.len();
         if n >= self.bh_threshold {
             let mut tree = std::mem::take(&mut self.tree);
             tree.build(&state.positions, &self.masses);
-            tree.accumulate(
-                &state.positions,
-                &self.masses,
-                self.theta,
-                self.scaling,
-                forces,
-            );
+            let (positions, masses, theta, scaling) =
+                (&state.positions, &self.masses, self.theta, self.scaling);
+            forces
+                .par_iter_mut()
+                .enumerate()
+                .for_each_init(Vec::new, |stack, (i, force)| {
+                    *force = tree.node_repulsion(i, positions, masses, theta, scaling, stack);
+                });
             self.tree = tree;
         } else {
             let mut grid = std::mem::take(&mut self.grid);
             grid.rebuild(&state.positions, self.repulsion_radius);
-            let positions = &state.positions;
-            let scaling = self.scaling;
-            let radius = self.repulsion_radius;
-            let masses = &self.masses;
-            grid.for_each_pair(&mut |i, j| {
-                let delta = algebraic_sub(positions[i], positions[j]);
-                let dist = delta.length();
-                if dist == 0.0 || dist > radius {
-                    return;
-                }
-                // `dir * force == delta * (strength / dist)` with the
-                // magnitude saturated at [`MIN_DISTANCE`]: overlapped pairs
-                // push apart at bounded strength instead of exploding or
-                // going weightless.
-                let eff = dist.max(MIN_DISTANCE);
-                let strength = scaling
-                    .algebraic_mul(masses[i])
-                    .algebraic_mul(masses[j])
-                    .algebraic_div(eff.algebraic_mul(eff));
-                let impulse = algebraic_mul_scalar(delta, strength / dist);
-                forces[i] = algebraic_add(forces[i], impulse);
-                forces[j] = algebraic_sub(forces[j], impulse);
+            let (positions, masses, scaling, radius) = (
+                &state.positions,
+                &self.masses,
+                self.scaling,
+                self.repulsion_radius,
+            );
+            forces.par_iter_mut().enumerate().for_each(|(i, force)| {
+                *force = grid.accumulate_node(i, positions, masses, scaling, radius);
             });
             self.grid = grid;
         }
 
-        // Attraction: every edge pulls its endpoints together.
-        for edge in &graph.edges {
-            let s = edge.source.0 as usize;
-            let t = edge.target.0 as usize;
-            let delta = algebraic_sub(state.positions[t], state.positions[s]);
-            let dist = delta.length().max(MIN_DISTANCE);
-            let fa = if self.lin_log {
-                (1.0f32.algebraic_add(dist)).ln()
-            } else {
-                dist
-            };
-            // `dir * fa == delta * (fa / dist)`: one division instead of two.
-            let pull = algebraic_mul_scalar(delta, fa.algebraic_div(dist));
-            forces[s] = algebraic_add(forces[s], pull);
-            forces[t] = algebraic_sub(forces[t], pull);
-        }
+        // Attraction: every edge pulls its endpoints together, gathered per
+        // node over the CSR adjacency so workers write disjoint accumulators.
+        // One entry per incident endpoint keeps duplicate-edge pull exact; a
+        // self-loop contributes a zero-length pull, exactly as the edge walk
+        // it replaces.
+        let lin_log = self.lin_log;
+        let (offsets, targets, positions) =
+            (&self.attr_offsets, &self.attr_targets, &state.positions);
+        forces.par_iter_mut().enumerate().for_each(|(i, force)| {
+            let mut acc = *force;
+            for entry in &targets[offsets[i] as usize..offsets[i + 1] as usize] {
+                let delta = algebraic_sub(positions[*entry as usize], positions[i]);
+                let dist = delta.length().max(MIN_DISTANCE);
+                let fa = if lin_log {
+                    (1.0f32.algebraic_add(dist)).ln()
+                } else {
+                    dist
+                };
+                // `dir * fa == delta * (fa / dist)`: one division instead of two.
+                acc = algebraic_add(acc, algebraic_mul_scalar(delta, fa.algebraic_div(dist)));
+            }
+            *force = acc;
+        });
 
         // Gravity: pull every node toward the origin, weighted by its mass,
         // with CONSTANT magnitude along the unit direction like the FA2
@@ -756,48 +895,67 @@ impl ForceAtlas2 {
         // The per-node `convergence` factor carries the adaptation across
         // iterations, so oscillating regions slow themselves down and the
         // layout converges instead of jittering around an equilibrium.
-        let mut total = 0.0f32;
-        for (i, &force) in forces.iter().enumerate() {
-            if state.is_pinned(LayoutIndex(i as u32)) {
-                continue;
-            }
-            let prev = self.prev_forces[i];
-            let swing_root = algebraic_sub(prev, force)
-                .length()
-                .algebraic_mul(self.masses[i])
-                .sqrt();
-            let swing_denom = swing_root.algebraic_add(1.0);
-            let traction = algebraic_add(prev, force).length() * 0.5;
-            let nodespeed = self.convergence[i]
-                .algebraic_mul((1.0 + traction).ln())
-                .algebraic_div(swing_denom);
-            // Update convergence from this iteration's balance before moving;
-            // clamped to 1 so adaptation never amplifies beyond raw forces.
-            self.convergence[i] = nodespeed
-                .algebraic_mul(force.length_squared())
-                .algebraic_div(swing_denom)
-                .sqrt()
-                .min(1.0);
-            self.prev_forces[i] = force;
-            // Dead-band: below the epsilon the node is effectively at rest.
-            // Freeze it so equilibrium noise cannot jitter it forever and the
-            // layout can report settled. State above stays fresh, so a real
-            // force (drag, topology change) moves it again immediately.
-            let desired = force
-                .length()
-                .algebraic_mul(nodespeed * self.cooling / self.slow_down);
-            if desired < DISPLACEMENT_EPSILON {
-                continue;
-            }
-            // [`MAX_STEP`] applies only when one iteration would otherwise
-            // fling the node across the graph.
-            let shrink = (MAX_STEP / desired).min(1.0);
-            state.positions[i] = algebraic_add(
-                state.positions[i],
-                algebraic_mul_scalar(force, nodespeed * shrink * self.cooling / self.slow_down),
-            );
-            total = total.algebraic_add(desired.algebraic_mul(shrink));
-        }
+        //
+        // Parallel over nodes: each worker owns its node's convergence,
+        // previous force, and position through zipped disjoint slices; skipped
+        // nodes contribute zero to the displacement total. Pinned nodes return
+        // before touching their adaptive state, keeping it frozen until
+        // unpinned.
+        let cooling = self.cooling;
+        let slow_down = self.slow_down;
+        let (forces_ref, masses_ref) = (&self.forces, &self.masses);
+        let pinned = &state.pinned;
+        let convergence = &mut self.convergence;
+        let prev_forces = &mut self.prev_forces;
+        let total: f32 = state
+            .positions
+            .par_iter_mut()
+            .zip(convergence.par_iter_mut())
+            .zip(prev_forces.par_iter_mut())
+            .enumerate()
+            .map(|(i, ((position, convergence_i), prev_force))| {
+                let force = forces_ref[i];
+                if pinned[i] {
+                    return 0.0;
+                }
+                let prev = *prev_force;
+                let swing_root = algebraic_sub(prev, force)
+                    .length()
+                    .algebraic_mul(masses_ref[i])
+                    .sqrt();
+                let swing_denom = swing_root.algebraic_add(1.0);
+                let traction = algebraic_add(prev, force).length() * 0.5;
+                let nodespeed = (*convergence_i)
+                    .algebraic_mul((1.0 + traction).ln())
+                    .algebraic_div(swing_denom);
+                // Update convergence from this iteration's balance before moving;
+                // clamped to 1 so adaptation never amplifies beyond raw forces.
+                *convergence_i = nodespeed
+                    .algebraic_mul(force.length_squared())
+                    .algebraic_div(swing_denom)
+                    .sqrt()
+                    .min(1.0);
+                *prev_force = force;
+                // Dead-band: below the epsilon the node is effectively at rest.
+                // Freeze it so equilibrium noise cannot jitter it forever and the
+                // layout can report settled. State above stays fresh, so a real
+                // force (drag, topology change) moves it again immediately.
+                let desired = force
+                    .length()
+                    .algebraic_mul(nodespeed * cooling / slow_down);
+                if desired < DISPLACEMENT_EPSILON {
+                    return 0.0;
+                }
+                // [`MAX_STEP`] applies only when one iteration would otherwise
+                // fling the node across the graph.
+                let shrink = (MAX_STEP / desired).min(1.0);
+                *position = algebraic_add(
+                    *position,
+                    algebraic_mul_scalar(force, nodespeed * shrink * cooling / slow_down),
+                );
+                desired.algebraic_mul(shrink)
+            })
+            .sum();
         // Global cooling decays once per iteration, after applying movements.
         self.cooling = (self.cooling * COOLING_FACTOR).max(0.0);
         total
@@ -808,7 +966,7 @@ impl ForceAtlas2 {
 mod tests {
     use super::*;
     use crate::graph::{EdgeDirection, Graph};
-    use crate::layout::graph::LayoutNode;
+    use crate::layout::graph::{LayoutIndex, LayoutNode};
 
     fn project(graph: &Graph<(), ()>) -> (LayoutGraph, LayoutState) {
         let node_ids: Vec<_> = graph.nodes().map(|(id, _)| id).collect();
@@ -935,6 +1093,108 @@ mod tests {
         assert_eq!(
             got, expected,
             "grid must visit exactly the adjacent-cell pairs"
+        );
+    }
+
+    #[test]
+    fn repulsion_node_scan_matches_pair_accumulation() {
+        // The single-sided per-node scan must reproduce exactly what the
+        // double-sided pair walk accumulates: same qualifying pairs, same
+        // saturated-magnitude impulses, summed in a different order.
+        let mut pts: Vec<Vec2> = (0..48)
+            .map(|i| {
+                let t = i as f32;
+                Vec2::new(t * 61.7 % 800.0 - 400.0, t * 113.3 % 600.0 - 300.0)
+            })
+            .collect();
+        pts.push(pts[3]);
+        pts.push(Vec2::ZERO);
+        let masses: Vec<f32> = (0..pts.len()).map(|i| (i % 3 + 1) as f32).collect();
+        let scaling = 12.0;
+        let radius = 150.0;
+
+        let mut grid = RepulsionGrid::new(radius);
+        grid.rebuild(&pts, radius);
+
+        let mut want = vec![Vec2::ZERO; pts.len()];
+        grid.for_each_pair(&mut |i, j| {
+            let delta = pts[i] - pts[j];
+            let dist = delta.length();
+            if dist == 0.0 || dist > radius {
+                return;
+            }
+            let eff = dist.max(MIN_DISTANCE);
+            let strength = scaling * masses[i] * masses[j] / (eff * eff);
+            let impulse = delta * (strength / dist);
+            want[i] += impulse;
+            want[j] -= impulse;
+        });
+
+        for (i, got) in (0..pts.len())
+            .map(|i| grid.accumulate_node(i, &pts, &masses, scaling, radius))
+            .enumerate()
+        {
+            let err = (got - want[i]).length();
+            let scale = want[i].length().max(1.0);
+            assert!(
+                err < 1e-4 * scale,
+                "node {i}: scan {got:?} vs pair {want:?} (err {err})"
+            );
+        }
+    }
+
+    #[test]
+    fn attraction_adjacency_lists_both_endpoints_per_edge() {
+        // Parallel edges pull twice, a self-loop contributes two zero-length
+        // endpoint entries, and every undirected edge appears under both ends.
+        let mut g = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let c = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Undirected, ());
+        g.add_edge(a, b, EdgeDirection::Undirected, ());
+        g.add_edge(b, c, EdgeDirection::Undirected, ());
+        g.add_edge(c, c, EdgeDirection::Undirected, ());
+
+        let (lg, mut state) = project(&g);
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+
+        // Node order is a, b, c. Endpoint multisets:
+        // a: [b, b], b: [a, a, c], c: [b, c, c].
+        assert_eq!(fa.attr_offsets, vec![0, 2, 5, 8]);
+        assert_eq!(fa.attr_targets, vec![1, 1, 0, 0, 2, 1, 2, 2]);
+        assert_eq!(fa.attr_revision, lg.topology_revision);
+    }
+
+    #[test]
+    fn stale_topology_refreshes_attraction_adjacency_without_rebuild() {
+        // Incremental topology updates may bypass the engine's rebuild; the
+        // step-time revision check must still pick up the changed edges.
+        let mut g = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Undirected, ());
+        let (mut lg, mut state) = project(&g);
+
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        assert_eq!(fa.attr_targets.len(), 2);
+
+        // Simulate an incremental delta: one more edge, no rebuild call.
+        lg.edges.push(crate::layout::graph::LayoutEdge {
+            source: crate::layout::LayoutIndex(1),
+            target: crate::layout::LayoutIndex(0),
+            direction: EdgeDirection::Undirected,
+        });
+        lg.topology_revision += 1;
+
+        fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+        assert_eq!(fa.attr_revision, 1);
+        assert_eq!(fa.attr_targets.len(), 4);
+        assert!(
+            fa.attr_targets.starts_with(&[1]),
+            "original adjacency preserved at the front"
         );
     }
 

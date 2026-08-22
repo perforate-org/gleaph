@@ -10,6 +10,7 @@ gpui.workspace = true
 slotmap = "1.1"
 bitvec = "1.1"
 glam = "0.33"
+rayon = "1.10"
 web-time.workspace = true
 
 [dev-dependencies]

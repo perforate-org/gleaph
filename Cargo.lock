@@ -4380,6 +4380,7 @@ dependencies = [
  "gpui 0.2.2 (git+https://github.com/zed-industries/zed?rev=e0931d5a9dbf4f781b336fdf448739e74a2ac0b5)",
  "gpui_platform",
  "rapidhash",
+ "rayon",
  "slotmap",
  "web-time",
 ]

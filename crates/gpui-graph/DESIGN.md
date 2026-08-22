@@ -978,6 +978,19 @@ as part of the `gpui-graph` public surface.
 
 This keeps the layout implementation replaceable.
 
+Execution model (§37): every force phase and the movement pass are data-parallel
+per node under rayon. Workers never share accumulators — grid repulsion scans
+each node's own 3×3 neighborhood single-sided (the same qualifying pairs and
+saturated impulses as the former double-sided pair walk, evaluated once per
+endpoint), Barnes-Hut resolves one root descent per node with thread-local
+stacks, and attraction gathers each node's incident pulls through a CSR
+adjacency (`attr_offsets` / `attr_targets`, one entry per incident edge
+endpoint, so duplicate edges pull exactly as before). The adjacency refresh is
+keyed on the projection's `topology_revision` with length guards, so
+incremental topology updates that arrive without an engine rebuild stay
+correct. Settling iteration counts on the contract shapes were unchanged by the
+rewrite (hub/256: 24 iterations; grid/20x20: 593).
+
 ---
 
 ## 15.2 Fixed / Manual
@@ -2333,6 +2346,16 @@ The following should remain intentionally open until implementation and profilin
   the quadtree computes all-pairs long-range repulsion where the cutoff grid
   only touches local neighborhoods),
 - Barnes-Hut activation policy (topology-aware threshold),
+- ~~parallel force evaluation~~ (implemented: every FA2 phase and the
+  movement pass are data-parallel per node under rayon — grid repulsion
+  single-sided per-node neighborhood scans, Barnes-Hut per-node descents with
+  thread-local stacks, attraction gathered per node over a CSR adjacency
+  refreshed by `topology_revision`, movement applied through zipped disjoint
+  slices. Contract settling counts unchanged: hub/256 24 iterations,
+  grid/20x20 593. Per-step speedups are expected to scale with core count on
+  the large bench cases; final numbers pending a re-run of
+  `layout_bench` on an idle machine — the post-change run coincided with a
+  system load average of ~140 and was discarded as contention noise),
 - dynamic incremental engine updates,
 - hierarchical layout,
 - Sugiyama layout,
