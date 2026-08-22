@@ -5883,6 +5883,90 @@ pub(crate) mod graph_type_catalog_vocabulary {
         );
         vector_ingest_outbox::clear_for_test();
     }
+
+    #[test]
+    fn frontier_marker_capacity_rejects_next_admission_without_counter_or_marker_change() {
+        use crate::facade::stable::{
+            ROUTER_MUTATION_COUNTER, ROUTER_SHARDS, vector_index_catalog, vector_ingest_outbox,
+        };
+        use gleaph_graph_kernel::federation::GraphShardKey;
+        use gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec;
+
+        let _guard = vector_ingest_outbox::test_lock();
+        vector_ingest_outbox::clear_for_test();
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let vector_target = graph_principal(7);
+        register_vector_def(graph_id, 1, vector_target);
+        futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_canister: vector_target,
+            },
+        ))
+        .expect("attach vector target");
+
+        let definition = vector_index_catalog::get_vector_index(graph_id, 1).expect("definition");
+        let shard_key = GraphShardKey::new(graph_id, ShardId::new(0));
+        let graph_target = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&shard_key))
+            .expect("live shard")
+            .graph_canister;
+        let input = || vector_ingest_outbox::NewVectorIngestIntent {
+            graph_id,
+            graph_target,
+            vector_target,
+            shard_id: ShardId::new(0),
+            local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId::from(17u32),
+            spec: IndexedEmbeddingSpec {
+                embedding_name_id: definition.embedding_name_id.raw(),
+                index_id: definition.index_id,
+                kind: definition.kind,
+                metric: definition.metric,
+                encoding: definition.encoding,
+                dims: definition.dims,
+                labels: definition.labels.clone(),
+            },
+            bytes: vec![0; usize::from(definition.dims) * 4],
+        };
+
+        let markers: Vec<_> = (1..=vector_ingest_outbox::MAX_VECTOR_INGEST_OUTBOX_ROWS as u64)
+            .map(|mutation_id| {
+                vector_ingest_outbox::intent_for_test(
+                    input(),
+                    mutation_id,
+                    vector_ingest_outbox::VectorIngestIntentPhase::AwaitingFrontier,
+                )
+            })
+            .collect();
+        vector_ingest_outbox::insert_intents_for_test(&markers).expect("fill marker capacity");
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| {
+            counter.set(vector_ingest_outbox::MAX_VECTOR_INGEST_OUTBOX_ROWS as u64)
+        });
+        let markers_before =
+            vector_ingest_outbox::scan(None, vector_ingest_outbox::MAX_VECTOR_INGEST_OUTBOX_ROWS).0;
+        let counter_before = ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
+
+        let error = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("a full AwaitingFrontier marker table rejects the next admission");
+        assert!(error.contains("capacity"), "{error}");
+        assert_eq!(
+            ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get()),
+            counter_before,
+            "capacity rejection must precede mutation-counter advance"
+        );
+        assert_eq!(
+            vector_ingest_outbox::scan(None, vector_ingest_outbox::MAX_VECTOR_INGEST_OUTBOX_ROWS,)
+                .0,
+            markers_before,
+            "capacity rejection must preserve every exact frontier marker"
+        );
+        vector_ingest_outbox::clear_for_test();
+    }
 }
 
 mod uniqueness_constraints {

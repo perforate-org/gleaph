@@ -278,8 +278,11 @@ pub(crate) type StableVectorIndexMap = BTreeMap<VectorIndexKey, VectorIndexDefRe
 pub(crate) type StableVectorIndexIdAllocator = Cell<u32, Memory>;
 pub(crate) type StableVectorMaintenancePolicyMap =
     BTreeMap<VectorIndexKey, VectorMaintenancePolicyRecord, Memory>;
-pub(crate) type StableVectorIngestOutboxMap =
-    BTreeMap<u64, super::vector_ingest_outbox::VectorIngestOutboxState, Memory>;
+pub(crate) type StableVectorIngestOutboxMap = BTreeMap<
+    super::vector_ingest_outbox::VectorIngestOutboxKey,
+    super::vector_ingest_outbox::VectorIngestOutboxValue,
+    Memory,
+>;
 
 // --- provisioning (ADR 0035 Slice 1) ---
 pub(crate) type StableProvisioningRequestMap =
@@ -704,16 +707,21 @@ mod tests {
             bytes: vec![42, 0, 0, 0],
             phase: super::super::vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
         };
+        let key = super::super::vector_ingest_outbox::VectorIngestOutboxKey::from_state(&state);
+        let value = super::super::vector_ingest_outbox::VectorIngestOutboxValue::from_state(&state);
         outbox.clear_new();
         allocator.set(4_100_000_007);
-        outbox.insert(mutation_id, state.clone());
+        outbox.insert(key, value);
         drop(outbox);
         drop(allocator);
 
         let reopened_allocator = init_next_vector_index_id();
         let reopened_outbox = init_vector_ingest_outbox();
         assert_eq!(*reopened_allocator.get(), 4_100_000_007);
-        assert_eq!(reopened_outbox.get(&mutation_id), Some(state));
+        let reopened_value = reopened_outbox.get(&key).expect("reopened outbox value");
+        let reopened_state =
+            super::super::vector_ingest_outbox::state_from_entry(key, reopened_value);
+        assert_eq!(reopened_state, state);
         drop(reopened_outbox);
         drop(reopened_allocator);
 

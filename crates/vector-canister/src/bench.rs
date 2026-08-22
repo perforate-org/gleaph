@@ -18,9 +18,10 @@
 //! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 
 use crate::facade::stable::subject_store;
+use crate::facade::stable::{VECTOR_DELETED_SUBJECTS, VECTOR_GC_CURSOR, VECTOR_SHARD_WATERMARKS};
 use crate::facade::{SearchTuning, VectorCanisterStore};
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
-use crate::records::SubjectKey;
+use crate::records::{DeletedSubjectKey, FixedSubjectMapEntry, ShardWatermarks, SubjectKey};
 use canbench_rs::bench;
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -974,6 +975,178 @@ fn bench_maintenance_step_awaiting_publish_d128_nlist16() -> canbench_rs::BenchR
             .expect("maintenance step");
         black_box(result);
     })
+}
+
+// --- Router contiguous frontier publication + bounded GC ---
+
+#[derive(Debug, PartialEq, Eq)]
+struct RouterFrontierGcState {
+    watermarks: Vec<(ShardId, ShardWatermarks)>,
+    cursor: Option<DeletedSubjectKey>,
+    deleted_subjects: Vec<(DeletedSubjectKey, u8)>,
+    subject_entries: Vec<(SubjectKey, Option<FixedSubjectMapEntry>)>,
+}
+
+fn frontier_subject_key(vertex_id: u32) -> SubjectKey {
+    SubjectKey::new(
+        INDEX_ID,
+        VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id,
+        },
+    )
+}
+
+fn frontier_deleted_key(vertex_id: u32) -> DeletedSubjectKey {
+    let key = frontier_subject_key(vertex_id);
+    DeletedSubjectKey::new(ShardId::new(0), u64::from(vertex_id) + 1, key)
+}
+
+fn frontier_subject_clock(vertex_id: u32) -> FixedSubjectMapEntry {
+    FixedSubjectMapEntry {
+        stamp: u64::from(vertex_id) + 1,
+        deleted: true,
+        slot: None,
+        shadow_slot: None,
+    }
+}
+
+fn router_frontier_gc_state(subject_keys: &[SubjectKey]) -> RouterFrontierGcState {
+    RouterFrontierGcState {
+        watermarks: VECTOR_SHARD_WATERMARKS.with_borrow(|watermarks| {
+            watermarks
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect()
+        }),
+        cursor: VECTOR_GC_CURSOR.with_borrow(|cursor| *cursor.get()),
+        deleted_subjects: VECTOR_DELETED_SUBJECTS.with_borrow(|deleted| {
+            deleted
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect()
+        }),
+        subject_entries: subject_keys
+            .iter()
+            .map(|key| {
+                (
+                    *key,
+                    subject_store::get(key).expect("subject state snapshot"),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Build a frontier fixture with one more lightweight deleted subject clock than the fixed GC
+/// budget. The graph watermark makes every fixture entry eligible; the measured call must remove
+/// exactly the first budget entries and leave the final fence behind its durable cursor.
+fn setup_router_frontier_gc_store() -> (VectorCanisterStore, SubjectKey, SubjectKey) {
+    let store = VectorCanisterStore::new();
+    store
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
+            router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+        })
+        .expect("init");
+    store
+        .admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            shard_owner(),
+        )
+        .expect("attach shard");
+    VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| watermarks.clear_new());
+    VECTOR_DELETED_SUBJECTS.with_borrow_mut(|deleted| deleted.clear_new());
+    VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+        watermarks.insert(
+            ShardId::new(0),
+            crate::records::ShardWatermarks {
+                graph_watermark: u64::MAX,
+                router_watermark: 0,
+            },
+        );
+    });
+    VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
+
+    let count = crate::canister::GC_SUBJECTS_BUDGET + 1;
+    for vertex_id in 0..count {
+        let key = frontier_subject_key(vertex_id);
+        subject_store::insert(key, frontier_subject_clock(vertex_id))
+            .expect("seed subject tombstone");
+        VECTOR_DELETED_SUBJECTS.with_borrow_mut(|deleted| {
+            deleted.insert(frontier_deleted_key(vertex_id), 0);
+        });
+    }
+    (
+        store,
+        frontier_subject_key(0),
+        frontier_subject_key(count - 1),
+    )
+}
+
+/// Measures one Router frontier publication plus the existing fixed-budget GC scan. The exact
+/// pre/post state assertions stay outside the measured closure and make a missing GC call, an
+/// ignored budget, or a removed fence fail the benchmark.
+#[bench(raw)]
+fn bench_router_frontier_gc_budget() -> canbench_rs::BenchResult {
+    let (store, first_subject, last_subject) = setup_router_frontier_gc_store();
+    let subject_keys = [first_subject, last_subject];
+    let budget = crate::canister::GC_SUBJECTS_BUDGET;
+    let last_vertex = budget;
+    let expected_before = RouterFrontierGcState {
+        watermarks: vec![(
+            ShardId::new(0),
+            ShardWatermarks {
+                graph_watermark: u64::MAX,
+                router_watermark: 0,
+            },
+        )],
+        cursor: None,
+        deleted_subjects: (0..=last_vertex)
+            .map(|vertex_id| (frontier_deleted_key(vertex_id), 0))
+            .collect(),
+        subject_entries: vec![
+            (first_subject, Some(frontier_subject_clock(0))),
+            (last_subject, Some(frontier_subject_clock(last_vertex))),
+        ],
+    };
+    assert_eq!(
+        router_frontier_gc_state(&subject_keys),
+        expected_before,
+        "benchmark setup must establish the exact frontier/GC state"
+    );
+
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_router_frontier_gc_budget");
+        store
+            .advance_router_frontier(router(), ShardId::new(0), u64::MAX)
+            .expect("router frontier");
+    });
+
+    let expected_after = RouterFrontierGcState {
+        watermarks: vec![(
+            ShardId::new(0),
+            ShardWatermarks {
+                graph_watermark: u64::MAX,
+                router_watermark: u64::MAX,
+            },
+        )],
+        cursor: Some(frontier_deleted_key(budget - 1)),
+        deleted_subjects: vec![(frontier_deleted_key(last_vertex), 0)],
+        subject_entries: vec![
+            (first_subject, None),
+            (last_subject, Some(frontier_subject_clock(last_vertex))),
+        ],
+    };
+    assert_eq!(
+        router_frontier_gc_state(&subject_keys),
+        expected_after,
+        "frontier benchmark must execute the exact bounded GC transition"
+    );
+    result
 }
 
 // --- ADR 0034 Slice 6: bounded candidate-subject exact search ---

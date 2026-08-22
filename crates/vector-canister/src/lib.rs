@@ -76,6 +76,42 @@ fn admin_detach_shard_canister(
     canister::admin_detach_shard_canister(shard_id, resume)
 }
 
+/// Applies a contiguous Router-owned frontier for one attached shard and runs one bounded subject
+/// tombstone-GC step. The store repeats the Router and exact-attachment checks below this guard.
+#[update(guard = "guard_router_canister")]
+fn admin_advance_router_frontier(shard_id: ShardId, frontier: u64) -> Result<(), String> {
+    canister::admin_advance_router_frontier(shard_id, frontier)
+}
+
+/// Test-only Router-guarded exact frontier/GC probe. It reads through the storage owner and does
+/// not expose a production status surface.
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_router_canister")]
+fn e2e_frontier_probe(
+    index_id: u32,
+    shard_id: ShardId,
+    vertex_id: u32,
+) -> Result<
+    (
+        u64,
+        u64,
+        Option<(u64, bool)>,
+        bool,
+        Option<(u32, u64, u32, u32, u32)>,
+    ),
+    String,
+> {
+    canister::e2e_frontier_probe(index_id, shard_id, vertex_id)
+}
+
+/// Test-only Router-guarded receipt of successful frontier store calls. The receipt is heap-only
+/// and therefore resets naturally when the Vector canister is upgraded.
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_router_canister")]
+fn e2e_frontier_receipt_probe() -> (u64, Option<(u32, u64)>) {
+    canister::e2e_frontier_receipt_probe()
+}
+
 #[update]
 fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {
     canister::vector_upsert(op)

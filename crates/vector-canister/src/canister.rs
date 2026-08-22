@@ -15,6 +15,9 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_cdk::api::msg_caller;
 
+#[cfg(feature = "pocket-ic-e2e")]
+use std::cell::Cell;
+
 pub(crate) const VECTOR_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
 pub(crate) const VECTOR_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
 const VECTOR_SYNC_BATCH_CHUNK: usize = 32;
@@ -22,6 +25,11 @@ const VECTOR_SYNC_BATCH_CHUNK: usize = 32;
 /// Upper bound on subject-map entries a single GC step examines (ADR 0064 §5). Bounds the per-message
 /// GC work so a large subject map cannot force an O(N) scan in one message.
 pub(crate) const GC_SUBJECTS_BUDGET: u32 = 20_000;
+
+#[cfg(feature = "pocket-ic-e2e")]
+thread_local! {
+    static E2E_FRONTIER_RECEIPT: Cell<(u64, Option<(u32, u64)>)> = const { Cell::new((0, None)) };
+}
 
 #[inline]
 pub(crate) fn instruction_counter() -> u64 {
@@ -96,6 +104,50 @@ pub(crate) fn admin_detach_shard_canister(
     VectorCanisterStore::new()
         .admin_detach_shard_canister(msg_caller(), shard_id, resume)
         .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_advance_router_frontier(
+    shard_id: ShardId,
+    frontier: u64,
+) -> Result<(), String> {
+    let result = VectorCanisterStore::new()
+        .advance_router_frontier(msg_caller(), shard_id, frontier)
+        .map_err(|e| e.to_string());
+    #[cfg(feature = "pocket-ic-e2e")]
+    if result.is_ok() {
+        let receipt = (shard_id.raw(), frontier);
+        E2E_FRONTIER_RECEIPT.with(|state| {
+            let (count, _) = state.get();
+            let next_count = count
+                .checked_add(1)
+                .expect("pocket-ic-e2e frontier receipt count overflow");
+            state.set((next_count, Some(receipt)));
+        });
+    }
+    result
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn e2e_frontier_receipt_probe() -> (u64, Option<(u32, u64)>) {
+    E2E_FRONTIER_RECEIPT.with(Cell::get)
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn e2e_frontier_probe(
+    index_id: u32,
+    shard_id: ShardId,
+    vertex_id: u32,
+) -> Result<
+    (
+        u64,
+        u64,
+        Option<(u64, bool)>,
+        bool,
+        Option<(u32, u64, u32, u32, u32)>,
+    ),
+    String,
+> {
+    VectorCanisterStore::new().test_vector_frontier_probe(index_id, shard_id, vertex_id)
 }
 
 pub(crate) fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {

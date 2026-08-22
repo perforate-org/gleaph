@@ -3,8 +3,10 @@
 // The model compares three Router watermark policies over two target/shard lanes.
 // The Contiguous candidate derives each lane's frontier from the durable global
 // mutation allocation ceiling and exact unresolved Router intents. Admission
-// persists an intent before its first Graph await; Graph and Vector responses,
-// response loss, frontier publication, GC, and restart remain separate actions.
+// persists an intent before its first Graph await; Graph rejection and exact
+// Vector-prefix observation move it to a durable frontier marker. Frontier
+// publication, apply, response loss, marker retirement, GC, and restart remain
+// separate actions.
 // Embedding bytes, Candid sizing, ANN maintenance, timer cadence, stable-memory
 // representation, fairness, and topology changes are deliberately abstracted.
 module routerVectorTombstoneGc {
@@ -12,7 +14,7 @@ module routerVectorTombstoneGc {
   type Lane = PrimaryLane | SecondaryLane
   type Subject = TargetSubject | OtherSubject | SecondarySubject
   type OperationKind = Upsert | Remove
-  type IntentPhase = AwaitingGraph | AwaitingVector
+  type IntentPhase = AwaitingGraph | AwaitingVector | AwaitingFrontier
 
   type Operation = {
     stamp: int,
@@ -68,6 +70,7 @@ module routerVectorTombstoneGc {
   type FrontierMessage = {
     lane: Lane,
     frontier: int,
+    markers: Set[Intent],
   }
 
   type FrontierTransport =
@@ -165,13 +168,26 @@ module routerVectorTombstoneGc {
       .union(Set(intent(operation, AwaitingVector))),
   }
 
-  pure def resolveIntent(
+  // Resolution is durable before any frontier publication await. The marker
+  // is no longer replayable work, but remains owned until an observed frontier
+  // response retires this exact row.
+  pure def resolveIntentToFrontier(
     state: RouterState,
     operation: Operation,
     phase: IntentPhase,
   ): RouterState = {
     ...state,
-    intents: state.intents.exclude(Set(intent(operation, phase))),
+    intents: state.intents
+      .exclude(Set(intent(operation, phase)))
+      .union(Set(intent(operation, AwaitingFrontier))),
+  }
+
+  pure def retireFrontierMarkers(
+    state: RouterState,
+    markers: Set[Intent],
+  ): RouterState = {
+    ...state,
+    intents: state.intents.exclude(markers),
   }
 
   pure def clockStamp(clock: SubjectClock): int = match clock {
@@ -218,11 +234,11 @@ module routerVectorTombstoneGc {
       if (operation.stamp > current) { operation.stamp } else { current }
     )
 
-  pure def removeAcknowledgedIntents(
+  pure def markAcknowledgedIntentsAwaitingFrontier(
     state: RouterState,
     operations: List[Operation],
   ): RouterState = operations.foldl(state, (current, operation) =>
-    resolveIntent(current, operation, AwaitingVector)
+    resolveIntentToFrontier(current, operation, AwaitingVector)
   )
 
   pure def maxAcknowledgedForLane(state: RouterState, lane: Lane): int =
@@ -236,7 +252,7 @@ module routerVectorTombstoneGc {
     state: RouterState,
     operations: List[Operation],
   ): RouterState = {
-    val resolved = removeAcknowledgedIntents(state, operations)
+    val resolved = markAcknowledgedIntentsAwaitingFrontier(state, operations)
     if (operations.length() == 0) {
       resolved
     } else {
@@ -271,9 +287,27 @@ module routerVectorTombstoneGc {
     lane: Lane,
     stamp: int,
   ): bool = state.intents.exists(current => and {
+    current.phase != AwaitingFrontier,
     current.operation.lane == lane,
     current.operation.stamp == stamp,
   })
+
+  // Publication captures only durable resolution markers in this exact lane
+  // and safe prefix. Markers above the captured frontier remain for a later
+  // call and are therefore never retired by an older response.
+  pure def frontierMarkerSnapshot(
+    state: RouterState,
+    lane: Lane,
+    frontier: int,
+  ): Set[Intent] = state.intents.filter(current => and {
+    current.phase == AwaitingFrontier,
+    current.operation.lane == lane,
+    current.operation.stamp <= frontier,
+  })
+
+  // Contiguous publication is marker-driven: a lane with no safe marker has
+  // no durable work to publish and remains at its current Vector watermark.
+  // This keeps the exact-lane marker set as the sole lane-discovery owner.
 
   // The bounded operation domain has stamps 10, 12, and 14. The oldest
   // unresolved stamp in one exact target/shard lane blocks only that lane.
@@ -352,6 +386,7 @@ module routerVectorTombstoneGc {
 
   pure def hasReplayableOlderTargetUpsert(state: RouterState, stamp: int): bool =
     state.intents.exists(current => and {
+      current.phase != AwaitingFrontier,
       current.operation.lane == PrimaryLane,
       current.operation.subject == TargetSubject,
       current.operation.kind == Upsert,
@@ -539,7 +574,11 @@ module routerVectorTombstoneGc {
     | GraphRejected(operation) => all {
         hasIntentInPhase(routerState, operation, AwaitingGraph),
         policy' = policy,
-        routerState' = resolveIntent(routerState, operation, AwaitingGraph),
+        routerState' = resolveIntentToFrontier(
+          routerState,
+          operation,
+          AwaitingGraph,
+        ),
         vectorState' = vectorState,
         graphTransport' = GraphIdle,
         vectorTransport' = vectorTransport,
@@ -621,17 +660,50 @@ module routerVectorTombstoneGc {
 
   action dispatchRouterFrontier(lane: Lane): bool = {
     val frontier = computedRouterFrontier(policy, routerState, lane)
+    val markers = frontierMarkerSnapshot(routerState, lane, frontier)
     all {
       frontierTransport == FrontierIdle,
-      frontier > routerWatermarkForLane(vectorState, lane),
+      or {
+        frontier > routerWatermarkForLane(vectorState, lane),
+        markers.size() > 0,
+      },
+      or {
+        policy != Contiguous,
+        markers.size() > 0,
+      },
       policy' = policy,
       routerState' = routerState,
       vectorState' = vectorState,
       graphTransport' = graphTransport,
       vectorTransport' = vectorTransport,
-      frontierTransport' = FrontierDelivered({ lane: lane, frontier: frontier }),
+      frontierTransport' = FrontierDelivered({
+        lane: lane,
+        frontier: frontier,
+        markers: markers,
+      }),
       lastAction' = FrontierDispatchAction,
     }
+  }
+
+  // A delayed retry may carry a lower frontier than one already applied.
+  // Keep this deterministic-test fault injection separate from Router frontier
+  // derivation so the receiver's monotonic watermark contract is exercised
+  // directly without broadening the sampled transition relation.
+  action retryStaleLowerPrimaryFrontier: bool = all {
+    policy == Contiguous,
+    frontierTransport == FrontierIdle,
+    vectorState.primaryRouterWatermark >= 12,
+    policy' = policy,
+    routerState' = routerState,
+    vectorState' = vectorState,
+    graphTransport' = graphTransport,
+    vectorTransport' = vectorTransport,
+    frontierTransport' = FrontierDelivered({
+      lane: PrimaryLane,
+      frontier: 10,
+      markers: Set(),
+    }),
+    lastAction' = FrontierDispatchAction,
   }
 
   action applyRouterFrontierMessage: bool = match frontierTransport {
@@ -661,9 +733,10 @@ module routerVectorTombstoneGc {
   }
 
   action observeFrontierResponse: bool = match frontierTransport {
-    | FrontierApplied(_) => all {
+    | FrontierApplied(message) => all {
+        message.markers.subseteq(routerState.intents),
         policy' = policy,
-        routerState' = routerState,
+        routerState' = retireFrontierMarkers(routerState, message.markers),
         vectorState' = vectorState,
         graphTransport' = graphTransport,
         vectorTransport' = vectorTransport,
@@ -737,8 +810,11 @@ module routerVectorTombstoneGc {
 
   val frontierDoesNotPassOutstanding: bool =
     routerState.intents.forall(current =>
-      current.operation.stamp >
-        routerWatermarkForLane(vectorState, current.operation.lane)
+      or {
+        current.phase == AwaitingFrontier,
+        current.operation.stamp >
+          routerWatermarkForLane(vectorState, current.operation.lane),
+      }
     )
 
   // Removing a subject clock is unsafe while an older exact Router operation
@@ -790,7 +866,7 @@ module routerVectorTombstoneGc {
 
   val partialPrefixRetainedWitness: bool = and {
     lastAction == VectorResponseObservationAction,
-    not(hasIntent(routerState, M10_UPSERT)),
+    hasIntentInPhase(routerState, M10_UPSERT, AwaitingFrontier),
     hasIntentInPhase(routerState, M12_UPSERT, AwaitingVector),
   }
 

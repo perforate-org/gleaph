@@ -5,22 +5,22 @@
 //!
 //! - `graph_watermark`: highest graph→vector acked stamp (advanced by the graph shard's typed
 //!   `vector_sync_batch_outcome` endpoint).
-//! - `router_watermark`: a contiguous Router-owned acknowledgement floor. Direct Router vector
-//!   ingestion does not advance this field because a later request cannot prove that an earlier
-//!   response was observed; it therefore remains zero on the current production path.
-//!
-//! Because the Router watermark remains zero, `min(graph_watermark, router_watermark)` remains zero
-//! and tombstone deletion is paused in production. No bounded subject-map growth claim is made.
+//! - `router_watermark`: a contiguous Router-owned acknowledgement floor, advanced only by the
+//!   Router frontier endpoint after exact lane validation.
 
 use crate::facade::stable::subject_store;
 use crate::facade::stable::{
     SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS, VECTOR_GC_CURSOR, VECTOR_INDEX_ROUTER,
     VECTOR_SHARD_WATERMARKS,
 };
-use crate::records::DeletedSubjectKey;
+use crate::records::{DeletedSubjectKey, SubjectKey};
 use candid::Principal;
+use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::vector_index::{VectorCanisterError, VectorSubject};
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use std::ops::Bound;
+
+use super::VectorCanisterStore;
 
 /// Advances an attached Graph's watermark for its own shard to the max stamp in `ops`.
 ///
@@ -52,12 +52,96 @@ pub(crate) fn advance_watermark(caller: Principal, ops: &[VectorEmbeddingSyncOp]
     true
 }
 
+impl VectorCanisterStore {
+    /// Applies a contiguous Router frontier for one exact attached shard, then performs one
+    /// bounded tombstone-GC step in the same message.
+    ///
+    /// The caller and attachment checks intentionally live below the public Candid guard. Native
+    /// unit tests bypass the IC guard, and the storage owner must not trust an intermediate caller
+    /// check before mutating the durable watermark.
+    pub(crate) fn advance_router_frontier(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        frontier: u64,
+    ) -> Result<(), VectorCanisterError> {
+        self.assert_router_caller(caller)?;
+        let attached =
+            SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.contains_shard(shard_id));
+        if !attached {
+            return Err(VectorCanisterError::ShardNotAttached);
+        }
+
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            let mut current = watermarks.get(&shard_id).unwrap_or_default();
+            current.router_watermark = current.router_watermark.max(frontier);
+            watermarks.insert(shard_id, current);
+        });
+        super::gc_subjects_step(crate::canister::GC_SUBJECTS_BUDGET);
+        Ok(())
+    }
+
+    /// Read the exact state relevant to one tombstone and the durable GC cursor. The tuple is a
+    /// feature-gated test seam only; each read stays behind its owning stable-storage facade.
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub(crate) fn test_vector_frontier_probe(
+        &self,
+        index_id: u32,
+        shard_id: ShardId,
+        vertex_id: u32,
+    ) -> Result<
+        (
+            u64,
+            u64,
+            Option<(u64, bool)>,
+            bool,
+            Option<(u32, u64, u32, u32, u32)>,
+        ),
+        String,
+    > {
+        let subject_key = SubjectKey::new(
+            index_id,
+            VectorSubject::Vertex {
+                shard_id,
+                vertex_id,
+            },
+        );
+        let watermarks = VECTOR_SHARD_WATERMARKS
+            .with_borrow(|watermarks| watermarks.get(&shard_id).unwrap_or_default());
+        let subject_clock = subject_store::get(&subject_key)
+            .map_err(|error| format!("subject probe read failed: {error:?}"))?
+            .map(|entry| (entry.stamp, entry.deleted));
+        let deleted_list_contains = VECTOR_DELETED_SUBJECTS
+            .with_borrow(|deleted| deleted.keys().any(|key| key.subject == subject_key));
+        let gc_cursor = VECTOR_GC_CURSOR.with_borrow(|cursor| {
+            cursor.get().map(|key| {
+                let subject_vertex_id = match key.subject.subject {
+                    VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+                };
+                (
+                    key.shard_id.raw(),
+                    key.stamp,
+                    key.subject.index_id,
+                    0,
+                    subject_vertex_id,
+                )
+            })
+        });
+        Ok((
+            watermarks.graph_watermark,
+            watermarks.router_watermark,
+            subject_clock,
+            deleted_list_contains,
+            gc_cursor,
+        ))
+    }
+}
+
 /// Removes up to `budget` deleted subject-map entries whose `stamp <= min(graph_watermark,
 /// router_watermark)` for their shard. Returns the number of entries removed.
 ///
 /// Live entries and deleted entries above the cutoff are retained. A shard with no watermark record
-/// has a cutoff of `0`, so nothing is GC-eligible until both watermarks advance; the current Router
-/// watermark of `0` therefore pauses tombstone deletion.
+/// has a cutoff of `0`, so nothing is GC-eligible until both watermarks advance.
 ///
 /// The scan walks `VECTOR_DELETED_SUBJECTS` (the deleted-subjects list, keyed by `(shard, stamp,
 /// subject)`) rather than the subject map, because the subject map's slot order is unstable under
@@ -109,8 +193,9 @@ pub(crate) fn gc_subjects_step(budget: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::stable::memory;
     use crate::init::{
-        DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs,
+        VectorCanisterInitArgs, DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED,
     };
     use crate::records::{DeletedSubjectKey, FixedSubjectMapEntry, ShardWatermarks, SubjectKey};
     use gleaph_graph_kernel::federation::ShardId;
@@ -184,6 +269,33 @@ mod tests {
         VECTOR_SHARD_WATERMARKS.with_borrow(|wm| wm.get(&shard_id).unwrap_or_default())
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct FrontierStateSnapshot {
+        watermarks: Vec<(ShardId, ShardWatermarks)>,
+        subject_clock: Option<FixedSubjectMapEntry>,
+        deleted_subjects: Vec<(DeletedSubjectKey, u8)>,
+        gc_cursor: Option<DeletedSubjectKey>,
+    }
+
+    fn frontier_state_snapshot(key: &SubjectKey) -> FrontierStateSnapshot {
+        FrontierStateSnapshot {
+            watermarks: VECTOR_SHARD_WATERMARKS.with_borrow(|watermarks| {
+                watermarks
+                    .iter()
+                    .map(|entry| (*entry.key(), entry.value()))
+                    .collect()
+            }),
+            subject_clock: subject_store::get(key).expect("subject clock snapshot"),
+            deleted_subjects: VECTOR_DELETED_SUBJECTS.with_borrow(|deleted| {
+                deleted
+                    .iter()
+                    .map(|entry| (*entry.key(), entry.value()))
+                    .collect()
+            }),
+            gc_cursor: VECTOR_GC_CURSOR.with_borrow(|cursor| *cursor.get()),
+        }
+    }
+
     fn subject_entry(vertex_id: u32) -> Option<FixedSubjectMapEntry> {
         subject_store::get(&SubjectKey::new(INDEX_ID, subject(vertex_id)))
             .ok()
@@ -212,11 +324,177 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_caller_does_not_advance_any_watermark() {
+    fn unknown_caller_preserves_frontier_state_exactly() {
         fresh_store();
+        let key = SubjectKey::new(INDEX_ID, subject(7));
+        subject_store::insert(
+            key,
+            FixedSubjectMapEntry {
+                stamp: 8,
+                deleted: true,
+                slot: None,
+                shadow_slot: None,
+            },
+        )
+        .expect("seed subject clock");
+        VECTOR_DELETED_SUBJECTS.with_borrow_mut(|deleted| {
+            deleted.insert(DeletedSubjectKey::new(ShardId::new(0), 8, key), 0);
+        });
+        let cursor = DeletedSubjectKey::new(ShardId::new(0), 8, key);
+        VECTOR_GC_CURSOR.with_borrow_mut(|gc_cursor| gc_cursor.set(Some(cursor)));
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(
+                ShardId::new(0),
+                ShardWatermarks {
+                    graph_watermark: 9,
+                    router_watermark: 4,
+                },
+            );
+        });
+        let before = frontier_state_snapshot(&key);
         let stranger = Principal::from_slice(&[2]);
         assert!(!advance_watermark(stranger, &[upsert_op(7, 9)]));
-        assert_eq!(watermarks(ShardId::new(0)), ShardWatermarks::default());
+        assert_eq!(frontier_state_snapshot(&key), before);
+    }
+
+    #[test]
+    fn router_frontier_requires_configured_router_and_attached_shard() {
+        let store = fresh_store();
+        let shard_id = ShardId::new(0);
+        store
+            .vector_upsert(shard_canister(), &upsert_op(7, 1))
+            .expect("upsert");
+        store
+            .vector_remove(shard_canister(), &remove_op(7, 2))
+            .expect("remove");
+        let before = ShardWatermarks {
+            graph_watermark: 9,
+            router_watermark: 4,
+        };
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(shard_id, before);
+        });
+        let key = SubjectKey::new(INDEX_ID, subject(7));
+        let cursor = DeletedSubjectKey::new(shard_id, 2, key);
+        VECTOR_GC_CURSOR.with_borrow_mut(|gc_cursor| gc_cursor.set(Some(cursor)));
+
+        let before_anonymous = frontier_state_snapshot(&key);
+        assert_eq!(
+            store.advance_router_frontier(Principal::anonymous(), shard_id, 100),
+            Err(VectorCanisterError::Unauthorized)
+        );
+        assert_eq!(frontier_state_snapshot(&key), before_anonymous);
+
+        let stranger = Principal::from_slice(&[2]);
+        let before_unauthorized = frontier_state_snapshot(&key);
+        assert_eq!(
+            store.advance_router_frontier(stranger, shard_id, 100),
+            Err(VectorCanisterError::Unauthorized)
+        );
+        assert_eq!(frontier_state_snapshot(&key), before_unauthorized);
+
+        let before_shard_caller = frontier_state_snapshot(&key);
+        assert_eq!(
+            store.advance_router_frontier(shard_canister(), shard_id, 100),
+            Err(VectorCanisterError::Unauthorized)
+        );
+        assert_eq!(frontier_state_snapshot(&key), before_shard_caller);
+
+        let detached = ShardId::new(1);
+        let before_detached = frontier_state_snapshot(&key);
+        assert_eq!(
+            store.advance_router_frontier(router(), detached, 100),
+            Err(VectorCanisterError::ShardNotAttached)
+        );
+        assert_eq!(frontier_state_snapshot(&key), before_detached);
+
+        store
+            .advance_router_frontier(router(), shard_id, 7)
+            .expect("configured Router may advance an attached shard");
+        assert_eq!(
+            watermarks(shard_id),
+            ShardWatermarks {
+                graph_watermark: 9,
+                router_watermark: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn router_frontier_is_monotonic_and_runs_bounded_gc() {
+        let store = fresh_store();
+        for (vertex_id, mutation_id) in [(7, 2), (8, 4), (9, 7)] {
+            store
+                .vector_upsert(shard_canister(), &upsert_op(vertex_id, mutation_id - 1))
+                .expect("upsert");
+            store
+                .vector_remove(shard_canister(), &remove_op(vertex_id, mutation_id))
+                .expect("remove");
+        }
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(
+                ShardId::new(0),
+                ShardWatermarks {
+                    graph_watermark: 100,
+                    router_watermark: 0,
+                },
+            );
+        });
+
+        store
+            .advance_router_frontier(router(), ShardId::new(0), 5)
+            .expect("advance frontier");
+        assert_eq!(watermarks(ShardId::new(0)).router_watermark, 5);
+        assert!(subject_entry(7).is_none(), "frontier GC removes stamp 2");
+        assert!(subject_entry(8).is_none(), "frontier GC removes stamp 4");
+        assert!(
+            subject_entry(9).expect("stamp 7 tombstone").deleted,
+            "frontier below the tombstone retains its replay fence"
+        );
+
+        store
+            .vector_upsert(shard_canister(), &upsert_op(10, 2))
+            .expect("upsert lower-retry tombstone");
+        store
+            .vector_remove(shard_canister(), &remove_op(10, 3))
+            .expect("remove lower-retry tombstone");
+        store
+            .advance_router_frontier(router(), ShardId::new(0), 4)
+            .expect("lower retry");
+        assert_eq!(
+            watermarks(ShardId::new(0)).router_watermark,
+            5,
+            "a lower frontier must not lower the durable Router watermark"
+        );
+        assert!(
+            subject_entry(10).is_none(),
+            "a lower retry still runs one bounded GC step"
+        );
+
+        store
+            .vector_upsert(shard_canister(), &upsert_op(11, 3))
+            .expect("upsert equal-retry tombstone");
+        store
+            .vector_remove(shard_canister(), &remove_op(11, 4))
+            .expect("remove equal-retry tombstone");
+        store
+            .advance_router_frontier(router(), ShardId::new(0), 5)
+            .expect("equal retry");
+        assert_eq!(watermarks(ShardId::new(0)).router_watermark, 5);
+        assert!(subject_entry(9).expect("stamp 7 tombstone").deleted);
+        assert!(
+            subject_entry(11).is_none(),
+            "an equal retry still runs one bounded GC step"
+        );
+
+        store
+            .advance_router_frontier(router(), ShardId::new(0), 7)
+            .expect("advance through final tombstone");
+        assert_eq!(watermarks(ShardId::new(0)).router_watermark, 7);
+        assert!(
+            subject_entry(9).is_none(),
+            "bounded GC eventually examines the fence"
+        );
     }
 
     #[test]
@@ -224,7 +502,11 @@ mod tests {
         fresh_store();
         advance_watermark(shard_canister(), &[upsert_op(7, 5)]);
         advance_watermark(shard_canister(), &[upsert_op(7, 3)]);
-        assert_eq!(watermarks(ShardId::new(0)).graph_watermark, 5);
+        assert_eq!(
+            watermarks(ShardId::new(0)).graph_watermark,
+            5,
+            "a lower graph watermark call must not lower the durable value"
+        );
     }
 
     #[test]
@@ -307,26 +589,72 @@ mod tests {
     #[test]
     fn gc_is_bounded_by_budget() {
         let store = fresh_store();
-        for vertex in 0..10 {
-            store
-                .vector_upsert(shard_canister(), &upsert_op(vertex, 1))
-                .expect("upsert");
-            store
-                .vector_remove(shard_canister(), &remove_op(vertex, 2))
-                .expect("remove");
+        let budget = crate::canister::GC_SUBJECTS_BUDGET;
+        let last_vertex = budget;
+        for vertex in 0..=last_vertex {
+            let key = SubjectKey::new(INDEX_ID, subject(vertex));
+            let stamp = u64::from(vertex) + 1;
+            subject_store::insert(
+                key,
+                FixedSubjectMapEntry {
+                    stamp,
+                    deleted: true,
+                    slot: None,
+                    shadow_slot: None,
+                },
+            )
+            .expect("seed lightweight tombstone");
+            VECTOR_DELETED_SUBJECTS.with_borrow_mut(|deleted| {
+                deleted.insert(DeletedSubjectKey::new(ShardId::new(0), stamp, key), 0);
+            });
         }
-        advance_watermark(shard_canister(), &[upsert_op(0, 5)]);
         VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
             watermarks.insert(
                 ShardId::new(0),
                 ShardWatermarks {
-                    graph_watermark: 5,
-                    router_watermark: 5,
+                    graph_watermark: u64::MAX,
+                    router_watermark: 0,
                 },
             );
         });
-        // Budget 3 examines only the first 3 entries; all are deleted and below cutoff.
-        assert_eq!(gc_subjects_step(3), 3);
+
+        let first_key = DeletedSubjectKey::new(
+            ShardId::new(0),
+            u64::from(budget),
+            SubjectKey::new(INDEX_ID, subject(budget - 1)),
+        );
+        let last_key = DeletedSubjectKey::new(
+            ShardId::new(0),
+            u64::from(last_vertex) + 1,
+            SubjectKey::new(INDEX_ID, subject(last_vertex)),
+        );
+
+        // Exactly budget entries are examined and deleted. The cursor identifies the budget-th
+        // key; the one remaining list key and subject clock prove that the budget was not ignored.
+        store
+            .advance_router_frontier(router(), ShardId::new(0), u64::MAX)
+            .expect("router frontier runs one bounded GC step");
+        assert_eq!(
+            VECTOR_GC_CURSOR.with_borrow(|cursor| *cursor.get()),
+            Some(first_key),
+            "the first bounded step must persist the budget-th examined key"
+        );
+        assert_eq!(
+            VECTOR_DELETED_SUBJECTS.with_borrow(|deleted| {
+                deleted
+                    .iter()
+                    .map(|entry| (*entry.key(), entry.value()))
+                    .collect::<Vec<_>>()
+            }),
+            vec![(last_key, 0)],
+            "the first bounded step must leave exactly the suffix after its cursor"
+        );
+        assert!(subject_store::get(&first_key.subject)
+            .expect("first examined subject")
+            .is_none());
+        assert!(subject_store::get(&last_key.subject)
+            .expect("remaining subject")
+            .is_some());
     }
 
     #[test]
@@ -422,6 +750,69 @@ mod tests {
             watermarks(ShardId::new(0)).graph_watermark,
             5,
             "watermark must survive upgrade"
+        );
+    }
+
+    /// Reopens every production frontier initializer over the same backing MemoryManager bytes.
+    /// This proves that the MemoryId 7 subject clock, MemoryId 15 watermark map, MemoryId 16 GC
+    /// cursor, and MemoryId 17 deleted-subject list retain the complete GC fence, not only the
+    /// independent definition-store bytes.
+    #[test]
+    fn production_frontier_initializers_reopen_over_same_backing_memory() {
+        let store = fresh_store();
+        let key = SubjectKey::new(INDEX_ID, subject(7));
+        store
+            .vector_upsert(shard_canister(), &upsert_op(7, 3))
+            .expect("upsert");
+        store
+            .vector_remove(shard_canister(), &remove_op(7, 8))
+            .expect("remove");
+        VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
+            watermarks.insert(
+                ShardId::new(0),
+                ShardWatermarks {
+                    graph_watermark: 13,
+                    router_watermark: 11,
+                },
+            );
+        });
+        let cursor = DeletedSubjectKey::new(ShardId::new(0), 8, key);
+        VECTOR_GC_CURSOR.with_borrow_mut(|gc_cursor| gc_cursor.set(Some(cursor)));
+        let expected = frontier_state_snapshot(&key);
+
+        // These are the same production initializer functions used by the thread-local handles;
+        // each resolves its region from the shared MemoryManager, so the reopen reads the bytes
+        // written above rather than a fresh native backing store.
+        let reopened_watermarks = memory::init_shard_watermarks();
+        let reopened_cursor = memory::init_gc_cursor();
+        let reopened_deleted = memory::init_deleted_subjects();
+        subject_store::reopen_for_test().expect("exact-open subject region");
+
+        assert_eq!(
+            reopened_watermarks
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect::<Vec<_>>(),
+            expected.watermarks,
+            "MemoryId 15 frontier must survive production initializer reopen"
+        );
+        assert_eq!(
+            *reopened_cursor.get(),
+            expected.gc_cursor,
+            "MemoryId 16 cursor must survive production initializer reopen"
+        );
+        assert_eq!(
+            reopened_deleted
+                .iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect::<Vec<_>>(),
+            expected.deleted_subjects,
+            "MemoryId 17 deleted-subject list must survive production initializer reopen"
+        );
+        assert_eq!(
+            subject_store::get(&key).expect("reopened subject clock"),
+            expected.subject_clock,
+            "MemoryId 7 subject fence must survive production initializer reopen"
         );
     }
 }

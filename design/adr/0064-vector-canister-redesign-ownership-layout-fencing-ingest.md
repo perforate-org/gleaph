@@ -1,14 +1,15 @@
 # 0064. Vector canister redesign: ownership, layout, fencing, and ingest
 
 Date: 2026-08-07
-Status: Partially Implemented (design contract; Router direct-ingestion durability slice implemented)
+Status: Partially Implemented (design contract; Router direct-ingestion and frontier implementation present; unfiltered persisted canbench artifacts and final plan gate pending)
 Last revised: 2026-08-22
-Anchor timestamp: 2026-08-22 02:46:09 UTC +0000
+Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
 
-> **Summary.** The vector canister owns the only durable embedding bytes; Graph holds zero
-> embedding state. Router-issued nonzero `mutation_id` stamps order direct ingestion against Graph
-> DML removes. Router durably owns each direct-ingestion request before the first Graph await through
-> an exact `AwaitingGraph | AwaitingVector` intent in MemoryId 53. The physical page store is owned by
+> **Summary.** The vector canister owns indexed embedding bytes; Graph holds zero embedding state.
+> Router-issued nonzero `mutation_id` stamps order direct ingestion against Graph DML removes. Router
+> durably owns pending/retry payload bytes before the first Graph await through the sole MemoryId 53
+> lifecycle: `AwaitingGraph | AwaitingVector | AwaitingFrontier`, and retains them until exact marker
+> retirement. The physical page store is owned by
 > the domain-free `ic-stable-vector-page-store` crate. The active contract is
 > `design/index/vector-index.md`.
 
@@ -34,10 +35,12 @@ determine the ownership boundary:
 
 ### 1. Vector canister owns embedding bytes; graph holds zero embedding state
 
-The vector canister owns the **only durable copy** of embedding bytes plus the subject clock and
-search structures. The graph owns canonical graph data (the semantic source) and **no vector-domain
-state**: no bytes, no registry, no per-identity clock. Recovery is self-rebuild (partition rebuild
-from the canister's own rows) plus client re-ingestion for full loss. This decision relieves the
+The vector canister owns indexed embedding bytes plus the subject clock and search structures. The
+Router's MemoryId 53 outbox owns pending/retry payload bytes until the exact `AwaitingFrontier`
+marker is retired; the Router row is therefore a temporary durable retry owner, not an indexed-byte
+store. The graph owns canonical graph data (the semantic source) and **no vector-domain state**: no
+bytes, no registry, no per-identity clock. Recovery is self-rebuild (partition rebuild from the
+canister's own rows) plus client re-ingestion for full loss. This decision relieves the
 graph canister (the shared capacity bottleneck) and removes relay amplification; it does **not** by
 itself remove the vector canister's own 500 GiB wall at `d = 1536` (~616 GB at 10⁸ subjects) — that
 is addressed by encoding compression (I8/Binary) and future multi-canister placement (§11).
@@ -81,12 +84,17 @@ documented).
   stamp cannot be mistaken for a completed Vector projection.
 - The subject map is the only store that would otherwise grow monotonically (deleted clocks).
   The attached Graph shard advances `graph_watermark` only for its contiguous applied prefix.
-  Router direct-ingestion delivery does not advance `router_watermark`: the current path has no
-  contiguous Router-owned acknowledgement frontier, so the production Router watermark remains
-  zero. Tombstone deletion is conservatively paused in production (`min(graph_watermark,
-  router_watermark) == 0`) pending a future contiguous frontier contract; a deleted entry is not
-  treated as removable merely because a Router call returned. No current subject-map growth bound
-  is claimed while that frontier is absent.
+  Router derives a frontier independently for each marked `(Vector target, shard)` lane from the
+  oldest unresolved exact-lane `AwaitingGraph | AwaitingVector` intent minus one, or from the
+  durable Router allocation ceiling when no unresolved intent remains. A lane is dispatched only
+  when it has an `AwaitingFrontier` marker at or below that safe frontier. The Router publishes
+  through the Router-only attached-shard Vector endpoint; Vector rechecks the configured Router and
+  exact shard attachment before changing durable state. MemoryId 15 applies
+  `router_watermark = max(current, frontier)`, and the same no-await update runs one bounded GC
+  step. The sole GC cutoff remains `min(graph_watermark, router_watermark)`. Only an observed
+  frontier acknowledgement retires the exact marker-key snapshot captured before the call; response
+  loss or failure leaves those markers durable for retry. Graph-only lanes that never produce a
+  marker remain outside this liveness slice, so no global subject-map growth bound is claimed.
 
 ### 6. Stamp-separated ingest
 
@@ -95,7 +103,8 @@ Router ── metadata + Router-issued stamp ─▶ Graph  (validate existence/l
 Graph  ── VertexEmbeddingStamp {mutation_id} ────────────────────────────────────▶ Router
 Router ── AwaitingGraph {mutation_id, exact targets, metadata, bytes} ─────────────▶ stable outbox
 Router ── AwaitingVector {same canonical intent} ─────────────────────────────────▶ stable outbox
-Router ── exact pending prefix ────────────────────────────────────────────────────▶ Vector
+Router ── AwaitingFrontier {same canonical intent, marker} ───────────────────────▶ stable outbox
+Router ── safe lane frontier ─────────────────────────────────────────────────────▶ Vector
 ```
 
 Bytes cross the subnet **once**, never through the graph; the graph holds no bytes even transiently.
@@ -106,51 +115,65 @@ derived-index outbox, or watermark write. Before the first Graph await, Router v
 batch, live shard, exact Graph/Vector targets, immutable definition, capacity, and encoded row size.
 It then synchronously co-writes the final mutation-counter value and every exact `AwaitingGraph`
 intent to `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53). An observed exact acceptance transitions only
-that row to `AwaitingVector`; an observed logical rejection removes only that row. Transport/decode
-failure or response loss leaves `AwaitingGraph` unchanged. Two calls are required because the fence
-requires comparable ingest/DML stamps.
+that row to `AwaitingVector`; an observed logical rejection changes only that row to
+`AwaitingFrontier`. Transport/decode failure or response loss leaves `AwaitingGraph` unchanged.
+Two calls are required because the fence requires comparable ingest/DML stamps.
 The graph's vector surface is `stamp_embedding` plus DML-driven removes (vertex delete, label loss),
 re-derivable from graph state.
 
-The outbox is bounded to `MAX_VECTOR_INGEST_OUTBOX_ROWS = 1024` rows. Each encoded row is
+The outbox is bounded to `MAX_VECTOR_INGEST_OUTBOX_ROWS = 1024` rows. The sole fresh-install
+`StableBTreeMap` at MemoryId 53 is keyed by the fixed 43-byte `VectorIngestOutboxKey`, ordered
+primarily by immutable `mutation_id`, then exact `vector_target`, `shard_id`, and `phase`. Its
+`VectorIngestOutboxValue` payload contains only Graph target/metadata, subject, and embedding
+bytes; key-owned identity is not duplicated in the persisted value. Each encoded row is
 prevalidated against `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` (2 MiB); capacity, duplicate
-identity, and row-encoding failures are checked before the first stable insertion. Each row stores
-exact Graph/Vector targets, metadata, subject, bytes, mutation ID, and phase. The persisted value
-uses `StorableBound::Unbounded`, because this transport/admission ceiling must not determine
-the `StableBTreeMap` node page size; `VectorIngestOutboxState::encode_checked` remains the single
-write-boundary size check. Public `Pending` means that one of the durable phases still owns the
-request.
+identity, and row-encoding failures are checked before the first stable insertion. A phase
+transition preflights and moves the exact old key to the exact new phase key in one no-await
+message, preserving capacity. The persisted value uses `StorableBound::Unbounded`, because this
+transport/admission ceiling must not determine the `StableBTreeMap` node page size;
+`VectorIngestOutboxState::encode_checked` remains the single write-boundary size check. Public
+`Pending` means that one of the durable phases still owns the request. Fresh reinstall is required
+for this layout; no migration or legacy decoder exists.
 
 Only the typed `vector_sync_batch_outcome` endpoint is supported for batch synchronization. Its
-response is an exact-prefix acknowledgement. `Progress { applied }` removes only the first `applied`
-submitted rows; the unacknowledged suffix remains `Pending`. `Terminal { applied,
-failed_index: applied, error }` removes that prefix, while the failed row and every later row remain
-`Pending` in the durable suffix. A transport/unavailable or malformed response leaves every
-submitted row pending. The typed Vector
+response is an exact-prefix acknowledgement. `Progress { applied }` changes only the first `applied`
+submitted rows to `AwaitingFrontier`; the unacknowledged suffix remains `AwaitingVector`.
+`Terminal { applied, failed_index: applied, error }` changes that prefix to `AwaitingFrontier`,
+while the failed row and every later row remain `AwaitingVector`. A transport/unavailable or
+malformed response leaves every submitted row pending in its existing phase. The typed Vector
 driver processes internal chunks of at most **32 rows**; the Router independently fits each complete
 Candid request below the 2 MiB ceiling. This is an at-least-once retry/convergence contract without
 a finite-time convergence guarantee or client-level exactly-once semantics.
 Vector's per-subject stamp makes replay idempotent when a successful Vector write is followed by
 response loss.
 
-Both phases are retried by the Router's bounded recovery timer. `AwaitingGraph` uses the persisted
-Graph target; `AwaitingVector` rows are grouped by persisted Vector target. The direct-ingestion scan
-examines at most 16 rows per tick and never re-resolves a target from mutable catalog state. Appending a
-row calls `recovery::arm_if_needed()`. If an append occurs while a recovery pass is awaiting a
-remote call, the arm request is latched and the tick re-arms the floor delay even when that pass
-reported no work, preventing a lost wake. A heap-only guard excludes rows still driven by their
-originating API call from timer recovery; an upgrade clears the guard and durable recovery resumes
-them. Router `init` and `post_upgrade` re-arm the same recovery
-lane because timers do not survive an upgrade. Each Vector batch measures the complete Candid
-request and adaptively fits a prefix below the 2 MiB hard ceiling, targeting the ceiling minus the
-fixed 500 KiB envelope headroom. Focused Router unit tests cover reopen, exact-prefix transitions,
-lost-wake re-arming, immutable target retention, and adaptive sizing. The targeted PocketIC lifecycle
-gates each ran one exact test and passed:
+All three phases are retried by the Router's bounded recovery timer. `AwaitingGraph` uses the persisted
+Graph target; `AwaitingVector` rows are grouped by the persisted exact `(Vector target, shard)` lane;
+`AwaitingFrontier` rows derive marked lanes from the sole outbox. The direct-ingestion scan may
+key-scan up to the bounded 1,024-entry compact outbox while decoding at most the selected 16 payloads
+per tick, and one pass publishes at most one exact lane frontier. It never re-resolves a target from mutable
+catalog state. Appending a row calls `recovery::arm_if_needed()`. If an append occurs while a recovery
+pass is awaiting a remote call, the arm request is latched and the tick re-arms the floor delay even
+when that pass reported no work, preventing a lost wake. A heap-only guard excludes rows still driven
+by their originating API call from timer recovery; an upgrade clears the guard and durable recovery
+resumes them. Router `init` and `post_upgrade` re-arm the same recovery lane because timers do not
+survive an upgrade. Each Vector batch measures the complete Candid request and adaptively fits a
+prefix below the 2 MiB hard ceiling, targeting the ceiling minus the fixed 500 KiB envelope headroom.
+Focused Router unit tests cover reopen, exact-prefix transitions, lost-wake re-arming, immutable target
+retention, and adaptive sizing. The prior targeted PocketIC lifecycle gates each ran one exact test
+and passed:
 `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
 and `graph_response_loss_preserves_pregraph_intent_across_router_upgrade -- --exact --nocapture`.
-Together they cover both intent phases, Router/Vector upgrades, exact GQL search, and idempotent
-replay. This targeted evidence does not prove autonomous wall-clock timer firing or
-watermark/tombstone GC completion.
+They cover the earlier Graph/Vector intent path, Router/Vector upgrades, exact GQL search, and
+idempotent replay. The focused frontier lifecycle gate now passes exactly one PocketIC test in 25.67s
+using one `PocketIc`, one federation bootstrap, and four canister installs (Router, Property Index,
+Graph, Vector). It covers Graph/Vector/frontier response loss, Router/Vector upgrades, exact retry
+and marker retirement, GC gating and physical collection, and stale-resurrection prevention. Router
+and Vector tests, checks, and clippy pass; focused frontier canbenches measure 3.29M instructions
+for the single-lane 1,024-row derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier
+plus bounded-GC step. Unfiltered persisted canbench artifacts and the final plan gate remain pending.
+Neither this runtime evidence nor the bounded Quint model is a production proof of frontier liveness,
+autonomous timer firing, or a global tombstone-GC bound.
 
 ### 7. Physical layout (two-table pages; run table; packed payload; version 1)
 
@@ -227,9 +250,11 @@ constraints — naming is revisited after the implementation proves distinctive 
 ### Positive
 
 - Graph canister embedding bytes: zero (persistent and transient); ingest subnet bytes halved.
-- One durable byte copy; self-rebuild; no graph backfill path.
-- Deterministic, mutable ordering via `mutation_id`; subject-map tombstone deletion remains paused
-  until a contiguous Router watermark frontier exists, so no current growth bound is claimed.
+- Indexed Vector bytes plus temporary Router pending/retry payload bytes; self-rebuild; no graph
+  backfill path.
+- Deterministic, mutable ordering via `mutation_id`; marked lanes can advance the existing Router
+  watermark and bounded GC cutoff, while Graph-only lanes remain outside this liveness slice and no
+  global subject-map growth bound is claimed.
 - Label-scoped definitions match industry practice and give cheap graph-side presence determination.
 - Fresh layout is a clean break (version 1) with fail-closed rejection of old data.
 - Multi-encoding (f16/int8/binary) gives the storage levers needed at `d = 1536`.
@@ -263,15 +288,21 @@ constraints — naming is revisited after the implementation proves distinctive 
 2. **[planned]** Create `ic-stable-vector-page-store` with the two-table page format, run table,
    `VertexPayload`, header validation, and distance kernels; unit tests + canbench in isolation.
 3. **[partial]** Rework the vector canister: the subject map clock and typed outcome path are
-   implemented; the attached Graph may advance `graph_watermark`, while Router watermark remains
-   zero and tombstone deletion stays paused. The physical layout and search/encoding roadmap remain
-   planned; graph embedding regions are removed.
+   implemented; the attached Graph advances `graph_watermark`, and the Router frontier endpoint
+   monotonically advances `router_watermark` for an exact attached shard while running one bounded
+   GC step. Focused frontier PocketIC and benchmark gates pass; unfiltered persisted canbench
+   artifacts and the final plan gate remain pending. The physical layout and
+   search/encoding roadmap remain planned; graph embedding regions are removed.
 4. **[partial]** Rework the graph: `stamp_embedding`, label-diff removes, remove embedding regions;
    the direct-ingest stamp is validation-only and does not update the existing DML mutation
    consumers.
 5. **[partial]** Rework the Router: label sets, target-list resolution, global merge contract,
-   immutable definition/shard target assignment, and both direct-ingestion intent phases are
-   implemented. A future split requires a separate ADR.
+   immutable definition/shard target assignment, and the three direct-ingestion intent phases are
+   implemented. Frontier derivation is per marked target/shard lane and scans stable keys without
+   decoding payloads; it retires only an exact marker-key snapshot after observed acknowledgement.
+   `AwaitingFrontier` has no legal payload mutation: phase or lane changes create a different key.
+   Focused frontier PocketIC and benchmark gates pass; unfiltered persisted canbench artifacts and
+   the final plan gate remain pending. A future split requires a separate ADR.
 6. **[planned]** Measure (canbench): scoring formulations, page scan cost at `d = 1536`, per-level
    `nlist` envelope; decide hierarchy deployment (`levels = 2`) and raw candidate region.
 

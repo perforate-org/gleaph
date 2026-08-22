@@ -73,6 +73,101 @@ fn bench_layout_router_stable_reopen_touch() -> canbench_rs::BenchResult {
     })
 }
 
+fn setup_vector_frontier_rows_1024(one_marker_per_lane: bool) {
+    use crate::facade::stable::vector_ingest_outbox::{
+        VectorIngestIntentPhase, VectorIngestOutboxKey, VectorIngestOutboxState,
+        VectorIngestOutboxValue, MAX_VECTOR_INGEST_OUTBOX_ROWS, MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES,
+    };
+    use candid::Principal;
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
+    use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
+    use gleaph_graph_kernel::vector_index::{
+        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
+    };
+
+    let spec = IndexedEmbeddingSpec {
+        embedding_name_id: 3,
+        index_id: 7,
+        kind: VectorIndexKind::IvfFlat,
+        metric: VectorMetric::L2Squared,
+        encoding: VectorEncoding::F32,
+        dims: u16::MAX,
+        labels: vec![VertexLabelId::from_raw(1)],
+    };
+    let payload_bytes = spec.encoding.stride_bytes(spec.dims) as usize;
+    assert!(payload_bytes <= MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES);
+    crate::facade::stable::ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
+        table.clear_new();
+        for mutation_id in 1..=MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 {
+            let vector_target = if one_marker_per_lane {
+                let mut principal_bytes = [1u8; 29];
+                principal_bytes[..8].copy_from_slice(&mutation_id.to_be_bytes());
+                Principal::from_slice(&principal_bytes)
+            } else {
+                Principal::from_slice(&[1; 29])
+            };
+            let state = VectorIngestOutboxState {
+                graph_id: GraphId::from_raw(1),
+                graph_target: Principal::from_slice(&[9; 29]),
+                vector_target,
+                shard_id: ShardId::new(2),
+                local_vertex_id: LocalVertexId::from(mutation_id as u32),
+                spec: spec.clone(),
+                mutation_id,
+                // Match the public F32 ingestion contract: every row carries exactly the
+                // canonical `encoding.stride_bytes(dims)` payload for the largest admissible
+                // `u16` dimension. The frontier derivation remains key-only and never decodes
+                // these embedding bytes.
+                bytes: vec![0; payload_bytes],
+                phase: if !one_marker_per_lane && mutation_id == 1024 {
+                    VectorIngestIntentPhase::AwaitingVector
+                } else {
+                    VectorIngestIntentPhase::AwaitingFrontier
+                },
+            };
+            let key = VectorIngestOutboxKey::from_state(&state);
+            let value = VectorIngestOutboxValue::from_state(&state);
+            assert!(table.insert(key, value).is_none());
+        }
+    });
+    crate::facade::stable::ROUTER_MUTATION_COUNTER
+        .with_borrow_mut(|counter| counter.set(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64));
+}
+
+#[bench(raw)]
+fn bench_router_frontier_key_only_scan_single_lane_1024() -> canbench_rs::BenchResult {
+    setup_vector_frontier_rows_1024(false);
+    let expected = crate::facade::stable::vector_ingest_outbox::derive_frontier_snapshots()
+        .expect("bench frontier derivation");
+    assert_eq!(expected.len(), 1);
+    assert_eq!(expected[0].frontier, 1023);
+    assert_eq!(expected[0].marker_keys.len(), 1023);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("router_frontier_key_only_scan_single_lane_1024");
+        let snapshots = crate::facade::stable::vector_ingest_outbox::derive_frontier_snapshots()
+            .expect("frontier derivation");
+        black_box(snapshots);
+    })
+}
+
+#[bench(raw)]
+fn bench_router_frontier_key_only_scan_1024_lanes_one_marker_each() -> canbench_rs::BenchResult {
+    setup_vector_frontier_rows_1024(true);
+    let expected = crate::facade::stable::vector_ingest_outbox::derive_frontier_snapshots()
+        .expect("bench frontier derivation");
+    assert_eq!(expected.len(), 1024);
+    assert!(expected
+        .iter()
+        .all(|snapshot| snapshot.marker_keys.len() == 1));
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("router_frontier_key_only_scan_1024_lanes_one_marker_each");
+        let snapshots = crate::facade::stable::vector_ingest_outbox::derive_frontier_snapshots()
+            .expect("frontier derivation");
+        black_box(snapshots);
+    })
+}
+
 // -----------------------------------------------------------------------------
 // Initial per-memory bucket policy capacity probes.
 //

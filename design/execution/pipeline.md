@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
+Last updated: 2026-08-22
+Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
 
 ## Purpose
 
@@ -283,35 +283,55 @@ metadata/encoding. This Graph call is validation-only: it does not write embeddi
 mutation-journal row, a derived-index outbox row, or a watermark.
 
 An observed exact Graph acceptance transitions only the matching row to `AwaitingVector`; an
-observed logical rejection removes only that row. Transport/decode failure or response loss leaves
-`AwaitingGraph` unchanged. Recovery uses the persisted Graph target and metadata, and derives the
-complete `VectorEmbeddingSyncOp` from the same canonical row without resolving either target from
-mutable catalog state. The outbox is bounded to 1,024 rows and 2 MiB per encoded row. Its persisted
-value uses `StorableBound::Unbounded`; `VectorIngestOutboxState::encode_checked`
-enforces the shared 2 MiB admission ceiling before the first stable insertion, so that transport
-limit does not inflate `StableBTreeMap` node pages.
+observed logical rejection changes only that row to `AwaitingFrontier`. Transport/decode failure or
+response loss leaves `AwaitingGraph` unchanged. Recovery uses the persisted Graph target and metadata,
+and derives the complete `VectorEmbeddingSyncOp` from the same canonical row without resolving either
+target from mutable catalog state. Vector owns indexed embedding bytes after delivery; Router MemoryId
+53 durably owns pending/retry payload bytes until the exact frontier marker retires. The outbox is
+bounded to 1,024 rows and 2 MiB per encoded row. Its
+persisted value uses `StorableBound::Unbounded`; `VectorIngestOutboxState::encode_checked` enforces the
+shared 2 MiB admission ceiling before the first stable insertion, so that transport limit does not
+inflate `StableBTreeMap` node pages.
 
 The Router then calls the typed-only Vector endpoint `vector_sync_batch_outcome`.
-`Progress { applied }` acknowledges and
-removes exactly the committed prefix. `Terminal { failed_index: applied }` removes that prefix but
-retains the failed row and later suffix as `Pending`. Transport,
-typed-unavailable, or malformed replies leave all submitted rows pending. The bounded recovery
-timer retries both phases through their exact immutable targets, up to 16 rows per tick, and Router
-`post_upgrade` re-arms the timer. Appending work calls `recovery::arm_if_needed()`; an arm raised
-while a pass is awaiting a remote call is latched and re-arms the floor delay after an empty pass,
-preventing a lost wake. A heap-only guard excludes mutation IDs still driven by their originating
-API call from timer recovery; an upgrade clears the guard so durable rows resume automatically.
+`Progress { applied }` transitions exactly the committed prefix to `AwaitingFrontier`.
+`Terminal { failed_index: applied }` transitions that prefix to `AwaitingFrontier` but retains the
+failed row and later suffix as `AwaitingVector`. Transport, typed-unavailable, or malformed replies
+leave all submitted rows pending in their current phases. The bounded recovery timer retries all
+three phases through their exact immutable targets. Each pass may key-scan up to the bounded
+1,024-entry compact outbox while decoding at most the selected 16 payloads, and publishes at most one
+exact `(Vector target, shard)` frontier lane per pass. Router `post_upgrade` re-arms the timer.
+Appending work calls `recovery::arm_if_needed()`; an arm raised while a pass is awaiting a remote call
+is latched and re-arms the floor delay after an empty pass, preventing a lost wake. A heap-only guard
+excludes mutation IDs still driven by their originating API call from timer recovery; an upgrade
+clears the guard so durable rows resume automatically.
 Each batch adaptively fits a prefix from a complete Candid encode below the
 2 MiB hard ceiling, targeting the ceiling minus the fixed 500 KiB envelope headroom. The typed Vector
 driver processes internal chunks of at most 32 rows. This is durable at-least-once retry/convergence
 without a finite-time guarantee or client-level exactly-once semantics.
 
-The targeted PocketIC lifecycle gates each ran one exact test and passed:
+For each marked lane, Router derives the frontier from the oldest unresolved exact-lane
+`AwaitingGraph | AwaitingVector` intent minus one, or the durable mutation allocation ceiling when
+none remains, and dispatches only if at least one `AwaitingFrontier` marker is covered. The Router-only
+Vector endpoint rechecks Router ownership and exact shard attachment, applies the frontier
+monotonically to MemoryId 15, and runs one bounded tombstone-GC step in the same no-await update.
+The GC cutoff remains `min(graph_watermark, router_watermark)`. After an observed acknowledgement,
+Router retires only the unchanged marker snapshot captured before the call; response loss retains it.
+Graph-only lanes that never produce a marker remain deferred. The focused frontier lifecycle gate
+passes exactly one PocketIC test in 25.67s using one `PocketIc`, one federation bootstrap, and four
+canister installs (Router, Property Index, Graph, Vector). It covers response loss, Router/Vector
+upgrades, exact retry and marker retirement, GC gating and physical collection, and stale-resurrection
+prevention. Router and Vector tests, checks, and clippy pass; focused canbenches measure 3.29M
+instructions for the single-lane 1,024-row derivation, 9.85M for 1,024 lanes, and 2.11B for the
+Vector frontier plus bounded-GC step. Unfiltered persisted canbench artifacts and the final plan gate
+remain pending, and the bounded Quint evidence is not production proof.
+
+The prior targeted PocketIC lifecycle gates each ran one exact test and passed:
 `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
 and `graph_response_loss_preserves_pregraph_intent_across_router_upgrade -- --exact --nocapture`.
-Together they cover both intent phases, Router/Vector upgrades, exact GQL search, and idempotent
-replay. This targeted evidence does not prove autonomous wall-clock timer firing or
-watermark/tombstone GC completion.
+They cover the earlier Graph/Vector intent path, Router/Vector upgrades, exact GQL search, and
+idempotent replay. They do not cover autonomous wall-clock timer firing or a global watermark/tombstone
+GC completion bound; those remain outside this bounded safety slice.
 
 ## Error model
 

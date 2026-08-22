@@ -110,9 +110,10 @@ This ADR records why that contract exists and the top-level policy:
    `GLEAPH.PAYLOAD(e)` surfaces have been removed (ADR 0051 Phase B).
 3. **Embeddings are not inline properties.** Vertex embeddings are derived model outputs, not edge
    inline property storage and not ordinary variable-size property payloads. ADR 0064 makes the vector
-   canister the only durable owner of embedding bytes; Router owns definition metadata and Graph remains
-   the source of vertex/label facts. Earlier wording that implied a Graph-side byte store is historical
-   and must not be used for the narrow vector-index DDL slice.
+   canister the owner of indexed embedding bytes; Router MemoryId 53 owns pending/retry payload bytes
+   until exact marker retirement. Router owns definition metadata and Graph remains the source of
+   vertex/label facts. Earlier wording that implied a Graph-side byte store is historical and must not
+   be used for the narrow vector-index DDL slice.
 4. **Operational procedures stay under `GLEAPH.*`.** Maintenance, finalize, backfill, and internal
    imperative operations remain explicit procedures.
 5. **IC extensions are part of the dialect but not portable GQL.** `IC.PRINCIPAL` and `MSG_CALLER()`

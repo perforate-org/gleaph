@@ -140,8 +140,10 @@ thread_local! {
         RefCell<memory::StableVectorDispatchActivation> =
         RefCell::new(memory::init_vector_dispatch_activation());
 
-    /// `mutation_id → one pending direct-ingestion operation and its exact Vector target`. Rows
-    /// are retried by the Router recovery lane until the exact operation is acknowledged.
+    /// `compact (mutation_id, vector_target, shard_id, phase) key → canonical direct-ingestion
+    /// inputs`. The sole MemoryId 53 owner persists `AwaitingGraph | AwaitingVector |
+    /// AwaitingFrontier`; recovery retries unresolved work, publishes exact lane frontiers, and
+    /// retires only the captured marker snapshot after an observed Vector acknowledgement.
     pub(crate) static ROUTER_VECTOR_INGEST_OUTBOX:
         RefCell<memory::StableVectorIngestOutboxMap> =
         RefCell::new(memory::init_vector_ingest_outbox());

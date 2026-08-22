@@ -184,7 +184,7 @@ async fn vector_sync_batch_outcome_once(
 ) -> Result<VectorSyncBatchOutcome, String> {
     use ic_cdk::call::Call;
 
-    Call::bounded_wait(vector_canister, "vector_sync_batch_outcome")
+    let outcome = Call::bounded_wait(vector_canister, "vector_sync_batch_outcome")
         .with_args(&(operations,))
         .await
         .map_err(|e| format!("vector vector_sync_batch_outcome call failed: {e}"))?
@@ -193,7 +193,12 @@ async fn vector_sync_batch_outcome_once(
             gleaph_graph_kernel::vector_index::VectorSyncBatchUnavailable,
         >>()
         .map_err(|e| format!("vector vector_sync_batch_outcome decode failed: {e}"))?
-        .map_err(|e| format!("vector vector_sync_batch_outcome unavailable: {e:?}"))
+        .map_err(|e| format!("vector vector_sync_batch_outcome unavailable: {e:?}"))?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::drop_after_vector_batch_result() {
+        return Err("pocket-ic-e2e injected loss after decoded Vector batch result".to_string());
+    }
+    Ok(outcome)
 }
 
 #[cfg(target_family = "wasm")]
@@ -280,11 +285,100 @@ pub async fn vector_sync_batch_outcome(
     Err("vector vector_sync_batch_outcome is unavailable in native builds".to_string())
 }
 
+/// Router → Vector: publish the contiguous Router frontier for one exact shard lane. A bounded
+/// wait makes timeout/unknown outcomes retryable by the durable Router marker queue.
+#[cfg(target_family = "wasm")]
+pub async fn admin_advance_router_frontier(
+    vector_canister: Principal,
+    shard_id: ShardId,
+    frontier: u64,
+) -> Result<(), String> {
+    use ic_cdk::call::Call;
+
+    Call::bounded_wait(vector_canister, "admin_advance_router_frontier")
+        .with_args(&(shard_id, frontier))
+        .await
+        .map_err(|e| format!("vector admin_advance_router_frontier call failed: {e}"))?
+        .candid::<Result<(), String>>()
+        .map_err(|e| format!("vector admin_advance_router_frontier decode failed: {e}"))?
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn admin_advance_router_frontier(
+    _vector_canister: Principal,
+    _shard_id: ShardId,
+    _frontier: u64,
+) -> Result<(), String> {
+    Err("vector admin_advance_router_frontier is unavailable in native builds".to_string())
+}
+
+/// Narrow publisher seam used by the Router frontier recovery owner. Production delegates to the
+/// bounded inter-canister call; native tests inject only this exact publication operation so they
+/// exercise recovery orchestration and retirement without fabricating a second recovery driver.
+pub(crate) async fn publish_router_frontier(
+    vector_canister: Principal,
+    shard_id: ShardId,
+    frontier: u64,
+) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = FRONTIER_PUBLISHER.with_borrow_mut(|publisher| {
+        publisher
+            .as_mut()
+            .map(|publish| publish(vector_canister, shard_id, frontier))
+    }) {
+        return result;
+    }
+
+    let result = admin_advance_router_frontier(vector_canister, shard_id, frontier).await;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if result.is_ok() && crate::test_fault::drop_after_frontier_reply() {
+        return Err("pocket-ic-e2e injected loss after Vector frontier reply".to_string());
+    }
+    result
+}
+
+#[cfg(test)]
+type FrontierPublisher = Box<dyn FnMut(Principal, ShardId, u64) -> Result<(), String> + 'static>;
+
+#[cfg(test)]
+thread_local! {
+    static FRONTIER_PUBLISHER: std::cell::RefCell<Option<FrontierPublisher>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct FrontierPublisherGuard;
+
+#[cfg(test)]
+impl Drop for FrontierPublisherGuard {
+    fn drop(&mut self) {
+        FRONTIER_PUBLISHER.with_borrow_mut(|publisher| *publisher = None);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_frontier_publisher<F>(publisher: F) -> FrontierPublisherGuard
+where
+    F: FnMut(Principal, ShardId, u64) -> Result<(), String> + 'static,
+{
+    FRONTIER_PUBLISHER.with_borrow_mut(|slot| {
+        let publisher: FrontierPublisher = Box::new(publisher);
+        assert!(slot.replace(publisher).is_none());
+    });
+    FrontierPublisherGuard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::stable::vector_ingest_outbox;
+    use candid::Principal;
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
+    use gleaph_graph_kernel::federation::LocalVertexId;
     use gleaph_graph_kernel::federation::ShardId;
-    use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric, VectorSubject};
+    use gleaph_graph_kernel::vector_index::{
+        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
+    };
+    use vector_ingest_outbox::VectorIngestIntentPhase;
 
     fn operation(bytes_len: usize) -> gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
         gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
@@ -301,6 +395,33 @@ mod tests {
             bytes: vec![0; bytes_len],
             remove: false,
         }
+    }
+
+    fn intent(
+        mutation_id: u64,
+        phase: VectorIngestIntentPhase,
+    ) -> vector_ingest_outbox::VectorIngestOutboxState {
+        vector_ingest_outbox::intent_for_test(
+            vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id: GraphId::from_raw(1),
+                graph_target: Principal::from_slice(&[9; 29]),
+                vector_target: Principal::from_slice(&[1; 29]),
+                shard_id: ShardId::new(2),
+                local_vertex_id: LocalVertexId::from(mutation_id as u32),
+                spec: IndexedEmbeddingSpec {
+                    embedding_name_id: 3,
+                    index_id: 7,
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 1,
+                    labels: vec![VertexLabelId::from_raw(1)],
+                },
+                bytes: vec![mutation_id as u8, 0, 0, 0],
+            },
+            mutation_id,
+            phase,
+        )
     }
 
     #[test]
@@ -325,6 +446,86 @@ mod tests {
         let (next_len, _) = vector_sync_batch_prefix_len(&operations, chunk_len, Some(hint))
             .expect("fit second vector prefix");
         assert_eq!(next_len, 1);
+    }
+
+    #[test]
+    fn resolved_rows_transition_to_awaiting_frontier_before_publish() {
+        let _guard = vector_ingest_outbox::test_lock();
+        vector_ingest_outbox::clear_for_test();
+        let row = intent(41, VectorIngestIntentPhase::AwaitingVector);
+        vector_ingest_outbox::insert_intents_for_test(std::slice::from_ref(&row))
+            .expect("seed vector intent");
+
+        vector_ingest_outbox::apply_outcome(
+            std::slice::from_ref(&row),
+            VectorSyncBatchOutcome::Progress { applied: 1 },
+        )
+        .expect("observe exact applied prefix");
+        let resolved_rows = vector_ingest_outbox::scan(None, 8).0;
+        assert_eq!(resolved_rows.len(), 1, "one durable frontier marker");
+        let resolved = &resolved_rows[0];
+        assert_eq!(
+            resolved.phase,
+            VectorIngestIntentPhase::AwaitingFrontier,
+            "applied rows remain durable until frontier publication is observed"
+        );
+        vector_ingest_outbox::clear_for_test();
+    }
+
+    #[test]
+    fn frontier_response_loss_retains_exact_marker_snapshot() {
+        let _guard = vector_ingest_outbox::test_lock();
+        vector_ingest_outbox::clear_for_test();
+        let marker = intent(51, VectorIngestIntentPhase::AwaitingFrontier);
+        let later_marker = intent(52, VectorIngestIntentPhase::AwaitingFrontier);
+        vector_ingest_outbox::insert_intents_for_test(&[marker.clone(), later_marker.clone()])
+            .expect("seed frontier markers");
+        crate::facade::stable::ROUTER_MUTATION_COUNTER
+            .with_borrow_mut(|counter| counter.set(later_marker.mutation_id));
+        let before = vector_ingest_outbox::scan(None, 8).0;
+        let expected_snapshot = vector_ingest_outbox::derive_frontier_snapshots_from_rows(
+            &before,
+            later_marker.mutation_id,
+        )
+        .expect("derive frontier snapshot")
+        .into_iter()
+        .next()
+        .expect("one frontier lane");
+
+        let remote_commits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let remote_commits_for_publisher = remote_commits.clone();
+        let _publisher = install_frontier_publisher(move |vector_target, shard_id, frontier| {
+            remote_commits_for_publisher
+                .borrow_mut()
+                .push((vector_target, shard_id, frontier));
+            Err("simulated lost reply after remote frontier commit".to_string())
+        });
+
+        futures::executor::block_on(vector_ingest_outbox::run_recovery_pass(None, 8));
+
+        assert_eq!(
+            *remote_commits.borrow(),
+            vec![(
+                expected_snapshot.vector_target,
+                expected_snapshot.shard_id,
+                expected_snapshot.frontier
+            )],
+            "the remote commit succeeded before its reply was lost"
+        );
+        let after = vector_ingest_outbox::scan(None, 8).0;
+        assert_eq!(
+            after, before,
+            "a lost frontier reply must retain every captured marker without retirement"
+        );
+        assert_eq!(
+            after
+                .iter()
+                .map(vector_ingest_outbox::VectorIngestOutboxKey::from_state)
+                .collect::<Vec<_>>(),
+            expected_snapshot.marker_keys,
+            "the exact captured marker keys remain the retry source"
+        );
+        vector_ingest_outbox::clear_for_test();
     }
 }
 

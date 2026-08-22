@@ -40,11 +40,12 @@ The V2 durable record is keyed by `(GraphId, index_id)` and contains `index_name
 direct `vector_search` now resolve the logical name; ingestion continues to identify the embedding
 field represented by `ON d.embedding`.
 
-The active vector redesign also makes the vector canister the only durable owner of embedding bytes.
-The stamp request now carries metadata and the Router-issued stamp only. Router validates public
-value dimensions and finiteness before allocation or the Graph call; Graph validates vertex state,
-required labels, and payload-independent embedding metadata/encoding before returning the stamp.
-Router then forwards the bytes directly to the vector canister.
+The active vector redesign makes the vector canister the owner of indexed embedding bytes; Router
+MemoryId 53 owns pending/retry payload bytes until exact marker retirement. The stamp request now
+carries metadata and the Router-issued stamp only. Router validates public value dimensions and
+finiteness before allocation or the Graph call; Graph validates vertex state, required labels, and
+payload-independent embedding metadata/encoding before returning the stamp. Router then forwards
+the bytes directly to the vector canister.
 
 ## Problem
 

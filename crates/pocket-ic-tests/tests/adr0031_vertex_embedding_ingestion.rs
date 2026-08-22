@@ -17,10 +17,10 @@ use gleaph_graph_kernel::vector_index::{
     VectorSyncBatchOutcome, VectorSyncBatchUnavailable, VertexEmbeddingProjectionOutcome,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, drain_maintenance_via_timer, e2e_insert_vertex_with_label,
-    ensure_user_graph_type, gql_mutate_as_admin, gql_query_with_params_as_admin,
-    install_single_shard_federation, install_vector_canister, run_router_recovery_timer,
-    user_vertex_label_id, wasm_bytes,
+    FederationEnv, GRAPH_NAME, arm_router_fault, drain_maintenance_via_timer,
+    e2e_insert_vertex_with_label, ensure_user_graph_type, gql_mutate_as_admin,
+    gql_mutate_result_as_admin, gql_query_with_params_as_admin, install_single_shard_federation,
+    install_vector_canister, run_router_recovery_timer, user_vertex_label_id, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingBatchArgs,
@@ -30,6 +30,8 @@ use gleaph_router::types::{
 const EMBEDDING_NAME: &str = "ingest_title_vec";
 const INDEX_ID: u32 = 1;
 const DIMS: u16 = 16;
+const VECTOR_SYNC_REPLY_AFTER_COMMIT_FAULT: u8 = 8;
+const FRONTIER_REPLY_AFTER_COMMIT_FAULT: u8 = 9;
 
 fn register_with_encoding(
     env: &FederationEnv,
@@ -295,6 +297,38 @@ fn router_vector_hit_count(env: &FederationEnv, value: f32) -> u64 {
     gql_query_with_params_as_admin(env, &query, params).row_count
 }
 
+fn router_vector_search_subjects(
+    env: &FederationEnv,
+    value: f32,
+) -> Vec<gleaph_gql_ic::GqlWireValue> {
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN ELEMENT_ID(d) AS d_id"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(value)),
+    )])
+    .expect("encode vector search subject params");
+    let result = gql_query_with_params_as_admin(env, &query, params);
+    if result.row_count == 0 {
+        return Vec::new();
+    }
+    let rows_blob = result.rows_blob.expect("vector search subject rows blob");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode vector search subject rows");
+    assert_eq!(wire.rows.len() as u64, result.row_count);
+    wire.rows
+        .into_iter()
+        .map(|row| {
+            let columns: std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue> =
+                row.columns.into_iter().collect();
+            columns
+                .get("d_id")
+                .cloned()
+                .expect("d_id column in vector search subject row")
+        })
+        .collect()
+}
+
 fn e2e_unbind_vector_definition_store(env: &FederationEnv, vector: Principal) {
     let bytes = env
         .pic
@@ -319,6 +353,68 @@ fn set_embedding_stamp_response_loss(env: &FederationEnv, armed: bool) {
             Encode!(&armed).expect("encode embedding-stamp response-loss flag"),
         )
         .expect("set embedding-stamp response-loss flag");
+}
+
+type RouterVectorIngestProbe = (u64, Vec<(u64, Principal, ShardId, u8)>);
+
+fn router_vector_ingest_probe(env: &FederationEnv) -> RouterVectorIngestProbe {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "test_vector_ingest_probe",
+            Encode!(&()).expect("encode test_vector_ingest_probe"),
+        )
+        .expect("router vector-ingest probe call");
+    Decode!(
+        &bytes,
+        Result<RouterVectorIngestProbe, RouterError>
+    )
+    .expect("decode test_vector_ingest_probe")
+    .expect("test_vector_ingest_probe succeeds")
+}
+
+type VectorFrontierProbe = (
+    u64,
+    u64,
+    Option<(u64, bool)>,
+    bool,
+    Option<(u32, u64, u32, u32, u32)>,
+);
+
+fn vector_frontier_probe(
+    env: &FederationEnv,
+    vector: Principal,
+    vertex_id: u32,
+) -> VectorFrontierProbe {
+    let bytes = env
+        .pic
+        .query_call(
+            vector,
+            env.router,
+            "e2e_frontier_probe",
+            Encode!(&INDEX_ID, &ShardId::new(0), &vertex_id).expect("encode e2e_frontier_probe"),
+        )
+        .expect("vector frontier probe call");
+    Decode!(&bytes, Result<VectorFrontierProbe, String>)
+        .expect("decode e2e_frontier_probe")
+        .expect("e2e_frontier_probe succeeds")
+}
+
+type VectorFrontierReceipt = (u64, Option<(u32, u64)>);
+
+fn vector_frontier_receipt_probe(env: &FederationEnv, vector: Principal) -> VectorFrontierReceipt {
+    let bytes = env
+        .pic
+        .query_call(
+            vector,
+            env.router,
+            "e2e_frontier_receipt_probe",
+            Encode!(&()).expect("encode e2e_frontier_receipt_probe"),
+        )
+        .expect("vector frontier receipt probe call");
+    Decode!(&bytes, u64, Option<(u32, u64)>).expect("decode e2e_frontier_receipt_probe")
 }
 
 #[test]
@@ -691,6 +787,354 @@ fn graph_response_loss_preserves_pregraph_intent_across_router_upgrade() {
         router_vector_hit_count(&env, 8.0),
         1,
         "a later recovery lap must remain idempotent"
+    );
+}
+
+#[test]
+fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
+    register(&env, vector);
+    fully_activate(&env, vector);
+
+    // The Router-only publication endpoint must reject a direct admin caller without changing the
+    // exact Vector state that the later frontier lifecycle will use.
+    let unauthorized_before = vector_frontier_probe(&env, vector, 0);
+    let unauthorized = env.pic.update_call(
+        vector,
+        env.admin,
+        "admin_advance_router_frontier",
+        Encode!(&ShardId::new(0), &1_u64).expect("encode unauthorized frontier publication"),
+    );
+    assert!(
+        unauthorized.is_err(),
+        "a direct admin caller must be rejected by the Router-only endpoint"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, 0),
+        unauthorized_before,
+        "an unauthorized frontier call must not mutate any Vector probe field"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (0, Vec::new()),
+        "the unauthorized Vector call must not allocate or create a Router outbox row"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (0, None),
+        "the rejected frontier call must not create a success receipt"
+    );
+
+    // The authorized Router must still be rejected below the public guard when it names an
+    // unattached shard. The store-level error must be returned without mutating Vector storage or
+    // the heap-only success receipt.
+    let detached_before = vector_frontier_probe(&env, vector, 0);
+    let detached_bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "admin_advance_router_frontier",
+            Encode!(&ShardId::new(1), &1_u64)
+                .expect("encode unattached-shard frontier publication"),
+        )
+        .expect("unattached-shard frontier publication call");
+    let detached_result: Result<(), String> = Decode!(&detached_bytes, Result<(), String>)
+        .expect("decode unattached-shard frontier publication");
+    assert_eq!(
+        detached_result,
+        Err("caller is not an attached graph shard".to_string()),
+        "the authorized Router must receive the store-level unattached-shard error"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, 0),
+        detached_before,
+        "an unattached-shard frontier call must not mutate any Vector storage probe field"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (0, None),
+        "a failed store call must not create a heap success receipt"
+    );
+
+    // m10: Vector commits the live subject, then the Router loses the successful reply before its
+    // exact row can move from AwaitingVector to AwaitingFrontier.
+    let first = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let expected_first_id = vertex_element_id(&env);
+    arm_router_fault(&env, VECTOR_SYNC_REPLY_AFTER_COMMIT_FAULT);
+    let m10_result = ingest(
+        &env,
+        encode_vertex(&env, first.local_vertex_id),
+        vec![6.0; DIMS as usize],
+    );
+    assert_eq!(
+        m10_result.projection_outcome,
+        VertexEmbeddingProjectionOutcome::Pending,
+        "a post-commit Vector reply loss must remain Pending at Router ingress"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, first.local_vertex_id),
+        (
+            0,
+            0,
+            Some((m10_result.embedding_version, false)),
+            false,
+            None
+        ),
+        "Vector must durably retain the live m10 subject while Router has not applied the reply"
+    );
+    assert_eq!(
+        router_vector_search_subjects(&env, 6.0),
+        vec![expected_first_id.clone()],
+        "the post-commit Vector subject must be searchable before Router applies the reply"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (
+            m10_result.embedding_version,
+            vec![(m10_result.embedding_version, vector, ShardId::new(0), 1,)]
+        ),
+        "the exact m10 row must remain AwaitingVector after the response loss"
+    );
+    arm_router_fault(&env, 0);
+
+    // m11: Graph removes the same subject. The Graph-owned watermark and Vector tombstone advance,
+    // but Router's watermark remains zero, so the deleted-list fence cannot be collected yet.
+    let delete_result = gql_mutate_result_as_admin(
+        &env,
+        "MATCH (v:User) DETACH DELETE v",
+        "contiguous-frontier-delete",
+    );
+    let m11 = delete_result
+        .token
+        .as_ref()
+        .expect("Graph delete mutation token")
+        .mutation_id;
+    assert!(m11 > m10_result.embedding_version, "m11 must follow m10");
+    assert_eq!(
+        vector_frontier_probe(&env, vector, first.local_vertex_id),
+        (m11, 0, Some((m11, true)), true, None,),
+        "Graph deletion must retain the exact m11 tombstone and deleted-list fence"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (
+            m11,
+            vec![(m10_result.embedding_version, vector, ShardId::new(0), 1,)]
+        ),
+        "Graph delete must advance the Router allocation ceiling for m11 without allocating a Router marker"
+    );
+    assert!(
+        router_vector_search_subjects(&env, 6.0).is_empty(),
+        "the Graph tombstone must hide the deleted subject before Router frontier publication"
+    );
+
+    // m12: a higher unrelated Router direct-ingest marker is committed to Vector. It must not
+    // allow a frontier to pass unresolved m10, and its own subject identity must be preserved.
+    let higher = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let expected_higher_id = vertex_element_id(&env);
+    let m12_result = ingest(
+        &env,
+        encode_vertex(&env, higher.local_vertex_id),
+        vec![9.0; DIMS as usize],
+    );
+    assert_eq!(
+        m12_result.projection_outcome,
+        VertexEmbeddingProjectionOutcome::Applied,
+        "the unrelated higher direct-ingest marker must commit independently"
+    );
+    assert_eq!(
+        m12_result.embedding_version,
+        m11 + 1,
+        "m12 must be the higher mutation immediately after the Graph delete"
+    );
+    assert_ne!(
+        expected_higher_id, expected_first_id,
+        "the higher direct-ingest subject must be distinct from the deleted subject"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, higher.local_vertex_id),
+        (
+            m11,
+            0,
+            Some((m12_result.embedding_version, false)),
+            false,
+            None
+        ),
+        "the higher direct-ingest subject must remain live without a Router frontier"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (
+            m12_result.embedding_version,
+            vec![
+                (m10_result.embedding_version, vector, ShardId::new(0), 1,),
+                (m12_result.embedding_version, vector, ShardId::new(0), 2),
+            ]
+        ),
+        "m10 must stay AwaitingVector while only the unrelated m12 marker is AwaitingFrontier"
+    );
+
+    // Attempt recovery while m10 is unresolved. The post-commit batch fault keeps the exact m10
+    // row unresolved, so no safe snapshot contains m12 and Vector GC remains gated.
+    arm_router_fault(&env, VECTOR_SYNC_REPLY_AFTER_COMMIT_FAULT);
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        router_vector_search_subjects(&env, 6.0),
+        vec![expected_higher_id.clone()],
+        "only the live m12 subject must remain searchable; deleted m10 must remain absent while its Router marker is unresolved"
+    );
+    assert!(
+        router_vector_search_subjects(&env, 9.0) == vec![expected_higher_id.clone()],
+        "the higher unrelated subject must remain searchable while m10 blocks the frontier"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, first.local_vertex_id),
+        (m11, 0, Some((m11, true)), true, None),
+        "the unresolved m10 marker must keep the tombstone and deleted-list entry retained"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (
+            m12_result.embedding_version,
+            vec![
+                (m10_result.embedding_version, vector, ShardId::new(0), 1,),
+                (m12_result.embedding_version, vector, ShardId::new(0), 2),
+            ]
+        ),
+        "blocked recovery must preserve both exact marker phases"
+    );
+    arm_router_fault(&env, 0);
+
+    // Resolve m10 through the durable Router retry while arming the frontier response-loss fault.
+    // Vector must ignore/no-op the stale m10 upsert against the newer m11 tombstone, then durably apply
+    // the safe m12 frontier and GC before Router can retire either marker.
+    arm_router_fault(&env, FRONTIER_REPLY_AFTER_COMMIT_FAULT);
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        vector_frontier_probe(&env, vector, first.local_vertex_id),
+        (m11, m12_result.embedding_version, None, false, None),
+        "Vector must durably advance the router watermark and GC m11 before the Router reply"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (
+            1,
+            Some((ShardId::new(0).raw(), m12_result.embedding_version))
+        ),
+        "the first lost frontier reply must follow exactly one successful Vector store call for shard 0 at m12"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (
+            m12_result.embedding_version,
+            vec![
+                (m10_result.embedding_version, vector, ShardId::new(0), 2,),
+                (m12_result.embedding_version, vector, ShardId::new(0), 2),
+            ]
+        ),
+        "lost frontier response must retain the exact m10/m12 marker snapshot"
+    );
+
+    // Both canisters must preserve their exact durable ownership across upgrades before the
+    // observed frontier retry is allowed to retire Router markers.
+    env.pic
+        .upgrade_canister(
+            env.router,
+            wasm_bytes("ROUTER_WASM"),
+            Encode!(&()).expect("encode Router upgrade args"),
+            None,
+        )
+        .expect("upgrade Router with retained frontier markers");
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (
+            m12_result.embedding_version,
+            vec![
+                (m10_result.embedding_version, vector, ShardId::new(0), 2,),
+                (m12_result.embedding_version, vector, ShardId::new(0), 2),
+            ]
+        ),
+        "Router upgrade must preserve the exact frontier marker ownership"
+    );
+    env.pic
+        .upgrade_canister(
+            vector,
+            wasm_bytes("VECTOR_INDEX_WASM"),
+            Encode!(&()).expect("encode Vector upgrade args"),
+            None,
+        )
+        .expect("upgrade Vector with retained tombstone-GC state");
+    assert_eq!(
+        vector_frontier_probe(&env, vector, first.local_vertex_id),
+        (m11, m12_result.embedding_version, None, false, None),
+        "Vector upgrade must preserve watermarks and the physically collected tombstone"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (0, None),
+        "Vector upgrade must reset the heap-only frontier receipt"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, higher.local_vertex_id),
+        (
+            m11,
+            m12_result.embedding_version,
+            Some((m12_result.embedding_version, false)),
+            false,
+            None
+        ),
+        "Vector upgrade must preserve the higher live subject identity"
+    );
+    arm_router_fault(&env, 0);
+
+    // The observed frontier retry is idempotent and retires exactly the captured marker snapshot.
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (
+            1,
+            Some((ShardId::new(0).raw(), m12_result.embedding_version))
+        ),
+        "the observed post-upgrade retry must advance the reset receipt 0 to 1 for shard 0 at m12"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (m12_result.embedding_version, Vec::new()),
+        "the observed frontier reply must retire exactly m10 and m12"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, first.local_vertex_id),
+        (m11, m12_result.embedding_version, None, false, None),
+        "retiring Router markers must not recreate the collected m10 tombstone"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, higher.local_vertex_id),
+        (
+            m11,
+            m12_result.embedding_version,
+            Some((m12_result.embedding_version, false)),
+            false,
+            None
+        ),
+        "retiring Router markers must preserve the higher live subject clock"
+    );
+
+    // A later idle lap is a no-op: no marker is recreated, no counter advances, and stale m10 never
+    // resurrects while the higher unrelated subject remains searchable.
+    let idle_before = router_vector_ingest_probe(&env);
+    run_router_recovery_timer(&env);
+    assert_eq!(router_vector_ingest_probe(&env), idle_before);
+    assert_eq!(
+        router_vector_search_subjects(&env, 6.0),
+        vec![expected_higher_id.clone()],
+        "a later recovery lap must keep the live m12 subject as the sole hit and never resurrect stale m10"
+    );
+    assert_eq!(
+        router_vector_search_subjects(&env, 9.0),
+        vec![expected_higher_id]
     );
 }
 

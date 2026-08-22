@@ -1169,7 +1169,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             53,
             StableMemoryClass::Canonical,
             "direct vector ingestion",
-            "mutation_id → exact Graph/Vector targets, canonical direct-ingestion inputs, and AwaitingGraph or AwaitingVector phase; Router recovery retries unresolved work and typed Vector acknowledgement removes only the exact applied prefix",
+            "mutation_id → exact Graph/Vector targets, canonical direct-ingestion inputs, and AwaitingGraph | AwaitingVector | AwaitingFrontier phase; Router derives marked target/shard frontiers, retries unresolved work, and retires only an exact marker snapshot after observed Vector acknowledgement",
             RebuildPath::None,
         ),
     ],
@@ -1536,9 +1536,11 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             StableMemoryClass::Maintenance,
             "per-shard watermark pair",
             "shard_id → ShardWatermarks { graph_watermark, router_watermark }: progress used for \
-             conservative tombstone GC (ADR 0064 §5). The production Router watermark remains zero, \
-             so tombstone deletion is paused; no subject-map growth bound is claimed. Operational \
-             bookkeeping, not a query-facing index or canonical fact: it carries no rebuild path",
+             conservative tombstone GC (ADR 0064 §5). The Router-only frontier endpoint applies a \
+             monotonic router_watermark for an exact attached shard and runs one bounded GC step; \
+             the cutoff is min(graph_watermark, router_watermark), with Graph-only lane liveness \
+             deferred. Operational bookkeeping, not a query-facing index or canonical fact: it \
+             carries no rebuild path",
             RebuildPath::None,
         ),
         region(
@@ -2036,8 +2038,8 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[14].rebuild,
             RebuildPath::None
         ));
-        // ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the production
-        // Router watermark remains zero, so tombstone deletion is paused.
+        // ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the Router-only
+        // frontier endpoint advances router_watermark monotonically for exact attached lanes.
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[15].symbol,
             "VECTOR_SHARD_WATERMARKS"

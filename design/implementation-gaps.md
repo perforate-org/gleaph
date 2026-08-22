@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
+Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
 
 ## Status
 
@@ -138,33 +138,50 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-002 — Router direct vector ingestion durable intent ownership
 
-- **Status:** Resolved (implementation complete; final validation recorded in Plan 0270)
+- **Status:** In progress (frontier implementation and focused runtime/benchmark gates pass; unfiltered persisted canbench artifacts and the final plan gate pending)
 - **Severity:** P0 durable derived-state contract
 - **Owner:** Router direct vector-ingestion API and MemoryId 53 lifecycle
 - **Contract:** Every allocated direct-ingestion mutation ID is synchronously co-written with one
   exact durable intent before the first Graph await. `Pending` is valid only while that intent is
-  `AwaitingGraph` or `AwaitingVector`.
+  `AwaitingGraph`, `AwaitingVector`, or `AwaitingFrontier` in the sole MemoryId 53 lifecycle. The
+  Router row durably owns pending/retry payload bytes until exact marker retirement; Vector owns the
+  indexed embedding bytes after delivery.
 - **Implementation:** `admit_awaiting_graph` validates the full batch, live shard, exact Graph and
   Vector targets, immutable definition, capacity, and encoded size before changing state. It then
   co-writes the final `ROUTER_MUTATION_COUNTER` value and every canonical `AwaitingGraph` row with no
   intervening await. Exact Graph acceptance changes only the matching row to `AwaitingVector`;
-  exact logical rejection removes only that row; transport/decode failure and response loss retain
-  it. Vector typed-prefix acknowledgement removes only applied `AwaitingVector` rows. Recovery uses
-  persisted targets and derives both wire requests from the canonical row.
+  exact logical rejection changes only that row to `AwaitingFrontier`; transport/decode failure and
+  response loss retain the current phase. Vector typed-prefix acknowledgement changes only applied
+  `AwaitingVector` rows to `AwaitingFrontier`. Router derives each marked `(Vector target, shard)`
+  lane from the oldest unresolved exact-lane intent minus one, or from the durable allocation ceiling
+  when none remains, and dispatches only a covered marker. The Router-only Vector endpoint rechecks
+  Router ownership and exact shard attachment, applies MemoryId 15 with `max`, and runs one bounded
+  GC step in the same no-await update. Recovery uses persisted targets and derives both wire requests
+  from the canonical row.
 - **Evidence:** `crates/router/src/facade/stable/vector_ingest_outbox.rs::{admit_awaiting_graph,
   observe_graph_accept,observe_graph_reject,apply_outcome,run_recovery_pass}` and
   `crates/router/src/api/control.rs::ingest_vertex_embeddings`. Owner-local tests cover admission
   atomicity, phase persistence, exact compare-before-transition, stale callbacks, reopen, Vector
-  prefix retention, malformed outcomes, and recovery scheduling. PocketIC
+  prefix retention, frontier marker snapshots, malformed outcomes, and recovery scheduling. PocketIC
   `graph_response_loss_preserves_pregraph_intent_across_router_upgrade` loses the Graph response,
   upgrades Router with `AwaitingGraph`, clears the test seam, drives recovery, and proves exact
-  Vector visibility plus idempotent replay.
+  Vector visibility plus idempotent replay. The focused frontier lifecycle gate passes exactly one
+  PocketIC test in 25.67s using one `PocketIc`, one federation bootstrap, and four canister installs
+  (Router, Property Index, Graph, Vector), covering response loss, upgrades, exact retry/retirement,
+  GC gating/physical collection, and stale-resurrection prevention. Router and Vector tests/checks/
+  clippy pass. Focused canbenches measure 3.29M instructions for the single-lane 1,024-row
+  derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier plus bounded-GC step.
+  Unfiltered persisted canbench artifacts and the final plan gate remain pending; the bounded Quint
+  model is protocol evidence only, not production proof.
 - **Impact:** Restart or response loss cannot leave an allocated direct-ingestion stamp without a
-  durable owner. The public operation remains at-least-once retry/convergence with no finite-time or
-  client-level exactly-once guarantee.
-- **Next decision:** Add an authenticated per-target/shard contiguous Router frontier publication
-  path. Until then Router watermark publication stays disabled and Vector tombstone deletion stays
-  paused.
+  durable owner. Marked lanes can now advance the contiguous Router frontier and use the existing
+  `min(graph_watermark, router_watermark)` cutoff, but Graph-only lanes that never produce a marker
+  remain outside this liveness slice. The public operation remains at-least-once retry/convergence
+  with no finite-time or client-level exactly-once guarantee, and no global subject-map growth or
+  finite-time GC bound is claimed.
+- **Next decision:** Run the unfiltered `canbench --persist` artifacts and the final Plan 0275 gate.
+  Do not infer production liveness or a global growth bound from the bounded Quint model or owner-local
+  tests.
 
 ### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
 
@@ -776,14 +793,17 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   stamps and exact `AwaitingGraph` intents before the first Graph await. Graph `stamp_embedding`
   validates existence/tombstone state, required labels, and payload-independent embedding
   metadata/encoding, then returns the Router-issued stamp without embedding-byte or journal writes.
-  Exact acceptance transitions the row to `AwaitingVector`; exact rejection resolves it; unknown
-  Graph or Vector outcomes retain the applicable phase. No finite-time or client-level exactly-once
-  guarantee is implied.
+  Exact acceptance transitions the row to `AwaitingVector`; exact rejection changes the row to
+  `AwaitingFrontier`; an observed Vector prefix also changes only the applied rows to
+  `AwaitingFrontier`. Unknown Graph, Vector, or frontier outcomes retain the applicable phase. No
+  finite-time or client-level exactly-once guarantee is implied.
 - **Evidence:** `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
   `crates/graph/src/canister/handlers.rs::stamp_embedding`; and the focused Router/Vector unit
   coverage. The targeted PocketIC lifecycle gate for the current lane passes as recorded in
   GAP-2026-08-20-002; it manually drives recovery seams and does not prove autonomous timer firing
-  or deferred watermark/tombstone GC completion.
+  or deferred watermark/tombstone GC completion. The frontier implementation is present, but its
+  focused PocketIC and benchmark gates pass; unfiltered persisted canbench artifacts and the final
+  plan gate remain pending. The bounded Quint model is not production proof.
 - **Related contracts:** [ADR 0031](./adr/0031-vertex-embedding-store-and-derived-vector-index.md),
   [design/index/vector-index.md](./index/vector-index.md),
   [design/execution/pipeline.md](./execution/pipeline.md)

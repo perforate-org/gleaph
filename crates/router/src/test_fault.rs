@@ -1,13 +1,14 @@
 //! Test-only (`pocket-ic-e2e`) fault injection for Router write-path durable boundaries.
 //!
-//! The armed fault is a committed heap flag, set by its own `test_arm_fault` ingress and read by the
-//! gql write path. Trap faults roll back only the trapping message's state, while the ordered
-//! canonical-receipt fault returns an application error after the durable receipt transition. The
-//! test clears the flag with a separate `test_arm_fault(0)` ingress before driving recovery. This
-//! reproduces a partial-failure boundary without leaving the canister wedged in a fault loop.
+//! The armed fault is a committed heap flag, set by its own `test_arm_fault` ingress and read by
+//! the GQL and Vector recovery paths. Trap faults roll back only the trapping message's state,
+//! while application faults return after a durable transition. Codes 8 and 9 persistently drop a
+//! decoded Vector batch reply or frontier reply before the Router's durable follow-up; the test
+//! clears any armed fault with a separate `test_arm_fault(0)` ingress before driving recovery. This
+//! reproduces partial-failure boundaries without leaving the canister wedged in a fault loop.
 //!
-//! Compiled only under `pocket-ic-e2e`; the call sites in `gql.rs` are `#[cfg]`-gated, so production
-//! builds contain none of this.
+//! Compiled only under `pocket-ic-e2e`; the call sites in `gql.rs` and `vector_sync.rs` are
+//! `#[cfg]`-gated, so production builds contain none of this.
 
 use std::cell::Cell;
 
@@ -34,6 +35,12 @@ pub(crate) enum InjectedFault {
     /// Trap immediately after the durable bulk-load Start parent/client binding insert. IC message
     /// rollback must restore both the parent and the counter.
     TrapAfterBulkStartParent,
+    /// Drop a successfully decoded Router→Vector batch response before the caller applies it to
+    /// the durable outbox. The armed fault remains active until `test_arm_fault(0)`.
+    DropAfterVectorBatchResult,
+    /// Drop a successful Vector frontier response after watermark/GC work but before the Router
+    /// retires its captured frontier snapshot. The armed fault remains active until clear.
+    DropAfterFrontierReply,
 }
 
 thread_local! {
@@ -54,6 +61,8 @@ pub(crate) fn fault_from_code(code: u8) -> Option<InjectedFault> {
         5 => Some(InjectedFault::FailAfterOrderedRetirementAck),
         6 => Some(InjectedFault::TrapAfterBulkStartCounter),
         7 => Some(InjectedFault::TrapAfterBulkStartParent),
+        8 => Some(InjectedFault::DropAfterVectorBatchResult),
+        9 => Some(InjectedFault::DropAfterFrontierReply),
         _ => None,
     }
 }
@@ -95,4 +104,23 @@ pub(crate) fn maybe_trap_after_bulk_start_parent() {
     if armed() == InjectedFault::TrapAfterBulkStartParent {
         ic_cdk::trap("pocket-ic-e2e injected fault: trap after bulk Start parent insert");
     }
+}
+
+/// Return whether a decoded Router→Vector result must be treated as lost before durable outbox
+/// application. This is intentionally persistent; only `test_arm_fault(0)` clears it.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "the decoded inter-canister reply seam runs on wasm"
+    )
+)]
+pub(crate) fn drop_after_vector_batch_result() -> bool {
+    armed() == InjectedFault::DropAfterVectorBatchResult
+}
+
+/// Return whether a successful Vector frontier reply must be treated as lost before exact marker
+/// retirement. This is intentionally persistent; only `test_arm_fault(0)` clears it.
+pub(crate) fn drop_after_frontier_reply() -> bool {
+    armed() == InjectedFault::DropAfterFrontierReply
 }

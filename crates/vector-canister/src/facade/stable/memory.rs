@@ -43,8 +43,9 @@ pub(crate) const VECTOR_ROW_SLAB: MemoryId = MemoryId::new(13);
 // page-health scan execution state (cursor + merged counters). Stable execution state — it must
 // survive upgrade and is cleared only on canister init/reset.
 const VECTOR_MAINTENANCE_STATE: MemoryId = MemoryId::new(14);
-// ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the production Router
-// watermark remains zero, so tombstone deletion is paused.
+// ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the Router-only frontier
+// endpoint advances router_watermark monotonically for an exact attached shard and runs one
+// bounded GC step in the same no-await update.
 const VECTOR_SHARD_WATERMARKS: MemoryId = MemoryId::new(15);
 // ADR 0064 §5: durable GC resume cursor (last examined SubjectKey) so a bounded GC step never
 // starves deleted entries that sort after a long run of live entries.
@@ -140,6 +141,14 @@ impl ShardCanisterCatalog {
 
     pub(crate) fn shard_for_canister(&self, canister: Principal) -> Option<ShardId> {
         self.by_canister.get(&canister)
+    }
+
+    /// Returns whether the shard has an exact active canister attachment.
+    pub(crate) fn contains_shard(&self, shard_id: ShardId) -> bool {
+        let Some(canister) = self.by_shard.get(&shard_id) else {
+            return false;
+        };
+        self.by_canister.get(&canister) == Some(shard_id)
     }
 
     /// Number of owned shards (the def-time source of `run_capacity`, ADR 0064 §7).

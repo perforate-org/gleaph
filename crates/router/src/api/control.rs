@@ -7,6 +7,7 @@
 use candid::Principal;
 use ic_cdk::api::msg_caller;
 use ic_cdk_macros::{query, update};
+use std::collections::BTreeMap;
 
 use crate::facade::auth;
 #[cfg(feature = "pocket-ic-e2e")]
@@ -363,6 +364,77 @@ type PreparedVertexEmbeddingItems = Vec<(
     usize,
 )>;
 
+type AcceptedVertexEmbeddingItems = Vec<(
+    crate::facade::stable::vector_ingest_outbox::VectorIngestOutboxState,
+    usize,
+)>;
+
+/// Group initial Vector delivery by the exact persisted lane.  Rows are admitted in mutation-id
+/// order, so pushing into each lane preserves that order while preventing one Vector call from
+/// combining different graph shards even when they share a Vector target.
+fn group_initial_vector_rows_by_lane(
+    rows: AcceptedVertexEmbeddingItems,
+) -> BTreeMap<(Principal, gleaph_graph_kernel::federation::ShardId), AcceptedVertexEmbeddingItems> {
+    let mut groups = BTreeMap::new();
+    for row in rows {
+        groups
+            .entry((row.0.vector_target, row.0.shard_id))
+            .or_insert_with(Vec::new)
+            .push(row);
+    }
+    groups
+}
+
+/// Deliver accepted rows through their exact persisted lanes. The publisher is the production
+/// Vector call in the canister and a capturing callback in native tests, while the lane grouping
+/// and outcome application remain one canonical orchestration path.
+async fn deliver_initial_vector_rows<F, Fut>(
+    rows: AcceptedVertexEmbeddingItems,
+    results: &mut [Result<
+        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+        String,
+    >],
+    mut publish: F,
+) where
+    F: FnMut(Principal, Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>) -> Fut,
+    Fut: std::future::Future<
+            Output = Result<gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome, String>,
+        >,
+{
+    for ((vector_target, _shard_id), lane_rows) in group_initial_vector_rows_by_lane(rows) {
+        let submitted: Vec<_> = lane_rows.iter().map(|(row, _)| row.clone()).collect();
+        let operations: Vec<_> = submitted
+            .iter()
+            .map(crate::facade::stable::vector_ingest_outbox::VectorIngestOutboxState::vector_operation)
+            .collect();
+        let outcome = match publish(vector_target, operations).await {
+            Ok(outcome) => outcome,
+            Err(_) => continue,
+        };
+        let applied = match outcome {
+            gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied }
+            | gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Terminal {
+                applied, ..
+            } => applied as usize,
+        };
+        if crate::facade::stable::vector_ingest_outbox::apply_outcome(&submitted, outcome).is_err()
+        {
+            continue;
+        }
+        for (index, (row, original_index)) in lane_rows.into_iter().enumerate() {
+            if index < applied {
+                results[original_index] = Ok(
+                    gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
+                        embedding_version: row.mutation_id,
+                        projection_outcome:
+                            gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::Applied,
+                    },
+                );
+            }
+        }
+    }
+}
+
 /// Validate and resolve the complete batch before consuming any mutation IDs.
 fn prepare_vertex_embedding_items(
     items: Vec<types::AdminIngestVertexEmbeddingBatchItem>,
@@ -418,7 +490,8 @@ fn prepare_vertex_embedding_items(
 /// Ingest finite F32 vertex embeddings via the Router-initiated two-call flow (ADR 0064 §6):
 /// Router → Graph `stamp_embedding` (validate metadata against a `mutation_id`, no byte storage), then
 /// Router → Vector (bytes + stamp). The graph holds no embedding bytes; the vector canister is the
-/// sole owner. Items are validated up front and grouped by target graph canister.
+/// sole owner. Items are validated up front and delivered by exact Vector target and graph-shard
+/// lane.
 #[update]
 async fn ingest_vertex_embeddings(
     args: types::AdminIngestVertexEmbeddingBatchArgs,
@@ -541,6 +614,9 @@ async fn ingest_vertex_embeddings(
             Ok(crate::graph_client::GraphStampOutcome::Rejected(error)) => {
                 if crate::facade::stable::vector_ingest_outbox::observe_graph_reject(&row).is_ok() {
                     results[original_index] = Err(error);
+                    // Graph rejection resolves the exact mutation only after its durable
+                    // AwaitingFrontier marker is published and observed by Vector.
+                    has_pending_intent = true;
                 } else {
                     results[original_index] = pending_result(row.mutation_id);
                     has_pending_intent = true;
@@ -557,42 +633,12 @@ async fn ingest_vertex_embeddings(
         crate::recovery::arm_if_needed();
     }
 
-    if !vector_rows.is_empty() {
-        let submitted: Vec<_> = vector_rows.iter().map(|(row, _)| row.clone()).collect();
-        let operations: Vec<_> = submitted
-            .iter()
-            .map(crate::facade::stable::vector_ingest_outbox::VectorIngestOutboxState::vector_operation)
-            .collect();
-        let outcome = match crate::vector_sync::vector_sync_batch_outcome(
-            vector_canister,
-            operations,
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => return Ok(results),
-        };
-        let applied = match outcome {
-            gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied }
-            | gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Terminal {
-                applied, ..
-            } => applied as usize,
-        };
-        if crate::facade::stable::vector_ingest_outbox::apply_outcome(&submitted, outcome).is_err()
-        {
-            return Ok(results);
-        }
-        for (index, (row, original_index)) in vector_rows.into_iter().enumerate() {
-            if index < applied {
-                results[original_index] = Ok(
-                    gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
-                        embedding_version: row.mutation_id,
-                        projection_outcome: gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::Applied,
-                    },
-                );
-            }
-        }
-    }
+    deliver_initial_vector_rows(
+        vector_rows,
+        &mut results,
+        crate::vector_sync::vector_sync_batch_outcome,
+    )
+    .await;
 
     Ok(results)
 }
@@ -871,6 +917,21 @@ fn test_arm_fault(code: u8) -> Result<(), RouterError> {
     Ok(())
 }
 
+/// Test-only (`pocket-ic-e2e`): inspect the mutation ceiling and exact durable direct-ingestion
+/// outbox identities. Rows are returned in stable key order and values are not decoded.
+#[cfg(feature = "pocket-ic-e2e")]
+#[query]
+fn test_vector_ingest_probe() -> Result<
+    (
+        u64,
+        Vec<(u64, Principal, gleaph_graph_kernel::federation::ShardId, u8)>,
+    ),
+    RouterError,
+> {
+    auth::require_admin(&msg_caller())?;
+    Ok(crate::facade::stable::vector_ingest_outbox::test_outbox_probe())
+}
+
 /// Test-only (`pocket-ic-e2e`): inspect the durable bulk-load Start allocation boundary for one
 /// client key. This exposes only the mutation counter, optional bound mutation id, and identity
 /// family so an ingress-trap test can prove IC message rollback without adding production API.
@@ -975,10 +1036,13 @@ mod vertex_embedding_validation_tests {
     use candid::Principal;
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::{
-        ElementIdEncodingKey, GlobalVertexId, ShardId, ShardRegistryEntry, encode_global_vertex_id,
+        ElementIdEncodingKey, GlobalVertexId, LocalVertexId, ShardId, ShardRegistryEntry,
+        encode_global_vertex_id,
     };
     use gleaph_graph_kernel::vector_index::{
         IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
+        VectorSyncBatchOutcome, VectorSyncTerminalError, VertexEmbeddingIngestionResult,
+        VertexEmbeddingProjectionOutcome,
     };
 
     fn reset_router_state() {
@@ -1042,6 +1106,164 @@ mod vertex_embedding_validation_tests {
 
     fn mutation_counter() -> u64 {
         crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get())
+    }
+
+    fn accepted_row(
+        mutation_id: u64,
+        local_vertex_id: u32,
+        vector_target: Principal,
+        shard_id: ShardId,
+    ) -> crate::facade::stable::vector_ingest_outbox::VectorIngestOutboxState {
+        vector_ingest_outbox::intent_for_test(
+            vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id: GraphId::from_raw(1),
+                graph_target: Principal::self_authenticating([3; 32]),
+                vector_target,
+                shard_id,
+                local_vertex_id: LocalVertexId::from(local_vertex_id),
+                spec: spec(),
+                bytes: vec![local_vertex_id as u8, 0, 0, 0],
+            },
+            mutation_id,
+            vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
+        )
+    }
+
+    #[test]
+    fn initial_vector_delivery_publishes_and_applies_each_exact_lane() {
+        let _guard = vector_ingest_outbox::test_lock();
+        vector_ingest_outbox::clear_for_test();
+
+        let shared_target = Principal::from_slice(&[1]);
+        let other_target = Principal::from_slice(&[2]);
+        let shard_a = ShardId::new(11);
+        let shard_b = ShardId::new(12);
+        let shard_c = ShardId::new(13);
+        let rows = vec![
+            (accepted_row(10, 1, shared_target, shard_a), 0),
+            (accepted_row(11, 2, shared_target, shard_b), 1),
+            (accepted_row(12, 3, shared_target, shard_a), 2),
+            (accepted_row(13, 4, other_target, shard_c), 3),
+            (accepted_row(14, 5, other_target, shard_c), 4),
+        ];
+        vector_ingest_outbox::insert_intents_for_test(
+            &rows.iter().map(|(row, _)| row.clone()).collect::<Vec<_>>(),
+        )
+        .expect("seed accepted rows");
+
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let calls_for_publisher = calls.clone();
+        let mut results: Vec<Result<VertexEmbeddingIngestionResult, String>> = rows
+            .iter()
+            .map(|(row, _)| {
+                Ok(VertexEmbeddingIngestionResult {
+                    embedding_version: row.mutation_id,
+                    projection_outcome: VertexEmbeddingProjectionOutcome::Pending,
+                })
+            })
+            .collect();
+
+        futures::executor::block_on(super::deliver_initial_vector_rows(
+            rows.clone(),
+            &mut results,
+            move |vector_target, operations| {
+                let shard_id = operations
+                    .first()
+                    .expect("a published lane is nonempty")
+                    .subject
+                    .shard_id();
+                let mutation_ids: Vec<_> = operations.iter().map(|op| op.mutation_id).collect();
+                calls_for_publisher
+                    .borrow_mut()
+                    .push((vector_target, shard_id, mutation_ids));
+                let outcome = match (vector_target, shard_id) {
+                    (target, shard) if target == shared_target && shard == shard_a => {
+                        VectorSyncBatchOutcome::Progress { applied: 1 }
+                    }
+                    (target, shard) if target == shared_target && shard == shard_b => {
+                        VectorSyncBatchOutcome::Terminal {
+                            applied: 0,
+                            failed_index: 0,
+                            error: VectorSyncTerminalError::SubjectTablePressure,
+                        }
+                    }
+                    (target, shard) if target == other_target && shard == shard_c => {
+                        VectorSyncBatchOutcome::Progress { applied: 2 }
+                    }
+                    _ => panic!("unexpected Vector lane {vector_target} / {shard_id:?}"),
+                };
+                async move { Ok(outcome) }
+            },
+        ));
+
+        let mut calls = calls.borrow().clone();
+        calls.sort_unstable_by_key(|(vector_target, shard_id, _)| (*vector_target, *shard_id));
+        assert_eq!(
+            calls,
+            vec![
+                (shared_target, shard_a, vec![10, 12]),
+                (shared_target, shard_b, vec![11]),
+                (other_target, shard_c, vec![13, 14]),
+            ],
+            "the initial loop must publish each exact lane in mutation order"
+        );
+        assert_eq!(
+            results,
+            vec![
+                Ok(VertexEmbeddingIngestionResult {
+                    embedding_version: 10,
+                    projection_outcome: VertexEmbeddingProjectionOutcome::Applied,
+                }),
+                Ok(VertexEmbeddingIngestionResult {
+                    embedding_version: 11,
+                    projection_outcome: VertexEmbeddingProjectionOutcome::Pending,
+                }),
+                Ok(VertexEmbeddingIngestionResult {
+                    embedding_version: 12,
+                    projection_outcome: VertexEmbeddingProjectionOutcome::Pending,
+                }),
+                Ok(VertexEmbeddingIngestionResult {
+                    embedding_version: 13,
+                    projection_outcome: VertexEmbeddingProjectionOutcome::Applied,
+                }),
+                Ok(VertexEmbeddingIngestionResult {
+                    embedding_version: 14,
+                    projection_outcome: VertexEmbeddingProjectionOutcome::Applied,
+                }),
+            ],
+            "each lane outcome must update only its own original result positions"
+        );
+        assert_eq!(
+            vector_ingest_outbox::scan(None, 8)
+                .0
+                .into_iter()
+                .map(|row| (row.mutation_id, row.phase))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    10,
+                    vector_ingest_outbox::VectorIngestIntentPhase::AwaitingFrontier
+                ),
+                (
+                    11,
+                    vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector
+                ),
+                (
+                    12,
+                    vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector
+                ),
+                (
+                    13,
+                    vector_ingest_outbox::VectorIngestIntentPhase::AwaitingFrontier
+                ),
+                (
+                    14,
+                    vector_ingest_outbox::VectorIngestIntentPhase::AwaitingFrontier
+                ),
+            ],
+            "outbox transitions must follow each lane's applied prefix"
+        );
+        vector_ingest_outbox::clear_for_test();
     }
 
     #[test]
