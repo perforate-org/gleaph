@@ -411,6 +411,31 @@ pub(crate) fn edge_posting_matches_registration(
     }
 }
 
+/// Distinct `(catalog edge label id, registration direction)` pairs carrying at least one
+/// Active index membership, sorted by catalog label id.
+///
+/// Backfill enumeration expands each pair into the concrete wire labels (directed and/or
+/// undirected packing) it must scan.
+pub(crate) fn active_indexed_edge_label_registrations() -> Vec<(u16, EdgeIndexDirection)> {
+    with_catalog(
+        |catalog| {
+            let mut out: Vec<(u16, EdgeIndexDirection)> = Vec::new();
+            for membership in &catalog.edge_indexes {
+                if !membership.phase.is_active() {
+                    continue;
+                }
+                let pair = (membership.label_id, membership.direction);
+                if !out.contains(&pair) {
+                    out.push(pair);
+                }
+            }
+            out.sort_by_key(|(label_id, _)| *label_id);
+            out
+        },
+        Vec::new(),
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn enter_vertex_indexed(property_ids: &[PropertyId]) -> CatalogGuard {
     enter(IndexedPropertyCatalog {

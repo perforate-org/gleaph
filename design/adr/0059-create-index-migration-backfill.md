@@ -3,7 +3,7 @@
 Date: 2026-08-03
 Status: accepted
 Last revised: 2026-08-20
-Anchor timestamp: 2026-08-20 14:53:06 UTC +0000
+Anchor timestamp: 2026-08-22 18:49:58 UTC +0000
 Implementation status: Partially implemented. The versioned artifact/wire, Router durable
 lifecycle and migration ledger, Active-only planner gate, Graph canonical export scope,
 graph-index build worker/state, and the production Router cross-canister driver with seal/drain
@@ -273,7 +273,10 @@ Positive:
 - Selector resolution, target identity, epoch fences, and `PhysicalIndexId` records make retries and
   upgrades deterministic.
 - One opaque export API prevents duplicate inline/sidecar/vertex scanners and keeps storage layout
-  encapsulated.
+  encapsulated. Implemented: the Graph edge-property export enumerates both canonical value
+  domains — sidecar `EDGE_PROPERTIES` rows first, then canonical edges carrying indexed inline
+  property bytes — under one domain-tagged opaque cursor, so an index on an eligible INLINE
+  property converges pre-existing values before activation.
 
 Costs and limits:
 

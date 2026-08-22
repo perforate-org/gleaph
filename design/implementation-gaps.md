@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
+Anchor timestamp: 2026-08-22 18:49:58 UTC +0000
 
 ## Status
 
@@ -1045,7 +1045,23 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-001 — Existing INLINE values are not included by property-index backfill
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22; the Graph edge-property export now enumerates both canonical
+  value domains under one opaque cursor: sidecar `EDGE_PROPERTIES` rows first, then canonical
+  edges carrying indexed inline values, decoded through the same `inline_index_values`
+  membership resolution mutations use. The cursor carries a domain tag byte
+  (`0x00` sidecar key, `0x01` inline `(wire label, owner)` position); untagged legacy cursors
+  are rejected cleanly. Inline enumeration visits outgoing rows only and keeps the exact
+  mutation identity — directed forward rows always, undirected max-endpoint rows only — so no
+  mirror double-posting and every later Remove can address what backfill inserted. A vertex
+  started within budget is collected fully (resume advances between vertices), so resume never
+  skips or replays an identity; `done` is true only after both domains exhaust.
+  ADR 0059's one-opaque-export consequence is now implemented as written. Owning tests:
+  `backfill_enumerates_indexed_inline_scalar_values`,
+  `backfill_emits_only_the_canonical_undirected_owner`,
+  `backfill_resume_walks_both_domains_without_duplicate_identities`,
+  `unversioned_backfill_cursor_is_rejected`. Deferred: focused PocketIC E2E/upgrade validation
+  of the full create-index lifecycle over inline data remains open follow-up, tracked by this
+  entry's Next decision context.)
 - **Severity:** P0 index correctness
 - **Owner:** Router backfill orchestration and Graph inline-property backfill boundary
 - **Observed behavior:** The edge-property backfill scans canonical `EDGE_PROPERTIES` only. Existing
