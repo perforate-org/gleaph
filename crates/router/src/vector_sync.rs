@@ -21,6 +21,27 @@ use gleaph_graph_kernel::vector_index::{
 };
 use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 
+#[cfg(all(test, not(target_family = "wasm")))]
+thread_local! {
+    static TEST_DETACH_SHARD_HOOK: std::cell::RefCell<
+        Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>>,
+    > =
+        const { std::cell::RefCell::new(None) };
+    static TEST_DETACH_SHARD_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Install a one-shot host continuation at the successful Vector detach response boundary.
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn set_test_detach_shard_hook(hook: impl std::future::Future<Output = ()> + 'static) {
+    TEST_DETACH_SHARD_HOOK.with_borrow_mut(|current| *current = Some(Box::pin(hook)));
+    TEST_DETACH_SHARD_CALLS.set(0);
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn test_detach_shard_call_count() -> u32 {
+    TEST_DETACH_SHARD_CALLS.get()
+}
+
 // The attach-handshake helpers below are only driven by `finish_shard_vector_attach`, which is itself
 // `#[cfg(not(pocket-ic-e2e))]` (the e2e harness drives the handshake legs from the test instead). The
 // search helper, by contrast, is the real read path and must stay live under e2e.
@@ -100,6 +121,13 @@ pub async fn admin_detach_shard_from_vector(
     _vector_canister: Principal,
     _shard_id: ShardId,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        TEST_DETACH_SHARD_CALLS.set(TEST_DETACH_SHARD_CALLS.get() + 1);
+        if let Some(hook) = TEST_DETACH_SHARD_HOOK.with_borrow_mut(Option::take) {
+            hook.await;
+        }
+    }
     Ok(())
 }
 

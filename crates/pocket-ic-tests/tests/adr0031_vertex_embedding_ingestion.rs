@@ -791,6 +791,209 @@ fn graph_response_loss_preserves_pregraph_intent_across_router_upgrade() {
 }
 
 #[test]
+fn graph_only_markerless_lane_advances_frontier_on_autonomous_timer() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
+    register(&env, vector);
+    fully_activate(&env, vector);
+
+    let seeded = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let expected_seeded_id = vertex_element_id(&env);
+
+    // The Vector storage owner must reject even the authorized Router when the exact shard is not
+    // attached. This probes the fail-closed check below the public caller guard before the real
+    // markerless lane lifecycle starts.
+    let unattached_before = vector_frontier_probe(&env, vector, seeded.local_vertex_id);
+    let unattached_receipt_before = vector_frontier_receipt_probe(&env, vector);
+    let unattached_bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "admin_advance_router_frontier",
+            Encode!(&ShardId::new(1), &1_u64)
+                .expect("encode unattached markerless frontier publication"),
+        )
+        .expect("unattached markerless frontier publication call");
+    let unattached_result: Result<(), String> = Decode!(&unattached_bytes, Result<(), String>)
+        .expect("decode unattached markerless frontier publication");
+    assert_eq!(
+        unattached_result,
+        Err("caller is not an attached graph shard".to_string())
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, seeded.local_vertex_id),
+        unattached_before,
+        "an unattached exact lane must preserve all frontier and subject state"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        unattached_receipt_before,
+        "an unattached exact lane must not record a successful frontier receipt"
+    );
+
+    // Allocate m1 with ordinary Graph DML, then seed the chosen subject through the production
+    // Graph-owned typed batch boundary. This creates no Router direct-ingestion intent or setup
+    // marker in MemoryId 53.
+    let setup =
+        gql_mutate_result_as_admin(&env, "INSERT (:User)", "markerless-frontier-setup-ceiling");
+    let m1 = setup
+        .token
+        .as_ref()
+        .expect("setup Graph mutation token")
+        .mutation_id;
+    let setup_upsert = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: seeded.local_vertex_id,
+        },
+        mutation_id: m1,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        bytes: vec_bytes(6.0),
+        remove: false,
+    };
+    let setup_bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.graph_source,
+            "vector_sync_batch_outcome",
+            Encode!(&vec![setup_upsert]).expect("encode Graph-owned setup batch"),
+        )
+        .expect("Graph-owned setup batch call");
+    let setup_outcome: Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable> = Decode!(
+        &setup_bytes,
+        Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable>
+    )
+    .expect("decode Graph-owned setup batch");
+    assert_eq!(
+        setup_outcome,
+        Ok(VectorSyncBatchOutcome::Progress { applied: 1 })
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (m1, Vec::new()),
+        "Graph-owned setup must leave the Router direct-ingestion outbox empty"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, seeded.local_vertex_id),
+        (m1, 0, Some((m1, false)), false, None),
+        "Graph-owned setup must advance only the Graph watermark and retain the live subject"
+    );
+    assert_eq!(
+        router_vector_search_subjects(&env, 6.0),
+        vec![expected_seeded_id.clone()],
+        "the bounded Graph-owned setup must create the exact live subject"
+    );
+
+    // The Graph-only delete raises the Router allocation ceiling without creating a direct-ingest
+    // row. Until the ordinary Router timer publishes the markerless frontier, the exact deleted
+    // clock and deleted-list entry remain as the replay fence.
+    let delete = gql_mutate_result_as_admin(
+        &env,
+        "MATCH (v:User) DETACH DELETE v",
+        "markerless-frontier-graph-delete",
+    );
+    let m2 = delete
+        .token
+        .as_ref()
+        .expect("Graph delete mutation token")
+        .mutation_id;
+    assert!(m2 > m1, "Graph delete must raise the mutation ceiling");
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (m2, Vec::new()),
+        "Graph-only delete must not synthesize a Router MemoryId 53 marker"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, seeded.local_vertex_id),
+        (m2, 0, Some((m2, true)), true, None),
+        "the Graph watermark must lead while the Router frontier still gates physical GC"
+    );
+    assert!(
+        router_vector_search_subjects(&env, 6.0).is_empty(),
+        "the Graph tombstone must hide the exact subject before physical collection"
+    );
+
+    // Lose the successful frontier response after Vector commits its monotonic watermark and GC.
+    // No direct recovery ingress is used: simulated time and ordinary ticks fire the Router timer.
+    let receipt_before_loss = vector_frontier_receipt_probe(&env, vector).0;
+    arm_router_fault(&env, FRONTIER_REPLY_AFTER_COMMIT_FAULT);
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        vector_frontier_probe(&env, vector, seeded.local_vertex_id),
+        (m2, m2, None, false, None),
+        "the markerless timer must advance the Router watermark and physically collect the exact tombstone"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (receipt_before_loss + 1, Some((ShardId::new(0).raw(), m2))),
+        "the lost response must follow one committed markerless frontier call"
+    );
+    assert_eq!(
+        router_vector_ingest_probe(&env),
+        (m2, Vec::new()),
+        "markerless response loss must not create a durable Router retry row"
+    );
+    assert!(
+        router_vector_search_subjects(&env, 6.0).is_empty(),
+        "physical collection must not resurrect the exact deleted subject"
+    );
+
+    // Router and Vector upgrades reset only heap scheduling/receipt state. Stable catalog
+    // rediscovery retries the same safe ceiling through the ordinary post-upgrade timer.
+    env.pic
+        .upgrade_canister(
+            env.router,
+            wasm_bytes("ROUTER_WASM"),
+            Encode!(&()).expect("encode Router upgrade args"),
+            None,
+        )
+        .expect("upgrade Router after markerless response loss");
+    env.pic
+        .upgrade_canister(
+            vector,
+            wasm_bytes("VECTOR_INDEX_WASM"),
+            Encode!(&()).expect("encode Vector upgrade args"),
+            None,
+        )
+        .expect("upgrade Vector after markerless response loss");
+    assert_eq!(
+        vector_frontier_probe(&env, vector, seeded.local_vertex_id),
+        (m2, m2, None, false, None),
+        "Vector upgrade must preserve the watermark and physical collection"
+    );
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (0, None),
+        "Vector upgrade must reset only the heap-only receipt"
+    );
+    assert_eq!(router_vector_ingest_probe(&env), (m2, Vec::new()));
+
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        vector_frontier_receipt_probe(&env, vector),
+        (1, Some((ShardId::new(0).raw(), m2))),
+        "post-upgrade catalog rediscovery must retry the markerless frontier autonomously"
+    );
+    assert_eq!(
+        vector_frontier_probe(&env, vector, seeded.local_vertex_id),
+        (m2, m2, None, false, None),
+        "the idempotent retry must preserve physical GC and the monotonic watermark"
+    );
+    assert_eq!(router_vector_ingest_probe(&env), (m2, Vec::new()));
+    assert!(
+        router_vector_search_subjects(&env, 6.0).is_empty(),
+        "the exact deleted subject must not resurrect after restart and retry"
+    );
+}
+
+#[test]
 fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
     let env = install_single_shard_federation();
     let vector = install_vector_canister(&env.pic, env.router);

@@ -2,11 +2,12 @@
 //
 // The model compares three Router watermark policies over two target/shard lanes.
 // The Contiguous candidate derives each lane's frontier from the durable global
-// mutation allocation ceiling and exact unresolved Router intents. Admission
-// persists an intent before its first Graph await; Graph rejection and exact
-// Vector-prefix observation move it to a durable frontier marker. Frontier
-// publication, apply, response loss, marker retirement, GC, and restart remain
-// separate actions.
+// mutation allocation ceiling and exact unresolved Router intents. PrimaryLane
+// admits direct intents; SecondaryLane is a fixed catalog-discovered attached
+// lane that may never have one. Admission persists an intent before its first
+// Graph await; Graph rejection and exact Vector-prefix observation move it to a
+// durable frontier marker. Marker-backed or markerless frontier publication,
+// apply, response loss, observation, GC, and restart remain separate actions.
 // Embedding bytes, Candid sizing, ANN maintenance, timer cadence, stable-memory
 // representation, fairness, and topology changes are deliberately abstracted.
 module routerVectorTombstoneGc {
@@ -115,11 +116,12 @@ module routerVectorTombstoneGc {
     kind: Upsert,
   }
 
-  pure val M14_SECONDARY_UPSERT: Operation = {
+  // This remove is Graph-owned and creates no Router direct-ingestion intent.
+  pure val M14_SECONDARY_REMOVE: Operation = {
     stamp: 14,
     lane: SecondaryLane,
     subject: SecondarySubject,
-    kind: Upsert,
+    kind: Remove,
   }
 
   pure val M11_REMOVE: Operation = {
@@ -129,8 +131,10 @@ module routerVectorTombstoneGc {
     kind: Remove,
   }
 
-  pure val ROUTER_OPERATIONS: Set[Operation] =
-    Set(M10_UPSERT, M12_UPSERT, M14_SECONDARY_UPSERT)
+  pure val ROUTER_OPERATIONS: Set[Operation] = Set(M10_UPSERT, M12_UPSERT)
+
+  // These are the bounded model's fixed, exact catalog-attached lanes. Catalog
+  // traversal, attachment changes, rotation, and timing are outside the model.
   pure val LANES: Set[Lane] = Set(PrimaryLane, SecondaryLane)
 
   var policy: Policy
@@ -305,16 +309,12 @@ module routerVectorTombstoneGc {
     current.operation.stamp <= frontier,
   })
 
-  // Contiguous publication is marker-driven: a lane with no safe marker has
-  // no durable work to publish and remains at its current Vector watermark.
-  // This keeps the exact-lane marker set as the sole lane-discovery owner.
-
-  // The bounded operation domain has stamps 10, 12, and 14. The oldest
-  // unresolved stamp in one exact target/shard lane blocks only that lane.
+  // The bounded direct-intent domain has stamps 10 and 12. The oldest
+  // unresolved stamp in one exact target/shard lane blocks only that lane;
+  // SecondaryLane has no direct intent and therefore reaches allocatedThrough.
   pure def contiguousFrontier(state: RouterState, lane: Lane): int =
     if (hasUnresolvedStamp(state, lane, 10)) { 9 }
     else if (hasUnresolvedStamp(state, lane, 12)) { 11 }
-    else if (hasUnresolvedStamp(state, lane, 14)) { 13 }
     else { state.allocatedThrough }
 
   pure def computedRouterFrontier(
@@ -381,6 +381,14 @@ module routerVectorTombstoneGc {
       ...afterRemove,
       primaryGraphWatermark: 11,
       latestTargetRemoveStamp: 11,
+    }
+  }
+
+  pure def applySecondaryGraphRemove(state: VectorState): VectorState = {
+    val afterRemove = applyVectorOperation(state, M14_SECONDARY_REMOVE)
+    {
+      ...afterRemove,
+      secondaryGraphWatermark: 14,
     }
   }
 
@@ -658,6 +666,20 @@ module routerVectorTombstoneGc {
     lastAction' = GraphRemoveAction,
   }
 
+  // This Graph-owned remove consumes the global stamp without creating any
+  // Router intent or frontier marker for SecondaryLane.
+  action applyGraphOnlyRemoveM14: bool = all {
+    routerState.allocatedThrough == 13,
+    vectorState.secondaryClock == Missing,
+    policy' = policy,
+    routerState' = { ...routerState, allocatedThrough: 14 },
+    vectorState' = applySecondaryGraphRemove(vectorState),
+    graphTransport' = graphTransport,
+    vectorTransport' = vectorTransport,
+    frontierTransport' = frontierTransport,
+    lastAction' = GraphRemoveAction,
+  }
+
   action dispatchRouterFrontier(lane: Lane): bool = {
     val frontier = computedRouterFrontier(policy, routerState, lane)
     val markers = frontierMarkerSnapshot(routerState, lane, frontier)
@@ -666,10 +688,13 @@ module routerVectorTombstoneGc {
       or {
         frontier > routerWatermarkForLane(vectorState, lane),
         markers.size() > 0,
-      },
-      or {
-        policy != Contiguous,
-        markers.size() > 0,
+        // Contiguous catalog discovery may dispatch an empty exact marker
+        // snapshot, including an idempotent retry after response loss/restart.
+        and {
+          policy == Contiguous,
+          frontier > 0,
+          markers.size() == 0,
+        },
       },
       policy' = policy,
       routerState' = routerState,
@@ -760,6 +785,20 @@ module routerVectorTombstoneGc {
     | _ => disabled
   }
 
+  action gcSecondaryClock: bool = match vectorState.secondaryClock {
+    | Deleted(stamp) => all {
+        stamp <= gcCutoff(vectorState, SecondaryLane),
+        policy' = policy,
+        routerState' = routerState,
+        vectorState' = { ...vectorState, secondaryClock: Missing },
+        graphTransport' = graphTransport,
+        vectorTransport' = vectorTransport,
+        frontierTransport' = frontierTransport,
+        lastAction' = SubjectClockGcAction,
+      }
+    | _ => disabled
+  }
+
   action restart: bool = all {
     or {
       graphTransport != GraphIdle,
@@ -796,6 +835,38 @@ module routerVectorTombstoneGc {
   val subjectClockGcWitness: bool = lastAction == SubjectClockGcAction
   val restartWitness: bool = lastAction == RestartAction
 
+  val markerlessFrontierDispatchWitness: bool =
+    match frontierTransport {
+      | FrontierDelivered(message) => and {
+          policy == Contiguous,
+          lastAction == FrontierDispatchAction,
+          message.markers == Set(),
+        }
+      | _ => false
+    }
+
+  val markerlessGraphOnlyRemoveWitness: bool = and {
+    lastAction == GraphRemoveAction,
+    routerState.allocatedThrough == 14,
+    vectorState.secondaryClock == Deleted(14),
+    vectorState.secondaryGraphWatermark == 14,
+  }
+
+  val markerlessGraphOnlyGcWitness: bool = and {
+    lastAction == SubjectClockGcAction,
+    routerState.allocatedThrough == 14,
+    vectorState.secondaryClock == Missing,
+    vectorState.secondaryGraphWatermark == 14,
+    vectorState.secondaryRouterWatermark >= 14,
+  }
+
+  val sameLaneOutstandingBoundWitness: bool = and {
+    policy == Contiguous,
+    lastAction == FrontierApplyAction,
+    hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+    vectorState.primaryRouterWatermark == 9,
+  }
+
   val routerOwnershipPartition: bool = and {
     routerState.intents.forall(current => and {
       ROUTER_OPERATIONS.contains(current.operation),
@@ -816,6 +887,11 @@ module routerVectorTombstoneGc {
           routerWatermarkForLane(vectorState, current.operation.lane),
       }
     )
+
+  val routerWatermarksWithinAllocation: bool = and {
+    vectorState.primaryRouterWatermark <= routerState.allocatedThrough,
+    vectorState.secondaryRouterWatermark <= routerState.allocatedThrough,
+  }
 
   // Removing a subject clock is unsafe while an older exact Router operation
   // remains durable and may still reach Vector after Graph validation or replay.
@@ -842,6 +918,7 @@ module routerVectorTombstoneGc {
   val protocolSafety: bool = and {
     routerOwnershipPartition,
     frontierDoesNotPassOutstanding,
+    routerWatermarksWithinAllocation,
     noUnsafeFenceCollection,
     noStaleResurrection,
   }
@@ -875,6 +952,7 @@ module routerVectorTombstoneGc {
     hasIntent(routerState, M10_UPSERT),
     vectorState.primaryRouterWatermark <= 9,
     vectorState.secondaryRouterWatermark >= 14,
+    vectorState.secondaryClock == Deleted(14),
   }
 
   action step: bool = {
@@ -897,11 +975,13 @@ module routerVectorTombstoneGc {
       loseVectorResponse,
       observeVectorResponse,
       applyGraphRemoveM11,
+      applyGraphOnlyRemoveM14,
       dispatchRouterFrontier(lane),
       applyRouterFrontierMessage,
       loseFrontierResponse,
       observeFrontierResponse,
       gcTargetClock,
+      gcSecondaryClock,
       restart,
     }
   }

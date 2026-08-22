@@ -43,6 +43,7 @@ use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -186,10 +187,69 @@ pub(crate) type StableAuthState = AuthState<Memory>;
 
 // --- registry ---
 pub(crate) type StableGraphRegistry = BTreeMap<GraphId, GraphRegistryEntry, Memory>;
-pub(crate) type StableShardRegistry = BTreeMap<GraphShardKey, ShardRegistryEntry, Memory>;
+pub(crate) type StableShardRegistry = BTreeMap<GraphShardKey, RouterShardState, Memory>;
 pub(crate) type StableShardByGraph = BTreeMap<Principal, GraphShardKey, Memory>;
 pub(crate) type StableShardsByGraphId = BTreeMap<GraphId, GraphShardList, Memory>;
 pub(crate) type StableGraphRuntimeConfigMap = BTreeMap<GraphId, GraphRuntimeConfig, Memory>;
+
+/// Canonical Router-owned state for one registered shard.
+///
+/// [`ShardRegistryEntry`] is the public routing projection consumed across the Router boundary.
+/// `vector_attach_epoch` is an internal durable fence: every new same-row Vector claim captures
+/// it, unregister invalidates it, and only the exact epoch may publish Vector readiness after an
+/// await. Keeping both in one MemoryId-2 value gives the Router one write owner without exposing
+/// orchestration identity on the public shard-registry API.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RouterShardState {
+    pub(crate) entry: ShardRegistryEntry,
+    pub(crate) vector_attach_epoch: u64,
+}
+
+impl RouterShardState {
+    pub(crate) const fn new(entry: ShardRegistryEntry) -> Self {
+        Self {
+            entry,
+            vector_attach_epoch: 0,
+        }
+    }
+}
+
+impl From<ShardRegistryEntry> for RouterShardState {
+    fn from(entry: ShardRegistryEntry) -> Self {
+        Self::new(entry)
+    }
+}
+
+impl Deref for RouterShardState {
+    type Target = ShardRegistryEntry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entry
+    }
+}
+
+impl DerefMut for RouterShardState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entry
+    }
+}
+
+impl ic_stable_structures::Storable for RouterShardState {
+    const BOUND: ic_stable_structures::storable::Bound =
+        ic_stable_structures::storable::Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode RouterShardState"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode RouterShardState")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), RouterShardState).expect("decode RouterShardState")
+    }
+}
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GraphRuntimeConfig {
@@ -687,6 +747,37 @@ mod tests {
         let reopened: BTreeMap<GraphId, GraphRuntimeConfig, _> =
             BTreeMap::init(reopened_manager.get(MemoryId::new(0)));
         assert_eq!(reopened.get(&graph_id), Some(expected));
+    }
+
+    #[test]
+    fn router_shard_state_reopen_preserves_vector_attach_epoch() {
+        let memory = VectorMemory::default();
+        let manager = ic_stable_structures::memory_manager::MemoryManager::init(memory.clone());
+        let mut shards: BTreeMap<GraphShardKey, RouterShardState, _> =
+            BTreeMap::init(manager.get(MemoryId::new(0)));
+        let graph_id = GraphId::from_raw(7);
+        let key = GraphShardKey::new(graph_id, ShardId::new(3));
+        let expected = RouterShardState {
+            entry: ShardRegistryEntry {
+                shard_id: key.shard_id,
+                graph_canister: Principal::from_slice(&[7; 29]),
+                index_canister: Principal::from_slice(&[8; 29]),
+                graph_id,
+                registered_at_ns: 123,
+                index_attached: true,
+                vector_canister: Some(Principal::from_slice(&[9; 29])),
+                vector_index_attached: false,
+            },
+            vector_attach_epoch: 42,
+        };
+        shards.insert(key, expected.clone());
+        drop(shards);
+        drop(manager);
+
+        let reopened_manager = ic_stable_structures::memory_manager::MemoryManager::init(memory);
+        let reopened: BTreeMap<GraphShardKey, RouterShardState, _> =
+            BTreeMap::init(reopened_manager.get(MemoryId::new(0)));
+        assert_eq!(reopened.get(&key), Some(expected));
     }
 
     #[test]

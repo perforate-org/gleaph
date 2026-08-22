@@ -16,6 +16,7 @@ use super::super::stable::{
 use super::registry_invariants::check_registry_invariants;
 use crate::facade::auth;
 use crate::facade::stable::constraint_catalog;
+use crate::facade::stable::memory::RouterShardState;
 use crate::facade::stable::{vector_index_catalog, vector_ingest_outbox};
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::index_sync;
@@ -73,6 +74,27 @@ fn validate_registration_principals(entry: &GraphRegistryEntry) -> Result<(), Ro
 const ELEMENT_ID_KEY_DERIVATION_DOMAIN: &[u8] = b"gleaph:element-id-key:v1";
 /// Deterministic entropy for host unit tests and `admin_register_graph` (not IC `raw_rand`).
 const HOST_GRAPH_REGISTRATION_ENTROPY: &[u8] = b"router-test-entropy-seed-000000000000";
+
+/// Exact durable ownership proof for one in-flight Vector attach handshake.
+///
+/// Same-target retries share the current claim. A new claim after unregister receives a new epoch,
+/// so a delayed pre-unregister finalizer cannot publish readiness for the newer operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct VectorAttachClaim {
+    pub(super) vector_canister: Principal,
+    pub(super) epoch: u64,
+}
+
+/// Exact durable ownership proof for one in-flight shard unregister operation.
+///
+/// The claim is derived from the canonical shard row before the first detach await. Any
+/// re-registration or later unregister advances the epoch, so an older continuation cannot detach
+/// or remove the newer row even when the Vector target principal is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ShardUnregisterClaim {
+    pub(super) vector_target: Option<Principal>,
+    pub(super) epoch: u64,
+}
 
 fn shard_group_index(shard_id: ShardId, index_group_size: u32) -> Result<usize, RouterError> {
     crate::index_route::index_group_index(shard_id, index_group_size).ok_or_else(|| {
@@ -165,7 +187,11 @@ fn rollback_failed_shard_registration(
     graph_id: GraphId,
     shard_id: ShardId,
 ) -> Result<(), RouterError> {
-    let _ = RouterStore::commit_unregister_shard(graph_id, shard_id)?;
+    let key = GraphShardKey::new(graph_id, shard_id);
+    let state = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .ok_or(RouterError::ShardNotRegistered)?;
+    let _ = RouterStore::commit_remove_shard_registry_row(graph_id, shard_id, state)?;
     reconcile_index_cluster_after_shard_removal(graph_id)
 }
 
@@ -318,7 +344,7 @@ impl RouterStore {
 
         runtime.next_shard_id = next_shard_id;
         ROUTER_SHARDS.with_borrow_mut(|s| {
-            s.insert(key, entry);
+            s.insert(key, entry.into());
         });
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
             m.insert(graph_canister, key);
@@ -337,45 +363,57 @@ impl RouterStore {
         Self::verify_registry_invariants_after_commit()
     }
 
-    /// Atomically removes shard registry, canister map, and per-graph shard index.
-    pub(super) fn commit_unregister_shard(
+    /// Atomically removes shard registry, canister map, and per-graph shard index after the caller
+    /// has completed every owner-local preflight in the same no-await message segment.
+    fn commit_remove_shard_registry_row(
         graph_id: GraphId,
         shard_id: ShardId,
+        state: RouterShardState,
     ) -> Result<ShardRegistryEntry, RouterError> {
         let key = GraphShardKey::new(graph_id, shard_id);
-        let entry = ROUTER_SHARDS
-            .with_borrow(|s| s.get(&key))
-            .ok_or(RouterError::ShardNotRegistered)?;
-        if let Some(vector_canister) = entry.vector_canister
-            && vector_ingest_outbox::has_pending_for_target_shard(vector_canister, shard_id)
-        {
-            return Err(RouterError::Conflict(format!(
-                "cannot unregister shard {shard_id:?} while direct vector-ingest work targets {vector_canister}"
-            )));
-        }
-
         ROUTER_SHARDS.with_borrow_mut(|s| {
             s.remove(&key);
         });
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
-            m.remove(&entry.graph_canister);
+            m.remove(&state.graph_canister);
         });
         ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|index| {
-            let Some(mut list) = index.get(&entry.graph_id) else {
+            let Some(mut list) = index.get(&state.graph_id) else {
                 return;
             };
             list.shard_ids.retain(|id| *id != shard_id);
             if list.shard_ids.is_empty() {
-                index.remove(&entry.graph_id);
+                index.remove(&state.graph_id);
             } else {
-                index.insert(entry.graph_id, list);
+                index.insert(state.graph_id, list);
             }
         });
         // Backfill cursors are derived state owned by the retiring shard.
         super::backfill::purge_backfill_state(key);
 
         Self::verify_registry_invariants_after_commit()?;
-        Ok(entry)
+        Ok(state.entry)
+    }
+
+    /// Atomically revalidates the exact unregister owner and removes only that lifecycle's row.
+    pub(super) fn commit_finish_shard_unregister(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        claim: ShardUnregisterClaim,
+    ) -> Result<ShardRegistryEntry, RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        let state = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .ok_or(RouterError::ShardNotRegistered)?;
+        Self::ensure_current_shard_unregister_claim(&state, shard_id, claim)?;
+        if let Some(vector_canister) = state.vector_canister
+            && vector_ingest_outbox::has_pending_for_target_shard(vector_canister, shard_id)
+        {
+            return Err(RouterError::Conflict(format!(
+                "cannot unregister shard {shard_id:?} while direct vector-ingest work targets {vector_canister}"
+            )));
+        }
+        Self::commit_remove_shard_registry_row(graph_id, shard_id, state)
     }
 
     fn commit_set_shard_index_attached(
@@ -391,6 +429,92 @@ impl RouterStore {
             Ok(())
         })?;
         Self::verify_registry_invariants_after_commit()
+    }
+
+    /// Completes index re-registration for an existing shard row. The first completion advances
+    /// the durable epoch and clears the target, fencing both pre-unregister attach finalizers and
+    /// delayed unregister continuations. A concurrent duplicate that observes an already attached
+    /// row is an exact no-op and cannot erase a newer Vector claim.
+    fn commit_complete_shard_index_reregistration(
+        graph_id: GraphId,
+        shard_id: ShardId,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut state = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            if state.index_attached {
+                return Ok(());
+            }
+            let next_epoch = state
+                .vector_attach_epoch
+                .checked_add(1)
+                .ok_or_else(|| RouterError::IdExhausted("vector attach epoch".into()))?;
+            state.index_attached = true;
+            state.vector_canister = None;
+            state.vector_index_attached = false;
+            state.vector_attach_epoch = next_epoch;
+            shards.insert(key, state);
+            Ok(())
+        })?;
+        Self::verify_registry_invariants_after_commit()
+    }
+
+    /// Starts canonical shard unregister before the first remote detach await by revoking both
+    /// readiness bits and advancing the Vector attach fence in one row write. The exact Vector
+    /// target remains durable so a lost detach response can retry the same owner.
+    pub(super) fn commit_begin_shard_unregister(
+        graph_id: GraphId,
+        shard_id: ShardId,
+    ) -> Result<ShardUnregisterClaim, RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        let claim = ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut state = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            let next_epoch = state
+                .vector_attach_epoch
+                .checked_add(1)
+                .ok_or_else(|| RouterError::IdExhausted("vector attach epoch".into()))?;
+            state.index_attached = false;
+            state.vector_index_attached = false;
+            state.vector_attach_epoch = next_epoch;
+            let claim = ShardUnregisterClaim {
+                vector_target: state.vector_canister,
+                epoch: next_epoch,
+            };
+            shards.insert(key, state);
+            Ok(claim)
+        })?;
+        Self::verify_registry_invariants_after_commit()?;
+        Ok(claim)
+    }
+
+    fn ensure_current_shard_unregister_claim(
+        state: &RouterShardState,
+        shard_id: ShardId,
+        claim: ShardUnregisterClaim,
+    ) -> Result<(), RouterError> {
+        if state.vector_attach_epoch != claim.epoch
+            || state.vector_canister != claim.vector_target
+            || state.index_attached
+            || state.vector_index_attached
+        {
+            return Err(RouterError::Conflict(format!(
+                "stale shard unregister claim for shard {shard_id:?}: target {:?} epoch {} no longer owns the unregistering row",
+                claim.vector_target, claim.epoch
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_shard_unregister_claim(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        claim: ShardUnregisterClaim,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        let state = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .ok_or(RouterError::ShardNotRegistered)?;
+        Self::ensure_current_shard_unregister_claim(&state, shard_id, claim)
     }
 
     /// Retrofit an existing (indexless) shard's index target to a newly provisioned index canister.
@@ -488,6 +612,29 @@ impl RouterStore {
         }
     }
 
+    /// Re-establishes the property-index attachment for a retained unregister row. The remote
+    /// attach must succeed before the existing row is made index-ready and its pre-unregister
+    /// Vector claim is invalidated in one no-await commit.
+    async fn complete_shard_index_reregistration(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        #[cfg(feature = "pocket-ic-e2e")]
+        {
+            let _ = (index_canister, graph_canister);
+            Self::commit_complete_shard_index_reregistration(graph_id, shard_id)
+        }
+
+        #[cfg(not(feature = "pocket-ic-e2e"))]
+        {
+            Self::attach_shard_to_index(graph_id, shard_id, index_canister, graph_canister).await?;
+            Self::commit_complete_shard_index_reregistration(graph_id, shard_id)
+        }
+    }
+
     /// Retrofit an existing (indexless) shard onto a newly provisioned index canister (ADR 0035
     /// Slice 10). The remote attach runs first so a failure leaves the shard indexless (no partial
     /// state); only a successful attach flips the shard's index target. Unlike
@@ -511,50 +658,121 @@ impl RouterStore {
         }
     }
 
-    /// Records this shard's derived vector-index target and durable readiness bit (ADR 0031
-    /// Slice 4). The final step of the vector attach handshake; the `vector_index_attached` bit is
-    /// the registry-side proxy for "graph-local routing set *and* shard attached to the vector
-    /// canister", mirroring `index_attached`.
-    fn commit_claim_shard_vector_target(
+    /// Claims this shard's derived Vector target before the first await. A new target claim advances
+    /// the durable epoch, while an in-flight same-target duplicate reuses the exact claim.
+    pub(super) fn commit_claim_shard_vector_target(
         graph_id: GraphId,
         shard_id: ShardId,
         vector_canister: Principal,
-    ) -> Result<(), RouterError> {
+    ) -> Result<VectorAttachClaim, RouterError> {
         let key = GraphShardKey::new(graph_id, shard_id);
-        ROUTER_SHARDS.with_borrow_mut(|shards| {
-            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
-            match entry.vector_canister {
+        let claim = ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut state = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            match state.vector_canister {
                 None => {
-                    entry.vector_canister = Some(vector_canister);
-                    entry.vector_index_attached = false;
-                    shards.insert(key, entry);
-                    Ok(())
+                    let epoch = state
+                        .vector_attach_epoch
+                        .checked_add(1)
+                        .ok_or_else(|| RouterError::IdExhausted("vector attach epoch".into()))?;
+                    state.vector_canister = Some(vector_canister);
+                    state.vector_index_attached = false;
+                    state.vector_attach_epoch = epoch;
+                    shards.insert(key, state);
+                    Ok(VectorAttachClaim {
+                        vector_canister,
+                        epoch,
+                    })
                 }
-                Some(current) if current == vector_canister => Ok(()),
+                Some(current) if current == vector_canister => Ok(VectorAttachClaim {
+                    vector_canister,
+                    epoch: state.vector_attach_epoch,
+                }),
                 Some(current) => Err(RouterError::Conflict(format!(
                     "shard {shard_id:?} already claims vector target {current}, not {vector_canister}"
                 ))),
             }
         })?;
-        Self::verify_registry_invariants_after_commit()
+        Self::verify_registry_invariants_after_commit()?;
+        Ok(claim)
     }
 
-    fn commit_set_shard_vector_attached(
-        graph_id: GraphId,
+    fn ensure_current_vector_attach_claim(
+        state: &RouterShardState,
         shard_id: ShardId,
+        claim: VectorAttachClaim,
+    ) -> Result<(), RouterError> {
+        if state.vector_attach_epoch != claim.epoch {
+            return Err(RouterError::Conflict(format!(
+                "stale vector attach claim for shard {shard_id:?}: epoch {} is not current epoch {}",
+                claim.epoch, state.vector_attach_epoch
+            )));
+        }
+        if state.vector_canister != Some(claim.vector_canister) {
+            return Err(RouterError::Conflict(format!(
+                "shard {shard_id:?} vector target is {:?}, not {}",
+                state.vector_canister, claim.vector_canister
+            )));
+        }
+        Ok(())
+    }
+
+    /// Preflight the global exact-lane identity before publishing the durable vector-readiness
+    /// bit. `shard_id` is graph-local, while direct-ingestion outbox keys are `(target, shard)`;
+    /// two fully attached catalog rows with the same pair would therefore have ambiguous durable
+    /// ownership. This scan is the attach write boundary and catches duplicates spanning any
+    /// bounded discovery page.
+    fn ensure_unique_attached_vector_lane(
+        key: GraphShardKey,
         vector_canister: Principal,
     ) -> Result<(), RouterError> {
-        let key = GraphShardKey::new(graph_id, shard_id);
-        ROUTER_SHARDS.with_borrow_mut(|shards| {
-            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
-            if entry.vector_canister != Some(vector_canister) {
+        ROUTER_SHARDS.with_borrow(|shards| {
+            if shards.iter().any(|lazy| {
+                let other_key = *lazy.key();
+                if other_key == key {
+                    return false;
+                }
+                let other = lazy.value();
+                other.index_attached
+                    && other.vector_index_attached
+                    && other.vector_canister == Some(vector_canister)
+                    && other.shard_id == key.shard_id
+            }) {
                 return Err(RouterError::Conflict(format!(
-                    "shard {shard_id:?} vector target is {:?}, not {vector_canister}",
-                    entry.vector_canister
+                    "vector target {vector_canister} already owns an attached shard {:?}",
+                    key.shard_id
                 )));
             }
-            entry.vector_index_attached = true;
-            shards.insert(key, entry);
+            Ok(())
+        })
+    }
+
+    pub(super) fn commit_set_shard_vector_attached(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        claim: VectorAttachClaim,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow(|shards| {
+            let state = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            Self::ensure_current_vector_attach_claim(&state, shard_id, claim)?;
+            if !state.index_attached {
+                return Err(RouterError::Conflict(
+                    "shard is not index-attached; vector readiness cannot be committed".into(),
+                ));
+            }
+            Ok(())
+        })?;
+        Self::ensure_unique_attached_vector_lane(key, claim.vector_canister)?;
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut state = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            Self::ensure_current_vector_attach_claim(&state, shard_id, claim)?;
+            if !state.index_attached {
+                return Err(RouterError::Conflict(
+                    "shard is not index-attached; vector readiness cannot be committed".into(),
+                ));
+            }
+            state.vector_index_attached = true;
+            shards.insert(key, state);
             Ok::<(), RouterError>(())
         })?;
         Self::verify_registry_invariants_after_commit()
@@ -565,7 +783,7 @@ impl RouterStore {
         &self,
         graph_id: GraphId,
         shard_id: ShardId,
-        vector_canister: Principal,
+        claim: VectorAttachClaim,
         graph_canister: Principal,
     ) -> Result<(), RouterError> {
         // The durable shard claim is made by `admin_attach_vector_index_shard` before entering this
@@ -573,7 +791,7 @@ impl RouterStore {
         // remote attach; a failed await therefore leaves an exact, retryable target claim.
         // Step 1: make the shard's *local* routing carry the target before anything observes it as
         // ready.
-        vector_sync::admin_set_graph_vector_canister(graph_canister, vector_canister)
+        vector_sync::admin_set_graph_vector_canister(graph_canister, claim.vector_canister)
             .await
             .map_err(RouterError::Internal)?;
         // Step 2: attach the shard to the vector canister so it accepts the shard's subject sync.
@@ -582,34 +800,34 @@ impl RouterStore {
         // property `index_group_size` would split a multi-shard graph into per-shard groups the
         // single target rejects).
         vector_sync::admin_attach_shard_to_vector(
-            vector_canister,
+            claim.vector_canister,
             graph_id,
             shard_id,
             graph_canister,
         )
         .await
         .map_err(RouterError::Internal)?;
-        // Step 3: only now flip the durable readiness bit; the predicate gates dispatch on it. The
-        // target is not rewritten here, so an A/B attach race cannot overwrite the durable claim.
-        Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister)
+        // Step 3: only the exact target-and-epoch claim may flip the durable readiness bit; the
+        // predicate gates dispatch on it.
+        Self::commit_set_shard_vector_attached(graph_id, shard_id, claim)
     }
 
     async fn complete_shard_vector_attach(
         &self,
         graph_id: GraphId,
         shard_id: ShardId,
-        vector_canister: Principal,
+        claim: VectorAttachClaim,
         graph_canister: Principal,
     ) -> Result<(), RouterError> {
         #[cfg(feature = "pocket-ic-e2e")]
         {
             let _ = graph_canister;
-            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister)
+            Self::commit_set_shard_vector_attached(graph_id, shard_id, claim)
         }
 
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
-            self.finish_shard_vector_attach(graph_id, shard_id, vector_canister, graph_canister)
+            self.finish_shard_vector_attach(graph_id, shard_id, claim, graph_canister)
                 .await
         }
     }
@@ -667,20 +885,34 @@ impl RouterStore {
                 conflict.vector_canister,
             )));
         }
+        let key = GraphShardKey::new(graph_id, args.shard_id);
         if entry.vector_index_attached && entry.vector_canister == Some(args.vector_canister) {
+            Self::ensure_unique_attached_vector_lane(key, args.vector_canister)?;
+            // An idempotent attach is still a valid wake-up boundary: a prior timer may have
+            // stopped while this durable lane remained attached.
+            crate::recovery::arm_if_needed();
             return Ok(());
         }
+        // Scan the complete stable catalog before claiming the candidate row. The final attach
+        // commit repeats this preflight after the remote handshake because another shard can
+        // complete concurrently while this request awaits; this first check keeps a known lane
+        // conflict atomic for the public attach operation.
+        Self::ensure_unique_attached_vector_lane(key, args.vector_canister)?;
         // Claim the exact definition target in the existing durable shard row before the first
         // await. A second concurrent request therefore observes the claim synchronously and can
         // only replay the same target; a different target is rejected without any remote call.
-        Self::commit_claim_shard_vector_target(graph_id, args.shard_id, args.vector_canister)?;
-        self.complete_shard_vector_attach(
-            graph_id,
-            args.shard_id,
-            args.vector_canister,
-            entry.graph_canister,
-        )
-        .await
+        let claim =
+            Self::commit_claim_shard_vector_target(graph_id, args.shard_id, args.vector_canister)?;
+        let result = self
+            .complete_shard_vector_attach(graph_id, args.shard_id, claim, entry.graph_canister)
+            .await;
+        if result.is_ok() {
+            // The catalog row is fully vector-attached only after the remote handshake and the
+            // durable readiness bit commit. Wake the existing recovery timer at that boundary;
+            // no separate marker or timer is needed for markerless Graph-owned lanes.
+            crate::recovery::arm_if_needed();
+        }
+        result
     }
 
     /// Predicate gating production vector dispatch/backfill for a graph (ADR 0031 Slice 4). True
@@ -1229,7 +1461,7 @@ impl RouterStore {
             }
             if !existing.index_attached {
                 return self
-                    .complete_shard_index_attach(
+                    .complete_shard_index_reregistration(
                         graph_id,
                         existing.shard_id,
                         args.index_canister,
@@ -1350,11 +1582,15 @@ impl RouterStore {
             .filter(|graph| *graph != departing_graph)
             .collect();
 
-        Self::commit_set_shard_index_attached(graph_id, shard_id, false)?;
-        // Keep the exact Vector target and attachment identity in the row until the remote detach
-        // reaches EOF. The shard is already non-live through `index_attached = false`, while a
-        // failed bounded purge must retain enough identity for an exact retry.
+        let claim = Self::commit_begin_shard_unregister(graph_id, shard_id)?;
+        // Keep the exact Vector target in the row until the remote detach reaches EOF. Both
+        // readiness bits are already false, while a failed bounded purge must retain enough
+        // identity for an exact retry.
 
+        // No newer registration may own the row when Graph detach is issued. The Graph Index owner
+        // generation-fences the remote session until EOF; this Router claim fences the continuation
+        // after each response boundary.
+        Self::ensure_shard_unregister_claim(graph_id, shard_id, claim)?;
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
             index_sync::admin_detach_shard_canister(entry.index_canister, shard_id)
@@ -1362,13 +1598,17 @@ impl RouterStore {
                 .map_err(RouterError::Internal)?;
         }
 
-        if let Some(vector_canister) = entry.vector_canister {
+        // A re-registration can complete after the Graph detach response and before this callback
+        // resumes. Revalidate before issuing Vector detach so the old operation cannot target a
+        // newer same-principal attachment.
+        Self::ensure_shard_unregister_claim(graph_id, shard_id, claim)?;
+        if let Some(vector_canister) = claim.vector_target {
             vector_sync::admin_detach_shard_from_vector(vector_canister, shard_id)
                 .await
                 .map_err(RouterError::Internal)?;
         }
 
-        Self::commit_unregister_shard(graph_id, shard_id)?;
+        Self::commit_finish_shard_unregister(graph_id, shard_id, claim)?;
         reconcile_index_cluster_after_shard_removal(graph_id)?;
 
         #[cfg(target_family = "wasm")]

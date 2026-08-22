@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 11:04:51 UTC +0000
+Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
 ## Purpose
 
@@ -299,8 +299,11 @@ The Router then calls the typed-only Vector endpoint `vector_sync_batch_outcome`
 failed row and later suffix as `AwaitingVector`. Transport, typed-unavailable, or malformed replies
 leave all submitted rows pending in their current phases. The bounded recovery timer retries all
 three phases through their exact immutable targets. Each pass may key-scan up to the bounded
-1,024-entry compact outbox while decoding at most the selected 16 payloads, and publishes at most one
-exact `(Vector target, shard)` frontier lane per pass. Router `post_upgrade` re-arms the timer.
+1,024-entry compact outbox while decoding at most the selected 16 payloads. It also scans a bounded
+canonical Router shard-catalog page and publishes at most one exact, fully attached `(Vector target,
+shard)` frontier lane per pass, even when that lane has no MemoryId 53 marker. The catalog cursor
+advances before the await and wraps only after a complete lap, so a failed lane cannot monopolize
+successive ticks. Router `post_upgrade` re-arms the timer.
 Appending work calls `recovery::arm_if_needed()`; an arm raised while a pass is awaiting a remote call
 is latched and re-arms the floor delay after an empty pass, preventing a lost wake. A heap-only guard
 excludes mutation IDs still driven by their originating API call from timer recovery; an upgrade
@@ -310,33 +313,50 @@ Each batch adaptively fits a prefix from a complete Candid encode below the
 driver processes internal chunks of at most 32 rows. This is durable at-least-once retry/convergence
 without a finite-time guarantee or client-level exactly-once semantics.
 
-For each marked lane, Router derives the frontier from the oldest unresolved exact-lane
-`AwaitingGraph | AwaitingVector` intent minus one, or the durable mutation allocation ceiling when
-none remains, and dispatches only if at least one `AwaitingFrontier` marker is covered. The Router-only
-Vector endpoint rechecks Router ownership and exact shard attachment, applies the frontier
-monotonically to MemoryId 15, and runs one bounded tombstone-GC step in the same no-await update.
-The GC cutoff remains `min(graph_watermark, router_watermark)`. After an observed acknowledgement,
-Router retires only the unchanged marker snapshot captured before the call; response loss retains it.
-Graph-only lanes that never produce a marker remain deferred. The focused frontier lifecycle gate
-passes exactly one PocketIC test in 25.67s using one `PocketIc`, one federation bootstrap, and four
-canister installs (Router, Property Index, Graph, Vector). It covers response loss, Router/Vector
-upgrades, exact retry and marker retirement, GC gating and physical collection, and stale-resurrection
-prevention. Router and Vector tests, checks, and clippy pass. The unfiltered Router
-`canbench --persist` run took approximately 190 seconds across 38 suites with no regressions and
-recorded 49,374,533 instructions for the single-lane derivation and 56,304,312 for the 1,024-lane
-derivation; the stable-reopen baseline was refreshed because canbench 0.7 expanded the reopen surface,
-not because of a compact-key regression. The unfiltered Vector run took approximately 181 seconds
-across 83 suites with zero
-regressions and recorded 2,106,603,774 instructions for the frontier-plus-GC budget. The targeted
-affected-crate format check passes; the workspace-wide format check is blocked by unrelated dirty
-paths and never passed. The bounded Quint evidence is not production proof.
+For each selected fully attached catalog lane, Router derives the frontier from the oldest unresolved
+exact-lane `AwaitingGraph | AwaitingVector` intent minus one, or the durable mutation allocation
+ceiling when none remains. Other lanes do not lower that frontier, and a markerless lane may publish
+an empty marker snapshot. The Router-only Vector endpoint rechecks Router ownership and exact shard
+attachment, applies the frontier monotonically to MemoryId 15, and runs one bounded tombstone-GC
+step in the same no-await update. The GC cutoff remains `min(graph_watermark, router_watermark)`.
+After an observed acknowledgement, Router retires only the unchanged marker snapshot captured before
+the call; markerless publication retires no Router row and response loss leaves marker-backed rows
+durable for retry. MemoryId 2 keeps the public shard projection and Router-private Vector attach epoch
+in one canonical row. Unregister advances that epoch while clearing `index_attached` and
+`vector_index_attached` before the first detach await, and retains the exact Vector target for detach
+retry. A successful existing-row index re-registration then atomically clears that target while
+preserving the fence and restoring only `index_attached`. A new explicit same-target attach advances
+the epoch again; any pre-unregister finalizer exact-conflicts, and only the new claim can restore
+readiness.
+
+The focused Graph-only markerless lifecycle gate
+`graph_only_markerless_lane_advances_frontier_on_autonomous_timer` passes exactly one test with seven
+filtered tests, one `PocketIc`, one federation bootstrap, and four canister installs (Router,
+Property Index, Graph, Vector). It covers an empty MemoryId 53 lane, ordinary timer dispatch,
+applied-but-lost response, upgrade rediscovery, and physical collection under the
+`min(graph_watermark, router_watermark)` cutoff. The persisted Router artifact has all 41 terminal
+benchmark entries; `markerless_frontier_catalog` records exactly 52,080,138 total instructions and
+52,079,143 instructions in its benchmark scope. The focused non-persisted Vector
+`bench_router_frontier_gc_budget` run recorded 2,106,603,774 instructions. The dated Plan 0277
+focused/persisted baseline records 2,110,300,092 total and 2,110,299,087 scoped instructions; the
+later live artifact currently records 2,084,327,695 total and 2,084,326,690 scoped instructions
+from unrelated work and is not Plan 0277 evidence. Nine exact Router owner unit tests and
+`cargo check -p gleaph-router --tests` pass. Router all-target/all-feature clippy is blocked only by
+unrelated unused imports and one needless borrow in `crates/router/src/prepared.rs`;
+production-library strict clippy passes with no markerless diagnostic. The Quint refinement passes
+15/15 deterministic tests and both 5,000-sample depth-35
+safe-policy runs with all requested witnesses; `quint verify` is unrun and non-required. The
+targeted affected-crate format check passes; the workspace-wide format check is blocked by
+unrelated dirty paths and never passed. These runtime, benchmark, and bounded formal results do not
+prove finite-time frontier liveness or a global tombstone-GC bound.
 
 The prior targeted PocketIC lifecycle gates each ran one exact test and passed:
 `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
 and `graph_response_loss_preserves_pregraph_intent_across_router_upgrade -- --exact --nocapture`.
 They cover the earlier Graph/Vector intent path, Router/Vector upgrades, exact GQL search, and
-idempotent replay. They do not cover autonomous wall-clock timer firing or a global watermark/tombstone
-GC completion bound; those remain outside this bounded safety slice.
+idempotent replay. The markerless gate is runtime evidence for one fully attached catalog lane, not a
+finite-time liveness or global watermark/tombstone-GC completion bound; those remain outside this
+bounded safety slice.
 
 ## Error model
 

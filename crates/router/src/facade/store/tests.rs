@@ -950,6 +950,633 @@ fn unregister_shard_with_vector_target_removes_vector_readiness_row() {
 }
 
 #[test]
+fn unregister_start_response_loss_then_register_requires_explicit_vector_reattach() {
+    use crate::facade::stable::{ROUTER_SHARDS, vector_activation};
+    use gleaph_graph_kernel::federation::GraphShardKey;
+
+    let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let shard_id = ShardId::new(0);
+    let graph_canister = graph_principal(1);
+    let index_canister = graph_principal(2);
+    let vector_canister = graph_principal(7);
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+    graph_type_catalog_vocabulary::register_vector_def(graph_id, 1, vector_canister);
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect("attach vector target");
+    vector_activation::set_vector_dispatch_globally_enabled(true);
+    assert!(store.graph_vector_dispatch_ready(graph_id));
+
+    // Model a Vector detach that committed remotely but whose response was lost: only the
+    // synchronous canonical unregister-start transition is observed, so the registry row and exact
+    // retry target remain.
+    RouterStore::commit_begin_shard_unregister(graph_id, shard_id)
+        .expect("begin unregister before detach await");
+    let key = GraphShardKey::new(graph_id, shard_id);
+    let unregistering = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("unregistering shard row");
+    assert!(!unregistering.index_attached);
+    assert!(
+        !unregistering.vector_index_attached,
+        "unregister start must revoke Vector readiness before the detach await"
+    );
+    assert_eq!(unregistering.vector_canister, Some(vector_canister));
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("re-register index attachment after lost detach response");
+    let reregistered = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("re-registered shard row");
+    assert!(reregistered.index_attached);
+    assert!(!reregistered.vector_index_attached);
+    assert_eq!(reregistered.vector_canister, None);
+    assert!(
+        reregistered.vector_attach_epoch > unregistering.vector_attach_epoch,
+        "index re-registration must advance the epoch that owns delayed unregister work"
+    );
+    assert!(
+        !store.graph_vector_dispatch_ready(graph_id),
+        "index re-registration alone must not restore full Vector readiness"
+    );
+
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect("explicit canonical Vector reattach");
+    assert!(store.graph_vector_dispatch_ready(graph_id));
+    vector_activation::set_vector_dispatch_globally_enabled(false);
+    assert_registry_invariants();
+}
+
+#[test]
+fn stale_vector_attach_finalizer_after_unregister_reregister_requires_new_attach() {
+    use crate::facade::stable::{ROUTER_SHARDS, graph_catalog, vector_activation};
+    use gleaph_graph_kernel::federation::GraphShardKey;
+
+    let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let shard_id = ShardId::new(0);
+    let graph_canister = graph_principal(1);
+    let index_canister = graph_principal(2);
+    let vector_canister = graph_principal(7);
+    let key = GraphShardKey::new(graph_id, shard_id);
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+    graph_type_catalog_vocabulary::register_vector_def(graph_id, 1, vector_canister);
+    vector_activation::set_vector_dispatch_globally_enabled(true);
+
+    let old_claim =
+        RouterStore::commit_claim_shard_vector_target(graph_id, shard_id, vector_canister)
+            .expect("claim old Vector attach target before await");
+    RouterStore::commit_begin_shard_unregister(graph_id, shard_id)
+        .expect("begin unregister while old Vector callback is pending");
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("re-register index attachment");
+
+    let reregistered = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("re-registered shard row");
+    assert!(reregistered.index_attached);
+    assert_eq!(reregistered.vector_canister, None);
+    assert!(!reregistered.vector_index_attached);
+
+    let error = RouterStore::commit_set_shard_vector_attached(graph_id, shard_id, old_claim)
+        .expect_err("old Vector attach finalizer must be stale after re-registration");
+    assert_eq!(
+        error,
+        RouterError::Conflict(format!(
+            "stale vector attach claim for shard {shard_id:?}: epoch {} is not current epoch {}",
+            old_claim.epoch, reregistered.vector_attach_epoch
+        ))
+    );
+    assert!(!store.graph_vector_dispatch_ready(graph_id));
+    assert_eq!(
+        graph_catalog::scan_attached_vector_lane(None)
+            .expect("scan catalog after stale finalizer")
+            .lane,
+        None,
+        "the stale finalizer must not make the lane discoverable"
+    );
+
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect("explicit new Vector attach");
+    assert!(store.graph_vector_dispatch_ready(graph_id));
+
+    vector_activation::set_vector_dispatch_globally_enabled(false);
+    assert_registry_invariants();
+}
+
+#[test]
+fn same_target_vector_reattach_claim_fences_delayed_pre_unregister_finalizer() {
+    use crate::facade::stable::{ROUTER_SHARDS, graph_catalog, vector_activation};
+    use gleaph_graph_kernel::federation::GraphShardKey;
+
+    let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let shard_id = ShardId::new(0);
+    let graph_canister = graph_principal(1);
+    let index_canister = graph_principal(2);
+    let vector_canister = graph_principal(7);
+    let key = GraphShardKey::new(graph_id, shard_id);
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+    let initially_registered = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("initial shard row");
+    assert!(initially_registered.index_attached);
+    assert_eq!(initially_registered.vector_canister, None);
+    assert!(!initially_registered.vector_index_attached);
+
+    graph_type_catalog_vocabulary::register_vector_def(graph_id, 1, vector_canister);
+    vector_activation::set_vector_dispatch_globally_enabled(true);
+
+    // Model the old Vector attach message after it has claimed the exact target but before its
+    // remote attach response invokes the local readiness finalizer.
+    let old_claim =
+        RouterStore::commit_claim_shard_vector_target(graph_id, shard_id, vector_canister)
+            .expect("claim old Vector attach target before await");
+    assert_eq!(
+        RouterStore::commit_claim_shard_vector_target(graph_id, shard_id, vector_canister)
+            .expect("concurrent duplicate shares the old claim"),
+        old_claim,
+        "a same-target duplicate before await must replay the in-flight claim"
+    );
+    let claimed = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("claimed shard row");
+    assert_eq!(claimed.vector_canister, Some(vector_canister));
+    assert!(!claimed.vector_index_attached);
+
+    RouterStore::commit_begin_shard_unregister(graph_id, shard_id)
+        .expect("begin unregister while old Vector callback is pending");
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("re-register index attachment");
+
+    let reregistered = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("re-registered shard row");
+    assert!(reregistered.index_attached);
+    assert_eq!(reregistered.vector_canister, None);
+    assert!(!reregistered.vector_index_attached);
+
+    // A new explicit attach to the same target claims the re-registered row before its remote
+    // await. The delayed finalizer below still belongs to the pre-unregister attach and must not
+    // satisfy this newer claim merely because the target principal is equal.
+    let new_claim =
+        RouterStore::commit_claim_shard_vector_target(graph_id, shard_id, vector_canister)
+            .expect("claim new same-target Vector attach before await");
+    assert_eq!(new_claim.vector_canister, old_claim.vector_canister);
+    assert!(
+        new_claim.epoch > old_claim.epoch,
+        "unregister and re-registration must fence the old same-target claim"
+    );
+    assert_eq!(
+        RouterStore::commit_claim_shard_vector_target(graph_id, shard_id, vector_canister)
+            .expect("concurrent duplicate shares the new claim"),
+        new_claim,
+        "a same-target duplicate must not supersede the current in-flight claim"
+    );
+
+    let error = RouterStore::commit_set_shard_vector_attached(graph_id, shard_id, old_claim)
+        .expect_err("old Vector attach finalizer must be stale after re-registration");
+    assert_eq!(
+        error,
+        RouterError::Conflict(format!(
+            "stale vector attach claim for shard {shard_id:?}: epoch {} is not current epoch {}",
+            old_claim.epoch, new_claim.epoch
+        ))
+    );
+    assert!(!store.graph_vector_dispatch_ready(graph_id));
+    assert_eq!(
+        graph_catalog::scan_attached_vector_lane(None)
+            .expect("scan catalog after stale finalizer")
+            .lane,
+        None,
+        "the stale finalizer must not make the lane discoverable"
+    );
+
+    RouterStore::commit_set_shard_vector_attached(graph_id, shard_id, new_claim)
+        .expect("new same-target Vector attach finalizer");
+    assert!(store.graph_vector_dispatch_ready(graph_id));
+    assert_eq!(
+        graph_catalog::scan_attached_vector_lane(None)
+            .expect("scan catalog after explicit Vector attach")
+            .lane,
+        Some(graph_catalog::AttachedVectorLane {
+            vector_target: vector_canister,
+            shard_id,
+        })
+    );
+
+    vector_activation::set_vector_dispatch_globally_enabled(false);
+    assert_registry_invariants();
+}
+
+#[test]
+fn delayed_unregister_cannot_detach_or_remove_new_same_target_ownership() {
+    use crate::facade::stable::ROUTER_SHARDS;
+    use gleaph_graph_kernel::federation::GraphShardKey;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let shard_id = ShardId::new(0);
+    let graph_canister = graph_principal(1);
+    let index_canister = graph_principal(2);
+    let vector_canister = graph_principal(7);
+    let key = GraphShardKey::new(graph_id, shard_id);
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+    graph_type_catalog_vocabulary::register_vector_def(graph_id, 1, vector_canister);
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect("attach initial Vector ownership");
+    let initial_epoch = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("initial attached row")
+        .vector_attach_epoch;
+
+    let old_unregister_epoch = Rc::new(Cell::new(None));
+    let observed_old_epoch = Rc::clone(&old_unregister_epoch);
+    crate::index_sync::set_test_detach_shard_hook(async move {
+        observed_old_epoch.set(Some(
+            ROUTER_SHARDS
+                .with_borrow(|shards| shards.get(&key))
+                .expect("old unregistering row")
+                .vector_attach_epoch,
+        ));
+        let concurrent = RouterStore::new();
+        concurrent
+            .admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id,
+                    graph_canister,
+                    index_canister,
+                    logical_graph_name: "tenant.main".into(),
+                },
+            )
+            .await
+            .expect("re-register while old unregister awaits Graph detach");
+        concurrent
+            .admin_attach_vector_index_shard(
+                admin,
+                AdminAttachVectorIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id,
+                    vector_canister,
+                },
+            )
+            .await
+            .expect("finalize newer same-target Vector ownership");
+    });
+    let vector_detach_called = Rc::new(Cell::new(false));
+    let observed = Rc::clone(&vector_detach_called);
+    crate::vector_sync::set_test_detach_shard_hook(async move { observed.set(true) });
+
+    let error =
+        futures::executor::block_on(store.admin_unregister_shard(admin, "tenant.main", shard_id))
+            .expect_err("old unregister continuation must conflict with newer ownership");
+    assert_eq!(
+        error,
+        RouterError::Conflict(format!(
+            "stale shard unregister claim for shard {shard_id:?}: target {:?} epoch {} no longer owns the unregistering row",
+            Some(vector_canister),
+            old_unregister_epoch
+                .get()
+                .expect("old unregister epoch observed during detach await")
+        ))
+    );
+    assert!(
+        !vector_detach_called.get(),
+        "old unregister must not issue Vector detach for the newer ownership"
+    );
+    let current = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("newer attached row must survive");
+    assert!(current.index_attached);
+    assert_eq!(current.vector_canister, Some(vector_canister));
+    assert!(current.vector_index_attached);
+    assert!(current.vector_attach_epoch > initial_epoch);
+    assert_registry_invariants();
+}
+
+#[test]
+fn delayed_unregister_final_commit_cannot_remove_new_same_target_ownership_after_vector_detach() {
+    use crate::facade::stable::{ROUTER_SHARDS, graph_catalog, vector_activation};
+    use gleaph_graph_kernel::federation::GraphShardKey;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let shard_id = ShardId::new(0);
+    let graph_canister = graph_principal(1);
+    let index_canister = graph_principal(2);
+    let vector_canister = graph_principal(7);
+    let key = GraphShardKey::new(graph_id, shard_id);
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id,
+            graph_canister,
+            index_canister,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+    graph_type_catalog_vocabulary::register_vector_def(graph_id, 1, vector_canister);
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect("attach initial Vector ownership");
+    vector_activation::set_vector_dispatch_globally_enabled(true);
+
+    let old_unregister_epoch = Rc::new(Cell::new(None));
+    let observed_epoch = Rc::clone(&old_unregister_epoch);
+    crate::vector_sync::set_test_detach_shard_hook(async move {
+        observed_epoch.set(Some(
+            ROUTER_SHARDS
+                .with_borrow(|shards| shards.get(&key))
+                .expect("old unregistering row after Vector detach response")
+                .vector_attach_epoch,
+        ));
+
+        // The old remote detach has completed. Before its Router continuation can remove the row,
+        // re-register the retained row and finish a new explicit attach to the same target.
+        let concurrent = RouterStore::new();
+        concurrent
+            .admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id,
+                    graph_canister,
+                    index_canister,
+                    logical_graph_name: "tenant.main".into(),
+                },
+            )
+            .await
+            .expect("re-register after the old Vector detach response");
+        concurrent
+            .admin_attach_vector_index_shard(
+                admin,
+                AdminAttachVectorIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id,
+                    vector_canister,
+                },
+            )
+            .await
+            .expect("finalize newer same-target Vector ownership");
+    });
+
+    let error =
+        futures::executor::block_on(store.admin_unregister_shard(admin, "tenant.main", shard_id))
+            .expect_err("old final commit must exact-conflict with newer ownership");
+    assert_eq!(
+        error,
+        RouterError::Conflict(format!(
+            "stale shard unregister claim for shard {shard_id:?}: target {:?} epoch {} no longer owns the unregistering row",
+            Some(vector_canister),
+            old_unregister_epoch
+                .get()
+                .expect("old unregister epoch observed after Vector detach")
+        ))
+    );
+    assert_eq!(
+        crate::vector_sync::test_detach_shard_call_count(),
+        1,
+        "the old unregister must complete exactly one Vector detach call"
+    );
+
+    let current = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&key))
+        .expect("newer attached row must survive the old final commit");
+    assert!(current.index_attached);
+    assert_eq!(current.vector_canister, Some(vector_canister));
+    assert!(current.vector_index_attached);
+    assert!(store.graph_vector_dispatch_ready(graph_id));
+    assert_eq!(
+        graph_catalog::scan_attached_vector_lane(None)
+            .expect("scan catalog after final-commit conflict")
+            .lane,
+        Some(graph_catalog::AttachedVectorLane {
+            vector_target: vector_canister,
+            shard_id,
+        })
+    );
+
+    vector_activation::set_vector_dispatch_globally_enabled(false);
+    assert_registry_invariants();
+}
+
+#[test]
+fn second_graph_same_vector_target_and_shard_cannot_duplicate_lane_ownership() {
+    use crate::facade::stable::ROUTER_SHARDS;
+    use gleaph_graph_kernel::federation::GraphShardKey;
+
+    let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    register_test_graph(&store, admin, "other.graph");
+    let first_graph_id = lookup_graph_id("tenant.main").expect("first graph id");
+    let second_graph_id = lookup_graph_id("other.graph").expect("second graph id");
+    let shard_id = ShardId::new(0);
+    let vector_canister = graph_principal(7);
+
+    for (logical_graph_name, graph_canister, index_canister) in [
+        ("tenant.main", graph_principal(1), graph_principal(2)),
+        ("other.graph", graph_principal(3), graph_principal(4)),
+    ] {
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id,
+                graph_canister,
+                index_canister,
+                logical_graph_name: logical_graph_name.into(),
+            },
+        ))
+        .expect("register graph-local shard zero");
+    }
+    graph_type_catalog_vocabulary::register_vector_def(first_graph_id, 1, vector_canister);
+    graph_type_catalog_vocabulary::register_vector_def(second_graph_id, 2, vector_canister);
+
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect("first graph owns exact lane");
+    let error = futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "other.graph".into(),
+            shard_id,
+            vector_canister,
+        },
+    ))
+    .expect_err("second graph cannot duplicate exact lane ownership");
+    assert!(
+        matches!(error, RouterError::Conflict(ref message) if message.contains("already owns an attached shard")),
+        "expected exact vector-lane Conflict, got {error:?}"
+    );
+
+    let first = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&GraphShardKey::new(first_graph_id, shard_id)))
+        .expect("first shard row");
+    let second = ROUTER_SHARDS
+        .with_borrow(|shards| shards.get(&GraphShardKey::new(second_graph_id, shard_id)))
+        .expect("second shard row");
+    assert!(first.index_attached && first.vector_index_attached);
+    assert_eq!(first.vector_canister, Some(vector_canister));
+    assert!(second.index_attached && !second.vector_index_attached);
+    assert_eq!(second.vector_canister, None);
+    assert_eq!(
+        ROUTER_SHARDS.with_borrow(|shards| {
+            shards
+                .iter()
+                .filter(|lazy| {
+                    let entry = lazy.value();
+                    entry.index_attached
+                        && entry.vector_index_attached
+                        && entry.vector_canister == Some(vector_canister)
+                        && entry.shard_id == shard_id
+                })
+                .count()
+        }),
+        1,
+        "the stable catalog must retain one exact lane owner"
+    );
+    assert_registry_invariants();
+}
+
+#[test]
 fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
@@ -5595,6 +6222,86 @@ pub(crate) mod graph_type_catalog_vocabulary {
             .expect("claimed shard row");
         assert_eq!(claimed.vector_canister, Some(target_a));
         assert!(!claimed.vector_index_attached);
+    }
+
+    #[test]
+    fn vector_attach_rejects_cross_page_duplicate_before_claiming_candidate() {
+        use crate::facade::stable::ROUTER_SHARDS;
+        use gleaph_graph_kernel::federation::{GraphShardKey, ShardRegistryEntry};
+
+        let _guard = crate::facade::stable::vector_ingest_outbox::test_lock();
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let target = graph_principal(7);
+        register_vector_def(graph_id, 1, target);
+        let candidate_key = GraphShardKey::new(graph_id, ShardId::new(0));
+        let candidate_before = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&candidate_key))
+            .expect("candidate shard row");
+
+        // Keep the candidate's exact (target, shard) lane only in the 65th eligible row. The
+        // first 64 rows use distinct shard lanes, so a page-limited preflight cannot see the
+        // duplicate while the actual attach write boundary must reject it.
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            for offset in 0..64u32 {
+                let filler_graph_id = GraphId::from_raw(graph_id.raw() + 1 + offset);
+                let shard_id = ShardId::new(offset + 1);
+                let key = GraphShardKey::new(filler_graph_id, shard_id);
+                shards.insert(
+                    key,
+                    ShardRegistryEntry {
+                        shard_id,
+                        graph_canister: Principal::from_slice(&[(100 + offset) as u8; 29]),
+                        index_canister: Principal::management_canister(),
+                        graph_id: filler_graph_id,
+                        registered_at_ns: 0,
+                        index_attached: true,
+                        vector_canister: Some(target),
+                        vector_index_attached: true,
+                    }
+                    .into(),
+                );
+            }
+            let duplicate_graph_id = GraphId::from_raw(graph_id.raw() + 65);
+            let duplicate_key = GraphShardKey::new(duplicate_graph_id, ShardId::new(0));
+            shards.insert(
+                duplicate_key,
+                ShardRegistryEntry {
+                    shard_id: ShardId::new(0),
+                    graph_canister: Principal::from_slice(&[200; 29]),
+                    index_canister: Principal::management_canister(),
+                    graph_id: duplicate_graph_id,
+                    registered_at_ns: 0,
+                    index_attached: true,
+                    vector_canister: Some(target),
+                    vector_index_attached: true,
+                }
+                .into(),
+            );
+        });
+
+        let error = futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_canister: target,
+            },
+        ))
+        .expect_err("cross-page duplicate lane must reject the attach");
+        assert!(
+            matches!(error, RouterError::Conflict(ref message) if message.contains("already owns an attached shard")),
+            "expected exact vector-lane Conflict, got {error:?}"
+        );
+        assert_eq!(
+            ROUTER_SHARDS.with_borrow(|shards| shards.get(&candidate_key)),
+            Some(candidate_before),
+            "duplicate rejection must leave the candidate row unattached"
+        );
+
+        ROUTER_SHARDS.with_borrow_mut(|shards| shards.clear_new());
     }
 
     #[test]

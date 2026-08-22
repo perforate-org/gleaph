@@ -455,4 +455,16 @@ benches:
         instructions: 83654777
         heap_increase: 1
         stable_memory_increase: 4
+  markerless_frontier_catalog:
+    total:
+      calls: 1
+      instructions: 52080138
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      markerless_frontier_catalog:
+        calls: 1
+        instructions: 52079143
+        heap_increase: 0
+        stable_memory_increase: 0
 version: 0.6.0

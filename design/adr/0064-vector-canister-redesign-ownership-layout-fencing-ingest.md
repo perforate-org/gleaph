@@ -7,7 +7,7 @@ Router artifact has all 41 terminal benchmark entries; targeted affected-crate f
 the workspace-wide format check is blocked by unrelated dirty paths; finite-time liveness and global
 subject-map growth remain deferred)
 Last revised: 2026-08-22
-Anchor timestamp: 2026-08-22 17:04:19 UTC +0000
+Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
 > **Summary.** The vector canister owns indexed embedding bytes; Graph holds zero embedding state.
 > Router-issued nonzero `mutation_id` stamps order direct ingestion against Graph DML removes. Router
@@ -196,8 +196,10 @@ upgrade rediscovery, and uses the Vector `min(graph_watermark, router_watermark)
 the deleted subject. The persisted Router artifact has all 41 terminal benchmark entries;
 `markerless_frontier_catalog` records exactly 52,080,138 total instructions and 52,079,143
 instructions in its benchmark scope. The focused non-persisted Vector
-`bench_router_frontier_gc_budget` run recorded 2,106,603,774 instructions; the current persisted
-artifact records 2,110,300,092 total and 2,110,299,087 scoped instructions. Eight exact Router owner unit tests and
+`bench_router_frontier_gc_budget` run recorded 2,106,603,774 instructions. The dated Plan 0277
+focused/persisted baseline records 2,110,300,092 total and 2,110,299,087 scoped instructions; the
+later live artifact currently records 2,084,327,695 total and 2,084,326,690 scoped instructions
+from unrelated work and is not Plan 0277 evidence. Nine exact Router owner unit tests and
 `cargo check -p gleaph-router --tests` pass. Router all-target/all-feature clippy is blocked only by
 unrelated unused imports and one needless borrow in `crates/router/src/prepared.rs`;
 production-library strict clippy passes with no markerless diagnostic. The targeted affected-crate

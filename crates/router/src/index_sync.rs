@@ -8,6 +8,19 @@ use gleaph_graph_kernel::federation::{IndexPostingPurgeCursor, IndexPostingPurge
 #[cfg(target_family = "wasm")]
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult};
 
+#[cfg(all(test, not(target_family = "wasm")))]
+thread_local! {
+    static TEST_DETACH_SHARD_HOOK: std::cell::RefCell<
+        Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>>,
+    > =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn set_test_detach_shard_hook(hook: impl std::future::Future<Output = ()> + 'static) {
+    TEST_DETACH_SHARD_HOOK.with_borrow_mut(|current| *current = Some(Box::pin(hook)));
+}
+
 #[cfg_attr(
     feature = "pocket-ic-e2e",
     expect(
@@ -103,6 +116,10 @@ pub async fn admin_detach_shard_canister(
     _index_canister: Principal,
     _shard_id: ShardId,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(hook) = TEST_DETACH_SHARD_HOOK.with_borrow_mut(Option::take) {
+        hook.await;
+    }
     Ok(())
 }
 

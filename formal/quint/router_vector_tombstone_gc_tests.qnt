@@ -138,7 +138,7 @@ module routerVectorTombstoneGcTests {
       })
   }
 
-  run frontierRetirementIsLaneScoped = {
+  run markerlessGraphOnlyRemovalAdvancesAndGcWithoutRetiringPrimaryMarkers = {
     initWithPolicy(Contiguous)
       .then(admitRouterOperation(M10_UPSERT))
       .then(dispatchGraph(M10_UPSERT))
@@ -150,20 +150,92 @@ module routerVectorTombstoneGcTests {
       .then(graphReject)
       .then(observeGraphReject)
       .then(allocateUnrelatedM13)
-      .then(admitRouterOperation(M14_SECONDARY_UPSERT))
-      .then(dispatchGraph(M14_SECONDARY_UPSERT))
-      .then(graphReject)
-      .then(observeGraphReject)
-      .then(dispatchRouterFrontier(PrimaryLane))
+      .then(applyGraphOnlyRemoveM14)
+      .expect(and {
+        vectorState.secondaryClock == Deleted(14),
+        vectorState.secondaryGraphWatermark == 14,
+        vectorState.secondaryRouterWatermark == 0,
+        frontierMarkerSnapshot(routerState, SecondaryLane, 14) == Set(),
+        markerlessGraphOnlyRemoveWitness,
+        protocolSafety,
+      })
+      .then(dispatchRouterFrontier(SecondaryLane))
+      .expect(frontierTransport == FrontierDelivered({
+        lane: SecondaryLane,
+        frontier: 14,
+        markers: Set(),
+      }))
       .then(applyRouterFrontierMessage)
       .then(observeFrontierResponse)
       .expect(and {
-        vectorState.primaryRouterWatermark == 14,
-        vectorState.secondaryRouterWatermark == 0,
-        not(hasIntent(routerState, M10_UPSERT)),
-        not(hasIntent(routerState, M12_UPSERT)),
-        hasIntentInPhase(routerState, M14_SECONDARY_UPSERT, AwaitingFrontier),
+        vectorState.primaryRouterWatermark == 0,
+        vectorState.secondaryRouterWatermark == 14,
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingFrontier),
+        hasIntentInPhase(routerState, M12_UPSERT, AwaitingFrontier),
+        vectorState.secondaryClock == Deleted(14),
+        frontierResponseObservationWitness,
         protocolSafety,
+      })
+      .then(gcSecondaryClock)
+      .expect(and {
+        vectorState.secondaryClock == Missing,
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingFrontier),
+        hasIntentInPhase(routerState, M12_UPSERT, AwaitingFrontier),
+        markerlessGraphOnlyGcWitness,
+        protocolSafety,
+      })
+  }
+
+  run secondaryLaneRemoveCannotBeAdmittedAsRouterIntent = {
+    initWithPolicy(Contiguous)
+      .then(admitRouterOperation(M10_UPSERT))
+      .then(applyGraphRemoveM11)
+      .then(admitRouterOperation(M12_UPSERT))
+      .then(allocateUnrelatedM13)
+      .expect(and {
+        routerState.allocatedThrough == 13,
+        not(hasIntent(routerState, M14_SECONDARY_REMOVE)),
+        protocolSafety,
+      })
+      .then(admitRouterOperation(M14_SECONDARY_REMOVE).fail())
+  }
+
+  run capturedPrimaryMarkerRetiresWithoutRetiringSecondaryMarker = {
+    initWithPolicy(Contiguous)
+      // Test-only state: SecondaryLane markers are unreachable through direct
+      // Router admission, but are needed to exercise cross-lane retirement.
+      .then(all {
+        policy' = policy,
+        routerState' = {
+          allocatedThrough: 14,
+          intents: Set(
+            intent(M10_UPSERT, AwaitingFrontier),
+            intent(M14_SECONDARY_REMOVE, AwaitingFrontier),
+          ),
+          primaryMaxAcknowledged: 0,
+          secondaryMaxAcknowledged: 0,
+        },
+        vectorState' = vectorState,
+        graphTransport' = GraphIdle,
+        vectorTransport' = VectorIdle,
+        frontierTransport' = FrontierIdle,
+        lastAction' = lastAction,
+      })
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .expect(frontierTransport == FrontierDelivered({
+        lane: PrimaryLane,
+        frontier: 14,
+        markers: Set(intent(M10_UPSERT, AwaitingFrontier)),
+      }))
+      .then(applyRouterFrontierMessage)
+      .then(observeFrontierResponse)
+      .expect(and {
+        routerState.intents == Set(
+          intent(M14_SECONDARY_REMOVE, AwaitingFrontier),
+        ),
+        not(hasIntent(routerState, M10_UPSERT)),
+        hasIntentInPhase(routerState, M14_SECONDARY_REMOVE, AwaitingFrontier),
+        frontierResponseObservationWitness,
       })
   }
 
@@ -310,20 +382,15 @@ module routerVectorTombstoneGcTests {
       .then(applyGraphRemoveM11)
       .then(admitRouterOperation(M12_UPSERT))
       .then(allocateUnrelatedM13)
-      .then(admitRouterOperation(M14_SECONDARY_UPSERT))
-      .then(dispatchGraph(M14_SECONDARY_UPSERT))
-      .then(graphAccept)
-      .then(observeGraphAccept)
-      .then(dispatchVectorBatch(List(M14_SECONDARY_UPSERT)))
-      .then(applyVectorPrefix(1))
-      .then(observeVectorResponse)
+      .then(applyGraphOnlyRemoveM14)
       .expect(and {
         routerState.allocatedThrough == 14,
         contiguousFrontier(routerState, PrimaryLane) == 9,
         contiguousFrontier(routerState, SecondaryLane) == 14,
         hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
         hasIntentInPhase(routerState, M12_UPSERT, AwaitingGraph),
-        hasIntentInPhase(routerState, M14_SECONDARY_UPSERT, AwaitingFrontier),
+        frontierMarkerSnapshot(routerState, SecondaryLane, 14) == Set(),
+        vectorState.secondaryClock == Deleted(14),
         protocolSafety,
       })
       .then(dispatchRouterFrontier(SecondaryLane))
@@ -331,8 +398,95 @@ module routerVectorTombstoneGcTests {
       .expect(and {
         vectorState.primaryRouterWatermark == 0,
         vectorState.secondaryRouterWatermark == 14,
-        hasIntentInPhase(routerState, M14_SECONDARY_UPSERT, AwaitingFrontier),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        hasIntentInPhase(routerState, M12_UPSERT, AwaitingGraph),
         laneIsolationWitness,
+        protocolSafety,
+      })
+  }
+
+  run sameLaneUnresolvedIntentBoundsMarkerlessFrontier = {
+    initWithPolicy(Contiguous)
+      .then(admitRouterOperation(M10_UPSERT))
+      .then(applyGraphRemoveM11)
+      .expect(and {
+        contiguousFrontier(routerState, PrimaryLane) == 9,
+        frontierMarkerSnapshot(routerState, PrimaryLane, 9) == Set(),
+        vectorState.targetClock == Deleted(11),
+        protocolSafety,
+      })
+      .then(dispatchRouterFrontier(PrimaryLane))
+      .expect(frontierTransport == FrontierDelivered({
+        lane: PrimaryLane,
+        frontier: 9,
+        markers: Set(),
+      }))
+      .then(applyRouterFrontierMessage)
+      .expect(and {
+        vectorState.primaryRouterWatermark == 9,
+        gcCutoff(vectorState, PrimaryLane) == 9,
+        vectorState.targetClock == Deleted(11),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        sameLaneOutstandingBoundWitness,
+        protocolSafety,
+      })
+      .then(observeFrontierResponse)
+      .expect(and {
+        vectorState.primaryRouterWatermark == 9,
+        vectorState.targetClock == Deleted(11),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        protocolSafety,
+      })
+  }
+
+  run markerlessFrontierLossRestartRetryIsMonotonic = {
+    initWithPolicy(Contiguous)
+      .then(admitRouterOperation(M10_UPSERT))
+      .then(applyGraphRemoveM11)
+      .then(admitRouterOperation(M12_UPSERT))
+      .then(allocateUnrelatedM13)
+      .then(applyGraphOnlyRemoveM14)
+      .then(dispatchRouterFrontier(SecondaryLane))
+      .then(applyRouterFrontierMessage)
+      .then(loseFrontierResponse)
+      .expect(and {
+        frontierTransport == FrontierIdle,
+        vectorState.secondaryRouterWatermark == 14,
+        vectorState.secondaryClock == Deleted(14),
+        frontierResponseLossWitness,
+        protocolSafety,
+      })
+      .then(dispatchRouterFrontier(SecondaryLane))
+      .expect(frontierTransport == FrontierDelivered({
+        lane: SecondaryLane,
+        frontier: 14,
+        markers: Set(),
+      }))
+      .then(applyRouterFrontierMessage)
+      .then(restart)
+      .expect(and {
+        frontierTransport == FrontierIdle,
+        vectorState.secondaryRouterWatermark == 14,
+        vectorState.secondaryClock == Deleted(14),
+        restartWitness,
+        protocolSafety,
+      })
+      .then(dispatchRouterFrontier(SecondaryLane))
+      .then(applyRouterFrontierMessage)
+      .then(observeFrontierResponse)
+      .expect(and {
+        vectorState.secondaryRouterWatermark == 14,
+        vectorState.secondaryClock == Deleted(14),
+        hasIntentInPhase(routerState, M10_UPSERT, AwaitingGraph),
+        hasIntentInPhase(routerState, M12_UPSERT, AwaitingGraph),
+        frontierResponseObservationWitness,
+        protocolSafety,
+      })
+      .then(gcSecondaryClock)
+      .expect(and {
+        vectorState.secondaryRouterWatermark == 14,
+        vectorState.secondaryClock == Missing,
+        markerlessGraphOnlyGcWitness,
         protocolSafety,
       })
   }

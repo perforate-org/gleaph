@@ -6,7 +6,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
+use gleaph_graph_kernel::federation::{GraphShardKey, LocalVertexId, ShardId};
 use gleaph_graph_kernel::vector_index::{
     IndexedEmbeddingSpec, VectorEmbeddingSyncOp, VectorSubject, VectorSyncBatchOutcome,
     VertexEmbeddingIngestionArgs,
@@ -376,9 +376,19 @@ thread_local! {
     /// Heap-only exclusion for rows whose originating API call is still driving initial delivery.
     /// An upgrade clears it, allowing durable recovery to resume every unresolved row.
     static INITIAL_DELIVERY_ACTIVE: RefCell<BTreeSet<u64>> = const { RefCell::new(BTreeSet::new()) };
-    /// Heap-only fairness cursor for frontier publication.  MemoryId 53 markers remain the
-    /// durable source of work; this cursor is only a round-robin hint and resets on upgrade.
-    static FRONTIER_LANE_CURSOR: RefCell<Option<(Principal, ShardId)>> = const { RefCell::new(None) };
+    /// Heap-only catalog cursor for markerless frontier discovery. The stable shard catalog is
+    /// the source of truth, so losing this cursor on upgrade only restarts enumeration.
+    static FRONTIER_CATALOG_CURSOR: RefCell<Option<GraphShardKey>> = const { RefCell::new(None) };
+    /// Heap-only last-observed progress per exact lane. It suppresses duplicate markerless calls
+    /// after an observed success, while an error/unknown response leaves the hint unchanged so
+    /// catalog rediscovery retries the monotonic Vector endpoint. Upgrade clears it naturally.
+    static FRONTIER_LANE_PROGRESS: RefCell<BTreeMap<(Principal, ShardId), u64>> =
+        const { RefCell::new(BTreeMap::new()) };
+    /// Heap-only liveness hint for the current forward catalog lap. It distinguishes an empty
+    /// catalog/ineligible-only lap, which may stop the scheduler, from a completed lap that did
+    /// observe an attached lane and must reserve the next lap. Upgrade clears it with the cursor.
+    static FRONTIER_LAP_SAW_ATTACHED_LANE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 pub(crate) struct InitialDeliveryGuard {
@@ -681,15 +691,14 @@ struct FrontierLane {
     marker_keys: Vec<VectorIngestOutboxKey>,
 }
 
-fn record_frontier_key(
-    lanes: &mut BTreeMap<(Principal, ShardId), FrontierLane>,
+fn record_frontier_key_in_lane(
+    lane: &mut FrontierLane,
     key: VectorIngestOutboxKey,
 ) -> Result<(), String> {
     if key.mutation_id == 0 {
         return Err("vector-ingest frontier row mutation_id must be nonzero".to_string());
     }
 
-    let lane = lanes.entry((key.vector_target, key.shard_id)).or_default();
     match key.phase {
         VectorIngestIntentPhase::AwaitingGraph | VectorIngestIntentPhase::AwaitingVector => {
             lane.oldest_unresolved = Some(
@@ -702,6 +711,41 @@ fn record_frontier_key(
     Ok(())
 }
 
+#[cfg(any(test, feature = "canbench"))]
+fn record_frontier_key(
+    lanes: &mut BTreeMap<(Principal, ShardId), FrontierLane>,
+    key: VectorIngestOutboxKey,
+) -> Result<(), String> {
+    let lane = lanes.entry((key.vector_target, key.shard_id)).or_default();
+    record_frontier_key_in_lane(lane, key)
+}
+
+fn finish_frontier_snapshot(
+    vector_target: Principal,
+    shard_id: ShardId,
+    lane: FrontierLane,
+    allocated_through: u64,
+) -> Result<VectorFrontierSnapshot, String> {
+    let frontier = match lane.oldest_unresolved {
+        Some(oldest) => oldest.checked_sub(1).ok_or_else(|| {
+            "vector-ingest unresolved mutation_id cannot derive a frontier".to_string()
+        })?,
+        None => allocated_through,
+    };
+    let marker_keys = lane
+        .marker_keys
+        .into_iter()
+        .filter(|key| key.mutation_id <= frontier)
+        .collect();
+    Ok(VectorFrontierSnapshot {
+        vector_target,
+        shard_id,
+        frontier,
+        marker_keys,
+    })
+}
+
+#[cfg(any(test, feature = "canbench"))]
 fn finish_frontier_snapshots(
     lanes: BTreeMap<(Principal, ShardId), FrontierLane>,
     allocated_through: u64,
@@ -711,28 +755,13 @@ fn finish_frontier_snapshots(
         if lane.marker_keys.is_empty() {
             continue;
         }
-        let frontier = match lane.oldest_unresolved {
-            Some(oldest) => oldest.checked_sub(1).ok_or_else(|| {
-                "vector-ingest unresolved mutation_id cannot derive a frontier".to_string()
-            })?,
-            None => allocated_through,
-        };
-        let marker_keys: Vec<_> = lane
-            .marker_keys
-            .into_iter()
-            .filter(|key| key.mutation_id <= frontier)
-            .collect();
+        let snapshot = finish_frontier_snapshot(vector_target, shard_id, lane, allocated_through)?;
         // A lane whose markers are all above its current safe frontier remains durable but is not
         // a publishable snapshot yet.  It must not be described as having been published.
-        if marker_keys.is_empty() {
+        if snapshot.marker_keys.is_empty() {
             continue;
         }
-        snapshots.push(VectorFrontierSnapshot {
-            vector_target,
-            shard_id,
-            frontier,
-            marker_keys,
-        });
+        snapshots.push(snapshot);
     }
     Ok(snapshots)
 }
@@ -756,6 +785,7 @@ pub(crate) fn derive_frontier_snapshots_from_rows(
 
 /// Snapshot all marked lanes from the sole durable outbox and the current mutation ceiling.
 /// The stable map is streamed exactly once; only compact per-lane state is retained.
+#[cfg(any(test, feature = "canbench"))]
 pub(crate) fn derive_frontier_snapshots() -> Result<Vec<VectorFrontierSnapshot>, String> {
     let allocated_through = ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
     let mut lanes = BTreeMap::new();
@@ -768,13 +798,38 @@ pub(crate) fn derive_frontier_snapshots() -> Result<Vec<VectorFrontierSnapshot>,
     finish_frontier_snapshots(lanes, allocated_through)
 }
 
+/// Derive the safe frontier for one exact catalog-attached lane.
+///
+/// Unlike [`derive_frontier_snapshots`], this returns a snapshot even when the lane has no
+/// `AwaitingFrontier` marker. The catalog is the caller's lane-discovery source; this bounded
+/// MemoryId 53 scan supplies only the exact-lane unresolved floor and captured marker keys.
+/// Marker keys may therefore be empty for a Graph-only lane or for a retry whose markers are
+/// above the current safe frontier.
+pub(crate) fn derive_frontier_snapshot_for_lane(
+    vector_target: Principal,
+    shard_id: ShardId,
+) -> Result<VectorFrontierSnapshot, String> {
+    let allocated_through = ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
+    let mut lane = FrontierLane::default();
+    ROUTER_VECTOR_INGEST_OUTBOX.with_borrow(|table| {
+        for key in table
+            .keys()
+            .filter(|key| key.vector_target == vector_target && key.shard_id == shard_id)
+        {
+            record_frontier_key_in_lane(&mut lane, key)?;
+        }
+        Ok::<_, String>(())
+    })?;
+    finish_frontier_snapshot(vector_target, shard_id, lane, allocated_through)
+}
+
 /// Retire only the exact marker rows captured before an observed Vector frontier reply. Every row
 /// is preflighted before the first removal, so a stale snapshot cannot partially retire newer work.
 /// Mutation IDs are never reused and `AwaitingFrontier` has no legal transition except retirement;
 /// rechecking the current row's phase and exact lane is therefore sufficient for this key snapshot.
 pub(crate) fn retire_frontier_snapshot(snapshot: &VectorFrontierSnapshot) -> Result<(), String> {
     if snapshot.marker_keys.is_empty() {
-        return Err("vector-ingest frontier snapshot has no captured markers".to_string());
+        return Ok(());
     }
     ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
         let mut captured_keys = BTreeSet::new();
@@ -820,31 +875,6 @@ pub(crate) fn retire_frontier_snapshot(snapshot: &VectorFrontierSnapshot) -> Res
         }
         Ok(())
     })
-}
-
-/// Choose the next publishable lane after the heap-only cursor, wrapping at the end of the
-/// lexicographically ordered snapshot set. The cursor advances before the remote attempt, so an
-/// unavailable first lane cannot starve a later healthy lane on the next recovery pass.
-fn next_frontier_snapshot(
-    snapshots: Vec<VectorFrontierSnapshot>,
-) -> Option<VectorFrontierSnapshot> {
-    if snapshots.is_empty() {
-        FRONTIER_LANE_CURSOR.with_borrow_mut(|cursor| *cursor = None);
-        return None;
-    }
-    let cursor = FRONTIER_LANE_CURSOR.with_borrow(|cursor| *cursor);
-    let index = cursor
-        .and_then(|cursor| {
-            snapshots
-                .iter()
-                .position(|snapshot| (snapshot.vector_target, snapshot.shard_id) > cursor)
-        })
-        .unwrap_or(0);
-    let snapshot = snapshots.into_iter().nth(index)?;
-    FRONTIER_LANE_CURSOR.with_borrow_mut(|cursor| {
-        *cursor = Some((snapshot.vector_target, snapshot.shard_id));
-    });
-    Some(snapshot)
 }
 
 /// Group only the rows that are ready for Vector by their persisted exact lane.  The input is
@@ -1014,13 +1044,96 @@ pub(crate) fn total_len() -> u64 {
 #[cfg(test)]
 pub(crate) fn clear_for_test() {
     ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| table.clear_new());
-    FRONTIER_LANE_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+    FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+    FRONTIER_LANE_PROGRESS.with_borrow_mut(|progress| progress.clear());
+    FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| saw.set(false));
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RecoveryPassOutcome {
     pub next_cursor: Option<u64>,
     pub found: bool,
+}
+
+/// Discover and attempt at most one catalog-attached frontier lane.
+///
+/// Catalog selection advances the heap cursor before the Vector await. A marker-backed snapshot
+/// is always eligible for the existing exact marker retirement contract. A markerless snapshot
+/// is sent only when it advances the last frontier observed for that exact lane; failed/unknown
+/// calls leave that hint unchanged so the next catalog lap retries, and an upgrade clears the hint
+/// so rediscovery is retryable without durable progress state.
+async fn run_catalog_frontier_pass() -> bool {
+    let start_after = FRONTIER_CATALOG_CURSOR.with_borrow(|cursor| *cursor);
+    if start_after.is_none() {
+        FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| saw.set(false));
+    }
+    let page = match graph_catalog::scan_attached_vector_lane(start_after) {
+        Ok(page) => page,
+        Err(_) => {
+            // Fail closed on catalog corruption and retry from the canonical first key on the
+            // next timer pass. Keeping the scheduler alive makes the failure observable/retryable
+            // after an operator repairs the catalog.
+            FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+            return true;
+        }
+    };
+
+    // This is deliberately before the remote call. A failing lane therefore cannot monopolize
+    // the next tick, while a page with no eligible row still advances toward later catalog keys.
+    FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = page.next_cursor);
+    let Some(lane) = page.lane else {
+        // A full ineligible page keeps the scheduler alive so the next tick can inspect later
+        // catalog keys. At the catalog end, only a lap that observed an attached lane reserves a
+        // fresh pass; an empty/ineligible-only catalog stops without a hot loop.
+        if catalog_page_requires_follow_up(&page) {
+            return true;
+        }
+        return FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| {
+            let saw_attached_lane = saw.get();
+            if saw_attached_lane {
+                FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+            }
+            saw_attached_lane
+        });
+    };
+    FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| saw.set(true));
+
+    let snapshot = match derive_frontier_snapshot_for_lane(lane.vector_target, lane.shard_id) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return true,
+    };
+    let exact_lane = (snapshot.vector_target, snapshot.shard_id);
+    if snapshot.marker_keys.is_empty()
+        && FRONTIER_LANE_PROGRESS.with_borrow(|progress| {
+            progress
+                .get(&exact_lane)
+                .is_some_and(|last| snapshot.frontier <= *last)
+        })
+    {
+        return true;
+    }
+
+    let publication_succeeded = crate::vector_sync::publish_router_frontier(
+        snapshot.vector_target,
+        snapshot.shard_id,
+        snapshot.frontier,
+    )
+    .await
+    .is_ok();
+    if publication_succeeded {
+        FRONTIER_LANE_PROGRESS.with_borrow_mut(|progress| {
+            let previous = progress.entry(exact_lane).or_insert(0);
+            *previous = (*previous).max(snapshot.frontier);
+        });
+        if !snapshot.marker_keys.is_empty() {
+            let _ = retire_frontier_snapshot(&snapshot);
+        }
+    }
+    true
+}
+
+fn catalog_page_requires_follow_up(page: &graph_catalog::AttachedVectorLanePage) -> bool {
+    page.next_cursor.is_some()
 }
 
 /// Run one bounded recovery pass. Operations are grouped only in heap for one call and every group
@@ -1034,17 +1147,6 @@ pub(crate) async fn run_recovery_pass(
     budget: usize,
 ) -> RecoveryPassOutcome {
     let (rows, last_key, scanned) = scan(start_after, budget);
-    if rows.is_empty() {
-        return RecoveryPassOutcome {
-            next_cursor: if scanned < budget as u32 {
-                None
-            } else {
-                last_key
-            },
-            found: false,
-        };
-    }
-
     let mut vector_rows = Vec::new();
     let mut found = false;
     for row in rows {
@@ -1086,21 +1188,9 @@ pub(crate) async fn run_recovery_pass(
         let _ = apply_outcome(&submitted, outcome);
     }
 
-    // A frontier publication is one bounded lane per recovery pass. The snapshot is derived
-    // after all observed Graph/Vector transitions above, and its marker rows remain durable until
-    // the bounded Vector reply is observed.
-    if let Ok(snapshots) = derive_frontier_snapshots()
-        && let Some(snapshot) = next_frontier_snapshot(snapshots)
-        && crate::vector_sync::publish_router_frontier(
-            snapshot.vector_target,
-            snapshot.shard_id,
-            snapshot.frontier,
-        )
-        .await
-        .is_ok()
-    {
-        let _ = retire_frontier_snapshot(&snapshot);
-    }
+    // Catalog discovery makes markerless Graph-owned lanes eligible while preserving the same
+    // one-lane frontier endpoint and exact marker retirement for direct-ingestion rows.
+    found |= run_catalog_frontier_pass().await;
 
     RecoveryPassOutcome {
         next_cursor: if scanned < budget as u32 {
@@ -1115,9 +1205,12 @@ pub(crate) async fn run_recovery_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::stable::ROUTER_SHARDS;
     use candid::Principal;
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
-    use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
+    use gleaph_graph_kernel::federation::{
+        GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
+    };
     use gleaph_graph_kernel::vector_index::{
         IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
         VectorSyncTerminalError,
@@ -1256,6 +1349,33 @@ mod tests {
 
     fn clear_production_rows() {
         ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| table.clear_new());
+    }
+
+    fn attach_catalog_lanes(lanes: &[(Principal, ShardId)]) {
+        ROUTER_SHARDS.with_borrow_mut(|shards| shards.clear_new());
+        for (index, (vector_target, shard_id)) in lanes.iter().enumerate() {
+            let graph_id = GraphId::from_raw(100 + index as u32);
+            let key = GraphShardKey::new(graph_id, *shard_id);
+            shards_insert_catalog_lane(
+                key,
+                ShardRegistryEntry {
+                    shard_id: *shard_id,
+                    graph_canister: Principal::from_slice(&[(100 + index) as u8; 29]),
+                    index_canister: Principal::management_canister(),
+                    graph_id,
+                    registered_at_ns: 0,
+                    index_attached: true,
+                    vector_canister: Some(*vector_target),
+                    vector_index_attached: true,
+                },
+            );
+        }
+    }
+
+    fn shards_insert_catalog_lane(key: GraphShardKey, entry: ShardRegistryEntry) {
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            shards.insert(key, entry.into());
+        });
     }
 
     fn production_snapshot() -> Vec<(u64, VectorIngestOutboxState)> {
@@ -1752,6 +1872,64 @@ mod tests {
     }
 
     #[test]
+    fn markerless_frontier_uses_allocation_ceiling_and_exact_lane_unresolved_floor() {
+        let _guard = test_lock();
+        clear_production_rows();
+        let selected_target = target(1);
+        let other_target = target(2);
+        let selected_marker = VectorIngestOutboxState {
+            vector_target: selected_target,
+            ..intent(10, 1, VectorIngestIntentPhase::AwaitingFrontier)
+        };
+        let selected_unresolved = VectorIngestOutboxState {
+            vector_target: selected_target,
+            ..intent(20, 2, VectorIngestIntentPhase::AwaitingVector)
+        };
+        let selected_later_marker = VectorIngestOutboxState {
+            vector_target: selected_target,
+            ..intent(30, 3, VectorIngestIntentPhase::AwaitingFrontier)
+        };
+        let other_unresolved = VectorIngestOutboxState {
+            vector_target: other_target,
+            ..intent(3, 4, VectorIngestIntentPhase::AwaitingGraph)
+        };
+        insert_intents_for_test(&[
+            selected_marker.clone(),
+            selected_unresolved,
+            selected_later_marker.clone(),
+            other_unresolved.clone(),
+        ])
+        .expect("seed exact-lane intents");
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(100));
+
+        let selected = derive_frontier_snapshot_for_lane(selected_target, ShardId::new(2))
+            .expect("derive selected exact lane");
+        assert_eq!(selected.frontier, 19);
+        assert_eq!(
+            selected.marker_keys,
+            vec![VectorIngestOutboxKey::from_state(&selected_marker)]
+        );
+        assert!(
+            !selected
+                .marker_keys
+                .contains(&VectorIngestOutboxKey::from_state(&selected_later_marker)),
+            "markers above the exact-lane frontier remain uncaptured"
+        );
+
+        clear_production_rows();
+        insert_intents_for_test(std::slice::from_ref(&other_unresolved))
+            .expect("seed unrelated-lane intent");
+        let markerless = derive_frontier_snapshot_for_lane(selected_target, ShardId::new(2))
+            .expect("derive empty exact lane");
+        assert_eq!(markerless.frontier, 100);
+        assert!(markerless.marker_keys.is_empty());
+        let before_markerless_success = production_bytes_snapshot();
+        retire_frontier_snapshot(&markerless).expect("empty marker snapshot is a stable no-op");
+        assert_eq!(production_bytes_snapshot(), before_markerless_success);
+        clear_production_rows();
+    }
+
+    #[test]
     fn frontier_response_loss_retains_exact_marker_snapshot() {
         let _guard = test_lock();
         clear_production_rows();
@@ -1985,6 +2163,11 @@ mod tests {
             same_target_other_shard.clone(),
         ])
         .expect("seed lanes");
+        attach_catalog_lanes(&[
+            (first_target, ShardId::new(2)),
+            (first_target, ShardId::new(3)),
+            (second_target, ShardId::new(2)),
+        ]);
         ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(63));
 
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -2032,6 +2215,14 @@ mod tests {
         );
 
         futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            scan(None, 8).0,
+            vec![first.clone()],
+            "catalog end reserves the next lap without same-call wrap"
+        );
+        assert_eq!(calls.borrow().len(), 3);
+
+        futures::executor::block_on(run_recovery_pass(None, 8));
         assert!(
             scan(None, 8).0.is_empty(),
             "rotation wraps to the first lane"
@@ -2051,9 +2242,73 @@ mod tests {
     }
 
     #[test]
+    fn recovery_catalog_terminates_after_exactly_64_incomplete_rows() {
+        let _guard = test_lock();
+        clear_for_test();
+        ROUTER_SHARDS.with_borrow_mut(|shards| shards.clear_new());
+        let vector_target = target(8);
+        for graph_raw in 1..=64 {
+            let graph_id = GraphId::from_raw(graph_raw);
+            let key = GraphShardKey::new(graph_id, ShardId::new(0));
+            ROUTER_SHARDS.with_borrow_mut(|shards| {
+                shards.insert(
+                    key,
+                    ShardRegistryEntry {
+                        shard_id: key.shard_id,
+                        graph_canister: Principal::from_slice(&[graph_raw as u8; 29]),
+                        index_canister: Principal::management_canister(),
+                        graph_id,
+                        registered_at_ns: 0,
+                        index_attached: true,
+                        vector_canister: Some(vector_target),
+                        vector_index_attached: false,
+                    }
+                    .into(),
+                );
+            });
+        }
+
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let calls_for_publisher = calls.clone();
+        let _publisher = crate::vector_sync::install_frontier_publisher(
+            move |vector_target, shard_id, frontier| {
+                calls_for_publisher
+                    .borrow_mut()
+                    .push((vector_target, shard_id, frontier));
+                Ok(())
+            },
+        );
+
+        let first = futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            first,
+            RecoveryPassOutcome {
+                next_cursor: None,
+                found: true,
+            },
+            "a full ineligible page keeps the catalog lap alive"
+        );
+        assert!(calls.borrow().is_empty());
+
+        let second = futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            second,
+            RecoveryPassOutcome {
+                next_cursor: None,
+                found: false,
+            },
+            "the empty page after exactly 64 ineligible rows ends the lap"
+        );
+        assert!(calls.borrow().is_empty());
+
+        ROUTER_SHARDS.with_borrow_mut(|shards| shards.clear_new());
+        clear_for_test();
+    }
+
+    #[test]
     fn recovery_frontier_success_retires_only_captured_marker_when_later_work_arrives() {
         let _guard = test_lock();
-        clear_production_rows();
+        clear_for_test();
         let target = target(1);
         let captured = VectorIngestOutboxState {
             vector_target: target,
@@ -2064,6 +2319,7 @@ mod tests {
             ..intent(72, 2, VectorIngestIntentPhase::AwaitingFrontier)
         };
         insert_intents_for_test(std::slice::from_ref(&captured)).expect("seed captured marker");
+        attach_catalog_lanes(&[(target, ShardId::new(2))]);
         ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(72));
         let later_for_publisher = later.clone();
         let _publisher = crate::vector_sync::install_frontier_publisher(
@@ -2081,6 +2337,150 @@ mod tests {
             "a later marker must survive retirement of the captured key"
         );
         clear_production_rows();
+    }
+
+    #[test]
+    fn markerless_response_loss_restart_and_detach_are_idempotent_and_fail_closed() {
+        let _guard = test_lock();
+        clear_for_test();
+        let target = target(4);
+        let shard_id = ShardId::new(2);
+        attach_catalog_lanes(&[(target, shard_id)]);
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(10));
+
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let calls_for_publisher = calls.clone();
+        let attempts_for_publisher = attempts.clone();
+        let _publisher = crate::vector_sync::install_frontier_publisher(
+            move |vector_target, shard_id, frontier| {
+                calls_for_publisher
+                    .borrow_mut()
+                    .push((vector_target, shard_id, frontier));
+                let attempt = attempts_for_publisher.get();
+                attempts_for_publisher.set(attempt + 1);
+                if attempt == 0 {
+                    Err("response lost after unknown markerless apply".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        // Empty MemoryId 53 still discovers the attached catalog lane. An unknown response does
+        // not update the heap hint, so the cursor advances to the catalog end before the next lap
+        // retries the same safe ceiling.
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert!(scan(None, 8).0.is_empty());
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            calls.borrow().len(),
+            1,
+            "catalog-end tick must not retry yet"
+        );
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            *calls.borrow(),
+            vec![(target, shard_id, 10), (target, shard_id, 10)]
+        );
+
+        // An observed success records only a heap hint; it is not a second durable owner and
+        // the catalog-end tick after it suppresses a duplicate call while the safe frontier is
+        // unchanged.
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(calls.borrow().len(), 2);
+
+        // Upgrade loses the hint and cursor. Catalog rediscovery retries safely; Vector's
+        // monotonic endpoint makes the duplicate application idempotent.
+        FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+        FRONTIER_LANE_PROGRESS.with_borrow_mut(|progress| progress.clear());
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(calls.borrow().len(), 3);
+
+        // Detach removes the canonical catalog lane. A stale heap state cannot publish to it.
+        ROUTER_SHARDS.with_borrow_mut(|shards| shards.clear_new());
+        FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(calls.borrow().len(), 3);
+        clear_for_test();
+    }
+
+    #[test]
+    fn markerless_failure_rotates_to_next_lane_and_wraps_without_starvation() {
+        let _guard = test_lock();
+        clear_for_test();
+        let vector_target = target(4);
+        let shard_a = ShardId::new(2);
+        let shard_b = ShardId::new(3);
+        attach_catalog_lanes(&[(vector_target, shard_a), (vector_target, shard_b)]);
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(10));
+
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let calls_for_publisher = calls.clone();
+        let _publisher = crate::vector_sync::install_frontier_publisher(
+            move |vector_target, shard_id, frontier| {
+                calls_for_publisher
+                    .borrow_mut()
+                    .push((vector_target, shard_id, frontier));
+                if shard_id == shard_a {
+                    Err("lane A unavailable".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        // A markerless failure keeps the catalog cursor advanced, so the next pass visits lane B.
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            *calls.borrow(),
+            vec![(vector_target, shard_a, 10)],
+            "one recovery pass makes at most one remote call"
+        );
+
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            *calls.borrow(),
+            vec![(vector_target, shard_a, 10), (vector_target, shard_b, 10),],
+            "lane B must run before lane A is retried"
+        );
+
+        // The catalog-end pass reserves the next lap without wrapping in the same tick.
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            *calls.borrow(),
+            vec![(vector_target, shard_a, 10), (vector_target, shard_b, 10),],
+            "catalog-end pass must not make a second remote call"
+        );
+
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            *calls.borrow(),
+            vec![
+                (vector_target, shard_a, 10),
+                (vector_target, shard_b, 10),
+                (vector_target, shard_a, 10),
+            ],
+            "the failed lane retries only after the catalog lap wraps"
+        );
+        clear_for_test();
+    }
+
+    #[test]
+    fn short_empty_catalog_page_does_not_keep_recovery_alive() {
+        let short_empty = graph_catalog::AttachedVectorLanePage {
+            lane: None,
+            next_cursor: None,
+            scanned: 1,
+        };
+        assert!(!catalog_page_requires_follow_up(&short_empty));
+
+        let full_empty = graph_catalog::AttachedVectorLanePage {
+            lane: None,
+            next_cursor: Some(GraphShardKey::new(GraphId::from_raw(64), ShardId::new(0))),
+            scanned: graph_catalog::VECTOR_LANE_CATALOG_PAGE_BUDGET as u32,
+        };
+        assert!(catalog_page_requires_follow_up(&full_empty));
     }
 
     #[test]

@@ -11,6 +11,7 @@ use super::super::stable::{
     ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH,
     ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
 };
+use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GraphShardKey, ShardId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -97,6 +98,7 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
     }
 
     let mut shards_by_graph: BTreeMap<GraphId, BTreeSet<ShardId>> = BTreeMap::new();
+    let mut attached_vector_lanes: BTreeMap<(Principal, ShardId), GraphShardKey> = BTreeMap::new();
 
     ROUTER_SHARDS.with_borrow(|shards| -> Result<(), String> {
         for lazy in shards.iter() {
@@ -155,6 +157,32 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
                 .entry(entry.graph_id)
                 .or_default()
                 .insert(key.shard_id);
+
+            if entry.index_attached && entry.vector_index_attached {
+                let vector_target = entry.vector_canister.ok_or_else(|| {
+                    format!(
+                        "ROUTER_SHARDS[{key:?}] is vector-attached without a vector target"
+                    )
+                })?;
+                if vector_target == Principal::anonymous() {
+                    return Err(format!(
+                        "ROUTER_SHARDS[{key:?}] is vector-attached to the anonymous principal"
+                    ));
+                }
+                if let Some(previous) =
+                    attached_vector_lanes.insert((vector_target, key.shard_id), key)
+                {
+                    return Err(format!(
+                        "duplicate fully attached vector lane target {vector_target} shard {:?}: {previous:?} and {key:?}",
+                        key.shard_id
+                    ));
+                }
+            }
+            if entry.vector_canister.is_some() && entry.vector_attach_epoch == 0 {
+                return Err(format!(
+                    "ROUTER_SHARDS[{key:?}] has a vector target without a nonzero attach epoch"
+                ));
+            }
 
             let mapped_key = ROUTER_SHARD_BY_GRAPH
                 .with_borrow(|m| m.get(&entry.graph_canister))

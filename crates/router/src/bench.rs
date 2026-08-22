@@ -168,6 +168,84 @@ fn bench_router_frontier_key_only_scan_1024_lanes_one_marker_each() -> canbench_
     })
 }
 
+fn setup_markerless_frontier_catalog() -> crate::facade::stable::graph_catalog::AttachedVectorLane {
+    use crate::facade::stable::graph_catalog::VECTOR_LANE_CATALOG_PAGE_BUDGET;
+    use candid::Principal;
+    use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::{GraphShardKey, ShardId, ShardRegistryEntry};
+
+    setup_vector_frontier_rows_1024(false);
+    assert_eq!(VECTOR_LANE_CATALOG_PAGE_BUDGET, 64);
+
+    let vector_target = Principal::from_slice(&[2; 29]);
+    let selected_shard = ShardId::new((VECTOR_LANE_CATALOG_PAGE_BUDGET - 1) as u32);
+    crate::facade::stable::ROUTER_SHARDS.with_borrow_mut(|shards| {
+        shards.clear_new();
+        for ordinal in 0..VECTOR_LANE_CATALOG_PAGE_BUDGET {
+            let graph_id = GraphId::from_raw(980_000 + ordinal as u32);
+            let shard_id = ShardId::new(ordinal as u32);
+            let fully_attached = shard_id == selected_shard;
+            let key = GraphShardKey::new(graph_id, shard_id);
+            let entry = ShardRegistryEntry {
+                shard_id,
+                graph_canister: Principal::from_slice(&[(ordinal + 1) as u8; 29]),
+                index_canister: Principal::management_canister(),
+                graph_id,
+                registered_at_ns: 0,
+                index_attached: fully_attached,
+                vector_canister: fully_attached.then_some(vector_target),
+                vector_index_attached: fully_attached,
+            };
+            assert!(shards.insert(key, entry.into()).is_none());
+        }
+    });
+
+    crate::facade::stable::graph_catalog::AttachedVectorLane {
+        vector_target,
+        shard_id: selected_shard,
+    }
+}
+
+fn markerless_frontier_catalog_round() -> Result<
+    (
+        crate::facade::stable::graph_catalog::AttachedVectorLanePage,
+        crate::facade::stable::vector_ingest_outbox::VectorFrontierSnapshot,
+    ),
+    String,
+> {
+    let page = crate::facade::stable::graph_catalog::scan_attached_vector_lane(None)
+        .map_err(|error| error.to_string())?;
+    let lane = page
+        .lane
+        .ok_or_else(|| "markerless frontier catalog page has no attached lane".to_owned())?;
+    let snapshot = crate::facade::stable::vector_ingest_outbox::derive_frontier_snapshot_for_lane(
+        lane.vector_target,
+        lane.shard_id,
+    )?;
+    Ok((page, snapshot))
+}
+
+#[bench(raw)]
+fn markerless_frontier_catalog() -> canbench_rs::BenchResult {
+    use crate::facade::stable::graph_catalog::VECTOR_LANE_CATALOG_PAGE_BUDGET;
+    use crate::facade::stable::vector_ingest_outbox::MAX_VECTOR_INGEST_OUTBOX_ROWS;
+
+    let expected_lane = setup_markerless_frontier_catalog();
+    let (page, snapshot) =
+        markerless_frontier_catalog_round().expect("derive markerless catalog frontier");
+    assert_eq!(page.scanned as usize, VECTOR_LANE_CATALOG_PAGE_BUDGET);
+    assert_eq!(page.lane, Some(expected_lane));
+    assert_eq!(snapshot.vector_target, expected_lane.vector_target);
+    assert_eq!(snapshot.shard_id, expected_lane.shard_id);
+    assert_eq!(snapshot.frontier, MAX_VECTOR_INGEST_OUTBOX_ROWS as u64);
+    assert!(snapshot.marker_keys.is_empty());
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("markerless_frontier_catalog");
+        let _ = black_box(markerless_frontier_catalog_round());
+    })
+}
+
 // -----------------------------------------------------------------------------
 // Initial per-memory bucket policy capacity probes.
 //
