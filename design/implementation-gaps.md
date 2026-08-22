@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 11:04:51 UTC +0000
+Anchor timestamp: 2026-08-22 11:50:43 UTC +0000
 
 ## Status
 
@@ -172,13 +172,12 @@ defect from being rediscovered without its prior reasoning.
   PocketIC test in 25.67s using one `PocketIc`, one federation bootstrap, and four canister installs
   (Router, Property Index, Graph, Vector), covering response loss, upgrades, exact retry/retirement,
   GC gating/physical collection, and stale-resurrection prevention. Router and Vector tests/checks/
-  clippy pass. Focused canbenches measure 3.29M instructions for the single-lane 1,024-row
-  derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier plus bounded-GC step. The
-  unfiltered Router `canbench --persist` run took approximately 190 seconds across 38 suites with
-  no regressions and recorded 56,304,312 and 49,374,533 instructions for the two frontier
-  derivations; its stable-reopen baseline was refreshed because canbench 0.7 expanded the reopen
-  surface, not because of a compact-key regression. The unfiltered Vector run took approximately
-  181 seconds across 83 suites with zero regressions and recorded 2,106,603,774 instructions for
+  clippy pass. The unfiltered Router `canbench --persist` run took approximately 190 seconds across
+  38 suites with no regressions and recorded 49,374,533 instructions for the single-lane derivation
+  and 56,304,312 for the 1,024-lane derivation; its stable-reopen baseline was refreshed because
+  canbench 0.7 expanded the reopen surface, not because of a compact-key regression. The unfiltered
+  Vector run took approximately 181 seconds across 83 suites with zero regressions and recorded
+  2,106,603,774 instructions for
   the frontier-plus-GC budget. The workspace-wide format check is blocked by unrelated dirty paths
   and never passed; the bounded Quint model is protocol evidence only, not production proof.
 - **Impact:** Restart or response loss cannot leave an allocated direct-ingestion stamp without a
@@ -596,7 +595,15 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-11-005 — `FreeSpanStore` reopen validation has no production-scale cost bound
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22; declared reopen envelope with measured scale probes — up to
+  262,144 non-coalescing active spans per store must validate within 1.0B wasm instructions and
+  ≤8 MiB transient heap; measured 774.92M instructions at the declared maximum, essentially linear
+  at ~2,956 instr/span, so the existing fail-closed sorted-merge validator is accepted unchanged
+  and no ADR 0007/0039 amendment is required. Owning benchmarks:
+  `bench_lara_free_span_store_reopen_16384/65536/262144` in
+  `crates/ic-stable-lara/src/lara/edge/free_span/bench.rs`, thresholds documented in the bench
+  header and [storage/lara.md](storage/lara.md) "Reopen integrity". Fragmentation beyond the
+  declared level is outside the supported upgrade envelope rather than trapped.)
 - **Severity:** P2 operational scalability risk
 - **Owner:** `ic-stable-lara` free-span persistence and Graph upgrade preflight
 - **Observed behavior:** `FreeSpanStore::init` validates the records/bin ↔ `by_start` bijection by

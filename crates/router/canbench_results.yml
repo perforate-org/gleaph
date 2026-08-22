@@ -119,6 +119,30 @@ benches:
         instructions: 285479
         heap_increase: 0
         stable_memory_increase: 88
+  bench_router_frontier_key_only_scan_1024_lanes_one_marker_each:
+    total:
+      calls: 1
+      instructions: 56304312
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      router_frontier_key_only_scan_1024_lanes_one_marker_each:
+        calls: 1
+        instructions: 56303320
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_router_frontier_key_only_scan_single_lane_1024:
+    total:
+      calls: 1
+      instructions: 49374533
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      router_frontier_key_only_scan_single_lane_1024:
+        calls: 1
+        instructions: 49373538
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_router_prepared_batch_register_32:
     total:
       calls: 1

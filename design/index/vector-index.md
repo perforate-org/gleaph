@@ -1,13 +1,19 @@
 # Vector index
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
+Anchor timestamp: 2026-08-22 11:04:51 UTC +0000
 
 ## Status
 
 **Partially Implemented.** The ownership/fencing model, Router direct-ingestion durability boundary,
 and contiguous frontier implementation are present. The focused frontier PocketIC and benchmark
-gates pass; unfiltered persisted canbench artifacts and the final plan gate remain pending.
+gates pass, and the unfiltered persisted canbench evidence is terminal: Router ran approximately
+190 seconds across 38 suites with no regressions and recorded 56,304,312 instructions for the
+1,024-lane derivation and 49,374,533 for the single-lane derivation; Vector ran approximately 181
+seconds across 83 suites with zero regressions and recorded 2,106,603,774 instructions for the
+frontier-plus-GC budget. The targeted affected-crate format check passes; the workspace-wide format
+check is blocked by unrelated dirty paths and never passed. Autonomous timer firing, Graph-only lane
+liveness, and a global subject-map growth bound remain deferred.
 Graph-only lanes that never produce a Router marker remain outside the liveness slice.
 The remaining physical-layout and algorithm work is tracked below. The current stable layout uses
 version 1 slab/page headers with 3-byte magic (`VSL` / `VPG`) and a binary `u8` version.
@@ -199,11 +205,11 @@ idempotent replay. The focused frontier lifecycle gate now passes exactly one Po
 using one `PocketIc`, one federation bootstrap, and four canister installs (Router, Property Index,
 Graph, Vector). It covers response loss, Router/Vector upgrades, exact retry and marker retirement,
 GC gating and physical collection, and stale-resurrection prevention. Router and Vector tests, checks,
-and clippy pass. Focused canbenches measure 3.29M instructions for the single-lane 1,024-row
-derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier plus bounded-GC step.
-Unfiltered persisted canbench artifacts and the final plan gate remain pending. Neither this runtime
-evidence nor the bounded Quint model is a production proof of frontier liveness, autonomous timer
-firing, or a global tombstone-GC bound.
+and clippy pass. The persisted unfiltered Router canbench evidence is terminal as recorded in the
+status above; the targeted affected-crate format check passes, while the workspace-wide format check
+is blocked by unrelated
+dirty paths and never passed. Neither this runtime evidence nor the bounded Quint model is a
+production proof of frontier liveness, autonomous timer firing, or a global tombstone-GC bound.
 
 ### DML-driven removes
 
@@ -584,10 +590,10 @@ bound. A raw candidate region remains the documented fallback if per-job pools s
 
 ## Implementation-gap traceability (non-normative)
 
-The implementation-gap ledger is the status authority for this open
-observation. This link does not amend the planned vector boundary above.
+The implementation-gap ledger records the resolved status of this capability. This link does not
+amend the planned vector boundary above.
 
-- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-durable-intent-ownership) — **In progress**: MemoryId 53 owns the three direct-ingestion phases and the Router frontier implementation; focused frontier PocketIC and benchmark gates pass, while unfiltered persisted canbench artifacts and the final plan gate remain pending. The bounded Quint model is not production proof, and Graph-only lane liveness remains deferred.
+- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-durable-intent-ownership) — **Resolved (2026-08-22)**: MemoryId 53 owns the three direct-ingestion phases and the Router frontier implementation; focused frontier PocketIC and benchmark gates pass, and the unfiltered persisted canbench evidence is terminal. The targeted affected-crate format check passes, while the workspace-wide format check is blocked by unrelated dirty paths and never passed. The bounded Quint model is not production proof, and Graph-only lane liveness remains deferred.
 
 ## Open items
 

@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
+Anchor timestamp: 2026-08-22 11:04:51 UTC +0000
 
 ## Purpose
 
@@ -321,10 +321,15 @@ Graph-only lanes that never produce a marker remain deferred. The focused fronti
 passes exactly one PocketIC test in 25.67s using one `PocketIc`, one federation bootstrap, and four
 canister installs (Router, Property Index, Graph, Vector). It covers response loss, Router/Vector
 upgrades, exact retry and marker retirement, GC gating and physical collection, and stale-resurrection
-prevention. Router and Vector tests, checks, and clippy pass; focused canbenches measure 3.29M
-instructions for the single-lane 1,024-row derivation, 9.85M for 1,024 lanes, and 2.11B for the
-Vector frontier plus bounded-GC step. Unfiltered persisted canbench artifacts and the final plan gate
-remain pending, and the bounded Quint evidence is not production proof.
+prevention. Router and Vector tests, checks, and clippy pass. The unfiltered Router
+`canbench --persist` run took approximately 190 seconds across 38 suites with no regressions and
+recorded 49,374,533 instructions for the single-lane derivation and 56,304,312 for the 1,024-lane
+derivation; the stable-reopen baseline was refreshed because canbench 0.7 expanded the reopen surface,
+not because of a compact-key regression. The unfiltered Vector run took approximately 181 seconds
+across 83 suites with zero
+regressions and recorded 2,106,603,774 instructions for the frontier-plus-GC budget. The targeted
+affected-crate format check passes; the workspace-wide format check is blocked by unrelated dirty
+paths and never passed. The bounded Quint evidence is not production proof.
 
 The prior targeted PocketIC lifecycle gates each ran one exact test and passed:
 `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`

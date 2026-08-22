@@ -1357,6 +1357,18 @@ benches:
         instructions: 13993
         heap_increase: 0
         stable_memory_increase: 0
+  bench_router_frontier_gc_budget:
+    total:
+      calls: 1
+      instructions: 2106603774
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_router_frontier_gc_budget:
+        calls: 1
+        instructions: 2106602769
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_subject_map_get_d128:
     total:
       calls: 1

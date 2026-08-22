@@ -1,9 +1,12 @@
 # 0064. Vector canister redesign: ownership, layout, fencing, and ingest
 
 Date: 2026-08-07
-Status: Partially Implemented (design contract; Router direct-ingestion and frontier implementation present; unfiltered persisted canbench artifacts and final plan gate pending)
+Status: Partially Implemented (design contract; Router direct-ingestion and frontier implementation
+present; unfiltered persisted canbench evidence is terminal; targeted affected-crate format passes,
+while the workspace-wide format check is blocked by unrelated dirty paths; autonomous timer firing,
+Graph-only lane liveness, and global subject-map growth remain deferred)
 Last revised: 2026-08-22
-Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
+Anchor timestamp: 2026-08-22 11:04:51 UTC +0000
 
 > **Summary.** The vector canister owns indexed embedding bytes; Graph holds zero embedding state.
 > Router-issued nonzero `mutation_id` stamps order direct ingestion against Graph DML removes. Router
@@ -169,11 +172,16 @@ idempotent replay. The focused frontier lifecycle gate now passes exactly one Po
 using one `PocketIc`, one federation bootstrap, and four canister installs (Router, Property Index,
 Graph, Vector). It covers Graph/Vector/frontier response loss, Router/Vector upgrades, exact retry
 and marker retirement, GC gating and physical collection, and stale-resurrection prevention. Router
-and Vector tests, checks, and clippy pass; focused frontier canbenches measure 3.29M instructions
-for the single-lane 1,024-row derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier
-plus bounded-GC step. Unfiltered persisted canbench artifacts and the final plan gate remain pending.
-Neither this runtime evidence nor the bounded Quint model is a production proof of frontier liveness,
-autonomous timer firing, or a global tombstone-GC bound.
+and Vector tests, checks, and clippy pass. The unfiltered Router `canbench --persist` run took
+approximately 190 seconds across 38 suites with no regressions and recorded 49,374,533 instructions
+for the single-lane derivation and 56,304,312 for the 1,024-lane frontier derivation; its stable-reopen
+baseline was refreshed because canbench 0.7 expanded the reopen surface, not because of a compact-key
+regression.
+The unfiltered Vector run took approximately 181 seconds across 83 suites with zero regressions and
+recorded 2,106,603,774 instructions for the frontier-plus-GC budget. The targeted affected-crate
+format check passes; the workspace-wide format check is blocked by unrelated dirty paths and never
+passed. Neither this runtime evidence nor the bounded Quint model is a production proof of frontier
+liveness, autonomous timer firing, or a global tombstone-GC bound.
 
 ### 7. Physical layout (two-table pages; run table; packed payload; version 1)
 
@@ -290,9 +298,10 @@ constraints — naming is revisited after the implementation proves distinctive 
 3. **[partial]** Rework the vector canister: the subject map clock and typed outcome path are
    implemented; the attached Graph advances `graph_watermark`, and the Router frontier endpoint
    monotonically advances `router_watermark` for an exact attached shard while running one bounded
-   GC step. Focused frontier PocketIC and benchmark gates pass; unfiltered persisted canbench
-   artifacts and the final plan gate remain pending. The physical layout and
-   search/encoding roadmap remain planned; graph embedding regions are removed.
+   GC step. Focused frontier PocketIC and benchmark gates pass, and the unfiltered persisted
+   canbench evidence is terminal. The targeted affected-crate format check passes; the
+   workspace-wide format check is blocked by unrelated dirty paths and never passed. The physical
+   layout and search/encoding roadmap remain planned; graph embedding regions are removed.
 4. **[partial]** Rework the graph: `stamp_embedding`, label-diff removes, remove embedding regions;
    the direct-ingest stamp is validation-only and does not update the existing DML mutation
    consumers.
@@ -301,8 +310,9 @@ constraints — naming is revisited after the implementation proves distinctive 
    implemented. Frontier derivation is per marked target/shard lane and scans stable keys without
    decoding payloads; it retires only an exact marker-key snapshot after observed acknowledgement.
    `AwaitingFrontier` has no legal payload mutation: phase or lane changes create a different key.
-   Focused frontier PocketIC and benchmark gates pass; unfiltered persisted canbench artifacts and
-   the final plan gate remain pending. A future split requires a separate ADR.
+   Focused frontier PocketIC and benchmark gates pass, and the unfiltered persisted canbench
+   evidence is terminal. The targeted affected-crate format check passes; the workspace-wide format
+   check is blocked by unrelated dirty paths and never passed. A future split requires a separate ADR.
 6. **[planned]** Measure (canbench): scoring formulations, page scan cost at `d = 1536`, per-level
    `nlist` envelope; decide hierarchy deployment (`levels = 2`) and raw candidate region.
 
