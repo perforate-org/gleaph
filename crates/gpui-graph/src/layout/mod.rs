@@ -78,7 +78,12 @@ impl Default for LayoutBudget {
 /// All layouts use this single interface rather than separate static and
 /// dynamic traits. Exact method signatures may evolve; the architectural
 /// contract is that layout is a long-lived session operating over dense data.
-pub trait LayoutEngine {
+///
+/// The API itself is synchronous and threading-free (§30); the [`Send`] bound
+/// exists so the scheduling layer *may* move an engine onto GPUI's background
+/// executor between calls (§30 native strategy). Every engine stays fully
+/// usable from the UI thread.
+pub trait LayoutEngine: Send {
     /// Rebuild the engine's internal algorithm state for the given graph.
     ///
     /// A rebuild must not imply discarding existing positions: old nodes keep

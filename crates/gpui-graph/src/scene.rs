@@ -8,6 +8,7 @@
 use std::hash::BuildHasher;
 
 use glam::Vec2;
+use gpui::{Context, Task};
 use slotmap::SecondaryMap;
 
 use crate::graph::{EdgeId, Graph, GraphDelta, NodeId};
@@ -58,7 +59,25 @@ where
     /// `layout_state`, so per-node lookups (e.g. cluster centers) are O(1)
     /// instead of a linear scan of `layout_graph.node_ids`.
     node_index: std::collections::HashMap<NodeId, usize, S>,
-    engine: Box<dyn LayoutEngine>,
+    /// The active layout engine. `None` while the engine is parked inside an
+    /// in-flight background step (§30); every engine touchpoint must treat
+    /// `None` as busy and defer through [`Self::pending_engine_rebuild`] or
+    /// [`Self::pending_engine`].
+    engine: Option<Box<dyn LayoutEngine>>,
+    /// Background task computing one layout budget off the UI thread.
+    /// Cancels on drop, so replacing or dropping the scene also reclaims the
+    /// parked engine.
+    flight: Option<Task<()>>,
+    /// An engine installed while a flight held the previous one; swapped in
+    /// (and rebuilt) when the flight completes.
+    pending_engine: Option<Box<dyn LayoutEngine>>,
+    /// Set when the projection changed while the engine was parked, so the
+    /// returning engine must rebuild before stepping again (§11.6).
+    pending_engine_rebuild: bool,
+    /// Bumped by direct position writes (`set_position`, i.e. drags) so a
+    /// completed flight can detect that its input snapshot was externally
+    /// mutated and discard its output instead of clobbering the user's drag.
+    layout_write_epoch: u64,
     controller: LayoutController,
     placement: Placement,
     rng: Rng,
@@ -96,7 +115,11 @@ where
             layout_graph: LayoutGraph::new(Vec::new(), Vec::new(), Vec::new(), 0),
             layout_state: LayoutState::new(),
             node_index: std::collections::HashMap::with_hasher(hasher),
-            engine: Box::new(crate::layout::FixedLayout),
+            engine: Some(Box::new(crate::layout::FixedLayout)),
+            flight: None,
+            pending_engine: None,
+            pending_engine_rebuild: false,
+            layout_write_epoch: 0,
             controller: LayoutController::new(),
             placement: Placement::default(),
             rng: Rng::new(0),
@@ -229,13 +252,28 @@ where
         if let Some(i) = self.node_index.get(&node) {
             self.layout_state.positions[*i] = position;
         }
+        self.layout_write_epoch += 1;
         self.bump_geometry_revision();
     }
 
     /// Replace the layout engine, rebuilding its internal state.
+    ///
+    /// While a background flight holds the previous engine, the replacement
+    /// is parked in [`Self::pending_engine`] and takes over (with a rebuild
+    /// against the current projection) when the flight completes; the
+    /// returning engine is dropped.
     pub fn set_layout(&mut self, engine: Box<dyn LayoutEngine>) {
-        self.engine = engine;
-        self.rebuild_layout_engine();
+        match self.engine.as_mut() {
+            Some(slot) => {
+                *slot = engine;
+                self.rebuild_layout_engine();
+            }
+            None => {
+                self.pending_engine = Some(engine);
+                // The parked engine's flight result will be discarded anyway.
+                self.pending_engine_rebuild = true;
+            }
+        }
         self.bump_geometry_revision();
         self.controller.reheat();
     }
@@ -253,8 +291,15 @@ where
         if !self.controller.should_step() {
             return LayoutProgress::Settled;
         }
+        if self.engine.is_none() {
+            // A background flight owns the engine; this synchronous call has
+            // nothing to advance. Report running so callers keep their loop.
+            return LayoutProgress::Running { stability: None };
+        }
         let progress = self
             .engine
+            .as_mut()
+            .expect("engine presence checked above")
             .step(&self.layout_graph, &mut self.layout_state, budget);
         for (i, id) in self.layout_graph.node_ids.iter().enumerate() {
             if let Some(scene) = self.node_scene.get_mut(*id) {
@@ -331,9 +376,13 @@ where
     /// cannot inherit geometry from a previous engine, while canonical node
     /// positions remain untouched.
     fn rebuild_layout_engine(&mut self) {
+        let Some(engine) = self.engine.as_mut() else {
+            // Engine is parked in a background flight; rebuild it on return.
+            self.pending_engine_rebuild = true;
+            return;
+        };
         self.layout_state.cluster_centers.fill(None);
-        self.engine
-            .rebuild(&self.layout_graph, &mut self.layout_state);
+        engine.rebuild(&self.layout_graph, &mut self.layout_state);
     }
 
     /// Topology revision (§31).
@@ -401,12 +450,228 @@ where
     }
 }
 
+impl<NK, EK, N, E, S> GraphScene<NK, EK, N, E, S>
+where
+    NK: Eq + std::hash::Hash + 'static,
+    EK: Eq + std::hash::Hash + 'static,
+    N: 'static,
+    E: 'static,
+    S: BuildHasher + Default + Clone + 'static,
+{
+    /// Step the layout by one frame budget on GPUI's background executor
+    /// (§30 native strategy).
+    ///
+    /// The engine and a snapshot of the layout session move into the spawned
+    /// task; when it completes, computed positions are adopted only if neither
+    /// the topology nor any direct position write happened meanwhile — stale
+    /// results are discarded and the returning engine rebuilds against the
+    /// current projection instead (§11.6: positions are preserved across that
+    /// rebuild). While a flight is in flight this returns [`LayoutProgress::Running`]
+    /// without doing work, so callers can drive frames with the same loop they
+    /// use for [`Self::step_layout`].
+    pub fn step_layout_async(
+        &mut self,
+        budget: LayoutBudget,
+        cx: &mut Context<Self>,
+    ) -> LayoutProgress {
+        if !self.controller.should_step() {
+            return LayoutProgress::Settled;
+        }
+        if self.flight.is_some() || self.engine.is_none() {
+            return LayoutProgress::Running { stability: None };
+        }
+        let Some(mut engine) = self.engine.take() else {
+            return LayoutProgress::Running { stability: None };
+        };
+        let graph = self.layout_graph.clone();
+        let mut state = self.layout_state.clone();
+        let topology_revision = graph.topology_revision;
+        let write_epoch = self.layout_write_epoch;
+        let task = cx.spawn(async move |this, cx| {
+            let finished = cx
+                .background_executor()
+                .spawn(async move {
+                    let progress = engine.step(&graph, &mut state, budget);
+                    (engine, state, progress)
+                })
+                .await;
+            this.update(cx, |scene, cx| {
+                scene.complete_layout_flight(finished, topology_revision, write_epoch, cx)
+            })
+            .ok();
+        });
+        self.flight = Some(task);
+        LayoutProgress::Running { stability: None }
+    }
+
+    /// Apply (or discard) a completed background step.
+    fn complete_layout_flight(
+        &mut self,
+        finished: (Box<dyn LayoutEngine>, LayoutState, LayoutProgress),
+        topology_revision: u64,
+        write_epoch: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.flight = None;
+        let (engine, state, progress) = finished;
+
+        // A replacement installed during the flight wins over the parked one.
+        if let Some(pending) = self.pending_engine.take() {
+            drop(engine);
+            self.engine = Some(pending);
+            self.pending_engine_rebuild = true;
+        } else {
+            self.engine = Some(engine);
+        }
+
+        // Adopt results only when nothing the snapshot depends on changed.
+        // Topology changes also shift dense indices, so their results must
+        // never be applied even if node counts happen to match.
+        let fresh = topology_revision == self.layout_graph.topology_revision
+            && write_epoch == self.layout_write_epoch;
+        if fresh && !self.pending_engine_rebuild {
+            self.layout_state.positions = state.positions;
+            self.layout_state.cluster_centers = state.cluster_centers;
+            for (i, id) in self.layout_graph.node_ids.iter().enumerate() {
+                if let Some(scene) = self.node_scene.get_mut(*id) {
+                    scene.position = self.layout_state.positions[i];
+                }
+            }
+            self.bump_geometry_revision();
+            if progress == LayoutProgress::Settled {
+                self.controller.notify_converged();
+            }
+        } else {
+            // Stale or deferred-rebuild path: recompute against the current
+            // projection. Positions live in `self.layout_state` already and
+            // are preserved across rebuilds (§11.6).
+            drop(state);
+            self.rebuild_layout_engine();
+        }
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::graph::EdgeDirection;
     use crate::layout::{FixedLayout, ForceAtlas2, SccLayoutEngine};
     use crate::runtime::GraphRuntime;
+    use gpui::{AppContext, Entity, TestAppContext};
+
+    #[gpui::test]
+    fn background_step_applies_positions_and_settles(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let scene: Entity<Scene> =
+            cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        scene.update(cx, |s, _| {
+            // A connected triangle: attraction binds the nodes, so the
+            // relaxation genuinely moves them before settling.
+            s.merge(
+                GraphBatch::new()
+                    .node("a", "A")
+                    .node("b", "B")
+                    .node("c", "C")
+                    .edge("ab", "a", "b", EdgeDirection::Undirected, "x")
+                    .edge("bc", "b", "c", EdgeDirection::Undirected, "y"),
+            );
+        });
+        let initial = scene.update(cx, |s, _| {
+            s.node_position(s.node_id(&"a").unwrap()).unwrap()
+        });
+
+        for _ in 0..40 {
+            let progress =
+                scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+            if progress == LayoutProgress::Settled {
+                break;
+            }
+            cx.run_until_parked();
+        }
+        let separated = scene.update(cx, |s, _| {
+            let a = s.node_position(s.node_id(&"a").unwrap()).unwrap();
+            let b = s.node_position(s.node_id(&"b").unwrap()).unwrap();
+            (a, b)
+        });
+        assert!(
+            (separated.0 - separated.1).length() > 1.0,
+            "background steps must move nodes apart: {separated:?}"
+        );
+        assert!(
+            (separated.0 - initial).length() > 1.0,
+            "node a must have moved from its initial placement: {initial} -> {}",
+            separated.0
+        );
+        assert_eq!(
+            scene.update(cx, |s, _| s.layout_state()),
+            LayoutRunState::Settled
+        );
+    }
+
+    #[gpui::test]
+    fn background_flight_discards_result_after_topology_change(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let scene: Entity<Scene> =
+            cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        scene.update(cx, |s, _| {
+            s.merge(GraphBatch::new().node("a", "A").node("b", "B").edge(
+                "ab",
+                "a",
+                "b",
+                EdgeDirection::Undirected,
+                "x",
+            ));
+        });
+
+        // Kick a flight, then mutate topology before the executor runs it.
+        let kicked = scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+        assert_eq!(kicked, LayoutProgress::Running { stability: None });
+        scene.update(cx, |s, _| {
+            s.merge(GraphBatch::new().node("c", "C").edge(
+                "ac",
+                "a",
+                "c",
+                EdgeDirection::Undirected,
+                "knows",
+            ));
+        });
+        cx.run_until_parked();
+
+        // The stale result must have been discarded and the returning engine
+        // rebuilt against the three-node projection; stepping continues.
+        scene.update(cx, |s, cx| {
+            assert_eq!(s.layout_graph.node_count(), 3);
+            let progress = s.step_layout_async(LayoutBudget::default(), cx);
+            assert_eq!(progress, LayoutProgress::Running { stability: None });
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn set_position_during_flight_prevents_result_clobber(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let scene: Entity<Scene> =
+            cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        scene.update(cx, |s, _| {
+            s.merge(GraphBatch::new().node("a", "A").node("b", "B"));
+        });
+        let a = scene.update(cx, |s, _| s.node_id(&"a").unwrap());
+        scene.update(cx, |s, _| s.set_position(a, glam::Vec2::new(500.0, 500.0)));
+
+        let _ = scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+        // Simulate a concurrent drag after the snapshot was taken but before
+        // completion: bump the write epoch via another direct write.
+        scene.update(cx, |s, _| s.set_position(a, glam::Vec2::new(600.0, 600.0)));
+        cx.run_until_parked();
+
+        // The flight's positions targeted pre-drag state; the drag value must
+        // survive as the authoritative position until the next fresh step.
+        scene.update(cx, |s, cx| {
+            let _ = s.step_layout_async(LayoutBudget::default(), cx);
+        });
+        cx.run_until_parked();
+    }
 
     type Scene = GraphScene<&'static str, &'static str, &'static str, &'static str>;
 
@@ -1236,5 +1501,32 @@ mod tests {
             }
             assert_eq!(runtime.geometry_revision(), scene.geometry_revision());
         }
+    }
+}
+
+#[cfg(test)]
+mod async_probe {
+    use gpui::{AppContext, TestAppContext};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[gpui::test]
+    fn background_spawn_completes_under_test_executor(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag2 = flag.clone();
+        let scene = cx.new(|_| 0u32);
+        scene.update(cx, |_, cx| {
+            cx.spawn(async move |this, cx| {
+                let done = cx.background_executor().spawn(async move {
+                    flag2.store(true, Ordering::SeqCst);
+                });
+                done.await;
+                let _ = this.update(cx, |_, _| {});
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+        assert!(flag.load(Ordering::SeqCst), "background task must run");
     }
 }

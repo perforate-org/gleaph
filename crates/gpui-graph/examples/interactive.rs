@@ -326,10 +326,13 @@ impl Example {
 
 impl Render for Example {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Advance the force model one frame, stopping when the layout settles.
+        // Advance the force model one frame on GPUI's background executor,
+        // stopping when the layout settles. Frames where a step is already
+        // computing return `Running` without doing work, so the animation
+        // loop stays identical to the synchronous driver's.
         if !self.settled {
             let progress = self.scene.update(cx, |scene, cx| {
-                let p = scene.step_layout(LayoutBudget::default());
+                let p = scene.step_layout_async(LayoutBudget::default(), cx);
                 cx.notify();
                 p
             });

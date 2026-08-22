@@ -2037,7 +2037,15 @@ Native and Web/WASM may use different execution strategies.
 
 ## Native
 
-Possible future strategy:
+Implemented (§37): `GraphScene::step_layout_async` moves the engine plus a
+snapshot of the layout session onto GPUI's background executor for one
+budget. The completion path adopts computed positions only when neither the
+topology revision nor any direct position write (drag epoch) changed during
+the flight; otherwise the result is discarded and the returning engine
+rebuilds against the current projection, preserving positions (§11.6).
+Engine replacement (`set_layout`) during a flight parks the new engine and
+swaps it in on completion. The synchronous `step_layout` remains fully
+supported — both drivers share one controller.
 
 ```text
 background task
@@ -2063,9 +2071,11 @@ paint
 next frame
 ```
 
-The `LayoutEngine` API must not require background threading.
-
-v0.1 should favor a cooperative stepping model that works everywhere.
+The `LayoutEngine` API does not require background threading: it is
+synchronous; the `Send` supertrait only permits moving an engine between
+executors. On wasm-family targets GPUI's executor runs tasks cooperatively,
+so `step_layout_async` is valid there too while remaining single-threaded.
+The cooperative stepping model stays the default everywhere.
 
 ---
 
@@ -2419,7 +2429,13 @@ The following should remain intentionally open until implementation and profilin
 
 ## Scheduling
 
-- native background layout,
+- ~~native background layout~~ (implemented as `step_layout_async`, §30:
+  engine + session snapshot fly to GPUI's background executor per budget;
+  results are revision-and-drag-epoch guarded on return, with parked-engine
+  reconciliation for topology rebuilds and `set_layout` mid-flight. The
+  trait gained a `Send` supertrait; all engines qualify trivially. Covered
+  by headless tests for apply-and-settle, stale-topology discard, and
+  drag-epoch non-clobber),
 - worker-based Web layout,
 - synchronization frequency,
 - frame-time budgeting.

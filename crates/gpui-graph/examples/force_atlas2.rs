@@ -107,7 +107,7 @@ impl Render for Example {
         // requesting animation frames so the window is not redrawn forever.
         if !self.settled {
             let progress = self.scene.update(cx, |scene, cx| {
-                let p = scene.step_layout(LayoutBudget::default());
+                let p = scene.step_layout_async(LayoutBudget::default(), cx);
                 cx.notify();
                 p
             });
