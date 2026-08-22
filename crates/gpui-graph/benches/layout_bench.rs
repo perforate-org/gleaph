@@ -150,11 +150,12 @@ impl BenchCase {
 fn step_bench(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     id: BenchmarkId,
+    engine: &dyn Fn() -> ForceAtlas2,
     case: &BenchCase,
 ) {
     group.bench_with_input(id, case, |b, case| {
         b.iter(|| {
-            let mut engine = ForceAtlas2::default();
+            let mut engine = engine();
             let mut state = case.state.clone();
             engine.rebuild(&case.graph, &mut state);
             std::hint::black_box(engine.step(
@@ -169,11 +170,17 @@ fn step_bench(
 fn bench_force_atlas2_step(c: &mut Criterion) {
     let mut group = c.benchmark_group("force_atlas2_step");
     group.sample_size(30);
+    let default_engine = || ForceAtlas2::default();
+    // Barnes-Hut is opt-in by default; keep its favorable (dense ring) and
+    // unfavorable (sparse grid) cases measured so the activation policy
+    // decision (§37) stays grounded in data.
+    let bh_engine = || ForceAtlas2::default().with_barnes_hut_threshold(0);
 
     for side in [20usize, 40usize] {
         step_bench(
             &mut group,
             BenchmarkId::new("grid", format!("{}x{}", side, side)),
+            &default_engine,
             &BenchCase::grid(side),
         );
     }
@@ -182,6 +189,7 @@ fn bench_force_atlas2_step(c: &mut Criterion) {
         step_bench(
             &mut group,
             BenchmarkId::new("hub", leaves.to_string()),
+            &default_engine,
             &BenchCase::hub(leaves),
         );
     }
@@ -191,16 +199,31 @@ fn bench_force_atlas2_step(c: &mut Criterion) {
     step_bench(
         &mut group,
         BenchmarkId::new("grid", "100x100"),
+        &default_engine,
+        &BenchCase::grid(100),
+    );
+    step_bench(
+        &mut group,
+        BenchmarkId::new("grid_bh", "100x100"),
+        &bh_engine,
         &BenchCase::grid(100),
     );
     step_bench(
         &mut group,
         BenchmarkId::new("hub", "4096"),
+        &default_engine,
+        &BenchCase::hub(4096),
+    );
+    step_bench(
+        &mut group,
+        BenchmarkId::new("hub_bh", "4096"),
+        &bh_engine,
         &BenchCase::hub(4096),
     );
     step_bench(
         &mut group,
         BenchmarkId::new("random", "5000"),
+        &default_engine,
         &BenchCase::random(5000),
     );
 

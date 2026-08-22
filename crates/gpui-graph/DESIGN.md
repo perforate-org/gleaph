@@ -2290,7 +2290,14 @@ The following should remain intentionally open until implementation and profilin
 - ForceAtlas2 default settings,
 - convergence thresholds,
 - iteration budget,
-- Barnes-Hut thresholds,
+- ~~Barnes-Hut quadtree~~ (implemented in `ForceAtlas2`: flat-arena quadtree,
+  FA2 degree mass, exact chains at the depth floor for coincident nodes,
+  parity-tested against brute force; opt-in via
+  `with_barnes_hut_threshold`, disabled by default. Measured: ~45% faster on
+  a 4096-node dense ring, up to ~6x slower on sparse uniform grids, because
+  the quadtree computes all-pairs long-range repulsion where the cutoff grid
+  only touches local neighborhoods),
+- Barnes-Hut activation policy (topology-aware threshold),
 - dynamic incremental engine updates,
 - hierarchical layout,
 - Sugiyama layout,
