@@ -2462,23 +2462,7 @@ pub async fn e2e_delete_directed_edge_with_property(
         LaraLabelId::from_raw(edge.label_id),
         edge.edge_slot_index.raw(),
     );
-    let catalog_label =
-        crate::facade::catalog_edge_label_from_wire(LaraLabelId::from_raw(edge.label_id))
-            .expect("e2e delete edge has a catalog label");
-    let _catalog =
-        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
-                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
-                    .expect("e2e physical id"),
-                catalog_epoch: 1,
-                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                label_id: catalog_label.raw(),
-                property_id: args.property_id,
-                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
-                field_path: String::new(),
-            }],
-            ..Default::default()
-        });
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     store
         .delete_edge_by_handle(handle)
         .map_err(|e| e.to_string())?;

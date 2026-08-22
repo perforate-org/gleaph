@@ -18,12 +18,12 @@ use candid::{Decode, Encode};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, RouterError};
-use gleaph_graph_kernel::index::PostingHit;
+use gleaph_graph_kernel::index::{IndexedPropertyCatalog, PostingHit};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_pocket_ic_tests::{
-    FederationEnv, SOURCE_SHARD, create_edge_property_index, create_vertex_property_index,
-    drain_maintenance_via_timer, drop_vertex_property_index,
+    FederationEnv, GRAPH_NAME, SOURCE_SHARD, create_edge_property_index,
+    create_vertex_property_index, drain_maintenance_via_timer, drop_vertex_property_index,
     e2e_delete_directed_edge_with_property, e2e_derived_index_outbox_len,
     e2e_enqueue_forward_compaction, e2e_insert_directed_edge_with_property, e2e_insert_vertex,
     e2e_maintenance_queue_len, e2e_repair_journal_len, e2e_reverse_resolved_edge_property,
@@ -37,22 +37,50 @@ const INDEX_AGE_NAME: &str = "adr0023_vertex_age";
 const INDEX_EDGE_LABEL: &str = "KNOWS";
 const INDEX_WEIGHT_NAME: &str = "adr0023_edge_weight";
 
-/// Counts postings on graph-index whose value matches `age` (summed over the
-/// small interned-property-id space the test uses). `lookup_equal` is
-/// router-guarded and returns a bare `Vec<PostingHit>`.
+/// Counts postings on graph-index whose value matches `value` across every
+/// (physical index, property) namespace the router's live catalog allocates
+/// for the test graph. `lookup_equal` is router-guarded and returns a bare
+/// `Vec<PostingHit>`.
 fn count_postings_for_value(env: &FederationEnv, value: &[u8]) -> usize {
+    let catalog_bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.graph_source,
+            "get_indexed_property_catalog",
+            Encode!(&GRAPH_NAME).expect("encode graph name"),
+        )
+        .expect("get_indexed_property_catalog query");
+    let catalog: IndexedPropertyCatalog =
+        Decode!(&catalog_bytes, Result<IndexedPropertyCatalog, RouterError>)
+            .expect("decode catalog result")
+            .expect("catalog query ok");
     let mut total = 0usize;
-    for property_id in 0u32..16 {
+    let namespaces = catalog
+        .vertex_indexes
+        .iter()
+        .map(|m| (m.physical_index_id, m.property_id))
+        .chain(
+            catalog
+                .edge_indexes
+                .iter()
+                .map(|m| (m.physical_index_id, m.property_id)),
+        )
+        .collect::<Vec<_>>();
+    // A dropped (or never-created) index legitimately leaves zero namespaces; the
+    // caller asserts on the summed posting count, so an empty catalog sums to 0.
+    for (physical_index_id, property_id) in namespaces {
         let bytes = env
             .pic
             .query_call(
                 env.index,
                 env.router,
                 "lookup_equal",
-                Encode!(&property_id, &value.to_vec()).expect("encode lookup_equal"),
+                Encode!(&physical_index_id, &property_id, &value.to_vec())
+                    .expect("encode lookup_equal"),
             )
             .expect("lookup_equal query");
-        let hits = Decode!(&bytes, Vec<PostingHit>).expect("decode lookup_equal");
+        let hits = Decode!(&bytes, Vec<PostingHit>).expect("decode PostingHit>");
         total += hits.len();
     }
     total
