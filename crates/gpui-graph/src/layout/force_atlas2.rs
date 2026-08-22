@@ -7,6 +7,15 @@
 //! This is a self-contained implementation of the ForceAtlas2 force model
 //! (repulsion, attraction, gravity) with adaptive speed and a convergence
 //! threshold. Barnes-Hut acceleration is deferred (§37).
+//!
+//! Numerical note: the force model computes through [`f32::algebraic_*`]
+//! arithmetic (see the component-wise helpers below), which permits
+//! reassociation, FMA contraction, and reciprocal-multiply. Results are not
+//! bit-reproducible across runs, compiler versions, or platforms; that is
+//! acceptable here because this is an animated simulation whose tests assert
+//! convergence, never exact coordinates. The algebraic helpers must stay out
+//! of hit-testing, paint geometry, and viewport math, where epsilon
+//! comparisons rely on stable operation-by-operation precision.
 
 use glam::Vec2;
 
@@ -23,6 +32,24 @@ const MAX_STEP: f32 = 0.1;
 /// dead-band, the force model keeps re-injecting a tiny velocity at the
 /// equilibrium and the node jitters forever instead of settling.
 const VELOCITY_EPSILON: f32 = 0.01;
+
+/// Component-wise [`f32::algebraic_add`].
+#[inline]
+fn algebraic_add(a: Vec2, b: Vec2) -> Vec2 {
+    Vec2::new(a.x.algebraic_add(b.x), a.y.algebraic_add(b.y))
+}
+
+/// Component-wise [`f32::algebraic_sub`].
+#[inline]
+fn algebraic_sub(a: Vec2, b: Vec2) -> Vec2 {
+    Vec2::new(a.x.algebraic_sub(b.x), a.y.algebraic_sub(b.y))
+}
+
+/// Scalar [`f32::algebraic_mul`] applied to both components.
+#[inline]
+fn algebraic_mul_scalar(v: Vec2, s: f32) -> Vec2 {
+    Vec2::new(v.x.algebraic_mul(s), v.y.algebraic_mul(s))
+}
 
 /// A uniform grid over node positions, so repulsion only tests nodes within
 /// `repulsion_radius` of each other instead of every pair (O(N·k) vs O(N²)).
@@ -206,15 +233,19 @@ impl ForceAtlas2 {
                 if j <= i {
                     continue;
                 }
-                let delta = state.positions[i] - state.positions[j];
+                let delta = algebraic_sub(state.positions[i], state.positions[j]);
                 let dist = delta.length().max(0.01);
                 if dist > self.repulsion_radius {
                     continue;
                 }
-                let force = self.scaling / (dist * dist);
-                let dir = delta / dist;
-                forces[i] += dir * force;
-                forces[j] -= dir * force;
+                // `dir * force == delta * (scaling / dist³)`: one division per
+                // pair instead of one in `force` plus two in `delta / dist`.
+                let strength = self
+                    .scaling
+                    .algebraic_div(dist.algebraic_mul(dist).algebraic_mul(dist));
+                let impulse = algebraic_mul_scalar(delta, strength);
+                forces[i] = algebraic_add(forces[i], impulse);
+                forces[j] = algebraic_sub(forces[j], impulse);
             }
         }
 
@@ -222,21 +253,22 @@ impl ForceAtlas2 {
         for edge in &graph.edges {
             let s = edge.source.0 as usize;
             let t = edge.target.0 as usize;
-            let delta = state.positions[t] - state.positions[s];
+            let delta = algebraic_sub(state.positions[t], state.positions[s]);
             let dist = delta.length().max(0.01);
             let fa = if self.lin_log {
-                (1.0 + dist).ln()
+                (1.0f32.algebraic_add(dist)).ln()
             } else {
                 dist
             };
-            let dir = delta / dist;
-            forces[s] += dir * fa;
-            forces[t] -= dir * fa;
+            // `dir * fa == delta * (fa / dist)`: one division instead of two.
+            let pull = algebraic_mul_scalar(delta, fa.algebraic_div(dist));
+            forces[s] = algebraic_add(forces[s], pull);
+            forces[t] = algebraic_sub(forces[t], pull);
         }
 
         // Gravity: pull every node toward the origin.
         for (force, pos) in forces.iter_mut().zip(&state.positions) {
-            *force -= *pos * self.gravity;
+            *force = algebraic_sub(*force, algebraic_mul_scalar(*pos, self.gravity));
         }
 
         // Integrate velocity and apply it, respecting pins. Velocity accumulates
@@ -248,7 +280,9 @@ impl ForceAtlas2 {
                 continue;
             }
             let v = &mut self.velocity[i];
-            *v += *force * self.speed;
+            *v = algebraic_add(*v, algebraic_mul_scalar(*force, self.speed));
+            // Damping by 1/2 is exactly representable, so plain multiplication
+            // is exact and needs no algebraic relaxation.
             *v *= DAMPING;
             let len = v.length();
             if len < VELOCITY_EPSILON {
@@ -261,9 +295,11 @@ impl ForceAtlas2 {
             // Cap the per-iteration step so a single strong force cannot
             // fling a node across the graph in one frame.
             let step = len.min(MAX_STEP);
-            let move_vec = *v / len * step;
-            state.positions[i] += move_vec;
-            total += step;
+            // `v / len * step == v * (step / len)`: one division.
+            let scaled_step = step.algebraic_div(len);
+            state.positions[i] =
+                algebraic_add(state.positions[i], algebraic_mul_scalar(*v, scaled_step));
+            total = total.algebraic_add(step);
         }
         total
     }
