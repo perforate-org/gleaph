@@ -51,43 +51,105 @@ fn algebraic_mul_scalar(v: Vec2, s: f32) -> Vec2 {
     Vec2::new(v.x.algebraic_mul(s), v.y.algebraic_mul(s))
 }
 
-/// A uniform grid over node positions, so repulsion only tests nodes within
-/// `repulsion_radius` of each other instead of every pair (O(N·k) vs O(N²)).
+/// Packs a cell coordinate into one sortable key. Negative components wrap to
+/// a fixed order via `as u32`; only injectivity matters, not numeric order.
+fn cell_key(cx: i32, cy: i32) -> u64 {
+    ((cx as u32 as u64) << 32) | cy as u32 as u64
+}
+
+/// Neighbor offsets that visit each adjacent cell pair exactly once: together
+/// with their negations they cover all eight Moore directions.
+const FORWARD_STENCIL: [(i32, i32); 4] = [(1, 0), (1, 1), (0, 1), (1, -1)];
+
+/// A uniform spatial hash over node positions, rebuilt every iteration into
+/// reused flat buffers. Nodes are grouped by grid cell into one contiguous
+/// `entries` array (`offsets` is its per-cell index), so pair enumeration
+/// walks memory sequentially instead of chasing per-cell heap vectors and
+/// hashing every candidate lookup.
+///
+/// With `cell_size == repulsion_radius`, only cells that are adjacent or equal
+/// can hold a pair within the radius. Each such pair is visited exactly once:
+/// intra-cell pairs directly, cross-cell pairs through [`FORWARD_STENCIL`].
+#[derive(Debug, Clone, Default)]
 struct RepulsionGrid {
+    /// Grid pitch; equals the repulsion radius.
     cell_size: f32,
-    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+    /// Unique packed cell coordinates, sorted ascending.
+    cells: Vec<u64>,
+    /// Per-cell start offset into `entries`, plus one end sentinel.
+    offsets: Vec<u32>,
+    /// Node indices grouped by cell.
+    entries: Vec<u32>,
+    /// Scratch reused across rebuilds; empty between calls.
+    scratch: Vec<(u64, u32)>,
 }
 
 impl RepulsionGrid {
-    fn new(positions: &[Vec2], cell_size: f32) -> Self {
-        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, p) in positions.iter().enumerate() {
-            let cell = (
-                (p.x / cell_size).floor() as i32,
-                (p.y / cell_size).floor() as i32,
-            );
-            cells.entry(cell).or_default().push(i);
+    fn new(cell_size: f32) -> Self {
+        Self {
+            cell_size,
+            cells: Vec::new(),
+            offsets: Vec::new(),
+            entries: Vec::new(),
+            scratch: Vec::new(),
         }
-        Self { cell_size, cells }
     }
 
-    /// Indices of nodes that may lie within `radius` of `point`.
-    fn candidates(&self, point: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
-        let cell = (
-            (point.x / self.cell_size).floor() as i32,
-            (point.y / self.cell_size).floor() as i32,
-        );
-        let span = (radius / self.cell_size).ceil() as i32;
-        (-span..=span).flat_map(move |dx| {
-            (-span..=span).flat_map(move |dy| {
-                self.cells
-                    .get(&(cell.0 + dx, cell.1 + dy))
-                    .into_iter()
-                    .flatten()
-                    .copied()
-            })
-        })
+    /// Regroup `positions` by grid cell, reusing all buffers. The pitch tracks
+    /// `radius` so the neighborhood scan stays 3×3 regardless of settings.
+    fn rebuild(&mut self, positions: &[Vec2], radius: f32) {
+        self.cell_size = radius;
+        let cs = self.cell_size;
+        self.scratch.clear();
+        self.cells.clear();
+        self.offsets.clear();
+        self.entries.clear();
+        for (i, p) in positions.iter().enumerate() {
+            let key = cell_key((p.x / cs).floor() as i32, (p.y / cs).floor() as i32);
+            self.scratch.push((key, i as u32));
+        }
+        self.scratch.sort_unstable();
+        for si in 0..self.scratch.len() {
+            let (key, i) = self.scratch[si];
+            if self.cells.last() != Some(&key) {
+                self.cells.push(key);
+                self.offsets.push(self.entries.len() as u32);
+            }
+            self.entries.push(i);
+        }
+        self.offsets.push(self.entries.len() as u32);
+    }
+
+    /// Entry range of the cell at `(cx, cy)`; empty if unoccupied.
+    fn cell_entries(&self, cx: i32, cy: i32) -> core::ops::Range<usize> {
+        let key = cell_key(cx, cy);
+        let lo = self.cells.partition_point(|&k| k < key);
+        let hi = self.cells.partition_point(|&k| k <= key);
+        self.offsets[lo] as usize..self.offsets[hi] as usize
+    }
+
+    /// Visit every unordered pair of nodes whose cells are adjacent or equal.
+    fn for_each_pair(&self, visit: &mut impl FnMut(usize, usize)) {
+        for ci in 0..self.cells.len() {
+            let cx = (self.cells[ci] >> 32) as u32 as i32;
+            let cy = self.cells[ci] as u32 as i32;
+            let range = self.offsets[ci] as usize..self.offsets[ci + 1] as usize;
+
+            for ai in range.clone() {
+                for bi in ai + 1..range.end {
+                    visit(self.entries[ai] as usize, self.entries[bi] as usize);
+                }
+            }
+
+            for (dx, dy) in FORWARD_STENCIL {
+                let neighbor = self.cell_entries(cx + dx, cy + dy);
+                for ai in range.clone() {
+                    for bi in neighbor.clone() {
+                        visit(self.entries[ai] as usize, self.entries[bi] as usize);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -114,6 +176,9 @@ pub struct ForceAtlas2 {
     velocity: Vec<Vec2>,
     /// Reused per-iteration force buffer, so `iterate` does not allocate.
     forces: Vec<Vec2>,
+    /// Spatial hash for the repulsion pass, rebuilt each iteration while
+    /// reusing its buffers across iterations (§37 Barnes-Hut remains open).
+    grid: RepulsionGrid,
 }
 
 impl Default for ForceAtlas2 {
@@ -127,6 +192,7 @@ impl Default for ForceAtlas2 {
             settled_threshold: 0.001,
             velocity: Vec::new(),
             forces: Vec::new(),
+            grid: RepulsionGrid::new(100.0),
         }
     }
 }
@@ -220,34 +286,32 @@ impl LayoutEngine for ForceAtlas2 {
 impl ForceAtlas2 {
     /// Run a single force-model iteration, returning total displacement.
     fn iterate(&mut self, graph: &LayoutGraph, state: &mut LayoutState) -> f32 {
-        let n = graph.node_count();
         let forces = &mut self.forces;
         forces.fill(Vec2::ZERO);
 
-        // Repulsion: nodes repel each other within `repulsion_radius`. The grid
-        // restricts the pair test to nearby nodes, so repulsion is O(N·k) with
-        // k the number of nodes within the radius, instead of O(N²).
-        let grid = RepulsionGrid::new(&state.positions, self.repulsion_radius);
-        for i in 0..n {
-            for j in grid.candidates(state.positions[i], self.repulsion_radius) {
-                if j <= i {
-                    continue;
-                }
-                let delta = algebraic_sub(state.positions[i], state.positions[j]);
-                let dist = delta.length().max(0.01);
-                if dist > self.repulsion_radius {
-                    continue;
-                }
-                // `dir * force == delta * (scaling / dist³)`: one division per
-                // pair instead of one in `force` plus two in `delta / dist`.
-                let strength = self
-                    .scaling
-                    .algebraic_div(dist.algebraic_mul(dist).algebraic_mul(dist));
-                let impulse = algebraic_mul_scalar(delta, strength);
-                forces[i] = algebraic_add(forces[i], impulse);
-                forces[j] = algebraic_sub(forces[j], impulse);
+        // Repulsion: nodes repel each other within `repulsion_radius`. The
+        // grid restricts the pair test to nearby nodes, so repulsion is
+        // O(N·k) with k the number of nodes within the radius, instead of
+        // O(N²); the forward stencil visits each unordered pair once.
+        let mut grid = std::mem::take(&mut self.grid);
+        grid.rebuild(&state.positions, self.repulsion_radius);
+        let positions = &state.positions;
+        let scaling = self.scaling;
+        let radius = self.repulsion_radius;
+        grid.for_each_pair(&mut |i, j| {
+            let delta = algebraic_sub(positions[i], positions[j]);
+            let dist = delta.length().max(0.01);
+            if dist > radius {
+                return;
             }
-        }
+            // `dir * force == delta * (scaling / dist³)`: one division per
+            // pair instead of one in `force` plus two in `delta / dist`.
+            let strength = scaling.algebraic_div(dist.algebraic_mul(dist).algebraic_mul(dist));
+            let impulse = algebraic_mul_scalar(delta, strength);
+            forces[i] = algebraic_add(forces[i], impulse);
+            forces[j] = algebraic_sub(forces[j], impulse);
+        });
+        self.grid = grid;
 
         // Attraction: every edge pulls its endpoints together.
         for edge in &graph.edges {
@@ -396,6 +460,45 @@ mod tests {
         assert_eq!(
             fa.step(&lg, &mut state, LayoutBudget::default()),
             LayoutProgress::Settled
+        );
+    }
+
+    #[test]
+    fn repulsion_grid_pairs_match_brute_force() {
+        // Scattered points across many cells, including coincident positions.
+        let mut pts: Vec<Vec2> = (0..48)
+            .map(|i| {
+                let t = i as f32;
+                Vec2::new(t * 61.7 % 800.0 - 400.0, t * 113.3 % 600.0 - 300.0)
+            })
+            .collect();
+        pts.push(pts[3]);
+        pts.push(pts[17]);
+        pts.push(Vec2::ZERO);
+
+        let cs = 100.0;
+        let cell = |p: Vec2| ((p.x / cs).floor() as i32, (p.y / cs).floor() as i32);
+        let mut expected = std::collections::BTreeSet::new();
+        for i in 0..pts.len() {
+            for j in i + 1..pts.len() {
+                let (a, b) = (cell(pts[i]), cell(pts[j]));
+                if (a.0 - b.0).abs() <= 1 && (a.1 - b.1).abs() <= 1 {
+                    expected.insert((i, j));
+                }
+            }
+        }
+
+        let mut grid = RepulsionGrid::new(cs);
+        grid.rebuild(&pts, cs);
+        let mut got = std::collections::BTreeSet::new();
+        grid.for_each_pair(&mut |i, j| {
+            assert!(i != j);
+            got.insert((i.min(j), i.max(j)));
+        });
+
+        assert_eq!(
+            got, expected,
+            "grid must visit exactly the adjacent-cell pairs"
         );
     }
 
