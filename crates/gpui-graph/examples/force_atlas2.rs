@@ -20,6 +20,14 @@ use gpui_graph::{
     LayoutProgress, Rng,
 };
 
+/// Per-frame layout work: up to 256 iterations but never more than ~6 ms,
+/// leaving headroom under a 120 Hz frame while small graphs converge in
+/// fewer animation frames (§11.8 wall-clock cap).
+const FRAME_LAYOUT_BUDGET: LayoutBudget = LayoutBudget {
+    max_iterations: 256,
+    max_duration: Some(core::time::Duration::from_millis(6)),
+};
+
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(800.), px(600.)), cx);
@@ -107,7 +115,7 @@ impl Render for Example {
         // requesting animation frames so the window is not redrawn forever.
         if !self.settled {
             let progress = self.scene.update(cx, |scene, cx| {
-                let p = scene.step_layout_async(LayoutBudget::default(), cx);
+                let p = scene.step_layout_async(FRAME_LAYOUT_BUDGET, cx);
                 cx.notify();
                 p
             });

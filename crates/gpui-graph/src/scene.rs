@@ -1341,7 +1341,10 @@ mod tests {
         s.set_position(a, Vec2::new(-100.0, 0.0));
         s.set_position(b, Vec2::new(100.0, 0.0));
 
-        s.step_layout(LayoutBudget { max_iterations: 1 });
+        s.step_layout(LayoutBudget {
+            max_iterations: 1,
+            max_duration: None,
+        });
 
         // The layout moved the nodes; the scene must reflect the new positions.
         assert_ne!(s.node_position(a).unwrap(), Vec2::new(-100.0, 0.0));
@@ -1379,7 +1382,10 @@ mod tests {
             .unwrap();
         let geometry_before = s.geometry_revision();
 
-        let progress = s.step_layout(LayoutBudget { max_iterations: 1 });
+        let progress = s.step_layout(LayoutBudget {
+            max_iterations: 1,
+            max_duration: None,
+        });
 
         assert!(matches!(
             progress,

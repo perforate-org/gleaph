@@ -156,7 +156,10 @@ fn step_bench(
             std::hint::black_box(engine.step(
                 &case.graph,
                 &mut state,
-                LayoutBudget { max_iterations: 8 },
+                LayoutBudget {
+                    max_iterations: 8,
+                    max_duration: None,
+                },
             ));
         })
     });
@@ -251,7 +254,10 @@ fn settle_bench(
             let mut engine = ForceAtlas2::default();
             let mut state = case.state.clone();
             engine.rebuild(&case.graph, &mut state);
-            let budget = LayoutBudget { max_iterations: 1 };
+            let budget = LayoutBudget {
+                max_iterations: 1,
+                max_duration: None,
+            };
             let mut iters = 0u32;
             while iters < SETTLE_ITERATION_CAP
                 && engine.step(&case.graph, &mut state, budget) != LayoutProgress::Settled
@@ -275,7 +281,10 @@ fn settle_bench(
 fn bench_force_atlas2_dynamic(c: &mut Criterion) {
     let mut group = c.benchmark_group("force_atlas2_dynamic");
     group.sample_size(10);
-    let budget = LayoutBudget { max_iterations: 1 };
+    let budget = LayoutBudget {
+        max_iterations: 1,
+        max_duration: None,
+    };
 
     for (name, sync) in [("hub_sync", true), ("hub_rebuild", false)] {
         group.bench_with_input(BenchmarkId::new(name, "256+16"), &sync, |b, &sync| {

@@ -42,6 +42,14 @@ use gpui_graph::{
     GraphViewState, LayoutBudget, LayoutProgress, NodeId, NodePatch, OverlayCategory,
 };
 
+/// Per-frame layout work: up to 256 iterations but never more than ~6 ms,
+/// leaving headroom under a 120 Hz frame while small graphs converge in
+/// fewer animation frames (§11.8 wall-clock cap).
+const FRAME_LAYOUT_BUDGET: LayoutBudget = LayoutBudget {
+    max_iterations: 256,
+    max_duration: Some(core::time::Duration::from_millis(6)),
+};
+
 /// Application data for a node (§6.3). The external key is stored with the
 /// payload so the example can expand a clicked `NodeId` back into the catalog:
 /// the scene exposes no reverse `NodeId -> key` lookup, so the application
@@ -329,10 +337,12 @@ impl Render for Example {
         // Advance the force model one frame on GPUI's background executor,
         // stopping when the layout settles. Frames where a step is already
         // computing return `Running` without doing work, so the animation
-        // loop stays identical to the synchronous driver's.
+        // loop stays identical to the synchronous driver's. The wall-clock
+        // cap (§11.8) bounds each frame's layout work: small graphs converge
+        // in fewer animation frames, large graphs never blow the frame.
         if !self.settled {
             let progress = self.scene.update(cx, |scene, cx| {
-                let p = scene.step_layout_async(LayoutBudget::default(), cx);
+                let p = scene.step_layout_async(FRAME_LAYOUT_BUDGET, cx);
                 cx.notify();
                 p
             });

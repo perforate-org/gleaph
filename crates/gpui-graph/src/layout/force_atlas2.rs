@@ -906,9 +906,19 @@ impl LayoutEngine for ForceAtlas2 {
             self.masses.clear();
             self.masses.resize(n, 1.0);
         }
+        let started = web_time::Instant::now();
         let mut last_displacement = 0.0f32;
         for _ in 0..budget.max_iterations {
             last_displacement = self.iterate(graph, state);
+            // Wall-clock frame budgets (§11.8) stop the loop between
+            // iterations; at least one iteration always completes so a step
+            // makes progress regardless of how small the cap is.
+            if budget
+                .max_duration
+                .is_some_and(|cap| started.elapsed() >= cap)
+            {
+                break;
+            }
         }
 
         // `iterate` returns the total displacement across all nodes; compare the
@@ -1251,6 +1261,47 @@ mod tests {
     }
 
     #[test]
+    fn step_respects_wall_clock_budget() {
+        // hub/1025: each cutoff iteration costs around a millisecond, so an
+        // unbounded 20k-iteration run would take tens of seconds. The cap
+        // must return Running promptly while still making progress.
+        let mut g = Graph::new();
+        let hub = g.add_node(());
+        let leaves: Vec<_> = (0..1024).map(|_| g.add_node(())).collect();
+        for leaf in &leaves {
+            g.add_edge(hub, *leaf, EdgeDirection::Undirected, ());
+        }
+        let (lg, mut state) = project(&g);
+        state.positions[0] = Vec2::ZERO;
+        // project() preserves insertion order: hub at 0, leaves after.
+        for i in 0..leaves.len() {
+            let angle = i as f32 / leaves.len() as f32 * std::f32::consts::TAU;
+            state.positions[i + 1] = Vec2::new(100.0 * angle.cos(), 100.0 * angle.sin());
+        }
+
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        let first = state.positions[1];
+        let budget = LayoutBudget {
+            max_iterations: 20_000,
+            max_duration: Some(core::time::Duration::from_millis(5)),
+        };
+        let started = web_time::Instant::now();
+        let progress = fa.step(&lg, &mut state, budget);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(progress, LayoutProgress::Running { .. }),
+            "capped step must report Running, got {progress:?}"
+        );
+        assert_ne!(state.positions[1], first, "at least one iteration ran");
+        assert!(
+            elapsed < core::time::Duration::from_millis(1000),
+            "wall-clock cap must bound the step, took {elapsed:?}"
+        );
+    }
+
+    #[test]
     fn apply_delta_cold_start_matches_rebuild() {
         let mut g = Graph::new();
         let a = g.add_node(());
@@ -1298,7 +1349,14 @@ mod tests {
         let mut fa = ForceAtlas2::default();
         fa.rebuild(&lg, &mut state);
         for _ in 0..50 {
-            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            fa.step(
+                &lg,
+                &mut state,
+                LayoutBudget {
+                    max_iterations: 1,
+                    max_duration: None,
+                },
+            );
         }
         assert!(
             (fa.convergence[0] - fa.convergence[1]).abs() > f32::EPSILON,
@@ -1344,7 +1402,14 @@ mod tests {
         let mut fa = ForceAtlas2::default();
         fa.rebuild(&lg, &mut state);
         for _ in 0..5 {
-            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            fa.step(
+                &lg,
+                &mut state,
+                LayoutBudget {
+                    max_iterations: 1,
+                    max_duration: None,
+                },
+            );
         }
 
         // Incremental: add two edges on top of the running engine.
@@ -1402,7 +1467,14 @@ mod tests {
         fa.rebuild(&lg, &mut state);
         let mut progress = LayoutProgress::Running { stability: None };
         for _ in 0..200 {
-            progress = fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            progress = fa.step(
+                &lg,
+                &mut state,
+                LayoutBudget {
+                    max_iterations: 1,
+                    max_duration: None,
+                },
+            );
         }
 
         // Nodes should have moved closer together and settled: a two-node
@@ -1427,7 +1499,14 @@ mod tests {
         let mut fa = ForceAtlas2::default();
         fa.rebuild(&lg, &mut state);
         for _ in 0..50 {
-            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            fa.step(
+                &lg,
+                &mut state,
+                LayoutBudget {
+                    max_iterations: 1,
+                    max_duration: None,
+                },
+            );
         }
 
         assert_eq!(state.positions[0], Vec2::new(-100.0, 0.0));
@@ -1588,7 +1667,10 @@ mod tests {
     fn run_until_settled((lg, mut state): (LayoutGraph, LayoutState)) -> u32 {
         let mut fa = ForceAtlas2::default();
         fa.rebuild(&lg, &mut state);
-        let budget = LayoutBudget { max_iterations: 1 };
+        let budget = LayoutBudget {
+            max_iterations: 1,
+            max_duration: None,
+        };
         for iters in 1..=4000 {
             if fa.step(&lg, &mut state, budget) == LayoutProgress::Settled {
                 return iters;
@@ -1631,7 +1713,14 @@ mod tests {
         let mut fa = ForceAtlas2::default();
         fa.rebuild(&lg, &mut state);
         for _ in 0..8 {
-            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            fa.step(
+                &lg,
+                &mut state,
+                LayoutBudget {
+                    max_iterations: 1,
+                    max_duration: None,
+                },
+            );
         }
         assert!(!fa.bh_active);
         assert!(
@@ -1674,7 +1763,14 @@ mod tests {
         let (lg, mut state) = build_grid(20, 40.0);
         let mut fa = ForceAtlas2::default().with_barnes_hut_threshold(0);
         fa.rebuild(&lg, &mut state);
-        fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+        fa.step(
+            &lg,
+            &mut state,
+            LayoutBudget {
+                max_iterations: 1,
+                max_duration: None,
+            },
+        );
         // The override runs Barnes-Hut directly; adaptive state stays put.
         assert!(!fa.bh_active);
     }
@@ -1767,7 +1863,14 @@ mod tests {
         fa.rebuild(&lg, &mut state);
         let mut progress = LayoutProgress::Running { stability: None };
         for _ in 0..2000 {
-            progress = fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            progress = fa.step(
+                &lg,
+                &mut state,
+                LayoutBudget {
+                    max_iterations: 1,
+                    max_duration: None,
+                },
+            );
             if progress == LayoutProgress::Settled {
                 break;
             }

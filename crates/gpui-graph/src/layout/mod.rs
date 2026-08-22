@@ -60,17 +60,26 @@ pub enum LayoutProgress {
 /// A budget controlling a layout step (§11.8).
 ///
 /// Iteration-oriented budgeting is preferred over making physical elapsed time
-/// part of layout semantics. The scheduling layer may still impose a wall-clock
-/// frame budget.
+/// part of layout semantics. An optional wall-clock cap supports real-time
+/// drivers: engines check it between iterations and stop early, always having
+/// completed at least one iteration. The scheduling layer may derive such a
+/// cap from its frame budget.
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutBudget {
     /// Maximum number of iterations to run in this step.
     pub max_iterations: u32,
+    /// Optional wall-clock cap on the step. `None` keeps stepping purely
+    /// iteration-oriented and deterministic (tests, benches); a set cap
+    /// trades trajectory reproducibility for bounded frame work.
+    pub max_duration: Option<core::time::Duration>,
 }
 
 impl Default for LayoutBudget {
     fn default() -> Self {
-        Self { max_iterations: 1 }
+        Self {
+            max_iterations: 1,
+            max_duration: None,
+        }
     }
 }
 

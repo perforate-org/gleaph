@@ -869,17 +869,28 @@ ForceAtlas-specific metrics, for example, may be converted into a general stabil
 
 Layout execution is controlled through a budget.
 
-A simple v0.1 form may be:
+Implemented:
 
 ```rust
 pub struct LayoutBudget {
     pub max_iterations: u32,
+    pub max_duration: Option<core::time::Duration>,
 }
 ```
 
-Iteration-oriented budgeting is preferred over making physical elapsed time part of layout semantics.
+Iteration-oriented budgeting remains the default and the deterministic
+contract: `max_duration: None` (the default) keeps trajectories
+reproducible, which tests and benches rely on.
 
-The scheduling layer may still impose a wall-clock frame budget.
+A set `max_duration` supports real-time drivers: engines check it between
+iterations and stop early, always completing at least one iteration so a
+step makes progress regardless of cap size. The scheduling layer derives
+the cap from its frame budget — the interactive and force_atlas2 examples
+run up to 256 iterations but never more than ~6 ms per frame. A capped
+step reports `Running` when iterations remain; convergence semantics are
+unchanged. Enforcement lives in the engine's iteration loop (one clock
+read per step call), so synchronous and background drivers share one
+mechanism.
 
 ---
 
@@ -1034,8 +1045,12 @@ the projection's own undirected incidence adjacency
 (`LayoutGraph::adjacency`, one entry per incident edge endpoint, so duplicate
 edges pull exactly as before). Because `GraphScene` rebuilds the projection
 wholesale on every topology change, the engine holds no adjacency cache and no
-revision guard. Contract settling counts: hub/256 24 iterations, grid/20x20
-591.
+revision guard. Contract settling counts come from
+`settles_within_iteration_budget` and are stable across recent engine work
+(verified byte-identical at the CSR-integration commit): hub/256 = 24
+iterations on the probe fixture (ring radius 100) and 91 on the wider
+layout_bench fixture (ring radius 300); grid/20x20 = 597 — all far below
+the 1500-iteration budget.
 Measured speedups concentrate on dense large graphs; sparse uniform grids on
 the exact-grid path remain serial-baseline-adjacent at best (§37).
 
@@ -2473,7 +2488,11 @@ The following should remain intentionally open until implementation and profilin
   localized response to dynamic merges),
 - worker-based Web layout,
 - synchronization frequency,
-- frame-time budgeting.
+- ~~frame-time budgeting~~ (implemented as `LayoutBudget::max_duration`,
+  §11.8: engines stop between iterations once the wall-clock cap is hit,
+  always after one completed iteration; `None` keeps the deterministic
+  iteration-only contract for tests and benches. Examples drive frames with
+  a ~6 ms cap and up to 256 iterations),
 
 ## Advanced graph presentation
 
