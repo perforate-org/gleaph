@@ -17,10 +17,12 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 ## Migration-driven index activation
 
 [ADR 0059](../adr/0059-create-index-migration-backfill.md) is the normative source for
-migration-driven `CREATE INDEX` backfill and is **partially implemented** (durable Router lifecycle,
-Graph canonical export scopes, graph-index build worker/state, pre-canonical seal fence, Graph
+migration-driven `CREATE INDEX` backfill and is **implemented** (durable Router lifecycle, Graph
+canonical export scopes, graph-index build worker/state, pre-canonical seal fence, Graph
 label-transition admission, and the production Router cross-canister driver with seal/drain
-composition). Focused PocketIC E2E and upgrade validation remain pending. Its online pull,
+composition); the cross-canister PocketIC convergence/fence/upgrade-reopen proof landed via
+GAP-2026-07-29-006 (closed 2026-08-22), while edge `INLINE` enumeration remains open under
+GAP-2026-07-29-001. Its online pull,
 `PhysicalIndexId`, touched-first outbox, seal, and Active-only planner rules therefore change this
 document's activation semantics for migration-created indexes: only an `Active` generation is
 planner-visible, while operator-driven backfill still does not prove activation or historical

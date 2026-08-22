@@ -140,7 +140,7 @@ Explain the **graph-index canister** and how the router uses it for query routin
 ## Non-goals
 
 - Index build algorithms on graph writes (implementation in `graph/src/index/`).
-- Migration-driven online `CREATE INDEX` backfill and activation are specified by [ADR 0059](../adr/0059-create-index-migration-backfill.md) and remain **partially implemented**; the production Router driver is implemented, while PocketIC E2E and upgrade validation remain pending.
+- Migration-driven online `CREATE INDEX` backfill and activation are specified by [ADR 0059](../adr/0059-create-index-migration-backfill.md) and are **implemented** with cross-canister PocketIC proof (convergence, label fence, same-wasm upgrade reopen; GAP-2026-07-29-006 closed 2026-08-22); edge `INLINE` enumeration remains open under GAP-2026-07-29-001.
 - Full Candid API listing.
 - Index canister sharding (multiple index canisters) — **Partially Implemented** per-graph `index_cluster` and shard-group formula ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)); subject/range split axes remain planned ([ADR 0010](../adr/0010-index-sharding-extensibility.md), [capacity-planning.md](capacity-planning.md)).
 
@@ -395,7 +395,9 @@ cursor batching model as `backfill_label_postings`). Unindexable values are skip
 These existing operator-driven backfill endpoints are not an activation gate and do not cover the
 single vertex/sidecar/`INLINE` export contract. The migration lifecycle, generation fence, short
 seal, and Active-only planner publication are implemented in [ADR 0059](../adr/0059-create-index-migration-backfill.md)
-for migration-driven index creation; PocketIC E2E and upgrade validation remain pending.
+for migration-driven index creation; the cross-canister PocketIC convergence/fence/upgrade-reopen
+proof landed (GAP-2026-07-29-006, closed 2026-08-22), leaving edge `INLINE` enumeration open under
+GAP-2026-07-29-001.
 
 **Label-transition admission:** A label gain or loss can change eligibility for an already-present
 vertex property. `facade/store/labels.rs` owns this transition: it reads canonical labels and

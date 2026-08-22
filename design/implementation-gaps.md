@@ -1023,7 +1023,7 @@ duplicate its state machine or ownership rules.
 
 | Priority | Work item                                                                                  | Current status                                                                               |
 | -------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — GAP-2026-07-29-006; ADR 0059 production driver implemented, E2E validation pending |
+| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — vertex/sidecar convergence closed 2026-08-22 via GAP-2026-07-29-006; edge INLINE enumeration remains open under GAP-2026-07-29-001 |
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | GAP-2026-07-29-004 open; GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Closed 2026-08-22 — GAP-2026-07-29-003 (see entry)                                           |
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
@@ -1079,8 +1079,9 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   equality/range candidates until those values are rewritten.
 - **Next decision:** The [ADR 0059](adr/0059-create-index-migration-backfill.md) lifecycle (one
   Graph-owned opaque export, graph-index pull, touched-first exact outbox mutation, base-seed guard,
-  and Active-only transition) is implemented; focused PocketIC E2E/upgrade validation remains
-  pending. The existing operator cursor endpoints remain separate from that lifecycle.
+  and Active-only transition) is implemented with its cross-canister PocketIC proof complete
+  (GAP-2026-07-29-006, closed 2026-08-22); this entry's remaining work is the edge `INLINE`
+  enumeration itself. The existing operator cursor endpoints remain separate from that lifecycle.
 
 ### GAP-2026-07-29-002 — Normal `MATCH` planning does not select vertex range indexes
 
@@ -1199,7 +1200,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-006 — Index activation convergence gate lacks production driver/E2E completion
 
-- **Status:** Partially implemented
+- **Status:** Closed 2026-08-22
 - **Severity:** P0 index correctness
 - **Owner:** Router index catalog and backfill lifecycle
 - **Observed behavior:** Router now persists hidden Preparing/Building/Sealing/Aborting lifecycle
@@ -1215,9 +1216,22 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   `sealing_label_gain_rejects_before_any_mutation`,
   `sealing_label_loss_rejects_before_any_mutation`,
   `public_mutation_id_zero_label_wrappers_preserve_index_build_admission`, and
-  `delete_internal_label_clear_does_not_emit_second_property_removal`. Focused PocketIC E2E and
-  upgrade validation are not yet complete, so the public migration path remains retryably
-  fail-closed until that cross-canister proof passes.
+  `delete_internal_label_clear_does_not_emit_second_property_removal`. The cross-canister PocketIC
+  proof is now complete (`crates/pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, three
+  scenarios green at HEAD `3c75d2fb5`; inventory precondition `router_gql_query` 24 passed / 0
+  failed): (a) one single-statement `CREATE INDEX` migration converges
+  Preparing→Building→Sealing→Active over a two-shard federation with pre-existing vertex and edge
+  sidecar data — equality/range reads stay correct throughout (label-scan fallback pre-Active,
+  index-served post-Active, non-Person decoy excluded) and the router catalog projects
+  Building→Sealing→Active in order; (b) while Building, an eligibility label gain is admitted and
+  its pre-existing property value converges into postings, while Sealing an eligibility label
+  loss rejects before canonical mutation (E2E mirror of the six Graph fence regressions); (c)
+  upgrading all five federation canisters same-wasm mid-build preserves graph-index's registered
+  build watermarks and resumes to Active with complete postings. Edge-INLINE backfill completeness
+  stays owned by GAP-2026-07-29-001 and is deliberately not asserted. The "retryably fail-closed"
+  posture resolved as documentation-only: no code-level gate exists — `apply_schema_migration`
+  composes `real_index_migration_driver()` unconditionally and caller-driven exact replay (CLI
+  `MAX_INDEX_APPLY_ROUNDS_PER_MIGRATION`) is the resumption contract.
 - **Expected or needed behavior:** A newly declared index must remain pending until sidecar and
   INLINE backfill has completed for every attached shard, or the query planner must explicitly treat
   it as incomplete and fail closed. During Building, every label membership transition that changes
@@ -1233,10 +1247,9 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   for label postings and the same index-build admission/fence owner as property transitions for
   exact label-scoped property eligibility. ADR 0059's touched-first BuildDml admission and
   pre-mutation Sealing rejection are covered by the six Graph regressions named above.
-- **Next decision:** Validate the catalog-epoch seal and per-shard watermark convergence in
-  PocketIC (including upgrade reopen). Keep the migration endpoint fail-closed until that
-  cross-canister proof passes. The real Router driver over the landed Graph and graph-index controls
-  is implemented. [ADR 0059](adr/0059-create-index-migration-backfill.md) remains the source of
+- **Resolution:** Catalog-epoch seal behavior and per-shard watermark convergence validated in
+  PocketIC, including upgrade reopen; the migration endpoint's resumption contract is documented
+  rather than gated. [ADR 0059](adr/0059-create-index-migration-backfill.md) remains the source of
   truth.
 
 ### GAP-2026-07-29-007 — Edge uniqueness and index-canister sharding remain design work

@@ -95,6 +95,9 @@ pub struct FederationEnv {
     pub admin: Principal,
     pub router: Principal,
     pub index: Principal,
+    /// Second federation index canister when one exists; equals `index` for
+    /// single-index topologies. Lets upgrade tests reach every index canister.
+    pub index_dest: Principal,
     pub graph_source: Principal,
     pub graph_dest: Principal,
 }
@@ -336,6 +339,7 @@ pub fn install_router_and_index() -> FederationEnv {
         pic,
         admin,
         router,
+        index_dest: index,
         index,
         graph_source: Principal::anonymous(),
         graph_dest: Principal::anonymous(),
@@ -410,6 +414,7 @@ pub fn install_federation() -> FederationEnv {
         pic,
         admin,
         router,
+        index_dest,
         index: index_source,
         graph_source,
         graph_dest,
@@ -485,6 +490,7 @@ pub fn install_two_graph_federation() -> FederationEnv {
         pic,
         admin,
         router,
+        index_dest: index_home,
         index: index_home,
         graph_source,
         graph_dest,
@@ -558,6 +564,7 @@ pub fn install_single_shard_federation_with_graph_admins(
         pic,
         admin,
         router,
+        index_dest: index,
         index,
         graph_source,
         graph_dest: Principal::anonymous(),
