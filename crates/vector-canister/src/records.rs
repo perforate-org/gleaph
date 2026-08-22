@@ -172,7 +172,10 @@ impl StableHashKey for PartitionKey {
 }
 
 /// `(index_id, index_version, partition_id, page_id)` key for `VECTOR_PAGE_META` (ADR 0032).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Also persists as the typed resume cursor of the slab-compaction driver state (plan 0278).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
 pub struct PageKey {
     pub index_id: u32,
     pub index_version: u64,
@@ -852,6 +855,50 @@ impl Storable for RawMaintenanceState {
     }
 }
 
+/// Durable global slab-compaction lifecycle (`VECTOR_SLAB_COMPACTION_STATE`, MemoryId 11; plan
+/// 0278).
+///
+/// The `VECTOR_ROW_SLAB` is one global allocation domain, so compaction state is a single canister
+/// record, not a per-index map. `Compacting` carries exactly three facts, all reopen-visible so an
+/// interrupted driver resumes fail-closed from its persisted cursors:
+///
+/// - `write_cursor` — the next free byte of the dense prefix (copy destination);
+/// - `range_end` — exclusive upper bound of the snapshot source range (`occupied_tail` at start);
+///   pages appended after that land above it and are never touched;
+/// - `scan_cursor` — last examined `PageKey` of the current meta-map lap (`None` restarts the lap),
+///   so each bounded step resumes without rescanning.
+///
+/// `pages_moved` is cumulative progress bookkeeping for the status surface only. The record is
+/// cleared (`Idle`) when finalize rewinds `occupied_tail` once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorSlabCompactionState {
+    #[default]
+    Idle,
+    Compacting {
+        write_cursor: u64,
+        range_end: u64,
+        scan_cursor: Option<PageKey>,
+        pages_moved: u64,
+    },
+}
+
+impl Storable for VectorSlabCompactionState {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode VectorSlabCompactionState"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode VectorSlabCompactionState")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), VectorSlabCompactionState)
+            .expect("decode VectorSlabCompactionState")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1128,6 +1175,30 @@ mod tests {
         ] {
             assert_eq!(
                 VectorRebuildStateRecord::from_bytes(state.to_bytes()),
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn slab_compaction_state_record_storable_roundtrip() {
+        for state in [
+            VectorSlabCompactionState::Idle,
+            VectorSlabCompactionState::Compacting {
+                write_cursor: 0xdead_beef_cafe_f00d,
+                range_end: 0x0123_4567_89ab_cdef,
+                scan_cursor: Some(PageKey::new(7, 3, 2, 41)),
+                pages_moved: 19,
+            },
+            VectorSlabCompactionState::Compacting {
+                write_cursor: 32,
+                range_end: 32,
+                scan_cursor: None,
+                pages_moved: 0,
+            },
+        ] {
+            assert_eq!(
+                VectorSlabCompactionState::from_bytes(state.to_bytes()),
                 state
             );
         }

@@ -10,6 +10,7 @@
 
 mod authorization;
 mod centroid_cache;
+mod compact;
 mod maintenance;
 mod maintenance_step;
 mod mutation;
@@ -68,6 +69,15 @@ pub(crate) const MAX_REBUILD_STEP_WORK: u32 = 20_000;
 /// when a single vector exceeds the budget).
 pub(crate) const MAX_REBUILD_STEP_VECTOR_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Per-message ceiling on directory entries one slab-compaction step examines (mirrors
+/// `MAX_SLAB_STATS_STEP_PAGES`). The caller-supplied budget is clamped to `1..=` this cap.
+pub(crate) const MAX_COMPACT_STEP_PAGES: u32 = 20_000;
+
+/// Per-message ceiling on page bytes one slab-compaction step copies down (mirrors
+/// [`MAX_REBUILD_STEP_VECTOR_BYTES`]). The first in-range page is always admitted regardless of
+/// this budget, so every step makes forward progress even for pages larger than the cap.
+pub(crate) const MAX_COMPACT_STEP_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Upper bound on the Candid-encoded `VectorRebuildStateRecord` value, i.e. the combined durable
 /// rebuild-state envelope (ADR 0031 Slice 7/8). This is an encoded `to_bytes().len()` cap (it
 /// accounts for enum/vec-length/nested-vec overhead), not a raw-vector-bytes cap. The `Training`
@@ -108,6 +118,10 @@ pub(crate) use authorization::{attach_single_shard_for_test, detach_shard_step_f
 pub(crate) use centroid_cache::{
     admin_vector_centroid_cache_clear, admin_vector_centroid_cache_status,
     admin_vector_centroid_cache_warmup,
+};
+pub(crate) use compact::{
+    admin_start_vector_slab_compact, admin_vector_slab_compact_status,
+    admin_vector_slab_compact_step,
 };
 pub(crate) use maintenance_step::{
     admin_vector_maintenance_reset, admin_vector_maintenance_status, admin_vector_maintenance_step,

@@ -2,7 +2,7 @@
 
 Date: 2026-06-24
 Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
-Last revised: 2026-08-07 23:39:30 UTC +0000
+Last revised: 2026-08-22 17:14:42 UTC +0000
 
 > **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
 > replaces this design; the slab page store is **completely discarded** (fresh two-table layout,
@@ -370,6 +370,16 @@ pages leave their slab bytes in place as dead space, and `occupied_tail` is unch
 validation therefore explicitly allows `occupied_tail` to exceed the highest referenced page-meta
 end. General free-span reuse and slab compaction are deferred until benchmarks show stable-memory
 growth or rebuild churn requires it.
+
+> **Superseded in part (2026-08-22).** Plan 0278 replaces this slice's "no slab tail rewind"
+> clause with an **opt-in bounded compaction driver**: a Router-driven state machine copies live
+> pages down into a dense prefix (bytes persisted strictly before each page's single
+> `VectorPageMeta.slab_offset` swap) and rewinds `occupied_tail` once at finalize, so drained dead
+> space is reclaimed without a free-span allocator. This ADR's default tail-only bump allocation
+> and its reopen allowance for a transiently higher `occupied_tail` remain in force: appends
+> always land at the current tail, and pages appended while a compaction runs keep the persisted
+> tail above the reclaimed gap. The kernel (`ic-stable-vector-page-store`) remains append-only;
+> the driver lives entirely in the vector canister above it.
 
 ## Invariants
 

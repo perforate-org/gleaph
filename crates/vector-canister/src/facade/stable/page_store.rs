@@ -23,7 +23,9 @@
 //!
 //! Allocation is tail-only; a page reserves its full span on creation. Page cleanup deletes
 //! `VECTOR_PAGE_META` entries only — slab bytes are left in place as dead space, so `occupied_tail`
-//! may exceed the highest referenced page end, and reopen validation allows that.
+//! may exceed the highest referenced page end, and reopen validation allows that. The opt-in
+//! bounded slab compaction (plan 0278, see `facade/store/compact.rs`) reclaims that dead space by
+//! copying live pages down and rewinding the tail once; this store stays append-only.
 //! `VECTOR_PARTITION_HEADS` is the per-partition allocator/counter owner and lives outside this
 //! composite store. The format lineage restarts at version 1 (breaking; dev data wiped); the discarded
 //! ASCII-magic format is rejected fail-closed.
@@ -137,6 +139,20 @@ pub(crate) struct DropProgress {
     pub cursor: Option<Vec<u8>>,
     /// True once no more pages of the version remain.
     pub exhausted: bool,
+}
+
+/// Outcome of one bounded [`VectorSlabStore::compact_step`] at the facade boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SlabCompactStepOutcome {
+    /// True once a full directory lap found no live page inside the source range and finalize has
+    /// persisted the rewound tail; the caller clears the durable driver state to `Idle`.
+    pub finalized: bool,
+    /// New copy destination after this step's moves (or the persisted tail once `finalized`).
+    pub write_cursor: u64,
+    /// Pages relocated by this step.
+    pub pages_moved: u64,
+    /// Resume cursor for the next step (`None` restarts the meta-map lap from the lower bound).
+    pub scan_cursor: Option<PageKey>,
 }
 
 /// Resolves the authoritative [`VectorIndexDef`] of an index id — the geometry owner used to
@@ -409,6 +425,17 @@ fn page_span_bytes(def: &VectorIndexDef) -> Option<u64> {
     )
     .ok()?;
     PageLayout::new(&header).ok().map(|l| l.page_len() as u64)
+}
+
+/// Exact on-slab span of one page of `index_id`, resolved from the def-frozen geometry. Panics
+/// fail-closed on missing/invalid geometry: compaction must never move bytes by guesswork (the
+/// same geometry reopen validates against each page header).
+fn compact_span_of(def_of: &mut DefResolver<'_>, index_id: u32) -> u64 {
+    ((*def_of)(index_id))
+        .and_then(|def| page_span_bytes(&def))
+        .unwrap_or_else(|| {
+            panic!("vector slab compaction: missing/invalid geometry for index {index_id}")
+        })
 }
 
 /// Returns `true` when the first `SLAB_HEADER_SIZE` bytes of the region are all zero (a pre-grown but
@@ -1190,8 +1217,8 @@ impl VectorSlabStore {
     }
 
     /// Bounded, cursor-resumable delete of `VECTOR_PAGE_META` entries for `(index_id, version)`.
-    /// No slab tail rewind in this slice: dropped pages leave their slab bytes as dead space and
-    /// `occupied_tail` is unchanged (reopen validation allows that).
+    /// No slab tail rewind here: dropped pages leave their slab bytes as dead space until the
+    /// opt-in slab compaction reclaims them (plan 0278).
     pub(crate) fn drop_version_pages(
         &mut self,
         index_id: u32,
@@ -1229,6 +1256,157 @@ impl VectorSlabStore {
             last.map(Storable::into_bytes)
         };
         DropProgress { cursor, exhausted }
+    }
+
+    /// One bounded slab-compaction pass segment (plan 0278). Continues the current meta-map lap
+    /// after `scan_cursor` (`None` starts a fresh lap), examining at most `max_entries` directory
+    /// entries and copying at most `max_bytes` of live pages down into the dense prefix.
+    ///
+    /// Collection rule: a page is collected exactly when its span lies inside the snapshot window
+    /// `[write_cursor, range_end)`. Pages appended after compaction start sit above `range_end`
+    /// and are never touched; metas dropped mid-compaction by GC/cleanup are absent from the map
+    /// and skipped by the read cursor. The first in-range page is always admitted so every step
+    /// makes forward progress; later ones only while their cumulative span fits `max_bytes`.
+    ///
+    /// Move rule: collected pages are copied contiguously down to `write_cursor` in ascending
+    /// original-offset order — destination spans never reach the next source (`dest_i + len_i <=
+    /// offset_{i+1}` holds inductively), so no copy can overwrite a not-yet-read source. Each
+    /// page's bytes are persisted strictly before its `VectorPageMeta.slab_offset` swap (the 16 B
+    /// indirection is the only reference to the bytes), so an interrupted move leaves duplicate
+    /// dead bytes below, never a dangling offset.
+    ///
+    /// Exhaustion: when a full lap completes without collecting any page, nothing live remains in
+    /// `[header, range_end)`; finalize runs in the same message — it fails closed if any live span
+    /// sits inside the reclaimed gap, then persists `occupied_tail = max(write_cursor, highest
+    /// live span end)` exactly once (spans beginning at/above `range_end` belong to post-start
+    /// appends and keep the tail above the gap), so only a quiescent store reclaims all the way
+    /// down to `write_cursor`. The slab header is persisted last per the ADR 0032 protocol.
+    pub(crate) fn compact_step(
+        &mut self,
+        write_cursor: u64,
+        range_end: u64,
+        scan_cursor: Option<PageKey>,
+        max_entries: u32,
+        max_bytes: u64,
+        mut def_of: DefResolver<'_>,
+    ) -> Result<SlabCompactStepOutcome, VectorCanisterError> {
+        assert!(
+            SLAB_HEADER_SIZE as u64 <= write_cursor && write_cursor <= range_end,
+            "vector slab compaction: corrupt durable cursors (write {write_cursor}, range end \
+             {range_end})"
+        );
+        let mut batch: Vec<(PageKey, VectorPageMeta, u64)> = Vec::new();
+        let mut batch_bytes = 0u64;
+        let mut examined = 0u32;
+        let mut last_key: Option<PageKey> = None;
+        let mut lap_complete = true;
+        {
+            let lower = match scan_cursor {
+                None => RangeBound::Unbounded,
+                Some(key) => RangeBound::Excluded(key),
+            };
+            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
+                if examined >= max_entries.max(1) {
+                    lap_complete = false;
+                    break;
+                }
+                examined += 1;
+                let key = *entry.key();
+                let m = entry.value();
+                last_key = Some(key);
+                if m.slab_offset < write_cursor || m.slab_offset >= range_end {
+                    // Dense prefix below the write cursor, or a post-start append outside the
+                    // snapshot range.
+                    continue;
+                }
+                let span = compact_span_of(&mut def_of, key.index_id);
+                if !batch.is_empty() && batch_bytes + span > max_bytes {
+                    continue; // beyond this message's copy budget; picked up on a later lap.
+                }
+                batch.push((key, m, span));
+                batch_bytes += span;
+            }
+        }
+
+        if batch.is_empty() {
+            return Ok(if lap_complete {
+                let final_tail = self.compact_finalize(write_cursor, range_end, def_of);
+                SlabCompactStepOutcome {
+                    finalized: true,
+                    write_cursor: final_tail,
+                    pages_moved: 0,
+                    scan_cursor: None,
+                }
+            } else {
+                SlabCompactStepOutcome {
+                    finalized: false,
+                    write_cursor,
+                    pages_moved: 0,
+                    scan_cursor: last_key,
+                }
+            });
+        }
+
+        // Ascending original-offset order keeps every copy strictly below the not-yet-copied
+        // sources (`dest_i + len_i <= offset_{i+1}` holds inductively); ties cannot occur because
+        // page spans are disjoint.
+        batch.sort_by_key(|(_, m, _)| m.slab_offset);
+        let dest_end = write_cursor
+            .checked_add(batch_bytes)
+            .expect("compaction destination overflow");
+        grow_to_at_least(&self.slab, dest_end)?;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut w = write_cursor;
+        let mut pages_moved = 0u64;
+        for (key, mut m, span) in batch {
+            buf.clear();
+            buf.resize(span as usize, 0);
+            self.slab.read(m.slab_offset, &mut buf);
+            self.slab.write(w, &buf);
+            m.slab_offset = w;
+            self.meta.insert(key, m);
+            w += span;
+            pages_moved += 1;
+        }
+        debug_assert_eq!(w, dest_end);
+        Ok(SlabCompactStepOutcome {
+            finalized: false,
+            write_cursor: w,
+            pages_moved,
+            scan_cursor: if lap_complete { None } else { last_key },
+        })
+    }
+
+    /// Reclaim gate + single tail rewind (plan 0278). Fails closed when any live page-meta span
+    /// sits inside the reclaimed gap `(write_cursor, range_end)` — i.e., when a mover bug stranded
+    /// a live page — then persists `occupied_tail = max(write_cursor, highest live span end)`
+    /// exactly once. Live spans beginning at/above `range_end` belong to pages appended after
+    /// compaction start; they keep the persisted tail above the gap, so only a quiescent store
+    /// reclaims down to `write_cursor`. Returns the persisted tail.
+    fn compact_finalize(
+        &mut self,
+        write_cursor: u64,
+        range_end: u64,
+        mut def_of: DefResolver<'_>,
+    ) -> u64 {
+        let mut highest_end = SLAB_HEADER_SIZE as u64;
+        for entry in self.meta.iter() {
+            let m = entry.value();
+            let end = m
+                .slab_offset
+                .checked_add(compact_span_of(&mut def_of, entry.key().index_id))
+                .expect("page span overflow");
+            assert!(
+                m.slab_offset >= range_end || end <= write_cursor,
+                "vector slab compaction: live page [{}, {end}) sits inside the reclaimed gap \
+                 ({write_cursor}, {range_end})",
+                m.slab_offset
+            );
+            highest_end = highest_end.max(end);
+        }
+        let new_tail = write_cursor.max(highest_end);
+        self.set_occupied_tail(new_tail);
+        new_tail
     }
 
     /// Derived, admin-only slab-space observability. Computes whole-slab physical facts plus logical
@@ -1431,7 +1609,6 @@ impl VectorSlabStore {
         ))
     }
 
-    #[cfg(test)]
     pub(crate) fn occupied_tail(&self) -> u64 {
         self.occupied_tail
     }
@@ -2216,5 +2393,362 @@ mod tests {
             .expect("empty health step");
         assert!(step.exhausted);
         assert_eq!(step.partial.page_count, 0);
+    }
+
+    // --- Slab compaction (plan 0278) ---
+
+    /// Captures every live row of `(index_id, version)` as `(page_id, slot, vertex_id, bytes)`.
+    fn live_rows(
+        store: &VectorSlabStore,
+        index_id: u32,
+        version: u64,
+    ) -> Vec<(u32, u32, u32, Vec<u8>)> {
+        let mut out = Vec::new();
+        store.visit_partition_pages(
+            index_id,
+            version,
+            0,
+            &mut PageScratch::new(),
+            |slot, info, vec| {
+                out.push((slot.page_id, slot.slot, info.vertex_id, vec.to_vec()));
+            },
+        );
+        out
+    }
+
+    /// Drives one compaction to finalize from `(write_cursor, scan_cursor)`, one bounded step at
+    /// a time through `store`.
+    fn drive_compaction_from(
+        store: &mut VectorSlabStore,
+        write_cursor: u64,
+        scan_cursor: Option<PageKey>,
+        range_end: u64,
+        max_entries: u32,
+        max_bytes: u64,
+        d: &VectorIndexDef,
+    ) -> SlabCompactStepOutcome {
+        let mut write_cursor = write_cursor;
+        let mut scan_cursor = scan_cursor;
+        loop {
+            let outcome = store
+                .compact_step(
+                    write_cursor,
+                    range_end,
+                    scan_cursor,
+                    max_entries,
+                    max_bytes,
+                    &mut |_| Some(*d),
+                )
+                .expect("compact step");
+            write_cursor = outcome.write_cursor;
+            scan_cursor = outcome.scan_cursor;
+            if outcome.finalized {
+                return outcome;
+            }
+        }
+    }
+
+    /// Drives one fresh compaction (from the slab header) to finalize.
+    fn drive_compaction(
+        store: &mut VectorSlabStore,
+        range_end: u64,
+        max_entries: u32,
+        max_bytes: u64,
+        d: &VectorIndexDef,
+    ) -> SlabCompactStepOutcome {
+        drive_compaction_from(
+            store,
+            SLAB_HEADER_SIZE as u64,
+            None,
+            range_end,
+            max_entries,
+            max_bytes,
+            d,
+        )
+    }
+
+    /// Interleaves two versions so each version's pages alternate on the slab; returns nothing.
+    /// 2 pages per version at capacity 2 (rows `100..104` for v1, `200..204` for v2).
+    fn seed_two_interleaved_versions(store: &mut VectorSlabStore, d: &VectorIndexDef) {
+        let mut v1_rows = 0u32;
+        let mut v2_rows = 0u32;
+        for i in 0..8u32 {
+            let (version, vid) = if i % 2 == 0 {
+                v1_rows += 1;
+                (1u64, 100 + v1_rows - 1)
+            } else {
+                v2_rows += 1;
+                (2u64, 200 + v2_rows - 1)
+            };
+            store
+                .append_row(
+                    1,
+                    version,
+                    0,
+                    d,
+                    subject(vid),
+                    &bytes(i as f32, 0.0),
+                    &zaux(),
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn compact_reclaims_dropped_version_bytes_to_a_dense_prefix() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2); // 2 rows per page
+        let span = page_span_bytes(&d).unwrap();
+        let mut store = open(&mm, &d);
+        seed_two_interleaved_versions(&mut store, &d);
+        assert_eq!(store.version_page_count(1, 1), 2);
+        assert_eq!(store.version_page_count(1, 2), 2);
+        let live_before = live_rows(&store, 1, 2);
+
+        // GC/cleanup drain of v1 leaves its slab bytes dead between the live v2 pages.
+        let progress = store.drop_version_pages(1, 1, None, 100);
+        assert!(progress.exhausted);
+        let before = store.stats_for_index(None, &mut |_| Some(d));
+        assert_eq!(before.scope.page_count, 2, "only v2 remains");
+        assert_eq!(
+            before.slab.estimated_unreferenced_bytes,
+            2 * span,
+            "dropped v1 spans are unreferenced"
+        );
+        assert_eq!(store.occupied_tail(), SLAB_HEADER_SIZE as u64 + 4 * span);
+
+        let range_end = store.occupied_tail();
+        let outcome = drive_compaction(&mut store, range_end, 1, u64::MAX, &d);
+        assert!(outcome.finalized);
+        assert_eq!(
+            outcome.write_cursor,
+            SLAB_HEADER_SIZE as u64 + 2 * span,
+            "the tail rewinds once to the dense prefix end"
+        );
+        assert_eq!(store.occupied_tail(), SLAB_HEADER_SIZE as u64 + 2 * span);
+
+        let after = store.stats_for_index(None, &mut |_| Some(d));
+        assert_eq!(after.slab.referenced_page_bytes_global, 2 * span);
+        assert_eq!(
+            after.slab.estimated_unreferenced_bytes, 0,
+            "reclaim drops to header-only on a drained store"
+        );
+        assert_eq!(after.slab.occupied_tail_bytes, store.occupied_tail());
+        assert_eq!(live_rows(&store, 1, 2), live_before, "live rows are intact");
+
+        // The rewind and every moved meta survive reopen.
+        let reopened = open(&mm, &d);
+        assert_eq!(reopened.occupied_tail(), SLAB_HEADER_SIZE as u64 + 2 * span);
+        assert_eq!(live_rows(&reopened, 1, 2), live_before);
+    }
+
+    #[test]
+    fn compact_all_live_store_is_a_noop_move_keeping_the_tail() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm, &d);
+        for v in 0..6u32 {
+            store
+                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
+                .unwrap();
+        }
+        let live_before = live_rows(&store, 1, 1);
+        let range_end = store.occupied_tail();
+
+        let outcome = drive_compaction(&mut store, range_end, 10, u64::MAX, &d);
+        assert!(outcome.finalized);
+        assert_eq!(outcome.write_cursor, range_end, "nothing to reclaim");
+        assert_eq!(live_rows(&store, 1, 1), live_before);
+
+        let reopened = open(&mm, &d);
+        assert_eq!(reopened.occupied_tail(), range_end);
+    }
+
+    #[test]
+    fn compact_interleaves_appends_and_meta_drops_safely() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let span = page_span_bytes(&d).unwrap();
+        let mut store = open(&mm, &d);
+        seed_two_interleaved_versions(&mut store, &d);
+        // GC drains v1 before the compaction starts; its spans become the dead space.
+        assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
+        let live_v2_before = live_rows(&store, 1, 2);
+        let range_end = store.occupied_tail(); // header + 4 * span
+
+        // Step once (moves the lowest-key live page), then append a post-start row: it lands at
+        // the old tail, above `range_end`, outside the snapshot.
+        let first = store
+            .compact_step(
+                SLAB_HEADER_SIZE as u64,
+                range_end,
+                None,
+                1,
+                u64::MAX,
+                &mut |_| Some(d),
+            )
+            .unwrap();
+        assert!(!first.finalized);
+        assert_eq!(first.pages_moved, 1);
+        let appended = store
+            .append_row(1, 3, 0, &d, subject(900), &bytes(9.0, 9.0), &zaux())
+            .unwrap();
+        let v3_page_offset = store
+            .meta
+            .get(&PageKey::new(1, 3, 0, appended.page_id as u64))
+            .expect("post-start page meta")
+            .slab_offset;
+        assert!(
+            v3_page_offset >= range_end,
+            "post-start appends stay outside the snapshot range"
+        );
+        let tail_after_append = store.occupied_tail();
+
+        // A version teardown lands mid-compaction (the rebuild `Cleaning` case): the still-unmoved
+        // second v2 page is drained (rows tombstoned first, then its meta dropped past the moved
+        // page's key) and the lap must skip the vanished meta instead of stalling or moving ghosts.
+        assert!(store.tombstone_row(
+            1,
+            SlotRef {
+                index_version: 2,
+                partition_id: 0,
+                page_id: 1,
+                slot: 0,
+            }
+        ));
+        assert!(store.tombstone_row(
+            1,
+            SlotRef {
+                index_version: 2,
+                partition_id: 0,
+                page_id: 1,
+                slot: 1,
+            }
+        ));
+        assert!(
+            store
+                .drop_version_pages(1, 2, Some(PageKey::new(1, 2, 0, 0).into_bytes()), 100)
+                .exhausted
+        );
+        assert_eq!(
+            store.version_page_count(1, 2),
+            1,
+            "only the moved page survives"
+        );
+        assert_eq!(
+            live_rows(&store, 1, 2),
+            &live_v2_before[..2],
+            "the already-moved page reads correctly mid-compaction"
+        );
+
+        let outcome = drive_compaction_from(
+            &mut store,
+            first.write_cursor,
+            first.scan_cursor,
+            range_end,
+            1,
+            u64::MAX,
+            &d,
+        );
+        assert!(outcome.finalized);
+        // Post-start appends keep the persisted tail above the reclaimed gap: only a quiescent
+        // store reclaims all the way down to the write cursor.
+        assert_eq!(outcome.write_cursor, tail_after_append);
+        assert_eq!(store.occupied_tail(), tail_after_append);
+
+        // Every surviving live row reads back correctly after finalize + reopen: the moved page's
+        // rows and the post-start append are both intact.
+        let reopened = open(&mm, &d);
+        assert_eq!(reopened.occupied_tail(), tail_after_append);
+        assert_eq!(live_rows(&reopened, 1, 2), &live_v2_before[..2]);
+        assert_eq!(
+            reopened.read_row_bytes(1, appended).map(|(v, _, _)| v),
+            Some(900)
+        );
+        let stats = reopened.stats_for_index(None, &mut |_| Some(d));
+        // referenced = moved prefix page + post-start v3 page; dead = the drained v1/v2 spans
+        // between them (conservatively counted while the tail is pinned above the gap).
+        assert_eq!(stats.slab.referenced_page_bytes_global, 2 * span);
+        assert_eq!(
+            stats.slab.estimated_unreferenced_bytes,
+            tail_after_append - SLAB_HEADER_SIZE as u64 - 2 * span
+        );
+    }
+
+    #[test]
+    fn compact_resume_determinism_two_runs_byte_identical() {
+        clear_heads();
+        let d = def(2);
+        let span = page_span_bytes(&d).unwrap();
+        let build_fixture = || {
+            clear_heads();
+            let mm = fresh_mm();
+            let mut store = open(&mm, &d);
+            seed_two_interleaved_versions(&mut store, &d);
+            assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
+            (mm, store)
+        };
+
+        // Run A drives straight through; run B simulates a crash by reopening the composite store
+        // from its regions after every non-finalizing step, resuming from the identical cursors.
+        let budgets = (1u32, span); // one directory entry and at most one page per step
+        let (mm_a, mut store_a) = build_fixture();
+        let range_a = store_a.occupied_tail();
+        let final_a = drive_compaction(&mut store_a, range_a, budgets.0, budgets.1, &d);
+
+        let (mm_b, mut store_b) = build_fixture();
+        let range_b = store_b.occupied_tail();
+        assert_eq!(range_a, range_b);
+        let mut write_cursor = SLAB_HEADER_SIZE as u64;
+        let mut scan_cursor = None;
+        loop {
+            let outcome = store_b
+                .compact_step(
+                    write_cursor,
+                    range_b,
+                    scan_cursor,
+                    budgets.0,
+                    budgets.1,
+                    &mut |_| Some(d),
+                )
+                .expect("compact step");
+            write_cursor = outcome.write_cursor;
+            scan_cursor = outcome.scan_cursor;
+            if outcome.finalized {
+                break;
+            }
+            store_b = open(&mm_b, &d);
+        }
+
+        assert_eq!(final_a.write_cursor, write_cursor, "equal final tails");
+        let len_a = final_a.write_cursor as usize;
+        let mut raw_a = vec![0u8; len_a];
+        mm_a.get(SLAB_ID).read(0, &mut raw_a);
+        let mut raw_b = vec![0u8; len_a];
+        mm_b.get(SLAB_ID).read(0, &mut raw_b);
+        assert_eq!(raw_b, raw_a, "byte-identical dense prefixes");
+        assert_eq!(live_rows(&store_b, 1, 2), live_rows(&store_a, 1, 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "sits inside the reclaimed gap")]
+    fn compact_finalize_fails_closed_when_live_span_stranded_in_gap() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm, &d);
+        for v in 0..4u32 {
+            store
+                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
+                .unwrap();
+        }
+        // Wrong-implementation guard: rewinding over live spans must fail closed instead of
+        // corrupting every read above the new tail.
+        store.compact_finalize(SLAB_HEADER_SIZE as u64, store.occupied_tail(), &mut |_| {
+            Some(d)
+        });
     }
 }

@@ -967,6 +967,35 @@ pub struct VectorSlabVersionStats {
     pub referenced_page_bytes: u64,
 }
 
+/// Phase of the opt-in slab dead-space compaction driver (plan 0278).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub enum VectorSlabCompactionPhase {
+    /// No compaction is active; the slab grows tail-only.
+    Idle,
+    /// A bounded compaction is copying live pages into a dense prefix.
+    Compacting,
+}
+
+/// Bounded scalar snapshot of the slab compaction driver.
+///
+/// O(1): it never carries page bytes or directory contents. `write_cursor` is the next free byte of
+/// the dense prefix (the copy destination), `range_end` the exclusive upper bound of the source
+/// range (`occupied_tail` at start — pages appended after that are outside the snapshot and are
+/// never moved), and `pages_moved` the cumulative relocated page count. When `phase` reports `Idle`
+/// after a step, `write_cursor` carries the persisted `occupied_tail` the finalize wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorSlabCompactionStatus {
+    pub phase: VectorSlabCompactionPhase,
+    /// Next copy destination in the compact prefix (or the finalized tail once `Idle`).
+    pub write_cursor: u64,
+    /// Exclusive end of the compaction source range (`occupied_tail` at start).
+    pub range_end: u64,
+    /// Pages relocated so far during the active (or just-finished) compaction.
+    pub pages_moved: u64,
+}
+
 /// Vector-index canister mutation/sync/admin/search failure.
 ///
 /// Single error type for the canister: mutation endpoints return it over the wire; admin endpoints
@@ -1053,6 +1082,10 @@ pub enum VectorCanisterError {
     /// Caller-attested maintenance health is stale: its `index_id`/`index_version`/`nlist` do not
     /// match the index's current active generation (ADR 0031 Slice 9 rebuild trigger).
     StaleMaintenanceHealth,
+    /// A slab compaction is already active (start while `Compacting`); drive it to finalize first.
+    CompactionAlreadyActive,
+    /// No slab compaction is active (step with nothing to do).
+    NoActiveCompaction,
 }
 
 impl std::fmt::Display for VectorCanisterError {
@@ -1105,6 +1138,8 @@ impl std::fmt::Display for VectorCanisterError {
             Self::StaleMaintenanceHealth => {
                 "attested maintenance health does not match the active index generation"
             }
+            Self::CompactionAlreadyActive => "a vector slab compaction is already active",
+            Self::NoActiveCompaction => "no vector slab compaction is active",
         };
         f.write_str(text)
     }

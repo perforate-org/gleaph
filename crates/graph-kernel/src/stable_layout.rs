@@ -1488,13 +1488,14 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(
-            "VECTOR_ID_TO_SUBJECT",
+            "VECTOR_SLAB_COMPACTION_STATE",
             11,
-            StableMemoryClass::Unallocated,
-            "retired vector id reverse map",
-            "Unallocated: the retired VECTOR_ID_TO_SUBJECT reverse map (no production reader after \
-             ADR 0064 §7 positional validation). Kept as an explicit hole so MemoryIds 9/10/12/13/14 \
-             stay stable without a repack",
+            StableMemoryClass::Maintenance,
+            "slab compaction driver state",
+            "Option-scalar global record { write_cursor, range_end, scan_cursor, pages_moved } for \
+             the bounded slab dead-space compaction driver (plan 0278); reuses the retired \
+             VECTOR_ID_TO_SUBJECT slot so MemoryIds 9/10/12/13/14 stay stable. Operational \
+             bookkeeping, not a query-facing index or canonical fact: it carries no rebuild path",
             RebuildPath::None,
         ),
         region(
@@ -1955,7 +1956,7 @@ mod tests {
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 18);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 16);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 17);
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(17));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
@@ -1997,15 +1998,20 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[8].class,
             StableMemoryClass::Unallocated
         );
-        // ADR 0064 §7: MemoryId 11 is an explicit unallocated hole (retired VECTOR_ID_TO_SUBJECT).
+        // ADR 0064 §7 retired the reverse map; plan 0278 reuses MemoryId 11 for the durable
+        // global slab-compaction driver state (operational bookkeeping, no rebuild path).
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[11].symbol,
-            "VECTOR_ID_TO_SUBJECT"
+            "VECTOR_SLAB_COMPACTION_STATE"
         );
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[11].class,
-            StableMemoryClass::Unallocated
+            StableMemoryClass::Maintenance
         );
+        assert!(matches!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[11].rebuild,
+            RebuildPath::None
+        ));
         // ADR 0031 Slice 7: bounded shadow-version rebuild state machine, derived/rebuildable.
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[12].symbol,

@@ -3209,6 +3209,61 @@ fn slab_stats_rejects_non_router_caller() {
 }
 
 #[test]
+fn slab_compact_endpoints_reject_non_router_caller() {
+    fresh_store();
+    assert_eq!(
+        admin_start_vector_slab_compact(shard_canister()).unwrap_err(),
+        VectorCanisterError::Unauthorized
+    );
+    assert_eq!(
+        admin_vector_slab_compact_step(shard_canister(), 10, 4096).unwrap_err(),
+        VectorCanisterError::Unauthorized
+    );
+    assert_eq!(
+        admin_vector_slab_compact_status(shard_canister()).unwrap_err(),
+        VectorCanisterError::Unauthorized
+    );
+}
+
+#[test]
+fn slab_compact_driver_runs_to_idle_through_public_api() {
+    use gleaph_graph_kernel::vector_index::VectorSlabCompactionPhase;
+    fresh_store();
+    seed_distinct(8);
+
+    // Idle status before any compaction.
+    let idle = admin_vector_slab_compact_status(router()).expect("idle status");
+    assert_eq!(idle.phase, VectorSlabCompactionPhase::Idle);
+    assert_eq!(
+        admin_vector_slab_compact_step(router(), 10, 4096).unwrap_err(),
+        VectorCanisterError::NoActiveCompaction
+    );
+
+    // Start snapshots the range; a second start is rejected while active.
+    admin_start_vector_slab_compact(router()).expect("start");
+    let active = admin_vector_slab_compact_status(router()).expect("active status");
+    assert_eq!(active.phase, VectorSlabCompactionPhase::Compacting);
+    assert_eq!(
+        admin_start_vector_slab_compact(router()).unwrap_err(),
+        VectorCanisterError::CompactionAlreadyActive
+    );
+
+    // Drive to finalize: the fixture is all-live, so the tail is unchanged and the phase clears.
+    loop {
+        let status = admin_vector_slab_compact_step(router(), u32::MAX, u64::MAX).expect("step");
+        if status.phase == VectorSlabCompactionPhase::Idle {
+            break;
+        }
+    }
+    let done = admin_vector_slab_compact_status(router()).expect("done status");
+    assert_eq!(done.phase, VectorSlabCompactionPhase::Idle);
+    assert_eq!(done.write_cursor, 0, "Idle zeroes the cursors");
+
+    // The state cleared: a fresh compaction can start again.
+    admin_start_vector_slab_compact(router()).expect("restart after finalize");
+}
+
+#[test]
 fn slab_stats_step_rejects_non_router_caller() {
     fresh_store();
     assert_eq!(

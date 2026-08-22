@@ -36,7 +36,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
+    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome,
+    VectorSyncBatchUnavailable,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -259,6 +260,34 @@ fn admin_vector_slab_stats_step(
     index_id: Option<u32>,
 ) -> Result<VectorSlabStatsStep, String> {
     canister::admin_vector_slab_stats_step(cursor, max_pages, index_id)
+}
+
+/// Begins an opt-in slab dead-space compaction (plan 0278): O(1) start that snapshots the source
+/// range `[slab header end, occupied_tail)` and fails while a compaction is already active. The
+/// Router then drives `admin_vector_slab_compact_step` to completion; pages appended after this
+/// point land above the snapshot range and are never moved. Router-guarded `#[update]`.
+#[update(guard = "guard_router_canister")]
+fn admin_start_vector_slab_compact() -> Result<(), String> {
+    canister::admin_start_vector_slab_compact()
+}
+
+/// Advances one bounded slab-compaction unit (plan 0278): one meta-map lap segment plus at most
+/// one copy batch — each page's bytes persisted before its 16 B `VectorPageMeta.slab_offset` swap —
+/// finalizing with a single `occupied_tail` rewind once a full lap finds nothing live inside the
+/// snapshot range. `max_pages`/`max_bytes` are clamped server-side. Router-guarded `#[update]`.
+#[update(guard = "guard_router_canister")]
+fn admin_vector_slab_compact_step(
+    max_pages: u32,
+    max_bytes: u64,
+) -> Result<VectorSlabCompactionStatus, String> {
+    canister::admin_vector_slab_compact_step(max_pages, max_bytes)
+}
+
+/// Reports the O(1) scalar slab-compaction driver state (phase + cursors). Router-guarded
+/// `#[query]`; an idle store reports phase `Idle` with zeroed cursors.
+#[query(guard = "guard_router_canister")]
+fn admin_vector_slab_compact_status() -> Result<VectorSlabCompactionStatus, String> {
+    canister::admin_vector_slab_compact_status()
 }
 
 /// Advances one bounded unit of Router-forwarded vector maintenance (ADR 0031 Slice 10). The Router

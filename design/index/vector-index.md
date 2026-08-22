@@ -47,8 +47,11 @@ cost bounded on the Internet Computer.
    EncodingRecord, per-shard watermarks).
 2. **Measurement-driven.** Every optimization (scoring formulation, pruning, page sizing, encoding)
    is adopted only after canbench isolates its instruction and storage effect against a baseline.
-3. **Simplest structure that meets the budget.** No PMA/free-span/compaction tiers, no maintained
-   reverse maps, no row moves: append-only positions and rebuild-as-compaction.
+3. **Simplest structure that meets the budget.** No PMA, no free-span reuse, no maintained
+   reverse maps: append-only positions on every hot path. Routine compaction stays
+   rebuild-as-compaction; an **opt-in, Router-driven bounded maintenance driver** (plan 0278) may
+   additionally relocate whole live pages into a dense prefix through each page's single
+   `VectorPageMeta.slab_offset` indirection and rewind `occupied_tail` once at finalize.
 4. **Stored precision = search precision.** The encoding is the data; non-`F32` indexes are
    approximate by contract, documented per definition.
 
@@ -487,11 +490,36 @@ parents' children and recurse to the leaves.
 
 ## Rebuild and compaction
 
-**Rebuild is the only compaction.** The shadow-version state machine
+**Rebuild is the routine compaction.** The shadow-version state machine
 (`Idle → Sampling → Training → Building → ReadyToPublish → Cleaning`) with dual-write and atomic
-publish is retained unchanged. There is no free-span allocator, no PMA rebalance, and no routine
-extent compaction: tail-only allocation grows the slab, and the Slice 9/10 tombstone-ratio policy
-bounds it (`slab ≤ live/(1 − r)` for trigger ratio `r`).
+publish is retained unchanged. There is no free-span allocator, no PMA rebalance, and no automatic
+extent-compaction trigger: tail-only allocation grows the slab, and the Slice 9/10 tombstone-ratio
+policy bounds it (`slab ≤ live/(1 − r)` for trigger ratio `r`).
+
+**Opt-in bounded slab compaction (plan 0278)** reclaims the dead bytes that rebuild cleanup and
+tombstone-GC page teardowns leave behind. A Router-driven driver (`admin_start_vector_slab_compact`
+→ repeated `admin_vector_slab_compact_step` → `admin_vector_slab_compact_status`) works entirely
+above the append-only kernel:
+
+- `VectorPageMeta.slab_offset` is the **only** reference to a page's bytes (subject `SlotRef`s are
+  page-relative; centroids live in their own regions), so moving one page = copy its bytes +
+  swap one fixed-16 B directory value.
+- Start freezes the snapshot source range `[slab header end, occupied_tail at start)` in the
+  durable `VECTOR_SLAB_COMPACTION_STATE` record (MemoryId 11) together with the write cursor and
+  lap cursor, so an interrupted or upgraded canister resumes fail-closed.
+- Each step examines a bounded slice of the page directory and copies at most a byte budget down
+  into the dense prefix, in ascending original-offset order so no copy can overwrite a not-yet-
+  read source; each page's bytes are persisted strictly before its meta swap, so an interrupted
+  move leaves duplicate dead bytes below — never a dangling offset.
+- Pages appended after start land above the snapshot range and are never touched; metas dropped
+  mid-compaction by GC/cleanup are skipped by the read cursor.
+- When a full directory lap finds nothing live inside the range, finalize fails closed if any live
+  span sits inside the reclaimed gap, then persists `occupied_tail = max(write_cursor, highest
+  live span end)` exactly once: a quiescent store reclaims to header-only, while post-start
+  appends keep the tail above the gap.
+
+There is still no free-span reuse and no row-level defragmentation inside partially-live pages;
+automatic policy triggers for this driver are deferred with the maintenance trust-model work.
 
 Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
 `Sampling` freezes each candidate in its **native stored form** (row bytes + aux scale, deduped on
@@ -515,6 +543,7 @@ stride (`align16(component_bytes × dims)`),
 | ----------------------------- | --------------------------------- | ---------------------------------------------------------- |
 | `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy |
 | `VECTOR_SUBJECT_TO_ID`        | `G × ~60B × η` while deleted clocks are retained | Marked lanes use `min(graph_watermark, router_watermark)` after observed frontier publication; Graph-only lanes remain deferred, so no global bound is claimed |
+| `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy; opt-in bounded slab compaction reclaims drained spans (plan 0278) |
 | `VECTOR_PAGE_META` / heads    | O(N / slots per page), O(nlist)   | negligible                                                 |
 | centroids / defs / watermarks | O(nlist × d), O(#defs), O(shards) | negligible                                                 |
 | graph                         | 0 embedding bytes                 | outbox carries remove metadata only                        |

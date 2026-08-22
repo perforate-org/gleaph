@@ -12,7 +12,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
+    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome,
+    VectorSyncBatchUnavailable,
 };
 use ic_cdk::api::msg_caller;
 
@@ -392,6 +393,22 @@ pub(crate) fn admin_vector_slab_stats_step(
 ) -> Result<VectorSlabStatsStep, String> {
     store::admin_vector_slab_stats_step(msg_caller(), cursor, max_pages, index_id)
         .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_start_vector_slab_compact() -> Result<(), String> {
+    store::admin_start_vector_slab_compact(msg_caller()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_slab_compact_step(
+    max_pages: u32,
+    max_bytes: u64,
+) -> Result<VectorSlabCompactionStatus, String> {
+    store::admin_vector_slab_compact_step(msg_caller(), max_pages, max_bytes)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_slab_compact_status() -> Result<VectorSlabCompactionStatus, String> {
+    store::admin_vector_slab_compact_status(msg_caller()).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_maintenance_step(

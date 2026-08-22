@@ -927,6 +927,66 @@ fn bench_maintenance_step_awaiting_publish_d128_nlist16() -> canbench_rs::BenchR
     })
 }
 
+// --- Plan 0278: opt-in bounded slab compaction (dead-space reclamation) ---
+
+use gleaph_graph_kernel::vector_index::VectorSlabCompactionPhase;
+
+/// Seeds a clustered index, then rebuilds + publishes + drains the old generation so the cleanup
+/// leaves every v1 page as dead slab bytes under the live v2 chain — the realistic reclamation
+/// case for the compaction driver. Asserts the fixture actually contains dead space so the
+/// measured closure cannot silently compact an empty gap.
+fn setup_store_with_dead_space() {
+    setup_partitioned_store(128, REBUILD_N, 16);
+    run_full_rebuild(REBUILD_N, 16);
+    loop {
+        let status =
+            admin_vector_rebuild_cleanup_step(router(), INDEX_ID, REBUILD_N).expect("cleanup");
+        if status.phase == VectorRebuildPhase::Idle {
+            break;
+        }
+    }
+    let stats = admin_vector_slab_stats(router(), None).expect("fixture stats");
+    assert!(
+        stats.slab.estimated_unreferenced_bytes > 0,
+        "compaction fixture must contain drained dead space"
+    );
+}
+
+/// Measures the full compaction drive (start + bounded steps to finalize) over the drained
+/// fixture. Post-state assertions stay outside the measured closure and make a missing finalize,
+/// a dropped page, or a stalled driver fail the benchmark.
+#[bench(raw)]
+fn bench_slab_compact_drained_d128_nlist16() -> canbench_rs::BenchResult {
+    setup_store_with_dead_space();
+    let before = admin_vector_slab_stats(router(), None).expect("pre-stats");
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_slab_compact_drained_d128_nlist16");
+        admin_start_vector_slab_compact(router()).expect("start");
+        loop {
+            let status =
+                admin_vector_slab_compact_step(router(), u32::MAX, u64::MAX).expect("compact step");
+            if status.phase == VectorSlabCompactionPhase::Idle {
+                black_box(status);
+                break;
+            }
+        }
+    });
+    let after = admin_vector_slab_stats(router(), None).expect("post-stats");
+    assert_eq!(
+        after.slab.estimated_unreferenced_bytes, 0,
+        "finalize must reclaim the drained dead space"
+    );
+    assert_eq!(
+        after.slab.referenced_page_bytes_global, before.slab.referenced_page_bytes_global,
+        "compaction relocates pages without dropping any"
+    );
+    assert!(
+        after.slab.occupied_tail_bytes < before.slab.occupied_tail_bytes,
+        "the single finalize rewind must shrink the occupied tail"
+    );
+    result
+}
+
 // --- Router contiguous frontier publication + bounded GC ---
 
 #[derive(Debug, PartialEq, Eq)]

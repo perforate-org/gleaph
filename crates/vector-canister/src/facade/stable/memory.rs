@@ -3,7 +3,8 @@
 //!
 //! MemoryIds: router auth → shard catalog → ownership config → index defs → centroid meta →
 //! reserved centroids → subject clock → partition heads → pages → rebuild state → row slab →
-//! maintenance state. MemoryIds 8 and 11 are unallocated (retired id reverse maps).
+//! maintenance state. MemoryId 8 is unallocated (retired id reverse map); MemoryId 11 holds the
+//! slab-compaction driver state (plan 0278).
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -53,6 +54,10 @@ const VECTOR_GC_CURSOR: MemoryId = MemoryId::new(16);
 // ADR 0064 §5: deleted-subjects list `(shard, tombstone stamp, subject) -> ()` giving the GC a
 // stable key-based cursor (the subject map's slot order is unstable under removal).
 const VECTOR_DELETED_SUBJECTS: MemoryId = MemoryId::new(17);
+// Plan 0278: durable global slab-compaction driver state ({write_cursor, range_end, scan_cursor});
+// reuses the retired VECTOR_ID_TO_SUBJECT slot so MemoryIds 9/10/12/13/14 stay stable without a
+// repack.
+const VECTOR_SLAB_COMPACTION_STATE: MemoryId = MemoryId::new(11);
 
 pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
@@ -67,6 +72,8 @@ pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
 pub(crate) type StableShardWatermarksMap = BTreeMap<ShardId, ShardWatermarks, Memory>;
 pub(crate) type StableGcCursorCell = Cell<Option<DeletedSubjectKey>, Memory>;
+pub(crate) type StableSlabCompactionStateCell =
+    Cell<crate::records::VectorSlabCompactionState, Memory>;
 
 /// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
 /// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
@@ -263,6 +270,13 @@ pub(crate) fn init_gc_cursor() -> StableGcCursorCell {
     Cell::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_GC_CURSOR)),
         None,
+    )
+}
+
+pub(crate) fn init_slab_compaction_state() -> StableSlabCompactionStateCell {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SLAB_COMPACTION_STATE)),
+        crate::records::VectorSlabCompactionState::Idle,
     )
 }
 
