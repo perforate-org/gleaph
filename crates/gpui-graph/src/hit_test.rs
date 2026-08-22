@@ -90,6 +90,25 @@ where
     let prep: &EdgePrep<S> = synced.edges();
     let candidates = synced.visible_edge_candidates(&bounds, margin);
 
+    // Cheap conservative reject before any curve work: drop candidates whose
+    // indexed bounding box cannot come near the pointer. The box is the same
+    // extent the spatial index trusts, so the surviving set is unchanged;
+    // self-loops and oversized boxes carry an unbounded extent and always
+    // survive to the precise test. The screen-space hit threshold widens the
+    // box so wide-zoom pointers still see every near-miss curve.
+    let edge_threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
+    let expand = margin.max(edge_threshold / viewport.zoom().max(f32::EPSILON));
+    let candidates: Vec<usize> = candidates
+        .into_iter()
+        .filter(|&index| {
+            let (lo, hi) = &prep.curve_bboxes[index];
+            world_point.x >= lo.x - expand
+                && world_point.x <= hi.x + expand
+                && world_point.y >= lo.y - expand
+                && world_point.y <= hi.y + expand
+        })
+        .collect();
+
     // The precise curve path for the candidate edges needs the same context the
     // paint layer builds. Obstacles come from the scene's node positions.
     let obstacles_screen: Vec<Vec2> = synced

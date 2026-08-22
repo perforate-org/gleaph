@@ -1516,6 +1516,20 @@ Edge hit testing may require distance-to-segment or curve calculations.
  curve context as the paint layer from the scene, so the selectable geometry
  matches the drawn geometry exactly.
 
+ Measured (hit_bench, lattice graphs at pointer-realistic zoom): the node phase
+ costs a few hundred nanoseconds regardless of graph size, but the edge phase
+ processed every slack-box candidate (`EDGE_INDEX_SLACK` pulls in hundreds of
+ edges regardless of graph size) with full curve-context construction, costing
+ a near-constant ~0.6–0.7 ms per event. The fix keeps one source of truth for
+ each edge's conservative extent: `EdgePrep::curve_bboxes` stores the exact
+ `edge_curve_bbox` output that builds the spatial cells, and hit testing
+ rejects candidates whose box cannot come near the pointer before any curve
+ work. Self-loops and oversized boxes carry an unbounded extent so they always
+ reach the precise screen-space test. The screen-space hit threshold widens
+ the rejection box so wide-zoom pointers still see near-miss curves. Edge and
+ miss queries drop ~8x to ~80 µs per event, size-independent; node queries are
+ unchanged.
+
  The path reuses the runtime's zoom-invariant [`EdgePrep`] — parallel groups,
  midpoints/normals, and the density grid — so the per-event density pass runs
  only for the visible candidates instead of rebuilding every edge's geometry on
@@ -2281,8 +2295,16 @@ The following should remain intentionally open until implementation and profilin
   positions and non-loop edge bounding boxes, with overflow handling, §20),
 - spatial index activation threshold,
 - geometry-cache policy,
-- hit-test acceleration structure and policy (§21; separate from the rendering
-  visibility index),
+- ~~hit-test acceleration structure and policy~~ (implemented: hit_test
+  reuses the runtime index for candidates, then pre-filters them with the
+  stored per-edge curve bounding boxes — the same `edge_curve_bbox` extent
+  that builds the cells, so one invariant serves both — before any curve
+  construction. Measured on lattice graphs: edge/miss events ~0.6–0.7 ms →
+  ~80 µs, size-independent; node events unchanged at a few hundred ns.
+  Policy note from §21 stands: below roughly a thousand nodes a direct
+  nearest-node scan (~1–10 µs) rivals indexed node lookups, but the edge
+  phase dominates every query that misses nodes, so no scan fallback is
+  warranted),
 - paint-record representation.
 
 ## Layout

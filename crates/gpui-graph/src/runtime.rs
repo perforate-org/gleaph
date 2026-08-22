@@ -298,6 +298,12 @@ where
     pub normals: Vec<glam::Vec2>,
     /// Grid over every edge's midpoint for local-density queries.
     pub density_grid: DensityGrid<S>,
+    /// Conservative world-space extent of each edge's drawn curve, the same
+    /// `edge_curve_bbox` output the spatial cell index is built from. Query
+    /// paths pre-filter candidates with a point-in-box test instead of
+    /// building curve geometry. Self-loops and oversized boxes carry the
+    /// unbounded sentinel so they always reach the precise test.
+    pub curve_bboxes: Vec<(glam::Vec2, glam::Vec2)>,
 }
 
 /// Build the zoom-invariant per-edge preprocessing for a graph.
@@ -321,6 +327,7 @@ where
         midpoints: Vec::new(),
         normals: Vec::new(),
         density_grid: DensityGrid::default(),
+        curve_bboxes: Vec::new(),
     };
     let mut groups: HashMap<(NodeId, NodeId), Vec<usize>, S> = HashMap::with_hasher(hasher.clone());
     for (id, edge) in graph.edges() {
@@ -508,6 +515,14 @@ where
         // unbounded number of cells.
         let empty_obstacle_grid =
             crate::paint::ObstacleGrid::new_with_hasher(&[], 1.0, S::default());
+        // Unbounded extent: the precise screen-space test must always see
+        // these candidates (self-loop geometry is viewport-dependent, so no
+        // finite world box can bound it).
+        let unbounded = (
+            glam::Vec2::new(f32::NEG_INFINITY, f32::NEG_INFINITY),
+            glam::Vec2::new(f32::INFINITY, f32::INFINITY),
+        );
+        runtime.edges.curve_bboxes = vec![unbounded; runtime.edges.edge_ids.len()];
         for (index, (source_position, target_position)) in runtime
             .edges
             .source
@@ -537,6 +552,10 @@ where
                 cluster,
                 &empty_obstacle_grid,
             );
+            // One computation feeds both the spatial cells and the query-time
+            // pre-filter, keeping a single source of truth for each edge's
+            // conservative extent.
+            runtime.edges.curve_bboxes[index] = (min, max);
             let Some(rect) = CellRect::from_world(min, max) else {
                 runtime.edge_overflow.push(index);
                 continue;
