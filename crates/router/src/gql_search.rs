@@ -1671,12 +1671,11 @@ fn resolve_search_filter_disjunction_sources(
                         range.property_name
                     )))?;
                 let value = resolve_filter_value(&range.value_expr, params)?;
-                let (low, high) =
-                    gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
-                        RouterError::InvalidArgument(format!(
-                            "SEARCH ... WHERE numeric range value is not supported: {e}"
-                        ))
-                    })?;
+                let (low, high) = gleaph_gql::range_bounds(&value, range.op).map_err(|e| {
+                    RouterError::InvalidArgument(format!(
+                        "SEARCH ... WHERE range value is not supported: {e}"
+                    ))
+                })?;
                 if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
                     return Err(RouterError::InvalidArgument(format!(
                         "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
@@ -1987,9 +1986,9 @@ fn resolve_filtered_range_interval(
     let mut final_high: Option<Vec<u8>> = None;
     for range in ranges {
         let value = resolve_filter_value(&range.value_expr, params)?;
-        let (low, high) = gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
+        let (low, high) = gleaph_gql::range_bounds(&value, range.op).map_err(|e| {
             RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE numeric range value is not supported: {e}"
+                "SEARCH ... WHERE range value is not supported: {e}"
             ))
         })?;
         if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
@@ -5271,10 +5270,9 @@ mod tests {
     }
 
     #[test]
-    fn try_execute_gql_search_non_leading_range_rejects_text_value() {
+    fn resolve_filtered_range_interval_accepts_text_domain_clamped() {
         let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
-        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
-        store
+        let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .unwrap();
         catalog_test_support::intern_property(
@@ -5294,32 +5292,26 @@ mod tests {
         ))
         .expect("create exact index");
 
-        let plan = non_leading_search_plan_with_property_filter_proof(filter_range_expr(
-            "category",
-            gleaph_gql::ast::CmpOp::Ge,
-            Value::Text("doc".into()),
-        ));
-        let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
-                graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
-            vector_search_unreachable(),
-        ));
-        let err = result.expect_err("text range value must fail");
-        assert!(
-            err.to_string()
-                .contains("numeric range value is not supported"),
-            "unexpected error: {err}"
+        // Text range literals are now accepted and clamp to the TEXT comparison domain.
+        let ranges = vec![SearchFilterRange {
+            property_name: "category".into(),
+            op: gleaph_gql::ast::CmpOp::Ge,
+            value_expr: Expr::new(ExprKind::Literal(Value::Text("doc".into()))),
+        }];
+        let params = BTreeMap::new();
+        let interval =
+            resolve_filtered_range_interval(graph_id, &store, label_id, "d", &ranges, &params)
+                .expect("text range resolves");
+        let (_property_id, _physical_index_id, low, high) =
+            interval.expect("interval must be non-empty");
+        assert_eq!(
+            low,
+            gleaph_gql::value_to_index_key_bytes(&Value::Text("doc".into()))
+                .unwrap()
+                .unwrap()
         );
+        // TEXT domain ceiling (tag 6 + 1): postings from other domains can never leak in.
+        assert_eq!(high, vec![7]);
     }
 
     #[test]
@@ -5437,29 +5429,12 @@ mod tests {
     }
 
     #[test]
-    fn try_execute_gql_search_mixed_rejects_text_range_value() {
+    fn resolve_filtered_range_interval_pins_datetime_subtype() {
         let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
-        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
-        store
+        let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .unwrap();
-        catalog_test_support::intern_property(
-            &store,
-            admin,
-            catalog_test_support::GRAPH,
-            "category",
-        );
         catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
-        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
-            graph_id,
-            crate::index_ddl::IndexTarget {
-                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
-                label: "Document".into(),
-                property: "category".into(),
-                edge_direction: None,
-            },
-        ))
-        .expect("create category index");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5471,14 +5446,53 @@ mod tests {
         ))
         .expect("create price index");
 
-        let filter = filter_mixed_expr(
-            "category",
-            Value::Text("doc".into()),
+        // DateTime range literals pin the interval to the DateTime subtype (tag 8, subtype 4).
+        let ranges = vec![SearchFilterRange {
+            property_name: "price".into(),
+            op: gleaph_gql::ast::CmpOp::Lt,
+            value_expr: Expr::new(ExprKind::Literal(Value::DateTime(100, 0))),
+        }];
+        let params = BTreeMap::new();
+        let interval =
+            resolve_filtered_range_interval(graph_id, &store, label_id, "d", &ranges, &params)
+                .expect("datetime range resolves");
+        let (_property_id, _physical_index_id, low, high) =
+            interval.expect("interval must be non-empty");
+        assert_eq!(low, vec![8, 4]);
+        assert_eq!(
+            high,
+            gleaph_gql::value_to_index_key_bytes(&Value::DateTime(100, 0))
+                .unwrap()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_range_rejects_unsupported_domain_without_numeric_wording() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .unwrap();
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        // Duration has no chronological total order in v1 and stays rejected; the error must
+        // not claim the value was rejected for being non-numeric.
+        let plan = non_leading_search_plan_with_property_filter_proof(filter_range_expr(
             "price",
             gleaph_gql::ast::CmpOp::Ge,
-            Value::Text("cheap".into()),
-        );
-        let plan = non_leading_search_plan_with_property_filter_proof(filter);
+            Value::Duration(1, 0),
+        ));
         let result = pollster::block_on(try_execute_gql_search(
             &plan,
             graph_id,
@@ -5494,11 +5508,15 @@ mod tests {
             candid::Principal::anonymous(),
             vector_search_unreachable(),
         ));
-        let err = result.expect_err("text range value must fail");
+        let err = result.expect_err("duration range value must fail");
         assert!(
             err.to_string()
-                .contains("numeric range value is not supported"),
+                .contains("SEARCH ... WHERE range value is not supported"),
             "unexpected error: {err}"
+        );
+        assert!(
+            !err.to_string().contains("numeric"),
+            "error must not mention numeric: {err}"
         );
     }
 
@@ -7123,16 +7141,14 @@ mod tests {
         // Canonical numeric keys are normalized decimal encodings, not raw width-prefixed values.
         // Intervals from different scalar magnitudes can have different byte lengths and remain
         // disjoint in encoded order; the merge helper must operate on those canonical encoded bounds.
-        let int32_le_negative = gleaph_gql::value_index_key::numeric_range_bounds(
+        let int32_le_negative = gleaph_gql::value_index_key::range_bounds(
             &Value::Int32(-1),
             gleaph_gql::ast::CmpOp::Le,
         )
         .expect("Int32 negative upper bound");
-        let int64_ge_zero = gleaph_gql::value_index_key::numeric_range_bounds(
-            &Value::Int64(0),
-            gleaph_gql::ast::CmpOp::Ge,
-        )
-        .expect("Int64 zero lower bound");
+        let int64_ge_zero =
+            gleaph_gql::value_index_key::range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge)
+                .expect("Int64 zero lower bound");
 
         // The negative interval ends strictly before the non-negative interval starts.
         assert!(

@@ -80,7 +80,8 @@ pub use value::{
     ValueBinaryError,
 };
 pub use value_index_key::{
-    ValueIndexKeyError, index_key_bytes_to_value, numeric_range_bounds, value_to_index_key_bytes,
+    ValueIndexKeyError, index_key_bytes_to_value, range_bounds, range_bounds_for_encoded_key,
+    value_to_index_key_bytes,
 };
 
 #[cfg(feature = "format")]

@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
+use gleaph_gql::ValueIndexKeyError;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{ConditionalScanCandidate, IndexScanSpec, ScanValue, Str};
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, PostingRangeRequest, validate_index_value_key_bytes,
+    IndexEqualSpec, IndexIntersectionRequest, MAX_INDEX_VALUE_KEY_BYTES, PostingRangeRequest,
+    validate_index_value_key_bytes,
 };
 
 use crate::facade::GraphStore;
@@ -26,20 +28,24 @@ fn property_id_for_scan(
         })
 }
 
-pub(crate) fn resolve_scan_payload_bytes(
+/// Resolve the scan literal/parameter to its [`Value`].
+fn resolve_scan_bound_value(
     sv: &ScanValue,
     parameters: &BTreeMap<String, Value>,
-) -> Result<Option<Vec<u8>>, PlanQueryError> {
-    let v = match sv {
-        ScanValue::Literal(val) => val.clone(),
+) -> Result<Value, PlanQueryError> {
+    match sv {
+        ScanValue::Literal(val) => Ok(val.clone()),
         ScanValue::Parameter(name) => parameters
             .get(crate::plan::query::param_map_key(name.as_ref()))
             .cloned()
             .ok_or_else(|| PlanQueryError::MissingParameter {
                 name: name.to_string(),
-            })?,
-    };
-    value_to_index_key_bytes(&v)
+            }),
+    }
+}
+
+fn validated_index_payload_bytes(value: &Value) -> Result<Option<Vec<u8>>, PlanQueryError> {
+    value_to_index_key_bytes(value)
         .map_err(|_| PlanQueryError::InvalidExpressionValue {
             expression: "index scan value encoding".to_owned(),
         })
@@ -56,21 +62,12 @@ pub(crate) fn resolve_scan_payload_bytes(
         })
 }
 
-fn cmp_to_posting_range_request(
-    cmp: CmpOp,
-    bound_bytes: Vec<u8>,
-) -> Result<PostingRangeRequest, PlanQueryError> {
-    Ok(match cmp {
-        CmpOp::Lt => PostingRangeRequest::Lt(bound_bytes),
-        CmpOp::Le => PostingRangeRequest::Le(bound_bytes),
-        CmpOp::Gt => PostingRangeRequest::Gt(bound_bytes),
-        CmpOp::Ge => PostingRangeRequest::Ge(bound_bytes),
-        CmpOp::Eq | CmpOp::Ne => {
-            return Err(PlanQueryError::UnsupportedOp(
-                "IndexScan.range(internal CmpOp)",
-            ));
-        }
-    })
+pub(crate) fn resolve_scan_payload_bytes(
+    sv: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Option<Vec<u8>>, PlanQueryError> {
+    let v = resolve_scan_bound_value(sv, parameters)?;
+    validated_index_payload_bytes(&v)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,7 +83,8 @@ pub(crate) async fn execute_index_scan(
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
     let pid = property_id_for_scan(&ctx.execution, property_name)?;
-    let Some(bytes) = resolve_scan_payload_bytes(scan_value, ctx.parameters)? else {
+    let value = resolve_scan_bound_value(scan_value, ctx.parameters)?;
+    let Some(bytes) = validated_index_payload_bytes(&value)? else {
         return Ok(Vec::new());
     };
     let physical_index_id = crate::index::catalog_context::unique_active_vertex_physical_index_id(
@@ -98,8 +96,36 @@ pub(crate) async fn execute_index_scan(
     let hits = if cmp == CmpOp::Eq {
         ix.lookup_equal(physical_index_id, pid, bytes).await?
     } else {
-        let req = cmp_to_posting_range_request(cmp, bytes)?;
-        ix.lookup_range(physical_index_id, pid, &req).await?
+        match gleaph_gql::value_index_key::range_bounds(&value, cmp) {
+            Ok((low, high)) if low < high => {
+                for bound in [&low, &high] {
+                    if bound.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                        return Err(PlanQueryError::InvalidExpressionValue {
+                            expression: "index range bound exceeds maximum encoded size".to_owned(),
+                        });
+                    }
+                }
+                ix.lookup_range(
+                    physical_index_id,
+                    pid,
+                    &PostingRangeRequest::Between { low, high },
+                )
+                .await?
+            }
+            // The domain-clamped interval is empty: no posting can satisfy the comparison.
+            Ok(_) => Vec::new(),
+            // Unsupported comparison domain (Bool/List/Record/Path/Extension/Duration): do not
+            // push down; the plan's residual filter enforces the predicate over the node scan.
+            Err(ValueIndexKeyError::UnsupportedRangeDomain) => {
+                let variable_str = Str::from(variable);
+                return execute_node_scan(ctx.store, rows, &variable_str, None, &ctx.execution);
+            }
+            Err(err) => {
+                return Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!("index scan range bound: {err}"),
+                });
+            }
+        }
     };
     Ok(ctx
         .federation
@@ -120,6 +146,23 @@ pub(crate) async fn execute_conditional_index_scan(
             .cloned()
             .unwrap_or(Value::Null);
         if pv != Value::Null {
+            // One-sided ranges push down only their domain-clamped interval; anything else
+            // (unsupported comparison domain, unencodable or oversized value, empty clamped
+            // interval) takes the non-index filter path via the labeled node-scan fallback.
+            let range_request = if c.cmp == CmpOp::Eq {
+                None
+            } else {
+                match gleaph_gql::value_index_key::range_bounds(&pv, c.cmp) {
+                    Ok((low, high))
+                        if low < high
+                            && low.len() <= MAX_INDEX_VALUE_KEY_BYTES
+                            && high.len() <= MAX_INDEX_VALUE_KEY_BYTES =>
+                    {
+                        Some(PostingRangeRequest::Between { low, high })
+                    }
+                    _ => break,
+                }
+            };
             let Some(bytes) = value_to_index_key_bytes(&pv).ok().flatten() else {
                 break;
             };
@@ -139,11 +182,9 @@ pub(crate) async fn execute_conditional_index_scan(
                 .ok_or(PlanQueryError::UnsupportedOp(
                     "ConditionalIndexScan(no unique physical index namespace)",
                 ))?;
-            let hits = if c.cmp == CmpOp::Eq {
-                ix.lookup_equal(physical_index_id, pid, bytes).await?
-            } else {
-                let req = cmp_to_posting_range_request(c.cmp, bytes)?;
-                ix.lookup_range(physical_index_id, pid, &req).await?
+            let hits = match range_request {
+                Some(req) => ix.lookup_range(physical_index_id, pid, &req).await?,
+                None => ix.lookup_equal(physical_index_id, pid, bytes).await?,
             };
             return Ok(ctx.federation.bind_index_hits(
                 ctx.store,

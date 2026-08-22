@@ -265,6 +265,213 @@ fn single_shard_vertex_index_match_range() {
     );
 }
 
+/// Decode every result row into its value columns for direct membership assertions.
+fn value_rows_from_result(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+) -> Vec<std::collections::BTreeMap<String, Value>> {
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("router gql_query should return rows_blob");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows_blob");
+    wire.rows
+        .into_iter()
+        .map(|row| row.try_into_value_row().expect("wire row to value row"))
+        .collect()
+}
+
+/// Router `gql_mutate` with a typed parameter blob (the shared helper passes none, and the
+/// mutation expression evaluator does not accept temporal literal syntax, so DateTime values
+/// are inserted through `$param` bindings).
+fn gql_mutate_with_params_as_admin(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    query: &str,
+    params: Vec<(String, Value)>,
+    client_mutation_key: &str,
+) {
+    use candid::{Decode, Encode};
+    use gleaph_gql_ic::wire::encode_gql_params_blob;
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let params_blob = encode_gql_params_blob(params).expect("encode mutation params");
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "gql_mutate",
+            candid::Encode!(
+                &query.to_string(),
+                &params_blob,
+                &client_mutation_key.to_string()
+            )
+            .expect("encode gql_mutate"),
+        )
+        .unwrap_or_else(|e| panic!("gql_mutate on router: {e:?}"));
+    match candid::Decode!(&bytes, Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError>)
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => panic!("gql_mutate rejected for '{client_mutation_key}': {err:?}"),
+        Err(err) => panic!("decode gql_mutate for '{client_mutation_key}': {err}"),
+    }
+}
+
+/// TEXT and DateTime one-sided ranges exercise comparison-domain pushdown end to end, and the
+/// mixed-type property proves a one-sided range never returns rows whose stored value lies
+/// outside the literal's comparison domain even when the same property holds Int64 and Text
+/// values.
+#[test]
+fn single_shard_vertex_index_match_domain_ranges() {
+    let env = install_single_shard_federation();
+
+    create_vertex_property_index(
+        &env,
+        "pocket_ic_domain_range_name",
+        INDEX_VERTEX_LABEL,
+        "domain_range_name",
+        "domain_range_create_name",
+    );
+    create_vertex_property_index(
+        &env,
+        "pocket_ic_domain_range_seen_at",
+        INDEX_VERTEX_LABEL,
+        "domain_range_seen_at",
+        "domain_range_create_seen_at",
+    );
+    create_vertex_property_index(
+        &env,
+        "pocket_ic_domain_range_mixed",
+        INDEX_VERTEX_LABEL,
+        "domain_range_mixed",
+        "domain_range_create_mixed",
+    );
+
+    let mut mutation_key = 0usize;
+    let mut next_key = || {
+        mutation_key += 1;
+        format!("domain_range_insert_{mutation_key}")
+    };
+    for name in ["apple", "banana", "cherry"] {
+        gql_mutate_as_admin(
+            &env,
+            &format!("INSERT (:Person {{ domain_range_name: '{name}' }})"),
+            &next_key(),
+        );
+    }
+    for at in [
+        "2024-01-02T03:04:05Z",
+        "2024-06-01T00:00:00Z",
+        "2025-01-01T00:00:00Z",
+    ] {
+        let (seconds, nanos) = gleaph_gql::temporal::parse_datetime(at).expect("parse datetime");
+        gql_mutate_with_params_as_admin(
+            &env,
+            "INSERT (:Person { domain_range_seen_at: $ts })",
+            vec![("ts".to_owned(), Value::DateTime(seconds, nanos))],
+            &next_key(),
+        );
+    }
+    for mixed in ["10", "20", "30"] {
+        gql_mutate_as_admin(
+            &env,
+            &format!("INSERT (:Person {{ domain_range_mixed: {mixed} }})"),
+            &next_key(),
+        );
+    }
+    for text in ["alpha", "zeta"] {
+        gql_mutate_as_admin(
+            &env,
+            &format!("INSERT (:Person {{ domain_range_mixed: '{text}' }})"),
+            &next_key(),
+        );
+    }
+
+    let assert_text_column = |query: &str, expected: &[&str], context: &str| {
+        let result = gql_query_as_admin(&env, query);
+        let mut got: Vec<String> = value_rows_from_result(&result)
+            .into_iter()
+            .map(|row| match row.get("v") {
+                Some(Value::Text(text)) => text.clone(),
+                other => panic!("{context}: expected text column, got {other:?}"),
+            })
+            .collect();
+        got.sort();
+        assert_eq!(&got, expected, "{context}");
+    };
+
+    // TEXT domain: only TEXT postings participate; the interval is clamped to [tag TEXT).
+    assert_text_column(
+        "MATCH (n) WHERE n.domain_range_name >= 'banana' RETURN n.domain_range_name AS v",
+        &["banana", "cherry"],
+        "text Ge one-sided range",
+    );
+    assert_text_column(
+        "MATCH (n) WHERE n.domain_range_name < 'banana' RETURN n.domain_range_name AS v",
+        &["apple"],
+        "text Lt one-sided range",
+    );
+
+    // DateTime subtype pinning: Date/Time postings never satisfy DateTime comparisons.
+    let assert_datetime_column = |query: &str, expected_seconds: &[i64], context: &str| {
+        let result = gql_query_as_admin(&env, query);
+        let mut got: Vec<i64> = value_rows_from_result(&result)
+            .into_iter()
+            .map(|row| match row.get("v") {
+                Some(Value::DateTime(seconds, _)) => *seconds,
+                other => panic!("{context}: expected datetime column, got {other:?}"),
+            })
+            .collect();
+        got.sort();
+        assert_eq!(&got, expected_seconds, "{context}");
+    };
+    let jan = gleaph_gql::temporal::parse_datetime("2024-01-02T03:04:05Z")
+        .expect("parse jan value")
+        .0;
+    let jun = gleaph_gql::temporal::parse_datetime("2024-06-01T00:00:00Z")
+        .expect("parse jun bound")
+        .0;
+    let jan_next = gleaph_gql::temporal::parse_datetime("2025-01-01T00:00:00Z")
+        .expect("parse 2025 value")
+        .0;
+    assert_datetime_column(
+        "MATCH (n) WHERE n.domain_range_seen_at >= DATETIME '2024-06-01T00:00:00Z' \
+         RETURN n.domain_range_seen_at AS v",
+        &[jun, jan_next],
+        "datetime Ge one-sided range",
+    );
+    assert_datetime_column(
+        "MATCH (n) WHERE n.domain_range_seen_at < DATETIME '2024-06-01T00:00:00Z' \
+         RETURN n.domain_range_seen_at AS v",
+        &[jan],
+        "datetime Lt one-sided range",
+    );
+
+    // Mixed-type leak regression: `mixed` holds Int64(10..30) AND Text('alpha','zeta') rows.
+    // A numeric literal must return exactly the numeric-domain rows, a text literal exactly
+    // the text-domain rows — never a union across domains.
+    let assert_mixed_column = |query: &str, expected: &[Value], context: &str| {
+        let result = gql_query_as_admin(&env, query);
+        let mut got: Vec<Value> = value_rows_from_result(&result)
+            .into_iter()
+            .map(|row| row.get("v").expect("mixed column").clone())
+            .collect();
+        got.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        let mut expected = expected.to_vec();
+        expected.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        assert_eq!(got, expected, "{context}");
+    };
+    assert_mixed_column(
+        "MATCH (n) WHERE n.domain_range_mixed >= 20 RETURN n.domain_range_mixed AS v",
+        &[Value::Int64(20), Value::Int64(30)],
+        "mixed property numeric literal excludes text rows",
+    );
+    assert_mixed_column(
+        "MATCH (n) WHERE n.domain_range_mixed < 'zeta' RETURN n.domain_range_mixed AS v",
+        &[Value::Text("alpha".into())],
+        "mixed property text literal excludes int rows",
+    );
+}
+
 fn assert_indexed_equality_lookup(
     env: &gleaph_pocket_ic_tests::FederationEnv,
     property_name: &str,

@@ -28,6 +28,36 @@ seeding graph shards via `IndexAnchor::Range` (GAP-2026-07-29-002, closed
 range endpoint. See [implementation-gaps.md](../implementation-gaps.md)
 GAP-2026-07-29-003.
 
+**Comparison-domain bounds (canonical owner: `gleaph_gql::value_index_key`).**
+Every consumer derives `property OP <literal>` scan intervals through one
+helper — `range_bounds(value, op)` for literals and parameters, and
+`range_bounds_for_encoded_key(bytes, op)` for cached probe bounds — never by
+reconstructing tag prefixes or ceilings itself. The helper pins each literal to
+its posting-key comparison domain and clamps every upper bound with
+`min(succ(bound), ceiling)` so an all-0xFF tail (e.g. `DateTime(i64::MAX,
+u32::MAX)`) cannot spill into the next tag or subtype domain:
+
+| Literal domain | Posting-key interval `[floor, ceiling)` |
+| --- | --- |
+| NUMERIC (all widths, Decimal, Float) | `[2] .. [3]` |
+| TEXT | `[6] .. [7]` |
+| BYTES | `[7] .. [8]` |
+| TEMPORAL Date / Time / LocalTime / DateTime / LocalDateTime / ZonedDateTime / ZonedTime | `[8, k] .. [8, k+1]` for subtype `k` in 1..=7 |
+
+Bool, List, Record, Path, Extension, Null, and Duration (tuple order is not
+chronological) have no contiguous ordered interval and reject with
+`ValueIndexKeyError::UnsupportedRangeDomain`. Pushdown eligibility by literal
+domain has exactly one gate, consulted where the resolved value lives:
+graph's single-shard executor falls unsupported domains back to the non-index
+filter path (node scan plus residual filter), the Router skips seeding for them
+(they cannot form a range anchor), and `SEARCH ... WHERE` rejects them with an
+explicit error. Because every request is clamped to the literal's own domain, a
+one-sided range over a mixed-type property can never return rows whose stored
+value lies outside the literal's comparison domain. An empty clamped interval
+(`low >= high`, e.g. strictly greater than the domain maximum) is answered as
+zero hits without calling the Property Index, whose structural validation
+rejects such bounds.
+
 The compound intersection reads `lookup_intersection_page_for_label` and
 `lookup_range_intersection_page_for_label` apply the same label sieve after the
 index-local equality/range intersection and preserve the walk-arm cursor. The
@@ -35,14 +65,14 @@ Router uses these endpoints for label-filtered `SEARCH` intersection paths, so
 each page requires one Router-to-index query instead of a separate label-filter
 call.
 
-**ADR 0034 Slice 14 — Implemented:** `lookup_range_intersection_page` supports one to eight equality arms combined with a single finite numeric range on a distinct vertex property. The index walks the finite encoded range one page at a time, sieves each page server-side against every equality arm, and preserves the range cursor even when a survivor page is empty. Zero equality arms and more than eight arms are rejected; non-vertex specs are rejected.
+**ADR 0034 Slice 14 — Implemented:** `lookup_range_intersection_page` supports one to eight equality arms combined with a single finite comparison-domain range on a distinct vertex property. The index walks the finite encoded range one page at a time, sieves each page server-side against every equality arm, and preserves the range cursor even when a survivor page is empty. Zero equality arms and more than eight arms are rejected; non-vertex specs are rejected.
 
 **ADR 0034 Slice 15 — Implemented (Router-side):** same-property equality disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight `lookup_equal_page` streams against the same `(property_id, label_id, graph_id)` active vertex property index. The Property Index endpoint contract does not change; `lookup_equal_page` remains the primitive for a single `(property_id, value)` bucket. The Router collects per-arm per-source pages, applies label-scoped filtering, globally deduplicates `(shard_id, vertex_id)` subjects, and enforces the existing 4096 candidate bound before Vector Index ranking.
 
 **ADR 0034 Slice 16 — Implemented (Router-side):** cross-property pure equality disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight `lookup_equal_page` streams, one stream per distinct `(property_id, encoded_value)` source. Each arm resolves its own `(property_id, label_id, graph_id)` active vertex property index; the Property Index endpoint contract still does not change. The Router applies the same per-page label filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate bound as Slice 15.
-**ADR 0034 Slice 17 — Implemented (Router-side):** same-property numeric range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded numeric intervals against the same `(property_id, label_id, graph_id)` active vertex property index. Each arm is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; the remaining intervals are sorted and merged into disjoint encoded bounds before any lookup. The candidate set is collected through paginated `lookup_range_page_for_label` calls with `PostingRangeRequest::Between`; the index canister applies label membership before returning each page, followed by global `(shard_id, vertex_id)` deduplication and the 4096 candidate bound. The Property Index endpoint exposes the label-sieved range primitive so label filtering does not require a second inter-canister call.
+**ADR 0034 Slice 17 — Implemented (Router-side):** same-property comparison-domain range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded domain intervals against the same `(property_id, label_id, graph_id)` active vertex property index. Each arm is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; the remaining intervals are sorted and merged into disjoint encoded bounds before any lookup. The candidate set is collected through paginated `lookup_range_page_for_label` calls with `PostingRangeRequest::Between`; the index canister applies label membership before returning each page, followed by global `(shard_id, vertex_id)` deduplication and the 4096 candidate bound. The Property Index endpoint exposes the label-sieved range primitive so label filtering does not require a second inter-canister call.
 
-**ADR 0034 Slice 18 — Implemented (Router-side):** cross-property numeric range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded numeric intervals across one or more `(property_id, label_id, graph_id)` active vertex property indexes. Each arm resolves its own property id and is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; intervals are grouped by property id and merged **within each group** into disjoint encoded bounds. The candidate set is collected through paginated `lookup_range_page_for_label` calls with `PostingRangeRequest::Between` for every merged interval across all involved properties; the index canister applies label membership inside each call, followed by global `(shard_id, vertex_id)` deduplication and the 4096 candidate bound. Intervals are never merged across property ids because encoded numeric keys are property-specific.
+**ADR 0034 Slice 18 — Implemented (Router-side):** cross-property comparison-domain range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded domain intervals across one or more `(property_id, label_id, graph_id)` active vertex property indexes. Each arm resolves its own property id and is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; intervals are grouped by property id and merged **within each group** into disjoint encoded bounds. The candidate set is collected through paginated `lookup_range_page_for_label` calls with `PostingRangeRequest::Between` for every merged interval across all involved properties; the index canister applies label membership inside each call, followed by global `(shard_id, vertex_id)` deduplication and the 4096 candidate bound. Intervals are never merged across property ids because encoded keys are property-specific.
 
 **Phase A ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)) — superseded by [ADR 0023](../adr/0023-federated-index-consistency-upgrade-compaction.md):** Phase A gated DML/backfill posting maintenance with a **persistent shard-local registry** (`register_indexed_property`) fanned out from the router. ADR 0023 (phases 1–2 implemented) **removes that registry** because it could not survive the upgrade boundary. The graph shard now holds **no persisted indexed catalog**: the router (definitions SSOT) supplies an `IndexedPropertyCatalog` in `ExecutePlanArgs.indexed_properties` (and in the backfill request), which the shard installs in an **ephemeral per-operation context** (`index/catalog_context.rs`) consulted by `dispatch_property_index_ops` and backfill. `CREATE INDEX` / `DROP INDEX` no longer fan registrations out to shards.
 
@@ -226,13 +256,14 @@ Property-index postings own filter membership for leading and non-leading `SEARC
 predicates. The Router consumes postings through bounded pagination:
 
 - The planner accepts one same-binding equality predicate, one to eight `AND`-connected
-  same-binding equality predicates on **distinct** properties, exactly one same-binding numeric range
+  same-binding equality predicates on **distinct** properties, exactly one same-binding one-sided range
   predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming one lower
   and one upper bound, one to eight equality predicates on distinct properties together with
-  one one- or two-sided numeric range predicate on a distinct property, or any number of
+  one one- or two-sided range predicate on a distinct property, or any number of
   `OR`-connected same-binding comparison predicates where each leaf is independently an equality
-  or a one-sided numeric range comparison, and preserves the original filter expression in
-  `PlanOp::Search`.
+  or a one-sided range comparison, and preserves the original filter expression in
+  `PlanOp::Search`. Range literal domains are gated at resolution (Router) and execution
+  (graph executor), not by planner shape validation.
 - The Router resolves the searched label and every filter property to router-issued ids and proves
   an active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm. For a leading search the label is taken from the leading
@@ -246,17 +277,18 @@ predicates. The Router consumes postings through bounded pagination:
   server-side `lookup_intersection_page`, which canonicalises the walk arm by `(property_id,
 encoded_value)` order and sieves the remaining arms in heap without materializing full buckets.
   Nine or more equality arms are rejected with `InvalidArgument`.
-- For one numeric range arm it derives a finite half-open encoded comparison-domain range with the
-  canonical `gleaph_gql::numeric_range_bounds` helper, validates each bound size against
-  `MAX_INDEX_VALUE_KEY_BYTES`, and pages through `lookup_range_page` with
+- For one range arm it derives a finite half-open encoded comparison-domain interval with the
+  canonical `gleaph_gql::range_bounds` helper (see the comparison-domain bounds contract above),
+  rejects unsupported domains (`UnsupportedRangeDomain`) with an explicit error, validates each
+  bound size against `MAX_INDEX_VALUE_KEY_BYTES`, and pages through `lookup_range_page` with
   `PostingRangeRequest::Between { low, high }`. For two same-property range arms the Router derives
   both half-open intervals through the same canonical helper, intersects them once (`low =
 max(first.low, second.low)`, `high = min(first.high, second.high)`), validates the final bounds, and
   issues one paginated `lookup_range_page` stream with the same `PostingRangeRequest::Between`.
 - For one equality arm plus one one-sided range arm on distinct properties the Router proves active
   vertex property indexes for both properties, encodes the equality value with
-  `gleaph_gql::value_to_index_key_bytes`, derives a finite half-open encoded numeric interval with
-  `gleaph_gql::numeric_range_bounds`, and pages through `lookup_range_intersection_page`. Property
+  `gleaph_gql::value_to_index_key_bytes`, derives a finite half-open encoded comparison-domain
+  interval with `gleaph_gql::range_bounds`, and pages through `lookup_range_intersection_page`. Property
   Index walks the finite encoded range one page at a time and sieves each page against the equality
   arm server-side. The sieve is span-aware: it uses a fast dense merge scan when the page's
   `(shard_id, vertex_id)` span is small relative to its size, and falls back to page-size-bounded
@@ -272,11 +304,12 @@ max(first.low, second.low)`, `high = min(first.high, second.high)`), validates t
 - For two to eight same-property or cross-property equality arms inside an `OR` the candidate set is
   the union of paginated `lookup_equal_page` results for every distinct `(property_id, encoded_value)`
   source, label-filtered per page and deduplicated globally by `(shard_id, vertex_id)`.
-- For two to eight same-property or cross-property one-sided numeric range arms inside an `OR` the
+- For two to eight same-property or cross-property one-sided range arms inside an `OR` the
   candidate set is the union of paginated `lookup_range_page` results. Each arm resolves one
-  `(graph_id, label_id, property_id)` tuple, derives a finite half-open encoded interval, and
-  contributes to a per-property-id merged interval set before lookup. The same per-page label
-  filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate bound apply.
+  `(graph_id, label_id, property_id)` tuple, derives a finite half-open encoded interval through
+  the canonical comparison-domain helper, and contributes to a per-property-id merged interval set
+  before lookup. The same per-page label filtering, global `(shard_id, vertex_id)` deduplication,
+  and 4096 candidate bound apply.
 - For two to eight same-binding heterogeneous equality/range arms inside an `OR` (ADR 0034 Slice 19)
   each arm is classified independently as equality or range, resolves one
   `(graph_id, label_id, property_id)` tuple, and is normalized using the same equality-deduplication
@@ -285,13 +318,13 @@ max(first.low, second.low)`, `high = min(first.high, second.high)`), validates t
   same per-page label filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate
   bound. Equality and range sources are never merged with each other because they are semantically
   distinct postings lookups.
-- If the numeric interval is empty (`low >= high`) the Router returns an empty candidate set before
+- If the clamped interval is empty (`low >= high`) the Router returns an empty candidate set before
   calling the Property Index or Vector Index, preserving the empty-candidate dispatch contract.
 - In all cases the Router deduplicates by `(shard_id, vertex_id)` and stops as soon as a 4097th
   distinct subject is observed. Exceeding the bound returns an explicit
-  `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error. The Property Index validates bounds structurally
-  (`low < high`, key sizes) and scans only the opaque encoded interval inside the requested property
-  bucket; it does not interpret GQL value types or numeric ordering.
+   `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error. The Property Index validates bounds structurally
+   (`low < high`, key sizes) and scans only the opaque encoded interval inside the requested property
+   bucket; it does not interpret GQL value types or comparison ordering.
 - The candidate set is intersected with the searched vertex label on each page using
   `filter_hits_by_label`, so vertices that do not belong to the searched label do not consume the
   candidate bound.

@@ -72,6 +72,11 @@ pub fn encode_unique_value(value: &Value) -> UniqueKeyOutcome {
         Err(ValueIndexKeyError::NonFiniteFloat) => {
             UniqueKeyOutcome::Rejected(UniqueKeyRejection::NonFinite)
         }
+        // `value_to_index_key_bytes` never produces this variant; it exists for range-bound
+        // derivation. A domain without an ordered interval has no canonical key here either.
+        Err(ValueIndexKeyError::UnsupportedRangeDomain) => {
+            UniqueKeyOutcome::Rejected(UniqueKeyRejection::Unsupported)
+        }
         Err(ValueIndexKeyError::UnsupportedValue) => {
             UniqueKeyOutcome::Rejected(UniqueKeyRejection::Unsupported)
         }

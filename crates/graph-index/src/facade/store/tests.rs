@@ -2821,8 +2821,8 @@ fn lookup_range_page_between_is_exact_and_excludes_non_numeric_domain() {
 
     // [0, 9): includes 0 and 5, excludes -1 and 9, and excludes the text value.
     let (low, _high_for_0) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge).unwrap();
-    let high = gleaph_gql::numeric_range_bounds(&Value::Int64(9), gleaph_gql::ast::CmpOp::Lt)
+        gleaph_gql::range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge).unwrap();
+    let high = gleaph_gql::range_bounds(&Value::Int64(9), gleaph_gql::ast::CmpOp::Lt)
         .unwrap()
         .1;
 
@@ -3507,9 +3507,8 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
         )
         .expect("other insert");
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(2), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(2), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
 
     let req = LookupRangeIntersectionPageRequest {
         range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
@@ -3560,9 +3559,8 @@ fn lookup_range_intersection_page_for_label_sieves_inside_index_call() {
         .label_posting_insert(shard, ShardId::new(0), 2, 3)
         .expect("label posting");
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(2), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(2), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
     let page = store
         .lookup_range_intersection_page_for_label(&LookupRangeIntersectionPageForLabelRequest {
             range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
@@ -3633,9 +3631,8 @@ fn lookup_range_intersection_page_filters_range_walk_by_multiple_equality_arms()
             .expect("org insert");
     }
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
 
     // Verify canonical sieve order: arms are sorted by (property_id, value), not request order.
     let req = LookupRangeIntersectionPageRequest {
@@ -3722,9 +3719,8 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
         .test_posting_insert(shard, ShardId::new(0), eq_property, category_doc.clone(), 3)
         .expect("doc insert");
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(1), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(1), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
 
     // First page: limit 2 captures vids 1,2; neither has category=doc.
     let first = LookupRangeIntersectionPageRequest {
@@ -3815,9 +3811,8 @@ fn build_n_arm_range_intersection_store(
 fn lookup_range_intersection_page_filters_by_four_equality_arms() {
     let (store, _shard, range_property, eq_properties) = build_n_arm_range_intersection_store(4, 5);
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
 
     let specs: Vec<IndexEqualSpec> = eq_properties
         .into_iter()
@@ -3848,9 +3843,8 @@ fn lookup_range_intersection_page_filters_by_four_equality_arms() {
 fn lookup_range_intersection_page_filters_by_eight_equality_arms() {
     let (store, _shard, range_property, eq_properties) = build_n_arm_range_intersection_store(8, 6);
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
 
     let specs: Vec<IndexEqualSpec> = eq_properties
         .into_iter()
@@ -3884,9 +3878,8 @@ fn lookup_range_intersection_page_rejects_non_vertex_equal_spec() {
     let shard = Principal::from_slice(&[1]);
     attach_shard_canister(&store, router, ShardId::new(0), shard);
 
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
     let req = LookupRangeIntersectionPageRequest {
         range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,
@@ -3934,9 +3927,8 @@ fn lookup_range_intersection_page_rejects_malformed_bounds() {
 fn lookup_range_intersection_page_empty_range_returns_terminal_page() {
     let store = IndexStore::new();
     init_test_store(&store);
-    let (low, high) =
-        gleaph_gql::numeric_range_bounds(&Value::Int64(10), gleaph_gql::ast::CmpOp::Ge)
-            .expect("range bounds");
+    let (low, high) = gleaph_gql::range_bounds(&Value::Int64(10), gleaph_gql::ast::CmpOp::Ge)
+        .expect("range bounds");
     let req = LookupRangeIntersectionPageRequest {
         range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,

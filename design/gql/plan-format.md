@@ -160,26 +160,27 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   upper bound, with the range property distinct from every equality property, any number of
   `OR`-connected equality comparisons on the same property of the searched binding, any number of
   `OR`-connected same-binding equality comparisons where property names may repeat or differ, any
-  number of `OR`-connected range comparisons on the same binding where each arm is a pure numeric
-  range comparison (`<`, `<=`, `>`, `>=`) and no equality or nested logical operator appears, **or
-  any number of `OR`-connected same-binding comparison predicates where each leaf is independently
-  either an equality comparison or a one-sided numeric range comparison (`<`, `<=`, `>`, `>=`) and no
-  nested logical operator or two-sided range disjunct appears. The arms may reference the same
-  property or different properties; the property names may repeat or differ across arms and across
-  comparison kinds**. Either operand order and any conjunct or disjunct order is accepted. The planner does not verify label,
-  index coverage, or numeric-domain semantics, and does not enforce the Router's eight-arm
-  disjunction execution bound.
+   number of `OR`-connected range comparisons on the same binding where each arm is a pure one-sided
+   range comparison (`<`, `<=`, `>`, `>=`) and no equality or nested logical operator appears, **or
+   any number of `OR`-connected same-binding comparison predicates where each leaf is independently
+   either an equality comparison or a one-sided range comparison (`<`, `<=`, `>`, `>=`) and no
+   nested logical operator or two-sided range disjunct appears. The arms may reference the same
+   property or different properties; the property names may repeat or differ across arms and across
+   comparison kinds**. Either operand order and any conjunct or disjunct order is accepted. The planner does not verify label,
+   index coverage, or range-domain semantics, and does not enforce the Router's eight-arm
+   disjunction execution bound.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
   active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm, and validates each encoded size against
   `MAX_INDEX_VALUE_KEY_BYTES` before calling the index. For equality arms it encodes each comparison
-  value with `gleaph_gql::value_to_index_key_bytes`. For a numeric range arm it derives a finite
-  half-open encoded comparison-domain range with `gleaph_gql::numeric_range_bounds`, normalizing
-  reversed operands by inverting the operator.
+   value with `gleaph_gql::value_to_index_key_bytes`. For a range arm it derives a finite
+   half-open encoded comparison-domain interval with `gleaph_gql::range_bounds`, normalizing
+   reversed operands by inverting the operator; literals outside the supported comparison domains
+   (NUMERIC, TEXT, BYTES, and TEMPORAL Date..ZonedTime) reject fail-closed.
 - The Router collects at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct vertex subjects
   from the Property Index via paginated `lookup_equal_page` for one equality arm, the server-side
   `lookup_intersection_page` for two to eight equality arms, `lookup_range_page` with
-  `PostingRangeRequest::Between { low, high }` for a numeric range arm,
+   `PostingRangeRequest::Between { low, high }` for a range arm,
   `lookup_range_intersection_page` for one to eight equality arms plus one or two same-property range arms on a
   distinct property (the two range arms are collapsed into one intersected encoded interval in
   Router before a single range-walk/equality-sieve stream), a sequential union of up to eight
@@ -200,9 +201,9 @@ property_id)` tuple and its own finite half-open encoded interval; empty arms ar
   within each group, and the combined normalized sources are walked through the shared union collector.
   The same 4096 candidate bound, per-page label filtering, and global `(shard_id, vertex_id)`
   deduplication are enforced, and the collector stops at the 4097th distinct subject with an explicit
-  error. Intervals are never merged across property ids because encoded numeric keys are
-  property-specific, and equality/range sources are never merged with each other because they are
-  semantically distinct postings lookups.**
+   error. Intervals are never merged across property ids because encoded keys are
+   property-specific, and equality/range sources are never merged with each other because they are
+   semantically distinct postings lookups.**
 - Deduplicating by
   `(shard_id, vertex_id)`, it stops as soon as a 4097th distinct subject is observed and returns an
   explicit error instead of truncating. Malformed postings are rejected. Nine or more syntactic

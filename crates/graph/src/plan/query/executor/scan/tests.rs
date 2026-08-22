@@ -7,6 +7,12 @@ use gleaph_graph_kernel::plan_exec::{
 use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
 
+/// Posting-key domain tags from `gleaph_gql::value_index_key` (private there; these tests
+/// assert exact encoded bytes, so they pin the constants locally).
+const TAG_NUMERIC: u8 = 2;
+const TAG_TEXT: u8 = 6;
+const TAG_TEMPORAL: u8 = 8;
+
 /// Builds an execution context with a Router-resolved label table. Vertex labels must be declared
 /// once `resolved_labels` is present (the executor stops using the host-test fallback), and each
 /// edge label carries the given policy so `ORDER BY INSERTION(e)` tests exercise the declared
@@ -489,41 +495,173 @@ fn executes_range_index_scan_with_lookup_range() {
     let calls = index.range_calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, pid);
-    assert!(matches!(
-        &calls[0].1,
-        PostingRangeRequest::Ge(bytes)
-            if bytes == &value_to_index_key_bytes(&Value::Int64(5)).unwrap().unwrap()
-    ));
+    // The one-sided predicate pushes down as a Between interval clamped to the NUMERIC domain
+    // (ceiling = tag NUMERIC + 1).
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: value_to_index_key_bytes(&Value::Int64(5)).unwrap().unwrap(),
+            high: vec![TAG_NUMERIC + 1],
+        }
+    );
 }
 
 #[test]
-fn executes_list_range_index_scan_with_lookup_range() {
+fn executes_text_range_index_scan_with_domain_clamped_between() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let hit = store
+        .insert_vertex_named(["IndexScanTextRange"], [("name", Value::Text("m".into()))])
+        .expect("insert hit");
+    let pid = crate::test_labels::property_id_for_name("name").raw();
+    let index = MockPropertyIndex::default();
+    index.range_hits.borrow_mut().push(PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: u32::try_from(u64::from(hit)).unwrap(),
+    });
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "name".into(),
+        value: ScanValue::Literal(Value::Text("b".into())),
+        cmp: CmpOp::Ge,
+        property_projection: None,
+    }]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute text range index scan");
+
+    assert_eq!(result.rows.len(), 1);
+    let calls = index.range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, pid);
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: value_to_index_key_bytes(&Value::Text("b".into()))
+                .unwrap()
+                .unwrap(),
+            high: vec![TAG_TEXT + 1],
+        }
+    );
+}
+
+#[test]
+fn executes_datetime_range_index_scan_with_subtype_pinned_between() {
     let store = GraphStore::new();
     configure_test_index(&store);
     let hit = store
         .insert_vertex_named(
-            ["IndexScanListRange"],
-            [("tags", Value::List(vec![Value::Int64(2)]))],
+            ["IndexScanDateTimeRange"],
+            [("at", Value::DateTime(200, 0))],
         )
         .expect("insert hit");
-    let miss = store
+    let pid = crate::test_labels::property_id_for_name("at").raw();
+    let index = MockPropertyIndex::default();
+    index.range_hits.borrow_mut().push(PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: u32::try_from(u64::from(hit)).unwrap(),
+    });
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "at".into(),
+        value: ScanValue::Literal(Value::DateTime(100, 0)),
+        cmp: CmpOp::Lt,
+        property_projection: None,
+    }]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("at"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute datetime range index scan");
+
+    assert_eq!(result.rows.len(), 1);
+    let calls = index.range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, pid);
+    // Lt pins the interval to the DateTime subtype floor (tag TEMPORAL, subtype 4) and the raw bound.
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: vec![TAG_TEMPORAL, 4],
+            high: value_to_index_key_bytes(&Value::DateTime(100, 0))
+                .unwrap()
+                .unwrap(),
+        }
+    );
+}
+
+#[test]
+fn range_index_scan_returns_no_rows_for_empty_clamped_interval() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    store
+        .insert_vertex_named(["IndexScanEmptyRange"], [("at", Value::DateTime(0, 0))])
+        .expect("insert vertex");
+    let index = MockPropertyIndex::default();
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "at".into(),
+        value: ScanValue::Literal(Value::DateTime(i64::MAX, u32::MAX)),
+        cmp: CmpOp::Gt,
+        property_projection: None,
+    }]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("at"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute empty-clamped range scan");
+
+    // Nothing is strictly greater than the domain maximum: no lookup is issued at all.
+    assert!(result.rows.is_empty());
+    assert!(index.range_calls.borrow().is_empty());
+}
+
+#[test]
+fn range_index_scan_falls_back_to_filter_path_for_unsupported_domains() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    store
         .insert_vertex_named(
-            ["IndexScanListRange"],
-            [("tags", Value::List(vec![Value::Int64(0)]))],
+            ["IndexScanUnsupportedRange"],
+            [
+                ("tags", Value::List(vec![Value::Int64(2)])),
+                ("name", Value::Text("hit".into())),
+            ],
+        )
+        .expect("insert hit");
+    store
+        .insert_vertex_named(
+            ["IndexScanUnsupportedRange"],
+            [
+                ("tags", Value::List(vec![Value::Int64(0)])),
+                ("name", Value::Text("miss".into())),
+            ],
         )
         .expect("insert miss");
-    let pid = crate::test_labels::property_id_for_name("tags").raw();
     let index = MockPropertyIndex::default();
-    index.range_hits.borrow_mut().extend([
-        PostingHit {
-            shard_id: ShardId::new(0),
-            vertex_id: u32::try_from(u64::from(hit)).unwrap(),
-        },
-        PostingHit {
-            shard_id: ShardId::new(0),
-            vertex_id: u32::try_from(u64::from(miss)).unwrap(),
-        },
-    ]);
     let bound = Value::List(vec![Value::Int64(1)]);
     let plan = plan(vec![
         PlanOp::IndexScan {
@@ -537,9 +675,13 @@ fn executes_list_range_index_scan_with_lookup_range() {
             predicates: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(prop("n", "tags")),
                 op: CmpOp::Ge,
-                right: Box::new(Expr::new(ExprKind::Literal(bound.clone()))),
+                right: Box::new(Expr::new(ExprKind::Literal(bound))),
             })],
             stage: 0,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("n", "name"), "n.name")],
+            distinct: false,
         },
     ]);
 
@@ -553,57 +695,138 @@ fn executes_list_range_index_scan_with_lookup_range() {
         Some(&index),
         GqlExecutionContext::default(),
     ))
-    .expect("execute list range index scan");
+    .expect("execute list-domain range fallback");
 
-    assert_eq!(result.rows.len(), 1);
-    let calls = index.range_calls.borrow();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, pid);
-    assert!(matches!(
-        &calls[0].1,
-        PostingRangeRequest::Ge(bytes)
-            if bytes == &value_to_index_key_bytes(&bound).unwrap().unwrap()
-    ));
+    // List has no contiguous ordered comparison domain: no pushdown; the residual filter
+    // answers over the node scan.
+    assert!(index.range_calls.borrow().is_empty());
     assert!(index.equal_calls.borrow().is_empty());
+    assert_eq!(text_column(&result, "n.name"), vec!["hit"]);
 }
 
 #[test]
-fn executes_record_range_index_scan_with_lookup_range() {
+fn range_index_scan_falls_back_to_filter_path_for_list_domain() {
     let store = GraphStore::new();
     configure_test_index(&store);
-    let hit = store
+    store
         .insert_vertex_named(
-            ["IndexScanRecordRange"],
-            [(
-                "profile",
-                Value::Record(vec![
-                    ("a".into(), Value::Int64(1)),
-                    ("b".into(), Value::Int64(1)),
-                ]),
-            )],
+            ["IndexScanListRange"],
+            [
+                ("tags", Value::List(vec![Value::Int64(2)])),
+                ("name", Value::Text("hit".into())),
+            ],
         )
         .expect("insert hit");
-    let pid = crate::test_labels::property_id_for_name("profile").raw();
+    store
+        .insert_vertex_named(
+            ["IndexScanListRange"],
+            [
+                ("tags", Value::List(vec![Value::Int64(0)])),
+                ("name", Value::Text("miss".into())),
+            ],
+        )
+        .expect("insert miss");
     let index = MockPropertyIndex::default();
-    index.range_hits.borrow_mut().push(PostingHit {
-        shard_id: ShardId::new(0),
-        vertex_id: u32::try_from(u64::from(hit)).unwrap(),
-    });
+    let bound = Value::List(vec![Value::Int64(1)]);
+    let plan = plan(vec![
+        PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "tags".into(),
+            value: ScanValue::Literal(bound.clone()),
+            cmp: CmpOp::Ge,
+            property_projection: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(prop("n", "tags")),
+                op: CmpOp::Ge,
+                right: Box::new(Expr::new(ExprKind::Literal(bound))),
+            })],
+            stage: 0,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("n", "name"), "n.name")],
+            distinct: false,
+        },
+    ]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("tags"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute list range fallback");
+
+    assert!(index.range_calls.borrow().is_empty());
+    assert!(index.equal_calls.borrow().is_empty());
+    assert_eq!(text_column(&result, "n.name"), vec!["hit"]);
+}
+
+#[test]
+fn range_index_scan_falls_back_to_filter_path_for_record_domain() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    store
+        .insert_vertex_named(
+            ["IndexScanRecordRange"],
+            [
+                (
+                    "profile",
+                    Value::Record(vec![
+                        ("a".into(), Value::Int64(1)),
+                        ("b".into(), Value::Int64(1)),
+                    ]),
+                ),
+                ("name", Value::Text("hit".into())),
+            ],
+        )
+        .expect("insert hit");
+    store
+        .insert_vertex_named(
+            ["IndexScanRecordRange"],
+            [
+                (
+                    "profile",
+                    Value::Record(vec![
+                        ("a".into(), Value::Int64(5)),
+                        ("b".into(), Value::Int64(5)),
+                    ]),
+                ),
+                ("name", Value::Text("miss".into())),
+            ],
+        )
+        .expect("insert miss");
+    let index = MockPropertyIndex::default();
     let bound = Value::Record(vec![
-        ("b".into(), Value::Int64(2)),
-        ("a".into(), Value::Int64(1)),
+        ("b".into(), Value::Int64(3)),
+        ("a".into(), Value::Int64(3)),
     ]);
-    let canonical_bound = Value::Record(vec![
-        ("a".into(), Value::Int64(1)),
-        ("b".into(), Value::Int64(2)),
+    let plan = plan(vec![
+        PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "profile".into(),
+            value: ScanValue::Literal(bound.clone()),
+            cmp: CmpOp::Lt,
+            property_projection: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(prop("n", "profile")),
+                op: CmpOp::Lt,
+                right: Box::new(Expr::new(ExprKind::Literal(bound))),
+            })],
+            stage: 0,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("n", "name"), "n.name")],
+            distinct: false,
+        },
     ]);
-    let plan = plan(vec![PlanOp::IndexScan {
-        variable: "n".into(),
-        property: "profile".into(),
-        value: ScanValue::Literal(bound),
-        cmp: CmpOp::Lt,
-        property_projection: None,
-    }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
         crate::test_labels::property_id_for_name("profile"),
@@ -615,18 +838,56 @@ fn executes_record_range_index_scan_with_lookup_range() {
         Some(&index),
         GqlExecutionContext::default(),
     ))
-    .expect("execute record range index scan");
+    .expect("execute record range fallback");
 
-    assert_eq!(result.rows.len(), 1);
-    let calls = index.range_calls.borrow();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, pid);
-    assert!(matches!(
-        &calls[0].1,
-        PostingRangeRequest::Lt(bytes)
-            if bytes == &value_to_index_key_bytes(&canonical_bound).unwrap().unwrap()
-    ));
+    assert!(index.range_calls.borrow().is_empty());
     assert!(index.equal_calls.borrow().is_empty());
+    assert_eq!(text_column(&result, "n.name"), vec!["hit"]);
+}
+
+#[test]
+fn range_index_scan_does_not_push_down_extension_domain() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    store
+        .insert_vertex_named(
+            ["IndexScanExtensionRange"],
+            [("principal", orderable_ext(7))],
+        )
+        .expect("insert hit");
+    store
+        .insert_vertex_named(
+            ["IndexScanExtensionRange"],
+            [("principal", orderable_ext(5))],
+        )
+        .expect("insert miss");
+    let index = MockPropertyIndex::default();
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "principal".into(),
+        value: ScanValue::Literal(orderable_ext(7)),
+        cmp: CmpOp::Ge,
+        property_projection: None,
+    }]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("principal"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute extension range without pushdown");
+
+    // Extension has no contiguous ordered comparison domain, so nothing is pushed down:
+    // the answer comes from the non-index path. (Exact residual filtering of extension
+    // comparisons is owned by the expression evaluator / extension codecs, not this gate.)
+    assert!(index.range_calls.borrow().is_empty());
+    assert!(index.equal_calls.borrow().is_empty());
+    assert_eq!(result.rows.len(), 2);
 }
 
 #[test]
@@ -678,58 +939,6 @@ fn executes_orderable_extension_equality_index_scan() {
         value_to_index_key_bytes(&value).unwrap().unwrap()
     );
     assert!(index.range_calls.borrow().is_empty());
-}
-
-#[test]
-fn executes_orderable_extension_range_index_scan() {
-    let store = GraphStore::new();
-    configure_test_index(&store);
-    let bound = orderable_ext(7);
-    store
-        .insert_vertex_named(
-            ["IndexScanExtensionRangeCatalog"],
-            [("principal", Value::Text("catalog".into()))],
-        )
-        .expect("insert catalog vertex");
-    let vid = store
-        .insert_vertex_named(["IndexScanExtensionRange"], Vec::<(&str, Value)>::new())
-        .expect("insert vertex");
-    let pid = crate::test_labels::property_id_for_name("principal").raw();
-    let index = MockPropertyIndex::default();
-    index.range_hits.borrow_mut().push(PostingHit {
-        shard_id: ShardId::new(0),
-        vertex_id: u32::try_from(u64::from(vid)).unwrap(),
-    });
-    let plan = plan(vec![PlanOp::IndexScan {
-        variable: "n".into(),
-        property: "principal".into(),
-        value: ScanValue::Literal(bound.clone()),
-        cmp: CmpOp::Ge,
-        property_projection: None,
-    }]);
-
-    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
-        crate::test_labels::property_id_for_name("principal"),
-    ]);
-    let result = pollster::block_on(execute_plan_query(
-        &store,
-        &plan,
-        &params(),
-        Some(&index),
-        GqlExecutionContext::default(),
-    ))
-    .expect("execute extension range index scan");
-
-    assert_eq!(result.rows.len(), 1);
-    let calls = index.range_calls.borrow();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, pid);
-    assert!(matches!(
-        &calls[0].1,
-        PostingRangeRequest::Ge(bytes)
-            if bytes == &value_to_index_key_bytes(&bound).unwrap().unwrap()
-    ));
-    assert!(index.equal_calls.borrow().is_empty());
 }
 
 #[test]

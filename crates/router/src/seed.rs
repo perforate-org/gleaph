@@ -18,8 +18,7 @@ use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_graph_kernel::entry::{GraphId, PropertyId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexEqualSpec, PhysicalIndexId, PostingHit, PostingRangeRequest,
-    validate_index_value_key_bytes,
+    EdgePostingHit, IndexEqualSpec, PhysicalIndexId, PostingHit, validate_index_value_key_bytes,
 };
 use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
 
@@ -215,13 +214,13 @@ impl SeedRangeBound {
         }
     }
 
-    /// Storage primitive for this bound over the given encoded key bytes.
-    pub fn to_posting_range_request(self, bound_bytes: Vec<u8>) -> PostingRangeRequest {
+    /// The equivalent one-sided [`CmpOp`] for comparison-domain bound derivation.
+    pub fn to_cmp(self) -> CmpOp {
         match self {
-            Self::Lt => PostingRangeRequest::Lt(bound_bytes),
-            Self::Le => PostingRangeRequest::Le(bound_bytes),
-            Self::Gt => PostingRangeRequest::Gt(bound_bytes),
-            Self::Ge => PostingRangeRequest::Ge(bound_bytes),
+            Self::Lt => CmpOp::Lt,
+            Self::Le => CmpOp::Le,
+            Self::Gt => CmpOp::Gt,
+            Self::Ge => CmpOp::Ge,
         }
     }
 }
@@ -596,18 +595,17 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                 if !record_bound_var(&mut bound_var, variable)? {
                     break;
                 }
-                push_unique_anchor(
-                    &mut anchors,
-                    range_anchor(
-                        store,
-                        graph_id,
-                        params,
-                        variable.as_ref(),
-                        property.as_ref(),
-                        value,
-                        *cmp,
-                    )?,
-                );
+                if let Some(anchor) = range_anchor(
+                    store,
+                    graph_id,
+                    params,
+                    variable.as_ref(),
+                    property.as_ref(),
+                    value,
+                    *cmp,
+                )? {
+                    push_unique_anchor(&mut anchors, anchor);
+                }
             }
             PlanOp::IndexIntersection {
                 variable, scans, ..
@@ -802,6 +800,10 @@ fn equal_anchor(
 }
 
 /// Build a range anchor from a leading non-Eq `IndexScan` bound.
+///
+/// Returns `Ok(None)` when the literal's comparison domain cannot form a domain-clamped
+/// interval (Bool/List/Record/Path/Extension/Duration): such predicates cannot seed a
+/// shard and must be answered by the non-index filter path instead.
 fn range_anchor(
     store: &RouterStore,
     graph_id: GraphId,
@@ -810,7 +812,7 @@ fn range_anchor(
     property: &str,
     value: &ScanValue,
     cmp: CmpOp,
-) -> Result<IndexAnchor, RouterError> {
+) -> Result<Option<IndexAnchor>, RouterError> {
     let Some(bound) = SeedRangeBound::try_from_cmp(cmp) else {
         return Err(RouterError::InvalidArgument(format!(
             "range seed anchor requires a one-sided comparison, got {cmp:?}"
@@ -818,6 +820,11 @@ fn range_anchor(
     };
     let bound_bytes = resolve_scan_value(value, params)?
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+    if gleaph_gql::value_index_key::range_bounds_for_encoded_key(&bound_bytes, bound.to_cmp())
+        .is_err()
+    {
+        return Ok(None);
+    }
     let property_id = store
         .lookup_property_id(graph_id, property)
         .map_err(|_| RouterError::NotFound(format!("property {property}")))?
@@ -827,14 +834,14 @@ fn range_anchor(
         None,
         PropertyId::from_raw(property_id),
     )?;
-    Ok(IndexAnchor::Range(RangeSeedProbe {
+    Ok(Some(IndexAnchor::Range(RangeSeedProbe {
         variable: variable.to_string(),
         property: property.to_string(),
         property_id,
         physical_index_id,
         bound_bytes,
         bound,
-    }))
+    })))
 }
 
 fn anchor_from_property_predicate(
@@ -1062,17 +1069,15 @@ fn extract_from_op(
             value,
             cmp,
             ..
-        } if matches!(cmp, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) => {
-            Ok(Some(range_anchor(
-                store,
-                graph_id,
-                parameters,
-                variable.as_ref(),
-                property.as_ref(),
-                value,
-                *cmp,
-            )?))
-        }
+        } if matches!(cmp, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) => range_anchor(
+            store,
+            graph_id,
+            parameters,
+            variable.as_ref(),
+            property.as_ref(),
+            value,
+            *cmp,
+        ),
         PlanOp::EdgeIndexScan {
             variable,
             property,

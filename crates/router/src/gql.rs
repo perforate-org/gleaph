@@ -16,7 +16,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PhysicalIndexId,
-    PostingHit, ValuePostingCount,
+    PostingHit, PostingRangeRequest, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
@@ -813,17 +813,28 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
             )
             .await?,
         )),
-        IndexAnchor::Range(probe) => Ok(SeedHits::Vertices(
-            index
-                .lookup_range(
-                    probe.physical_index_id,
-                    probe.property_id,
-                    probe
-                        .bound
-                        .to_posting_range_request(probe.bound_bytes.clone()),
-                )
-                .await?,
-        )),
+        IndexAnchor::Range(probe) => {
+            // Clamp the one-sided bound to the literal's comparison-domain interval so a
+            // mixed-type property cannot leak wrong-domain rows through the seeded path.
+            let (low, high) = gleaph_gql::value_index_key::range_bounds_for_encoded_key(
+                &probe.bound_bytes,
+                probe.bound.to_cmp(),
+            )
+            .map_err(|e| format!("range seed probe bound is not supported: {e}"))?;
+            if low >= high {
+                // Empty clamped interval: no posting can satisfy the comparison.
+                return Ok(SeedHits::Vertices(Vec::new()));
+            }
+            Ok(SeedHits::Vertices(
+                index
+                    .lookup_range(
+                        probe.physical_index_id,
+                        probe.property_id,
+                        PostingRangeRequest::Between { low, high },
+                    )
+                    .await?,
+            ))
+        }
         IndexAnchor::Intersection { specs, .. } => {
             let result = index
                 .lookup_intersection(IndexIntersectionRequest {
@@ -9529,5 +9540,201 @@ mod tests {
             vec!["a", "b"],
             "indexed demo_id should anchor both a and b"
         );
+    }
+
+    /// Records every `lookup_range` request so tests can assert the exact pushed-down shape.
+    #[derive(Default)]
+    struct RangeRecordingIndex {
+        ranges:
+            std::rc::Rc<std::cell::RefCell<Vec<gleaph_graph_kernel::index::PostingRangeRequest>>>,
+    }
+
+    impl IndexLookup for RangeRecordingIndex {
+        fn lookup_equal(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _value: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            range: gleaph_graph_kernel::index::PostingRangeRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            self.ranges.borrow_mut().push(range);
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_intersection(
+            &self,
+            _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            gleaph_graph_kernel::index::IndexIntersectionResult,
+                            String,
+                        >,
+                    > + '_,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Vec::new()))
+            })
+        }
+
+        fn lookup_edge_equal(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn count_postings_by_value(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _min_count: u64,
+            _vertex_filter_packed: Option<Vec<u64>>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_page(
+            &self,
+            _req: gleaph_graph_kernel::index::LabelLookupPageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+            Box::pin(async move {
+                Ok(LabelLookupPageResult {
+                    hits: Vec::new(),
+                    next: None,
+                    done: true,
+                })
+            })
+        }
+
+        fn lookup_label_intersection(
+            &self,
+            _req: IndexLabelIntersectionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn filter_hits_by_label(
+            &self,
+            _label_id: u32,
+            hits: Vec<PostingHit>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(hits) })
+        }
+
+        fn count_postings_by_value_for_label(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _vertex_label_id: u32,
+            _min_count: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
+
+    fn range_probe_anchor(
+        bound_value: Value,
+        bound: crate::seed::SeedRangeBound,
+    ) -> crate::seed::IndexAnchor {
+        crate::seed::IndexAnchor::Range(crate::seed::RangeSeedProbe {
+            variable: "n".to_owned(),
+            property: "p".to_owned(),
+            property_id: 11,
+            physical_index_id: PhysicalIndexId::new(3).expect("physical id"),
+            bound_bytes: gleaph_gql::value_to_index_key_bytes(&bound_value)
+                .unwrap()
+                .unwrap(),
+            bound,
+        })
+    }
+
+    #[test]
+    fn range_seed_probe_executes_domain_clamped_between_requests() {
+        let cases: Vec<(Value, crate::seed::SeedRangeBound, Vec<u8>, Vec<u8>)> = vec![
+            (
+                Value::Int64(5),
+                crate::seed::SeedRangeBound::Ge,
+                gleaph_gql::value_to_index_key_bytes(&Value::Int64(5))
+                    .unwrap()
+                    .unwrap(),
+                // NUMERIC domain ceiling (tag 2 + 1).
+                vec![3],
+            ),
+            (
+                Value::Text("b".to_owned()),
+                crate::seed::SeedRangeBound::Ge,
+                gleaph_gql::value_to_index_key_bytes(&Value::Text("b".into()))
+                    .unwrap()
+                    .unwrap(),
+                // TEXT domain ceiling (tag 6 + 1).
+                vec![7],
+            ),
+            (
+                Value::DateTime(100, 0),
+                crate::seed::SeedRangeBound::Lt,
+                // TEMPORAL DateTime subtype floor.
+                vec![8, 4],
+                gleaph_gql::value_to_index_key_bytes(&Value::DateTime(100, 0))
+                    .unwrap()
+                    .unwrap(),
+            ),
+        ];
+        for (bound_value, bound, expected_low, expected_high) in cases {
+            let index = RangeRecordingIndex::default();
+            let anchor = range_probe_anchor(bound_value.clone(), bound);
+            let mut metrics = super::SeedResolutionMetrics::default();
+            let hits = futures::executor::block_on(super::lookup_anchor_hits(
+                &index,
+                &anchor,
+                &[],
+                &mut metrics,
+            ))
+            .expect("probe lookup");
+            assert!(matches!(&hits, SeedHits::Vertices(_)));
+            let ranges = index.ranges.borrow();
+            assert_eq!(
+                ranges.as_slice(),
+                &[gleaph_graph_kernel::index::PostingRangeRequest::Between {
+                    low: expected_low,
+                    high: expected_high,
+                }],
+                "{bound_value:?} {bound:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_seed_probe_empty_clamped_interval_issues_no_lookup() {
+        // Nothing is strictly greater than the maximum DateTime: the clamped interval is
+        // empty, so no index call is made at all.
+        let index = RangeRecordingIndex::default();
+        let anchor = range_probe_anchor(
+            Value::DateTime(i64::MAX, u32::MAX),
+            crate::seed::SeedRangeBound::Gt,
+        );
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let hits = futures::executor::block_on(super::lookup_anchor_hits(
+            &index,
+            &anchor,
+            &[],
+            &mut metrics,
+        ))
+        .expect("probe lookup");
+        assert!(matches!(&hits, SeedHits::Vertices(v) if v.is_empty()));
+        assert!(index.ranges.borrow().is_empty());
     }
 }

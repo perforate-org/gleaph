@@ -610,7 +610,7 @@ fn setup_numeric_range_store() -> (IndexStore, Principal) {
 }
 
 fn numeric_range_bounds(value: i64, op: gleaph_gql::ast::CmpOp) -> (Vec<u8>, Vec<u8>) {
-    gleaph_gql::numeric_range_bounds(&gleaph_gql::Value::Int64(value), op).expect("range bounds")
+    gleaph_gql::range_bounds(&gleaph_gql::Value::Int64(value), op).expect("range bounds")
 }
 
 /// First page of a bounded numeric range that covers roughly half the postings.

@@ -14,6 +14,10 @@ use std::fmt;
 pub enum ValueIndexKeyError {
     UnsupportedValue,
     NonFiniteFloat,
+    /// The value encodes into a posting-key domain whose comparison semantics do not realize
+    /// `property OP value` as one contiguous ordered interval (Bool, List, Record, Path,
+    /// Extension, and Duration). Range consumers must not push such literals down.
+    UnsupportedRangeDomain,
 }
 
 impl fmt::Display for ValueIndexKeyError {
@@ -26,6 +30,10 @@ impl fmt::Display for ValueIndexKeyError {
                     "non-finite float is not supported by property index keys"
                 )
             }
+            Self::UnsupportedRangeDomain => write!(
+                f,
+                "value's comparison domain does not support ordered index ranges"
+            ),
         }
     }
 }
@@ -308,19 +316,50 @@ fn lex_succ_bytes(b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Derive a finite half-open encoded-key range `[low, high)` that corresponds to the numeric
-/// comparison-domain of `property OP value`.
+/// Derive the finite half-open encoded-key interval `[low, high)` of the comparison domain that
+/// realizes `property OP value` for any supported ordered literal.
 ///
-/// The returned bounds are encoded bytes that, when used as a `[low, high)` scan over the
-/// ordered property-index posting keys for the same `property_id`, return exactly the postings
-/// whose stored value satisfies the GQL comparison. Non-numeric values and non-range operators
-/// are rejected because their comparison semantics do not map to a single contiguous encoded
-/// interval.
+/// The interval is clamped to the literal's posting-key domain: NUMERIC (`[2]..[3]`), TEXT
+/// (`[6]..[7]`), BYTES (`[7]..[8]`), and each chronologically-ordered TEMPORAL subtype
+/// (`[8, k]..succ([8, k])`, subtypes Date..ZonedTime). A scan over these bounds returns exactly
+/// the postings whose stored value satisfies the GQL comparison; postings from other domains are
+/// never included, so mixed-type properties cannot leak wrong-domain rows. Bool, List, Record,
+/// Path, Extension, Null, and Duration (tuple order is not chronological) reject with
+/// [`ValueIndexKeyError::UnsupportedRangeDomain`] or [`ValueIndexKeyError::UnsupportedValue`];
+/// consumers must answer those through their non-index filter path instead of pushing down.
 ///
-/// This is the canonical place where GQL value-type tags meet numeric ordering. Router and
-/// Property Index must not duplicate tag or numeric-ordering knowledge.
-pub fn numeric_range_bounds(
+/// The returned bounds may form an empty interval when no domain value can satisfy the
+/// comparison (for example `> Date::MAX`); consumers must treat `low >= high` as zero hits.
+///
+/// This is the canonical place where GQL value-type tags meet comparison ordering. Router and
+/// Property Index must not duplicate tag or ordering knowledge.
+pub fn range_bounds(
     value: &Value,
+    op: crate::ast::CmpOp,
+) -> Result<(Vec<u8>, Vec<u8>), ValueIndexKeyError> {
+    let bound_key = encoded_range_bound_key(value)?;
+    one_sided_domain_interval(&bound_key, op)
+}
+
+/// Same contract as [`range_bounds`] for an already-encoded index key (for example a cached
+/// seed-probe bound whose original [`Value`] is not retained).
+pub fn range_bounds_for_encoded_key(
+    bound_key: &[u8],
+    op: crate::ast::CmpOp,
+) -> Result<(Vec<u8>, Vec<u8>), ValueIndexKeyError> {
+    if bound_key.is_empty() {
+        return Err(ValueIndexKeyError::UnsupportedRangeDomain);
+    }
+    one_sided_domain_interval(bound_key, op)
+}
+
+fn encoded_range_bound_key(value: &Value) -> Result<Vec<u8>, ValueIndexKeyError> {
+    value_to_index_key_bytes(value)?.ok_or(ValueIndexKeyError::UnsupportedValue)
+}
+
+/// Merge the one-sided cut of `op` with the bound key's comparison-domain interval.
+fn one_sided_domain_interval(
+    bound_key: &[u8],
     op: crate::ast::CmpOp,
 ) -> Result<(Vec<u8>, Vec<u8>), ValueIndexKeyError> {
     use crate::ast::CmpOp;
@@ -329,20 +368,51 @@ pub fn numeric_range_bounds(
         return Err(ValueIndexKeyError::UnsupportedValue);
     }
 
-    let bound_key = value_to_index_key_bytes(value)?.ok_or(ValueIndexKeyError::UnsupportedValue)?;
-    if bound_key.is_empty() || bound_key[0] != INDEX_KEY_NUMERIC {
-        return Err(ValueIndexKeyError::UnsupportedValue);
-    }
+    let Some((floor, ceiling)) = comparison_domain_interval(bound_key) else {
+        return Err(ValueIndexKeyError::UnsupportedRangeDomain);
+    };
 
-    let numeric_prefix = vec![INDEX_KEY_NUMERIC];
-    let after_numeric = lex_succ_bytes(&numeric_prefix);
+    // `lex_succ_bytes(bound)` spills past the ceiling when the bound tail is all 0xFF
+    // (for example Date(i64::MAX)); every upper bound is clamped to the domain ceiling.
+    let clamped_succ = |bound: &[u8]| {
+        let succ = lex_succ_bytes(bound);
+        if succ.as_slice() > ceiling.as_slice() {
+            ceiling.clone()
+        } else {
+            succ
+        }
+    };
     match op {
-        CmpOp::Ge => Ok((bound_key.clone(), after_numeric)),
-        CmpOp::Gt => Ok((lex_succ_bytes(&bound_key), after_numeric)),
-        CmpOp::Le => Ok((numeric_prefix, lex_succ_bytes(&bound_key))),
-        CmpOp::Lt => Ok((numeric_prefix, bound_key)),
+        CmpOp::Ge => Ok((bound_key.to_vec(), ceiling)),
+        CmpOp::Gt => Ok((clamped_succ(bound_key), ceiling)),
+        CmpOp::Le => Ok((floor, clamped_succ(bound_key))),
+        CmpOp::Lt => Ok((floor, bound_key.to_vec())),
         _ => unreachable!(),
     }
+}
+
+/// Half-open `[floor, ceiling)` memcmp interval holding exactly the posting keys whose leading
+/// bytes share `key`'s comparison domain. `None` for domains without a contiguous ordered
+/// interval (Bool, List, Record, Path, Extension) and for Duration, whose `(months, nanos)`
+/// tuple order is not chronological.
+fn comparison_domain_interval(key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (&tag, rest) = key.split_first()?;
+    let floor = match tag {
+        INDEX_KEY_NUMERIC => vec![INDEX_KEY_NUMERIC],
+        INDEX_KEY_TEXT | INDEX_KEY_BYTES => vec![tag],
+        INDEX_KEY_TEMPORAL => {
+            let (&subtype, _) = rest.split_first()?;
+            // Subtypes 1..=7 (Date .. ZonedTime) keep chronological order in key space;
+            // subtype 8 is Duration, rejected until it has a spec-backed total order.
+            if !(1..=7).contains(&subtype) {
+                return None;
+            }
+            vec![INDEX_KEY_TEMPORAL, subtype]
+        }
+        _ => return None,
+    };
+    let ceiling = lex_succ_bytes(&floor);
+    Some((floor, ceiling))
 }
 
 #[cfg(test)]
@@ -835,32 +905,222 @@ mod tests {
     }
 
     #[test]
-    fn numeric_range_bounds_rejects_non_range_operators() {
+    fn range_bounds_rejects_non_range_operators() {
         use crate::ast::CmpOp;
-        assert!(numeric_range_bounds(&Value::Int64(5), CmpOp::Eq).is_err());
-        assert!(numeric_range_bounds(&Value::Int64(5), CmpOp::Ne).is_err());
+        assert!(range_bounds(&Value::Int64(5), CmpOp::Eq).is_err());
+        assert!(range_bounds(&Value::Int64(5), CmpOp::Ne).is_err());
+        assert!(range_bounds(&Value::Text("a".into()), CmpOp::Eq).is_err());
+        // The bytes-facing entry shares the operator gate.
+        assert!(range_bounds_for_encoded_key(&key(Value::Int64(5)), CmpOp::Ne).is_err());
     }
 
     #[test]
-    fn numeric_range_bounds_rejects_non_numeric_and_null() {
+    fn range_bounds_rejects_null_and_unencodable_values_as_unsupported() {
         use crate::ast::CmpOp;
-        assert!(numeric_range_bounds(&Value::Text("a".into()), CmpOp::Ge).is_err());
-        assert!(numeric_range_bounds(&Value::Null, CmpOp::Ge).is_err());
-        assert!(numeric_range_bounds(&Value::Bytes(vec![1]), CmpOp::Lt).is_err());
+        assert_eq!(
+            range_bounds(&Value::Null, CmpOp::Ge),
+            Err(ValueIndexKeyError::UnsupportedValue)
+        );
+        assert_eq!(
+            range_bounds(&Value::Float64(f64::NAN), CmpOp::Ge),
+            Err(ValueIndexKeyError::NonFiniteFloat)
+        );
+        assert_eq!(
+            range_bounds(&Value::Float64(f64::INFINITY), CmpOp::Lt),
+            Err(ValueIndexKeyError::NonFiniteFloat)
+        );
     }
 
     #[test]
-    fn numeric_range_bounds_rejects_non_finite_floats() {
+    fn range_bounds_rejects_domains_without_ordered_interval() {
         use crate::ast::CmpOp;
-        assert!(numeric_range_bounds(&Value::Float64(f64::NAN), CmpOp::Ge).is_err());
-        assert!(numeric_range_bounds(&Value::Float64(f64::INFINITY), CmpOp::Lt).is_err());
+        let rejected = [
+            Value::Bool(true),
+            Value::List(vec![Value::Int64(1)]),
+            Value::Record(vec![("a".into(), Value::Int64(1))]),
+            Value::Path(vec![PathElement::Vertex(vec![1].into())]),
+            extension("domain/v1", b"a"),
+            Value::Duration(1, 0),
+        ];
+        for value in rejected {
+            assert_eq!(
+                range_bounds(&value, CmpOp::Ge),
+                Err(ValueIndexKeyError::UnsupportedRangeDomain),
+                "{value:?} must not push down"
+            );
+            assert_eq!(
+                range_bounds(&value, CmpOp::Lt),
+                Err(ValueIndexKeyError::UnsupportedRangeDomain),
+                "{value:?} must not push down"
+            );
+        }
+    }
+
+    #[test]
+    fn range_bounds_domain_table_pins_floor_and_ceiling_per_domain() {
+        use crate::ast::CmpOp;
+
+        let cases: Vec<(Value, Vec<u8>, Vec<u8>)> = vec![
+            (
+                Value::Int64(5),
+                vec![INDEX_KEY_NUMERIC],
+                vec![INDEX_KEY_NUMERIC + 1],
+            ),
+            (
+                Value::Text("m".into()),
+                vec![INDEX_KEY_TEXT],
+                vec![INDEX_KEY_TEXT + 1],
+            ),
+            (
+                Value::Bytes(vec![7]),
+                vec![INDEX_KEY_BYTES],
+                vec![INDEX_KEY_BYTES + 1],
+            ),
+            (
+                Value::Date(19_000),
+                vec![INDEX_KEY_TEMPORAL, 1],
+                vec![INDEX_KEY_TEMPORAL, 2],
+            ),
+            (
+                Value::Time(500),
+                vec![INDEX_KEY_TEMPORAL, 2],
+                vec![INDEX_KEY_TEMPORAL, 3],
+            ),
+            (
+                Value::LocalTime(500),
+                vec![INDEX_KEY_TEMPORAL, 3],
+                vec![INDEX_KEY_TEMPORAL, 4],
+            ),
+            (
+                Value::DateTime(1_700_000_000, 1),
+                vec![INDEX_KEY_TEMPORAL, 4],
+                vec![INDEX_KEY_TEMPORAL, 5],
+            ),
+            (
+                Value::LocalDateTime(1_700_000_000, 1),
+                vec![INDEX_KEY_TEMPORAL, 5],
+                vec![INDEX_KEY_TEMPORAL, 6],
+            ),
+            (
+                Value::ZonedDateTime(1_700_000_000, 1, 3_600),
+                vec![INDEX_KEY_TEMPORAL, 6],
+                vec![INDEX_KEY_TEMPORAL, 7],
+            ),
+            (
+                Value::ZonedTime(500, 3_600),
+                vec![INDEX_KEY_TEMPORAL, 7],
+                vec![INDEX_KEY_TEMPORAL, 8],
+            ),
+        ];
+        for (value, floor, ceiling) in cases {
+            let bound_key = key(value.clone());
+            let ge = range_bounds(&value, CmpOp::Ge).expect("supported domain");
+            assert_eq!(
+                ge,
+                (bound_key.clone(), ceiling.clone()),
+                "Ge keeps the bound"
+            );
+            let gt = range_bounds(&value, CmpOp::Gt).expect("supported domain");
+            assert!(
+                gt.0 > bound_key && gt.0 <= gt.1,
+                "Gt starts strictly above the bound and stays in-domain"
+            );
+            assert_eq!(gt.1, ceiling, "Gt high is the domain ceiling");
+            let (low, high) = range_bounds(&value, CmpOp::Le).expect("supported domain");
+            assert_eq!(low, floor, "Le: low is the domain floor");
+            assert!(
+                bound_key < high && high <= ceiling,
+                "Le: high holds the bound and stays under the ceiling"
+            );
+            let (low, high) = range_bounds(&value, CmpOp::Lt).expect("supported domain");
+            assert_eq!(low, floor, "Lt: low is the domain floor");
+            assert_eq!(high, bound_key, "Lt: high is the raw bound");
+        }
+    }
+
+    #[cfg(feature = "cmp")]
+    #[test]
+    fn range_bounds_are_half_open_and_agree_with_comparison_across_domains() {
+        use crate::ast::CmpOp;
+        use crate::value::cmp::compare_values;
+
+        // (literal, probe) pairs straddling the bound within the literal's own domain,
+        // plus probes from foreign domains that must always fall outside the interval.
+        let text_cases = [
+            ("b", "a", CmpOp::Ge, false),
+            ("b", "b", CmpOp::Ge, true),
+            ("b", "c", CmpOp::Ge, true),
+            ("b", "a", CmpOp::Gt, false),
+            ("b", "b", CmpOp::Gt, false),
+            ("b", "bb", CmpOp::Gt, true),
+            ("b", "a", CmpOp::Le, true),
+            ("b", "b", CmpOp::Le, true),
+            ("b", "c", CmpOp::Le, false),
+            ("b\0", "b", CmpOp::Lt, true),
+            ("b\0", "b\0", CmpOp::Lt, false),
+        ];
+        for (bound, probe, op, expected) in text_cases {
+            let (low, high) =
+                range_bounds(&Value::Text(bound.into()), op).expect("text range bounds");
+            let probe_key = key(Value::Text(probe.into()));
+            assert_eq!(
+                low <= probe_key && probe_key < high,
+                expected,
+                "Text({probe:?}) {op:?} Text({bound:?})"
+            );
+        }
+
+        let byte_cases = [
+            (vec![2u8], vec![1u8], CmpOp::Le, true),
+            (vec![2u8], vec![2u8], CmpOp::Le, true),
+            (vec![2u8], vec![2u8, 0], CmpOp::Le, false),
+            (vec![2u8], vec![3u8], CmpOp::Le, false),
+            (vec![2u8], vec![1, 255], CmpOp::Gt, false),
+            (vec![2u8], vec![2u8], CmpOp::Gt, false),
+            (vec![2u8], vec![2, 0], CmpOp::Gt, true),
+        ];
+        for (bound, probe, op, expected) in byte_cases {
+            let (low, high) = range_bounds(&Value::Bytes(bound.clone()), op).expect("bytes range");
+            let probe_key = key(Value::Bytes(probe));
+            assert_eq!(low <= probe_key && probe_key < high, expected, "{op:?}");
+        }
+
+        let datetime_cases: [(i64, u32, i64, u32, CmpOp, bool); 6] = [
+            (100, 0, 99, 0, CmpOp::Ge, false),
+            (100, 0, 100, 0, CmpOp::Ge, true),
+            (100, 0, 101, 5, CmpOp::Ge, true),
+            (100, 0, 100, 0, CmpOp::Gt, false),
+            (100, 0, 100, 1, CmpOp::Gt, true),
+            (99, u32::MAX, 100, 0, CmpOp::Ge, true),
+        ];
+        for (bs, bn, ps, pn, op, expected) in datetime_cases {
+            let (low, high) =
+                range_bounds(&Value::DateTime(bs, bn), op).expect("datetime range bounds");
+            let probe_key = key(Value::DateTime(ps, pn));
+            let in_range = low <= probe_key && probe_key < high;
+            assert_eq!(
+                in_range, expected,
+                "DateTime({ps},{pn}) {op:?} DateTime({bs},{bn})"
+            );
+            let probe_value = Value::DateTime(ps, pn);
+            let bound_value = Value::DateTime(bs, bn);
+            let ordering = compare_values(&probe_value, &bound_value);
+            let satisfies = match op {
+                CmpOp::Ge => ordering >= Some(Ordering::Equal),
+                CmpOp::Gt => ordering == Some(Ordering::Greater),
+                _ => unreachable!("datetime cases only use lower bounds"),
+            };
+            assert_eq!(
+                in_range, satisfies,
+                "encoded interval disagrees with compare_values for {op:?}"
+            );
+        }
     }
 
     #[cfg(feature = "cmp")]
     #[test]
     fn numeric_range_bounds_are_half_open_and_ordered() {
         use crate::ast::CmpOp;
-        #[cfg(feature = "cmp")]
         use crate::value::cmp::compare_values;
 
         // Pick values that straddle the bound.
@@ -878,7 +1138,7 @@ mod tests {
         ];
 
         for (bound_value, op, probe_value, expected_in_range) in cases {
-            let (low, high) = numeric_range_bounds(&bound_value, op).expect("numeric range");
+            let (low, high) = range_bounds(&bound_value, op).expect("numeric range");
             let probe_key = value_to_index_key_bytes(&probe_value).unwrap().unwrap();
             let in_range = low <= probe_key && probe_key < high;
             assert_eq!(
@@ -916,34 +1176,173 @@ mod tests {
     }
 
     #[test]
-    fn numeric_range_bounds_excludes_adjacent_non_numeric_domains() {
+    fn range_bounds_excludes_every_foreign_domain() {
         use crate::ast::CmpOp;
 
-        // All numeric keys start with INDEX_KEY_NUMERIC. A `Ge` scan must stop before the next
-        // type domain, so a text key is never included.
-        let (low, high) = numeric_range_bounds(&Value::Int64(0), CmpOp::Ge).unwrap();
-        assert_eq!(low[0], INDEX_KEY_NUMERIC);
-        assert_eq!(high[0], INDEX_KEY_NUMERIC + 1);
-        let text_key = value_to_index_key_bytes(&Value::Text("a".into()))
-            .unwrap()
-            .unwrap();
+        // For each supported domain, probes encoded in every OTHER domain must fall outside
+        // the literal's interval: mixed-type properties cannot leak wrong-domain rows.
+        let literals = [
+            Value::Int64(5),
+            Value::Text("m".into()),
+            Value::Bytes(vec![9]),
+            Value::Date(19_000),
+            Value::DateTime(1_700_000_000, 1),
+            Value::ZonedTime(500, 0),
+        ];
+        let foreign_probes = [
+            Value::Bool(true),
+            Value::Int64(5),
+            Value::Text("m".into()),
+            Value::Bytes(vec![9]),
+            Value::Date(19_000),
+            Value::Time(500),
+            Value::LocalTime(500),
+            Value::DateTime(1_700_000_000, 1),
+            Value::LocalDateTime(1_700_000_000, 1),
+            Value::ZonedDateTime(1_700_000_000, 1, 0),
+            Value::ZonedTime(500, 0),
+            Value::Duration(1, 0),
+        ];
+        for literal in &literals {
+            for op in [CmpOp::Ge, CmpOp::Le] {
+                let (low, high) = range_bounds(literal, op).expect("supported domain");
+                for probe in &foreign_probes {
+                    if compare_tags(probe, literal) {
+                        continue;
+                    }
+                    let probe_key = key(probe.clone());
+                    assert!(
+                        !(low <= probe_key && probe_key < high),
+                        "{probe:?} key must stay outside {literal:?} {op:?} interval"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether `a` and `b` share the same posting-key comparison-domain tag (and TEMPORAL subtype).
+    fn compare_tags(a: &Value, b: &Value) -> bool {
+        let tag = |v: &Value| key(v.clone())[0];
+        if tag(a) != tag(b) {
+            return false;
+        }
+        if tag(a) != INDEX_KEY_TEMPORAL {
+            return true;
+        }
+        key(a.clone())[1] == key(b.clone())[1]
+    }
+
+    #[test]
+    fn range_bounds_all_ff_tail_bound_does_not_spill_past_ceiling() {
+        use crate::ast::CmpOp;
+
+        // DateTime(i64::MAX, u32::MAX) encodes to [8, 4, FF*12]: an all-0xFF payload tail.
+        // The successor of that bound would walk into subtype 5 ([8, 5]); the upper bound must
+        // clamp to the ceiling instead of crossing it.
+        let max_datetime = Value::DateTime(i64::MAX, u32::MAX);
+        let bound_key = key(max_datetime.clone());
         assert!(
-            text_key >= high || text_key < low,
-            "text key must be outside numeric range"
+            bound_key[2..].iter().all(|&b| b == 255),
+            "precondition: all-FF tail"
         );
+
+        let le = range_bounds(&max_datetime, CmpOp::Le).expect("supported domain");
+        assert_eq!(
+            le.1,
+            vec![INDEX_KEY_TEMPORAL, 5],
+            "Le clamps at the ceiling"
+        );
+        assert_eq!(
+            le.0,
+            vec![INDEX_KEY_TEMPORAL, 4],
+            "Le starts at the subtype floor"
+        );
+
+        // Nothing is strictly greater than the maximum value: the clamped interval is empty,
+        // which consumers must treat as zero hits rather than an open-ended scan.
+        let gt = range_bounds(&max_datetime, CmpOp::Gt).expect("supported domain");
+        assert!(gt.0 >= gt.1, "Gt past the domain maximum is empty");
+
+        // Adversarial cached keys through the bytes-facing entry behave the same way.
+        let adversarial: &[&[u8]] = &[
+            &[INDEX_KEY_TEXT, 255, 255],
+            &[INDEX_KEY_BYTES, 255, 255],
+            &[INDEX_KEY_TEMPORAL, 7, 255, 255],
+        ];
+        let ceilings: Vec<Vec<u8>> = vec![
+            vec![INDEX_KEY_TEXT + 1],
+            vec![INDEX_KEY_BYTES + 1],
+            vec![INDEX_KEY_TEMPORAL, 8],
+        ];
+        for (bound, ceiling) in adversarial.iter().zip(ceilings) {
+            for op in [CmpOp::Le, CmpOp::Lt, CmpOp::Ge, CmpOp::Gt] {
+                let (low, high) =
+                    range_bounds_for_encoded_key(bound, op).expect("tagged key has a domain");
+                assert!(
+                    high <= ceiling,
+                    "{op:?}: high must not spill past the ceiling"
+                );
+                assert!(low <= high, "{op:?}: interval stays ordered");
+            }
+        }
+    }
+
+    #[test]
+    fn range_bounds_temporal_subtypes_are_pinned() {
+        use crate::ast::CmpOp;
+
+        // A DateTime literal must never admit Date or LocalDateTime postings even when their
+        // payloads would order between the interval endpoints.
+        let bound = Value::DateTime(1_000, 0);
+        let (low, high) = range_bounds(&bound, CmpOp::Ge).expect("datetime bounds");
+        let date_probe = key(Value::Date(40_000));
+        let local_dt_probe = key(Value::LocalDateTime(2_000, 0));
+        assert!(
+            !(low <= date_probe && date_probe < high),
+            "Date postings are outside the DateTime subtype interval"
+        );
+        assert!(
+            !(low <= local_dt_probe && local_dt_probe < high),
+            "LocalDateTime postings are outside the DateTime subtype interval"
+        );
+        let bound_key = key(bound);
+        assert!(low <= bound_key && bound_key < high);
+    }
+
+    #[test]
+    fn range_bounds_for_encoded_key_matches_value_entry() {
+        use crate::ast::CmpOp;
+
+        let values = [
+            Value::Int64(-7),
+            Value::Text("mixed\0bytes".into()),
+            Value::Bytes(vec![0, 255, 1]),
+            Value::Date(19_500),
+            Value::DateTime(1_700_000_000, 999),
+        ];
+        for value in values {
+            for op in [CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge] {
+                assert_eq!(
+                    range_bounds(&value, op),
+                    range_bounds_for_encoded_key(&key(value.clone()), op),
+                    "{value:?} {op:?}"
+                );
+            }
+        }
+        assert!(range_bounds_for_encoded_key(&[], CmpOp::Ge).is_err());
     }
 
     #[cfg(feature = "decimal")]
     #[test]
-    fn numeric_range_bounds_unifies_across_numeric_widths() {
+    fn range_bounds_unifies_across_numeric_widths() {
         use crate::ast::CmpOp;
 
         // Int64(5), Uint8(5), Decimal("5.0") and Float64(5.0) should all produce the same
         // encoded bound and therefore the same range.
-        let bound1 = numeric_range_bounds(&Value::Int64(5), CmpOp::Ge).unwrap();
-        let bound2 = numeric_range_bounds(&Value::Uint8(5), CmpOp::Ge).unwrap();
-        let bound3 = numeric_range_bounds(&Value::Float64(5.0), CmpOp::Ge).unwrap();
-        let bound4 = numeric_range_bounds(&decimal("5.0"), CmpOp::Ge).unwrap();
+        let bound1 = range_bounds(&Value::Int64(5), CmpOp::Ge).unwrap();
+        let bound2 = range_bounds(&Value::Uint8(5), CmpOp::Ge).unwrap();
+        let bound3 = range_bounds(&Value::Float64(5.0), CmpOp::Ge).unwrap();
+        let bound4 = range_bounds(&decimal("5.0"), CmpOp::Ge).unwrap();
         assert_eq!(bound1, bound2);
         assert_eq!(bound2, bound3);
         assert_eq!(bound3, bound4);
