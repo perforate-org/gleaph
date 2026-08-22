@@ -6,7 +6,8 @@ use gleaph_graph_kernel::federation::{GraphShardKey, ShardId, ShardRegistryEntry
 use std::collections::BTreeSet;
 
 use crate::facade::stable::{
-    ROUTER_GRAPH_CATALOG, ROUTER_GRAPHS, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
+    ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_SHARDS,
+    ROUTER_SHARDS_BY_GRAPH_ID,
 };
 use crate::state::RouterError;
 
@@ -126,21 +127,15 @@ pub(crate) fn list_live_shards_for_graph_id(
         .collect())
 }
 
-/// Next graph-local [`ShardId`] for `admin_register_shard` (dense `0..n-1` growth).
-pub(crate) fn next_graph_local_shard_id(graph_id: GraphId) -> ShardId {
-    let shard_ids = ROUTER_SHARDS_BY_GRAPH_ID.with_borrow(|index| {
-        index
-            .get(&graph_id)
-            .map(|list| list.shard_ids.clone())
-            .unwrap_or_default()
-    });
-    let next = shard_ids
-        .iter()
-        .map(|id| id.raw())
-        .max()
-        .map(|max| max.saturating_add(1))
-        .unwrap_or(0);
-    ShardId::new(next)
+/// Returns the next graph-local [`ShardId`] that has never been issued.
+pub(crate) fn next_graph_local_shard_id(graph_id: GraphId) -> Result<ShardId, RouterError> {
+    let next = ROUTER_GRAPH_RUNTIME_CONFIG
+        .with_borrow(|configs| configs.get(&graph_id))
+        .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id:?}")))?
+        .next_shard_id;
+    let raw = u32::try_from(next)
+        .map_err(|_| RouterError::IdExhausted(format!("shard for graph {graph_id:?}")))?;
+    Ok(ShardId::new(raw))
 }
 
 pub(crate) fn lookup_shard_entry(

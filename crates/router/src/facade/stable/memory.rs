@@ -193,6 +193,8 @@ pub(crate) struct GraphRuntimeConfig {
     pub element_id_encoding_key: [u8; 16],
     pub index_group_size: u32,
     pub index_cluster: Vec<Principal>,
+    /// Next graph-local shard identity that has never been issued.
+    pub next_shard_id: u64,
 }
 
 impl GraphRuntimeConfig {
@@ -201,6 +203,7 @@ impl GraphRuntimeConfig {
             element_id_encoding_key: key.0,
             index_group_size: 1,
             index_cluster: Vec::new(),
+            next_shard_id: 0,
         }
     }
 }
@@ -629,6 +632,7 @@ mod tests {
     use gleaph_graph_kernel::vector_index::{
         IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
     };
+    use ic_stable_structures::VectorMemory;
     use std::collections::HashSet;
 
     #[test]
@@ -646,6 +650,27 @@ mod tests {
         for id in 0..=53 {
             assert!(ids.contains(&id));
         }
+    }
+
+    #[test]
+    fn graph_runtime_config_reopen_preserves_shard_high_water() {
+        let memory = VectorMemory::default();
+        let manager = ic_stable_structures::memory_manager::MemoryManager::init(memory.clone());
+        let mut configs: BTreeMap<GraphId, GraphRuntimeConfig, _> =
+            BTreeMap::init(manager.get(MemoryId::new(0)));
+        let graph_id = GraphId::from_raw(7);
+        let mut expected = GraphRuntimeConfig::with_element_id_encoding_key(
+            ElementIdEncodingKey::host_test_fixture(),
+        );
+        expected.next_shard_id = u64::from(u32::MAX) + 1;
+        configs.insert(graph_id, expected.clone());
+        drop(configs);
+        drop(manager);
+
+        let reopened_manager = ic_stable_structures::memory_manager::MemoryManager::init(memory);
+        let reopened: BTreeMap<GraphId, GraphRuntimeConfig, _> =
+            BTreeMap::init(reopened_manager.get(MemoryId::new(0)));
+        assert_eq!(reopened.get(&graph_id), Some(expected));
     }
 
     #[test]

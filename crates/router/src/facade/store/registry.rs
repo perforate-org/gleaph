@@ -288,6 +288,24 @@ impl RouterStore {
         let graph_canister = entry.graph_canister;
         let key = GraphShardKey::new(graph_id, shard_id);
 
+        let mut runtime = ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|configs| configs.get(&graph_id))
+            .ok_or_else(|| {
+                RouterError::NotFound(format!("runtime config for graph {graph_id:?}"))
+            })?;
+        let expected_raw = u32::try_from(runtime.next_shard_id)
+            .map_err(|_| RouterError::IdExhausted(format!("shard for graph {graph_id:?}")))?;
+        let expected = ShardId::new(expected_raw);
+        if shard_id != expected {
+            return Err(RouterError::Conflict(format!(
+                "expected next graph-local shard {expected:?}, got {shard_id:?}"
+            )));
+        }
+        let next_shard_id = runtime
+            .next_shard_id
+            .checked_add(1)
+            .ok_or_else(|| RouterError::IdExhausted(format!("shard for graph {graph_id:?}")))?;
+
         if ROUTER_SHARDS.with_borrow(|s| s.get(&key).is_some()) {
             return Err(RouterError::ShardAlreadyRegistered);
         }
@@ -298,6 +316,7 @@ impl RouterStore {
             return Err(RouterError::ShardAlreadyRegistered);
         }
 
+        runtime.next_shard_id = next_shard_id;
         ROUTER_SHARDS.with_borrow_mut(|s| {
             s.insert(key, entry);
         });
@@ -310,6 +329,9 @@ impl RouterStore {
                 list.shard_ids.push(shard_id);
                 index.insert(graph_id, list);
             }
+        });
+        ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+            configs.insert(graph_id, runtime);
         });
 
         Self::verify_registry_invariants_after_commit()
@@ -349,8 +371,7 @@ impl RouterStore {
                 index.insert(entry.graph_id, list);
             }
         });
-        // Drop the shard's derived posting-backfill cursors so a re-registered shard
-        // reusing this key starts from a clean cursor instead of a stale one.
+        // Backfill cursors are derived state owned by the retiring shard.
         super::backfill::purge_backfill_state(key);
 
         Self::verify_registry_invariants_after_commit()?;
@@ -1235,7 +1256,7 @@ impl RouterStore {
             ));
         }
 
-        let allocated_shard_id = next_graph_local_shard_id(graph_id);
+        let allocated_shard_id = next_graph_local_shard_id(graph_id)?;
         if args.shard_id != allocated_shard_id {
             return Err(RouterError::Conflict(format!(
                 "expected next graph-local shard {:?} for `{}`, got {:?}",

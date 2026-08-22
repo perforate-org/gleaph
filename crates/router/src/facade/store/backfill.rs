@@ -495,10 +495,7 @@ impl RouterStore {
 }
 
 /// Deletes the three posting-backfill cursors for one shard. Backfill cursors are
-/// derived per-shard state, so they are owned by the shard lifecycle: dropping them
-/// on `unregister_shard` prevents orphaned cursors and stops a later shard reusing
-/// the same `(graph_id, shard_id)` from inheriting a stale cursor (which could skip
-/// its historical backfill or wedge on a leftover in-progress claim).
+/// derived per-shard state, so they are removed when that shard retires.
 pub(super) fn purge_backfill_state(key: GraphShardKey) {
     ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
         map.remove(&key);

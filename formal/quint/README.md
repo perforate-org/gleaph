@@ -1,6 +1,6 @@
 # Quint protocol pilot
 
-Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
+Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
 
 Status: **Experimental, non-blocking**. This directory contains bounded
 auxiliary specifications for the Router–Graph–Property Index projection and
@@ -84,7 +84,7 @@ slice and must not duplicate those sources of truth.
 | Router atomic_insert response loss while CanonicalPending | **Adopted / experimental** | ADR 0029 §2 and ADR 0049 §1558–1579 require exact journal reconciliation; the bounded model maps the implemented exact-receipt, explicit-`Absent`, background-query-only, and conflict boundaries. Commit `d700331c` plus the focused Rust/PocketIC comparisons are production evidence; this model remains non-normative. | Keep the one-request/one-shard boundary and record bounded formal results separately. Do not add CI or extend this slice to projection, retirement, routing/catalog mutation, or multi-shard behavior. |
 | ReadMode::AtLeast versus first-delivery outbox work | **Covered** | DerivedIndexOutbox and RepairJournal remain distinct owners; Graph MemoryId 52 stores one fixed key per qualifying source row and exposes their exact ordinary floor. Exact Graph owner tests plus the passing stopped-index/Graph-upgrade PocketIC lifecycle protect the contract. | No production prerequisite remains. Preserve `durableQueue` as a conceptual FIFO abstraction; keep this pilot `revise` until its independent formal gates are rerun. |
 | Router direct vector-ingest partial suffix | **Covered / modeled abstraction** | MemoryId 53 now stores one canonical `AwaitingGraph \| AwaitingVector` intent with exact Graph/Vector targets, metadata, subject, bytes, and mutation ID. Router co-writes every allocated direct-ingestion stamp with `AwaitingGraph` before the first Graph await. Exact Graph observation transitions or resolves only that row; typed Vector acknowledgement removes only the exact applied prefix. The refined GC model covers the same bounded two-operation ownership partition and retained suffix, while abstracting Candid fitting and the production 32-row chunking mechanism. | GAP-2026-08-20-002 is **Resolved**. Owner-local tests cover atomic admission and exact phases; the focused PocketIC gate covers Graph response loss, Router upgrade, and replay. The Quint result remains bounded protocol evidence, not a replacement for runtime gates. |
-| Router shard identity across unregister/re-register | **Design/implementation prerequisite; later Quint candidate** | GlobalVertexId has only ShardId plus local id while the live catalog can reuse a numeric shard id. | GAP-2026-08-20-006: select never-reuse, incarnation, or equivalent principal-pinning semantics before stale-delivery tests. |
+| Router shard identity across unregister/re-register | **Covered** | Router persists a per-graph `next_shard_id` high-water, accepts only the exact never-issued id, and never rewinds it on unregister or failed attach. Owner-local tests cover retirement, exhaustion, reopen, and invariant corruption. | GAP-2026-08-20-006 is **Resolved**. The current Quint model still excludes topology changes; no additional shard-incarnation state is required for the frontier slice. |
 | Property DROP INDEX retirement | **Rust-test-first + design/implementation prerequisite** | Catalog deletion precedes remote purge; purge progress is call-local; PhysicalIndexId namespaces can diverge for one logical property. | GAP-2026-08-20-005: define durable per-PhysicalIndexId retirement and first add same-property/two-index and lost-response regressions. |
 | Index-build label membership and Sealing admission | **Rust-test-first** | Property-transition admission exists, but label gain/loss does not emit exact BuildDml or reject before the canonical label change. | GAP-2026-07-29-006: add focused Graph-owner regressions before migration-lifecycle PocketIC validation. |
 | Vector Router watermark and tombstone retention | **Modeled / experimental; production deferred** | Router-originated watermark advancement remains disabled and production tombstone deletion remains conservatively paused. `router_vector_tombstone_gc.qnt` reproduces unsafe fence collection and stale resurrection under `MaxAcknowledged`; sampled and deterministic scenarios preserve safety under `Frozen` and the refined bounded `Contiguous` candidate. The candidate derives each lane frontier from the durable global allocation ceiling plus unresolved exact-lane intents, without a second settled-history owner. | Production now has the pre-Graph intent phase but still lacks an authenticated per-target/shard frontier publication path. Define and validate that API before advancing the Router watermark or resuming deletion. The model supplies no subject-map growth bound, exhaustive proof, or liveness guarantee. |
@@ -121,8 +121,9 @@ Vector acknowledgement resolves an intent, the durable global allocation
 ceiling proves that its stamp cannot be reused; the oldest remaining intent in
 the exact lane is therefore sufficient to derive the bounded frontier. This
 does not select a Rust representation or publication API. The model also does
-not claim fairness, finite-time convergence, arbitrary batch size, topology
-change safety, or physical subject-map bounds.
+not claim fairness, finite-time convergence, arbitrary batch size, live topology
+transitions, or physical subject-map bounds. Production's never-reuse ShardId rule prevents a
+retired lane identity from aliasing a later shard, but topology transitions remain outside this model.
 
 ### State and source correspondence
 
@@ -186,6 +187,11 @@ traces, Graph rejection resolution in 2,358, exact partial-prefix retention in
 in 60 traces and stale resurrection in 8 traces. `quint verify` was intentionally
 not run, so these results are sampled bounded evidence, not exhaustive model
 checking or a liveness proof.
+
+After the production never-reuse ShardId fence was implemented on 2026-08-22, both modules were
+typechecked again, the deterministic suite passed with seed `0x271`, and the unchanged `Contiguous`
+run explored 5,000 traces through depth 35 without a `protocolSafety` violation. This confirms spec
+stability; it does not add topology transitions to the model.
 
 ## Router CanonicalPending exact-replay slice
 

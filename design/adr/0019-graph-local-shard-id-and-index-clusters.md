@@ -2,14 +2,15 @@
 
 Date: 2026-06-17  
 Status: accepted  
-Last revised: 2026-08-20
+Last revised: 2026-08-22
 
-Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
+Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-08-22 | Made graph-local `ShardId` allocation monotonic and never-reuse through a Router-owned per-graph high-water. |
 | 2026-08-20 | Added a non-normative implementation-gap traceability note; active contracts unchanged. |
 | 2026-08-14 | Shard detach sessions now carry an owner-issued durable generation; reattach is excluded until the bounded purge reaches EOF. |
 | 2026-06-17 | **Accepted** — S0–S5 implemented; post-accept doc sync (0005/0006/0010, capacity-planning, federation-target). |
@@ -43,8 +44,8 @@ is an **example only** — **`GROUP_SIZE` is not chosen**.
 
 Operators want:
 
-1. **`ShardId` dense and per logical graph** — graph `g` uses `0, 1, …, n-1` independently of
-   other graphs.
+1. **`ShardId` monotonic and per logical graph** — graph `g` starts at `0`, issues each ordinal once,
+   and never reuses a retired ordinal.
 2. **Deterministic index shard-group routing** — for a fixed `GROUP_SIZE`, index canister `k`
    owns graph-local shards `[k × GROUP_SIZE, (k+1) × GROUP_SIZE)`.
 3. **Separate index cluster per logical graph** — graph `g`'s index canisters live on a dedicated
@@ -90,7 +91,7 @@ catalog ids → dedicated index cluster.
 
 ## Decision
 
-### 1. `ShardId` is graph-local and dense per `GraphId`
+### 1. `ShardId` is graph-local and never reused per `GraphId`
 
 **Semantics (amended from ADR 0006 §1):**
 
@@ -98,11 +99,12 @@ catalog ids → dedicated index cluster.
 |------|-------|
 | Type | `ShardId(u32)` unchanged |
 | Scope | **Meaningful only with `GraphId`** (same contract as graph-scoped `PropertyId` / label ids) |
-| Assignment | Per graph: **`0..n-1`**, issued **`n`** on next `admin_register_shard` for that graph |
+| Assignment | Per graph: issue `next_shard_id`, then advance the durable high-water; retirement never rewinds it |
 | Validity | `ShardId(0)` is the first shard of **each** graph (standalone: one graph, one shard `0`) |
 | Unregistered | Still an error at router dispatch — no sentinel inside `ShardId` |
 
-**Do not** allocate federation-wide monotonic shard ids.
+The active shard set may be sparse after retirement. Do not allocate federation-wide shard ids and
+do not derive the next identity from the maximum active registry row.
 
 ### 2. Router registry keys use `(GraphId, ShardId)`
 
@@ -116,7 +118,7 @@ catalog ids → dedicated index cluster.
 
 | Layer | Shape | Notes |
 |-------|--------|-------|
-| `ROUTER_SHARDS_BY_GRAPH_ID` | **`GraphId → Vec<ShardId>`** | Denormalized fan-out index; dense **`0..n-1`** insertion order per graph |
+| `ROUTER_SHARDS_BY_GRAPH_ID` | **`GraphId → Vec<ShardId>`** | Denormalized fan-out index of active graph-local ordinals; insertion order is monotonic but may be sparse |
 | `list_shards_for_graph_id` / `list_shards_for_graph` | **`Vec<ShardRegistryEntry>`** | Walks the index, hydrates each ordinal from `ROUTER_SHARDS[GraphShardKey]`, validates `entry.graph_id` |
 | `list_live_shards_for_graph_id` / `list_live_shards_for_graph` | **`Vec<ShardRegistryEntry>`** | Same as above, filtered to `index_attached == true` (dispatch / index fan-out / backfill) |
 
@@ -141,7 +143,7 @@ payloads.
 | Layer | Policy |
 |-------|--------|
 | **Execution context** | Every router dispatch, index lookup, graph `execute_plan_*`, and GQL `USE GRAPH` segment carries an explicit **`GraphId`** ([0011](0011-gql-graph-resolution-and-catalog-scoping.md)). Element ids are interpreted **only inside that context**. |
-| **`ShardId` in element keys** | **Graph-local** ordinal ([§1](#1-shardid-is-graph-local-and-dense-per-graphid)). `(ShardId(0), local)` on graph `a` ≠ `(ShardId(0), local)` on graph `b`. |
+| **`ShardId` in element keys** | **Graph-local** ordinal ([§1](#1-shardid-is-graph-local-and-never-reused-per-graphid)). `(ShardId(0), local)` on graph `a` ≠ `(ShardId(0), local)` on graph `b`. |
 | **Index postings** | **`(…, shard_id, local_vertex_id)`** — no `GraphId`; index canister is graph-dedicated ([§6](#6-one-index-cluster-per-logical-graph)) |
 | **Client wire** | **`EncodedVertexId` (8 B) / `EncodedEdgeId` (12 B)** unchanged; encoded bytes are **meaningful only with graph context**. Decode requires the same `GraphId` context and encoding key as encode (session / `USE GRAPH` / prepared plan's `GraphId`). |
 | **Cross-graph U2** | Each sub-plan carries its own **`GraphId`**; merged rows do not unify element ids across graphs. Remote / expand handles are **not** passed between graphs without re-resolution. |
@@ -228,7 +230,7 @@ Keep public/admin graph metadata separate from router execution configuration:
 | Store | Key | Owns |
 |-------|-----|------|
 | `ROUTER_GRAPHS` | `GraphId` | `GraphRegistryEntry`: display/admin metadata such as name, owner, status, HOME flag |
-| `ROUTER_GRAPH_RUNTIME_CONFIG` | `GraphId` | Router-owned execution config: element-id key, index grouping, index cluster (**router MemoryId 5**, immediately after registry regions) |
+| `ROUTER_GRAPH_RUNTIME_CONFIG` | `GraphId` | Router-owned execution config: element-id key, index grouping, index cluster, and shard-id high-water (**router MemoryId 5**, immediately after registry regions) |
 
 `GraphRegistryEntry` currently lives in `gleaph-gql-ic` for Candid/admin registry presentation.
 Do **not** require that type to expose `ElementIdEncodingKey` or index topology. The router may
@@ -242,6 +244,7 @@ Target runtime config:
 | `index_group_size: u32` | **`GROUP_SIZE`** — shards per index canister within this graph |
 | `index_cluster: Vec<Principal>` | Index canister principals for groups `0, 1, …` |
 | `element_id_encoding_key` | **`ElementIdEncodingKey`** for client `ELEMENT_ID` / path wire ([§3.1](#31-element-id-encoding-key-per-logical-graph)) |
+| `next_shard_id: u64` | Next graph-local ordinal that has never been issued; allocation fails once it exceeds `u32::MAX` |
 
 ### 5. Commit index shard-group routing (`GROUP_SIZE`)
 
@@ -257,6 +260,7 @@ index_principal = index_cluster[group_index]
 | Invariant | Enforcement |
 |-----------|-------------|
 | `index_group_size > 0` | Runtime config construction rejects zero |
+| Every active `shard_id < next_shard_id` | Registration advances the high-water in the same commit; invariant checks reject rewound allocator state |
 | `index_cluster.len() > group_index` for every registered shard | Shard registration extends the cluster before commit or fails |
 | `ShardRegistryEntry.index_canister == index_cluster[shard_id / index_group_size]` | Registration commit and registry invariant checks |
 | `index_cluster` contains no anonymous principal | Runtime config validation |
@@ -265,7 +269,8 @@ index_principal = index_cluster[group_index]
 |------|--------|
 | Standalone (`n = 1`) with Property Index enabled | `shard_id = 0`, `group_index = 0`, `|index_cluster| = 1` |
 | Indexless first shard (planned) | `shard_id = 0`; `index_cluster` may be empty after the Router registry is changed to support absent Property Index bindings ([ADR 0054](0054-provisioned-logical-graph-topology-and-resource-activation.md)); current registration requires an index canister |
-| Shard registration | Router assigns next graph-local `shard_id = n`; computes `group_index`; extends `index_cluster` when a new group is needed, or fails before committing the shard |
+| Shard registration | Router assigns the current graph-local `next_shard_id`, advances it once, computes `group_index`, and extends `index_cluster` when a new group is needed, or fails before committing the shard |
+| Shard retirement or failed attach | Removes live registry state but never rewinds `next_shard_id` |
 | `ShardRegistryEntry.index_canister` | **Denormalized cache** of `index_principal` — must match formula at commit ([registry invariants](0011-gql-graph-resolution-and-catalog-scoping.md)) |
 
 [ADR 0010](0010-index-sharding-extensibility.md) **defers split strategy** policy is **closed**
@@ -311,7 +316,7 @@ With [ADR 0018](0018-graph-scoped-label-property-catalogs.md), **`property_id` /
 
 | ADR | Change |
 |-----|--------|
-| [0006](0006-pre-federation-foundation.md) §1 | Federation-global contiguous `ShardId` → **graph-local dense ids** |
+| [0006](0006-pre-federation-foundation.md) §1 | Federation-global contiguous `ShardId` → **graph-local monotonic ids** |
 | [0006](0006-pre-federation-foundation.md) §5 | Illustrative deferred `GROUP_SIZE` → **committed per graph** ([§5](#5-commit-index-shard-group-routing-group_size)) |
 | [0005](0005-vertex-identity.md) | **Layouts unchanged**; clarify **`Global*` = within logical graph**; `GraphId` is context, not part of element key |
 | [0010](0010-index-sharding-extensibility.md) | Shard-group policy **chosen**; per-graph index cluster is the **default multi-tenant layout** |
@@ -323,7 +328,7 @@ With [ADR 0018](0018-graph-scoped-label-property-catalogs.md), **`property_id` /
 ```mermaid
 flowchart TB
     G["GraphId g<br/>(execution context)"]
-    S["ShardId 0..n-1<br/>(graph-local)"]
+    S["ShardId<br/>(graph-local, never reused)"]
     IG["index_group_size = GROUP_SIZE"]
     IC["index_cluster[k]<br/>dedicated subnet"]
     IX["graph-index canister k"]
@@ -357,7 +362,7 @@ flowchart TB
 - Aligns with Neo4j / JanusGraph **per-graph shard namespace** expectations
 - **Deterministic** index provisioning: shard ordinal → group → canister without cross-graph tables
 - Index posting buckets contain **one graph’s** shards only — removes [0018](0018-graph-scoped-label-property-catalogs.md) cross-graph scan waste
-- `ROUTER_SHARDS_BY_GRAPH_ID` lists human-meaningful `0..n-1` ordinals
+- `ROUTER_SHARDS_BY_GRAPH_ID` lists active graph-local ordinals in issuance order
 - Operator model: **one logical graph = one index cluster** (clear blast radius and capacity)
 
 ### Trade-offs
@@ -365,6 +370,7 @@ flowchart TB
 - **Context discipline** — any federation-wide code path must carry **`GraphId`**; raw `GlobalVertexId` alone is insufficient across graphs
 - **Router repack** — `ROUTER_SHARDS` key shape; `ROUTER_SHARD_BY_GRAPH` value shape
 - **Runtime config region** — new router-owned graph config must be created and kept in sync with `ROUTER_GRAPHS`
+- **Sparse live sets** — retirement leaves an intentional ordinal gap so stale identifiers cannot alias later shards
 - **Encoded id discipline** — encoded bytes alone are not graph-agnostic cache/log/SDK handles; use `(GraphId, Encoded*)` when graph boundaries may be crossed
 - **More index canisters** at scale (one cluster per graph) — accepted operator cost for isolation
 - **Cross-graph queries (U2)** — each segment keeps its own `GraphId`; element ids are not portable across graphs in merged results
@@ -381,6 +387,8 @@ flowchart TB
 | **Global `ElementIdEncodingKey::standalone()` for all graphs** | Rejected — deterministic same-byte encoding when graph-local canonical keys match across graphs |
 | **Embed `GraphId` in posting keys only** | Rejected — duplicates canister boundary; larger keys on every posting |
 | **Global `ShardId` + formula on global id** | Rejected — ordinals do not restart per graph; leaks layout |
+| **Reuse the maximum retired graph-local ordinal** | Rejected — delayed work and encoded element ids could alias a different shard lifecycle |
+| **Add a shard-incarnation field to every identifier and protocol** | Rejected — never-reuse supplies the required identity fence without widening the wire contract |
 | **Shared index cluster across graphs** | Rejected — conflicts with dedicated cluster requirement; reintroduces cross-graph buckets |
 | **Separate router per graph** | Rejected — operational fragmentation; `GraphId` partition on one router suffices |
 
@@ -397,6 +405,7 @@ flowchart TB
 | **S3** | `ROUTER_GRAPH_RUNTIME_CONFIG.index_group_size` + `index_cluster`; registration computes group and validates invariants | **done** |
 | **S4** | graph-index owning `GraphId`; attach range checks; router `index_route` uses formula | done |
 | **S5** | PocketIC multi-graph: two graphs both with `ShardId(0)`; distinct index clusters | done |
+| **S6** | Per-graph never-reuse `next_shard_id` high-water; retirement, exhaustion, reopen, and invariant tests | **done** |
 
 ### S2 audit notes (2026-06-17)
 
@@ -436,38 +445,20 @@ The graph-index owner persists the global checked-monotonic next generation and 
 while that row exists. A `Some(cursor)` must carry the exact active generation for the API shard
 before the owner decodes a posting key or reads/writes a posting set. Vertex, label, and edge phase
 transitions retain that generation, and only explicit edge-phase EOF removes the active row. A
-completed D1 cursor therefore cannot resume after reattach or during D2, even when the shard id and
-principal are reused.
-
-The optional cursor/config fields are Candid decode compatibility only. Missing config fields reopen
-as empty lifecycle state; a legacy cursor decodes with no generation and is rejected as stale before
-derived-state access. Generation exhaustion and active-set capacity are typed prewrite failures. No
-new MemoryId, Router lifecycle table, catalog value format, or compatibility execution path is
-introduced. The auth removal plus reattach exclusion closes both the large-detach liveness/DoS gap
+completed D1 cursor therefore cannot resume after reattach or during a later detach of the same live
+shard. Generation exhaustion and active-set capacity are typed prewrite failures. The auth removal
+plus reattach exclusion closes both the large-detach liveness/DoS gap
 and the detach/attach/detach ABA gap that could otherwise delete or miss newly inserted postings.
 
 **Sequencing:** S0–S1 before multi-graph federation tests; S2 is docs + call-site audit (no element wire bump); land with [0018](0018-graph-scoped-label-property-catalogs.md) V0–V2 when possible (shared router repack gate per [0007](0007-stable-memory-layout.md)).
 
 ---
 
-## Migration
-
-1. **Dev / pre-production:** discard snapshots; re-register graphs and shards with graph-local ids.
-2. **Element wire:** no `GlobalVertexId` / `EncodedVertexId` layout migration — semantics only.
-3. **Runtime config:** create `ROUTER_GRAPH_RUNTIME_CONFIG` rows for each graph; derive or fixture
-   `element_id_encoding_key` during graph re-registration.
-4. **Single-graph deployments:** existing `ShardId(0)` remains `ShardId(0)` under the sole `GraphId` — behavioral change only when a **second graph** is added.
-5. Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md), [glossary.md](../glossary.md), [0005](0005-vertex-identity.md), [0010](0010-index-sharding-extensibility.md) on acceptance. **Done** (2026-06-17).
-
----
-
 ## Implementation-gap traceability (non-normative)
 
-The implementation-gap ledger is the status authority for this open
-observation. This link does not amend the graph-local `ShardId` or detach
-lifecycle contracts above.
+The implementation-gap ledger records the completed production evidence for this decision.
 
-- [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: Router shard incarnation and lifecycle fencing.
+- [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Resolved** by the Router-owned never-reuse high-water.
 
 ---
 

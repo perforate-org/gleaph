@@ -1,10 +1,11 @@
-//! Registry denormalization invariants across five stable regions.
+//! Registry denormalization invariants across six stable regions.
 //!
 //! At every commit boundary the following must hold:
 //! - `ROUTER_GRAPH_CATALOG` ↔ `ROUTER_GRAPHS` (name ↔ `GraphId`, entry.graph_id matches key)
 //! - `ROUTER_SHARDS` ↔ `ROUTER_SHARD_BY_GRAPH` (`graph_canister` ↔ `GraphShardKey`)
 //! - `ROUTER_SHARDS` ↔ `ROUTER_SHARDS_BY_GRAPH_ID` (`graph_id` ↔ shard list)
 //! - every shard `graph_id` exists in `ROUTER_GRAPHS`
+//! - every active `ShardId` is below its graph's never-reuse allocation high-water
 
 use super::super::stable::{
     ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH,
@@ -126,6 +127,12 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
                     entry.graph_id
                 )
             })?;
+            if u64::from(key.shard_id.raw()) >= runtime.next_shard_id {
+                return Err(format!(
+                    "ROUTER_SHARDS[{key:?}] is not below runtime next_shard_id {}",
+                    runtime.next_shard_id
+                ));
+            }
             let group_index = usize::try_from(key.shard_id.raw() / runtime.index_group_size)
                 .map_err(|_| format!("ROUTER_SHARDS[{key:?}] group index overflow"))?;
             // An indexless shard (ADR 0054) has no index canister and no index_cluster entry.

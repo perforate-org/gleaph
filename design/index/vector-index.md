@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
+Last updated: 2026-08-22
+Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
 
 ## Status
 
@@ -98,7 +98,8 @@ Vector target/attachment identity while driving the existing generation-fenced V
 `admin_detach_shard_canister` cursor to explicit EOF. It removes the registry row only after both the
 Graph Index and Vector detach operations succeed. If either operation fails, the row and exact
 Vector target/attachment identity remain available for retry; a successful unregister therefore
-purges stale Vector subjects before the shard id can be reused. This orchestration adds no Router
+purges stale Vector subjects before unregister completes. Router never reuses the retired shard id.
+This orchestration adds no Router
 stable region, Vector MemoryId, or public endpoint.
 
 ## Mutation flow

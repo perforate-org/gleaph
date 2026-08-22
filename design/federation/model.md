@@ -1,10 +1,10 @@
 # Federation model
 
-Last updated: 2026-06-17
+Last updated: 2026-08-22
 Status: **Partially Implemented** (graph-scoped vertex identity per [ADR 0005](../adr/0005-vertex-identity.md) /
 [ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md); vertex **existence SSOT on graph shard**
 per [ADR 0017](../adr/0017-graph-vertex-existence-ssot.md); cross-shard remote CSR and `federated_expand` deferred)
-Anchor timestamp: 2026-06-17 00:16:22 UTC +0000
+Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
 
 ## Purpose
 
@@ -12,7 +12,6 @@ Define the **distributed graph identity and placement model** shared by router, 
 
 ## Non-goals
 
-- Future migration runbooks ([operations.md](operations.md)).
 - Query planner rules ([query-semantics.md](query-semantics.md)).
 - Production multi-shard dispatch and peer expand (see [../sharding/federation-target.md](../sharding/federation-target.md)).
 
@@ -39,15 +38,11 @@ flowchart TD
 
 | Type | Owner / location | Notes |
 |------|------------------|-------|
-| `ShardId` | Router registry (`ROUTER_SHARDS`) | `ShardId(u32)` newtype; sole standalone shard is **`0`** |
+| `ShardId` | Router runtime config and registry | Graph-local `ShardId(u32)`; issued monotonically from `0` and never reused after retirement |
 | `GlobalVertexId` | Graph shard (derived) | Canonical global key: `(shard_id, local_vertex_id)` — 8 bytes LE |
 | `LocalVertexId` | Graph shard | Same bits as LARA `VertexId` on that shard; **not reused** after delete |
 | `GlobalEdgeId` | Query-time handle | `(shard_id, owner_local, edge_slot_index)` — 12 bytes; not stable across compaction |
 | `EncodedVertexId` / `EncodedEdgeId` | Client wire only | Bijective encoding of global keys; see `federation/encoded.rs` |
-| `PhysicalPlacementKey` | Type alias | Deprecated name for `GlobalVertexId` during migration |
-
-**Removed:** `LogicalVertexId`, router `ROUTER_PLACEMENTS`, placement commit/release APIs ([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)).
-
 **Standalone:** `GlobalVertexId { shard_id: ShardId(0), local_vertex_id }` when graph metadata has federation routing for shard 0. Graph derives the global key from `FederationRouting.shard_id` + local dense id.
 
 ## Vertex existence (graph shard SSOT)
@@ -58,13 +53,9 @@ A vertex is **live** on a graph shard when its CSR row exists in range and is **
 
 1. **Graph shard is authoritative** for vertex/edge existence (CSR tombstone).
 2. **`VertexId` is not reused** after delete; invalid global keys decode to tombstoned or out-of-range locals.
-3. **Index postings** are derived projections; vertex delete must enqueue property/label index removals before tombstone.
-4. **Router** owns shard registry and encoded wire ids only — not per-vertex existence.
-5. Migration (future) tombstones the source vertex on the graph shard; no router placement transition state.
-
-### Removed router APIs (ADR 0017)
-
-`commit_vertex_placement`, `release_vertex_placement`, `resolve_placement`, `resolve_global_at`.
+3. **`ShardId` is not reused** after unregister; delayed work and encoded element ids cannot bind to a later shard.
+4. **Index postings** are derived projections; vertex delete must enqueue property/label index removals before tombstone.
+5. **Router** owns shard registry and encoded wire ids only — not per-vertex existence.
 
 ## Remote edges
 
@@ -78,7 +69,7 @@ A vertex is **live** on a graph shard when its CSR row exists in range and is **
 - `graph_canister`, `index_canister`
 - `graph_id` (logical graph; name via `ROUTER_GRAPH_CATALOG`)
 
-Five stable regions (`ROUTER_GRAPH_CATALOG`, `ROUTER_GRAPHS`, `ROUTER_SHARDS`, `ROUTER_SHARDS_BY_GRAPH_ID`, `ROUTER_SHARD_BY_GRAPH`) are intentionally denormalized for lookup performance. Registry mutations go through `commit_register_*` / `commit_unregister_shard` (shard commits require a `ROUTER_GRAPHS` entry); `check_registry_invariants` verifies full bidirectional consistency in tests. Query fan-out reads `ROUTER_SHARDS_BY_GRAPH_ID` only and validates index-local integrity. See [stable-memory-inventory.md](../storage/stable-memory-inventory.md) § registry denormalization invariants.
+Six stable regions (`ROUTER_GRAPH_CATALOG`, `ROUTER_GRAPHS`, `ROUTER_GRAPH_RUNTIME_CONFIG`, `ROUTER_SHARDS`, `ROUTER_SHARDS_BY_GRAPH_ID`, `ROUTER_SHARD_BY_GRAPH`) are intentionally coordinated for lookup performance. `ROUTER_GRAPH_RUNTIME_CONFIG.next_shard_id` is the canonical never-reuse allocator high-water; live rows may be sparse. Registry mutations go through `commit_register_*` / `commit_unregister_shard` (shard commits require a `ROUTER_GRAPHS` entry); `check_registry_invariants` verifies full bidirectional consistency and that every live shard is below the high-water. Query fan-out reads `ROUTER_SHARDS_BY_GRAPH_ID` only and validates index-local integrity. See [stable-memory-inventory.md](../storage/stable-memory-inventory.md) § registry denormalization invariants.
 
 Router `list_shards_for_graph` drives multi-shard dispatch (PocketIC experiments; not product-supported in standalone mode).
 

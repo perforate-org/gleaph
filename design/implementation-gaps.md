@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
+Last updated: 2026-08-22
+Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
 
 ## Status
 
@@ -247,23 +247,20 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-006 — Router shard identity has no incarnation or lifecycle fence
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22)
 - **Severity:** P0 identity safety
 - **Owner:** Router graph catalog lifecycle, ShardId allocation, and Graph/Router wire identity
-- **Observed behavior:** A numeric ShardId may be reused after its live catalog entry is removed,
-  while GlobalVertexId carries only that numeric shard id and the local vertex id. Delayed postings,
-  vector operations, or encoded vertex ids therefore have no durable incarnation value that
-  distinguishes an old shard from a new shard assigned the same number.
-- **Expected or needed behavior:** A delayed operation or identifier from a retired shard
-  incarnation must never be interpreted as canonical state for a later incarnation.
-- **Evidence:** crates/router/src/facade/stable/graph_catalog.rs (live-catalog shard allocation);
-  crates/router/src/facade/store/registry.rs (unregister/re-register coverage); and
-  crates/graph-kernel/src/federation.rs (GlobalVertexId).
-- **Impact:** Reuse can alias delayed durable work or public identifiers across distinct shard
-  lifecycles.
-- **Next decision:** Choose a never-reuse high-water rule, an explicit wire incarnation, or an
-  equivalent principal-pinning contract before stale-delivery regressions or a multi-owner Quint
-  model.
+- **Resolution:** `ROUTER_GRAPH_RUNTIME_CONFIG.next_shard_id` is the canonical per-graph high-water.
+  Registration accepts only that never-issued id and advances the high-water; unregister and
+  failed-attach rollback never rewind it. Exhaustion fails before any registry mutation.
+- **Evidence:** `graph_runtime_config_reopen_preserves_shard_high_water`,
+  `unregister_shard_never_reuses_the_retired_graph_local_id`,
+  `exhausted_graph_local_shard_allocator_rejects_without_registry_mutation`, and
+  `registry_invariants_reject_active_shard_at_allocator_high_water`.
+- **Impact:** Delayed work and public identifiers from a retired shard cannot alias a later shard
+  within the same graph, without widening `GlobalVertexId` or cross-canister protocols.
+- **Next decision:** None for shard identity. Frontier publication remains a separate Vector GC
+  protocol decision.
 
 ### GAP-2026-08-20-005 — Property DROP INDEX has no durable per-PhysicalIndexId retirement lifecycle
 

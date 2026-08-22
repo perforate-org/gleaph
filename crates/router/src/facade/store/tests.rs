@@ -693,7 +693,12 @@ fn pending_shard_excluded_from_index_lookup_targets() {
 }
 
 #[test]
-fn unregister_shard_reconciles_index_cluster_for_retry() {
+fn unregister_shard_never_reuses_the_retired_graph_local_id() {
+    use crate::facade::stable::{
+        ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
+        ROUTER_SHARDS_BY_GRAPH_ID,
+    };
+
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::from_slice(&[1; 29]);
@@ -718,7 +723,23 @@ fn unregister_shard_reconciles_index_cluster_for_retry() {
     ))
     .expect("unregister shard");
 
-    futures::executor::block_on(store.admin_register_shard(
+    let graph_id = tenant_main_graph_id();
+    let shards_before: Vec<_> = ROUTER_SHARDS.with_borrow(|rows| {
+        rows.iter()
+            .map(|entry| (*entry.key(), entry.value()))
+            .collect()
+    });
+    let reverse_before: Vec<_> = ROUTER_SHARD_BY_GRAPH.with_borrow(|rows| {
+        rows.iter()
+            .map(|entry| (*entry.key(), entry.value()))
+            .collect()
+    });
+    let list_before = ROUTER_SHARDS_BY_GRAPH_ID.with_borrow(|rows| rows.get(&graph_id));
+    let runtime_before = ROUTER_GRAPH_RUNTIME_CONFIG
+        .with_borrow(|configs| configs.get(&graph_id))
+        .expect("runtime config");
+
+    let stale = futures::executor::block_on(store.admin_register_shard(
         admin,
         AdminRegisterShardArgs {
             shard_id: ShardId::new(0),
@@ -727,9 +748,151 @@ fn unregister_shard_reconciles_index_cluster_for_retry() {
             logical_graph_name: "tenant.main".into(),
         },
     ))
-    .expect("re-register with different index canister");
+    .expect_err("retired shard id must not be reused");
+    assert_eq!(
+        stale,
+        RouterError::Conflict(
+            "expected next graph-local shard ShardId(1) for `tenant.main`, got ShardId(0)"
+                .to_string()
+        )
+    );
+    assert!(
+        store
+            .list_shards_for_graph("tenant.main")
+            .expect("list after rejected reuse")
+            .is_empty(),
+        "rejected reuse must not recreate any registry row"
+    );
+    assert_eq!(
+        ROUTER_SHARDS.with_borrow(|rows| {
+            rows.iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect::<Vec<_>>()
+        }),
+        shards_before
+    );
+    assert_eq!(
+        ROUTER_SHARD_BY_GRAPH.with_borrow(|rows| {
+            rows.iter()
+                .map(|entry| (*entry.key(), entry.value()))
+                .collect::<Vec<_>>()
+        }),
+        reverse_before
+    );
+    assert_eq!(
+        ROUTER_SHARDS_BY_GRAPH_ID.with_borrow(|rows| rows.get(&graph_id)),
+        list_before
+    );
+    assert_eq!(
+        ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|configs| configs.get(&graph_id))
+            .expect("runtime config"),
+        runtime_before,
+        "rejected reuse must leave the complete runtime config unchanged"
+    );
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(1),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register next never-issued shard id");
+
+    let listed = store.list_shards_for_graph("tenant.main").expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].shard_id, ShardId::new(1));
+    assert_eq!(
+        ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|configs| configs.get(&graph_id))
+            .expect("runtime config")
+            .next_shard_id,
+        2
+    );
 
     assert_registry_invariants();
+}
+
+#[test]
+fn exhausted_graph_local_shard_allocator_rejects_without_registry_mutation() {
+    use crate::facade::stable::{
+        ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
+        ROUTER_SHARDS_BY_GRAPH_ID,
+    };
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let expected_runtime = ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+        let mut runtime = configs.get(&graph_id).expect("runtime config");
+        runtime.next_shard_id = u64::from(u32::MAX) + 1;
+        configs.insert(graph_id, runtime.clone());
+        runtime
+    });
+
+    let error = futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(u32::MAX),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect_err("exhausted shard allocator");
+    assert_eq!(
+        error,
+        RouterError::IdExhausted(format!("shard for graph {graph_id:?}"))
+    );
+    assert!(ROUTER_SHARDS.with_borrow(|rows| rows.is_empty()));
+    assert!(ROUTER_SHARD_BY_GRAPH.with_borrow(|rows| rows.is_empty()));
+    assert!(ROUTER_SHARDS_BY_GRAPH_ID.with_borrow(|rows| rows.get(&graph_id).is_none()));
+    assert_eq!(
+        ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow(|configs| configs.get(&graph_id)),
+        Some(expected_runtime)
+    );
+    assert_registry_invariants();
+}
+
+#[test]
+fn registry_invariants_reject_active_shard_at_allocator_high_water() {
+    use super::registry_invariants::check_registry_invariants;
+    use crate::facade::stable::ROUTER_GRAPH_RUNTIME_CONFIG;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let graph_id = tenant_main_graph_id();
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+        let mut runtime = configs.get(&graph_id).expect("runtime config");
+        runtime.next_shard_id = 0;
+        configs.insert(graph_id, runtime);
+    });
+
+    let error = check_registry_invariants().expect_err("high-water corruption must fail");
+    assert!(
+        error.contains("is not below runtime next_shard_id 0"),
+        "unexpected invariant error: {error}"
+    );
 }
 
 #[test]
