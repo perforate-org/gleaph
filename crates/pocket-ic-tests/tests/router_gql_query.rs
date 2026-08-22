@@ -11,10 +11,11 @@ use gleaph_pocket_ic_tests::{
     DEST_SHARD, SOURCE_SHARD, create_directed_edge_property_index, create_edge_property_index,
     create_undirected_edge_property_index, create_vertex_property_index,
     drop_vertex_property_index, e2e_insert_directed_edge_with_property,
-    e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
-    e2e_insert_vertex_with_two_properties, ensure_edge_label, ensure_property, gql_mutate_as_admin,
-    gql_mutate_as_admin_expect_err, gql_mutate_result_as_admin, gql_query_as_admin,
-    gql_query_as_admin_expect_err, gql_query_as_admin_with_read_mode,
+    e2e_insert_undirected_edge_with_property, e2e_insert_vertex,
+    e2e_insert_vertex_with_label_and_property, e2e_insert_vertex_with_property,
+    e2e_insert_vertex_with_two_properties, ensure_edge_label, ensure_property, ensure_vertex_label,
+    gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_mutate_result_as_admin,
+    gql_query_as_admin, gql_query_as_admin_expect_err, gql_query_as_admin_with_read_mode,
     graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
     mutation_status_as_admin, run_router_recovery_timer, start_graph_shard, stop_graph_shard,
     test_inject_projection_pending_saga,
@@ -579,6 +580,73 @@ fn router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga() {
     assert_eq!(
         updated.row_count, 2,
         "both shards' anchor vertices were updated by the bundle"
+    );
+}
+
+/// Focused GAP-2026-08-21-001 regression: the labeled-insert variant of the anchored SET bundle
+/// must converge like the unlabeled one. Its fixture previously posted into a fabricated
+/// physical namespace, so the Router anchor never saw the rows and the bundle was not admitted.
+/// Kept separate from the restored saga bodies above.
+#[test]
+fn router_labeled_insert_set_repost_converges_across_shards() {
+    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
+
+    let env = install_federation();
+    let age = ensure_property(&env, "age");
+    let person = ensure_vertex_label(&env, INDEX_VERTEX_LABEL);
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "router_labeled_insert_set_repost_converges_across_shards",
+    );
+    let source = e2e_insert_vertex_with_label_and_property(
+        &env,
+        env.graph_source,
+        person.raw(),
+        age.raw(),
+        5,
+    );
+    let dest =
+        e2e_insert_vertex_with_label_and_property(&env, env.graph_dest, person.raw(), age.raw(), 5);
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
+
+    let pre = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+    assert_eq!(
+        pre.row_count, 2,
+        "labeled inserts must be visible through the label-less anchor lookup before the bundle"
+    );
+
+    let result = gql_mutate_result_as_admin(
+        &env,
+        "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)",
+        "router_labeled_insert_set_repost_converges_across_shards",
+    );
+    let token = result
+        .token
+        .expect("an admitted anchored multi-DML bundle issues a mutation token");
+    assert_eq!(
+        token.shards.len(),
+        2,
+        "the labeled anchor fans out to both shards"
+    );
+    assert_eq!(
+        result.phase,
+        Some(MutationLifecyclePhase::Completed),
+        "the roll-forward saga converges immediately with both shards reachable"
+    );
+
+    let updated = gql_query_as_admin(&env, "MATCH (n {age: 6}) RETURN n");
+    assert_eq!(
+        updated.row_count, 2,
+        "SET must repost add-new for labeled vertices on both shards"
+    );
+    let stale = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+    assert_eq!(
+        stale.row_count, 0,
+        "SET must remove the old-value posting for labeled vertices"
     );
 }
 

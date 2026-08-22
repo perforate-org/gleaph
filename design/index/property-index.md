@@ -309,6 +309,16 @@ This follows the existing derived-state contract: postings may lag canonical ver
 
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.
 
+**Vertex membership resolution (single owner):** single DML, bulk insert, and backfill all resolve
+their namespaces through `vertex_index_memberships_for_labels`
+(`crates/graph/src/index/catalog_context.rs`), so a committed transition maintains exactly the
+namespaces its posting state was built against. A vertex that carries no canonical label maintains
+every namespace indexing the property (legacy-unlabeled contract — it cannot be excluded from any
+label scope, mirroring the Router's label-less superset anchor lookups, which serve such postings
+without a sieve); labeled vertices maintain wildcard (`label_id == 0`) memberships plus exact
+label matches, and label scopes that do not intersect their labels stay excluded even when they
+index the same property. A missing vertex row dispatches nothing.
+
 **Backfill:** `backfill_vertex_property_postings` on graph shards replays indexable vertex properties from
 `VERTEX_PROPERTIES` into graph-index via the budget-driven `posting_batch` transport when the concrete
 client supports it, with per-posting fallback for native/legacy clients (router-guarded update, same

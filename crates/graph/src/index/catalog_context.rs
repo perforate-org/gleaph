@@ -128,7 +128,17 @@ pub(crate) fn vertex_index_memberships(
     )
 }
 
-/// Return the union of exact namespaces applicable to a canonical vertex label set.
+/// Single membership-resolution owner for vertex property maintenance.
+///
+/// Single DML, bulk insert, and backfill all resolve through this helper, so a committed
+/// transition maintains exactly the namespaces its posting state was built against:
+///
+/// - A vertex that carries no canonical label cannot be excluded from any label scope (the
+///   legacy-unlabeled contract): it maintains EVERY namespace indexing the property. This mirrors
+///   the Router's label-less superset anchor lookups, which serve such postings without a sieve.
+/// - A labeled vertex maintains wildcard (`label_id == 0`) memberships plus exact label matches;
+///   label scopes that do not intersect its labels are excluded even when they index the same
+///   property.
 pub(crate) fn vertex_index_memberships_for_labels(
     labels: &[VertexLabelId],
     property_id: PropertyId,
@@ -138,7 +148,8 @@ pub(crate) fn vertex_index_memberships_for_labels(
             let mut memberships = Vec::new();
             for membership in catalog.vertex_indexes.iter().filter(|membership| {
                 membership.property_id == property_id.raw()
-                    && (membership.label_id == 0
+                    && (labels.is_empty()
+                        || membership.label_id == 0
                         || labels
                             .iter()
                             .any(|label| label.raw() == membership.label_id))
@@ -817,6 +828,262 @@ mod tests {
                 .count(),
             0
         );
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    /// Builds an Active vertex membership for repost-contract fixtures.
+    #[cfg(test)]
+    fn active_vertex_membership(
+        physical_index_id: u64,
+        catalog_epoch: u64,
+        property_id: PropertyId,
+        label_id: u16,
+    ) -> gleaph_graph_kernel::index::IndexedVertexMembership {
+        gleaph_graph_kernel::index::IndexedVertexMembership {
+            physical_index_id: PhysicalIndexId::new(physical_index_id).expect("test physical id"),
+            catalog_epoch,
+            phase: IndexMaintenancePhase::Active,
+            property_id: property_id.raw(),
+            label_id,
+        }
+    }
+
+    fn int_key(value: i64) -> Vec<u8> {
+        gleaph_gql::value_to_index_key_bytes(&Value::Int64(value))
+            .unwrap()
+            .expect("Int64 index key")
+    }
+
+    #[test]
+    fn unlabeled_legacy_set_reposts_remove_and_insert_into_label_scoped_membership() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        let property_id = PropertyId::from_raw(79);
+        // No label set: the legacy-unlabeled rule maintains every namespace indexing the
+        // property, including this Person-scoped one.
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![active_vertex_membership(721, 12, property_id, 1)],
+            ..Default::default()
+        });
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            property_id,
+            Some(&Value::Int64(5)),
+            Some(&Value::Int64(6)),
+        ));
+
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(
+            pending.len(),
+            2,
+            "SET must repost remove-old plus add-new into the label-scoped membership"
+        );
+        assert!(matches!(
+            pending[0],
+            crate::index::pending::PendingPostingOp::Remove {
+                physical_index_id,
+                catalog_epoch,
+                ref payload_bytes,
+                ..
+            } if physical_index_id == PhysicalIndexId::new(721).unwrap()
+                && catalog_epoch == 12
+                && payload_bytes == &int_key(5)
+        ));
+        assert!(matches!(
+            pending[1],
+            crate::index::pending::PendingPostingOp::Insert {
+                physical_index_id,
+                catalog_epoch,
+                ref payload_bytes,
+                ..
+            } if physical_index_id == PhysicalIndexId::new(721).unwrap()
+                && catalog_epoch == 12
+                && payload_bytes == &int_key(6)
+        ));
+
+        crate::index::pending::clear_pending();
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn labeled_set_reposts_only_into_its_own_label_membership() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        let property_id = PropertyId::from_raw(80);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let vertex = store.vertex(vertex_id).expect("vertex row");
+        store
+            .set_vertex_labels(vertex_id, vertex, [VertexLabelId::from_raw(1)])
+            .expect("target label");
+        crate::index::pending::clear_pending();
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                active_vertex_membership(731, 13, property_id, 1),
+                active_vertex_membership(732, 14, property_id, 2),
+            ],
+            ..Default::default()
+        });
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            property_id,
+            Some(&Value::Int64(5)),
+            Some(&Value::Int64(6)),
+        ));
+
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(pending.len(), 2, "label 2's namespace is not maintained");
+        assert!(pending.iter().all(
+            |op| matches!(op, crate::index::pending::PendingPostingOp::Remove { physical_index_id, .. }
+                | crate::index::pending::PendingPostingOp::Insert { physical_index_id, .. }
+                if *physical_index_id == PhysicalIndexId::new(731).unwrap())
+        ));
+
+        crate::index::pending::clear_pending();
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn remove_repost_removes_exactly_the_old_value_posting() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        let property_id = PropertyId::from_raw(81);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![active_vertex_membership(741, 15, property_id, 3)],
+            ..Default::default()
+        });
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            property_id,
+            Some(&Value::Int64(5)),
+            None,
+        ));
+
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(
+            pending.len(),
+            1,
+            "REMOVE must enqueue exactly one removal of the old-value posting"
+        );
+        assert!(matches!(
+            pending[0],
+            crate::index::pending::PendingPostingOp::Remove {
+                physical_index_id,
+                ref payload_bytes,
+                ..
+            } if physical_index_id == PhysicalIndexId::new(741).unwrap()
+                && payload_bytes == &int_key(5)
+        ));
+
+        crate::index::pending::clear_pending();
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn multi_label_vertex_sharing_one_namespace_pushes_no_duplicate_ops() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        let property_id = PropertyId::from_raw(82);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let vertex = store.vertex(vertex_id).expect("vertex row");
+        store
+            .set_vertex_labels(
+                vertex_id,
+                vertex,
+                [VertexLabelId::from_raw(1), VertexLabelId::from_raw(2)],
+            )
+            .expect("target labels");
+        crate::index::pending::clear_pending();
+        let _guard = enter(IndexedPropertyCatalog {
+            // One namespace registered under both of the vertex's labels.
+            vertex_indexes: vec![
+                active_vertex_membership(751, 16, property_id, 1),
+                active_vertex_membership(751, 16, property_id, 2),
+            ],
+            ..Default::default()
+        });
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            property_id,
+            None,
+            Some(&Value::Int64(6)),
+        ));
+
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(
+            pending.len(),
+            1,
+            "one shared membership identity yields exactly one posting op"
+        );
+
+        crate::index::pending::clear_pending();
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn missing_vertex_row_dispatches_no_postings() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        let property_id = PropertyId::from_raw(83);
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![active_vertex_membership(761, 17, property_id, 0)],
+            ..Default::default()
+        });
+        let absent = ic_stable_lara::VertexId::from(u32::MAX);
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            absent,
+            property_id,
+            None,
+            Some(&Value::Int64(6)),
+        ));
+
+        assert!(crate::index::pending::take_pending().is_empty());
         store.set_federation_routing(None).expect("clear routing");
     }
 }

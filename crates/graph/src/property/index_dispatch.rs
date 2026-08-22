@@ -65,10 +65,12 @@ fn memberships_for_change(change: PropertyValueChange<'_>) -> Vec<IndexMembershi
     match change.entity {
         PropertyEntity::Vertex(vertex_id) => {
             let store = GraphStore::new();
-            let labels = store
-                .vertex(vertex_id)
-                .map(|vertex| store.vertex_labels(vertex_id, vertex))
-                .unwrap_or_default();
+            // A missing vertex row has no posting state to maintain; only a live row resolves
+            // memberships (an empty label set there means the legacy-unlabeled wildcard rule).
+            let Some(vertex) = store.vertex(vertex_id) else {
+                return Vec::new();
+            };
+            let labels = store.vertex_labels(vertex_id, vertex);
             crate::index::catalog_context::vertex_index_memberships_for_labels(
                 &labels,
                 change.property_id,
@@ -154,10 +156,11 @@ pub(crate) fn dispatch_vertex_property_index_ops_bulk<'a>(
     let store = GraphStore::new();
     let mut pending = Vec::new();
     for (vertex_id, property_id, previous, value) in changes {
-        let labels = store
-            .vertex(*vertex_id)
-            .map(|vertex| store.vertex_labels(*vertex_id, vertex))
-            .unwrap_or_default();
+        // Same missing-row rule as the single-write path: only live rows resolve memberships.
+        let Some(vertex) = store.vertex(*vertex_id) else {
+            continue;
+        };
+        let labels = store.vertex_labels(*vertex_id, vertex);
         for membership in crate::index::catalog_context::vertex_index_memberships_for_labels(
             &labels,
             *property_id,
