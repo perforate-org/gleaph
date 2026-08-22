@@ -11,6 +11,7 @@ pub(crate) mod graph_catalog;
 pub(crate) mod graph_type_catalog;
 pub(crate) mod graph_type_name_catalog;
 pub(crate) mod index_name_catalog;
+pub(crate) mod index_retirement;
 pub(crate) mod indexed_catalog;
 pub(crate) mod label_stats;
 pub(crate) mod layout;
@@ -153,6 +154,13 @@ thread_local! {
     pub(crate) static ROUTER_VECTOR_MAINTENANCE_POLICIES:
         RefCell<memory::StableVectorMaintenancePolicyMap> =
         RefCell::new(memory::init_vector_maintenance_policies());
+
+    /// `PhysicalIndexId → pending posting-purge obligation` (ADR 0023 D6). The sole durable
+    /// identity of a dropped index's purge work: the catalog row is already gone, so this
+    /// record — not the caller's stack — owns resumable drain progress until every frozen
+    /// target confirms completion.
+    pub(crate) static ROUTER_INDEX_RETIRED: RefCell<memory::StableIndexRetiredMap> =
+        RefCell::new(memory::init_index_retired());
 
     /// `(request_id, deployment_id) → RouterProvisioningRequest` (ADR 0035 Slice 1). Canonical
     /// Router-owned issuance intent before any canister id exists.

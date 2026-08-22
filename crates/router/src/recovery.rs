@@ -33,8 +33,9 @@ const RECLAIM_SCAN_BUDGET: usize = 8;
 #[cfg(target_family = "wasm")]
 const EFFECT_SCAN_BUDGET: usize = 8;
 
-/// Direct vector-ingestion outbox rows examined per recovery tick. Each target group issues one
-/// bounded typed batch call; stable rows remain pending until that exact target acknowledges them.
+/// Direct vector-ingestion outbox rows examined per recovery tick. Each exact `(target, shard)`
+/// group issues one bounded typed batch call; after resolution, one rotated Vector lane is
+/// attempted per pass and stable rows remain pending until that frontier reply is observed.
 #[cfg(target_family = "wasm")]
 const VECTOR_INGEST_OUTBOX_SCAN_BUDGET: usize = 16;
 
@@ -42,6 +43,12 @@ const VECTOR_INGEST_OUTBOX_SCAN_BUDGET: usize = 16;
 /// budget: each `Dropping` constraint can purge a reservation page and page each shard's outbox.
 #[cfg(target_family = "wasm")]
 const CONSTRAINT_DROP_SCAN_BUDGET: usize = 8;
+
+/// Retired physical posting namespaces examined per tick by the ADR 0023 D6 retirement
+/// drain driver (Driver 4). Each record issues at most one bounded inter-canister purge
+/// step per pending target.
+#[cfg(target_family = "wasm")]
+const INDEX_RETIREMENT_SCAN_BUDGET: usize = 8;
 
 /// Delay between ticks while a lap is still in progress (more keyspace to scan).
 #[cfg(any(target_family = "wasm", test))]
@@ -174,6 +181,13 @@ thread_local! {
     /// `true` if the drop-drain lap in progress has found a `Dropping` constraint still needing work
     /// on **any** of its pages (accumulated; reset only when a fresh lap begins).
     static CONSTRAINT_DROP_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Round-robin scan cursor for the ADR 0023 D6 retirement drain driver (Driver 4) over the
+    /// retired-physical-index records. Independent of the other cursors; raw PhysicalIndexId keys.
+    static INDEX_RETIREMENT_CURSOR: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+    /// `true` if the retirement-drain lap in progress still found a record needing a later
+    /// step (accumulated; reset only when a fresh lap begins).
+    static INDEX_RETIREMENT_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Schedules the recovery timer iff one is not already armed or running. Idempotent and
@@ -373,6 +387,24 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     }
     CONSTRAINT_DROP_CURSOR.with_borrow_mut(|c| *c = drop_next);
 
+    // ADR 0023 D6: drive a bounded slice of the retired physical posting namespaces
+    // through the retirement drain driver (Driver 4) on the same tick. Best-effort: an
+    // unreachable index canister holds its record with its durable resume cursor for the
+    // next lap.
+    let retirement_start = INDEX_RETIREMENT_CURSOR.get();
+    if retirement_start.is_none() {
+        INDEX_RETIREMENT_LAP_FOUND.with(|f| f.set(false));
+    }
+    let (retirement_next, retirement_found) = crate::index_retirement::run_index_retirement_pass(
+        retirement_start,
+        INDEX_RETIREMENT_SCAN_BUDGET,
+    )
+    .await;
+    if retirement_found {
+        INDEX_RETIREMENT_LAP_FOUND.with(|f| f.set(true));
+    }
+    INDEX_RETIREMENT_CURSOR.set(retirement_next);
+
     // Advance the cursor. A short scan (fewer than the budget) means we reached the end of
     // the keyspace, so reset to start a fresh lap next time.
     let lap_complete = scanned < RECOVERY_SCAN_BUDGET as u32;
@@ -385,6 +417,7 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
         || effect_next.is_some()
         || vector_outbox_next.is_some()
         || drop_next.is_some()
+        || retirement_next.is_some()
     {
         // Mid-lap on any driver: keep scanning promptly.
         return Some(RECOVERY_FLOOR_DELAY);
@@ -396,6 +429,7 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
         || EFFECT_LAP_FOUND.with(std::cell::Cell::get)
         || VECTOR_INGEST_OUTBOX_LAP_FOUND.with(std::cell::Cell::get)
         || CONSTRAINT_DROP_LAP_FOUND.with(std::cell::Cell::get)
+        || INDEX_RETIREMENT_LAP_FOUND.with(std::cell::Cell::get)
     {
         return Some(RECOVERY_RELAXED_DELAY);
     }

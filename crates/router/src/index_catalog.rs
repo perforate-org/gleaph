@@ -14,8 +14,7 @@ use crate::facade::stable::index_name_catalog::{
     intern_index_name, lookup_index_name_id, preflight_index_name,
 };
 use crate::facade::stable::indexed_catalog::{
-    create_named_index, drop_named_index, edge_index_uses_property_label, get_named_index,
-    is_property_registered, load_graph_stats,
+    create_named_index, drop_named_index, get_named_index, load_graph_stats,
 };
 use crate::facade::stable::vector_index_catalog;
 use crate::facade::store::RouterStore;
@@ -469,59 +468,53 @@ async fn drop_index(
         }
         return Err(RouterError::NotFound(index_name.to_owned()));
     };
+    // Preflight BEFORE the destructive catalog mutation: freeze the graph's live index
+    // canisters as the retirement's drain targets so a registry error rejects the DDL
+    // before any state is removed.
+    let targets = RouterStore::new().graph_index_lookup_targets(graph_id)?;
     let removed = drop_named_index(graph_id, index_name_id, if_exists)?;
 
     let Some(def) = removed else {
         return Ok(());
     };
 
-    // ADR 0023 D6: DROP INDEX must also purge the dropped property's postings from
-    // graph-index (closes P7). Purge only when no remaining index still needs them:
-    // - vertex postings carry no label, so they are shared by every vertex index on
-    //   the property → purge once the property is fully unregistered.
-    // - edge postings carry the catalog label_id → purge the (property, label) scope
-    //   once no remaining edge index references it.
-    let purge =
-        match def.kind {
-            IndexedPropertyKind::Vertex => (!is_property_registered(
+    // ADR 0023 D6 (+ GAP-2026-08-20-005): co-write the catalog removal with a durable
+    // retirement record keyed by PhysicalIndexId. Postings are namespaced by physical id
+    // and no reader can reach a namespace whose catalog row is gone, so EVERY dropped
+    // definition retires its own namespace unconditionally — a sibling index on the same
+    // property neither needs those postings nor protects them. The record — not this
+    // call — owns purge progress from here on: a response loss, a stopped target, or an
+    // upgrade defers the remainder to the recovery lane instead of orphaning them.
+    let kind = match def.kind {
+        IndexedPropertyKind::Vertex => IndexPurgeKind::Vertex,
+        IndexedPropertyKind::Edge => IndexPurgeKind::Edge,
+    };
+    // A graph with no live index canister owns its posting cleanup through the shard
+    // detach flow instead; an empty fan-out would enqueue a self-deleting record.
+    if !targets.is_empty() {
+        crate::facade::stable::index_retirement::enqueue_retirement(
+            def.physical_index_id,
+            crate::facade::stable::index_retirement::RetiredIndexRecord {
                 graph_id,
-                def.kind,
-                def.property_id,
-            ))
-            .then_some((IndexPurgeKind::Vertex, def.property_id.raw(), 0u16)),
-            IndexedPropertyKind::Edge => {
-                (!edge_index_uses_property_label(graph_id, def.property_id, def.label_id))
-                    .then_some((IndexPurgeKind::Edge, def.property_id.raw(), def.label_id))
-            }
-        };
-
-    if let Some((kind, property_id, label_id)) = purge {
-        purge_property_postings(graph_id, def.physical_index_id, kind, property_id, label_id)
-            .await?;
-    }
-    Ok(())
-}
-
-/// Fans the bounded posting purge out to every index canister backing `graph_id`'s
-/// live shards (ADR 0023 D6). A no-op on native builds (`index_sync` stubs out).
-async fn purge_property_postings(
-    graph_id: GraphId,
-    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
-    kind: IndexPurgeKind,
-    property_id: u32,
-    label_id: u16,
-) -> Result<(), RouterError> {
-    let targets = RouterStore::new().graph_index_lookup_targets(graph_id)?;
-    for index_canister in targets {
-        crate::index_sync::admin_purge_property_postings(
-            index_canister,
-            physical_index_id,
-            kind,
-            property_id,
-            label_id,
-        )
-        .await
-        .map_err(RouterError::Internal)?;
+                kind,
+                property_id: def.property_id.raw(),
+                label_id: def.label_id,
+                pending: targets
+                    .iter()
+                    .map(|canister| {
+                        crate::facade::stable::index_retirement::RetirementTargetDrain {
+                            canister: *canister,
+                            resume: None,
+                        }
+                    })
+                    .collect(),
+                enqueued_at_ns: crate::facade::store::ic_time_ns(),
+            },
+        );
+        // Arm the autonomous lane first so even a trapped inline drain converges without a caller.
+        crate::recovery::arm_if_needed();
+        // Inline fast path: bounded rounds until done or hold; holds defer to the recovery lane.
+        crate::index_retirement::drain_retirement_inline(def.physical_index_id).await;
     }
     Ok(())
 }

@@ -10,11 +10,16 @@
 //! Scope (the posting key orders `property_id` first, so each scope is a
 //! contiguous `property_id` range):
 //! - **Vertex** postings carry no label, so the scope is the whole `property_id`
-//!   range; driven only once the property is no longer referenced by any vertex
-//!   index.
+//!   range.
 //! - **Edge** postings carry the catalog `label_id` (direction stripped), so the
-//!   scope is `(property_id, label_id)`; driven once no remaining edge index
-//!   references that `(property_id, label_id)`.
+//!   scope is `(property_id, label_id)`.
+//!
+//! Every scope belongs to exactly one physical namespace: a dropped index definition
+//! always retires its own namespace unconditionally — no reader can reach a namespace
+//! whose catalog row is gone, and a sibling index on the same property owns a disjoint
+//! range. The Router keeps the durable retirement identity (and per-target resume
+//! cursors) in its retired-index records so purge progress survives response loss,
+//! stopped targets, and upgrades without any caller in the loop.
 
 use candid::CandidType;
 use serde::{Deserialize, Serialize};

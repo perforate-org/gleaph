@@ -18,7 +18,7 @@ use candid::{Decode, Encode};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, RouterError};
-use gleaph_graph_kernel::index::{IndexedPropertyCatalog, PostingHit};
+use gleaph_graph_kernel::index::{IndexedPropertyCatalog, PhysicalIndexId, PostingHit};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_pocket_ic_tests::{
@@ -215,6 +215,123 @@ fn drop_index_purges_postings_from_graph_index() {
         0,
         "DROP INDEX must purge the dropped property's postings from graph-index \
          (P7: dropped indexes used to orphan their postings)"
+    );
+}
+
+/// Per-namespace posting hits on graph-index for one exact `(physical index, property)`
+/// scope. Unlike [`count_postings_for_value`] this does not sum across namespaces, so it
+/// can attribute postings to the specific physical namespace being audited.
+fn namespace_hits(
+    env: &FederationEnv,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: &[u8],
+) -> usize {
+    let bytes = env
+        .pic
+        .query_call(
+            env.index,
+            env.router,
+            "lookup_equal",
+            Encode!(&physical_index_id, &property_id, &value.to_vec())
+                .expect("encode lookup_equal"),
+        )
+        .expect("lookup_equal query");
+    Decode!(&bytes, Vec<PostingHit>)
+        .expect("decode PostingHit>")
+        .len()
+}
+
+/// Active vertex namespaces the router's live catalog allocates for one property.
+fn active_vertex_namespaces(env: &FederationEnv, property_id: u32) -> Vec<PhysicalIndexId> {
+    let catalog_bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.graph_source,
+            "get_indexed_property_catalog",
+            Encode!(&GRAPH_NAME).expect("encode graph name"),
+        )
+        .expect("get_indexed_property_catalog query");
+    let catalog: IndexedPropertyCatalog =
+        Decode!(&catalog_bytes, Result<IndexedPropertyCatalog, RouterError>)
+            .expect("decode catalog result")
+            .expect("catalog query ok");
+    catalog
+        .vertex_indexes
+        .iter()
+        .filter(|membership| membership.property_id == property_id)
+        .map(|membership| membership.physical_index_id)
+        .collect()
+}
+
+/// GAP-2026-08-20-005 regression: two vertex indexes sharing one property own distinct
+/// physical namespaces. Dropping ONE of them must retire exactly that namespace's
+/// postings even though the property itself stays registered by its sibling — the old
+/// remaining-reference gate skipped the purge entirely and leaked every coexisting
+/// namespace until (and even after) the last reference disappeared.
+#[test]
+fn dropping_one_of_two_indexes_on_shared_property_does_not_leak_its_namespace() {
+    let env = install_single_shard_federation();
+    let age = ensure_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "shared_create_person_age",
+    );
+    const EMPLOYEE_LABEL: &str = "Employee";
+    create_vertex_property_index(
+        &env,
+        "adr0023_shared_employee_age",
+        EMPLOYEE_LABEL,
+        "age",
+        "shared_create_employee_age",
+    );
+    let _ = gql_mutate_as_admin(&env, "INSERT (:Person {age: 5})", "shared_insert_person");
+    let _ = gql_mutate_as_admin(&env, "INSERT (:Employee {age: 5})", "shared_insert_employee");
+
+    let age_value = value_to_index_key_bytes(&Value::Int64(5))
+        .expect("encode age value")
+        .expect("age value is indexable");
+
+    let both = active_vertex_namespaces(&env, age.raw());
+    assert_eq!(
+        both.len(),
+        2,
+        "the two shared-property indexes must own distinct physical namespaces"
+    );
+    assert_eq!(
+        count_postings_for_value(&env, &age_value),
+        2,
+        "each namespace holds exactly one posting for the written value"
+    );
+
+    drop_vertex_property_index(
+        &env,
+        "adr0023_shared_employee_age",
+        false,
+        "shared_drop_employee_age",
+    );
+
+    let survivor = active_vertex_namespaces(&env, age.raw());
+    assert_eq!(survivor.len(), 1, "the sibling index must remain registered");
+    let retired_namespace = both
+        .iter()
+        .find(|ns| survivor.first() != Some(ns))
+        .copied()
+        .expect("the dropped index's namespace differs from the sibling's");
+    assert_eq!(
+        namespace_hits(&env, retired_namespace, age.raw(), &age_value),
+        0,
+        "dropping one of two shared-property indexes must retire that namespace's \
+         postings instead of leaking them behind the still-registered property"
+    );
+    assert_eq!(
+        namespace_hits(&env, survivor[0], age.raw(), &age_value),
+        1,
+        "the sibling index's postings must survive the retirement untouched"
     );
 }
 

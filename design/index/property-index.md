@@ -397,25 +397,37 @@ argument is also capped at the conservative 2 MiB cross-subnet request limit, so
 code remains safe if the index canister moves subnets. DML-only ad-hoc/native blocks use the same
 outbox; a block that reads after DML retains a legacy flush boundary for read-after-write visibility.
 
-**`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
-postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes
-orphaned their postings). The index exposes a router-guarded, bounded, resumable
-`admin_purge_property_postings(kind, property_id, label_id, resume)`
+**`DROP INDEX` posting purge + durable retirement (ADR 0023 D6, implemented):** dropping an index
+removes the dropped property's postings from graph-index, not just the router catalog entry
+(closing P7, where dropped indexes orphaned their postings). The index exposes a router-guarded,
+bounded, resumable `admin_purge_property_postings(kind, property_id, label_id, resume)`
 (`graph-index/src/facade/store/posting_purge.rs`) mirroring `admin_detach_shard_canister`: posting
-keys order `property_id` first, so each scope is a contiguous range — **vertex** keys carry no label
-(purge the whole `property_id` range); **edge** keys carry the catalog `label_id` (direction
-stripped), so the purge filters to `(property_id, label_id)`. `router::drop_index` purges only when
-the postings are no longer referenced (`is_property_registered` for a shared vertex property;
-`edge_index_uses_property_label` for a per-`(property, label)` edge scope), fanning the resume loop
-out to every index canister backing the graph's live shards (`graph_index_lookup_targets`). The
-purge is stateless (no new stable region).
+keys order `property_id` first and each scope is namespaced by its physical id — **vertex** keys
+carry no label (purge the whole `(physical_index_id, property_id)` range); **edge** keys carry the
+catalog `label_id` (direction stripped), so the purge filters to `(physical_index_id, property_id,
+label_id)`.
+
+Because posting ranges are disjoint per physical namespace and no reader can reach a namespace
+whose catalog row is gone, **every dropped definition retires its own physical namespace
+unconditionally** — a sibling index on a shared property neither needs those postings nor protects
+them. The Router co-writes the catalog removal with a durable retirement record keyed by
+`PhysicalIndexId` (`ROUTER_INDEX_RETIRED`, MemoryId 54,
+`router/src/facade/stable/index_retirement.rs`) whose value freezes the drain target set resolved
+*before* the destructive mutation plus one resume cursor per pending target. The inline fast path
+drives bounded rounds during the DDL call; any hold (stopped target, response loss, upgrade) defers
+the remainder to the recovery timer's retirement-drain lane (`router/src/index_retirement.rs`,
+Driver 4), which advances one bounded step per pending target per tick until every target confirms
+`done` and deletes the record. PhysicalIndexId allocation is monotonic and never reused, so a
+retired identity cannot be resurrected by a later `CREATE INDEX`; `DROP INDEX` therefore always
+returns success after the co-write and never fails on purge transport errors. A graph with no live
+index canister owns its posting cleanup through the shard detach flow instead.
 
 ## Implementation-gap traceability (non-normative)
 
 The implementation-gap ledger is the status authority for the following open
 observations. These links do not amend the property-index contract above.
 
-- [GAP-2026-08-20-005](../implementation-gaps.md#gap-2026-08-20-005--property-drop-index-has-no-durable-per-physicalindexid-retirement-lifecycle) — **Open**: per-`PhysicalIndexId` DROP retirement durability.
+- [GAP-2026-08-20-005](../implementation-gaps.md#gap-2026-08-20-005--property-drop-index-has-no-durable-per-physicalindexid-retirement-lifecycle) — **Resolved (commit pending)**: per-`PhysicalIndexId` DROP retirement durability; owning regressions `dropping_one_of_two_indexes_on_shared_property_does_not_leak_its_namespace` + router unit tests in `index_retirement.rs`.
 - [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: shard incarnation and unregister lifecycle fencing.
 
 ## Derived-state lag

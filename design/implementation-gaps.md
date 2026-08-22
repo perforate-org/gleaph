@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 08:49:10 UTC +0000
+Anchor timestamp: 2026-08-22 11:04:51 UTC +0000
 
 ## Status
 
@@ -138,7 +138,10 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-002 — Router direct vector ingestion durable intent ownership
 
-- **Status:** In progress (frontier implementation and focused runtime/benchmark gates pass; unfiltered persisted canbench artifacts and the final plan gate pending)
+- **Status:** Resolved (2026-08-22; contiguous frontier implementation and focused/unfiltered runtime
+  and benchmark gates pass; targeted affected-crate format passes while the workspace-wide format
+  check is blocked by unrelated dirty paths and never passed; autonomous timer firing, Graph-only
+  lane liveness, global subject-map growth, and finite-time GC remain explicitly deferred)
 - **Severity:** P0 durable derived-state contract
 - **Owner:** Router direct vector-ingestion API and MemoryId 53 lifecycle
 - **Contract:** Every allocated direct-ingestion mutation ID is synchronously co-written with one
@@ -170,18 +173,24 @@ defect from being rediscovered without its prior reasoning.
   (Router, Property Index, Graph, Vector), covering response loss, upgrades, exact retry/retirement,
   GC gating/physical collection, and stale-resurrection prevention. Router and Vector tests/checks/
   clippy pass. Focused canbenches measure 3.29M instructions for the single-lane 1,024-row
-  derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier plus bounded-GC step.
-  Unfiltered persisted canbench artifacts and the final plan gate remain pending; the bounded Quint
-  model is protocol evidence only, not production proof.
+  derivation, 9.85M for 1,024 lanes, and 2.11B for the Vector frontier plus bounded-GC step. The
+  unfiltered Router `canbench --persist` run took approximately 190 seconds across 38 suites with
+  no regressions and recorded 56,304,312 and 49,374,533 instructions for the two frontier
+  derivations; its stable-reopen baseline was refreshed because canbench 0.7 expanded the reopen
+  surface, not because of a compact-key regression. The unfiltered Vector run took approximately
+  181 seconds across 83 suites with zero regressions and recorded 2,106,603,774 instructions for
+  the frontier-plus-GC budget. The workspace-wide format check is blocked by unrelated dirty paths
+  and never passed; the bounded Quint model is protocol evidence only, not production proof.
 - **Impact:** Restart or response loss cannot leave an allocated direct-ingestion stamp without a
   durable owner. Marked lanes can now advance the contiguous Router frontier and use the existing
   `min(graph_watermark, router_watermark)` cutoff, but Graph-only lanes that never produce a marker
   remain outside this liveness slice. The public operation remains at-least-once retry/convergence
   with no finite-time or client-level exactly-once guarantee, and no global subject-map growth or
   finite-time GC bound is claimed.
-- **Next decision:** Run the unfiltered `canbench --persist` artifacts and the final Plan 0275 gate.
-  Do not infer production liveness or a global growth bound from the bounded Quint model or owner-local
-  tests.
+- **Next decision:** No remaining prerequisite exists for this bounded durable-ownership slice.
+  Keep autonomous timer firing, Graph-only lane liveness, global subject-map growth, and finite-time
+  GC as separate future evidence; do not infer those claims from the bounded Quint model or
+  owner-local tests.
 
 ### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
 
@@ -281,24 +290,40 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-005 — Property DROP INDEX has no durable per-PhysicalIndexId retirement lifecycle
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22; fix is in this patch)
 - **Severity:** P1 derived-index cleanup
 - **Owner:** Router index catalog and graph-index posting purge lifecycle
 - **Observed behavior:** Router removes the catalog row before remote purge and keeps purge progress
   only in the active call. A retry after response loss cannot recover the removed catalog identity.
   Multiple physical namespaces can exist for one logical property, while the remaining-reference
-  decision can skip or target only one namespace.
+  decision can skip or target only one namespace: dropping one of several indexes on a shared
+  property skipped the purge entirely, orphaning the dropped namespace immediately, and the final
+  drop purged only its own namespace.
 - **Expected or needed behavior:** Every unreferenced PhysicalIndexId must have a durable,
   resumable purge identity and cursor until graph-index confirms cleanup; a shared logical property
   must not leak a distinct physical namespace after its final reference is removed.
-- **Evidence:** crates/router/src/index_catalog.rs (catalog deletion, remaining-reference check,
-  and remote purge); crates/router/src/index_sync.rs (call-local purge cursor);
-  crates/router/src/facade/stable/indexed_catalog.rs (physical-index identity); and
-  crates/graph-index/src/facade/store/posting_purge.rs.
-- **Impact:** A stopped target, response loss, or multi-index sequence can leave orphan postings
-  that no public retry can identify and retire.
-- **Next decision:** Define a durable Router-owned retirement record keyed by PhysicalIndexId; add
-  deterministic same-property/two-index and purge-response-loss regressions before a Quint model.
+- **Resolution:** `DROP INDEX` now co-writes the catalog removal with a durable Router-owned
+  retirement record keyed by `PhysicalIndexId` (`ROUTER_INDEX_RETIRED`, MemoryId 54) that freezes
+  the drain target set resolved before the destructive mutation and persists one resume cursor per
+  pending target. Posting scopes are disjoint per physical namespace and unreachable once the
+  catalog row dies, so every dropped definition retires unconditionally — the wrong
+  remaining-reference gate is deleted. The inline fast path drains bounded rounds inside the DDL;
+  holds defer to a new recovery-timer lane (`index_retirement.rs`, Driver 4) advancing one bounded
+  step per pending target per tick; records delete exactly when the last frozen target confirms
+  done. `DROP INDEX` returns success after the co-write and never fails on purge transport errors.
+- **Owning regression tests:** PocketIC
+  `dropping_one_of_two_indexes_on_shared_property_does_not_leak_its_namespace` (per-namespace leak,
+  plus sibling-survival guard) alongside the restored `drop_index_purges_postings_from_graph_index`
+  and timer-compaction contracts in `adr0023_index_store_consistency.rs` (6 passed); router unit
+  tests in `router/src/index_retirement.rs`: response-loss hold-and-converge, cross-pass cursor
+  persistence, per-target partial completion, empty-pending retirement, scan pagination; memory
+  layout inventory updated to 55 regions.
+- **Evidence:** Failure modes F1–F5 traced through `router::drop_index` → `drop_named_index`
+  (catalog row removed first) → call-local resume loop over `graph_index_lookup_targets`; probe
+  verified postings are keyed per `(physical_index_id, property_id)` so per-namespace retirement is
+  complete by construction. The Quint model named in the next decision is unnecessary: the
+  retirement record is a single-owner monotonic lifecycle (enqueue → per-target drain → delete)
+  with no concurrency beyond the idempotent bounded steps, which the unit regressions cover.
 
 ### GAP-2026-08-11-004 — Current V1 metadata boundary leaves too little extension space
 
@@ -802,8 +827,10 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   coverage. The targeted PocketIC lifecycle gate for the current lane passes as recorded in
   GAP-2026-08-20-002; it manually drives recovery seams and does not prove autonomous timer firing
   or deferred watermark/tombstone GC completion. The frontier implementation is present, but its
-  focused PocketIC and benchmark gates pass; unfiltered persisted canbench artifacts and the final
-  plan gate remain pending. The bounded Quint model is not production proof.
+  focused PocketIC and benchmark gates pass, and the unfiltered persisted canbench evidence is
+  terminal. The targeted affected-crate format check passes, while the workspace-wide format check
+  is blocked by unrelated dirty paths and never passed. The bounded Quint model is not production
+  proof.
 - **Related contracts:** [ADR 0031](./adr/0031-vertex-embedding-store-and-derived-vector-index.md),
   [design/index/vector-index.md](./index/vector-index.md),
   [design/execution/pipeline.md](./execution/pipeline.md)

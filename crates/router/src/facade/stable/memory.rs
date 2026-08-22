@@ -138,6 +138,9 @@ const ROUTER_NEXT_VECTOR_INDEX_ID: MemoryId = MemoryId::new(52);
 // --- direct vector-ingestion durable suffix ---
 pub(crate) const ROUTER_VECTOR_INGEST_OUTBOX: MemoryId = MemoryId::new(53);
 
+// --- retired physical posting namespaces pending a confirmed graph-index purge (ADR 0023 D6) ---
+pub(crate) const ROUTER_INDEX_RETIRED: MemoryId = MemoryId::new(54);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -283,6 +286,11 @@ pub(crate) type StableVectorIngestOutboxMap = BTreeMap<
     super::vector_ingest_outbox::VectorIngestOutboxValue,
     Memory,
 >;
+pub(crate) type StableIndexRetiredMap = BTreeMap<
+    super::index_retirement::RetiredPhysicalIndexKey,
+    super::index_retirement::RetiredIndexRecord,
+    Memory,
+>;
 
 // --- provisioning (ADR 0035 Slice 1) ---
 pub(crate) type StableProvisioningRequestMap =
@@ -372,6 +380,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_INDEX_CATALOG_EPOCH, 1),
     (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
     (ROUTER_VECTOR_INGEST_OUTBOX, 16),
+    (ROUTER_INDEX_RETIRED, 8),
 ];
 
 thread_local! {
@@ -544,6 +553,10 @@ pub(crate) fn init_vector_ingest_outbox() -> StableVectorIngestOutboxMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_INGEST_OUTBOX)))
 }
 
+pub(crate) fn init_index_retired() -> StableIndexRetiredMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEX_RETIRED)))
+}
+
 pub(crate) fn init_vector_maintenance_policies() -> StableVectorMaintenancePolicyMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_MAINTENANCE_POLICIES)))
 }
@@ -640,17 +653,17 @@ mod tests {
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 54);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 55);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=53)
+                (0..=54)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 54);
-        for id in 0..=53 {
+        assert_eq!(ids.len(), 55);
+        for id in 0..=54 {
             assert!(ids.contains(&id));
         }
     }
