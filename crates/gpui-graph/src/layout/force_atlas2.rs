@@ -30,9 +30,9 @@
 //! per node (rayon) at or above [`PAR_MIN_NODES`]; below it, serial drivers
 //! run the same physics with the cheaper scheduling the scale allows — the
 //! grid pair walk shares one distance evaluation between both endpoints
-//! instead of the parallel path's per-node single-sided scans. wasm32 builds
-//! link no rayon at all (no worker threads exist there) and always take the
-//! serial drivers. Parallel workers never share accumulators: grid repulsion
+//! instead of the parallel path's per-node single-sided scans. Wasm-family
+//! builds (browser, WASI) link no rayon at all — no OS worker threads exist
+//! there — and always take the serial drivers. Parallel workers never share accumulators: grid repulsion
 //! scans each node's own 3×3 neighborhood single-sided, Barnes-Hut resolves
 //! one root descent per node with thread-local stacks, and attraction gathers
 //! each node's incident pulls through a CSR adjacency refreshed whenever the
@@ -51,7 +51,7 @@
 //! comparisons rely on stable operation-by-operation precision.
 
 use glam::Vec2;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use rayon::prelude::*;
 
 use super::graph::{LayoutGraph, LayoutState};
@@ -98,12 +98,15 @@ const DISPLACEMENT_EPSILON: f32 = 0.1;
 /// → 11.3 ms). Like `bh_threshold`, this is a node-count proxy whose outcome
 /// topology modulates (sparse uniform grids gain least); a finer activation
 /// policy stays deferred (§37). Scheduling differs only — physics does not.
-/// Irrelevant on wasm32, where rayon is not linked and every size is serial.
+/// Irrelevant on wasm targets, where rayon is not linked and every size is
+/// serial.
 const PAR_MIN_NODES: usize = 4096;
 
-/// Whether rayon workers exist on this target: wasm32 embeds have no OS
-/// worker threads and the dependency is not even linked there.
-const RAYON_AVAILABLE: bool = cfg!(not(target_arch = "wasm32"));
+/// Whether rayon workers exist on this target: every wasm-family target
+/// lacks OS worker threads and the dependency is not even linked there.
+/// (`target_family = "wasm"` also covers a future wasm64, which an arch
+/// check would miss.)
+const RAYON_AVAILABLE: bool = cfg!(not(target_family = "wasm"));
 
 /// Component-wise [`f32::algebraic_add`].
 #[inline]
@@ -237,7 +240,7 @@ impl RepulsionGrid {
     /// its own accumulator, so the parallel pass needs no races at the cost of
     /// evaluating each qualifying pair twice (once per endpoint). Native-only:
     /// wasm embeds always drive repulsion through [`Self::for_each_pair`].
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn accumulate_node(
         &self,
         i: usize,
@@ -846,7 +849,7 @@ impl ForceAtlas2 {
             let (positions, masses, theta, scaling) =
                 (&state.positions, &self.masses, self.theta, self.scaling);
             if parallel {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(target_family = "wasm"))]
                 forces
                     .par_iter_mut()
                     .enumerate()
@@ -870,7 +873,7 @@ impl ForceAtlas2 {
                 self.repulsion_radius,
             );
             if parallel {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(target_family = "wasm"))]
                 forces.par_iter_mut().enumerate().for_each(|(i, force)| {
                     *force = grid.accumulate_node(i, positions, masses, scaling, radius);
                 });
@@ -912,7 +915,7 @@ impl ForceAtlas2 {
             );
         };
         if parallel {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             forces
                 .par_iter_mut()
                 .enumerate()
@@ -957,7 +960,7 @@ impl ForceAtlas2 {
         let pinned = &state.pinned;
         let convergence = &mut self.convergence;
         let prev_forces = &mut self.prev_forces;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         let total: f32 = if parallel {
             state
                 .positions
@@ -1000,7 +1003,7 @@ impl ForceAtlas2 {
             }
             total
         };
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         let total: f32 = {
             let mut total = 0.0f32;
             for (i, ((position, convergence_i), prev_force)) in state
