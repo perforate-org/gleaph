@@ -95,7 +95,7 @@ impl VectorCanisterStore {
     ) -> Result<VectorMaintenanceStepResult, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
 
         // ADR 0064 §5: run a bounded subject-map GC step on each maintenance tick so a quiet graph

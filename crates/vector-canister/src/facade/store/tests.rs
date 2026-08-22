@@ -602,7 +602,7 @@ fn typed_batch_zero_prefix_terminal_does_not_run_graph_gc() {
 }
 
 #[test]
-fn router_direct_ingest_does_not_own_watermark_or_gc_tombstone() {
+fn m10_response_loss_retains_m11_fence_until_exact_resolution() {
     let store = fresh_store();
     VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
     VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
@@ -660,6 +660,19 @@ fn router_direct_ingest_does_not_own_watermark_or_gc_tombstone() {
     assert!(replayed.deleted);
     assert_eq!(replayed.stamp, 11);
     assert_eq!(replayed.slot, None);
+
+    // The Router now observes the exact m10 outcome and publishes the contiguous frontier through
+    // the guarded Vector owner. Only after that observed resolution may the m11 fence be collected.
+    store
+        .advance_router_frontier(router(), ShardId::new(0), 11)
+        .expect("exact m10 resolution advances the safe frontier");
+    let watermarks = VECTOR_SHARD_WATERMARKS
+        .with_borrow(|watermarks| watermarks.get(&ShardId::new(0)).expect("watermark record"));
+    assert_eq!(watermarks.router_watermark, 11);
+    assert!(
+        store.subject_entry_for_test(INDEX_ID, subject(7)).is_none(),
+        "the m11 fence is collected only after exact m10 resolution"
+    );
 }
 
 #[test]

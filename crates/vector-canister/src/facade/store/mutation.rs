@@ -14,10 +14,10 @@ use super::{
 use crate::encoding::EncodingRecord;
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
-use crate::facade::stable::definition_store::{self, DefinitionStoreError};
-use crate::facade::stable::subject_store::{self, SubjectStoreError};
+use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::{
     IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS,
+    definition_store, subject_store,
 };
 #[cfg(test)]
 use crate::records::PartitionKey;
@@ -295,7 +295,7 @@ impl VectorCanisterStore {
                 | VectorSyncBatchOutcomeOperationError::SubjectTablePressure
                 | VectorSyncBatchOutcomeOperationError::StoreUnavailable
                 | VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable => {
-                    super::legacy_definition_store_error(DefinitionStoreError::TablePressure)
+                    VectorCanisterError::StableGrowFailed
                 }
                 VectorSyncBatchOutcomeOperationError::Fatal(error) => error,
             })
@@ -333,16 +333,12 @@ impl VectorCanisterStore {
         definition_store::insert(index_id, def)
             .map(|_| ())
             .map_err(|error| match error {
-                DefinitionStoreError::TablePressure => {
-                    VectorSyncBatchOutcomeOperationError::TablePressure
-                }
-                DefinitionStoreError::Unavailable(_) | DefinitionStoreError::Mutation(_) => {
+                RegionError::TablePressure => VectorSyncBatchOutcomeOperationError::TablePressure,
+                RegionError::Unavailable(_) | RegionError::Mutation(_) | RegionError::Scan(_) => {
                     VectorSyncBatchOutcomeOperationError::StoreUnavailable
                 }
                 #[cfg(any(test, feature = "canbench"))]
-                DefinitionStoreError::Reset(_) => {
-                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
-                }
+                RegionError::Reset(_) => VectorSyncBatchOutcomeOperationError::StoreUnavailable,
             })?;
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(def)
@@ -587,7 +583,7 @@ impl VectorCanisterStore {
         // LHM TablePressure an exact terminal result instead of an ambiguous post-row failure.
         let reserved_new_subject = subject_store::get(&key)
             .map_err(|error| match error {
-                SubjectStoreError::TablePressure => {
+                RegionError::TablePressure => {
                     VectorSyncBatchOutcomeOperationError::SubjectTablePressure
                 }
                 _ => VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable,
@@ -604,7 +600,7 @@ impl VectorCanisterStore {
                 },
             )
             .map_err(|error| match error {
-                SubjectStoreError::TablePressure => {
+                RegionError::TablePressure => {
                     VectorSyncBatchOutcomeOperationError::SubjectTablePressure
                 }
                 _ => VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable,
@@ -703,7 +699,7 @@ impl VectorCanisterStore {
         let _scope = bench_scope("sync_subject_insert");
         subject_store::insert(key, entry)
             .map(|_| ())
-            .map_err(super::legacy_subject_store_error)
+            .map_err(VectorCanisterError::from)
     }
 
     /// Commits a subject entry for the typed batch path while preserving table pressure as a
@@ -729,7 +725,7 @@ impl VectorCanisterStore {
         subject_store::insert(key, entry)
             .map(|_| ())
             .map_err(|error| match error {
-                SubjectStoreError::TablePressure => {
+                RegionError::TablePressure => {
                     VectorSyncBatchOutcomeOperationError::SubjectTablePressure
                 }
                 _ => VectorSyncBatchOutcomeOperationError::Fatal(
@@ -824,7 +820,7 @@ impl VectorCanisterStore {
         let existing = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _get_scope = bench_scope("sync_subject_get");
-            subject_store::get(&key).map_err(super::legacy_subject_store_error)?
+            subject_store::get(&key).map_err(VectorCanisterError::from)?
         };
 
         let Some(entry) = existing else {
@@ -1010,7 +1006,7 @@ impl VectorCanisterStore {
         let insert_result = if reserved {
             subject_store::insert(key, entry)
                 .map(|_| ())
-                .map_err(super::legacy_subject_store_error)
+                .map_err(VectorCanisterError::from)
         } else {
             self.insert_subject_entry(key, entry)
         };
@@ -1054,7 +1050,7 @@ impl VectorCanisterStore {
         }
         self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
         let active = definition_store::get(op.index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .map(|def| def.active_index_version);
         self.vector_remove_after_definition_admission(op, active)
     }
@@ -1067,7 +1063,7 @@ impl VectorCanisterStore {
     ) -> Result<(), VectorCanisterError> {
         let mode = rebuild_mutation_mode(op.index_id);
         let key = SubjectKey::new(op.index_id, op.subject);
-        let existing = subject_store::get(&key).map_err(super::legacy_subject_store_error)?;
+        let existing = subject_store::get(&key).map_err(VectorCanisterError::from)?;
 
         let Some(entry) = existing else {
             self.insert_subject_entry(
@@ -1354,7 +1350,7 @@ impl VectorCanisterStore {
 
             let existing = match subject_store::get(&key) {
                 Ok(existing) => existing,
-                Err(SubjectStoreError::TablePressure) => {
+                Err(RegionError::TablePressure) => {
                     match flush_run!() {
                         Ok(run_len) => applied += run_len,
                         Err(VectorSyncBatchFlushError::Operation { index, error }) => {
@@ -1478,7 +1474,7 @@ impl VectorCanisterStore {
         };
         definition_store::insert(index_id, def)
             .map(|_| ())
-            .map_err(super::legacy_definition_store_error)?;
+            .map_err(VectorCanisterError::from)?;
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(())
     }

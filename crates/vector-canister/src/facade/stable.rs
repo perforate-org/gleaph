@@ -6,32 +6,27 @@ pub(crate) mod definition_store;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod page_store;
+pub(crate) mod region_store;
 pub(crate) mod subject_store;
 
 #[cfg(any(test, feature = "canbench"))]
-use definition_store::{DefinitionResetTicket, DefinitionStoreError};
+use definition_store::DefinitionResetTicket;
 #[cfg(any(test, feature = "canbench"))]
-use subject_store::{SubjectResetTicket, SubjectStoreError};
+use region_store::RegionError;
+#[cfg(any(test, feature = "canbench"))]
+use subject_store::SubjectResetTicket;
 
 #[cfg(any(test, feature = "canbench"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DefinitionDomainResetError {
-    Definition(DefinitionStoreError),
-    Subject(SubjectStoreError),
+    Region(RegionError),
     RegionHandleUnavailable(&'static str),
 }
 
 #[cfg(any(test, feature = "canbench"))]
-impl From<DefinitionStoreError> for DefinitionDomainResetError {
-    fn from(error: DefinitionStoreError) -> Self {
-        Self::Definition(error)
-    }
-}
-
-#[cfg(any(test, feature = "canbench"))]
-impl From<SubjectStoreError> for DefinitionDomainResetError {
-    fn from(error: SubjectStoreError) -> Self {
-        Self::Subject(error)
+impl From<RegionError> for DefinitionDomainResetError {
+    fn from(error: RegionError) -> Self {
+        Self::Region(error)
     }
 }
 
@@ -136,8 +131,9 @@ thread_local! {
     pub(crate) static VECTOR_MAINTENANCE_STATE: RefCell<memory::StableMaintenanceStateMap> =
         RefCell::new(memory::init_maintenance_state());
 
-    // ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the production Router
-    // watermark remains zero, so tombstone deletion is paused.
+    // ADR 0064 §5: per-shard watermark pair for conservative tombstone GC; the Router-only
+    // frontier endpoint advances router_watermark monotonically for an exact attached shard and
+    // runs one bounded GC step in the same no-await update.
     pub(crate) static VECTOR_SHARD_WATERMARKS: RefCell<memory::StableShardWatermarksMap> =
         RefCell::new(memory::init_shard_watermarks());
 

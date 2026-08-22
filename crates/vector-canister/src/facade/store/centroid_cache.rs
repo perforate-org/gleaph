@@ -144,7 +144,7 @@ impl VectorCanisterStore {
     ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
             Some(centroids) if def.nlist > 1 => {

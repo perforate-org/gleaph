@@ -14,8 +14,7 @@ mod rebuild;
 mod search;
 mod watermark;
 
-use crate::facade::stable::definition_store::DefinitionStoreError;
-use crate::facade::stable::subject_store::SubjectStoreError;
+use crate::facade::stable::region_store::RegionError;
 use gleaph_graph_kernel::vector_index::VectorCanisterError;
 
 pub(crate) use maintenance::recommend_partition_maintenance;
@@ -118,15 +117,12 @@ pub(crate) enum VectorSyncBatchOutcomeOperationError {
     Fatal(VectorCanisterError),
 }
 
-/// The legacy Vector wire surface has no availability or terminal-admission envelope.  Preserve its
-/// existing generic stable-write projection until the additive typed batch endpoint owns the richer
-/// definition-store result.
-fn legacy_definition_store_error(_error: DefinitionStoreError) -> VectorCanisterError {
-    VectorCanisterError::StableGrowFailed
-}
-
-/// The legacy point/batch surfaces predate the typed subject pressure result. They retain their
-/// generic stable-write projection until the typed batch driver consumes the owner error directly.
-fn legacy_subject_store_error(_error: SubjectStoreError) -> VectorCanisterError {
-    VectorCanisterError::StableGrowFailed
+/// The legacy Vector wire surface has no availability or terminal-admission envelope: every
+/// stable-region failure projects to the existing generic stable-write error, once, at this
+/// boundary. The typed batch endpoint consumes [`RegionError`] directly and owns the richer
+/// per-store classification.
+impl From<RegionError> for VectorCanisterError {
+    fn from(_error: RegionError) -> Self {
+        VectorCanisterError::StableGrowFailed
+    }
 }

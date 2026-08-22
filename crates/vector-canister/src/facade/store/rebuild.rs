@@ -29,6 +29,7 @@ use super::{
 };
 use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::{PageScratch, live_def_resolver};
+use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::subject_store::{self, SubjectScanPage};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE,
@@ -45,7 +46,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
     VectorSlabStatsStep, VectorSubject,
 };
-use ic_stable_linear_hash_map::SLOTS_PER_BUCKET;
+use ic_stable_linear_hash_map::{SLOTS_PER_BUCKET, ScanError};
 use ic_stable_structures::Storable;
 use ic_stable_vector_page_store::kernel::{l2_squared_f32, l2_squared_f32_early_exit};
 
@@ -298,18 +299,15 @@ fn next_subject_page(
     let cursor = match cursor {
         Some(cursor) if cursor.is_done() => return Ok(None),
         Some(cursor) => cursor,
-        None => subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?,
+        None => subject_store::scan_start(scope).map_err(VectorCanisterError::from)?,
     };
     match subject_store::scan_step(scope, cursor, physical_slot_budget) {
         Ok(page) => Ok(Some(NextSubjectPage {
             page,
             restarted: false,
         })),
-        Err(subject_store::SubjectStoreError::Scan(
-            subject_store::SubjectStoreScanError::RestartRequired,
-        )) => {
-            let fresh =
-                subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?;
+        Err(RegionError::Scan(ScanError::RestartRequired)) => {
+            let fresh = subject_store::scan_start(scope).map_err(VectorCanisterError::from)?;
             subject_store::scan_step(scope, fresh, physical_slot_budget)
                 .map(|page| {
                     Some(NextSubjectPage {
@@ -317,9 +315,9 @@ fn next_subject_page(
                         restarted: true,
                     })
                 })
-                .map_err(super::legacy_subject_store_error)
+                .map_err(VectorCanisterError::from)
         }
-        Err(error) => Err(super::legacy_subject_store_error(error)),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -436,7 +434,7 @@ impl VectorCanisterStore {
     ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         if !matches!(def.encoding, VectorEncoding::F32 | VectorEncoding::I8)
             || (def.metric != VectorMetric::L2Squared && def.metric != VectorMetric::Cosine)
@@ -515,7 +513,7 @@ impl VectorCanisterStore {
     ) -> Result<VectorMaintenanceRecommendation, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         // Freshness guard: reject page health attested against a different generation. The skew
         // summary needs no such guard because it is recomputed below from current heads.
@@ -650,7 +648,7 @@ impl VectorCanisterStore {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_sampling");
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
         // Candidates freeze native stored rows (the index's `pad_stride_bytes` width), while the
@@ -854,7 +852,7 @@ impl VectorCanisterStore {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_training");
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let dims = def.dims as usize;
         let nlist_usize = nlist as usize;
@@ -987,7 +985,7 @@ impl VectorCanisterStore {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_building");
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
         let centroids = read_centroids_at(index_id, target_index_version, nlist, def.dims)
@@ -1196,7 +1194,7 @@ impl VectorCanisterStore {
     ) -> Result<VectorPartitionHealthSummary, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         Ok(partition_health_summary(
             index_id,
@@ -1257,7 +1255,7 @@ impl VectorCanisterStore {
     ) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         PAGE_STORE.with_borrow(|store| {
             store.partition_page_health_step(index_id, def.active_index_version, cursor, max_pages)
@@ -1283,7 +1281,7 @@ impl VectorCanisterStore {
             return Err(VectorCanisterError::RebuildNotReadyToPublish);
         };
         let mut def = definition_store::get(index_id)
-            .map_err(super::legacy_definition_store_error)?
+            .map_err(VectorCanisterError::from)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         // O(`nlist`) centroid presence check (bounded by MAX_NLIST); not a subject scan.
         if read_centroids_at(index_id, target_index_version, nlist, def.dims).is_none() {
@@ -1296,7 +1294,7 @@ impl VectorCanisterStore {
         def.nlist = nlist;
         definition_store::insert(index_id, def)
             .map(|_| ())
-            .map_err(super::legacy_definition_store_error)?;
+            .map_err(VectorCanisterError::from)?;
         // The active centroid set just changed generation; drop any warmed heap entry so search does
         // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
         super::centroid_cache::invalidate(index_id);
@@ -1535,12 +1533,10 @@ impl VectorCanisterStore {
         }
 
         for (key, shadow) in updates {
-            if let Some(mut entry) =
-                subject_store::get(&key).map_err(super::legacy_subject_store_error)?
-            {
+            if let Some(mut entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? {
                 entry.slot = Some(shadow);
                 entry.shadow_slot = None;
-                subject_store::insert(key, entry).map_err(super::legacy_subject_store_error)?;
+                subject_store::insert(key, entry).map_err(VectorCanisterError::from)?;
             }
         }
 
@@ -1586,11 +1582,9 @@ impl VectorCanisterStore {
         }
 
         for key in keys {
-            if let Some(mut entry) =
-                subject_store::get(&key).map_err(super::legacy_subject_store_error)?
-            {
+            if let Some(mut entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? {
                 entry.shadow_slot = None;
-                subject_store::insert(key, entry).map_err(super::legacy_subject_store_error)?;
+                subject_store::insert(key, entry).map_err(VectorCanisterError::from)?;
             }
         }
 

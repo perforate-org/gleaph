@@ -55,7 +55,7 @@ pub struct ControlRegion {
     pub(crate) hash_seed: u64,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
     NonEmptyMemory,
     BadMagic { actual: [u8; 3] },

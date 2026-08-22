@@ -659,8 +659,7 @@ impl VectorCanisterStore {
         // The physical def is created lazily on the first upsert (see `mutation.rs`). A
         // Router-registered, activated index with no embeddings yet has no physical def, but it is a
         // known-empty index, not an unknown one — return an empty result rather than `UnknownIndex`.
-        let Some(def) =
-            definition_store::get(req.index_id).map_err(super::legacy_definition_store_error)?
+        let Some(def) = definition_store::get(req.index_id).map_err(VectorCanisterError::from)?
         else {
             return Ok(VectorSearchResult { hits: Vec::new() });
         };
@@ -825,9 +824,7 @@ impl VectorCanisterStore {
         let _scope = bench_scope("filtered_resolve");
         for subject in candidates {
             let key = SubjectKey::new(index_id, *subject);
-            let Some(value) =
-                subject_store::get(&key).map_err(super::legacy_subject_store_error)?
-            else {
+            let Some(value) = subject_store::get(&key).map_err(VectorCanisterError::from)? else {
                 continue;
             };
             if value.deleted {

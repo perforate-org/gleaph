@@ -5,6 +5,7 @@ use crate::facade::stable::definition_store;
 use crate::facade::stable::memory::{
     ActiveShardDetach, ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig,
 };
+use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::subject_store;
 #[cfg(any(test, feature = "canbench"))]
 use crate::facade::stable::{DefinitionDomainResetError, reset_definition_domain};
@@ -20,6 +21,7 @@ use gleaph_graph_kernel::federation::{
     ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult, ShardId,
 };
 use gleaph_graph_kernel::vector_index::VectorCanisterError;
+use ic_stable_linear_hash_map::ScanError;
 
 /// Upper bound on subject keys examined per detach step, keeping one message within the canister
 /// instruction / stable read budget regardless of total index size.
@@ -118,9 +120,9 @@ impl VectorCanisterStore {
             return Err(VectorCanisterError::AnonymousRouter);
         }
         definition_store::create_for_install(args.definition_map_seed)
-            .map_err(super::legacy_definition_store_error)?;
+            .map_err(VectorCanisterError::from)?;
         subject_store::create_for_install(args.subject_map_seed)
-            .map_err(super::legacy_subject_store_error)?;
+            .map_err(VectorCanisterError::from)?;
         super::centroid_cache::clear_all();
         VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
@@ -142,25 +144,15 @@ impl VectorCanisterStore {
             return Err(VectorCanisterError::AnonymousRouter);
         }
         definition_store::bind_for_fixture(args.definition_map_seed)
-            .map_err(super::legacy_definition_store_error)?;
+            .map_err(VectorCanisterError::from)?;
         subject_store::bind_for_fixture(args.subject_map_seed)
-            .map_err(super::legacy_subject_store_error)?;
-        let expected_incarnation = definition_store::incarnation_for_test_or_bench()
-            .map_err(super::legacy_definition_store_error)?;
-        let subject_incarnation = subject_store::incarnation_for_test_or_bench()
-            .map_err(super::legacy_subject_store_error)?;
+            .map_err(VectorCanisterError::from)?;
+        let expected_incarnation =
+            definition_store::incarnation_for_test_or_bench().map_err(VectorCanisterError::from)?;
+        let subject_incarnation =
+            subject_store::incarnation_for_test_or_bench().map_err(VectorCanisterError::from)?;
         self.reset_definition_domain(expected_incarnation, subject_incarnation)
-            .map_err(|error| match error {
-                DefinitionDomainResetError::Definition(error) => {
-                    super::legacy_definition_store_error(error)
-                }
-                DefinitionDomainResetError::Subject(error) => {
-                    super::legacy_subject_store_error(error)
-                }
-                DefinitionDomainResetError::RegionHandleUnavailable(_) => {
-                    VectorCanisterError::StableGrowFailed
-                }
-            })?;
+            .map_err(|_| VectorCanisterError::StableGrowFailed)?;
         SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
         VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
@@ -306,32 +298,22 @@ impl VectorCanisterStore {
         let cursor = if resume_key.is_empty() {
             subject_store::scan_start(scope)
         } else {
-            SubjectScanCursor::decode_bytes(scope, resume_key).map_err(|_| {
-                subject_store::SubjectStoreError::Scan(
-                    subject_store::SubjectStoreScanError::InvalidCursor,
-                )
-            })
+            SubjectScanCursor::decode_bytes(scope, resume_key)
+                .map_err(|_| RegionError::Scan(ScanError::InvalidCursor))
         };
         let cursor = match cursor {
             Ok(cursor) => Ok(cursor),
-            Err(subject_store::SubjectStoreError::Scan(
-                subject_store::SubjectStoreScanError::RestartRequired,
-            )) => subject_store::scan_start(scope),
+            Err(RegionError::Scan(ScanError::RestartRequired)) => subject_store::scan_start(scope),
             Err(error) => Err(error),
         };
-        let cursor = cursor.map_err(super::legacy_subject_store_error)?;
+        let cursor = cursor.map_err(VectorCanisterError::from)?;
         let page = match subject_store::scan_step(scope, cursor, u64::from(budget)) {
             Ok(page) => Ok(page),
-            Err(subject_store::SubjectStoreError::Scan(
-                subject_store::SubjectStoreScanError::RestartRequired,
-            )) => {
-                let fresh =
-                    subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?;
+            Err(RegionError::Scan(ScanError::RestartRequired)) => {
+                let fresh = subject_store::scan_start(scope).map_err(VectorCanisterError::from)?;
                 subject_store::scan_step(scope, fresh, u64::from(budget))
             }
-            Err(subject_store::SubjectStoreError::Scan(
-                subject_store::SubjectStoreScanError::InProgress,
-            )) => {
+            Err(RegionError::Scan(ScanError::InProgress)) => {
                 return Ok(SubjectPurgeStep {
                     examined: 0,
                     removed: 0,
@@ -340,7 +322,7 @@ impl VectorCanisterStore {
             }
             Err(error) => Err(error),
         }
-        .map_err(super::legacy_subject_store_error)?;
+        .map_err(VectorCanisterError::from)?;
         let examined = u32::try_from(page.examined_slots).unwrap_or(u32::MAX);
         let to_remove: Vec<SubjectKey> = page
             .entries
@@ -350,7 +332,7 @@ impl VectorCanisterStore {
 
         let removed = u32::try_from(to_remove.len()).unwrap_or(u32::MAX);
         for key in &to_remove {
-            let entry = subject_store::get(key).map_err(super::legacy_subject_store_error)?;
+            let entry = subject_store::get(key).map_err(VectorCanisterError::from)?;
             if let Some(entry) = entry {
                 if entry.deleted {
                     // Drop the tombstoned row from the deleted list so the GC does not later try to
@@ -373,7 +355,7 @@ impl VectorCanisterStore {
                     self.tombstone_slot(key.index_id, shadow_slot);
                 }
             }
-            subject_store::remove(key).map_err(super::legacy_subject_store_error)?;
+            subject_store::remove(key).map_err(VectorCanisterError::from)?;
         }
 
         let resume_key = if page.exhausted {
