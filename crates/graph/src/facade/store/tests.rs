@@ -2484,3 +2484,240 @@ fn resolved_insertion_policy_preserves_append_order() {
     assert_eq!(appended.slot_index.raw(), 3);
     crate::edge_inline_property_schema::set_execution_resolved_labels(None);
 }
+
+// --- GAP-2026-07-29-004: inline index old-key/new-key posting transitions ---
+
+fn inline_posting_test_catalog(
+    physical_raw: u64,
+    label_raw: u16,
+    property_raw: u32,
+    field_path: &str,
+) -> crate::index::catalog_context::CatalogGuard {
+    use gleaph_graph_kernel::index::{
+        EdgeIndexDirection, IndexedEdgeMembership, IndexedPropertyCatalog,
+    };
+    crate::index::catalog_context::enter(IndexedPropertyCatalog {
+        edge_indexes: vec![IndexedEdgeMembership {
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(physical_raw)
+                .expect("test physical id"),
+            catalog_epoch: 1,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+            label_id: label_raw,
+            property_id: property_raw,
+            direction: EdgeIndexDirection::Outgoing,
+            field_path: field_path.to_owned(),
+        }],
+        ..Default::default()
+    })
+}
+
+fn posting_ops_for(
+    pending: &[crate::index::edge_pending::PendingEdgePostingOp],
+    property_raw: u32,
+) -> Vec<(&'static str, Vec<u8>)> {
+    pending
+        .iter()
+        .filter(|op| match op {
+            crate::index::edge_pending::PendingEdgePostingOp::Insert { property_id, .. }
+            | crate::index::edge_pending::PendingEdgePostingOp::Remove { property_id, .. } => {
+                *property_id == property_raw
+            }
+        })
+        .map(|op| match op {
+            crate::index::edge_pending::PendingEdgePostingOp::Insert { payload_bytes, .. } => {
+                ("insert", payload_bytes.clone())
+            }
+            crate::index::edge_pending::PendingEdgePostingOp::Remove { payload_bytes, .. } => {
+                ("remove", payload_bytes.clone())
+            }
+        })
+        .collect()
+}
+
+fn inline_scalar_posting_fixture(
+    physical_raw: u64,
+    label_raw: u16,
+    property_raw: u32,
+    field_path: &str,
+) -> (
+    GraphStore,
+    EdgeLabelId,
+    PropertyId,
+    EdgeHandle,
+    crate::index::catalog_context::CatalogGuard,
+) {
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+    let store = GraphStore::new();
+    store
+        .set_federation_routing(Some(crate::facade::FederationRouting {
+            router_canister: candid::Principal::management_canister(),
+            index_canister: candid::Principal::management_canister(),
+            shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+            vector_canister: None,
+        }))
+        .expect("configure index routing");
+    crate::index::edge_pending::clear_pending();
+    let label = EdgeLabelId::from_raw(label_raw);
+    let property = PropertyId::from_raw(property_raw);
+    crate::test_labels::install_test_edge_inline_property_profile(
+        label,
+        EdgeInlinePropertyProfile {
+            byte_width: 4,
+            encoding: EdgeInlinePropertyEncoding::F32,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(label, property);
+    let catalog =
+        inline_posting_test_catalog(physical_raw, label.raw(), property.raw(), field_path);
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let handle = store
+        .insert_directed_edge_with_inline_property_bytes(
+            source,
+            target,
+            Some(label),
+            &1.5f32.to_le_bytes(),
+        )
+        .expect("edge");
+    let swallowed = crate::index::edge_pending::take_pending();
+    assert!(
+        !posting_ops_for(&swallowed, property.raw()).is_empty(),
+        "fixture insert must post the initial scalar value"
+    );
+    (store, label, property, handle, catalog)
+}
+
+#[test]
+fn updating_indexed_inline_scalar_swaps_posting_old_for_new() {
+    let (store, _label, property, handle, _catalog) =
+        inline_scalar_posting_fixture(107, 12, 912, "");
+
+    store
+        .update_edge_inline_property_at_handle(handle, &2.5f32.to_le_bytes())
+        .expect("scalar update");
+
+    let ops = posting_ops_for(&crate::index::edge_pending::take_pending(), property.raw());
+    let key = |v: f32| crate::property::sortable_index_key(&Value::Float32(v)).expect("key");
+    assert_eq!(
+        ops,
+        vec![("remove", key(1.5)), ("insert", key(2.5))],
+        "replacement must remove exactly the old key and insert exactly the new key"
+    );
+    store.set_federation_routing(None).expect("clear routing");
+}
+
+#[test]
+fn updating_indexed_inline_scalar_to_same_value_emits_no_posting() {
+    let (store, _label, property, handle, _catalog) =
+        inline_scalar_posting_fixture(107, 12, 912, "");
+
+    store
+        .update_edge_inline_property_at_handle(handle, &1.5f32.to_le_bytes())
+        .expect("no-op update");
+
+    assert!(
+        posting_ops_for(&crate::index::edge_pending::take_pending(), property.raw()).is_empty(),
+        "an equal-value update must not churn index postings"
+    );
+    store.set_federation_routing(None).expect("clear routing");
+}
+
+#[test]
+fn updating_indexed_inline_struct_leaf_replaces_only_that_leaf_posting() {
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+    let (store, label, property, _scalar_edge, _scalar_catalog) =
+        inline_scalar_posting_fixture(110, 15, 915, "");
+    // The struct projection widens the label profile: two F32 leaves at offsets 0 and 4.
+    use gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding as Encoding;
+    crate::test_labels::install_test_edge_inline_property_profile(
+        label,
+        EdgeInlinePropertyProfile {
+            byte_width: 8,
+            encoding: Encoding::RawBytes,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_struct_property(
+        label,
+        property,
+        vec![
+            (
+                "score".to_string(),
+                0,
+                EdgeInlinePropertyProfile {
+                    byte_width: 4,
+                    encoding: EdgeInlinePropertyEncoding::F32,
+                },
+            ),
+            (
+                "confidence".to_string(),
+                4,
+                EdgeInlinePropertyProfile {
+                    byte_width: 4,
+                    encoding: EdgeInlinePropertyEncoding::F32,
+                },
+            ),
+        ],
+    );
+    drop(_scalar_catalog);
+    let _catalog = inline_posting_test_catalog(110, 15, property.raw(), "score");
+    // Insert with struct bytes: score 1.5, confidence 0.75.
+    let source = store.insert_vertex().expect("source");
+    let neighbor = store.insert_vertex().expect("neighbor");
+    let struct_handle = store
+        .insert_directed_edge_with_inline_property_bytes(source, neighbor, Some(label), &{
+            let mut bytes = Vec::with_capacity(8);
+            bytes.extend_from_slice(&1.5f32.to_le_bytes());
+            bytes.extend_from_slice(&0.75f32.to_le_bytes());
+            bytes
+        })
+        .expect("struct edge");
+    assert!(
+        !posting_ops_for(&crate::index::edge_pending::take_pending(), property.raw()).is_empty(),
+        "fixture insert must post initial leaf values"
+    );
+
+    let mut updated = Vec::with_capacity(8);
+    updated.extend_from_slice(&2.5f32.to_le_bytes());
+    updated.extend_from_slice(&0.75f32.to_le_bytes());
+    store
+        .update_edge_inline_property_at_handle(struct_handle, &updated)
+        .expect("struct leaf update");
+
+    let ops = posting_ops_for(&crate::index::edge_pending::take_pending(), property.raw());
+    let key = |v: f32| crate::property::sortable_index_key(&Value::Float32(v)).expect("key");
+    assert_eq!(
+        ops,
+        vec![("remove", key(1.5)), ("insert", key(2.5))],
+        "only the changed leaf may transition; untouched leaves keep their postings"
+    );
+    store.set_federation_routing(None).expect("clear routing");
+}
+
+#[test]
+fn updating_indexed_inline_bytes_with_wrong_width_rejects_before_write() {
+    let (store, _label, property, handle, _catalog) =
+        inline_scalar_posting_fixture(107, 12, 912, "");
+
+    let err = store
+        .update_edge_inline_property_at_handle(handle, &[1, 2, 3])
+        .expect_err("width mismatch must reject");
+
+    assert!(matches!(
+        err,
+        GraphStoreError::EdgeInlinePropertyBytesWidthMismatch { .. }
+    ));
+    assert!(
+        posting_ops_for(&crate::index::edge_pending::take_pending(), property.raw()).is_empty(),
+        "a rejected update must not dispatch any index transition"
+    );
+    assert_eq!(
+        store
+            .find_outgoing_edge_record(handle)
+            .expect("row lookup")
+            .expect("row")
+            .edge_inline_property_bytes(),
+        &1.5f32.to_le_bytes(),
+        "the previous value stays canonical"
+    );
+    store.set_federation_routing(None).expect("clear routing");
+}

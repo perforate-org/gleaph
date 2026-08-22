@@ -4932,4 +4932,129 @@ mod tests {
             vec![(note_property_id, Value::Text("old".into()))]
         );
     }
+
+    // --- GAP-2026-07-29-004: inline mutation contracts for NULL and non-indexable values ---
+    //
+    // A failed SET must reject before the first stable write so no stale inline posting can
+    // outlive the rejected value: the old bytes stay canonical and index maintenance never
+    // observes a transition that did not happen.
+
+    fn set_inline_property_ops(property: &str, value: Value) -> Vec<PlanOp> {
+        vec![PlanOp::SetProperties {
+            items: vec![SetPlanItem::Property {
+                variable: "e".into(),
+                property: property.into(),
+                value: Expr::new(ExprKind::Literal(value)),
+            }],
+        }]
+    }
+
+    fn set_inline_property_err(
+        store: &GraphStore,
+        ops: &[PlanOp],
+        handle: EdgeHandle,
+    ) -> PlanMutationError {
+        let parameters = BTreeMap::<String, Value>::new();
+        let mut bindings = PlanMutationBindings::default();
+        bindings
+            .vertices
+            .insert("a".into(), store.insert_vertex().expect("a"));
+        bindings
+            .vertices
+            .insert("b".into(), store.insert_vertex().expect("b"));
+        bindings.edges.insert("e".into(), handle);
+        execute_ops_with_bindings(
+            store,
+            ops,
+            &parameters,
+            GqlExecutionContext::default(),
+            &mut bindings,
+        )
+        .expect_err("rejected inline SET")
+    }
+
+    #[test]
+    fn inline_edge_scalar_set_null_aborts_without_write() {
+        let store = GraphStore::new();
+        let (label, _property) = install_inline_road_fixture();
+        let a = store.insert_vertex().expect("a");
+        let b = store.insert_vertex().expect("b");
+        let handle = store
+            .insert_directed_edge_with_inline_property_bytes(a, b, Some(label), &[7, 0])
+            .expect("edge");
+
+        let err = set_inline_property_err(
+            &store,
+            &set_inline_property_ops("distance", Value::Null),
+            handle,
+        );
+        assert!(
+            matches!(err, PlanMutationError::NullInlineProperty { .. }),
+            "got {err:?}"
+        );
+        // The previous value stays canonical; nothing replaced it.
+        assert_eq!(
+            find_out_edge_inline_property(&store, a, b),
+            Some(vec![7, 0]),
+            "failed NULL SET must not disturb the stored inline bytes"
+        );
+    }
+
+    #[test]
+    fn inline_edge_struct_set_missing_field_aborts_without_write() {
+        let store = GraphStore::new();
+        let (label, _property) = install_inline_struct_road_fixture();
+        let (a, b, handle) = insert_inline_struct_edge(&store, label);
+
+        // Shape change: the record omits `updated_at`, which the schema still indexes.
+        let err = set_inline_property_err(
+            &store,
+            &set_inline_property_ops(
+                "stats",
+                Value::Record(vec![
+                    ("score".into(), Value::Float32(1.0)),
+                    ("confidence".into(), Value::Float32(0.5)),
+                ]),
+            ),
+            handle,
+        );
+        assert!(
+            matches!(err, PlanMutationError::InvalidInlinePropertyValue { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(
+            find_out_edge_inline_property(&store, a, b),
+            Some(pack_stats_inline_property(3.5, 0.75, 1_700_000_000)),
+            "failed struct SET must keep every leaf byte, so leaf postings cannot go stale"
+        );
+    }
+
+    #[test]
+    fn inline_edge_struct_set_null_leaf_aborts_without_write() {
+        let store = GraphStore::new();
+        let (label, _property) = install_inline_struct_road_fixture();
+        let (a, b, handle) = insert_inline_struct_edge(&store, label);
+
+        let err = set_inline_property_err(
+            &store,
+            &set_inline_property_ops(
+                "stats",
+                Value::Record(vec![
+                    ("score".into(), Value::Float32(2.0)),
+                    ("confidence".into(), Value::Null),
+                    ("updated_at".into(), Value::Uint64(5)),
+                ]),
+            ),
+            handle,
+        );
+        assert!(
+            matches!(err, PlanMutationError::InvalidInlinePropertyValue { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(
+            find_out_edge_inline_property(&store, a, b),
+            Some(pack_stats_inline_property(3.5, 0.75, 1_700_000_000)),
+            "NULL leaf rejection must preserve all stored leaves"
+        );
+    }
 }

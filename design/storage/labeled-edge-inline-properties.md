@@ -1,7 +1,7 @@
 # Labeled edge inline property storage
 
 Last updated: 2026-07-25
-Anchor timestamp: 2026-07-25 13:11:03 UTC +0000
+Anchor timestamp: 2026-08-22 16:20:23 UTC +0000
 
 ## Overview
 
@@ -217,6 +217,17 @@ edge, a stale inline property bytes, or a torn sidecar record.
   facade alias path remains active.
 - **Absence not represented.** `REMOVE e.inline_property` is rejected. There is no null/presence
 bitmap in this slice, so the inline property is required on insertion and cannot be deleted.
+- **Index old-key/new-key transitions (implemented).** Every accepted inline mutation resolves the
+previous and next indexed values per catalog membership before the canonical write and dispatches
+exactly `Remove(prev key)` + `Insert(next key)` when both exist, `Remove(prev key)` alone when a
+membership's decoded value disappears (schema no longer exposes that leaf path), and nothing when
+the value is unchanged (`crates/graph/src/property/change.rs::index_ops_for_value_change`). A
+rejected SET (top-level or nested `NULL`, wrong-kind leaf, missing schema field, byte-width
+mismatch) fails before the first stable write, so no stale posting can outlive its value. Active
+memberships post through the ordinary pending queue; Building/Sealing memberships are admitted
+through the pre-canonical build fence. Owning tests: the executor NULL/missing-field/NULL-leaf
+rejection contracts and the store-level posting-swap/no-op/leaf-scoped/width-reject contracts
+(GAP-2026-07-29-004).
 
 Non-inline properties on the same edge keep existing sidecar behavior, including index-maintenance
 where applicable. The inline schema itself is never written by Graph; it is derived from Router

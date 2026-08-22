@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 14:25:26 UTC +0000
+Anchor timestamp: 2026-08-22 16:20:47 UTC +0000
 
 ## Status
 
@@ -1088,7 +1088,23 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-004 — INLINE removal/NULL transitions need explicit posting semantics
 
-- **Status:** Planned
+- **Status:** Resolved (2026-08-22; contract pinned by owning tests — the implementation already
+  satisfied the intended old-key/new-key semantics. Executor level: SET of top-level `NULL`
+  rejects with `NullInlineProperty`, struct records missing a schema field or carrying a `NULL`
+  leaf reject with `InvalidInlinePropertyValue`, and every rejection leaves the stored bytes
+  untouched, so no stale posting can be produced. Store level: accepted updates dispatch exactly
+  Remove(prev)+Insert(next) per membership, equal-value updates dispatch nothing, a leaf-scoped
+  membership transitions only its own leaf key, and a width-mismatched update rejects before any
+  posting or row change. Contract recorded in
+  `design/storage/labeled-edge-inline-properties.md` §Mutation write semantics. Owning tests:
+  `inline_edge_scalar_set_null_aborts_without_write`,
+  `inline_edge_struct_set_missing_field_aborts_without_write`,
+  `inline_edge_struct_set_null_leaf_aborts_without_write` (executor),
+  `updating_indexed_inline_scalar_swaps_posting_old_for_new`,
+  `updating_indexed_inline_scalar_to_same_value_emits_no_posting`,
+  `updating_indexed_inline_struct_leaf_replaces_only_that_leaf_posting`,
+  `updating_indexed_inline_bytes_with_wrong_width_rejects_before_write` (store). No code-path
+  change, so no benchmark artifact update is required.)
 - **Severity:** P1 index consistency
 - **Owner:** Graph inline-property mutation and index posting dispatch
 - **Observed behavior:** Inline index maintenance now supports eligible scalar values and struct leaf
