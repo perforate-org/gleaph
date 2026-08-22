@@ -20,7 +20,6 @@
 //!
 //! [`FixedSubjectMapEntry`]: crate::records::FixedSubjectMapEntry
 
-use super::VectorCanisterStore;
 use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::{PageScratch, RowInfo};
 use crate::facade::stable::subject_store;
@@ -615,150 +614,98 @@ fn select_partitions(
     scored.into_iter().map(|(_, p)| p).collect()
 }
 
-impl VectorCanisterStore {
-    /// Exact top-k vector search over the `ivf_flat` index (ADR 0031 Slice 5/6).
-    ///
-    /// Read-only: validates the request against the stored definition, selects the read path (exact
-    /// subject-map scan for degenerate/untrained indexes, partition-page scan otherwise), and returns
-    /// the `top_k` nearest ordered by `(distance ascending, subject ascending)`. Uses the in-canister
-    /// default `nprobe` (clamped to `1..=nlist`).
-    pub fn vector_search(
-        &self,
-        req: &VectorSearchRequest,
-    ) -> Result<VectorSearchResult, VectorCanisterError> {
-        self.search_impl(req, None)
+/// Exact top-k vector search over the `ivf_flat` index (ADR 0031 Slice 5/6).
+///
+/// Read-only: validates the request against the stored definition, selects the read path (exact
+/// subject-map scan for degenerate/untrained indexes, partition-page scan otherwise), and returns
+/// the `top_k` nearest ordered by `(distance ascending, subject ascending)`. Uses the in-canister
+/// default `nprobe` (clamped to `1..=nlist`).
+pub(crate) fn vector_search(
+    req: &VectorSearchRequest,
+) -> Result<VectorSearchResult, VectorCanisterError> {
+    search_impl(req, None)
+}
+
+/// Test/bench entry point that overrides `nprobe`. Out-of-range `nprobe` (`0` or `> nlist`) is a
+/// caller bug and panics, rather than silently returning fewer/empty hits and masking a
+/// regression. This is an internal assertion distinct from the public `InvalidSearchTopK` wire
+/// error.
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) fn vector_search_tuned(
+    req: &VectorSearchRequest,
+    tuning: SearchTuning,
+) -> Result<VectorSearchResult, VectorCanisterError> {
+    search_impl(req, Some(tuning))
+}
+
+fn search_impl(
+    req: &VectorSearchRequest,
+    tuning_override: Option<SearchTuning>,
+) -> Result<VectorSearchResult, VectorCanisterError> {
+    if req.top_k == 0 || req.top_k > MAX_VECTOR_SEARCH_TOP_K {
+        return Err(VectorCanisterError::InvalidSearchTopK);
+    }
+    // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
+    // over current live vector slots. Validate the allowlist shape before the physical def check
+    // so protocol violations fail closed even on an empty index.
+    if let Some(candidates) = &req.candidate_subjects {
+        validate_candidate_allowlist(candidates)?;
+    }
+    // The physical def is created lazily on the first upsert (see `mutation.rs`). A
+    // Router-registered, activated index with no embeddings yet has no physical def, but it is a
+    // known-empty index, not an unknown one — return an empty result rather than `UnknownIndex`.
+    let Some(def) = definition_store::get(req.index_id).map_err(VectorCanisterError::from)? else {
+        return Ok(VectorSearchResult { hits: Vec::new() });
+    };
+    // Model Y: the request must agree with the stored definition's encoding (F32 or I8) and
+    // metric/dims. The wire query bytes are always canonical F32 (`dims * 4`), independent of the
+    // stored encoding; `def.stride_bytes` is the stored width (`dims` for I8) and must NOT be
+    // used here.
+    if req.encoding != def.encoding || req.metric != def.metric || req.dims != def.dims {
+        return Err(VectorCanisterError::DimensionMismatch);
+    }
+    if req.query.len() != req.dims as usize * 4 {
+        return Err(VectorCanisterError::ByteWidthMismatch);
     }
 
-    /// Test/bench entry point that overrides `nprobe`. Out-of-range `nprobe` (`0` or `> nlist`) is a
-    /// caller bug and panics, rather than silently returning fewer/empty hits and masking a
-    /// regression. This is an internal assertion distinct from the public `InvalidSearchTopK` wire
-    /// error.
-    #[cfg(any(test, feature = "canbench"))]
-    pub(crate) fn vector_search_tuned(
-        &self,
-        req: &VectorSearchRequest,
-        tuning: SearchTuning,
-    ) -> Result<VectorSearchResult, VectorCanisterError> {
-        self.search_impl(req, Some(tuning))
+    let query = decode_f32(&req.query);
+    if !vector_is_finite(&query)
+        || (req.metric == VectorMetric::Cosine && !vector_has_nonzero_norm(&query))
+    {
+        return Err(VectorCanisterError::InvalidQueryVector);
     }
+    // Precompute the query norm once for cosine scoring (the query is validated non-zero-norm).
+    let q_norm = if req.metric == VectorMetric::Cosine {
+        query.iter().map(|x| x * x).sum::<f32>().sqrt()
+    } else {
+        0.0
+    };
+    // Precompute the query suffix norms once for the cosine Cauchy-Schwarz early exit (length
+    // `dims + 1`); L2 passes an empty slice and ignores it.
+    let suffix_norm: Vec<f32> = if req.metric == VectorMetric::Cosine {
+        compute_suffix_norms(&query)
+    } else {
+        Vec::new()
+    };
+    // Conservative upper bound on the stored row norm for the I8 cosine early exit (I8 rows are
+    // only approximately unit-normalized: per-component quantization error <= 1/(2*127), so
+    // `norm(v) <= 1 + sqrt(dims)/(2*127)`). F32 rows are exactly unit-normalized (`1.0`).
+    let max_norm = if req.metric == VectorMetric::Cosine && req.encoding == VectorEncoding::I8 {
+        1.0 + (req.dims as f32).sqrt() / (2.0 * 127.0)
+    } else {
+        1.0
+    };
 
-    fn search_impl(
-        &self,
-        req: &VectorSearchRequest,
-        tuning_override: Option<SearchTuning>,
-    ) -> Result<VectorSearchResult, VectorCanisterError> {
-        if req.top_k == 0 || req.top_k > MAX_VECTOR_SEARCH_TOP_K {
-            return Err(VectorCanisterError::InvalidSearchTopK);
-        }
-        // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
-        // over current live vector slots. Validate the allowlist shape before the physical def check
-        // so protocol violations fail closed even on an empty index.
-        if let Some(candidates) = &req.candidate_subjects {
-            Self::validate_candidate_allowlist(candidates)?;
-        }
-        // The physical def is created lazily on the first upsert (see `mutation.rs`). A
-        // Router-registered, activated index with no embeddings yet has no physical def, but it is a
-        // known-empty index, not an unknown one — return an empty result rather than `UnknownIndex`.
-        let Some(def) = definition_store::get(req.index_id).map_err(VectorCanisterError::from)?
-        else {
-            return Ok(VectorSearchResult { hits: Vec::new() });
-        };
-        // Model Y: the request must agree with the stored definition's encoding (F32 or I8) and
-        // metric/dims. The wire query bytes are always canonical F32 (`dims * 4`), independent of the
-        // stored encoding; `def.stride_bytes` is the stored width (`dims` for I8) and must NOT be
-        // used here.
-        if req.encoding != def.encoding || req.metric != def.metric || req.dims != def.dims {
-            return Err(VectorCanisterError::DimensionMismatch);
-        }
-        if req.query.len() != req.dims as usize * 4 {
-            return Err(VectorCanisterError::ByteWidthMismatch);
-        }
-
-        let query = decode_f32(&req.query);
-        if !vector_is_finite(&query)
-            || (req.metric == VectorMetric::Cosine && !vector_has_nonzero_norm(&query))
-        {
-            return Err(VectorCanisterError::InvalidQueryVector);
-        }
-        // Precompute the query norm once for cosine scoring (the query is validated non-zero-norm).
-        let q_norm = if req.metric == VectorMetric::Cosine {
-            query.iter().map(|x| x * x).sum::<f32>().sqrt()
-        } else {
-            0.0
-        };
-        // Precompute the query suffix norms once for the cosine Cauchy-Schwarz early exit (length
-        // `dims + 1`); L2 passes an empty slice and ignores it.
-        let suffix_norm: Vec<f32> = if req.metric == VectorMetric::Cosine {
-            compute_suffix_norms(&query)
-        } else {
-            Vec::new()
-        };
-        // Conservative upper bound on the stored row norm for the I8 cosine early exit (I8 rows are
-        // only approximately unit-normalized: per-component quantization error <= 1/(2*127), so
-        // `norm(v) <= 1 + sqrt(dims)/(2*127)`). F32 rows are exactly unit-normalized (`1.0`).
-        let max_norm = if req.metric == VectorMetric::Cosine && req.encoding == VectorEncoding::I8 {
-            1.0 + (req.dims as f32).sqrt() / (2.0 * 127.0)
-        } else {
-            1.0
-        };
-
-        // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
-        // over current live vector slots. The receiving boundary validates count, vertex-only
-        // subjects, and duplicates independently of the Router.
-        if let Some(candidates) = &req.candidate_subjects {
-            // For a large allowlist relative to the live rows, scan-with-membership (page scan +
-            // in-memory candidate set) is cheaper than a per-candidate subject-map resolve.
-            let live = active_live_count(req.index_id, def.active_index_version, def.nlist);
-            if candidates.len() as u64 * 2 >= live {
-                return Ok(candidate_scan_with_membership(
-                    req.index_id,
-                    def.active_index_version,
-                    def.nlist,
-                    &query,
-                    def.metric,
-                    def.encoding,
-                    q_norm,
-                    &suffix_norm,
-                    max_norm,
-                    candidates,
-                    req.top_k,
-                ));
-            }
-            return self.candidate_subject_scan(
+    // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
+    // over current live vector slots. The receiving boundary validates count, vertex-only
+    // subjects, and duplicates independently of the Router.
+    if let Some(candidates) = &req.candidate_subjects {
+        // For a large allowlist relative to the live rows, scan-with-membership (page scan +
+        // in-memory candidate set) is cheaper than a per-candidate subject-map resolve.
+        let live = active_live_count(req.index_id, def.active_index_version, def.nlist);
+        if candidates.len() as u64 * 2 >= live {
+            return Ok(candidate_scan_with_membership(
                 req.index_id,
-                def.active_index_version,
-                &query,
-                def.metric,
-                def.encoding,
-                candidates,
-                req.top_k,
-                q_norm,
-                &suffix_norm,
-                max_norm,
-            );
-        }
-
-        // Resolve tuning. The default path uses `DEFAULT_EPS_QUERY`; the tuned path rejects a
-        // negative `eps_query` (see `vector_search_tuned`).
-        let tuning = match tuning_override {
-            Some(t) => {
-                assert!(
-                    t.eps_query >= 0.0,
-                    "tuned eps_query {} must be >= 0",
-                    t.eps_query
-                );
-                t
-            }
-            None => SearchTuning {
-                eps_query: DEFAULT_EPS_QUERY,
-            },
-        };
-
-        // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
-        // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
-        if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
-            Ok(self.exact_subject_scan(
-                req,
                 def.active_index_version,
                 def.nlist,
                 &query,
@@ -767,189 +714,238 @@ impl VectorCanisterStore {
                 q_norm,
                 &suffix_norm,
                 max_norm,
-            ))
-        } else {
-            Ok(self.partition_page_scan(req, &def, &query, tuning, q_norm, &suffix_norm, max_norm))
+                candidates,
+                req.top_k,
+            ));
         }
+        return candidate_subject_scan(
+            req.index_id,
+            def.active_index_version,
+            &query,
+            def.metric,
+            def.encoding,
+            candidates,
+            req.top_k,
+            q_norm,
+            &suffix_norm,
+            max_norm,
+        );
     }
 
-    /// Validate a candidate allowlist before consulting the physical index definition.
-    ///
-    /// Fails closed for oversized, duplicate, or non-vertex candidates. The receiving canister must
-    /// not depend on the Router to police the wire contract.
-    fn validate_candidate_allowlist(
-        candidates: &[VectorSubject],
-    ) -> Result<(), VectorCanisterError> {
-        if candidates.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+    // Resolve tuning. The default path uses `DEFAULT_EPS_QUERY`; the tuned path rejects a
+    // negative `eps_query` (see `vector_search_tuned`).
+    let tuning = match tuning_override {
+        Some(t) => {
+            assert!(
+                t.eps_query >= 0.0,
+                "tuned eps_query {} must be >= 0",
+                t.eps_query
+            );
+            t
+        }
+        None => SearchTuning {
+            eps_query: DEFAULT_EPS_QUERY,
+        },
+    };
+
+    // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
+    // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
+    if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
+        Ok(exact_subject_scan(
+            req,
+            def.active_index_version,
+            def.nlist,
+            &query,
+            def.metric,
+            def.encoding,
+            q_norm,
+            &suffix_norm,
+            max_norm,
+        ))
+    } else {
+        Ok(partition_page_scan(
+            req,
+            &def,
+            &query,
+            tuning,
+            q_norm,
+            &suffix_norm,
+            max_norm,
+        ))
+    }
+}
+
+/// Validate a candidate allowlist before consulting the physical index definition.
+///
+/// Fails closed for oversized, duplicate, or non-vertex candidates. The receiving canister must
+/// not depend on the Router to police the wire contract.
+fn validate_candidate_allowlist(candidates: &[VectorSubject]) -> Result<(), VectorCanisterError> {
+    if candidates.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+        return Err(VectorCanisterError::InvalidSearchCandidates);
+    }
+    let mut seen = std::collections::HashSet::with_capacity(candidates.len());
+    for subject in candidates {
+        if !matches!(subject, VectorSubject::Vertex { .. }) || !seen.insert(*subject) {
             return Err(VectorCanisterError::InvalidSearchCandidates);
         }
-        let mut seen = std::collections::HashSet::with_capacity(candidates.len());
-        for subject in candidates {
-            if !matches!(subject, VectorSubject::Vertex { .. }) || !seen.insert(*subject) {
-                return Err(VectorCanisterError::InvalidSearchCandidates);
-            }
-        }
-        Ok(())
     }
+    Ok(())
+}
 
-    /// Filtered scan over a bounded candidate allowlist, batch-read page-major.
-    ///
-    /// Precondition: `candidates` has already passed [`validate_candidate_allowlist`], so the scan
-    /// only resolves each subject to its current live slot, scores, and pushes through the bounded
-    /// top-k heap. Deleted, stale, or superseded subjects are skipped silently; they represent
-    /// derived-index drift rather than protocol violations.
-    ///
-    /// Pass 1 resolves each live candidate's current slot via the subject map (inherent to a bounded
-    /// allowlist); pass 2 groups those slots by page and bulk-reads each distinct page once (via
-    /// [`VectorSlabStore::load_page`] into a reused [`PageScratch`]) instead of calling `read_row_bytes`
-    /// once per candidate. The early-exit threshold is order-independent (a partial sum already
-    /// exceeding the k-th best proves the row cannot be in the top-k), so the page-major order yields
-    /// the same exact top-k.
-    pub(super) fn candidate_subject_scan(
-        &self,
-        index_id: u32,
-        active_index_version: u64,
-        query: &[f32],
-        metric: VectorMetric,
-        encoding: VectorEncoding,
-        candidates: &[VectorSubject],
-        top_k: u32,
-        q_norm: f32,
-        suffix_norm: &[f32],
-        max_norm: f32,
-    ) -> Result<VectorSearchResult, VectorCanisterError> {
-        // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
-        let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
+/// Filtered scan over a bounded candidate allowlist, batch-read page-major.
+///
+/// Precondition: `candidates` has already passed [`validate_candidate_allowlist`], so the scan
+/// only resolves each subject to its current live slot, scores, and pushes through the bounded
+/// top-k heap. Deleted, stale, or superseded subjects are skipped silently; they represent
+/// derived-index drift rather than protocol violations.
+///
+/// Pass 1 resolves each live candidate's current slot via the subject map (inherent to a bounded
+/// allowlist); pass 2 groups those slots by page and bulk-reads each distinct page once (via
+/// [`VectorSlabStore::load_page`] into a reused [`PageScratch`]) instead of calling `read_row_bytes`
+/// once per candidate. The early-exit threshold is order-independent (a partial sum already
+/// exceeding the k-th best proves the row cannot be in the top-k), so the page-major order yields
+/// the same exact top-k.
+pub(super) fn candidate_subject_scan(
+    index_id: u32,
+    active_index_version: u64,
+    query: &[f32],
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+    candidates: &[VectorSubject],
+    top_k: u32,
+    q_norm: f32,
+    suffix_norm: &[f32],
+    max_norm: f32,
+) -> Result<VectorSearchResult, VectorCanisterError> {
+    // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
+    let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("filtered_resolve");
+    for subject in candidates {
+        let key = SubjectKey::new(index_id, *subject);
+        let Some(value) = subject_store::get(&key).map_err(VectorCanisterError::from)? else {
+            continue;
+        };
+        if value.deleted {
+            continue;
+        }
+        let Some(slot) = value.current_slot_for(active_index_version) else {
+            continue;
+        };
+        let page_key = PageKey::new(
+            index_id,
+            slot.index_version as u64,
+            slot.partition_id,
+            slot.page_id as u64,
+        );
+        rows.push((page_key, *subject, slot));
+    }
+    if rows.is_empty() {
+        return Ok(VectorSearchResult { hits: Vec::new() });
+    }
+    // Pass 2: page-major order so each distinct page is bulk-read once.
+    rows.sort_by_key(|(page, _, slot)| (*page, slot.slot));
+
+    let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+    let mut scratch = PageScratch::new();
+    {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("filtered_resolve");
-        for subject in candidates {
-            let key = SubjectKey::new(index_id, *subject);
-            let Some(value) = subject_store::get(&key).map_err(VectorCanisterError::from)? else {
-                continue;
-            };
-            if value.deleted {
-                continue;
-            }
-            let Some(slot) = value.current_slot_for(active_index_version) else {
-                continue;
-            };
-            let page_key = PageKey::new(
-                index_id,
-                slot.index_version as u64,
-                slot.partition_id,
-                slot.page_id as u64,
-            );
-            rows.push((page_key, *subject, slot));
-        }
-        if rows.is_empty() {
-            return Ok(VectorSearchResult { hits: Vec::new() });
-        }
-        // Pass 2: page-major order so each distinct page is bulk-read once.
-        rows.sort_by_key(|(page, _, slot)| (*page, slot.slot));
-
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-        let mut scratch = PageScratch::new();
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("filtered_score");
-            score_sorted_rows(
-                query,
-                metric,
-                encoding,
-                q_norm,
-                suffix_norm,
-                max_norm,
-                top_k,
-                &mut heap,
-                &rows,
-                &mut scratch,
-            );
-        }
-
-        Ok(finalize(heap))
-    }
-
-    /// Exact fallback scan: bulk-read every partition `0..nlist` at the active version and score each
-    /// non-tombstoned row directly (no subject-map access; the write path guarantees a non-tombstoned
-    /// row is the subject's current live slot). Walking all partitions covers the degenerate `nlist = 1`
-    /// case (all rows in partition 0) and a trained-then-cleared index (`nlist > 1`, centroids missing)
-    /// whose rows are spread across `0..nlist`. The deterministic top-k and shadow/current-slot handling
-    /// are unchanged.
-    fn exact_subject_scan(
-        &self,
-        req: &VectorSearchRequest,
-        active_index_version: u64,
-        nlist: u32,
-        query: &[f32],
-        metric: VectorMetric,
-        encoding: VectorEncoding,
-        q_norm: f32,
-        suffix_norm: &[f32],
-        max_norm: f32,
-    ) -> VectorSearchResult {
-        scan_partitions(
-            req.index_id,
-            active_index_version,
-            0..nlist,
+        let _scope = bench_scope("filtered_score");
+        score_sorted_rows(
             query,
             metric,
             encoding,
             q_norm,
             suffix_norm,
             max_norm,
-            req.top_k,
-        )
+            top_k,
+            &mut heap,
+            &rows,
+            &mut scratch,
+        );
     }
 
-    /// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
-    /// chains in full, scoring every non-tombstoned row directly (no subject-map access; the write
-    /// path guarantees a non-tombstoned row is the subject's current live slot).
-    fn partition_page_scan(
-        &self,
-        req: &VectorSearchRequest,
-        def: &VectorIndexDef,
-        query: &[f32],
-        tuning: SearchTuning,
-        q_norm: f32,
-        suffix_norm: &[f32],
-        max_norm: f32,
-    ) -> VectorSearchResult {
-        // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
-        // if it somehow vanished between the gate and here.
-        let Some(centroids) = read_centroids(def, req.index_id) else {
-            return self.exact_subject_scan(
-                req,
-                def.active_index_version,
-                def.nlist,
-                query,
-                def.metric,
-                def.encoding,
-                q_norm,
-                suffix_norm,
-                max_norm,
-            );
-        };
-        let active = def.active_index_version;
-        let selected = select_partitions(
-            &centroids,
-            &req.query,
-            def.metric,
-            def.dims as usize,
-            tuning.eps_query,
-        );
-        scan_partitions(
-            req.index_id,
-            active,
-            selected.into_iter(),
+    Ok(finalize(heap))
+}
+
+/// Exact fallback scan: bulk-read every partition `0..nlist` at the active version and score each
+/// non-tombstoned row directly (no subject-map access; the write path guarantees a non-tombstoned
+/// row is the subject's current live slot). Walking all partitions covers the degenerate `nlist = 1`
+/// case (all rows in partition 0) and a trained-then-cleared index (`nlist > 1`, centroids missing)
+/// whose rows are spread across `0..nlist`. The deterministic top-k and shadow/current-slot handling
+/// are unchanged.
+fn exact_subject_scan(
+    req: &VectorSearchRequest,
+    active_index_version: u64,
+    nlist: u32,
+    query: &[f32],
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+    q_norm: f32,
+    suffix_norm: &[f32],
+    max_norm: f32,
+) -> VectorSearchResult {
+    scan_partitions(
+        req.index_id,
+        active_index_version,
+        0..nlist,
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+        req.top_k,
+    )
+}
+
+/// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
+/// chains in full, scoring every non-tombstoned row directly (no subject-map access; the write
+/// path guarantees a non-tombstoned row is the subject's current live slot).
+fn partition_page_scan(
+    req: &VectorSearchRequest,
+    def: &VectorIndexDef,
+    query: &[f32],
+    tuning: SearchTuning,
+    q_norm: f32,
+    suffix_norm: &[f32],
+    max_norm: f32,
+) -> VectorSearchResult {
+    // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
+    // if it somehow vanished between the gate and here.
+    let Some(centroids) = read_centroids(def, req.index_id) else {
+        return exact_subject_scan(
+            req,
+            def.active_index_version,
+            def.nlist,
             query,
             def.metric,
             def.encoding,
             q_norm,
             suffix_norm,
             max_norm,
-            req.top_k,
-        )
-    }
+        );
+    };
+    let active = def.active_index_version;
+    let selected = select_partitions(
+        &centroids,
+        &req.query,
+        def.metric,
+        def.dims as usize,
+        tuning.eps_query,
+    );
+    scan_partitions(
+        req.index_id,
+        active,
+        selected.into_iter(),
+        query,
+        def.metric,
+        def.encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+        req.top_k,
+    )
 }
 
 #[cfg(test)]

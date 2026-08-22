@@ -19,13 +19,15 @@
 //! [`crate::records::FixedSubjectMapEntry::current_slot_for`] against `def.active_index_version`, which is
 //! the old version until the atomic publish.
 
+use super::authorization::assert_router_caller;
+use super::mutation::{append_slot_batch, insert_subject_entry, tombstone_slot};
 use super::search::{
     assign_partition, decode_f32, encode_f32, read_centroids_at, stored_to_f32_bytes,
 };
 use super::{
     MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES,
     MAX_REBUILD_STEP_VECTOR_BYTES, MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS,
-    MAX_REBUILD_TRAINING_ITERATIONS, VectorCanisterStore,
+    MAX_REBUILD_TRAINING_ITERATIONS,
 };
 use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::{PageScratch, live_def_resolver};
@@ -75,7 +77,7 @@ fn clamp_step_work(requested: u32) -> u32 {
 
 /// Recomputes the head-only partition-health skew summary for `(index_id, active)` directly from the
 /// authoritative `PartitionHead` rows. **O(`nlist`)** (bounded by [`MAX_NLIST`]), never scans pages.
-/// Used both by [`VectorCanisterStore::admin_vector_partition_health`] and the rebuild trigger so the
+/// Used both by [`admin_vector_partition_health`] and the rebuild trigger so the
 /// skew signal is always derived from current state rather than caller-attested input.
 pub(super) fn partition_health_summary(
     index_id: u32,
@@ -326,7 +328,7 @@ fn next_subject_page(
 /// The first centroid is the candidate with the largest L2 norm (Katsavounidis et al. 1994
 /// deterministic variant); each subsequent centroid is the candidate farthest from the already-chosen
 /// set (ties broken by candidate index). This spreads the initial centroids across the pool, which
-/// improves the k-means result and lets the early-convergence exit in [`VectorCanisterStore::training_step`]
+/// improves the k-means result and lets the early-convergence exit in [`training_step`]
 /// fire sooner. The stored-form pool is decoded to canonical f32 once, transiently (the durable
 /// candidates stay frozen); cost is `O(nlist * n * dims)` — roughly one training iteration — so it is
 /// amortized by the reduction in iterations for separated data.
@@ -420,1176 +422,1146 @@ fn drop_version_heads_and_centroids(index_id: u32, version: u64, nlist: u32) {
     });
 }
 
-impl VectorCanisterStore {
-    /// Begins a rebuild (ADR 0031 Slice 7/8). **O(1)**: validates parameters — including the Slice 8
-    /// `Training` feasibility checks (combined-state byte budget and per-iteration distance-op
-    /// budget) — and enters `Sampling` without scanning subjects or writing centroids.
-    /// Insufficient-data failure is detected later in the bounded `Sampling` phase.
-    pub fn admin_start_vector_rebuild(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        nlist: u32,
-        sample_limit: u32,
-    ) -> Result<(), VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        if !matches!(def.encoding, VectorEncoding::F32 | VectorEncoding::I8)
-            || (def.metric != VectorMetric::L2Squared && def.metric != VectorMetric::Cosine)
-        {
-            return Err(VectorCanisterError::InvalidRebuildParams);
-        }
-        if !(2..=MAX_NLIST).contains(&nlist) {
-            return Err(VectorCanisterError::InvalidRebuildParams);
-        }
-        if sample_limit < nlist || sample_limit > MAX_REBUILD_SAMPLE_LIMIT {
-            return Err(VectorCanisterError::InvalidRebuildParams);
-        }
-        // Bound the combined durable rebuild state (candidate pool + trained centroids) and the
-        // per-iteration `Training` work; both scale with `dims`. The pool freezes native stored rows
-        // (the index's `pad_stride_bytes` width); the trained centroids are always canonical f32
-        // (`dims * 4` bytes each), so the state budget charges pool and centroid widths separately.
-        if !training_start_feasible(
-            nlist,
-            def.pad_stride_bytes,
-            u32::from(def.dims) * 4,
-            def.dims,
-        ) {
-            return Err(VectorCanisterError::InvalidRebuildParams);
-        }
-        if !matches!(rebuild_state_of(index_id), VectorRebuildStateRecord::Idle) {
-            return Err(VectorCanisterError::RebuildAlreadyActive);
-        }
-        let target = def
-            .active_index_version
-            .checked_add(1)
-            .ok_or(VectorCanisterError::AllocatorOverflow)?;
-        put_rebuild_state(
-            index_id,
-            VectorRebuildStateRecord::Sampling {
-                target_index_version: target,
-                nlist,
-                sample_limit,
-                cursor: None,
-                subjects_scanned: 0,
-                candidates: Vec::new(),
-            },
-        );
-        Ok(())
+/// Begins a rebuild (ADR 0031 Slice 7/8). **O(1)**: validates parameters — including the Slice 8
+/// `Training` feasibility checks (combined-state byte budget and per-iteration distance-op
+/// budget) — and enters `Sampling` without scanning subjects or writing centroids.
+/// Insufficient-data failure is detected later in the bounded `Sampling` phase.
+pub(crate) fn admin_start_vector_rebuild(
+    caller: Principal,
+    index_id: u32,
+    nlist: u32,
+    sample_limit: u32,
+) -> Result<(), VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    if !matches!(def.encoding, VectorEncoding::F32 | VectorEncoding::I8)
+        || (def.metric != VectorMetric::L2Squared && def.metric != VectorMetric::Cosine)
+    {
+        return Err(VectorCanisterError::InvalidRebuildParams);
     }
-
-    /// Starts a rebuild only if caller-attested partition health crosses the supplied policy (ADR
-    /// 0031 Slice 9). The operator gathers the head-only skew summary
-    /// ([`admin_vector_partition_health`](Self::admin_vector_partition_health)) and the merged
-    /// page-meta tombstone health ([`admin_vector_partition_health_step`](Self::admin_vector_partition_health_step),
-    /// run to `exhausted`), then passes them back with a policy; this re-derives the recommendation
-    /// and, if not `Healthy`, begins the rebuild via [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild)
-    /// (no autonomous timer in this slice). The decided recommendation is always returned, so a
-    /// `Healthy` result is an explicit no-op rather than an error.
-    ///
-    /// **Trust model.** The head-only skew summary is *recomputed here* from the authoritative
-    /// `PartitionHead` rows (O(`nlist`)), so a stale or foreign skew summary can never trip the
-    /// trigger. Only the page-meta tombstone health is *trusted admin input*, since proving its
-    /// completeness would require an unbounded scan (mirroring the no-snapshot-isolation contract of
-    /// [`VectorPartitionHealthStep`]). The freshness guard rejects page health attested against a
-    /// different generation: `attested_page_health.index_id`/`index_version` must equal the index's
-    /// current `active_index_version`, else [`VectorCanisterError::StaleMaintenanceHealth`].
-    ///
-    /// **nlist resolution.** `target_nlist = Some(n)` rebuilds at `n`; `None` defaults to the current
-    /// `def.nlist` only when it is `>= 2`. A degenerate `def.nlist == 1` with no `target_nlist`
-    /// returns [`VectorCanisterError::InvalidRebuildParams`] (the underlying rebuild requires
-    /// `nlist >= 2`). All other parameter/feasibility validation and the active-rebuild guard are
-    /// delegated to [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild).
-    pub fn admin_start_vector_rebuild_if_recommended(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        attested_page_health: VectorPartitionPageHealth,
-        policy: VectorMaintenancePolicy,
-        target_nlist: Option<u32>,
-        sample_limit: u32,
-    ) -> Result<VectorMaintenanceRecommendation, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        // Freshness guard: reject page health attested against a different generation. The skew
-        // summary needs no such guard because it is recomputed below from current heads.
-        if attested_page_health.index_id != index_id
-            || attested_page_health.index_version != def.active_index_version
-        {
-            return Err(VectorCanisterError::StaleMaintenanceHealth);
-        }
-        let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
-        let recommendation =
-            recommend_partition_maintenance(&summary, &attested_page_health, &policy)?;
-        if matches!(recommendation, VectorMaintenanceRecommendation::Healthy) {
-            return Ok(recommendation);
-        }
-        let effective_nlist = match target_nlist {
-            Some(n) => n,
-            None if def.nlist >= 2 => def.nlist,
-            None => return Err(VectorCanisterError::InvalidRebuildParams),
-        };
-        self.admin_start_vector_rebuild(caller, index_id, effective_nlist, sample_limit)?;
-        Ok(recommendation)
+    if !(2..=MAX_NLIST).contains(&nlist) {
+        return Err(VectorCanisterError::InvalidRebuildParams);
     }
-
-    /// Drives one bounded `Sampling`/`Building` step. Router resumes by calling this repeatedly until
-    /// the phase reaches `ReadyToPublish`.
-    pub fn admin_vector_rebuild_step(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        max_subjects: u32,
-    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        self.rebuild_step_inner(
-            index_id,
-            clamp_step_work(max_subjects),
-            MAX_REBUILD_STEP_VECTOR_BYTES,
-        )
+    if sample_limit < nlist || sample_limit > MAX_REBUILD_SAMPLE_LIMIT {
+        return Err(VectorCanisterError::InvalidRebuildParams);
     }
-
-    /// Shared body for the rebuild step, dispatching on phase with explicit per-step budgets so the
-    /// production endpoint (clamped count + [`MAX_REBUILD_STEP_VECTOR_BYTES`]) and tests (injected
-    /// small budgets) share one code path.
-    fn rebuild_step_inner(
-        &self,
-        index_id: u32,
-        max_subjects: u32,
-        max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
-        let state = {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_read_state");
-            rebuild_state_of(index_id)
-        };
-        let next = match state {
-            VectorRebuildStateRecord::Idle => return Err(VectorCanisterError::NoActiveRebuild),
-            VectorRebuildStateRecord::Sampling { .. } => {
-                self.sampling_step(index_id, state, max_subjects, max_vector_bytes)?
-            }
-            VectorRebuildStateRecord::Training { .. } => self.training_step(index_id, state)?,
-            VectorRebuildStateRecord::Building { .. } => {
-                self.building_step(index_id, state, max_subjects, max_vector_bytes)?
-            }
-            // ReadyToPublish/Cleaning/Aborting/Failed are not advanced by `step`.
-            other => other,
-        };
-        // Status is read before the move into the persist block (it only needs the phase/cursor
-        // summary, not ownership).
-        let status = status_of(&next);
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_persist_state");
-            match next {
-                VectorRebuildStateRecord::Idle => {
-                    VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.remove(&index_id));
-                }
-                next => {
-                    // Fail-closed encoded-size guard (P2): `Training` is the only durable rebuild
-                    // value whose size scales with sampled data (`candidates + centroids`). Encode
-                    // exactly once, re-check the Candid-encoded length before persisting any Training
-                    // transition (`Sampling -> Training` and each `Training -> Training` re-persist),
-                    // and store those same bytes verbatim. An oversized value returns a trap-free
-                    // error and leaves the prior recoverable state intact.
-                    let is_training = matches!(next, VectorRebuildStateRecord::Training { .. });
-                    let bytes = next.into_bytes();
-                    if is_training && bytes.len() as u64 > MAX_REBUILD_STATE_BYTES {
-                        return Err(VectorCanisterError::InvalidRebuildParams);
-                    }
-                    VECTOR_REBUILD_STATE
-                        .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(bytes)));
-                }
-            }
-        }
-        Ok(status)
+    // Bound the combined durable rebuild state (candidate pool + trained centroids) and the
+    // per-iteration `Training` work; both scale with `dims`. The pool freezes native stored rows
+    // (the index's `pad_stride_bytes` width); the trained centroids are always canonical f32
+    // (`dims * 4` bytes each), so the state budget charges pool and centroid widths separately.
+    if !training_start_feasible(
+        nlist,
+        def.pad_stride_bytes,
+        u32::from(def.dims) * 4,
+        def.dims,
+    ) {
+        return Err(VectorCanisterError::InvalidRebuildParams);
     }
-
-    /// Test-only entry point that drives one rebuild step with injectable count/byte budgets, so a
-    /// small fixture can exercise the bounded-step truncation (cursor/status survives) without
-    /// seeding `MAX_REBUILD_STEP_WORK` rows.
-    #[cfg(test)]
-    pub(crate) fn rebuild_step_with_budget(
-        &self,
-        index_id: u32,
-        max_subjects: u32,
-        max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
-        self.rebuild_step_inner(index_id, max_subjects, max_vector_bytes)
+    if !matches!(rebuild_state_of(index_id), VectorRebuildStateRecord::Idle) {
+        return Err(VectorCanisterError::RebuildAlreadyActive);
     }
-
-    /// Bounded `Sampling` step (ADR 0031 Slice 8): examines up to `max_subjects` rows, accumulating a
-    /// bounded distinct candidate pool (`candidate_pool_cap`) from live subjects. Once sampling is
-    /// done (range exhausted, `sample_limit` consumed, or the pool cap reached) it transitions to
-    /// `Training` if `>= nlist` distinct candidates were collected, else to `Failed`. No centroids
-    /// are written here; `Training` writes them on its transition to `Building`.
-    fn sampling_step(
-        &self,
-        index_id: u32,
-        state: VectorRebuildStateRecord,
-        max_subjects: u32,
-        max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
-        let VectorRebuildStateRecord::Sampling {
-            target_index_version,
+    let target = def
+        .active_index_version
+        .checked_add(1)
+        .ok_or(VectorCanisterError::AllocatorOverflow)?;
+    put_rebuild_state(
+        index_id,
+        VectorRebuildStateRecord::Sampling {
+            target_index_version: target,
             nlist,
             sample_limit,
-            cursor,
-            mut subjects_scanned,
-            mut candidates,
-        } = state
-        else {
-            unreachable!("sampling_step called off Sampling");
-        };
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("rebuild_sampling");
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        let active = def.active_index_version;
-        // Candidates freeze native stored rows (the index's `pad_stride_bytes` width), while the
-        // trained centroids are canonical f32, so the pool cap charges those widths separately.
-        let pool_cap = candidate_pool_cap(
-            nlist,
-            def.pad_stride_bytes,
-            u32::from(def.dims) * 4,
-            def.dims,
-        );
+            cursor: None,
+            subjects_scanned: 0,
+            candidates: Vec::new(),
+        },
+    );
+    Ok(())
+}
 
-        let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
-        let mut range_exhausted = false;
-        let mut bytes_buffered = 0u64;
-        let mut live_rows: Vec<RebuildCandidate> = Vec::new();
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_sampling_scan");
-            // Phase 1: walk the subject map and collect live subjects to sample, keyed by their
-            // active page. The byte budget is charged by row stride so the buffered `live_bytes`
-            // stays bounded; the actual bytes are read in phase 2 (mirrors the rebuild `Building`
-            // scan and the search exact-scan).
-            let mut to_read: Vec<(PageKey, SlotRef)> = Vec::new();
-            let scope = SubjectScanScope::Sampling {
-                index_id,
-                target_index_version,
-            };
-            let mut scan_cursor = cursor;
-            // The owner cursor budgets physical slots, while this phase budgets live subjects.
-            // Keep one-slot pages so a logical subject limit never skips the remainder of a page;
-            // a bucket block is the bounded translation between the two budgets.
-            let physical_step_limit = max_subjects.max(1).saturating_mul(SLOTS_PER_BUCKET);
-            for _ in 0..physical_step_limit {
-                let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
-                    range_exhausted = true;
-                    last_cursor = None;
-                    break;
-                };
-                if next.restarted {
-                    subjects_scanned = 0;
-                    candidates.clear();
-                    to_read.clear();
-                    bytes_buffered = 0;
-                }
-                let page = next.page;
-                scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
-                last_cursor = scan_cursor.clone();
-                if page.exhausted {
-                    range_exhausted = true;
-                }
-                for (key, value) in page.entries {
-                    if key.index_id != index_id || value.deleted {
-                        continue;
-                    }
-                    let Some(slot) = value.current_slot_for(active) else {
-                        continue;
-                    };
-                    if subjects_scanned >= sample_limit as u64 {
-                        break;
-                    }
-                    subjects_scanned += 1;
-                    bytes_buffered += def.pad_stride_bytes as u64;
-                    to_read.push((
-                        PageKey::new(
-                            index_id,
-                            slot.index_version as u64,
-                            slot.partition_id,
-                            slot.page_id as u64,
-                        ),
-                        slot,
-                    ));
-                }
-                if range_exhausted
-                    || subjects_scanned >= sample_limit as u64
-                    || bytes_buffered >= max_vector_bytes
-                {
-                    break;
-                }
+/// Starts a rebuild only if caller-attested partition health crosses the supplied policy (ADR
+/// 0031 Slice 9). The operator gathers the head-only skew summary
+/// ([`admin_vector_partition_health`](Self::admin_vector_partition_health)) and the merged
+/// page-meta tombstone health ([`admin_vector_partition_health_step`](Self::admin_vector_partition_health_step),
+/// run to `exhausted`), then passes them back with a policy; this re-derives the recommendation
+/// and, if not `Healthy`, begins the rebuild via [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild)
+/// (no autonomous timer in this slice). The decided recommendation is always returned, so a
+/// `Healthy` result is an explicit no-op rather than an error.
+///
+/// **Trust model.** The head-only skew summary is *recomputed here* from the authoritative
+/// `PartitionHead` rows (O(`nlist`)), so a stale or foreign skew summary can never trip the
+/// trigger. Only the page-meta tombstone health is *trusted admin input*, since proving its
+/// completeness would require an unbounded scan (mirroring the no-snapshot-isolation contract of
+/// [`VectorPartitionHealthStep`]). The freshness guard rejects page health attested against a
+/// different generation: `attested_page_health.index_id`/`index_version` must equal the index's
+/// current `active_index_version`, else [`VectorCanisterError::StaleMaintenanceHealth`].
+///
+/// **nlist resolution.** `target_nlist = Some(n)` rebuilds at `n`; `None` defaults to the current
+/// `def.nlist` only when it is `>= 2`. A degenerate `def.nlist == 1` with no `target_nlist`
+/// returns [`VectorCanisterError::InvalidRebuildParams`] (the underlying rebuild requires
+/// `nlist >= 2`). All other parameter/feasibility validation and the active-rebuild guard are
+/// delegated to [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild).
+pub(crate) fn admin_start_vector_rebuild_if_recommended(
+    caller: Principal,
+    index_id: u32,
+    attested_page_health: VectorPartitionPageHealth,
+    policy: VectorMaintenancePolicy,
+    target_nlist: Option<u32>,
+    sample_limit: u32,
+) -> Result<VectorMaintenanceRecommendation, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    // Freshness guard: reject page health attested against a different generation. The skew
+    // summary needs no such guard because it is recomputed below from current heads.
+    if attested_page_health.index_id != index_id
+        || attested_page_health.index_version != def.active_index_version
+    {
+        return Err(VectorCanisterError::StaleMaintenanceHealth);
+    }
+    let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
+    let recommendation = recommend_partition_maintenance(&summary, &attested_page_health, &policy)?;
+    if matches!(recommendation, VectorMaintenanceRecommendation::Healthy) {
+        return Ok(recommendation);
+    }
+    let effective_nlist = match target_nlist {
+        Some(n) => n,
+        None if def.nlist >= 2 => def.nlist,
+        None => return Err(VectorCanisterError::InvalidRebuildParams),
+    };
+    admin_start_vector_rebuild(caller, index_id, effective_nlist, sample_limit)?;
+    Ok(recommendation)
+}
+
+/// Drives one bounded `Sampling`/`Building` step. Router resumes by calling this repeatedly until
+/// the phase reaches `ReadyToPublish`.
+pub(crate) fn admin_vector_rebuild_step(
+    caller: Principal,
+    index_id: u32,
+    max_subjects: u32,
+) -> Result<VectorRebuildStatus, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    rebuild_step_inner(
+        index_id,
+        clamp_step_work(max_subjects),
+        MAX_REBUILD_STEP_VECTOR_BYTES,
+    )
+}
+
+/// Shared body for the rebuild step, dispatching on phase with explicit per-step budgets so the
+/// production endpoint (clamped count + [`MAX_REBUILD_STEP_VECTOR_BYTES`]) and tests (injected
+/// small budgets) share one code path.
+fn rebuild_step_inner(
+    index_id: u32,
+    max_subjects: u32,
+    max_vector_bytes: u64,
+) -> Result<VectorRebuildStatus, VectorCanisterError> {
+    let state = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_read_state");
+        rebuild_state_of(index_id)
+    };
+    let next = match state {
+        VectorRebuildStateRecord::Idle => return Err(VectorCanisterError::NoActiveRebuild),
+        VectorRebuildStateRecord::Sampling { .. } => {
+            sampling_step(index_id, state, max_subjects, max_vector_bytes)?
+        }
+        VectorRebuildStateRecord::Training { .. } => training_step(index_id, state)?,
+        VectorRebuildStateRecord::Building { .. } => {
+            building_step(index_id, state, max_subjects, max_vector_bytes)?
+        }
+        // ReadyToPublish/Cleaning/Aborting/Failed are not advanced by `step`.
+        other => other,
+    };
+    // Status is read before the move into the persist block (it only needs the phase/cursor
+    // summary, not ownership).
+    let status = status_of(&next);
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_persist_state");
+        match next {
+            VectorRebuildStateRecord::Idle => {
+                VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.remove(&index_id));
             }
-            // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
-            // each sampled row's bytes into `live_rows`. A slot at/after `row_count` or tombstoned
-            // is dropped, matching the per-subject `read_row_bytes` `None` path.
-            {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("rebuild_sampling_read");
-                to_read.sort_by_key(|(page_key, _)| *page_key);
-                let mut scratch = PageScratch::new();
-                let mut i = 0usize;
-                while i < to_read.len() {
-                    let page_key = to_read[i].0;
-                    let loaded =
-                        PAGE_STORE.with_borrow(|store| store.load_page(page_key, &mut scratch));
-                    let mut end = i + 1;
-                    while end < to_read.len() && to_read[end].0 == page_key {
-                        end += 1;
-                    }
-                    if loaded {
-                        let row_count = scratch.row_count();
-                        for (_, slot) in &to_read[i..end] {
-                            if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
-                                continue;
-                            }
-                            // Sampling freezes each row in its native stored form (bytes + aux
-                            // scale); f32 exists only transiently inside seed/Training computation.
-                            live_rows.push(RebuildCandidate {
-                                stored: scratch.vec_slice(slot.slot).to_vec(),
-                                aux: scratch.row_info(slot.slot).aux,
-                            });
-                        }
-                    }
-                    i = end;
+            next => {
+                // Fail-closed encoded-size guard (P2): `Training` is the only durable rebuild
+                // value whose size scales with sampled data (`candidates + centroids`). Encode
+                // exactly once, re-check the Candid-encoded length before persisting any Training
+                // transition (`Sampling -> Training` and each `Training -> Training` re-persist),
+                // and store those same bytes verbatim. An oversized value returns a trap-free
+                // error and leaves the prior recoverable state intact.
+                let is_training = matches!(next, VectorRebuildStateRecord::Training { .. });
+                let bytes = next.into_bytes();
+                if is_training && bytes.len() as u64 > MAX_REBUILD_STATE_BYTES {
+                    return Err(VectorCanisterError::InvalidRebuildParams);
                 }
+                VECTOR_REBUILD_STATE
+                    .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(bytes)));
             }
         }
+    }
+    Ok(status)
+}
 
-        // Distinct membership via a transient set seeded from the existing pool (P1): keeps the
-        // per-step dedup cost ~O(total candidate bytes) instead of `candidates.contains` being
-        // O(existing candidates * vector_width) for every new candidate. The key is the whole
-        // `(stored bytes, aux)` pair: identical quantized bytes under different scales are distinct
-        // vectors. The set is heap-only; the durable state stays `Vec<RebuildCandidate>`.
-        let mut pool_cap_reached = candidates.len() >= pool_cap;
+/// Test-only entry point that drives one rebuild step with injectable count/byte budgets, so a
+/// small fixture can exercise the bounded-step truncation (cursor/status survives) without
+/// seeding `MAX_REBUILD_STEP_WORK` rows.
+#[cfg(test)]
+pub(crate) fn rebuild_step_with_budget(
+    index_id: u32,
+    max_subjects: u32,
+    max_vector_bytes: u64,
+) -> Result<VectorRebuildStatus, VectorCanisterError> {
+    rebuild_step_inner(index_id, max_subjects, max_vector_bytes)
+}
+
+/// Bounded `Sampling` step (ADR 0031 Slice 8): examines up to `max_subjects` rows, accumulating a
+/// bounded distinct candidate pool (`candidate_pool_cap`) from live subjects. Once sampling is
+/// done (range exhausted, `sample_limit` consumed, or the pool cap reached) it transitions to
+/// `Training` if `>= nlist` distinct candidates were collected, else to `Failed`. No centroids
+/// are written here; `Training` writes them on its transition to `Building`.
+fn sampling_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+    max_subjects: u32,
+    max_vector_bytes: u64,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::Sampling {
+        target_index_version,
+        nlist,
+        sample_limit,
+        cursor,
+        mut subjects_scanned,
+        mut candidates,
+    } = state
+    else {
+        unreachable!("sampling_step called off Sampling");
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("rebuild_sampling");
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    let active = def.active_index_version;
+    // Candidates freeze native stored rows (the index's `pad_stride_bytes` width), while the
+    // trained centroids are canonical f32, so the pool cap charges those widths separately.
+    let pool_cap = candidate_pool_cap(
+        nlist,
+        def.pad_stride_bytes,
+        u32::from(def.dims) * 4,
+        def.dims,
+    );
+
+    let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
+    let mut range_exhausted = false;
+    let mut bytes_buffered = 0u64;
+    let mut live_rows: Vec<RebuildCandidate> = Vec::new();
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_sampling_scan");
+        // Phase 1: walk the subject map and collect live subjects to sample, keyed by their
+        // active page. The byte budget is charged by row stride so the buffered `live_bytes`
+        // stays bounded; the actual bytes are read in phase 2 (mirrors the rebuild `Building`
+        // scan and the search exact-scan).
+        let mut to_read: Vec<(PageKey, SlotRef)> = Vec::new();
+        let scope = SubjectScanScope::Sampling {
+            index_id,
+            target_index_version,
+        };
+        let mut scan_cursor = cursor;
+        // The owner cursor budgets physical slots, while this phase budgets live subjects.
+        // Keep one-slot pages so a logical subject limit never skips the remainder of a page;
+        // a bucket block is the bounded translation between the two budgets.
+        let physical_step_limit = max_subjects.max(1).saturating_mul(SLOTS_PER_BUCKET);
+        for _ in 0..physical_step_limit {
+            let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
+                range_exhausted = true;
+                last_cursor = None;
+                break;
+            };
+            if next.restarted {
+                subjects_scanned = 0;
+                candidates.clear();
+                to_read.clear();
+                bytes_buffered = 0;
+            }
+            let page = next.page;
+            scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+            last_cursor = scan_cursor.clone();
+            if page.exhausted {
+                range_exhausted = true;
+            }
+            for (key, value) in page.entries {
+                if key.index_id != index_id || value.deleted {
+                    continue;
+                }
+                let Some(slot) = value.current_slot_for(active) else {
+                    continue;
+                };
+                if subjects_scanned >= sample_limit as u64 {
+                    break;
+                }
+                subjects_scanned += 1;
+                bytes_buffered += def.pad_stride_bytes as u64;
+                to_read.push((
+                    PageKey::new(
+                        index_id,
+                        slot.index_version as u64,
+                        slot.partition_id,
+                        slot.page_id as u64,
+                    ),
+                    slot,
+                ));
+            }
+            if range_exhausted
+                || subjects_scanned >= sample_limit as u64
+                || bytes_buffered >= max_vector_bytes
+            {
+                break;
+            }
+        }
+        // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
+        // each sampled row's bytes into `live_rows`. A slot at/after `row_count` or tombstoned
+        // is dropped, matching the per-subject `read_row_bytes` `None` path.
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_sampling_dedup");
-            let mut seen: RapidHashSet<RebuildCandidate> =
-                RapidHashSet::with_capacity(candidates.len() + live_rows.len());
-            seen.extend(candidates.iter().cloned());
-            for row in live_rows {
+            let _scope = bench_scope("rebuild_sampling_read");
+            to_read.sort_by_key(|(page_key, _)| *page_key);
+            let mut scratch = PageScratch::new();
+            let mut i = 0usize;
+            while i < to_read.len() {
+                let page_key = to_read[i].0;
+                let loaded =
+                    PAGE_STORE.with_borrow(|store| store.load_page(page_key, &mut scratch));
+                let mut end = i + 1;
+                while end < to_read.len() && to_read[end].0 == page_key {
+                    end += 1;
+                }
+                if loaded {
+                    let row_count = scratch.row_count();
+                    for (_, slot) in &to_read[i..end] {
+                        if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                            continue;
+                        }
+                        // Sampling freezes each row in its native stored form (bytes + aux
+                        // scale); f32 exists only transiently inside seed/Training computation.
+                        live_rows.push(RebuildCandidate {
+                            stored: scratch.vec_slice(slot.slot).to_vec(),
+                            aux: scratch.row_info(slot.slot).aux,
+                        });
+                    }
+                }
+                i = end;
+            }
+        }
+    }
+
+    // Distinct membership via a transient set seeded from the existing pool (P1): keeps the
+    // per-step dedup cost ~O(total candidate bytes) instead of `candidates.contains` being
+    // O(existing candidates * vector_width) for every new candidate. The key is the whole
+    // `(stored bytes, aux)` pair: identical quantized bytes under different scales are distinct
+    // vectors. The set is heap-only; the durable state stays `Vec<RebuildCandidate>`.
+    let mut pool_cap_reached = candidates.len() >= pool_cap;
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_sampling_dedup");
+        let mut seen: RapidHashSet<RebuildCandidate> =
+            RapidHashSet::with_capacity(candidates.len() + live_rows.len());
+        seen.extend(candidates.iter().cloned());
+        for row in live_rows {
+            if candidates.len() >= pool_cap {
+                pool_cap_reached = true;
+                break;
+            }
+            if seen.insert(row.clone()) {
+                candidates.push(row);
                 if candidates.len() >= pool_cap {
                     pool_cap_reached = true;
-                    break;
-                }
-                if seen.insert(row.clone()) {
-                    candidates.push(row);
-                    if candidates.len() >= pool_cap {
-                        pool_cap_reached = true;
-                    }
                 }
             }
         }
-
-        let budget_exhausted = subjects_scanned >= sample_limit as u64;
-        let sampling_done = range_exhausted || budget_exhausted || pool_cap_reached;
-        if sampling_done {
-            if candidates.len() >= nlist as usize {
-                // The fail-closed encoded-size guard (P2) is applied centrally in
-                // `rebuild_step_inner` before persisting, covering this transition and every
-                // subsequent `Training` re-persist uniformly.
-                return Ok(VectorRebuildStateRecord::Training {
-                    target_index_version,
-                    nlist,
-                    sample_limit,
-                    iteration: 0,
-                    candidates,
-                    centroids: Vec::new(),
-                });
-            }
-            return Ok(VectorRebuildStateRecord::Failed {
-                target_index_version,
-                reason: "insufficient live vectors to form nlist distinct centroids".to_string(),
-            });
-        }
-
-        Ok(VectorRebuildStateRecord::Sampling {
-            target_index_version,
-            nlist,
-            sample_limit,
-            cursor: last_cursor,
-            subjects_scanned,
-            candidates,
-        })
     }
 
-    /// Bounded deterministic k-means-lite `Training` step (ADR 0031 Slice 8). Performs exactly one
-    /// full iteration over the bounded candidate pool per call: assigns each candidate to its nearest
-    /// current centroid (ties to the lowest id, via the same rule as `assign_partition`), recomputes
-    /// each centroid as the arithmetic mean of its members, and keeps a previous centroid unchanged
-    /// for an empty cluster. The per-iteration work `candidate_count * nlist * dims` is bounded by
-    /// [`MAX_REBUILD_TRAINING_DISTANCE_OPS`] (the `Sampling` pool cap); sums/counts are transient
-    /// heap buffers (`O(nlist * dims)`), never persisted. Once the recomputed centroids equal the
-    /// previous iteration's (the assignment is stable) or [`MAX_REBUILD_TRAINING_ITERATIONS`] is
-    /// reached, it writes exactly `nlist` centroids to `IVF_CENTROIDS` and transitions to `Building`
-    /// (the early-exit is exact: a converged centroid set reproduces itself, so stopping early changes
-    /// no result).
-    fn training_step(
-        &self,
-        index_id: u32,
-        state: VectorRebuildStateRecord,
-    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
-        let VectorRebuildStateRecord::Training {
-            target_index_version,
-            nlist,
-            sample_limit,
-            iteration,
-            candidates,
-            mut centroids,
-        } = state
-        else {
-            unreachable!("training_step called off Training");
-        };
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("rebuild_training");
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        let dims = def.dims as usize;
-        let nlist_usize = nlist as usize;
-
-        // Iteration 0: seed centroids via deterministic furthest-point selection (spread across the
-        // pool) rather than the first `nlist` candidates, which can cluster together and stall
-        // convergence. The recompute below is deterministic (same assignment -> same mean), so if it
-        // leaves the centroids unchanged the assignment is stable and k-means has converged: a
-        // further iteration would reproduce the same centroids, so stopping early is exact.
-        if centroids.is_empty() {
-            centroids = furthest_point_seed(&candidates, nlist_usize, &def);
-        }
-        // The centroids used for this iteration's assignment.
-        let prev_centroids = centroids.clone();
-
-        let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; nlist_usize];
-        let mut counts: Vec<u64> = vec![0u64; nlist_usize];
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_training_assign");
-            let decoded_centroids: Vec<Vec<f32>> =
-                centroids.iter().map(|c| decode_f32(c)).collect();
-            for cand in &candidates {
-                // Each candidate is decoded from its frozen stored form exactly once per iteration;
-                // the assignment scores canonical f32 bytes against the f32 centroids. An `F32` row
-                // already is canonical f32, so its bytes are borrowed without a copy; only an `I8`
-                // row materializes a transient dequantized buffer.
-                let v = match def.encoding {
-                    VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
-                    VectorEncoding::I8 => {
-                        Cow::Owned(stored_to_f32_bytes(&def, &cand.stored, &cand.aux))
-                    }
-                };
-                let mut best = 0usize;
-                let mut best_d = f32::INFINITY;
-                for (p, centroid) in decoded_centroids.iter().enumerate() {
-                    // Centroid-level early exit: a centroid whose partial L2 already exceeds the
-                    // running best cannot be the nearest (L2 partial sums are monotone), so skip it.
-                    // A tie does not trigger the strict-exceeds exit, preserving the lowest-id
-                    // tie-break; a non-finite centroid is skipped (a NaN distance never beats `best_d`).
-                    let Some(d) = l2_squared_f32_early_exit(&v, centroid, best_d) else {
-                        continue;
-                    };
-                    if d < best_d {
-                        best_d = d;
-                        best = p;
-                    }
-                }
-                for (acc, x) in sums[best].iter_mut().zip(v.as_chunks::<4>().0) {
-                    *acc += f32::from_le_bytes(*x);
-                }
-                counts[best] += 1;
-            }
-        }
-        {
-            // Recompute each centroid as the mean; an empty cluster keeps its previous centroid.
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_training_recompute");
-            let is_cosine = def.metric == VectorMetric::Cosine;
-            for p in 0..nlist_usize {
-                if counts[p] == 0 {
-                    continue;
-                }
-                let inv = 1.0f32 / counts[p] as f32;
-                let mean: Vec<f32> = sums[p].iter().map(|s| s * inv).collect();
-                // Spherical k-means (cosine): renormalize the mean direction to unit length so the
-                // next L2 assignment is cosine-aware (L2² = 2 − 2cos on unit vectors). A zero-norm
-                // mean (members cancel direction) keeps the previous centroid.
-                let new_centroid: Vec<f32> = if is_cosine {
-                    let norm_sq: f32 = mean.iter().map(|x| x * x).sum();
-                    if norm_sq == 0.0 {
-                        continue;
-                    }
-                    let inv_norm = 1.0 / norm_sq.sqrt();
-                    mean.iter().map(|x| x * inv_norm).collect()
-                } else {
-                    mean
-                };
-                centroids[p] = encode_f32(&new_centroid);
-            }
-        }
-        let iteration = iteration + 1;
-        let converged = prev_centroids == centroids;
-
-        if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
-            IVF_CENTROIDS.with_borrow_mut(|m| {
-                for (p, bytes) in centroids.iter().enumerate() {
-                    m.insert(
-                        PartitionKey::new(index_id, target_index_version, p as u32),
-                        bytes.clone(),
-                    );
-                }
-            });
-            return Ok(VectorRebuildStateRecord::Building {
+    let budget_exhausted = subjects_scanned >= sample_limit as u64;
+    let sampling_done = range_exhausted || budget_exhausted || pool_cap_reached;
+    if sampling_done {
+        if candidates.len() >= nlist as usize {
+            // The fail-closed encoded-size guard (P2) is applied centrally in
+            // `rebuild_step_inner` before persisting, covering this transition and every
+            // subsequent `Training` re-persist uniformly.
+            return Ok(VectorRebuildStateRecord::Training {
                 target_index_version,
                 nlist,
-                cursor: None,
-                subjects_processed: 0,
+                sample_limit,
+                iteration: 0,
+                candidates,
+                centroids: Vec::new(),
             });
         }
-
-        Ok(VectorRebuildStateRecord::Training {
+        return Ok(VectorRebuildStateRecord::Failed {
             target_index_version,
-            nlist,
-            sample_limit,
-            iteration,
-            candidates,
-            centroids,
-        })
-    }
-
-    /// Bounded `Building` step: shadows up to `max_subjects` still-live subjects into their nearest
-    /// target partition. Transitions to `ReadyToPublish` once the subject range is exhausted.
-    fn building_step(
-        &self,
-        index_id: u32,
-        state: VectorRebuildStateRecord,
-        max_subjects: u32,
-        max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
-        let VectorRebuildStateRecord::Building {
-            target_index_version,
-            nlist,
-            cursor,
-            mut subjects_processed,
-        } = state
-        else {
-            unreachable!("building_step called off Building");
-        };
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("rebuild_building");
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        let active = def.active_index_version;
-        let centroids = read_centroids_at(index_id, target_index_version, nlist, def.dims)
-            .ok_or(VectorCanisterError::RebuildIncomplete)?;
-
-        let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
-        let mut range_exhausted = false;
-        let mut bytes_buffered = 0u64;
-        let mut pending: Vec<ShadowPendingRow> = Vec::new();
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_building_scan");
-            // Phase 1: walk the subject map and collect subjects still needing a shadow, keyed by
-            // their active page. The byte budget is charged by row stride (the bytes each shadow row
-            // will carry) so the buffered `pending` stays bounded; the actual bytes are read in phase
-            // 2.
-            let mut to_read: Vec<(PageKey, SubjectKey, FixedSubjectMapEntry, SlotRef)> = Vec::new();
-            let scope = SubjectScanScope::Building {
-                index_id,
-                target_index_version,
-            };
-            let mut scan_cursor = cursor;
-            let subject_budget = max_subjects.max(1);
-            let mut subjects_in_step = 0u32;
-            for _ in 0..max_subjects.max(1) {
-                let remaining_subjects = u64::from(subject_budget.saturating_sub(subjects_in_step));
-                let remaining_bytes = max_vector_bytes.saturating_sub(bytes_buffered);
-                let stride = u64::from(def.pad_stride_bytes).max(1);
-                let byte_budget = (remaining_bytes / stride).max(1);
-                let physical_slot_budget = remaining_subjects
-                    .min(byte_budget)
-                    .min(BUILDING_SCAN_SLOT_BUDGET);
-                let Some(next) =
-                    next_subject_page(scope, scan_cursor.clone(), physical_slot_budget)?
-                else {
-                    range_exhausted = true;
-                    last_cursor = None;
-                    break;
-                };
-                let page = next.page;
-                scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
-                last_cursor = scan_cursor.clone();
-                if page.exhausted {
-                    range_exhausted = true;
-                }
-                for (key, value) in page.entries {
-                    if key.index_id != index_id
-                        || value.deleted
-                        || value
-                            .shadow_slot
-                            .is_some_and(|s| s.index_version as u64 == target_index_version)
-                    {
-                        continue;
-                    }
-                    let Some(active_slot) = value.current_slot_for(active) else {
-                        continue;
-                    };
-                    bytes_buffered += def.pad_stride_bytes as u64;
-                    subjects_in_step += 1;
-                    to_read.push((
-                        PageKey::new(
-                            index_id,
-                            active_slot.index_version as u64,
-                            active_slot.partition_id,
-                            active_slot.page_id as u64,
-                        ),
-                        key,
-                        value,
-                        active_slot,
-                    ));
-                }
-                if range_exhausted
-                    || subjects_in_step >= subject_budget
-                    || bytes_buffered >= max_vector_bytes
-                {
-                    break;
-                }
-            }
-            // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
-            // each row's bytes. A subject whose slot is at/after `row_count` or is tombstoned is
-            // dropped, matching the per-subject `read_row_bytes` `None` path.
-            {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("rebuild_building_read");
-                to_read.sort_by_key(|(page_key, _, _, _)| *page_key);
-                let mut scratch = PageScratch::new();
-                let mut i = 0usize;
-                while i < to_read.len() {
-                    let page_key = to_read[i].0;
-                    let loaded =
-                        PAGE_STORE.with_borrow(|store| store.load_page(page_key, &mut scratch));
-                    let mut end = i + 1;
-                    while end < to_read.len() && to_read[end].0 == page_key {
-                        end += 1;
-                    }
-                    if loaded {
-                        let row_count = scratch.row_count();
-                        for (_, key, entry, slot) in &to_read[i..end] {
-                            if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
-                                continue;
-                            }
-                            let bytes = scratch.vec_slice(slot.slot).to_vec();
-                            let aux = scratch.row_info(slot.slot).aux;
-                            pending.push((*key, *entry, *slot, bytes, aux));
-                        }
-                    }
-                    i = end;
-                }
-            }
-        }
-
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("rebuild_building_append");
-            // Pre-compute each row's nearest target partition and group by partition, so a whole
-            // partition's shadow rows are appended in one batched page-store call (amortizing page
-            // directory commits across rows) and each subject entry is updated with a single map
-            // insert (no redundant get). The guard below is still checked per row because the
-            // subject's live slot must be the one we read bytes from.
-            let mut by_partition: Vec<Vec<ShadowPendingRow>> =
-                (0..nlist as usize).map(|_| Vec::new()).collect();
-            for (key, entry, active_slot, bytes, aux) in pending {
-                // Partition assignment is in f32 space (dequantizing an `I8` row with its aux scale),
-                // matching the upsert `active_partition` so pre- and post-rebuild assignment agree.
-                let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
-                let partition = assign_partition(&centroids, &assign_bytes);
-                by_partition[partition as usize].push((key, entry, active_slot, bytes, aux));
-            }
-            for (partition, bucket) in by_partition.into_iter().enumerate() {
-                if bucket.is_empty() {
-                    continue;
-                }
-                let shadow_slots = {
-                    let rows: Vec<(VectorSubject, &[u8], [u8; 8])> = bucket
-                        .iter()
-                        .map(|(key, _, _, bytes, aux)| (key.subject, bytes.as_slice(), *aux))
-                        .collect();
-                    self.append_slot_batch(
-                        index_id,
-                        target_index_version,
-                        partition as u32,
-                        &def,
-                        &rows,
-                    )?
-                };
-                for (i, (shadow_slot, (key, mut entry, active_slot, _, _))) in
-                    shadow_slots.iter().copied().zip(bucket).enumerate()
-                {
-                    // Positional stale-read guard: the subject's current live slot must still be the
-                    // one we read bytes from (replaces the retired `vector_id` equality check).
-                    if !entry.deleted && entry.current_slot_for(active) == Some(active_slot) {
-                        entry.shadow_slot = Some(shadow_slot);
-                        if let Err(error) = self.insert_subject_entry(key, entry) {
-                            // The linked prefix belongs to the rebuilt subject map and stays live.
-                            // This row and the unattempted suffix have no subject owner, so retire
-                            // only those rows appended by this batch before returning the original
-                            // commit error.
-                            for unlinked_slot in &shadow_slots[i..] {
-                                self.tombstone_slot(index_id, *unlinked_slot);
-                            }
-                            return Err(error);
-                        }
-                    } else {
-                        // The positional guard rejected this stale scan result, so its newly
-                        // appended row has no subject owner.
-                        self.tombstone_slot(index_id, shadow_slot);
-                    }
-                    subjects_processed += 1;
-                }
-            }
-        }
-
-        if range_exhausted {
-            Ok(VectorRebuildStateRecord::ReadyToPublish {
-                target_index_version,
-                nlist,
-            })
-        } else {
-            Ok(VectorRebuildStateRecord::Building {
-                target_index_version,
-                nlist,
-                cursor: last_cursor,
-                subjects_processed,
-            })
-        }
-    }
-
-    /// Reports the current rebuild status (O(1) scalar snapshot). Router-guarded `#[query]`.
-    pub fn admin_vector_rebuild_status(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        Ok(status_of(&rebuild_state_of(index_id)))
-    }
-
-    /// Head-only partition-health summary for the active index version (ADR 0031 Slice 8).
-    /// **O(`nlist`)** (bounded by [`MAX_NLIST`]): reads `0..nlist` `PartitionHead` rows of the active
-    /// version, summing `live_len`/`page_count` and tracking the max `live_len`; it never scans
-    /// pages. Integer-only raw counts; the caller derives `avg`/skew. Router-guarded `#[query]`.
-    pub fn admin_vector_partition_health(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<VectorPartitionHealthSummary, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        Ok(partition_health_summary(
-            index_id,
-            def.nlist,
-            def.active_index_version,
-        ))
-    }
-
-    /// Derived slab-space observability for the ADR 0032 page store (maintenance, not search truth).
-    /// Whole-slab physical facts are global; `index_id` (`None` = all indexes) scopes only the
-    /// logical row/referenced-byte counters and the version breakdown. Reads only `VECTOR_PAGE_META`
-    /// + the slab header — never row bytes or `VECTOR_SUBJECT_TO_ID`, and it mutates nothing.
-    ///
-    /// **Unbounded** full page-meta scan (a bounded cursor snapshot is a deferred follow-up).
-    /// Router-guarded `#[query]`. It is purely derived, so an unknown/empty index yields zero scope
-    /// counters rather than an error.
-    pub fn admin_vector_slab_stats(
-        &self,
-        caller: Principal,
-        index_id: Option<u32>,
-    ) -> Result<VectorSlabStats, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let mut def_of = live_def_resolver();
-        Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id, &mut def_of)))
-    }
-
-    /// IC-safe, cursor/budgeted variant of [`admin_vector_slab_stats`](Self::admin_vector_slab_stats)
-    /// for large stores: one bounded page-meta scan step (see [`VectorSlabStatsStep`] for the
-    /// client-side merge contract). Router-guarded `#[query]`. The cursor is external caller input,
-    /// so a malformed cursor returns [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
-    pub fn admin_vector_slab_stats_step(
-        &self,
-        caller: Principal,
-        cursor: Option<Vec<u8>>,
-        max_pages: u32,
-        index_id: Option<u32>,
-    ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let mut def_of = live_def_resolver();
-        PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id, &mut def_of))
-    }
-
-    /// Bounded page-meta tombstone-health step for the active index version (ADR 0031 Slice 9).
-    /// Router-guarded `#[query]`. Complements the head-only [`admin_vector_partition_health`] skew
-    /// summary with the tombstone signal (`total_rows`/`physical_live_rows`/`tombstoned_rows`) that
-    /// requires a page-meta scan. Resolves the active version from `VECTOR_INDEX_DEFS` and forwards to
-    /// the slab store; the cursor is scope-checked against `(index_id, active_version)` and a
-    /// malformed/wrong-scope cursor returns [`VectorCanisterError::InvalidStatsCursor`] rather than
-    /// trapping. See [`VectorPartitionHealthStep`] for the additive client-side merge contract.
-    ///
-    /// [`admin_vector_partition_health`]: Self::admin_vector_partition_health
-    pub fn admin_vector_partition_health_step(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        cursor: Option<Vec<u8>>,
-        max_pages: u32,
-    ) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        PAGE_STORE.with_borrow(|store| {
-            store.partition_page_health_step(index_id, def.active_index_version, cursor, max_pages)
-        })
-    }
-
-    /// Atomically publishes a `ReadyToPublish` rebuild (ADR 0031 Slice 7). **O(1)**: completeness is
-    /// an invariant held by `Building` + dual-write, so no live-subject scan is performed. Flips
-    /// `def.active_index_version` + `nlist` and the centroid metadata in one step, then enters the
-    /// bounded `Cleaning` teardown.
-    pub fn admin_publish_vector_rebuild(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<(), VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let state = rebuild_state_of(index_id);
-        let VectorRebuildStateRecord::ReadyToPublish {
-            target_index_version,
-            nlist,
-        } = state
-        else {
-            return Err(VectorCanisterError::RebuildNotReadyToPublish);
-        };
-        let mut def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        // O(`nlist`) centroid presence check (bounded by MAX_NLIST); not a subject scan.
-        if read_centroids_at(index_id, target_index_version, nlist, def.dims).is_none() {
-            return Err(VectorCanisterError::RebuildIncomplete);
-        }
-        let old_version = def.active_index_version;
-        let old_nlist = def.nlist;
-
-        def.active_index_version = target_index_version;
-        def.nlist = nlist;
-        definition_store::insert(index_id, def)
-            .map(|_| ())
-            .map_err(VectorCanisterError::from)?;
-        // The active centroid set just changed generation; drop any warmed heap entry so search does
-        // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
-        super::centroid_cache::invalidate(index_id);
-        IVF_CENTROID_META.with_borrow_mut(|meta| {
-            meta.insert(
-                index_id,
-                IvfCentroidMeta {
-                    centroid_ready: true,
-                    trained_index_version: target_index_version,
-                },
-            );
+            reason: "insufficient live vectors to form nlist distinct centroids".to_string(),
         });
-        put_rebuild_state(
+    }
+
+    Ok(VectorRebuildStateRecord::Sampling {
+        target_index_version,
+        nlist,
+        sample_limit,
+        cursor: last_cursor,
+        subjects_scanned,
+        candidates,
+    })
+}
+
+/// Bounded deterministic k-means-lite `Training` step (ADR 0031 Slice 8). Performs exactly one
+/// full iteration over the bounded candidate pool per call: assigns each candidate to its nearest
+/// current centroid (ties to the lowest id, via the same rule as `assign_partition`), recomputes
+/// each centroid as the arithmetic mean of its members, and keeps a previous centroid unchanged
+/// for an empty cluster. The per-iteration work `candidate_count * nlist * dims` is bounded by
+/// [`MAX_REBUILD_TRAINING_DISTANCE_OPS`] (the `Sampling` pool cap); sums/counts are transient
+/// heap buffers (`O(nlist * dims)`), never persisted. Once the recomputed centroids equal the
+/// previous iteration's (the assignment is stable) or [`MAX_REBUILD_TRAINING_ITERATIONS`] is
+/// reached, it writes exactly `nlist` centroids to `IVF_CENTROIDS` and transitions to `Building`
+/// (the early-exit is exact: a converged centroid set reproduces itself, so stopping early changes
+/// no result).
+fn training_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::Training {
+        target_index_version,
+        nlist,
+        sample_limit,
+        iteration,
+        candidates,
+        mut centroids,
+    } = state
+    else {
+        unreachable!("training_step called off Training");
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("rebuild_training");
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    let dims = def.dims as usize;
+    let nlist_usize = nlist as usize;
+
+    // Iteration 0: seed centroids via deterministic furthest-point selection (spread across the
+    // pool) rather than the first `nlist` candidates, which can cluster together and stall
+    // convergence. The recompute below is deterministic (same assignment -> same mean), so if it
+    // leaves the centroids unchanged the assignment is stable and k-means has converged: a
+    // further iteration would reproduce the same centroids, so stopping early is exact.
+    if centroids.is_empty() {
+        centroids = furthest_point_seed(&candidates, nlist_usize, &def);
+    }
+    // The centroids used for this iteration's assignment.
+    let prev_centroids = centroids.clone();
+
+    let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; nlist_usize];
+    let mut counts: Vec<u64> = vec![0u64; nlist_usize];
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_training_assign");
+        let decoded_centroids: Vec<Vec<f32>> = centroids.iter().map(|c| decode_f32(c)).collect();
+        for cand in &candidates {
+            // Each candidate is decoded from its frozen stored form exactly once per iteration;
+            // the assignment scores canonical f32 bytes against the f32 centroids. An `F32` row
+            // already is canonical f32, so its bytes are borrowed without a copy; only an `I8`
+            // row materializes a transient dequantized buffer.
+            let v = match def.encoding {
+                VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
+                VectorEncoding::I8 => {
+                    Cow::Owned(stored_to_f32_bytes(&def, &cand.stored, &cand.aux))
+                }
+            };
+            let mut best = 0usize;
+            let mut best_d = f32::INFINITY;
+            for (p, centroid) in decoded_centroids.iter().enumerate() {
+                // Centroid-level early exit: a centroid whose partial L2 already exceeds the
+                // running best cannot be the nearest (L2 partial sums are monotone), so skip it.
+                // A tie does not trigger the strict-exceeds exit, preserving the lowest-id
+                // tie-break; a non-finite centroid is skipped (a NaN distance never beats `best_d`).
+                let Some(d) = l2_squared_f32_early_exit(&v, centroid, best_d) else {
+                    continue;
+                };
+                if d < best_d {
+                    best_d = d;
+                    best = p;
+                }
+            }
+            for (acc, x) in sums[best].iter_mut().zip(v.as_chunks::<4>().0) {
+                *acc += f32::from_le_bytes(*x);
+            }
+            counts[best] += 1;
+        }
+    }
+    {
+        // Recompute each centroid as the mean; an empty cluster keeps its previous centroid.
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_training_recompute");
+        let is_cosine = def.metric == VectorMetric::Cosine;
+        for p in 0..nlist_usize {
+            if counts[p] == 0 {
+                continue;
+            }
+            let inv = 1.0f32 / counts[p] as f32;
+            let mean: Vec<f32> = sums[p].iter().map(|s| s * inv).collect();
+            // Spherical k-means (cosine): renormalize the mean direction to unit length so the
+            // next L2 assignment is cosine-aware (L2² = 2 − 2cos on unit vectors). A zero-norm
+            // mean (members cancel direction) keeps the previous centroid.
+            let new_centroid: Vec<f32> = if is_cosine {
+                let norm_sq: f32 = mean.iter().map(|x| x * x).sum();
+                if norm_sq == 0.0 {
+                    continue;
+                }
+                let inv_norm = 1.0 / norm_sq.sqrt();
+                mean.iter().map(|x| x * inv_norm).collect()
+            } else {
+                mean
+            };
+            centroids[p] = encode_f32(&new_centroid);
+        }
+    }
+    let iteration = iteration + 1;
+    let converged = prev_centroids == centroids;
+
+    if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
+        IVF_CENTROIDS.with_borrow_mut(|m| {
+            for (p, bytes) in centroids.iter().enumerate() {
+                m.insert(
+                    PartitionKey::new(index_id, target_index_version, p as u32),
+                    bytes.clone(),
+                );
+            }
+        });
+        return Ok(VectorRebuildStateRecord::Building {
+            target_index_version,
+            nlist,
+            cursor: None,
+            subjects_processed: 0,
+        });
+    }
+
+    Ok(VectorRebuildStateRecord::Training {
+        target_index_version,
+        nlist,
+        sample_limit,
+        iteration,
+        candidates,
+        centroids,
+    })
+}
+
+/// Bounded `Building` step: shadows up to `max_subjects` still-live subjects into their nearest
+/// target partition. Transitions to `ReadyToPublish` once the subject range is exhausted.
+fn building_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+    max_subjects: u32,
+    max_vector_bytes: u64,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::Building {
+        target_index_version,
+        nlist,
+        cursor,
+        mut subjects_processed,
+    } = state
+    else {
+        unreachable!("building_step called off Building");
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("rebuild_building");
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    let active = def.active_index_version;
+    let centroids = read_centroids_at(index_id, target_index_version, nlist, def.dims)
+        .ok_or(VectorCanisterError::RebuildIncomplete)?;
+
+    let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
+    let mut range_exhausted = false;
+    let mut bytes_buffered = 0u64;
+    let mut pending: Vec<ShadowPendingRow> = Vec::new();
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_building_scan");
+        // Phase 1: walk the subject map and collect subjects still needing a shadow, keyed by
+        // their active page. The byte budget is charged by row stride (the bytes each shadow row
+        // will carry) so the buffered `pending` stays bounded; the actual bytes are read in phase
+        // 2.
+        let mut to_read: Vec<(PageKey, SubjectKey, FixedSubjectMapEntry, SlotRef)> = Vec::new();
+        let scope = SubjectScanScope::Building {
             index_id,
-            VectorRebuildStateRecord::Cleaning {
-                old_version,
-                old_nlist,
-                target_index_version,
-                subject_cursor: None,
-                page_cursor: None,
+            target_index_version,
+        };
+        let mut scan_cursor = cursor;
+        let subject_budget = max_subjects.max(1);
+        let mut subjects_in_step = 0u32;
+        for _ in 0..max_subjects.max(1) {
+            let remaining_subjects = u64::from(subject_budget.saturating_sub(subjects_in_step));
+            let remaining_bytes = max_vector_bytes.saturating_sub(bytes_buffered);
+            let stride = u64::from(def.pad_stride_bytes).max(1);
+            let byte_budget = (remaining_bytes / stride).max(1);
+            let physical_slot_budget = remaining_subjects
+                .min(byte_budget)
+                .min(BUILDING_SCAN_SLOT_BUDGET);
+            let Some(next) = next_subject_page(scope, scan_cursor.clone(), physical_slot_budget)?
+            else {
+                range_exhausted = true;
+                last_cursor = None;
+                break;
+            };
+            let page = next.page;
+            scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+            last_cursor = scan_cursor.clone();
+            if page.exhausted {
+                range_exhausted = true;
+            }
+            for (key, value) in page.entries {
+                if key.index_id != index_id
+                    || value.deleted
+                    || value
+                        .shadow_slot
+                        .is_some_and(|s| s.index_version as u64 == target_index_version)
+                {
+                    continue;
+                }
+                let Some(active_slot) = value.current_slot_for(active) else {
+                    continue;
+                };
+                bytes_buffered += def.pad_stride_bytes as u64;
+                subjects_in_step += 1;
+                to_read.push((
+                    PageKey::new(
+                        index_id,
+                        active_slot.index_version as u64,
+                        active_slot.partition_id,
+                        active_slot.page_id as u64,
+                    ),
+                    key,
+                    value,
+                    active_slot,
+                ));
+            }
+            if range_exhausted
+                || subjects_in_step >= subject_budget
+                || bytes_buffered >= max_vector_bytes
+            {
+                break;
+            }
+        }
+        // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
+        // each row's bytes. A subject whose slot is at/after `row_count` or is tombstoned is
+        // dropped, matching the per-subject `read_row_bytes` `None` path.
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_building_read");
+            to_read.sort_by_key(|(page_key, _, _, _)| *page_key);
+            let mut scratch = PageScratch::new();
+            let mut i = 0usize;
+            while i < to_read.len() {
+                let page_key = to_read[i].0;
+                let loaded =
+                    PAGE_STORE.with_borrow(|store| store.load_page(page_key, &mut scratch));
+                let mut end = i + 1;
+                while end < to_read.len() && to_read[end].0 == page_key {
+                    end += 1;
+                }
+                if loaded {
+                    let row_count = scratch.row_count();
+                    for (_, key, entry, slot) in &to_read[i..end] {
+                        if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                            continue;
+                        }
+                        let bytes = scratch.vec_slice(slot.slot).to_vec();
+                        let aux = scratch.row_info(slot.slot).aux;
+                        pending.push((*key, *entry, *slot, bytes, aux));
+                    }
+                }
+                i = end;
+            }
+        }
+    }
+
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_building_append");
+        // Pre-compute each row's nearest target partition and group by partition, so a whole
+        // partition's shadow rows are appended in one batched page-store call (amortizing page
+        // directory commits across rows) and each subject entry is updated with a single map
+        // insert (no redundant get). The guard below is still checked per row because the
+        // subject's live slot must be the one we read bytes from.
+        let mut by_partition: Vec<Vec<ShadowPendingRow>> =
+            (0..nlist as usize).map(|_| Vec::new()).collect();
+        for (key, entry, active_slot, bytes, aux) in pending {
+            // Partition assignment is in f32 space (dequantizing an `I8` row with its aux scale),
+            // matching the upsert `active_partition` so pre- and post-rebuild assignment agree.
+            let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
+            let partition = assign_partition(&centroids, &assign_bytes);
+            by_partition[partition as usize].push((key, entry, active_slot, bytes, aux));
+        }
+        for (partition, bucket) in by_partition.into_iter().enumerate() {
+            if bucket.is_empty() {
+                continue;
+            }
+            let shadow_slots = {
+                let rows: Vec<(VectorSubject, &[u8], [u8; 8])> = bucket
+                    .iter()
+                    .map(|(key, _, _, bytes, aux)| (key.subject, bytes.as_slice(), *aux))
+                    .collect();
+                append_slot_batch(
+                    index_id,
+                    target_index_version,
+                    partition as u32,
+                    &def,
+                    &rows,
+                )?
+            };
+            for (i, (shadow_slot, (key, mut entry, active_slot, _, _))) in
+                shadow_slots.iter().copied().zip(bucket).enumerate()
+            {
+                // Positional stale-read guard: the subject's current live slot must still be the
+                // one we read bytes from (replaces the retired `vector_id` equality check).
+                if !entry.deleted && entry.current_slot_for(active) == Some(active_slot) {
+                    entry.shadow_slot = Some(shadow_slot);
+                    if let Err(error) = insert_subject_entry(key, entry) {
+                        // The linked prefix belongs to the rebuilt subject map and stays live.
+                        // This row and the unattempted suffix have no subject owner, so retire
+                        // only those rows appended by this batch before returning the original
+                        // commit error.
+                        for unlinked_slot in &shadow_slots[i..] {
+                            tombstone_slot(index_id, *unlinked_slot);
+                        }
+                        return Err(error);
+                    }
+                } else {
+                    // The positional guard rejected this stale scan result, so its newly
+                    // appended row has no subject owner.
+                    tombstone_slot(index_id, shadow_slot);
+                }
+                subjects_processed += 1;
+            }
+        }
+    }
+
+    if range_exhausted {
+        Ok(VectorRebuildStateRecord::ReadyToPublish {
+            target_index_version,
+            nlist,
+        })
+    } else {
+        Ok(VectorRebuildStateRecord::Building {
+            target_index_version,
+            nlist,
+            cursor: last_cursor,
+            subjects_processed,
+        })
+    }
+}
+
+/// Reports the current rebuild status (O(1) scalar snapshot). Router-guarded `#[query]`.
+pub(crate) fn admin_vector_rebuild_status(
+    caller: Principal,
+    index_id: u32,
+) -> Result<VectorRebuildStatus, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    Ok(status_of(&rebuild_state_of(index_id)))
+}
+
+/// Head-only partition-health summary for the active index version (ADR 0031 Slice 8).
+/// **O(`nlist`)** (bounded by [`MAX_NLIST`]): reads `0..nlist` `PartitionHead` rows of the active
+/// version, summing `live_len`/`page_count` and tracking the max `live_len`; it never scans
+/// pages. Integer-only raw counts; the caller derives `avg`/skew. Router-guarded `#[query]`.
+pub(crate) fn admin_vector_partition_health(
+    caller: Principal,
+    index_id: u32,
+) -> Result<VectorPartitionHealthSummary, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    Ok(partition_health_summary(
+        index_id,
+        def.nlist,
+        def.active_index_version,
+    ))
+}
+
+/// Derived slab-space observability for the ADR 0032 page store (maintenance, not search truth).
+/// Whole-slab physical facts are global; `index_id` (`None` = all indexes) scopes only the
+/// logical row/referenced-byte counters and the version breakdown. Reads only `VECTOR_PAGE_META`
+/// + the slab header — never row bytes or `VECTOR_SUBJECT_TO_ID`, and it mutates nothing.
+///
+/// **Unbounded** full page-meta scan (a bounded cursor snapshot is a deferred follow-up).
+/// Router-guarded `#[query]`. It is purely derived, so an unknown/empty index yields zero scope
+/// counters rather than an error.
+pub(crate) fn admin_vector_slab_stats(
+    caller: Principal,
+    index_id: Option<u32>,
+) -> Result<VectorSlabStats, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let mut def_of = live_def_resolver();
+    Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id, &mut def_of)))
+}
+
+/// IC-safe, cursor/budgeted variant of [`admin_vector_slab_stats`](Self::admin_vector_slab_stats)
+/// for large stores: one bounded page-meta scan step (see [`VectorSlabStatsStep`] for the
+/// client-side merge contract). Router-guarded `#[query]`. The cursor is external caller input,
+/// so a malformed cursor returns [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
+pub(crate) fn admin_vector_slab_stats_step(
+    caller: Principal,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+    index_id: Option<u32>,
+) -> Result<VectorSlabStatsStep, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let mut def_of = live_def_resolver();
+    PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id, &mut def_of))
+}
+
+/// Bounded page-meta tombstone-health step for the active index version (ADR 0031 Slice 9).
+/// Router-guarded `#[query]`. Complements the head-only [`admin_vector_partition_health`] skew
+/// summary with the tombstone signal (`total_rows`/`physical_live_rows`/`tombstoned_rows`) that
+/// requires a page-meta scan. Resolves the active version from `VECTOR_INDEX_DEFS` and forwards to
+/// the slab store; the cursor is scope-checked against `(index_id, active_version)` and a
+/// malformed/wrong-scope cursor returns [`VectorCanisterError::InvalidStatsCursor`] rather than
+/// trapping. See [`VectorPartitionHealthStep`] for the additive client-side merge contract.
+///
+/// [`admin_vector_partition_health`]: Self::admin_vector_partition_health
+pub(crate) fn admin_vector_partition_health_step(
+    caller: Principal,
+    index_id: u32,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    PAGE_STORE.with_borrow(|store| {
+        store.partition_page_health_step(index_id, def.active_index_version, cursor, max_pages)
+    })
+}
+
+/// Atomically publishes a `ReadyToPublish` rebuild (ADR 0031 Slice 7). **O(1)**: completeness is
+/// an invariant held by `Building` + dual-write, so no live-subject scan is performed. Flips
+/// `def.active_index_version` + `nlist` and the centroid metadata in one step, then enters the
+/// bounded `Cleaning` teardown.
+pub(crate) fn admin_publish_vector_rebuild(
+    caller: Principal,
+    index_id: u32,
+) -> Result<(), VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let state = rebuild_state_of(index_id);
+    let VectorRebuildStateRecord::ReadyToPublish {
+        target_index_version,
+        nlist,
+    } = state
+    else {
+        return Err(VectorCanisterError::RebuildNotReadyToPublish);
+    };
+    let mut def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    // O(`nlist`) centroid presence check (bounded by MAX_NLIST); not a subject scan.
+    if read_centroids_at(index_id, target_index_version, nlist, def.dims).is_none() {
+        return Err(VectorCanisterError::RebuildIncomplete);
+    }
+    let old_version = def.active_index_version;
+    let old_nlist = def.nlist;
+
+    def.active_index_version = target_index_version;
+    def.nlist = nlist;
+    definition_store::insert(index_id, def)
+        .map(|_| ())
+        .map_err(VectorCanisterError::from)?;
+    // The active centroid set just changed generation; drop any warmed heap entry so search does
+    // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
+    super::centroid_cache::invalidate(index_id);
+    IVF_CENTROID_META.with_borrow_mut(|meta| {
+        meta.insert(
+            index_id,
+            IvfCentroidMeta {
+                centroid_ready: true,
+                trained_index_version: target_index_version,
             },
         );
-        Ok(())
-    }
+    });
+    put_rebuild_state(
+        index_id,
+        VectorRebuildStateRecord::Cleaning {
+            old_version,
+            old_nlist,
+            target_index_version,
+            subject_cursor: None,
+            page_cursor: None,
+        },
+    );
+    Ok(())
+}
 
-    /// Aborts an in-flight rebuild. From `Sampling`/`Failed` (nothing persisted) it returns straight
-    /// to `Idle` in O(1); from `Building`/`ReadyToPublish` it enters the bounded `Aborting` teardown.
-    pub fn admin_abort_vector_rebuild(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<(), VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let state = rebuild_state_of(index_id);
-        let next = match state {
-            VectorRebuildStateRecord::Sampling { .. }
-            | VectorRebuildStateRecord::Training { .. }
-            | VectorRebuildStateRecord::Failed { .. } => {
-                // Nothing durable outside the rebuild-state row: `Sampling`/`Training` write no
-                // pages, no shadow slots, and no `IVF_CENTROIDS` (Training centroids live in the
-                // state record until the transition to `Building`). O(1) back to `Idle`.
-                VectorRebuildStateRecord::Idle
-            }
-            VectorRebuildStateRecord::Building {
-                target_index_version,
-                nlist,
-                ..
-            }
-            | VectorRebuildStateRecord::ReadyToPublish {
-                target_index_version,
-                nlist,
-            } => VectorRebuildStateRecord::Aborting {
-                target_index_version,
-                target_nlist: nlist,
-                subject_cursor: None,
-                page_cursor: None,
-            },
+/// Aborts an in-flight rebuild. From `Sampling`/`Failed` (nothing persisted) it returns straight
+/// to `Idle` in O(1); from `Building`/`ReadyToPublish` it enters the bounded `Aborting` teardown.
+pub(crate) fn admin_abort_vector_rebuild(
+    caller: Principal,
+    index_id: u32,
+) -> Result<(), VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let state = rebuild_state_of(index_id);
+    let next = match state {
+        VectorRebuildStateRecord::Sampling { .. }
+        | VectorRebuildStateRecord::Training { .. }
+        | VectorRebuildStateRecord::Failed { .. } => {
+            // Nothing durable outside the rebuild-state row: `Sampling`/`Training` write no
+            // pages, no shadow slots, and no `IVF_CENTROIDS` (Training centroids live in the
+            // state record until the transition to `Building`). O(1) back to `Idle`.
             VectorRebuildStateRecord::Idle
-            | VectorRebuildStateRecord::Cleaning { .. }
-            | VectorRebuildStateRecord::Aborting { .. } => {
-                return Err(VectorCanisterError::NoActiveRebuild);
-            }
+        }
+        VectorRebuildStateRecord::Building {
+            target_index_version,
+            nlist,
+            ..
+        }
+        | VectorRebuildStateRecord::ReadyToPublish {
+            target_index_version,
+            nlist,
+        } => VectorRebuildStateRecord::Aborting {
+            target_index_version,
+            target_nlist: nlist,
+            subject_cursor: None,
+            page_cursor: None,
+        },
+        VectorRebuildStateRecord::Idle
+        | VectorRebuildStateRecord::Cleaning { .. }
+        | VectorRebuildStateRecord::Aborting { .. } => {
+            return Err(VectorCanisterError::NoActiveRebuild);
+        }
+    };
+    put_rebuild_state(index_id, next);
+    Ok(())
+}
+
+/// Drives one bounded teardown step for both the post-publish `Cleaning` and the `Aborting`
+/// paths. Each call advances at most `max_work` subjects or pages and is cursor-resumable to
+/// `Idle`.
+pub(crate) fn admin_vector_rebuild_cleanup_step(
+    caller: Principal,
+    index_id: u32,
+    max_work: u32,
+) -> Result<VectorRebuildStatus, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let max_work = clamp_step_work(max_work);
+    let state = rebuild_state_of(index_id);
+    let next = match state {
+        VectorRebuildStateRecord::Cleaning { .. } => cleaning_step(index_id, state, max_work),
+        VectorRebuildStateRecord::Aborting { .. } => aborting_step(index_id, state, max_work),
+        _ => return Err(VectorCanisterError::NoActiveRebuild),
+    }?;
+    put_rebuild_state(index_id, next.clone());
+    Ok(status_of(&next))
+}
+
+/// One bounded `Cleaning` step: stage 1 collapses `shadow_slot -> slot` per subject and repoints
+/// `VECTOR_ID_TO_SLOT`; stage 2 range-deletes the old version's pages, then its heads/centroids.
+fn cleaning_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+    max_work: u32,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::Cleaning {
+        old_version,
+        old_nlist,
+        target_index_version,
+        subject_cursor,
+        page_cursor,
+    } = state
+    else {
+        unreachable!("cleaning_step called off Cleaning");
+    };
+
+    if !is_subjects_done(&subject_cursor) {
+        let scope = SubjectScanScope::Cleaning {
+            index_id,
+            target_index_version,
         };
-        put_rebuild_state(index_id, next);
-        Ok(())
+        let (next_cursor, exhausted) =
+            collapse_subjects(index_id, target_index_version, subject_cursor, max_work)?;
+        return Ok(VectorRebuildStateRecord::Cleaning {
+            old_version,
+            old_nlist,
+            target_index_version,
+            subject_cursor: if exhausted {
+                subjects_done_marker(scope)
+            } else {
+                next_cursor
+            },
+            page_cursor: None,
+        });
     }
 
-    /// Drives one bounded teardown step for both the post-publish `Cleaning` and the `Aborting`
-    /// paths. Each call advances at most `max_work` subjects or pages and is cursor-resumable to
-    /// `Idle`.
-    pub fn admin_vector_rebuild_cleanup_step(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        max_work: u32,
-    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let max_work = clamp_step_work(max_work);
-        let state = rebuild_state_of(index_id);
-        let next = match state {
-            VectorRebuildStateRecord::Cleaning { .. } => {
-                self.cleaning_step(index_id, state, max_work)
-            }
-            VectorRebuildStateRecord::Aborting { .. } => {
-                self.aborting_step(index_id, state, max_work)
-            }
-            _ => return Err(VectorCanisterError::NoActiveRebuild),
-        }?;
-        put_rebuild_state(index_id, next.clone());
-        Ok(status_of(&next))
-    }
-
-    /// One bounded `Cleaning` step: stage 1 collapses `shadow_slot -> slot` per subject and repoints
-    /// `VECTOR_ID_TO_SLOT`; stage 2 range-deletes the old version's pages, then its heads/centroids.
-    fn cleaning_step(
-        &self,
-        index_id: u32,
-        state: VectorRebuildStateRecord,
-        max_work: u32,
-    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
-        let VectorRebuildStateRecord::Cleaning {
+    let (next_page, exhausted) = drop_version_pages(index_id, old_version, page_cursor, max_work);
+    if exhausted {
+        drop_version_heads_and_centroids(index_id, old_version, old_nlist);
+        Ok(VectorRebuildStateRecord::Idle)
+    } else {
+        Ok(VectorRebuildStateRecord::Cleaning {
             old_version,
             old_nlist,
             target_index_version,
             subject_cursor,
-            page_cursor,
-        } = state
-        else {
-            unreachable!("cleaning_step called off Cleaning");
+            page_cursor: next_page,
+        })
+    }
+}
+
+/// One bounded `Aborting` step: stage 1 clears `shadow_slot` per subject; stage 2 range-deletes
+/// the shadow (target) version's pages, then its heads/centroids. Active state is untouched.
+fn aborting_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+    max_work: u32,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::Aborting {
+        target_index_version,
+        target_nlist,
+        subject_cursor,
+        page_cursor,
+    } = state
+    else {
+        unreachable!("aborting_step called off Aborting");
+    };
+
+    if !is_subjects_done(&subject_cursor) {
+        let scope = SubjectScanScope::Aborting {
+            index_id,
+            target_index_version,
         };
-
-        if !is_subjects_done(&subject_cursor) {
-            let scope = SubjectScanScope::Cleaning {
-                index_id,
-                target_index_version,
-            };
-            let (next_cursor, exhausted) =
-                self.collapse_subjects(index_id, target_index_version, subject_cursor, max_work)?;
-            return Ok(VectorRebuildStateRecord::Cleaning {
-                old_version,
-                old_nlist,
-                target_index_version,
-                subject_cursor: if exhausted {
-                    subjects_done_marker(scope)
-                } else {
-                    next_cursor
-                },
-                page_cursor: None,
-            });
-        }
-
-        let (next_page, exhausted) =
-            drop_version_pages(index_id, old_version, page_cursor, max_work);
-        if exhausted {
-            drop_version_heads_and_centroids(index_id, old_version, old_nlist);
-            Ok(VectorRebuildStateRecord::Idle)
-        } else {
-            Ok(VectorRebuildStateRecord::Cleaning {
-                old_version,
-                old_nlist,
-                target_index_version,
-                subject_cursor,
-                page_cursor: next_page,
-            })
-        }
+        let (next_cursor, exhausted) =
+            clear_shadow_slots(index_id, target_index_version, subject_cursor, max_work)?;
+        return Ok(VectorRebuildStateRecord::Aborting {
+            target_index_version,
+            target_nlist,
+            subject_cursor: if exhausted {
+                subjects_done_marker(scope)
+            } else {
+                next_cursor
+            },
+            page_cursor: None,
+        });
     }
 
-    /// One bounded `Aborting` step: stage 1 clears `shadow_slot` per subject; stage 2 range-deletes
-    /// the shadow (target) version's pages, then its heads/centroids. Active state is untouched.
-    fn aborting_step(
-        &self,
-        index_id: u32,
-        state: VectorRebuildStateRecord,
-        max_work: u32,
-    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
-        let VectorRebuildStateRecord::Aborting {
+    let (next_page, exhausted) =
+        drop_version_pages(index_id, target_index_version, page_cursor, max_work);
+    if exhausted {
+        drop_version_heads_and_centroids(index_id, target_index_version, target_nlist);
+        Ok(VectorRebuildStateRecord::Idle)
+    } else {
+        Ok(VectorRebuildStateRecord::Aborting {
             target_index_version,
             target_nlist,
             subject_cursor,
-            page_cursor,
-        } = state
-        else {
-            unreachable!("aborting_step called off Aborting");
+            page_cursor: next_page,
+        })
+    }
+}
+
+/// Stage 1 of `Cleaning`: collapse `shadow_slot@target -> slot` for up to `max_work` subjects.
+/// Returns `(next_cursor, exhausted)`.
+fn collapse_subjects(
+    index_id: u32,
+    target: u64,
+    cursor: Option<SubjectScanCursor>,
+    max_work: u32,
+) -> Result<(Option<SubjectScanCursor>, bool), VectorCanisterError> {
+    let mut updates: Vec<(SubjectKey, SlotRef)> = Vec::new();
+    let scope = SubjectScanScope::Cleaning {
+        index_id,
+        target_index_version: target,
+    };
+    let mut scan_cursor = cursor;
+    let mut exhausted = false;
+    for _ in 0..max_work.max(1) {
+        let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
+            exhausted = true;
+            break;
         };
-
-        if !is_subjects_done(&subject_cursor) {
-            let scope = SubjectScanScope::Aborting {
-                index_id,
-                target_index_version,
-            };
-            let (next_cursor, exhausted) =
-                self.clear_shadow_slots(index_id, target_index_version, subject_cursor, max_work)?;
-            return Ok(VectorRebuildStateRecord::Aborting {
-                target_index_version,
-                target_nlist,
-                subject_cursor: if exhausted {
-                    subjects_done_marker(scope)
-                } else {
-                    next_cursor
-                },
-                page_cursor: None,
-            });
+        let page = next.page;
+        scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+        for (key, value) in page.entries {
+            if key.index_id == index_id
+                && value
+                    .shadow_slot
+                    .is_some_and(|shadow| shadow.index_version as u64 == target)
+            {
+                updates.push((key, value.shadow_slot.expect("shadow slot checked")));
+            }
         }
-
-        let (next_page, exhausted) =
-            drop_version_pages(index_id, target_index_version, page_cursor, max_work);
-        if exhausted {
-            drop_version_heads_and_centroids(index_id, target_index_version, target_nlist);
-            Ok(VectorRebuildStateRecord::Idle)
-        } else {
-            Ok(VectorRebuildStateRecord::Aborting {
-                target_index_version,
-                target_nlist,
-                subject_cursor,
-                page_cursor: next_page,
-            })
+        if page.exhausted {
+            exhausted = true;
+            break;
         }
     }
 
-    /// Stage 1 of `Cleaning`: collapse `shadow_slot@target -> slot` for up to `max_work` subjects.
-    /// Returns `(next_cursor, exhausted)`.
-    fn collapse_subjects(
-        &self,
-        index_id: u32,
-        target: u64,
-        cursor: Option<SubjectScanCursor>,
-        max_work: u32,
-    ) -> Result<(Option<SubjectScanCursor>, bool), VectorCanisterError> {
-        let mut updates: Vec<(SubjectKey, SlotRef)> = Vec::new();
-        let scope = SubjectScanScope::Cleaning {
-            index_id,
-            target_index_version: target,
-        };
-        let mut scan_cursor = cursor;
-        let mut exhausted = false;
-        for _ in 0..max_work.max(1) {
-            let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
-                exhausted = true;
-                break;
-            };
-            let page = next.page;
-            scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
-            for (key, value) in page.entries {
-                if key.index_id == index_id
-                    && value
-                        .shadow_slot
-                        .is_some_and(|shadow| shadow.index_version as u64 == target)
-                {
-                    updates.push((key, value.shadow_slot.expect("shadow slot checked")));
-                }
-            }
-            if page.exhausted {
-                exhausted = true;
-                break;
-            }
+    for (key, shadow) in updates {
+        if let Some(mut entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? {
+            entry.slot = Some(shadow);
+            entry.shadow_slot = None;
+            subject_store::insert(key, entry).map_err(VectorCanisterError::from)?;
         }
-
-        for (key, shadow) in updates {
-            if let Some(mut entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? {
-                entry.slot = Some(shadow);
-                entry.shadow_slot = None;
-                subject_store::insert(key, entry).map_err(VectorCanisterError::from)?;
-            }
-        }
-
-        Ok((if exhausted { None } else { scan_cursor }, exhausted))
     }
 
-    /// Stage 1 of `Aborting`: clear `shadow_slot@target` for up to `max_work` subjects without
-    /// touching `slot` or the reverse-map locator. Returns `(next_cursor, exhausted)`.
-    fn clear_shadow_slots(
-        &self,
-        index_id: u32,
-        target: u64,
-        cursor: Option<SubjectScanCursor>,
-        max_work: u32,
-    ) -> Result<(Option<SubjectScanCursor>, bool), VectorCanisterError> {
-        let mut keys: Vec<SubjectKey> = Vec::new();
-        let scope = SubjectScanScope::Aborting {
-            index_id,
-            target_index_version: target,
+    Ok((if exhausted { None } else { scan_cursor }, exhausted))
+}
+
+/// Stage 1 of `Aborting`: clear `shadow_slot@target` for up to `max_work` subjects without
+/// touching `slot` or the reverse-map locator. Returns `(next_cursor, exhausted)`.
+fn clear_shadow_slots(
+    index_id: u32,
+    target: u64,
+    cursor: Option<SubjectScanCursor>,
+    max_work: u32,
+) -> Result<(Option<SubjectScanCursor>, bool), VectorCanisterError> {
+    let mut keys: Vec<SubjectKey> = Vec::new();
+    let scope = SubjectScanScope::Aborting {
+        index_id,
+        target_index_version: target,
+    };
+    let mut scan_cursor = cursor;
+    let mut exhausted = false;
+    for _ in 0..max_work.max(1) {
+        let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
+            exhausted = true;
+            break;
         };
-        let mut scan_cursor = cursor;
-        let mut exhausted = false;
-        for _ in 0..max_work.max(1) {
-            let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
-                exhausted = true;
-                break;
-            };
-            let page = next.page;
-            scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
-            for (key, value) in page.entries {
-                if key.index_id == index_id
-                    && value
-                        .shadow_slot
-                        .is_some_and(|shadow| shadow.index_version as u64 == target)
-                {
-                    keys.push(key);
-                }
-            }
-            if page.exhausted {
-                exhausted = true;
-                break;
+        let page = next.page;
+        scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+        for (key, value) in page.entries {
+            if key.index_id == index_id
+                && value
+                    .shadow_slot
+                    .is_some_and(|shadow| shadow.index_version as u64 == target)
+            {
+                keys.push(key);
             }
         }
-
-        for key in keys {
-            if let Some(mut entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? {
-                entry.shadow_slot = None;
-                subject_store::insert(key, entry).map_err(VectorCanisterError::from)?;
-            }
+        if page.exhausted {
+            exhausted = true;
+            break;
         }
-
-        Ok((if exhausted { None } else { scan_cursor }, exhausted))
     }
+
+    for key in keys {
+        if let Some(mut entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? {
+            entry.shadow_slot = None;
+            subject_store::insert(key, entry).map_err(VectorCanisterError::from)?;
+        }
+    }
+
+    Ok((if exhausted { None } else { scan_cursor }, exhausted))
 }
 
 #[cfg(test)]

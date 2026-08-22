@@ -2,7 +2,7 @@
 //!
 //! The Router owns the maintenance *policy* and forwards a [`VectorMaintenanceStepRequest`] snapshot
 //! (thresholds + per-step budgets); this module owns the *execution* state. One
-//! [`VectorCanisterStore::admin_vector_maintenance_step`] call advances **at most one bounded unit** of
+//! [`admin_vector_maintenance_step`] call advances **at most one bounded unit** of
 //! work and returns a [`VectorMaintenanceStepResult`], then stops — there is no internal loop.
 //!
 //! Only the page-health **scan** phase is persisted here (`VECTOR_MAINTENANCE_STATE`); once a rebuild
@@ -11,10 +11,14 @@
 //!
 //! **Persistence.** `VECTOR_MAINTENANCE_STATE` is stable execution state and survives upgrade (it
 //! holds the mid-orchestration scan cursor + merged counters); it is cleared only on canister
-//! init/reset, or set back to `Idle` by the explicit [`VectorCanisterStore::admin_vector_maintenance_reset`].
+//! init/reset, or set back to `Idle` by the explicit [`admin_vector_maintenance_reset`].
 
-use super::VectorCanisterStore;
-use super::rebuild::{partition_health_summary, rebuild_state_of};
+use super::authorization::assert_router_caller;
+use super::rebuild::{
+    admin_start_vector_rebuild, admin_vector_partition_health_step,
+    admin_vector_rebuild_cleanup_step, admin_vector_rebuild_status, admin_vector_rebuild_step,
+    partition_health_summary, rebuild_state_of,
+};
 use super::recommend_partition_maintenance;
 use crate::facade::stable::VECTOR_MAINTENANCE_STATE;
 use crate::facade::stable::definition_store;
@@ -79,208 +83,191 @@ fn merge_health(merged: &mut VectorPartitionPageHealth, partial: &VectorPartitio
         .saturating_add(partial.tombstoned_rows);
 }
 
-impl VectorCanisterStore {
-    /// Advances one bounded unit of vector-index maintenance (ADR 0031 Slice 10). Router-guarded
-    /// `#[update]`. The Router snapshots its policy + budgets into `req`; this performs at most one
-    /// scan step, rebuild step, or cleanup step and returns the outcome, stopping at `ReadyToPublish`.
-    ///
-    /// Failure handling: a downstream execution error transitions the maintenance state to `Failed`
-    /// (a no-op until [`admin_vector_maintenance_reset`](Self::admin_vector_maintenance_reset)); an
-    /// invalid policy or unknown index is returned as `Err` without persisting `Failed`.
-    pub fn admin_vector_maintenance_step(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        req: VectorMaintenanceStepRequest,
-    ) -> Result<VectorMaintenanceStepResult, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
+/// Advances one bounded unit of vector-index maintenance (ADR 0031 Slice 10). Router-guarded
+/// `#[update]`. The Router snapshots its policy + budgets into `req`; this performs at most one
+/// scan step, rebuild step, or cleanup step and returns the outcome, stopping at `ReadyToPublish`.
+///
+/// Failure handling: a downstream execution error transitions the maintenance state to `Failed`
+/// (a no-op until [`admin_vector_maintenance_reset`](Self::admin_vector_maintenance_reset)); an
+/// invalid policy or unknown index is returned as `Err` without persisting `Failed`.
+pub(crate) fn admin_vector_maintenance_step(
+    caller: Principal,
+    index_id: u32,
+    req: VectorMaintenanceStepRequest,
+) -> Result<VectorMaintenanceStepResult, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
 
-        // ADR 0064 §5: run a bounded subject-map GC step on each maintenance tick so a quiet graph
-        // or Router without typed vector acknowledgements never blocks GC of deleted entries below
-        // the watermarks.
-        super::gc_subjects_step(crate::canister::GC_SUBJECTS_BUDGET);
+    // ADR 0064 §5: run a bounded subject-map GC step on each maintenance tick so a quiet graph
+    // or Router without typed vector acknowledgements never blocks GC of deleted entries below
+    // the watermarks.
+    super::gc_subjects_step(crate::canister::GC_SUBJECTS_BUDGET);
 
-        // 0. A prior step failed: no-op until an explicit reset.
-        if let VectorMaintenanceState::Failed(failure) = maintenance_state_of(index_id) {
+    // 0. A prior step failed: no-op until an explicit reset.
+    if let VectorMaintenanceState::Failed(failure) = maintenance_state_of(index_id) {
+        return Ok(VectorMaintenanceStepResult::Failed(failure));
+    }
+
+    // 1. Rebuild in flight (its own state machine owns the phase): drive/observe one unit.
+    let rebuild = rebuild_state_of(index_id);
+    match rebuild {
+        VectorRebuildStateRecord::Sampling { .. }
+        | VectorRebuildStateRecord::Training { .. }
+        | VectorRebuildStateRecord::Building { .. } => {
+            return Ok(
+                match admin_vector_rebuild_step(caller, index_id, req.rebuild_max_subjects) {
+                    Ok(status) => VectorMaintenanceStepResult::RebuildAdvanced(status),
+                    Err(e) => fail_maintenance(index_id, e),
+                },
+            );
+        }
+        VectorRebuildStateRecord::ReadyToPublish { .. } => {
+            // Publish is explicit; surface the status and stop here.
+            return Ok(VectorMaintenanceStepResult::AwaitingPublish(
+                admin_vector_rebuild_status(caller, index_id)?,
+            ));
+        }
+        VectorRebuildStateRecord::Cleaning { .. } | VectorRebuildStateRecord::Aborting { .. } => {
+            return Ok(
+                match admin_vector_rebuild_cleanup_step(caller, index_id, req.cleanup_max_work) {
+                    Ok(status) => VectorMaintenanceStepResult::CleanupAdvanced(status),
+                    Err(e) => fail_maintenance(index_id, e),
+                },
+            );
+        }
+        VectorRebuildStateRecord::Failed { .. } => {
+            // The rebuild itself failed; surface its status so the operator aborts it explicitly.
+            return Ok(VectorMaintenanceStepResult::RebuildAdvanced(
+                admin_vector_rebuild_status(caller, index_id)?,
+            ));
+        }
+        VectorRebuildStateRecord::Idle => {}
+    }
+
+    // 2. No rebuild in flight: advance the page-health scan (start one if idle).
+    let (cursor, exhausted, mut merged) = match maintenance_state_of(index_id) {
+        VectorMaintenanceState::Idle => (None, false, VectorPartitionPageHealth::default()),
+        VectorMaintenanceState::Scanning {
+            cursor,
+            exhausted,
+            merged,
+        } => (cursor, exhausted, merged),
+        // Handled in step 0.
+        VectorMaintenanceState::Failed(failure) => {
             return Ok(VectorMaintenanceStepResult::Failed(failure));
         }
+    };
 
-        // 1. Rebuild in flight (its own state machine owns the phase): drive/observe one unit.
-        let rebuild = rebuild_state_of(index_id);
-        match rebuild {
-            VectorRebuildStateRecord::Sampling { .. }
-            | VectorRebuildStateRecord::Training { .. }
-            | VectorRebuildStateRecord::Building { .. } => {
-                return Ok(
-                    match self.admin_vector_rebuild_step(caller, index_id, req.rebuild_max_subjects)
-                    {
-                        Ok(status) => VectorMaintenanceStepResult::RebuildAdvanced(status),
-                        Err(e) => self.fail_maintenance(index_id, e),
-                    },
-                );
-            }
-            VectorRebuildStateRecord::ReadyToPublish { .. } => {
-                // Publish is explicit; surface the status and stop here.
-                return Ok(VectorMaintenanceStepResult::AwaitingPublish(
-                    self.admin_vector_rebuild_status(caller, index_id)?,
-                ));
-            }
-            VectorRebuildStateRecord::Cleaning { .. }
-            | VectorRebuildStateRecord::Aborting { .. } => {
-                return Ok(
-                    match self.admin_vector_rebuild_cleanup_step(
-                        caller,
-                        index_id,
-                        req.cleanup_max_work,
-                    ) {
-                        Ok(status) => VectorMaintenanceStepResult::CleanupAdvanced(status),
-                        Err(e) => self.fail_maintenance(index_id, e),
-                    },
-                );
-            }
-            VectorRebuildStateRecord::Failed { .. } => {
-                // The rebuild itself failed; surface its status so the operator aborts it explicitly.
-                return Ok(VectorMaintenanceStepResult::RebuildAdvanced(
-                    self.admin_vector_rebuild_status(caller, index_id)?,
-                ));
-            }
-            VectorRebuildStateRecord::Idle => {}
-        }
+    if !exhausted {
+        return Ok(scan_one_step(caller, index_id, cursor, merged, &req));
+    }
 
-        // 2. No rebuild in flight: advance the page-health scan (start one if idle).
-        let (cursor, exhausted, mut merged) = match maintenance_state_of(index_id) {
-            VectorMaintenanceState::Idle => (None, false, VectorPartitionPageHealth::default()),
-            VectorMaintenanceState::Scanning {
-                cursor,
-                exhausted,
-                merged,
-            } => (cursor, exhausted, merged),
-            // Handled in step 0.
-            VectorMaintenanceState::Failed(failure) => {
-                return Ok(VectorMaintenanceStepResult::Failed(failure));
-            }
+    // 3. Scan exhausted: generation guard before recommending. An active-version flip after the
+    // scan exhausted (no cursor left to scope-check) is caught here; restart instead of judging
+    // against stale `merged` page health.
+    if merged.index_id != index_id || merged.index_version != def.active_index_version {
+        let restart = VectorMaintenanceState::Scanning {
+            cursor: None,
+            exhausted: false,
+            merged: VectorPartitionPageHealth::default(),
         };
+        put_maintenance_state(index_id, &restart);
+        return Ok(VectorMaintenanceStepResult::Scanning { exhausted: false });
+    }
 
-        if !exhausted {
-            return Ok(self.scan_one_step(caller, index_id, cursor, merged, &req));
+    // Recompute the O(nlist) head-only skew summary server-side; never trust caller-attested skew.
+    let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
+    merged.index_id = index_id;
+    let recommendation = recommend_partition_maintenance(&summary, &merged, &req.policy)?;
+    match recommendation {
+        VectorMaintenanceRecommendation::Healthy => {
+            put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
+            Ok(VectorMaintenanceStepResult::Healthy)
         }
+        VectorMaintenanceRecommendation::RebuildRecommended
+        | VectorMaintenanceRecommendation::RebuildRequired => {
+            // `nlist=1` indexes must pass an explicit `target_nlist`; otherwise default to the
+            // current `nlist` (rejected by the rebuild start when degenerate).
+            let nlist = req.target_nlist.unwrap_or(def.nlist);
+            match admin_start_vector_rebuild(caller, index_id, nlist, req.sample_limit) {
+                Ok(()) => {
+                    // The rebuild state machine now drives; clear the scan state.
+                    put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
+                    Ok(VectorMaintenanceStepResult::RebuildStarted(recommendation))
+                }
+                Err(e) => Ok(fail_maintenance(index_id, e)),
+            }
+        }
+    }
+}
 
-        // 3. Scan exhausted: generation guard before recommending. An active-version flip after the
-        // scan exhausted (no cursor left to scope-check) is caught here; restart instead of judging
-        // against stale `merged` page health.
-        if merged.index_id != index_id || merged.index_version != def.active_index_version {
+/// One bounded page-health scan step: merges the partial, persists progress (or restarts on a
+/// stale cursor), and returns `Scanning { exhausted }`.
+fn scan_one_step(
+    caller: Principal,
+    index_id: u32,
+    cursor: Option<Vec<u8>>,
+    mut merged: VectorPartitionPageHealth,
+    req: &VectorMaintenanceStepRequest,
+) -> VectorMaintenanceStepResult {
+    match admin_vector_partition_health_step(caller, index_id, cursor, req.scan_max_pages) {
+        Ok(step) => {
+            merge_health(&mut merged, &step.partial);
+            let next = VectorMaintenanceState::Scanning {
+                cursor: if step.exhausted { None } else { step.cursor },
+                exhausted: step.exhausted,
+                merged,
+            };
+            put_maintenance_state(index_id, &next);
+            VectorMaintenanceStepResult::Scanning {
+                exhausted: step.exhausted,
+            }
+        }
+        // The active version changed mid-scan (cursor scope no longer matches): restart cleanly.
+        Err(VectorCanisterError::InvalidStatsCursor) => {
             let restart = VectorMaintenanceState::Scanning {
                 cursor: None,
                 exhausted: false,
                 merged: VectorPartitionPageHealth::default(),
             };
             put_maintenance_state(index_id, &restart);
-            return Ok(VectorMaintenanceStepResult::Scanning { exhausted: false });
+            VectorMaintenanceStepResult::Scanning { exhausted: false }
         }
-
-        // Recompute the O(nlist) head-only skew summary server-side; never trust caller-attested skew.
-        let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
-        merged.index_id = index_id;
-        let recommendation = recommend_partition_maintenance(&summary, &merged, &req.policy)?;
-        match recommendation {
-            VectorMaintenanceRecommendation::Healthy => {
-                put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
-                Ok(VectorMaintenanceStepResult::Healthy)
-            }
-            VectorMaintenanceRecommendation::RebuildRecommended
-            | VectorMaintenanceRecommendation::RebuildRequired => {
-                // `nlist=1` indexes must pass an explicit `target_nlist`; otherwise default to the
-                // current `nlist` (rejected by the rebuild start when degenerate).
-                let nlist = req.target_nlist.unwrap_or(def.nlist);
-                match self.admin_start_vector_rebuild(caller, index_id, nlist, req.sample_limit) {
-                    Ok(()) => {
-                        // The rebuild state machine now drives; clear the scan state.
-                        put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
-                        Ok(VectorMaintenanceStepResult::RebuildStarted(recommendation))
-                    }
-                    Err(e) => Ok(self.fail_maintenance(index_id, e)),
-                }
-            }
-        }
+        Err(e) => fail_maintenance(index_id, e),
     }
+}
 
-    /// One bounded page-health scan step: merges the partial, persists progress (or restarts on a
-    /// stale cursor), and returns `Scanning { exhausted }`.
-    fn scan_one_step(
-        &self,
-        caller: Principal,
-        index_id: u32,
-        cursor: Option<Vec<u8>>,
-        mut merged: VectorPartitionPageHealth,
-        req: &VectorMaintenanceStepRequest,
-    ) -> VectorMaintenanceStepResult {
-        match self.admin_vector_partition_health_step(caller, index_id, cursor, req.scan_max_pages)
-        {
-            Ok(step) => {
-                merge_health(&mut merged, &step.partial);
-                let next = VectorMaintenanceState::Scanning {
-                    cursor: if step.exhausted { None } else { step.cursor },
-                    exhausted: step.exhausted,
-                    merged,
-                };
-                put_maintenance_state(index_id, &next);
-                VectorMaintenanceStepResult::Scanning {
-                    exhausted: step.exhausted,
-                }
-            }
-            // The active version changed mid-scan (cursor scope no longer matches): restart cleanly.
-            Err(VectorCanisterError::InvalidStatsCursor) => {
-                let restart = VectorMaintenanceState::Scanning {
-                    cursor: None,
-                    exhausted: false,
-                    merged: VectorPartitionPageHealth::default(),
-                };
-                put_maintenance_state(index_id, &restart);
-                VectorMaintenanceStepResult::Scanning { exhausted: false }
-            }
-            Err(e) => self.fail_maintenance(index_id, e),
-        }
-    }
+/// Records a bounded `Failed` maintenance state and returns the matching step result.
+fn fail_maintenance(index_id: u32, e: VectorCanisterError) -> VectorMaintenanceStepResult {
+    let failure = VectorMaintenanceFailure {
+        code: e,
+        message: bounded_message(e.to_string()),
+    };
+    put_maintenance_state(index_id, &VectorMaintenanceState::Failed(failure.clone()));
+    VectorMaintenanceStepResult::Failed(failure)
+}
 
-    /// Records a bounded `Failed` maintenance state and returns the matching step result.
-    fn fail_maintenance(
-        &self,
-        index_id: u32,
-        e: VectorCanisterError,
-    ) -> VectorMaintenanceStepResult {
-        let failure = VectorMaintenanceFailure {
-            code: e,
-            message: bounded_message(e.to_string()),
-        };
-        put_maintenance_state(index_id, &VectorMaintenanceState::Failed(failure.clone()));
-        VectorMaintenanceStepResult::Failed(failure)
-    }
+/// Reports the current maintenance execution state (ADR 0031 Slice 10). Router-guarded `#[query]`.
+/// An index with no recorded state reports `Idle`.
+pub(crate) fn admin_vector_maintenance_status(
+    caller: Principal,
+    index_id: u32,
+) -> Result<VectorMaintenanceState, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    Ok(maintenance_state_of(index_id))
+}
 
-    /// Reports the current maintenance execution state (ADR 0031 Slice 10). Router-guarded `#[query]`.
-    /// An index with no recorded state reports `Idle`.
-    pub fn admin_vector_maintenance_status(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<VectorMaintenanceState, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        Ok(maintenance_state_of(index_id))
-    }
-
-    /// Resets the maintenance execution state to `Idle` from any state, including `Failed` (ADR 0031
-    /// Slice 10). Router-guarded `#[update]`. This is the only recovery path for a `Failed`
-    /// maintenance state. It does **not** touch `VECTOR_REBUILD_STATE`: aborting an in-flight rebuild
-    /// remains the explicit `admin_abort_vector_rebuild`.
-    pub fn admin_vector_maintenance_reset(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<(), VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
-        Ok(())
-    }
+/// Resets the maintenance execution state to `Idle` from any state, including `Failed` (ADR 0031
+/// Slice 10). Router-guarded `#[update]`. This is the only recovery path for a `Failed`
+/// maintenance state. It does **not** touch `VECTOR_REBUILD_STATE`: aborting an in-flight rebuild
+/// remains the explicit `admin_abort_vector_rebuild`.
+pub(crate) fn admin_vector_maintenance_reset(
+    caller: Principal,
+    index_id: u32,
+) -> Result<(), VectorCanisterError> {
+    assert_router_caller(caller)?;
+    put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
+    Ok(())
 }

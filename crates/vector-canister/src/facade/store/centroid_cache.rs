@@ -12,8 +12,8 @@
 //! - [`lookup`] is the only path a query touches. It *reads* an already-warmed entry and never
 //!   writes. A miss simply returns `None`; the caller then performs a one-call stable read (it does
 //!   **not** populate the cache, since that write would be rolled back anyway).
-//! - Population ([`VectorCanisterStore::admin_vector_centroid_cache_warmup`]) and eviction
-//!   ([`VectorCanisterStore::admin_vector_centroid_cache_clear`], [`invalidate`]) happen only on
+//! - Population ([`admin_vector_centroid_cache_warmup`]) and eviction
+//!   ([`admin_vector_centroid_cache_clear`], [`invalidate`]) happen only on
 //!   `#[update]` paths, whose heap writes are committed.
 //!
 //! **Freshness.** Each entry is keyed by `(index_id -> {version, nlist, dims})`. The active centroid
@@ -22,7 +22,7 @@
 //! calls [`invalidate`] to free the heap promptly. The cache is purely derived, so it is dropped on
 //! init/upgrade.
 
-use super::VectorCanisterStore;
+use super::authorization::assert_router_caller;
 use super::search::read_centroids_at;
 use crate::facade::stable::definition_store;
 use candid::Principal;
@@ -132,56 +132,51 @@ fn status() -> VectorCentroidCacheStatus {
     })
 }
 
-impl VectorCanisterStore {
-    /// Warms the heap centroid cache for `index_id` from its active centroid set (ADR 0031 Slice 9).
-    /// Router-guarded `#[update]` (a query cannot persist the warmed entry). Only indexes with a ready
-    /// `nlist > 1` centroid set are cached; a degenerate (`nlist <= 1`) or untrained index instead
-    /// drops any stale entry. Returns the post-warmup cache status.
-    pub fn admin_vector_centroid_cache_warmup(
-        &self,
-        caller: Principal,
-        index_id: u32,
-    ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        let def = definition_store::get(index_id)
-            .map_err(VectorCanisterError::from)?
-            .ok_or(VectorCanisterError::UnknownIndex)?;
-        match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
-            Some(centroids) if def.nlist > 1 => {
-                let bytes = centroid_bytes(&centroids);
-                insert(
-                    index_id,
-                    CachedCentroids {
-                        version: def.active_index_version,
-                        nlist: def.nlist,
-                        dims: def.dims,
-                        centroids,
-                        bytes,
-                    },
-                );
-            }
-            // No ready centroid set (or degenerate index): ensure no stale entry lingers.
-            _ => invalidate(index_id),
+/// Warms the heap centroid cache for `index_id` from its active centroid set (ADR 0031 Slice 9).
+/// Router-guarded `#[update]` (a query cannot persist the warmed entry). Only indexes with a ready
+/// `nlist > 1` centroid set are cached; a degenerate (`nlist <= 1`) or untrained index instead
+/// drops any stale entry. Returns the post-warmup cache status.
+pub(crate) fn admin_vector_centroid_cache_warmup(
+    caller: Principal,
+    index_id: u32,
+) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
+        Some(centroids) if def.nlist > 1 => {
+            let bytes = centroid_bytes(&centroids);
+            insert(
+                index_id,
+                CachedCentroids {
+                    version: def.active_index_version,
+                    nlist: def.nlist,
+                    dims: def.dims,
+                    centroids,
+                    bytes,
+                },
+            );
         }
-        Ok(status())
+        // No ready centroid set (or degenerate index): ensure no stale entry lingers.
+        _ => invalidate(index_id),
     }
+    Ok(status())
+}
 
-    /// Clears the entire heap centroid cache (ADR 0031 Slice 9). Router-guarded `#[update]`.
-    pub fn admin_vector_centroid_cache_clear(
-        &self,
-        caller: Principal,
-    ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        clear_all();
-        Ok(status())
-    }
+/// Clears the entire heap centroid cache (ADR 0031 Slice 9). Router-guarded `#[update]`.
+pub(crate) fn admin_vector_centroid_cache_clear(
+    caller: Principal,
+) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    clear_all();
+    Ok(status())
+}
 
-    /// Reports the heap centroid cache status (ADR 0031 Slice 9). Router-guarded `#[query]`.
-    pub fn admin_vector_centroid_cache_status(
-        &self,
-        caller: Principal,
-    ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
-        self.assert_router_caller(caller)?;
-        Ok(status())
-    }
+/// Reports the heap centroid cache status (ADR 0031 Slice 9). Router-guarded `#[query]`.
+pub(crate) fn admin_vector_centroid_cache_status(
+    caller: Principal,
+) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
+    assert_router_caller(caller)?;
+    Ok(status())
 }

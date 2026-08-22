@@ -1,6 +1,7 @@
 //! Canister request handlers for `gleaph-vector-canister`.
 
-use crate::facade::{VectorCanisterStore, VectorSyncBatchOutcomeOperationError};
+use crate::facade::VectorSyncBatchOutcomeOperationError;
+use crate::facade::store;
 use crate::init::VectorCanisterInitArgs;
 use crate::state::VectorCanisterError;
 use candid::Principal;
@@ -68,7 +69,7 @@ pub(crate) fn advance_watermark_and_gc_for_applied_prefix(
 }
 
 pub(crate) fn init(args: VectorCanisterInitArgs) {
-    if let Err(e) = VectorCanisterStore::new().init_from_args(&args) {
+    if let Err(e) = store::init_from_args(&args) {
         ic_cdk::trap(e.to_string());
     }
 }
@@ -76,8 +77,8 @@ pub(crate) fn init(args: VectorCanisterInitArgs) {
 /// Rebind the definition and subject-store heap owners. Each retains an unavailable exact-open
 /// result for subsequent request handling instead of creating or resetting a nonempty region.
 pub(crate) fn post_upgrade() {
-    VectorCanisterStore::new().open_definition_store_after_upgrade();
-    VectorCanisterStore::new().open_subject_store_after_upgrade();
+    store::open_definition_store_after_upgrade();
+    store::open_subject_store_after_upgrade();
 }
 
 /// Test-only PocketIC seam for simulating the post-upgrade pre-open window without touching stable
@@ -92,8 +93,7 @@ pub(crate) fn admin_attach_shard_canister(
     shard_id: ShardId,
     shard_canister_principal: Principal,
 ) -> Result<(), String> {
-    VectorCanisterStore::new()
-        .admin_attach_shard_canister(msg_caller(), graph_id, shard_id, shard_canister_principal)
+    store::admin_attach_shard_canister(msg_caller(), graph_id, shard_id, shard_canister_principal)
         .map_err(|e| e.to_string())
 }
 
@@ -101,18 +101,15 @@ pub(crate) fn admin_detach_shard_canister(
     shard_id: ShardId,
     resume: Option<ShardDetachCursor>,
 ) -> Result<ShardDetachStepResult, String> {
-    VectorCanisterStore::new()
-        .admin_detach_shard_canister(msg_caller(), shard_id, resume)
-        .map_err(|e| e.to_string())
+    store::admin_detach_shard_canister(msg_caller(), shard_id, resume).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_advance_router_frontier(
     shard_id: ShardId,
     frontier: u64,
 ) -> Result<(), String> {
-    let result = VectorCanisterStore::new()
-        .advance_router_frontier(msg_caller(), shard_id, frontier)
-        .map_err(|e| e.to_string());
+    let result =
+        store::advance_router_frontier(msg_caller(), shard_id, frontier).map_err(|e| e.to_string());
     #[cfg(feature = "pocket-ic-e2e")]
     if result.is_ok() {
         let receipt = (shard_id.raw(), frontier);
@@ -133,29 +130,26 @@ pub(crate) fn e2e_frontier_receipt_probe() -> (u64, Option<(u32, u64)>) {
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+/// Ingress-facing alias of the PocketIC frontier probe tuple (see
+/// [`store::watermark::VectorTombstoneFrontierProbe`]).
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) type VectorIngressFrontierProbe = crate::facade::store::VectorTombstoneFrontierProbe;
+
+#[cfg(feature = "pocket-ic-e2e")]
 pub(crate) fn e2e_frontier_probe(
     index_id: u32,
     shard_id: ShardId,
     vertex_id: u32,
-) -> Result<
-    (
-        u64,
-        u64,
-        Option<(u64, bool)>,
-        bool,
-        Option<(u32, u64, u32, u32, u32)>,
-    ),
-    String,
-> {
-    VectorCanisterStore::new().test_vector_frontier_probe(index_id, shard_id, vertex_id)
+) -> Result<VectorIngressFrontierProbe, String> {
+    store::test_vector_frontier_probe(index_id, shard_id, vertex_id)
 }
 
 pub(crate) fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {
-    VectorCanisterStore::new().vector_upsert(msg_caller(), &op)
+    store::vector_upsert(msg_caller(), &op)
 }
 
 pub(crate) fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {
-    VectorCanisterStore::new().vector_remove(msg_caller(), &op)
+    store::vector_remove(msg_caller(), &op)
 }
 
 /// Failure that cannot be represented as a committed typed batch outcome.
@@ -177,11 +171,10 @@ pub(crate) fn vector_sync_batch_outcome_for_caller(
     caller: Principal,
     operations: &[VectorEmbeddingSyncOp],
 ) -> Result<VectorSyncBatchOutcome, VectorSyncBatchOutcomeDriverError> {
-    let store = VectorCanisterStore::new();
     let baseline = instruction_counter();
 
-    match store.preflight_vector_sync_batch(caller, operations) {
-        Ok(()) => {}
+    let prepared = match store::preflight_vector_sync_batch(caller, operations) {
+        Ok(prepared) => prepared,
         Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) => {
             return Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable);
         }
@@ -195,7 +188,7 @@ pub(crate) fn vector_sync_batch_outcome_for_caller(
         | Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
             unreachable!("typed batch preflight does not admit a terminal pressure result")
         }
-    }
+    };
 
     let mut applied = 0u32;
 
@@ -217,28 +210,31 @@ pub(crate) fn vector_sync_batch_outcome_for_caller(
             .unwrap_or(operations.len())
             .min(operations.len());
         let chunk = &operations[offset..end];
-        let outcome = match store.vector_sync_batch_outcome_chunk(caller, chunk) {
-            Ok(outcome) => outcome,
-            Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) if applied == 0 => {
-                return Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable);
-            }
-            Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) if applied == 0 => {
-                return Err(VectorSyncBatchOutcomeDriverError::SubjectStoreUnavailable);
-            }
-            Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable)
-            | Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) => {
-                return Err(VectorSyncBatchOutcomeDriverError::Fatal(
-                    VectorCanisterError::StableGrowFailed,
-                ));
-            }
-            Err(VectorSyncBatchOutcomeOperationError::Fatal(error)) => {
-                return Err(VectorSyncBatchOutcomeDriverError::Fatal(error));
-            }
-            Err(VectorSyncBatchOutcomeOperationError::TablePressure)
-            | Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
-                unreachable!("typed batch chunk converts pressure to a terminal outcome")
-            }
-        };
+        let outcome =
+            match store::vector_sync_batch_outcome_chunk(caller, chunk, &prepared[offset..end]) {
+                Ok(outcome) => outcome,
+                Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) if applied == 0 => {
+                    return Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable);
+                }
+                Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable)
+                    if applied == 0 =>
+                {
+                    return Err(VectorSyncBatchOutcomeDriverError::SubjectStoreUnavailable);
+                }
+                Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable)
+                | Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) => {
+                    return Err(VectorSyncBatchOutcomeDriverError::Fatal(
+                        VectorCanisterError::StableGrowFailed,
+                    ));
+                }
+                Err(VectorSyncBatchOutcomeOperationError::Fatal(error)) => {
+                    return Err(VectorSyncBatchOutcomeDriverError::Fatal(error));
+                }
+                Err(VectorSyncBatchOutcomeOperationError::TablePressure)
+                | Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
+                    unreachable!("typed batch chunk converts pressure to a terminal outcome")
+                }
+            };
 
         match outcome {
             VectorSyncBatchOutcome::Progress {
@@ -298,7 +294,7 @@ pub(crate) fn vector_sync_batch_outcome(
 pub(crate) fn vector_search(
     req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, VectorCanisterError> {
-    VectorCanisterStore::new().vector_search(&req)
+    store::vector_search(&req)
 }
 
 pub(crate) fn admin_start_vector_rebuild(
@@ -306,8 +302,7 @@ pub(crate) fn admin_start_vector_rebuild(
     nlist: u32,
     sample_limit: u32,
 ) -> Result<(), String> {
-    VectorCanisterStore::new()
-        .admin_start_vector_rebuild(msg_caller(), index_id, nlist, sample_limit)
+    store::admin_start_vector_rebuild(msg_caller(), index_id, nlist, sample_limit)
         .map_err(|e| e.to_string())
 }
 
@@ -318,60 +313,49 @@ pub(crate) fn admin_start_vector_rebuild_if_recommended(
     target_nlist: Option<u32>,
     sample_limit: u32,
 ) -> Result<VectorMaintenanceRecommendation, String> {
-    VectorCanisterStore::new()
-        .admin_start_vector_rebuild_if_recommended(
-            msg_caller(),
-            index_id,
-            attested_page_health,
-            policy,
-            target_nlist,
-            sample_limit,
-        )
-        .map_err(|e| e.to_string())
+    store::admin_start_vector_rebuild_if_recommended(
+        msg_caller(),
+        index_id,
+        attested_page_health,
+        policy,
+        target_nlist,
+        sample_limit,
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_rebuild_step(
     index_id: u32,
     max_subjects: u32,
 ) -> Result<VectorRebuildStatus, String> {
-    VectorCanisterStore::new()
-        .admin_vector_rebuild_step(msg_caller(), index_id, max_subjects)
+    store::admin_vector_rebuild_step(msg_caller(), index_id, max_subjects)
         .map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_rebuild_status(index_id: u32) -> Result<VectorRebuildStatus, String> {
-    VectorCanisterStore::new()
-        .admin_vector_rebuild_status(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_vector_rebuild_status(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_publish_vector_rebuild(index_id: u32) -> Result<(), String> {
-    VectorCanisterStore::new()
-        .admin_publish_vector_rebuild(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_publish_vector_rebuild(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_abort_vector_rebuild(index_id: u32) -> Result<(), String> {
-    VectorCanisterStore::new()
-        .admin_abort_vector_rebuild(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_abort_vector_rebuild(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_rebuild_cleanup_step(
     index_id: u32,
     max_work: u32,
 ) -> Result<VectorRebuildStatus, String> {
-    VectorCanisterStore::new()
-        .admin_vector_rebuild_cleanup_step(msg_caller(), index_id, max_work)
+    store::admin_vector_rebuild_cleanup_step(msg_caller(), index_id, max_work)
         .map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_partition_health(
     index_id: u32,
 ) -> Result<VectorPartitionHealthSummary, String> {
-    VectorCanisterStore::new()
-        .admin_vector_partition_health(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_vector_partition_health(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_partition_health_step(
@@ -379,35 +363,26 @@ pub(crate) fn admin_vector_partition_health_step(
     cursor: Option<Vec<u8>>,
     max_pages: u32,
 ) -> Result<VectorPartitionHealthStep, String> {
-    VectorCanisterStore::new()
-        .admin_vector_partition_health_step(msg_caller(), index_id, cursor, max_pages)
+    store::admin_vector_partition_health_step(msg_caller(), index_id, cursor, max_pages)
         .map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_centroid_cache_warmup(
     index_id: u32,
 ) -> Result<VectorCentroidCacheStatus, String> {
-    VectorCanisterStore::new()
-        .admin_vector_centroid_cache_warmup(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_vector_centroid_cache_warmup(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_centroid_cache_clear() -> Result<VectorCentroidCacheStatus, String> {
-    VectorCanisterStore::new()
-        .admin_vector_centroid_cache_clear(msg_caller())
-        .map_err(|e| e.to_string())
+    store::admin_vector_centroid_cache_clear(msg_caller()).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_centroid_cache_status() -> Result<VectorCentroidCacheStatus, String> {
-    VectorCanisterStore::new()
-        .admin_vector_centroid_cache_status(msg_caller())
-        .map_err(|e| e.to_string())
+    store::admin_vector_centroid_cache_status(msg_caller()).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_slab_stats(index_id: Option<u32>) -> Result<VectorSlabStats, String> {
-    VectorCanisterStore::new()
-        .admin_vector_slab_stats(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_vector_slab_stats(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_slab_stats_step(
@@ -415,8 +390,7 @@ pub(crate) fn admin_vector_slab_stats_step(
     max_pages: u32,
     index_id: Option<u32>,
 ) -> Result<VectorSlabStatsStep, String> {
-    VectorCanisterStore::new()
-        .admin_vector_slab_stats_step(msg_caller(), cursor, max_pages, index_id)
+    store::admin_vector_slab_stats_step(msg_caller(), cursor, max_pages, index_id)
         .map_err(|e| e.to_string())
 }
 
@@ -424,21 +398,15 @@ pub(crate) fn admin_vector_maintenance_step(
     index_id: u32,
     req: VectorMaintenanceStepRequest,
 ) -> Result<VectorMaintenanceStepResult, String> {
-    VectorCanisterStore::new()
-        .admin_vector_maintenance_step(msg_caller(), index_id, req)
-        .map_err(|e| e.to_string())
+    store::admin_vector_maintenance_step(msg_caller(), index_id, req).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_maintenance_status(
     index_id: u32,
 ) -> Result<VectorMaintenanceState, String> {
-    VectorCanisterStore::new()
-        .admin_vector_maintenance_status(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_vector_maintenance_status(msg_caller(), index_id).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_maintenance_reset(index_id: u32) -> Result<(), String> {
-    VectorCanisterStore::new()
-        .admin_vector_maintenance_reset(msg_caller(), index_id)
-        .map_err(|e| e.to_string())
+    store::admin_vector_maintenance_reset(msg_caller(), index_id).map_err(|e| e.to_string())
 }

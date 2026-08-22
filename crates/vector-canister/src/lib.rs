@@ -24,7 +24,6 @@ mod encoding;
 mod guards;
 
 pub use encoding::{EncodingError, EncodingRecord, ScoringKernel};
-pub use facade::VectorCanisterStore;
 pub use init::VectorCanisterInitArgs;
 pub use state::VectorCanisterError;
 
@@ -91,16 +90,7 @@ fn e2e_frontier_probe(
     index_id: u32,
     shard_id: ShardId,
     vertex_id: u32,
-) -> Result<
-    (
-        u64,
-        u64,
-        Option<(u64, bool)>,
-        bool,
-        Option<(u32, u64, u32, u32, u32)>,
-    ),
-    String,
-> {
+) -> Result<canister::VectorIngressFrontierProbe, String> {
     canister::e2e_frontier_probe(index_id, shard_id, vertex_id)
 }
 

@@ -854,12 +854,27 @@ pub struct VectorSlabGlobalStats {
     /// Approximate leaked/dead bytes:
     /// `occupied_tail_bytes - slab_header_len - referenced_page_bytes_global`, saturating at zero.
     /// Conservative; grows as cleanup deletes page meta without rewinding the slab tail.
-    ///
-    /// **Meaningful only in a whole-slab result** (the unbounded `admin_vector_slab_stats`, or a
-    /// client-merged set of [`VectorSlabStatsStep`]s). It is always `0` inside a per-step
-    /// [`VectorSlabStatsStep::partial`], because a single bounded step has not yet observed every
-    /// referenced page; the caller recomputes the estimate after merging all steps.
     pub estimated_unreferenced_bytes: u64,
+}
+
+/// One bounded step's view of the whole-slab physical facts ([`VectorSlabStatsStep::partial`]).
+///
+/// A single bounded step observes only part of the page-meta map, so it cannot know the global
+/// dead-space estimate — [`VectorSlabStats`] carries it, this shape deliberately does not. The
+/// caller computes it once after merging all steps from the snapshot fields plus the referenced-byte
+/// sum (see the [`VectorSlabStatsStep`] merge contract).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub struct VectorSlabStepGlobalStats {
+    /// Total bytes backing the raw slab region — a repeated physical snapshot, not a sum.
+    pub slab_size_bytes: u64,
+    /// Bytes the slab considers allocated (the slab header's `occupied_tail`) — a repeated physical
+    /// snapshot, not a sum.
+    pub occupied_tail_bytes: u64,
+    /// Span of *every* page observed in the step, even pages outside a `Some(index_id)` filter,
+    /// because `VECTOR_ROW_SLAB` is one global allocation domain. Summed across steps.
+    pub referenced_page_bytes_global: u64,
 }
 
 /// One bounded page-meta scan step for the cursor/budgeted `admin_vector_slab_stats_step` query.
@@ -871,16 +886,12 @@ pub struct VectorSlabGlobalStats {
 /// **Merge contract.** `partial` is *additive* across steps, with these exceptions:
 /// - `partial.slab.slab_size_bytes` and `partial.slab.occupied_tail_bytes` are repeated physical
 ///   snapshots, not sums; take any step's value (the last is freshest).
-/// - `partial.slab.estimated_unreferenced_bytes` is always `0` per step. The final dead-space
-///   estimate is computed once after merging:
-///   `occupied_tail_bytes - slab_header_len - sum(partial.slab.referenced_page_bytes_global)`,
-///   saturating at zero.
 /// - `partial.slab.referenced_page_bytes_global`, `partial.scope`, and `partial.versions` are summed
 ///   (versions by `(index_id, index_version)` key).
-///
-/// `partial.slab.referenced_page_bytes_global` accumulates the span of *every* page observed in the
-/// step, even pages outside a `Some(index_id)` filter, because `VECTOR_ROW_SLAB` is one global
-/// allocation domain. `partial.scope`/`partial.versions` only count pages within the scope.
+/// - The dead-space estimate is absent from every step (a bounded prefix of the map cannot know
+///   it). It is computed once after merging:
+///   `occupied_tail_bytes - slab_header_len - sum(partial.slab.referenced_page_bytes_global)`,
+///   saturating at zero.
 ///
 /// `cursor` is opaque `PageKey` bytes; pass it back verbatim. It is `None` exactly when `exhausted`.
 ///
@@ -894,11 +905,22 @@ pub struct VectorSlabGlobalStats {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VectorSlabStatsStep {
     /// This step's additive contribution (see the merge contract above).
-    pub partial: VectorSlabStats,
+    pub partial: VectorSlabStatsPartial,
     /// Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
     pub cursor: Option<Vec<u8>>,
     /// `true` once the whole page-meta map has been scanned.
     pub exhausted: bool,
+}
+
+/// One bounded step's additive contribution to a client-side [`VectorSlabStats`] merge.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorSlabStatsPartial {
+    /// Whole-slab physical facts as observed by this one bounded step.
+    pub slab: VectorSlabStepGlobalStats,
+    /// Logical counters observed for the queried scope in this step (summed across steps).
+    pub scope: VectorSlabScopeStats,
+    /// Per-`(index_id, index_version)` counters observed in this step (summed across steps, by key).
+    pub versions: Vec<VectorSlabVersionStats>,
 }
 
 /// Logical counters aggregated over the queried scope for [`VectorSlabStats`].
@@ -1578,6 +1600,40 @@ mod tests {
         };
         let bytes = Encode!(&stats).expect("encode");
         assert_eq!(Decode!(&bytes, VectorSlabStats).expect("decode"), stats);
+    }
+
+    #[test]
+    fn slab_stats_step_candid_roundtrip() {
+        let step = VectorSlabStatsStep {
+            partial: VectorSlabStatsPartial {
+                slab: VectorSlabStepGlobalStats {
+                    slab_size_bytes: 131_072,
+                    occupied_tail_bytes: 96_000,
+                    referenced_page_bytes_global: 64_000,
+                },
+                scope: VectorSlabScopeStats {
+                    index_id: Some(7),
+                    referenced_page_bytes: 48_000,
+                    page_count: 2,
+                    row_count: 80,
+                    physical_live_row_count: 70,
+                    tombstone_row_count: 10,
+                },
+                versions: vec![VectorSlabVersionStats {
+                    index_id: 7,
+                    index_version: 1,
+                    page_count: 2,
+                    row_count: 80,
+                    physical_live_row_count: 70,
+                    tombstone_row_count: 10,
+                    referenced_page_bytes: 32_000,
+                }],
+            },
+            cursor: Some(vec![1, 2, 3]),
+            exhausted: false,
+        };
+        let bytes = Encode!(&step).expect("encode");
+        assert_eq!(Decode!(&bytes, VectorSlabStatsStep).expect("decode"), step);
     }
 
     #[test]

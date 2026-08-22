@@ -17,9 +17,10 @@
 //!
 //! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 
+use crate::facade::SearchTuning;
 use crate::facade::stable::subject_store;
 use crate::facade::stable::{VECTOR_DELETED_SUBJECTS, VECTOR_GC_CURSOR, VECTOR_SHARD_WATERMARKS};
-use crate::facade::{SearchTuning, VectorCanisterStore};
+use crate::facade::store::*;
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
 use crate::records::{DeletedSubjectKey, FixedSubjectMapEntry, ShardWatermarks, SubjectKey};
 use canbench_rs::bench;
@@ -87,30 +88,27 @@ fn vec_bytes_varied(dims: u16, vid: u32) -> Vec<u8> {
 
 /// Fresh store with `n` width-`dims` vectors on shard 0; vector `i` is filled with the value `i` so
 /// the scored set is fully distinct.
-fn setup_search_store(dims: u16, n: u32) -> VectorCanisterStore {
+fn setup_search_store(dims: u16, n: u32) {
     setup_search_store_metric(dims, n, VectorMetric::L2Squared)
 }
 
 /// Like [`setup_search_store`] but seeds the index with the given metric, so a metric-mismatched
 /// request (e.g. a cosine search against an L2 index) is avoided and the metric's scoring path is
 /// exercised directly.
-fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorCanisterStore {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
-    store
-        .admin_attach_shard_canister(
-            router(),
-            GraphId::from_raw(1),
-            ShardId::new(0),
-            shard_owner(),
-        )
-        .expect("attach shard");
+fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_owner(),
+    )
+    .expect("attach shard");
     for vid in 0..n {
         // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value
         // (vid 0 would be the zero vector). Constant rows are degenerate for cosine (all rows at
@@ -140,32 +138,27 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
             bytes,
             remove: false,
         };
-        store
-            .vector_upsert(shard_owner(), &op)
-            .expect("seed vector");
+        vector_upsert(shard_owner(), &op).expect("seed vector");
     }
-    store
 }
 
 /// Like [`setup_search_store_metric`] but seeds an `I8` index (Model Y: the wire op bytes are still
 /// canonical F32; the canister quantizes at write). Benchmarks the fused i8×f32 scoring path.
-fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorCanisterStore {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
-    store
-        .admin_attach_shard_canister(
-            router(),
-            GraphId::from_raw(1),
-            ShardId::new(0),
-            shard_owner(),
-        )
-        .expect("attach shard");
+#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_owner(),
+    )
+    .expect("attach shard");
     for vid in 0..n {
         // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value. Constant
         // rows are degenerate for cosine (all rows at distance 0), so cosine uses varied-direction rows
@@ -195,11 +188,8 @@ fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> Vect
             bytes,
             remove: false,
         };
-        store
-            .vector_upsert(shard_owner(), &op)
-            .expect("seed i8 vector");
+        vector_upsert(shard_owner(), &op).expect("seed i8 vector");
     }
-    store
 }
 
 fn search_req(dims: u16, top_k: u32) -> VectorSearchRequest {
@@ -255,7 +245,7 @@ macro_rules! i8_search_bench {
     ($name:ident, $dims:expr, $top_k:expr, $metric:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_i8_search_store_metric($dims, SCAN_N, $metric);
+            setup_i8_search_store_metric($dims, SCAN_N, $metric);
             let value = if $metric == VectorMetric::Cosine {
                 1.0
             } else {
@@ -264,9 +254,7 @@ macro_rules! i8_search_bench {
             let req = i8_search_req_metric_value($dims, $top_k, value, $metric);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store
-                    .vector_search(black_box(&req))
-                    .expect("i8 vector_search");
+                let result = vector_search(black_box(&req)).expect("i8 vector_search");
                 black_box(result);
             })
         }
@@ -277,11 +265,11 @@ macro_rules! search_bench {
     ($name:ident, $dims:expr, $top_k:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_search_store($dims, SCAN_N);
+            setup_search_store($dims, SCAN_N);
             let req = search_req($dims, $top_k);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store.vector_search(black_box(&req)).expect("vector_search");
+                let result = vector_search(black_box(&req)).expect("vector_search");
                 black_box(result);
             })
         }
@@ -329,11 +317,11 @@ macro_rules! cosine_search_bench {
     ($name:ident, $dims:expr, $top_k:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_search_store_metric($dims, SCAN_N, VectorMetric::Cosine);
+            setup_search_store_metric($dims, SCAN_N, VectorMetric::Cosine);
             let req = search_req_metric_value($dims, $top_k, 1.0, VectorMetric::Cosine);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store.vector_search(black_box(&req)).expect("vector_search");
+                let result = vector_search(black_box(&req)).expect("vector_search");
                 black_box(result);
             })
         }
@@ -350,7 +338,7 @@ cosine_search_bench!(bench_vector_search_cosine_d1536_k100, 1536, 100);
 /// node decode) is isolated from the row reads and scoring. Per-get = total / SCAN_N.
 #[bench(raw)]
 fn bench_subject_map_get_d128() -> canbench_rs::BenchResult {
-    let _store = setup_search_store(128, SCAN_N);
+    setup_search_store(128, SCAN_N);
     let subjects: Vec<VectorSubject> = (0..SCAN_N)
         .map(|v| VectorSubject::Vertex {
             shard_id: ShardId::new(0),
@@ -371,6 +359,7 @@ fn bench_subject_map_get_d128() -> canbench_rs::BenchResult {
 }
 
 /// A constant-valued width-`dims` `f32` vector.
+#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
 fn cvec(dims: u16, value: f32) -> Vec<f32> {
     vec![value; dims as usize]
 }
@@ -379,15 +368,14 @@ fn cvec(dims: u16, value: f32) -> Vec<f32> {
 /// `CLUSTER_SPACING`, with `n` vectors round-robin assigned to clusters and a tiny in-cluster jitter
 /// so every vector is distinct yet nearest to its own centroid. Lower `nprobe` therefore skips whole
 /// populated clusters.
-fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
+#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
     let centroids: Vec<Vec<f32>> = (0..nlist)
         .map(|c| cvec(dims, c as f32 * CLUSTER_SPACING))
         .collect();
@@ -405,14 +393,14 @@ fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore
             )
         })
         .collect();
-    store.seed_ivf_for_test(INDEX_ID, VectorEncoding::F32, dims, &centroids, &vectors);
-    store
+    seed_ivf_for_test(INDEX_ID, VectorEncoding::F32, dims, &centroids, &vectors);
 }
 
 /// A deterministic varied-direction raw f32 vector (values in `[-1, 1]`) for cosine partitioned
 /// benches. The previous centroid construction `(c+1)*0.3 + j*0.01 + 1.0` is degenerate: for large
 /// `dims` the `j*0.01` gradient dominates, so every centroid/row points in the same direction and the
 /// cosine similarity to a constant query is uniformly high, which never exercises the early exit.
+#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
 fn varied_raw(dims: u16, seed: u32) -> Vec<f32> {
     (0..dims)
         .map(|j| {
@@ -428,15 +416,14 @@ fn varied_raw(dims: u16, seed: u32) -> Vec<f32> {
 /// unit vectors near its centroid direction; a smaller `eps_query` scans fewer populated clusters. The
 /// first `COSINE_ALIGNED_ROWS` rows are aligned with the query `[1,1,..,1]` (distance 0) so the k-th
 /// best distance is small and the Cauchy-Schwarz early exit triggers on the varied rows.
-fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
+#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
     let centroids: Vec<Vec<f32>> = (0..nlist)
         .map(|c| {
             let raw = varied_raw(dims, c + 1);
@@ -461,7 +448,7 @@ fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanist
             }
         })
         .collect();
-    store.seed_ivf_with_metric_for_test(
+    seed_ivf_with_metric_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         dims,
@@ -469,27 +456,25 @@ fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanist
         &centroids,
         &vectors,
     );
-    store
 }
 
 macro_rules! partitioned_bench {
     ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_partitioned_store($dims, SCAN_N, $nlist);
+            setup_partitioned_store($dims, SCAN_N, $nlist);
             // The query sits between the first two clusters so the ε sweep actually varies how many
             // partitions are scanned (see [`SWEEP_QUERY`]).
             let req = search_req_value($dims, 10, SWEEP_QUERY);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store
-                    .vector_search_tuned(
-                        black_box(&req),
-                        SearchTuning {
-                            eps_query: $eps_query,
-                        },
-                    )
-                    .expect("vector_search_tuned");
+                let result = vector_search_tuned(
+                    black_box(&req),
+                    SearchTuning {
+                        eps_query: $eps_query,
+                    },
+                )
+                .expect("vector_search_tuned");
                 black_box(result);
             })
         }
@@ -535,18 +520,17 @@ macro_rules! partitioned_cosine_bench {
     ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_partitioned_cosine_store($dims, SCAN_N, $nlist);
+            setup_partitioned_cosine_store($dims, SCAN_N, $nlist);
             let req = search_req_metric_value($dims, 10, 1.0, VectorMetric::Cosine);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store
-                    .vector_search_tuned(
-                        black_box(&req),
-                        SearchTuning {
-                            eps_query: $eps_query,
-                        },
-                    )
-                    .expect("vector_search_tuned");
+                let result = vector_search_tuned(
+                    black_box(&req),
+                    SearchTuning {
+                        eps_query: $eps_query,
+                    },
+                )
+                .expect("vector_search_tuned");
                 black_box(result);
             })
         }
@@ -568,35 +552,26 @@ const REBUILD_N: u32 = 1024;
 
 /// Drives a full rebuild (start -> bounded steps -> publish) of a degenerate index of `n` distinct
 /// vectors into `nlist` partitions. Steps run in `n`-sized batches.
-fn run_full_rebuild(store: &VectorCanisterStore, n: u32, nlist: u32) {
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
-        .expect("start");
+fn run_full_rebuild(n: u32, nlist: u32) {
+    admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1).expect("start");
     loop {
-        let status = store
-            .admin_vector_rebuild_step(router(), INDEX_ID, n)
-            .expect("step");
+        let status = admin_vector_rebuild_step(router(), INDEX_ID, n).expect("step");
         match status.phase {
             VectorRebuildPhase::ReadyToPublish => break,
             VectorRebuildPhase::Failed => panic!("rebuild failed"),
             _ => {}
         }
     }
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
 }
 
 /// Advances a freshly-started rebuild into `Building` (centroids written) without shadowing any
 /// subject yet, so a follow-up `Building` step measures shadow-append cost in isolation.
-fn start_into_building(store: &VectorCanisterStore, n: u32, nlist: u32) {
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
-        .expect("start");
+fn start_into_building(n: u32, nlist: u32) {
+    admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1).expect("start");
     loop {
-        let status = store
-            .admin_vector_rebuild_step(router(), INDEX_ID, n)
-            .expect("sampling/training step");
+        let status =
+            admin_vector_rebuild_step(router(), INDEX_ID, n).expect("sampling/training step");
         if status.phase == VectorRebuildPhase::Building {
             break;
         }
@@ -614,14 +589,10 @@ fn start_into_building(store: &VectorCanisterStore, n: u32, nlist: u32) {
 /// Advances a freshly-started rebuild into `Training` (iteration 0, candidate pool collected, no
 /// centroids written yet), so a follow-up `Training` step measures one k-means-lite iteration over
 /// the full pool in isolation (ADR 0031 Slice 8).
-fn start_into_training(store: &VectorCanisterStore, n: u32, nlist: u32) {
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
-        .expect("start");
+fn start_into_training(n: u32, nlist: u32) {
+    admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1).expect("start");
     loop {
-        let status = store
-            .admin_vector_rebuild_step(router(), INDEX_ID, n)
-            .expect("sampling step");
+        let status = admin_vector_rebuild_step(router(), INDEX_ID, n).expect("sampling step");
         match status.phase {
             VectorRebuildPhase::Training => break,
             VectorRebuildPhase::Sampling => {}
@@ -651,10 +622,10 @@ macro_rules! rebuild_full_bench {
     ($name:ident, $dims:expr, $nlist:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_search_store($dims, REBUILD_N);
+            setup_search_store($dims, REBUILD_N);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                run_full_rebuild(&store, REBUILD_N, $nlist);
+                run_full_rebuild(REBUILD_N, $nlist);
             })
         }
     };
@@ -672,10 +643,10 @@ macro_rules! rebuild_full_clustered_bench {
     ($name:ident, $dims:expr, $nlist:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_partitioned_store($dims, REBUILD_N, $nlist);
+            setup_partitioned_store($dims, REBUILD_N, $nlist);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                run_full_rebuild(&store, REBUILD_N, $nlist);
+                run_full_rebuild(REBUILD_N, $nlist);
             })
         }
     };
@@ -691,12 +662,11 @@ macro_rules! training_step_bench {
         /// Slice 8). This is the per-message work the candidate-pool cap bounds.
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_search_store($dims, REBUILD_N);
-            start_into_training(&store, REBUILD_N, $nlist);
+            setup_search_store($dims, REBUILD_N);
+            start_into_training(REBUILD_N, $nlist);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let status = store
-                    .admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N)
+                let status = admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N)
                     .expect("training step");
                 black_box(status);
             })
@@ -711,13 +681,12 @@ training_step_bench!(bench_rebuild_training_step_d768_nlist64, 768, 64);
 /// Cost of one `Building` step that shadows all `REBUILD_N` subjects into their nearest partition.
 #[bench(raw)]
 fn bench_rebuild_building_step_d128_nlist16() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
-    start_into_building(&store, REBUILD_N, 16);
+    setup_search_store(128, REBUILD_N);
+    start_into_building(REBUILD_N, 16);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_rebuild_building_step_d128_nlist16");
-        let status = store
-            .admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N)
-            .expect("building step");
+        let status =
+            admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N).expect("building step");
         black_box(status);
     })
 }
@@ -725,13 +694,11 @@ fn bench_rebuild_building_step_d128_nlist16() -> canbench_rs::BenchResult {
 /// Baseline: a normal new-subject upsert with no rebuild in flight.
 #[bench(raw)]
 fn bench_upsert_normal_d128() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
+    setup_search_store(128, REBUILD_N);
     let op = new_subject_upsert(128, REBUILD_N + 1, 7.0);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_upsert_normal_d128");
-        store
-            .vector_upsert(shard_owner(), black_box(&op))
-            .expect("upsert");
+        vector_upsert(shard_owner(), black_box(&op)).expect("upsert");
     })
 }
 
@@ -739,7 +706,7 @@ fn bench_upsert_normal_d128() -> canbench_rs::BenchResult {
 /// (tombstones the live slot via the slab page store, ADR 0032).
 #[bench(raw)]
 fn bench_remove_normal_d128() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
+    setup_search_store(128, REBUILD_N);
     let op = VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
@@ -756,23 +723,19 @@ fn bench_remove_normal_d128() -> canbench_rs::BenchResult {
     };
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_remove_normal_d128");
-        store
-            .vector_remove(shard_owner(), black_box(&op))
-            .expect("remove");
+        vector_remove(shard_owner(), black_box(&op)).expect("remove");
     })
 }
 
 /// A new-subject upsert while `Building`: dual-writes into both the active and shadow versions.
 #[bench(raw)]
 fn bench_upsert_dualwrite_d128_nlist16() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
-    start_into_building(&store, REBUILD_N, 16);
+    setup_search_store(128, REBUILD_N);
+    start_into_building(REBUILD_N, 16);
     let op = new_subject_upsert(128, REBUILD_N + 1, 7.0);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_upsert_dualwrite_d128_nlist16");
-        store
-            .vector_upsert(shard_owner(), black_box(&op))
-            .expect("upsert");
+        vector_upsert(shard_owner(), black_box(&op)).expect("upsert");
     })
 }
 
@@ -781,7 +744,7 @@ fn bench_upsert_dualwrite_d128_nlist16() -> canbench_rs::BenchResult {
 /// Re-upserts vectors `0..tombstoned` of a degenerate store at a newer `embedding_version`, which
 /// tombstones each subject's prior row (a new live row is appended). Produces a page store with a
 /// known live/tombstone mix for the health-scan benchmark.
-fn tombstone_first(store: &VectorCanisterStore, dims: u16, tombstoned: u32) {
+fn tombstone_first(dims: u16, tombstoned: u32) {
     for vid in 0..tombstoned {
         let op = VectorEmbeddingSyncOp {
             index_id: INDEX_ID,
@@ -797,18 +760,17 @@ fn tombstone_first(store: &VectorCanisterStore, dims: u16, tombstoned: u32) {
             bytes: vec_bytes(dims, vid as f32 + 0.5),
             remove: false,
         };
-        store.vector_upsert(shard_owner(), &op).expect("re-upsert");
+        vector_upsert(shard_owner(), &op).expect("re-upsert");
     }
 }
 
 /// Drives the bounded page-meta health scan over the active version to exhaustion, summing the
 /// additive partials (the operator-side merge contract).
-fn drive_health_scan(store: &VectorCanisterStore, max_pages: u32) -> u64 {
+fn drive_health_scan(max_pages: u32) -> u64 {
     let mut cursor: Option<Vec<u8>> = None;
     let mut total = 0u64;
     loop {
-        let step = store
-            .admin_vector_partition_health_step(router(), INDEX_ID, cursor, max_pages)
+        let step = admin_vector_partition_health_step(router(), INDEX_ID, cursor, max_pages)
             .expect("health step");
         total += step.partial.total_rows;
         if step.exhausted {
@@ -822,10 +784,10 @@ fn drive_health_scan(store: &VectorCanisterStore, max_pages: u32) -> u64 {
 /// the per-page-meta scan cost the tombstone-accounting endpoint adds.
 #[bench(raw)]
 fn bench_partition_health_scan_d128() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
+    setup_search_store(128, REBUILD_N);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_partition_health_scan_d128");
-        black_box(drive_health_scan(&store, REBUILD_N));
+        black_box(drive_health_scan(REBUILD_N));
     })
 }
 
@@ -833,11 +795,11 @@ fn bench_partition_health_scan_d128() -> canbench_rs::BenchResult {
 /// of the clean case carry tombstones). Regression guard for the scan cost when tombstones dominate.
 #[bench(raw)]
 fn bench_partition_health_scan_tombstoned_d128() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
-    tombstone_first(&store, 128, REBUILD_N / 2);
+    setup_search_store(128, REBUILD_N);
+    tombstone_first(128, REBUILD_N / 2);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_partition_health_scan_tombstoned_d128");
-        black_box(drive_health_scan(&store, REBUILD_N));
+        black_box(drive_health_scan(REBUILD_N));
     })
 }
 
@@ -848,23 +810,20 @@ macro_rules! cache_search_bench {
         /// `#[query]` search reads decoded centroids from the heap instead of `IVF_CENTROIDS`.
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_partitioned_store($dims, SCAN_N, $nlist);
+            setup_partitioned_store($dims, SCAN_N, $nlist);
             if $warm {
-                store
-                    .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-                    .expect("warmup");
+                admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
             }
             let req = search_req($dims, 10);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store
-                    .vector_search_tuned(
-                        black_box(&req),
-                        SearchTuning {
-                            eps_query: $eps_query,
-                        },
-                    )
-                    .expect("vector_search_tuned");
+                let result = vector_search_tuned(
+                    black_box(&req),
+                    SearchTuning {
+                        eps_query: $eps_query,
+                    },
+                )
+                .expect("vector_search_tuned");
                 black_box(result);
             })
         }
@@ -880,12 +839,10 @@ cache_search_bench!(bench_ivf_cache_warm_d768_nlist64_eps1, 768, 64, 1.0, true);
 /// `nlist`-partition index — the bounded update-path work an operator pays once per generation.
 #[bench(raw)]
 fn bench_centroid_cache_warmup_d768_nlist64() -> canbench_rs::BenchResult {
-    let store = setup_partitioned_store(768, SCAN_N, 64);
+    setup_partitioned_store(768, SCAN_N, 64);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_centroid_cache_warmup_d768_nlist64");
-        let status = store
-            .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-            .expect("warmup");
+        let status = admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
         black_box(status);
     })
 }
@@ -914,14 +871,10 @@ fn maint_req(target_nlist: u32) -> VectorMaintenanceStepRequest {
 
 /// Drives a freshly-started rebuild to `ReadyToPublish` without publishing, so a follow-up
 /// maintenance step measures the bounded `AwaitingPublish` no-op (publish stays explicit).
-fn start_into_ready_to_publish(store: &VectorCanisterStore, n: u32, nlist: u32) {
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
-        .expect("start");
+fn start_into_ready_to_publish(n: u32, nlist: u32) {
+    admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1).expect("start");
     loop {
-        let status = store
-            .admin_vector_rebuild_step(router(), INDEX_ID, n)
-            .expect("step");
+        let status = admin_vector_rebuild_step(router(), INDEX_ID, n).expect("step");
         match status.phase {
             VectorRebuildPhase::ReadyToPublish => break,
             VectorRebuildPhase::Failed => panic!("rebuild failed"),
@@ -934,12 +887,11 @@ fn start_into_ready_to_publish(store: &VectorCanisterStore, n: u32, nlist: u32) 
 /// bounded `partition_page_health_step`). The scan/dispatch end of the maintenance step.
 #[bench(raw)]
 fn bench_maintenance_step_scan_d128() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
+    setup_search_store(128, REBUILD_N);
     let req = maint_req(16);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_maintenance_step_scan_d128");
-        let result = store
-            .admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
+        let result = admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
             .expect("maintenance step");
         black_box(result);
     })
@@ -948,13 +900,12 @@ fn bench_maintenance_step_scan_d128() -> canbench_rs::BenchResult {
 /// One maintenance unit while a rebuild is `Building`: the step drives one bounded rebuild step.
 #[bench(raw)]
 fn bench_maintenance_step_rebuild_d128_nlist16() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
-    start_into_building(&store, REBUILD_N, 16);
+    setup_search_store(128, REBUILD_N);
+    start_into_building(REBUILD_N, 16);
     let req = maint_req(16);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_maintenance_step_rebuild_d128_nlist16");
-        let result = store
-            .admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
+        let result = admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
             .expect("maintenance step");
         black_box(result);
     })
@@ -964,14 +915,13 @@ fn bench_maintenance_step_rebuild_d128_nlist16() -> canbench_rs::BenchResult {
 /// step-dispatch floor with no scan or rebuild work performed.
 #[bench(raw)]
 fn bench_maintenance_step_awaiting_publish_d128_nlist16() -> canbench_rs::BenchResult {
-    let store = setup_search_store(128, REBUILD_N);
-    start_into_ready_to_publish(&store, REBUILD_N, 16);
+    setup_search_store(128, REBUILD_N);
+    start_into_ready_to_publish(REBUILD_N, 16);
     let req = maint_req(16);
     canbench_rs::bench_fn(|| {
         let _scope =
             canbench_rs::bench_scope("bench_maintenance_step_awaiting_publish_d128_nlist16");
-        let result = store
-            .admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
+        let result = admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
             .expect("maintenance step");
         black_box(result);
     })
@@ -1041,23 +991,20 @@ fn router_frontier_gc_state(subject_keys: &[SubjectKey]) -> RouterFrontierGcStat
 /// Build a frontier fixture with one more lightweight deleted subject clock than the fixed GC
 /// budget. The graph watermark makes every fixture entry eligible; the measured call must remove
 /// exactly the first budget entries and leave the final fence behind its durable cursor.
-fn setup_router_frontier_gc_store() -> (VectorCanisterStore, SubjectKey, SubjectKey) {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
-    store
-        .admin_attach_shard_canister(
-            router(),
-            GraphId::from_raw(1),
-            ShardId::new(0),
-            shard_owner(),
-        )
-        .expect("attach shard");
+fn setup_router_frontier_gc_store() -> (SubjectKey, SubjectKey) {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_owner(),
+    )
+    .expect("attach shard");
     VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| watermarks.clear_new());
     VECTOR_DELETED_SUBJECTS.with_borrow_mut(|deleted| deleted.clear_new());
     VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
@@ -1080,11 +1027,7 @@ fn setup_router_frontier_gc_store() -> (VectorCanisterStore, SubjectKey, Subject
             deleted.insert(frontier_deleted_key(vertex_id), 0);
         });
     }
-    (
-        store,
-        frontier_subject_key(0),
-        frontier_subject_key(count - 1),
-    )
+    (frontier_subject_key(0), frontier_subject_key(count - 1))
 }
 
 /// Measures one Router frontier publication plus the existing fixed-budget GC scan. The exact
@@ -1092,7 +1035,7 @@ fn setup_router_frontier_gc_store() -> (VectorCanisterStore, SubjectKey, Subject
 /// ignored budget, or a removed fence fail the benchmark.
 #[bench(raw)]
 fn bench_router_frontier_gc_budget() -> canbench_rs::BenchResult {
-    let (store, first_subject, last_subject) = setup_router_frontier_gc_store();
+    let (first_subject, last_subject) = setup_router_frontier_gc_store();
     let subject_keys = [first_subject, last_subject];
     let budget = crate::canister::GC_SUBJECTS_BUDGET;
     let last_vertex = budget;
@@ -1121,9 +1064,7 @@ fn bench_router_frontier_gc_budget() -> canbench_rs::BenchResult {
 
     let result = canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_router_frontier_gc_budget");
-        store
-            .advance_router_frontier(router(), ShardId::new(0), u64::MAX)
-            .expect("router frontier");
+        advance_router_frontier(router(), ShardId::new(0), u64::MAX).expect("router frontier");
     });
 
     let expected_after = RouterFrontierGcState {
@@ -1181,12 +1122,12 @@ macro_rules! filtered_search_bench {
     ($name:ident, $dims:expr, $candidates:expr, $top_k:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
-            let store = setup_search_store($dims, SCAN_N);
+            setup_search_store($dims, SCAN_N);
             let candidates = candidate_subjects($candidates);
             let req = filtered_search_req($dims, $top_k, candidates);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
-                let result = store.vector_search(black_box(&req)).expect("vector_search");
+                let result = vector_search(black_box(&req)).expect("vector_search");
                 black_box(result);
             })
         }
@@ -1297,11 +1238,10 @@ fn assert_sync_batch_progress(caller: Principal, ops: &[VectorEmbeddingSyncOp]) 
 #[bench(raw)]
 fn bench_vector_sync_batch_outcome_256() -> canbench_rs::BenchResult {
     let ops = sync_ops(256, 8);
-    let _validation_store = setup_search_store(8, 0);
+    setup_search_store(8, 0);
     assert_sync_batch_progress(shard_owner(), &ops);
-    let store = setup_search_store(8, 0);
+    setup_search_store(8, 0);
     canbench_rs::bench_fn(|| {
-        black_box(&store);
         let outcome = sync_batch_outcome_round(shard_owner(), black_box(&ops));
         black_box(outcome)
     })
@@ -1312,11 +1252,10 @@ fn bench_vector_sync_batch_outcome_256() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_vector_sync_batch_outcome_256_768_dims() -> canbench_rs::BenchResult {
     let ops = sync_ops(256, 768);
-    let _validation_store = setup_search_store(768, 0);
+    setup_search_store(768, 0);
     assert_sync_batch_progress(shard_owner(), &ops);
-    let store = setup_search_store(768, 0);
+    setup_search_store(768, 0);
     canbench_rs::bench_fn(|| {
-        black_box(&store);
         let outcome = sync_batch_outcome_round(shard_owner(), black_box(&ops));
         black_box(outcome)
     })
@@ -1327,11 +1266,10 @@ fn bench_vector_sync_batch_outcome_256_768_dims() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_vector_sync_batch_outcome_256_768_dims_mixed() -> canbench_rs::BenchResult {
     let ops = sync_ops_mixed(256, 768);
-    let _validation_store = setup_search_store(768, 128); // pre-seed 128 subjects
+    setup_search_store(768, 128); // pre-seed 128 subjects
     assert_sync_batch_progress(shard_owner(), &ops);
-    let store = setup_search_store(768, 128); // pre-seed 128 subjects
+    setup_search_store(768, 128); // pre-seed 128 subjects
     canbench_rs::bench_fn(|| {
-        black_box(&store);
         let outcome = sync_batch_outcome_round(shard_owner(), black_box(&ops));
         black_box(outcome)
     })

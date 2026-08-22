@@ -4,6 +4,9 @@
 //! - [`authorization`] — router auth, shard-canister attachments, detach purge
 //! - [`mutation`] — `vector_upsert` / `vector_remove` with embedding_version + subject-clock
 //!   idempotence over a degenerate `ivf_flat` page store
+//!
+//! Every facade entry point is a free function over the stable-memory statics owned by
+//! [`super::stable`]; there is no instance layer.
 
 mod authorization;
 mod centroid_cache;
@@ -92,15 +95,47 @@ pub(crate) const MAX_REBUILD_TRAINING_ITERATIONS: u32 = 8;
 /// stays within the per-message instruction budget.
 pub(crate) const MAX_REBUILD_TRAINING_DISTANCE_OPS: u64 = 1_100_000_000;
 
-/// Stateless facade over vector-index stable structures initialized in [`super::stable`].
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VectorCanisterStore;
-
-impl VectorCanisterStore {
-    pub const fn new() -> Self {
-        Self
-    }
-}
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) use authorization::reset_for_test_or_bench;
+/// Facade entry points, re-exported so callers reach every former method as a plain free
+/// function from one place.
+pub(crate) use authorization::{
+    admin_attach_shard_canister, admin_detach_shard_canister, init_from_args,
+    open_definition_store_after_upgrade, open_subject_store_after_upgrade,
+};
+#[cfg(test)]
+pub(crate) use authorization::{attach_single_shard_for_test, detach_shard_step_for_test};
+pub(crate) use centroid_cache::{
+    admin_vector_centroid_cache_clear, admin_vector_centroid_cache_status,
+    admin_vector_centroid_cache_warmup,
+};
+pub(crate) use maintenance_step::{
+    admin_vector_maintenance_reset, admin_vector_maintenance_status, admin_vector_maintenance_step,
+};
+#[cfg(test)]
+pub(crate) use mutation::{
+    create_index_for_test, def_for_test, partition_head_for_test, subject_entry_for_test,
+};
+pub(crate) use mutation::{
+    preflight_vector_sync_batch, vector_remove, vector_sync_batch_outcome_chunk, vector_upsert,
+};
+pub(crate) use rebuild::{
+    admin_abort_vector_rebuild, admin_publish_vector_rebuild, admin_start_vector_rebuild,
+    admin_start_vector_rebuild_if_recommended, admin_vector_partition_health,
+    admin_vector_partition_health_step, admin_vector_rebuild_cleanup_step,
+    admin_vector_rebuild_status, admin_vector_rebuild_step, admin_vector_slab_stats,
+    admin_vector_slab_stats_step,
+};
+pub(crate) use search::vector_search;
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) use search::vector_search_tuned;
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) use seed::{seed_ivf_for_test, seed_ivf_with_metric_for_test};
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) use watermark::VectorTombstoneFrontierProbe;
+pub(crate) use watermark::advance_router_frontier;
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) use watermark::test_vector_frontier_probe;
 
 /// Result of admitting one operation through the typed batch path.
 ///

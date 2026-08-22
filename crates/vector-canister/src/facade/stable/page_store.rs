@@ -33,8 +33,8 @@ use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorPartitionHealthStep, VectorPartitionPageHealth,
-    VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsStep,
-    VectorSlabVersionStats, VectorSubject,
+    VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsPartial,
+    VectorSlabStatsStep, VectorSlabStepGlobalStats, VectorSlabVersionStats, VectorSubject,
 };
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::{Bound, Storable};
@@ -1321,12 +1321,11 @@ impl VectorSlabStore {
 
         let slab_size_bytes = self.slab.size().saturating_mul(WASM_PAGE_SIZE);
         Ok(VectorSlabStatsStep {
-            partial: VectorSlabStats {
-                slab: VectorSlabGlobalStats {
+            partial: VectorSlabStatsPartial {
+                slab: VectorSlabStepGlobalStats {
                     slab_size_bytes,
                     occupied_tail_bytes: self.occupied_tail,
                     referenced_page_bytes_global: referenced_global,
-                    estimated_unreferenced_bytes: 0,
                 },
                 scope,
                 versions,

@@ -1,6 +1,5 @@
 //! Unit tests for the degenerate `ivf_flat` mutation store (ADR 0031 Slice 2).
 
-use super::VectorCanisterStore;
 use crate::facade::stable::definition_store;
 use crate::facade::stable::memory::{ActiveShardDetach, VectorIndexOwnershipConfig};
 use crate::facade::stable::{
@@ -22,6 +21,11 @@ const INDEX_ID: u32 = 1;
 const DIMS: u16 = 4;
 const STRIDE: usize = 16; // dims * 4 for F32
 
+use super::mutation::read_slot_bytes;
+use super::rebuild::rebuild_step_with_budget;
+use super::search::{candidate_subject_scan, vector_search_tuned};
+use super::*;
+
 fn router() -> Principal {
     Principal::from_slice(&[9])
 }
@@ -31,17 +35,14 @@ fn shard_canister() -> Principal {
 }
 
 /// Resets the fixture-only store and attaches shard 0.
-fn fresh_store() -> VectorCanisterStore {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
-    store.attach_single_shard_for_test(router(), ShardId::new(0), shard_canister());
-    store
+fn fresh_store() {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
+    attach_single_shard_for_test(router(), ShardId::new(0), shard_canister());
 }
 
 fn subject(vertex_id: u32) -> VectorSubject {
@@ -83,19 +84,15 @@ fn remove_op(vertex_id: u32, mutation_id: u64) -> VectorEmbeddingSyncOp {
 
 #[test]
 fn upsert_new_creates_def_slot_and_clock() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("upsert");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("upsert");
 
-    let def = store.def_for_test(INDEX_ID).expect("def created lazily");
+    let def = def_for_test(INDEX_ID).expect("def created lazily");
     assert_eq!(def.active_index_version, 1);
     assert_eq!(def.dims, DIMS);
     assert_eq!(def.stride_bytes, STRIDE as u32);
 
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .expect("clock");
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).expect("clock");
     assert!(!entry.deleted);
     assert_eq!(entry.stamp, 1);
     let slot = entry.slot.expect("live slot");
@@ -104,7 +101,7 @@ fn upsert_new_creates_def_slot_and_clock() {
 
 #[test]
 fn typed_sync_unavailable_before_first_operation_is_outer_error_without_write() {
-    let store = fresh_store();
+    fresh_store();
     let op = upsert_op(45, 1, 0xA5);
     definition_store::unbind_for_test().expect("unbind ready definition owner");
 
@@ -114,18 +111,14 @@ fn typed_sync_unavailable_before_first_operation_is_outer_error_without_write() 
         result,
         Err(crate::canister::VectorSyncBatchOutcomeDriverError::StoreUnavailable)
     ));
-    assert!(store.def_for_test(INDEX_ID).is_none());
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(45))
-            .is_none()
-    );
+    assert!(def_for_test(INDEX_ID).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(45)).is_none());
     definition_store::reopen_for_test().expect("restore exact-open definition owner");
 }
 
 #[test]
 fn typed_sync_replay_after_discarded_success_is_canonical_noop() {
-    let store = fresh_store();
+    fresh_store();
     let op = upsert_op(46, 1, 0xA6);
 
     // The caller loses the first successful response and retries the exact wire operation.
@@ -134,19 +127,11 @@ fn typed_sync_replay_after_discarded_success_is_canonical_noop() {
         std::slice::from_ref(&op),
     )
     .expect("initial typed sync");
-    let before_entry = store
-        .subject_entry_for_test(INDEX_ID, subject(46))
-        .expect("live subject entry");
+    let before_entry = subject_entry_for_test(INDEX_ID, subject(46)).expect("live subject entry");
     let before_slot = before_entry.slot.expect("live subject slot");
-    let before_bytes = store
-        .read_slot_bytes(INDEX_ID, before_slot)
-        .expect("canonical vector bytes");
-    let before_head = store
-        .partition_head_for_test(INDEX_ID, 1)
-        .expect("partition head");
-    let before_stats = store
-        .admin_vector_slab_stats(router(), Some(INDEX_ID))
-        .expect("slab stats");
+    let before_bytes = read_slot_bytes(INDEX_ID, before_slot).expect("canonical vector bytes");
+    let before_head = partition_head_for_test(INDEX_ID, 1).expect("partition head");
+    let before_stats = admin_vector_slab_stats(router(), Some(INDEX_ID)).expect("slab stats");
 
     let replay = crate::canister::vector_sync_batch_outcome_for_caller(
         shard_canister(),
@@ -160,22 +145,22 @@ fn typed_sync_replay_after_discarded_success_is_canonical_noop() {
     replay.validate(1).expect("valid replay outcome");
 
     assert_eq!(
-        store.subject_entry_for_test(INDEX_ID, subject(46)),
+        subject_entry_for_test(INDEX_ID, subject(46)),
         Some(before_entry),
         "replay preserves the canonical subject clock and slot"
     );
     assert_eq!(
-        store.read_slot_bytes(INDEX_ID, before_slot),
+        read_slot_bytes(INDEX_ID, before_slot),
         Some(before_bytes),
         "replay preserves canonical vector bytes"
     );
     assert_eq!(
-        store.partition_head_for_test(INDEX_ID, 1),
+        partition_head_for_test(INDEX_ID, 1),
         Some(before_head),
         "replay does not allocate another slot"
     );
     assert_eq!(
-        store.admin_vector_slab_stats(router(), Some(INDEX_ID)),
+        admin_vector_slab_stats(router(), Some(INDEX_ID)),
         Ok(before_stats),
         "replay preserves physical allocation and row counters"
     );
@@ -183,19 +168,14 @@ fn typed_sync_replay_after_discarded_success_is_canonical_noop() {
 
 #[test]
 fn typed_batch_watermark_uses_applied_prefix() {
-    let store = fresh_store();
+    fresh_store();
     VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
-    store
-        .vector_upsert(shard_canister(), &upsert_op(100, 1, 0xA5))
+    vector_upsert(shard_canister(), &upsert_op(100, 1, 0xA5))
         .expect("create first deleted subject definition");
-    store
-        .vector_remove(shard_canister(), &remove_op(100, 2))
-        .expect("write first deleted subject clock");
-    store
-        .vector_upsert(shard_canister(), &upsert_op(101, 39, 0xA6))
+    vector_remove(shard_canister(), &remove_op(100, 2)).expect("write first deleted subject clock");
+    vector_upsert(shard_canister(), &upsert_op(101, 39, 0xA6))
         .expect("create second deleted subject definition");
-    store
-        .vector_remove(shard_canister(), &remove_op(101, 40))
+    vector_remove(shard_canister(), &remove_op(101, 40))
         .expect("write second deleted subject clock");
     // Seed the independent Router acknowledgement floor so the Graph-owned prefix test can make
     // one tombstone eligible while retaining the later tombstone.
@@ -223,16 +203,8 @@ fn typed_batch_watermark_uses_applied_prefix() {
         progress,
         gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 32 }
     );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(31))
-            .is_some()
-    );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(32))
-            .is_none()
-    );
+    assert!(subject_entry_for_test(INDEX_ID, subject(31)).is_some());
+    assert!(subject_entry_for_test(INDEX_ID, subject(32)).is_none());
 
     let watermarks_before_suffix = VECTOR_SHARD_WATERMARKS
         .with_borrow(|watermarks| watermarks.get(&ShardId::new(0)).expect("watermark record"));
@@ -244,14 +216,11 @@ fn typed_batch_watermark_uses_applied_prefix() {
     assert_eq!(watermarks.graph_watermark, 32);
     assert_eq!(watermarks.router_watermark, 100);
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(100))
-            .is_none(),
+        subject_entry_for_test(INDEX_ID, subject(100)).is_none(),
         "GC removes the tombstone below the applied Graph watermark"
     );
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(101))
+        subject_entry_for_test(INDEX_ID, subject(101))
             .expect("later deleted subject clock")
             .deleted,
         "the unapplied suffix must not make the later tombstone GC-eligible"
@@ -260,7 +229,7 @@ fn typed_batch_watermark_uses_applied_prefix() {
 
 #[test]
 fn typed_batch_replay_preserves_all_canonical_rows_and_page_allocation() {
-    let store = fresh_store();
+    fresh_store();
     let operations = vec![
         upsert_op(110, 1, 0xA1),
         upsert_op(111, 1, 0xA2),
@@ -274,18 +243,11 @@ fn typed_batch_replay_preserves_all_canonical_rows_and_page_allocation() {
     );
     let before_entries: Vec<_> = operations
         .iter()
-        .map(|op| {
-            store
-                .subject_entry_for_test(INDEX_ID, op.subject)
-                .expect("initial subject entry")
-        })
+        .map(|op| subject_entry_for_test(INDEX_ID, op.subject).expect("initial subject entry"))
         .collect();
-    let before_head = store
-        .partition_head_for_test(INDEX_ID, 1)
-        .expect("initial partition head");
-    let before_stats = store
-        .admin_vector_slab_stats(router(), Some(INDEX_ID))
-        .expect("initial slab stats");
+    let before_head = partition_head_for_test(INDEX_ID, 1).expect("initial partition head");
+    let before_stats =
+        admin_vector_slab_stats(router(), Some(INDEX_ID)).expect("initial slab stats");
 
     assert_eq!(
         crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &operations)
@@ -294,29 +256,23 @@ fn typed_batch_replay_preserves_all_canonical_rows_and_page_allocation() {
     );
     let after_entries: Vec<_> = operations
         .iter()
-        .map(|op| {
-            store
-                .subject_entry_for_test(INDEX_ID, op.subject)
-                .expect("replayed subject entry")
-        })
+        .map(|op| subject_entry_for_test(INDEX_ID, op.subject).expect("replayed subject entry"))
         .collect();
 
     assert_eq!(after_entries, before_entries);
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
-            .expect("replayed partition head"),
+        partition_head_for_test(INDEX_ID, 1).expect("replayed partition head"),
         before_head
     );
     assert_eq!(
-        store.admin_vector_slab_stats(router(), Some(INDEX_ID)),
+        admin_vector_slab_stats(router(), Some(INDEX_ID)),
         Ok(before_stats)
     );
 }
 
 #[test]
 fn typed_batch_preserves_order_when_a_subject_repeats() {
-    let store = fresh_store();
+    fresh_store();
     let operations = vec![upsert_op(113, 1, 0xB1), upsert_op(113, 2, 0xB2)];
 
     assert_eq!(
@@ -324,14 +280,11 @@ fn typed_batch_preserves_order_when_a_subject_repeats() {
             .expect("ordered typed batch"),
         gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 2 }
     );
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(113))
-        .expect("final subject entry");
+    let entry = subject_entry_for_test(INDEX_ID, subject(113)).expect("final subject entry");
     assert_eq!(entry.stamp, 2);
     assert!(!entry.deleted);
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
+        partition_head_for_test(INDEX_ID, 1)
             .expect("final partition head")
             .live_len,
         1,
@@ -341,12 +294,9 @@ fn typed_batch_preserves_order_when_a_subject_repeats() {
 
 #[test]
 fn typed_batch_batches_live_updates_with_fresh_rows() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(114, 1, 0xC1))
-        .expect("seed live subject");
-    let old_slot = store
-        .subject_entry_for_test(INDEX_ID, subject(114))
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(114, 1, 0xC1)).expect("seed live subject");
+    let old_slot = subject_entry_for_test(INDEX_ID, subject(114))
         .expect("seed entry")
         .slot
         .expect("seed slot");
@@ -362,14 +312,11 @@ fn typed_batch_batches_live_updates_with_fresh_rows() {
         gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 3 }
     );
 
-    let updated = store
-        .subject_entry_for_test(INDEX_ID, subject(114))
-        .expect("updated entry");
+    let updated = subject_entry_for_test(INDEX_ID, subject(114)).expect("updated entry");
     assert_eq!(updated.stamp, 2);
     assert_ne!(updated.slot.expect("updated slot"), old_slot);
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
+        partition_head_for_test(INDEX_ID, 1)
             .expect("mixed partition head")
             .live_len,
         3
@@ -378,7 +325,7 @@ fn typed_batch_batches_live_updates_with_fresh_rows() {
 
 #[test]
 fn typed_batch_rejects_dimension_mismatch_without_appending_the_bad_row() {
-    let store = fresh_store();
+    fresh_store();
     let mut operations: Vec<_> = (0..64)
         .map(|index| upsert_op(120 + index, u64::from(index) + 1, index as u8))
         .collect();
@@ -392,30 +339,22 @@ fn typed_batch_rejects_dimension_mismatch_without_appending_the_bad_row() {
             VectorCanisterError::DimensionMismatch
         ))
     ));
-    assert!(store.def_for_test(INDEX_ID).is_none());
+    assert!(def_for_test(INDEX_ID).is_none());
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(120))
-            .is_none(),
+        subject_entry_for_test(INDEX_ID, subject(120)).is_none(),
         "fatal validation must complete before any earlier chunk can commit"
     );
+    assert!(subject_entry_for_test(INDEX_ID, subject(153)).is_none());
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(153))
-            .is_none()
-    );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(183))
-            .is_none(),
+        subject_entry_for_test(INDEX_ID, subject(183)).is_none(),
         "the suffix is not attempted after a fatal operation"
     );
-    assert!(store.partition_head_for_test(INDEX_ID, 1).is_none());
+    assert!(partition_head_for_test(INDEX_ID, 1).is_none());
 }
 
 #[test]
 fn typed_batch_terminal_in_second_chunk_reports_global_prefix_and_replays_safely() {
-    let store = fresh_store();
+    fresh_store();
     let operations: Vec<_> = (0..68)
         .map(|index| upsert_op(200 + index, u64::from(index) + 1, index as u8))
         .collect();
@@ -435,7 +374,7 @@ fn typed_batch_terminal_in_second_chunk_reports_global_prefix_and_replays_safely
     );
 
     for (index, operation) in operations.iter().enumerate() {
-        let entry = store.subject_entry_for_test(INDEX_ID, operation.subject);
+        let entry = subject_entry_for_test(INDEX_ID, operation.subject);
         if index < 33 {
             let entry = entry.expect("committed prefix subject");
             assert!(!entry.deleted, "committed prefix remains live at {index}");
@@ -446,24 +385,18 @@ fn typed_batch_terminal_in_second_chunk_reports_global_prefix_and_replays_safely
             );
         }
     }
-    let terminal_stats = store
-        .admin_vector_slab_stats(router(), Some(INDEX_ID))
-        .expect("terminal slab stats");
+    let terminal_stats =
+        admin_vector_slab_stats(router(), Some(INDEX_ID)).expect("terminal slab stats");
     assert_eq!(terminal_stats.scope.physical_live_row_count, 33);
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
+        partition_head_for_test(INDEX_ID, 1)
             .expect("terminal partition head")
             .live_len,
         33
     );
     let prefix_entries: Vec<_> = operations[..33]
         .iter()
-        .map(|operation| {
-            store
-                .subject_entry_for_test(INDEX_ID, operation.subject)
-                .expect("prefix entry")
-        })
+        .map(|operation| subject_entry_for_test(INDEX_ID, operation.subject).expect("prefix entry"))
         .collect();
 
     // The failed operation and suffix are replayed with their original IDs. The acknowledged
@@ -476,22 +409,18 @@ fn typed_batch_terminal_in_second_chunk_reports_global_prefix_and_replays_safely
     let replayed_prefix: Vec<_> = operations[..33]
         .iter()
         .map(|operation| {
-            store
-                .subject_entry_for_test(INDEX_ID, operation.subject)
-                .expect("replayed prefix entry")
+            subject_entry_for_test(INDEX_ID, operation.subject).expect("replayed prefix entry")
         })
         .collect();
     assert_eq!(replayed_prefix, prefix_entries);
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
+        partition_head_for_test(INDEX_ID, 1)
             .expect("replayed partition head")
             .live_len,
         68
     );
-    let replay_stats = store
-        .admin_vector_slab_stats(router(), Some(INDEX_ID))
-        .expect("replayed slab stats");
+    let replay_stats =
+        admin_vector_slab_stats(router(), Some(INDEX_ID)).expect("replayed slab stats");
     assert_eq!(replay_stats.scope.physical_live_row_count, 68);
     assert_eq!(
         replay_stats.scope.row_count,
@@ -502,7 +431,7 @@ fn typed_batch_terminal_in_second_chunk_reports_global_prefix_and_replays_safely
 
 #[test]
 fn typed_batch_terminal_pressure_acknowledges_only_the_committed_prefix() {
-    let store = fresh_store();
+    fresh_store();
     let operations = vec![
         upsert_op(117, 1, 0xD1),
         upsert_op(118, 1, 0xD2),
@@ -519,24 +448,11 @@ fn typed_batch_terminal_pressure_acknowledges_only_the_committed_prefix() {
             error: gleaph_graph_kernel::vector_index::VectorSyncTerminalError::SubjectTablePressure,
         }
     );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(117))
-            .is_some()
-    );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(118))
-            .is_none()
-    );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(119))
-            .is_none()
-    );
+    assert!(subject_entry_for_test(INDEX_ID, subject(117)).is_some());
+    assert!(subject_entry_for_test(INDEX_ID, subject(118)).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(119)).is_none());
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
+        partition_head_for_test(INDEX_ID, 1)
             .expect("terminal partition head")
             .live_len,
         1
@@ -550,8 +466,7 @@ fn typed_batch_terminal_pressure_acknowledges_only_the_committed_prefix() {
         gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied: 3 }
     );
     assert_eq!(
-        store
-            .partition_head_for_test(INDEX_ID, 1)
+        partition_head_for_test(INDEX_ID, 1)
             .expect("replayed partition head")
             .live_len,
         3
@@ -560,13 +475,9 @@ fn typed_batch_terminal_pressure_acknowledges_only_the_committed_prefix() {
 
 #[test]
 fn typed_batch_zero_prefix_terminal_does_not_run_graph_gc() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(123, 1, 0xD0))
-        .expect("seed deleted clock");
-    store
-        .vector_remove(shard_canister(), &remove_op(123, 2))
-        .expect("seed deleted clock");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(123, 1, 0xD0)).expect("seed deleted clock");
+    vector_remove(shard_canister(), &remove_op(123, 2)).expect("seed deleted clock");
     VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
     VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
         watermarks.insert(
@@ -593,8 +504,7 @@ fn typed_batch_zero_prefix_terminal_does_not_run_graph_gc() {
         }
     );
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(123))
+        subject_entry_for_test(INDEX_ID, subject(123))
             .expect("deleted clock")
             .deleted,
         "a zero-length committed prefix must not trigger Graph GC"
@@ -603,7 +513,7 @@ fn typed_batch_zero_prefix_terminal_does_not_run_graph_gc() {
 
 #[test]
 fn m10_response_loss_retains_m11_fence_until_exact_resolution() {
-    let store = fresh_store();
+    fresh_store();
     VECTOR_GC_CURSOR.with_borrow_mut(|cursor| cursor.set(None));
     VECTOR_SHARD_WATERMARKS.with_borrow_mut(|watermarks| {
         watermarks.insert(ShardId::new(0), ShardWatermarks::default());
@@ -616,8 +526,7 @@ fn m10_response_loss_retains_m11_fence_until_exact_resolution() {
         crate::canister::vector_sync_batch_outcome_for_caller(router(), std::slice::from_ref(&m10))
             .expect("Router m10 apply");
     assert_eq!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(7))
+        subject_entry_for_test(INDEX_ID, subject(7))
             .expect("m10 subject")
             .stamp,
         10
@@ -643,9 +552,7 @@ fn m10_response_loss_retains_m11_fence_until_exact_resolution() {
     assert_eq!(watermarks.graph_watermark, 11);
     assert_eq!(watermarks.router_watermark, 0);
     assert_eq!(crate::facade::gc_subjects_step(20_000), 0);
-    let tombstone = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .expect("m11 tombstone retained");
+    let tombstone = subject_entry_for_test(INDEX_ID, subject(7)).expect("m11 tombstone retained");
     assert!(tombstone.deleted);
     assert_eq!(tombstone.stamp, 11);
     assert_eq!(tombstone.slot, None);
@@ -654,119 +561,92 @@ fn m10_response_loss_retains_m11_fence_until_exact_resolution() {
     // resurrect the subject.
     crate::canister::vector_sync_batch_outcome_for_caller(router(), std::slice::from_ref(&m10))
         .expect("stale Router m10 replay");
-    let replayed = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .expect("tombstone after stale replay");
+    let replayed =
+        subject_entry_for_test(INDEX_ID, subject(7)).expect("tombstone after stale replay");
     assert!(replayed.deleted);
     assert_eq!(replayed.stamp, 11);
     assert_eq!(replayed.slot, None);
 
     // The Router now observes the exact m10 outcome and publishes the contiguous frontier through
     // the guarded Vector owner. Only after that observed resolution may the m11 fence be collected.
-    store
-        .advance_router_frontier(router(), ShardId::new(0), 11)
+    advance_router_frontier(router(), ShardId::new(0), 11)
         .expect("exact m10 resolution advances the safe frontier");
     let watermarks = VECTOR_SHARD_WATERMARKS
         .with_borrow(|watermarks| watermarks.get(&ShardId::new(0)).expect("watermark record"));
     assert_eq!(watermarks.router_watermark, 11);
     assert!(
-        store.subject_entry_for_test(INDEX_ID, subject(7)).is_none(),
+        subject_entry_for_test(INDEX_ID, subject(7)).is_none(),
         "the m11 fence is collected only after exact m10 resolution"
     );
 }
 
 #[test]
 fn upsert_same_version_identical_payload_is_noop() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("idempotent no-op");
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("idempotent no-op");
+    let head = partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 1, "no new slot appended");
 }
 
 #[test]
 fn upsert_same_version_different_payload_conflicts() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    let err = store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xBB))
-        .expect_err("conflict");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    let err = vector_upsert(shard_canister(), &upsert_op(7, 1, 0xBB)).expect_err("conflict");
     assert_eq!(err, VectorCanisterError::MutationStampConflict);
 }
 
 #[test]
 fn upsert_older_version_is_noop() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 5, 0xAA))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 3, 0xBB))
-        .expect("stale no-op");
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 5, 0xAA)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 3, 0xBB)).expect("stale no-op");
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert_eq!(entry.stamp, 5);
 }
 
 #[test]
 fn upsert_newer_version_live_appends_and_tombstones_old_slot() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    let old_slot = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    let old_slot = subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
         .slot
         .unwrap();
 
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
-        .unwrap();
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert_eq!(entry.stamp, 2);
     let new_slot = entry.slot.unwrap();
     assert_ne!(
         new_slot.slot, old_slot.slot,
         "newer version appends a fresh slot"
     );
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    let head = partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 1, "append +1, tombstone -1");
 }
 
 #[test]
 fn remove_live_tombstones_and_advances_clock() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 2))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 2)).unwrap();
 
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(entry.deleted);
     assert_eq!(entry.stamp, 2);
     assert_eq!(entry.slot, None);
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    let head = partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 0);
 }
 
 #[test]
 fn remove_missing_subject_writes_tombstone_clock() {
-    let store = fresh_store();
+    fresh_store();
     // No def yet; remove on a never-inserted subject still writes a clock.
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .expect("clock written");
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).expect("clock written");
     assert!(entry.deleted);
     assert_eq!(entry.stamp, 1);
 }
@@ -775,19 +655,13 @@ fn remove_missing_subject_writes_tombstone_clock() {
 fn same_incarnation_upsert_to_deleted_subject_is_noop() {
     // Under incarnation fencing, an upsert at the *same* incarnation as a tombstone is a stale
     // replay: a genuine reinsert carries a strictly greater incarnation. So it must NOT resurrect.
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
     // Stale same-incarnation upsert (e.g. a journaled replay) lands behind the tombstone clock.
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("stale replay no-op");
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("stale replay no-op");
 
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(entry.deleted, "same-incarnation upsert cannot resurrect");
 }
 
@@ -795,24 +669,17 @@ fn same_incarnation_upsert_to_deleted_subject_is_noop() {
 fn newer_incarnation_upsert_resurrects_with_fresh_slot() {
     // Resurrection requires a strictly greater incarnation, mirroring the canonical store bumping
     // the incarnation on each delete/reinsert. The fresh incarnation lands a brand-new slot.
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    let old_slot = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    let old_slot = subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
         .slot
         .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
     // Reinsert at incarnation 2, version 1 (canonical version reset): resurrects.
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
-        .unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB)).unwrap();
 
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted, "newer-incarnation upsert resurrects");
     assert_eq!(entry.stamp, 2);
     let new_slot = entry.slot.expect("resurrected live slot");
@@ -826,48 +693,34 @@ fn newer_incarnation_upsert_resurrects_with_fresh_slot() {
 fn newer_incarnation_upsert_after_missing_remove_clock_resurrects() {
     // A remove on a never-inserted subject writes a tombstone clock at its incarnation; only a
     // strictly newer incarnation resurrects (a same-incarnation replay stays a no-op).
-    let store = fresh_store();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("same-incarnation replay no-op");
+    fresh_store();
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("same-incarnation replay no-op");
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(7))
+        subject_entry_for_test(INDEX_ID, subject(7))
             .unwrap()
             .deleted
     );
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xAA))
-        .unwrap();
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 2, 0xAA)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted, "newer incarnation resurrects after a clock");
     assert_eq!(entry.stamp, 2);
 }
 
 #[test]
 fn reinsert_after_delete_appends_fresh_slot() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    let first_slot = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    let first_slot = subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
         .slot
         .unwrap();
 
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
     // The canonical reinsert bumps the incarnation to 2.
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xCC))
-        .unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 2, 0xCC)).unwrap();
 
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted);
     let new_slot = entry.slot.unwrap();
     assert_ne!(
@@ -880,24 +733,17 @@ fn reinsert_after_delete_appends_fresh_slot() {
 fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
     // The reverse-orphan race: a late repair-drain remove for the *deleted* incarnation arrives
     // after a newer reinsert already advanced the clock. The incarnation fence makes it a no-op.
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
     // Reinsert at incarnation 2 (live again, fresh slot).
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
-        .unwrap();
+    vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB)).unwrap();
 
     // Late blind remove for the OLD incarnation with the authoritative max version: must no-op.
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
+    vector_remove(shard_canister(), &remove_op(7, 1))
         .expect("stale older-incarnation remove is fenced");
 
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(
         !entry.deleted,
         "newer live incarnation survives a stale remove"
@@ -910,14 +756,10 @@ fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
 fn newer_incarnation_remove_on_live_tombstones() {
     // A remove for a strictly newer incarnation than the live clock authoritatively tombstones the
     // live slot (e.g. the upsert for that incarnation never arrived).
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 2))
-        .unwrap();
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 2)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(entry.deleted);
     assert_eq!(entry.stamp, 2);
     assert_eq!(entry.slot, None);
@@ -925,19 +767,15 @@ fn newer_incarnation_remove_on_live_tombstones() {
 
 #[test]
 fn page_capacity_rolls_to_new_page_at_slots_per_page() {
-    let store = fresh_store();
+    fresh_store();
     // d = 4 F32: pad stride 16, meta 4, single shard. A 80-byte budget fits exactly 2 rows.
-    store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80)
-        .expect("create");
-    assert_eq!(store.def_for_test(INDEX_ID).unwrap().slots_per_page, 2);
+    create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80).expect("create");
+    assert_eq!(def_for_test(INDEX_ID).unwrap().slots_per_page, 2);
 
     for v in 0..3u32 {
-        store
-            .vector_upsert(shard_canister(), &upsert_op(v, 1, v as u8))
-            .unwrap();
+        vector_upsert(shard_canister(), &upsert_op(v, 1, v as u8)).unwrap();
     }
-    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    let head = partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.page_count, 2, "third insert rolls to a new page");
     assert_eq!(head.next_page_id, 2);
     assert_eq!(head.live_len, 3);
@@ -945,73 +783,63 @@ fn page_capacity_rolls_to_new_page_at_slots_per_page() {
 
 #[test]
 fn create_index_rejects_capacity_below_one_slot() {
-    let store = fresh_store();
+    fresh_store();
     // d = 4 F32 needs 64 bytes for a single row; a 40-byte budget fits no row.
-    let err = store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 40)
-        .expect_err("reject");
+    let err = create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 40).expect_err("reject");
     assert_eq!(err, VectorCanisterError::InvalidPageCapacity);
 }
 
 #[test]
 fn upsert_dimension_and_byte_width_mismatch() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
 
     let mut wrong_dims = upsert_op(8, 1, 0xAA);
     wrong_dims.dims = DIMS + 1;
     assert_eq!(
-        store
-            .vector_upsert(shard_canister(), &wrong_dims)
-            .unwrap_err(),
+        vector_upsert(shard_canister(), &wrong_dims).unwrap_err(),
         VectorCanisterError::DimensionMismatch
     );
 
     let mut wrong_bytes = upsert_op(9, 1, 0xAA);
     wrong_bytes.bytes = vec![0u8; STRIDE - 1];
     assert_eq!(
-        store
-            .vector_upsert(shard_canister(), &wrong_bytes)
-            .unwrap_err(),
+        vector_upsert(shard_canister(), &wrong_bytes).unwrap_err(),
         VectorCanisterError::ByteWidthMismatch
     );
 }
 
 #[test]
 fn vector_upsert_rejects_remove_flag() {
-    let store = fresh_store();
+    fresh_store();
     let mut op = upsert_op(7, 1, 0xAA);
     op.remove = true;
     assert_eq!(
-        store.vector_upsert(shard_canister(), &op).unwrap_err(),
+        vector_upsert(shard_canister(), &op).unwrap_err(),
         VectorCanisterError::MutationKindMismatch
     );
     // The contradictory op must not have mutated any state.
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(7)).is_none());
 }
 
 #[test]
 fn vector_remove_rejects_insert_flag() {
-    let store = fresh_store();
+    fresh_store();
     let mut op = remove_op(7, 1);
     op.remove = false;
     assert_eq!(
-        store.vector_remove(shard_canister(), &op).unwrap_err(),
+        vector_remove(shard_canister(), &op).unwrap_err(),
         VectorCanisterError::MutationKindMismatch
     );
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(7)).is_none());
 }
 
 #[test]
 fn mutation_auth_rejects_unattached_and_cross_shard() {
-    let store = fresh_store();
+    fresh_store();
     let stranger = Principal::from_slice(&[2]);
     assert_eq!(
-        store
-            .vector_upsert(stranger, &upsert_op(7, 1, 0xAA))
-            .unwrap_err(),
+        vector_upsert(stranger, &upsert_op(7, 1, 0xAA)).unwrap_err(),
         VectorCanisterError::ShardNotAttached
     );
 
@@ -1022,209 +850,173 @@ fn mutation_auth_rejects_unattached_and_cross_shard() {
         vertex_id: 7,
     };
     assert_eq!(
-        store.vector_upsert(shard_canister(), &cross).unwrap_err(),
+        vector_upsert(shard_canister(), &cross).unwrap_err(),
         VectorCanisterError::ShardMismatch
     );
 }
 
 #[test]
 fn router_can_persist_any_shard_subject() {
-    let store = fresh_store();
+    fresh_store();
     // The Router is the trusted coordinator (ADR 0064 §6): it persists ops for any shard, so it must
     // not be rejected as an unattached caller. This is the path the typed batch endpoint exercises.
-    store
-        .vector_upsert(router(), &upsert_op(7, 1, 0xAA))
-        .expect("Router upsert for shard 0");
+    vector_upsert(router(), &upsert_op(7, 1, 0xAA)).expect("Router upsert for shard 0");
 
     let mut cross = upsert_op(8, 2, 0xBB);
     cross.subject = VectorSubject::Vertex {
         shard_id: ShardId::new(1),
         vertex_id: 8,
     };
-    store
-        .vector_upsert(router(), &cross)
-        .expect("Router upsert for a shard it is not attached to");
+    vector_upsert(router(), &cross).expect("Router upsert for a shard it is not attached to");
 
-    store
-        .vector_remove(router(), &remove_op(7, 3))
-        .expect("Router remove");
+    vector_remove(router(), &remove_op(7, 3)).expect("Router remove");
 }
 
 #[test]
 fn init_rejects_anonymous_router() {
-    let store = VectorCanisterStore::new();
-    let err = store
-        .init_from_args(&VectorCanisterInitArgs {
-            router_canister: Principal::anonymous(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect_err("anonymous router rejected");
+    let err = init_from_args(&VectorCanisterInitArgs {
+        router_canister: Principal::anonymous(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect_err("anonymous router rejected");
     assert_eq!(err, VectorCanisterError::AnonymousRouter);
 }
 
 #[test]
 fn attach_rejects_anonymous_principal() {
-    let store = fresh_store();
+    fresh_store();
     assert_eq!(
-        store
-            .admin_attach_shard_canister(
-                router(),
-                GraphId::from_raw(1),
-                ShardId::new(0),
-                Principal::anonymous(),
-            )
-            .unwrap_err(),
+        admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            Principal::anonymous(),
+        )
+        .unwrap_err(),
         VectorCanisterError::InvalidPrincipalInRegistry
     );
 }
 
 #[test]
 fn single_target_owns_all_shards_of_one_graph() {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("init");
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
     let graph = GraphId::from_raw(1);
     // One vector target owns *every* shard of the graph (ADR 0031 Slice 4 target model B). Shard 0
     // pins the graph; a *different* shard of the SAME graph must also attach (the old property-index
     // group model rejected this with GraphOwnershipMismatch — the bug this guards against).
-    store
-        .admin_attach_shard_canister(
-            router(),
-            graph,
-            ShardId::new(0),
-            Principal::from_slice(&[10]),
-        )
-        .expect("attach shard 0");
-    store
-        .admin_attach_shard_canister(
-            router(),
-            graph,
-            ShardId::new(1),
-            Principal::from_slice(&[11]),
-        )
-        .expect("attach shard 1 to the same single target");
+    admin_attach_shard_canister(
+        router(),
+        graph,
+        ShardId::new(0),
+        Principal::from_slice(&[10]),
+    )
+    .expect("attach shard 0");
+    admin_attach_shard_canister(
+        router(),
+        graph,
+        ShardId::new(1),
+        Principal::from_slice(&[11]),
+    )
+    .expect("attach shard 1 to the same single target");
     // A shard belonging to a *different* graph is rejected — one target per graph.
     assert_eq!(
-        store
-            .admin_attach_shard_canister(
-                router(),
-                GraphId::from_raw(2),
-                ShardId::new(0),
-                Principal::from_slice(&[12]),
-            )
-            .unwrap_err(),
+        admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(2),
+            ShardId::new(0),
+            Principal::from_slice(&[12]),
+        )
+        .unwrap_err(),
         VectorCanisterError::GraphOwnershipMismatch
     );
 }
 
 #[test]
 fn attach_rejects_non_router_caller() {
-    let store = fresh_store();
+    fresh_store();
     let not_router = Principal::from_slice(&[123]);
     assert_eq!(
-        store
-            .admin_attach_shard_canister(
-                not_router,
-                GraphId::from_raw(1),
-                ShardId::new(0),
-                shard_canister(),
-            )
-            .unwrap_err(),
+        admin_attach_shard_canister(
+            not_router,
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            shard_canister(),
+        )
+        .unwrap_err(),
         VectorCanisterError::Unauthorized
     );
 }
 
 #[test]
 fn detach_purges_shard_subjects_and_slots() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(8, 1, 0xBB))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(9, 1))
-        .unwrap(); // tombstone clock
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(8, 1, 0xBB)).unwrap();
+    vector_remove(shard_canister(), &remove_op(9, 1)).unwrap(); // tombstone clock
 
-    let result = store
-        .detach_shard_step_for_test(ShardId::new(0), None, 20_000)
-        .expect("detach step");
+    let result = detach_shard_step_for_test(ShardId::new(0), None, 20_000).expect("detach step");
     assert!(result.done);
     assert!(result.removed >= 3);
 
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(8)).is_none());
-    assert!(store.subject_entry_for_test(INDEX_ID, subject(9)).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(7)).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(8)).is_none());
+    assert!(subject_entry_for_test(INDEX_ID, subject(9)).is_none());
 }
 
 #[test]
 fn detach_sessions_for_distinct_shards_are_independent_and_not_cross_replayable() {
-    let store = fresh_store();
+    fresh_store();
     let shard1 = Principal::from_slice(&[2]);
-    store
-        .admin_attach_shard_canister(router(), GraphId::from_raw(1), ShardId::new(1), shard1)
+    admin_attach_shard_canister(router(), GraphId::from_raw(1), ShardId::new(1), shard1)
         .expect("attach shard 1");
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("seed shard 0");
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("seed shard 0");
     let mut shard1_op = upsert_op(8, 1, 0xBB);
     shard1_op.subject = VectorSubject::Vertex {
         shard_id: ShardId::new(1),
         vertex_id: 8,
     };
-    store
-        .vector_upsert(shard1, &shard1_op)
-        .expect("seed shard 1");
+    vector_upsert(shard1, &shard1_op).expect("seed shard 1");
 
-    let shard0_step = store
-        .detach_shard_step_for_test(ShardId::new(0), None, 1)
-        .expect("begin shard-0 detach");
+    let shard0_step =
+        detach_shard_step_for_test(ShardId::new(0), None, 1).expect("begin shard-0 detach");
     let shard0_cursor = shard0_step.next.expect("shard-0 detach remains bounded");
-    let shard1_step = store
-        .detach_shard_step_for_test(ShardId::new(1), None, 1)
-        .expect("begin shard-1 detach");
+    let shard1_step =
+        detach_shard_step_for_test(ShardId::new(1), None, 1).expect("begin shard-1 detach");
     let shard1_cursor = shard1_step.next.expect("shard-1 detach remains bounded");
     assert_ne!(
         shard0_cursor.detach_generation,
         shard1_cursor.detach_generation
     );
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(1), Some(shard0_cursor.clone()), 1,),
+        detach_shard_step_for_test(ShardId::new(1), Some(shard0_cursor.clone()), 1,),
         Err(VectorCanisterError::LegacyOrStaleDetachCursor)
     );
     let mut wrong_phase = shard0_cursor.clone();
     wrong_phase.phase = ShardDetachPhase::Label;
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), Some(wrong_phase), 1),
+        detach_shard_step_for_test(ShardId::new(0), Some(wrong_phase), 1),
         Err(VectorCanisterError::LegacyOrStaleDetachCursor)
     );
     assert!(
-        store
-            .detach_shard_step_for_test(ShardId::new(0), Some(shard0_cursor), 1)
-            .is_ok(),
+        detach_shard_step_for_test(ShardId::new(0), Some(shard0_cursor), 1).is_ok(),
         "one shard's active session does not invalidate another"
     );
 }
 
 #[test]
 fn legacy_detach_cursor_is_rejected_before_subject_cursor_decode_or_state_change() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("seed live subject");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("seed live subject");
     let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
-    let before_entry = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .expect("live subject entry");
+    let before_entry = subject_entry_for_test(INDEX_ID, subject(7)).expect("live subject entry");
     let slot = before_entry.slot.expect("live subject slot");
-    let before_bytes = store.read_slot_bytes(INDEX_ID, slot);
+    let before_bytes = read_slot_bytes(INDEX_ID, slot);
     let legacy = ShardDetachCursor {
         detach_generation: None,
         phase: ShardDetachPhase::Vertex,
@@ -1233,7 +1025,7 @@ fn legacy_detach_cursor_is_rejected_before_subject_cursor_decode_or_state_change
     };
 
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), Some(legacy), 1),
+        detach_shard_step_for_test(ShardId::new(0), Some(legacy), 1),
         Err(VectorCanisterError::LegacyOrStaleDetachCursor)
     );
     assert_eq!(
@@ -1245,18 +1037,16 @@ fn legacy_detach_cursor_is_rejected_before_subject_cursor_decode_or_state_change
         Some(ShardId::new(0))
     );
     assert_eq!(
-        store.subject_entry_for_test(INDEX_ID, subject(7)),
+        subject_entry_for_test(INDEX_ID, subject(7)),
         Some(before_entry)
     );
-    assert_eq!(store.read_slot_bytes(INDEX_ID, slot), before_bytes);
+    assert_eq!(read_slot_bytes(INDEX_ID, slot), before_bytes);
 }
 
 #[test]
 fn detach_generation_exhaustion_is_an_exact_no_write_failure() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("seed live subject");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("seed live subject");
     OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
         let mut config = cell.get().clone();
         config.next_detach_generation = Some(u64::MAX);
@@ -1264,15 +1054,15 @@ fn detach_generation_exhaustion_is_an_exact_no_write_failure() {
         cell.set(config);
     });
     let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
-    let before_entry = store.subject_entry_for_test(INDEX_ID, subject(7));
+    let before_entry = subject_entry_for_test(INDEX_ID, subject(7));
     let slot = before_entry
         .as_ref()
         .and_then(|entry| entry.slot)
         .expect("live subject slot");
-    let before_bytes = store.read_slot_bytes(INDEX_ID, slot);
+    let before_bytes = read_slot_bytes(INDEX_ID, slot);
 
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), None, 1),
+        detach_shard_step_for_test(ShardId::new(0), None, 1),
         Err(VectorCanisterError::DetachGenerationExhausted)
     );
     assert_eq!(
@@ -1283,19 +1073,14 @@ fn detach_generation_exhaustion_is_an_exact_no_write_failure() {
         SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(shard_canister())),
         Some(ShardId::new(0))
     );
-    assert_eq!(
-        store.subject_entry_for_test(INDEX_ID, subject(7)),
-        before_entry
-    );
-    assert_eq!(store.read_slot_bytes(INDEX_ID, slot), before_bytes);
+    assert_eq!(subject_entry_for_test(INDEX_ID, subject(7)), before_entry);
+    assert_eq!(read_slot_bytes(INDEX_ID, slot), before_bytes);
 }
 
 #[test]
 fn detach_capacity_is_an_exact_no_write_failure() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .expect("seed live subject");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("seed live subject");
     OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
         let mut config = cell.get().clone();
         config.next_detach_generation = Some(65);
@@ -1311,15 +1096,15 @@ fn detach_capacity_is_an_exact_no_write_failure() {
     });
     let before_config: VectorIndexOwnershipConfig =
         OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
-    let before_entry = store.subject_entry_for_test(INDEX_ID, subject(7));
+    let before_entry = subject_entry_for_test(INDEX_ID, subject(7));
     let slot = before_entry
         .as_ref()
         .and_then(|entry| entry.slot)
         .expect("live subject slot");
-    let before_bytes = store.read_slot_bytes(INDEX_ID, slot);
+    let before_bytes = read_slot_bytes(INDEX_ID, slot);
 
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), None, 1),
+        detach_shard_step_for_test(ShardId::new(0), None, 1),
         Err(VectorCanisterError::TooManyActiveDetaches)
     );
     assert_eq!(
@@ -1330,28 +1115,20 @@ fn detach_capacity_is_an_exact_no_write_failure() {
         SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(shard_canister())),
         Some(ShardId::new(0))
     );
-    assert_eq!(
-        store.subject_entry_for_test(INDEX_ID, subject(7)),
-        before_entry
-    );
-    assert_eq!(store.read_slot_bytes(INDEX_ID, slot), before_bytes);
+    assert_eq!(subject_entry_for_test(INDEX_ID, subject(7)), before_entry);
+    assert_eq!(read_slot_bytes(INDEX_ID, slot), before_bytes);
 }
 
 #[test]
 fn def_and_heads_persist_across_store_handles() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(8, 1, 0xBB))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).unwrap();
+    vector_upsert(shard_canister(), &upsert_op(8, 1, 0xBB)).unwrap();
 
     // A fresh stateless handle reads the same durable stable state ("reopen").
-    let reopened = VectorCanisterStore::new();
-    let def = reopened.def_for_test(INDEX_ID).unwrap();
+    let def = def_for_test(INDEX_ID).unwrap();
     assert_eq!(def.dims, DIMS);
-    let head = reopened.partition_head_for_test(INDEX_ID, 1).unwrap();
+    let head = partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 2);
 }
 
@@ -1445,11 +1222,9 @@ fn search_metric_from(values: &[f32], top_k: u32, metric: VectorMetric) -> Vecto
 
 #[test]
 fn search_returns_inserted_vector() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     let hit = &result.hits[0];
     assert_eq!(hit.subject, subject(7));
@@ -1458,17 +1233,11 @@ fn search_returns_inserted_vector() {
 
 #[test]
 fn search_top_k_orders_by_distance_and_bounds_results() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(9, 1, 3.0))
-        .unwrap();
-    let result = store.vector_search(&search_value(1.0, 2)).expect("search");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(9, 1, 3.0)).unwrap();
+    let result = vector_search(&search_value(1.0, 2)).expect("search");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
         subjects,
@@ -1480,16 +1249,12 @@ fn search_top_k_orders_by_distance_and_bounds_results() {
 
 #[test]
 fn search_tie_break_is_subject_ascending() {
-    let store = fresh_store();
+    fresh_store();
     // Both are equidistant (|1-0| == |1-2|) from the query 1.0; the tie-break must be deterministic
     // on the subject key ascending.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
-        .unwrap();
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0)).unwrap();
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(result.hits[0].distance, result.hits[1].distance);
     assert_eq!(
         result.hits.iter().map(|h| h.subject).collect::<Vec<_>>(),
@@ -1499,78 +1264,61 @@ fn search_tie_break_is_subject_ascending() {
 
 #[test]
 fn search_skips_deleted_subject() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 2))
-        .unwrap();
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 2)).unwrap();
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(result.hits.is_empty(), "deleted subject must not appear");
 }
 
 #[test]
 fn search_returns_newest_slot_only() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0)).unwrap();
     // Query the newest value: exactly one hit, distance 0, at the newest version.
-    let result = store.vector_search(&search_value(5.0, 10)).expect("search");
+    let result = vector_search(&search_value(5.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].distance, 0.0);
     // The superseded (tombstoned) generation's value 1.0 is never scored.
-    let stale = store.vector_search(&search_value(1.0, 10)).expect("search");
+    let stale = vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(stale.hits.len(), 1);
     assert!(stale.hits[0].distance > 0.0);
 }
 
 #[test]
 fn search_reinsert_after_delete_returns_newer_incarnation_only() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 1))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 9.0))
-        .unwrap();
-    let result = store.vector_search(&search_value(9.0, 10)).expect("search");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    vector_remove(shard_canister(), &remove_op(7, 1)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(7, 2, 9.0)).unwrap();
+    let result = vector_search(&search_value(9.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].distance, 0.0);
 }
 
 #[test]
 fn search_does_not_read_rows_of_a_different_index() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
     // Seed a second index with the same subject/value; a search over INDEX_ID must not read it.
     let other_index = INDEX_ID + 1;
-    store
-        .vector_upsert(
-            shard_canister(),
-            &VectorEmbeddingSyncOp {
-                index_id: other_index,
-                embedding_name_id: 0,
-                subject: subject(8),
-                mutation_id: 1,
-                encoding: VectorEncoding::F32,
-                dims: DIMS,
-                metric: VectorMetric::L2Squared,
-                bytes: vec_bytes(1.0),
-                remove: false,
-            },
-        )
-        .unwrap();
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    vector_upsert(
+        shard_canister(),
+        &VectorEmbeddingSyncOp {
+            index_id: other_index,
+            embedding_name_id: 0,
+            subject: subject(8),
+            mutation_id: 1,
+            encoding: VectorEncoding::F32,
+            dims: DIMS,
+            metric: VectorMetric::L2Squared,
+            bytes: vec_bytes(1.0),
+            remove: false,
+        },
+    )
+    .unwrap();
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1, "only INDEX_ID rows are scanned");
     assert_eq!(result.hits[0].subject, subject(7));
 }
@@ -1579,15 +1327,10 @@ fn search_does_not_read_rows_of_a_different_index() {
 fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
     use crate::facade::stable::subject_store;
     use crate::records::{FixedSubjectMapEntry, SubjectKey};
-
-    let store = fresh_store();
+    fresh_store();
     // Seed a valid live vector so the def, a page row, and a real slot all exist.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .expect("live entry");
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(7)).expect("live entry");
     assert!(entry.slot.is_some());
 
     // The search no longer consults the subject map: it scores every non-tombstoned row, relying on
@@ -1601,7 +1344,7 @@ fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
     subject_store::insert(SubjectKey::new(INDEX_ID, subject(7)), drifted)
         .expect("insert drifted entry");
 
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(
         result.hits.iter().map(|h| h.subject).collect::<Vec<_>>(),
         vec![subject(7)],
@@ -1611,10 +1354,8 @@ fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
 
 #[test]
 fn search_rejects_dimension_mismatch() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
     let req = VectorSearchRequest {
         index_id: INDEX_ID,
         query: vec![0u8; (DIMS as usize + 1) * 4],
@@ -1625,17 +1366,15 @@ fn search_rejects_dimension_mismatch() {
         candidate_subjects: None,
     };
     assert_eq!(
-        store.vector_search(&req).unwrap_err(),
+        vector_search(&req).unwrap_err(),
         VectorCanisterError::DimensionMismatch
     );
 }
 
 #[test]
 fn search_rejects_byte_width_mismatch() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
     let req = VectorSearchRequest {
         index_id: INDEX_ID,
         query: vec![0u8; STRIDE - 4],
@@ -1646,25 +1385,21 @@ fn search_rejects_byte_width_mismatch() {
         candidate_subjects: None,
     };
     assert_eq!(
-        store.vector_search(&req).unwrap_err(),
+        vector_search(&req).unwrap_err(),
         VectorCanisterError::ByteWidthMismatch
     );
 }
 
 #[test]
 fn search_rejects_invalid_top_k() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
     assert_eq!(
-        store.vector_search(&search_value(1.0, 0)).unwrap_err(),
+        vector_search(&search_value(1.0, 0)).unwrap_err(),
         VectorCanisterError::InvalidSearchTopK
     );
     assert_eq!(
-        store
-            .vector_search(&search_value(1.0, MAX_VECTOR_SEARCH_TOP_K + 1))
-            .unwrap_err(),
+        vector_search(&search_value(1.0, MAX_VECTOR_SEARCH_TOP_K + 1)).unwrap_err(),
         VectorCanisterError::InvalidSearchTopK
     );
 }
@@ -1673,18 +1408,16 @@ fn search_rejects_invalid_top_k() {
 fn search_missing_physical_def_returns_empty() {
     // The physical def is created lazily on first upsert; a Router-registered, activated index with
     // no embeddings yet has no def but is a known-empty index, not an unknown one.
-    let store = fresh_store();
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    fresh_store();
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(result.hits.is_empty());
 }
 
 #[test]
 fn search_empty_index_returns_no_hits() {
-    let store = fresh_store();
-    store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 64 * 1024)
-        .expect("create index");
-    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    fresh_store();
+    create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 64 * 1024).expect("create index");
+    let result = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(result.hits.is_empty());
 }
 
@@ -1692,37 +1425,33 @@ fn search_empty_index_returns_no_hits() {
 
 #[test]
 fn cosine_exact_scan_orders_by_one_minus_similarity() {
-    let store = fresh_store();
+    fresh_store();
     // Three distinct unit-direction vectors; query aligns with the first.
     let v7 = vec![1.0f32, 0.0, 0.0, 0.0];
     let v8 = vec![0.0f32, 1.0, 0.0, 0.0];
     let v9 = vec![1.0f32, 1.0, 0.0, 0.0];
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &v7, VectorMetric::Cosine),
-        )
-        .unwrap();
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(8, 1, &v8, VectorMetric::Cosine),
-        )
-        .unwrap();
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(9, 1, &v9, VectorMetric::Cosine),
-        )
-        .unwrap();
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &v7, VectorMetric::Cosine),
+    )
+    .unwrap();
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(8, 1, &v8, VectorMetric::Cosine),
+    )
+    .unwrap();
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(9, 1, &v9, VectorMetric::Cosine),
+    )
+    .unwrap();
 
-    let result = store
-        .vector_search(&search_metric_from(
-            &[1.0f32, 0.0, 0.0, 0.0],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect("cosine search");
+    let result = vector_search(&search_metric_from(
+        &[1.0f32, 0.0, 0.0, 0.0],
+        10,
+        VectorMetric::Cosine,
+    ))
+    .expect("cosine search");
     assert_eq!(result.hits.len(), 3);
     assert_eq!(
         result.hits[0].subject,
@@ -1742,73 +1471,66 @@ fn cosine_exact_scan_orders_by_one_minus_similarity() {
 
 #[test]
 fn cosine_zero_norm_query_fails_closed() {
-    let store = fresh_store();
+    fresh_store();
     // Create the physical def as a cosine index first.
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
-        )
-        .unwrap();
-    let err = store
-        .vector_search(&search_metric_from(
-            &[0.0f32; DIMS as usize],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect_err("zero-norm cosine query must fail");
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+    )
+    .unwrap();
+    let err = vector_search(&search_metric_from(
+        &[0.0f32; DIMS as usize],
+        10,
+        VectorMetric::Cosine,
+    ))
+    .expect_err("zero-norm cosine query must fail");
     assert!(matches!(err, VectorCanisterError::InvalidQueryVector));
 }
 
 #[test]
 fn cosine_nonfinite_query_fails_closed() {
-    let store = fresh_store();
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
-        )
-        .unwrap();
-    let err = store
-        .vector_search(&search_metric_from(
-            &[f32::NAN; DIMS as usize],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect_err("non-finite cosine query must fail");
+    fresh_store();
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+    )
+    .unwrap();
+    let err = vector_search(&search_metric_from(
+        &[f32::NAN; DIMS as usize],
+        10,
+        VectorMetric::Cosine,
+    ))
+    .expect_err("non-finite cosine query must fail");
     assert!(matches!(err, VectorCanisterError::InvalidQueryVector));
 }
 
 #[test]
 fn cosine_zero_norm_indexed_vector_is_rejected() {
-    let store = fresh_store();
+    fresh_store();
     // Zero-norm vectors have no cosine similarity; cosine ingest rejects them fail-closed instead
     // of storing a non-normalizable row.
-    let err = store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &[0.0f32; DIMS as usize], VectorMetric::Cosine),
-        )
-        .expect_err("zero-norm cosine ingest must fail");
+    let err = vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &[0.0f32; DIMS as usize], VectorMetric::Cosine),
+    )
+    .expect_err("zero-norm cosine ingest must fail");
     assert!(matches!(err, VectorCanisterError::InvalidQueryVector));
 }
 
 #[test]
 fn cosine_upsert_stores_unit_normalized_row() {
-    let store = fresh_store();
+    fresh_store();
     let v = [3.0f32, 4.0, 0.0, 0.0];
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
-        )
-        .expect("cosine upsert");
-    let slot = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
+    )
+    .expect("cosine upsert");
+    let slot = subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
         .slot
         .expect("live");
-    let stored = store.read_slot_bytes(INDEX_ID, slot).expect("stored bytes");
+    let stored = read_slot_bytes(INDEX_ID, slot).expect("stored bytes");
     let decoded = super::search::decode_f32(&stored);
     // Stored row is unit-normalized and points in the input direction ([3,4,0,0]/5 = [0.6,0.8,0,0]).
     let norm_sq: f32 = decoded.iter().map(|x| x * x).sum();
@@ -1821,29 +1543,25 @@ fn cosine_upsert_stores_unit_normalized_row() {
 
 #[test]
 fn cosine_upsert_same_bytes_replay_is_noop() {
-    let store = fresh_store();
+    fresh_store();
     let v = [3.0f32, 4.0, 0.0, 0.0];
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
-        )
-        .expect("first upsert");
-    let slot1 = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
+    )
+    .expect("first upsert");
+    let slot1 = subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
         .slot
         .expect("live");
     // Replaying the same stamp + bytes is an idempotent no-op (the normalized comparison matches the
     // stored unit row).
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
-        )
-        .expect("idempotent replay");
-    let slot2 = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
+    )
+    .expect("idempotent replay");
+    let slot2 = subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
         .slot
         .expect("live");
@@ -1852,22 +1570,20 @@ fn cosine_upsert_same_bytes_replay_is_noop() {
 
 #[test]
 fn cosine_nonfinite_indexed_vector_is_skipped() {
-    let store = fresh_store();
+    fresh_store();
     let mut bad = vec![1.0f32; DIMS as usize];
     bad[0] = f32::NAN;
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &bad, VectorMetric::Cosine),
-        )
-        .unwrap();
-    let result = store
-        .vector_search(&search_metric_from(
-            &[1.0f32; DIMS as usize],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect("search");
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &bad, VectorMetric::Cosine),
+    )
+    .unwrap();
+    let result = vector_search(&search_metric_from(
+        &[1.0f32; DIMS as usize],
+        10,
+        VectorMetric::Cosine,
+    ))
+    .expect("search");
     assert!(
         result.hits.is_empty(),
         "non-finite indexed vector must not produce NaN distance"
@@ -1876,25 +1592,20 @@ fn cosine_nonfinite_indexed_vector_is_skipped() {
 
 #[test]
 fn l2_nonfinite_indexed_vector_is_skipped_for_consistency() {
-    let store = fresh_store();
+    fresh_store();
     let mut bad = vec![1.0f32; DIMS as usize];
     bad[0] = f32::NAN;
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    store
-        .vector_upsert(
-            shard_canister(),
-            &VectorEmbeddingSyncOp {
-                metric: VectorMetric::L2Squared,
-                bytes: vec_bytes_from(&bad),
-                ..upsert_vec(8, 1, 2.0)
-            },
-        )
-        .unwrap();
-    let result = store
-        .vector_search(&search_value(1.0, 10))
-        .expect("l2 search");
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    vector_upsert(
+        shard_canister(),
+        &VectorEmbeddingSyncOp {
+            metric: VectorMetric::L2Squared,
+            bytes: vec_bytes_from(&bad),
+            ..upsert_vec(8, 1, 2.0)
+        },
+    )
+    .unwrap();
+    let result = vector_search(&search_value(1.0, 10)).expect("l2 search");
     assert_eq!(
         result.hits.len(),
         1,
@@ -1905,40 +1616,35 @@ fn l2_nonfinite_indexed_vector_is_skipped_for_consistency() {
 
 #[test]
 fn cosine_metric_mismatch_on_later_upsert_fails_closed() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    let err = store
-        .vector_upsert(
-            shard_canister(),
-            &VectorEmbeddingSyncOp {
-                metric: VectorMetric::Cosine,
-                ..upsert_vec(8, 1, 2.0)
-            },
-        )
-        .expect_err("metric mismatch must fail");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    let err = vector_upsert(
+        shard_canister(),
+        &VectorEmbeddingSyncOp {
+            metric: VectorMetric::Cosine,
+            ..upsert_vec(8, 1, 2.0)
+        },
+    )
+    .expect_err("metric mismatch must fail");
     assert!(matches!(err, VectorCanisterError::MetricMismatch));
 }
 
 #[test]
 fn l2_metric_mismatch_on_later_upsert_fails_closed() {
-    let store = fresh_store();
-    store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
-        )
-        .unwrap();
-    let err = store
-        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
+    fresh_store();
+    vector_upsert(
+        shard_canister(),
+        &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+    )
+    .unwrap();
+    let err = vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
         .expect_err("metric mismatch must fail");
     assert!(matches!(err, VectorCanisterError::MetricMismatch));
 }
 
 #[test]
 fn cosine_partition_scan_returns_cosine_ordered_rows() {
-    let store = fresh_store();
+    fresh_store();
     // Unit centroids along the axes so L2-based selection is cosine-ordered (L2²(q,c) = 2 − 2cos
     // on unit vectors).
     let centroids = vec![vec![1.0f32, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]];
@@ -1951,7 +1657,7 @@ fn cosine_partition_scan_returns_cosine_ordered_rows() {
     ]
     .map(|(v, dir)| (subject(v), dir.to_vec()))
     .to_vec();
-    store.seed_ivf_with_metric_for_test(
+    seed_ivf_with_metric_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -1961,31 +1667,29 @@ fn cosine_partition_scan_returns_cosine_ordered_rows() {
     );
     // Query along +x: nearest centroid is partition 0. With the default eps=0 only partition 0 is
     // scanned, so the top hits are rows 1 and 3 (both x-direction), ordered by 1 − cos.
-    let result = store
-        .vector_search(&search_metric_from(
-            &[1.0f32, 0.0, 0.0, 0.0],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect("partitioned cosine search");
+    let result = vector_search(&search_metric_from(
+        &[1.0f32, 0.0, 0.0, 0.0],
+        10,
+        VectorMetric::Cosine,
+    ))
+    .expect("partitioned cosine search");
     assert_eq!(result.hits[0].subject, subject(1));
     assert_eq!(result.hits[1].subject, subject(3));
     // A full scan (eps = INF) returns all four, still cosine-ordered (x-rows first).
-    let all = store
-        .vector_search_tuned(
-            &search_metric_from(&[1.0f32, 0.0, 0.0, 0.0], 10, VectorMetric::Cosine),
-            SearchTuning {
-                eps_query: f32::INFINITY,
-            },
-        )
-        .expect("full cosine scan");
+    let all = vector_search_tuned(
+        &search_metric_from(&[1.0f32, 0.0, 0.0, 0.0], 10, VectorMetric::Cosine),
+        SearchTuning {
+            eps_query: f32::INFINITY,
+        },
+    )
+    .expect("full cosine scan");
     assert_eq!(all.hits.len(), 4);
     assert_eq!(all.hits[0].subject, subject(1));
 }
 
 #[test]
 fn cosine_rebuild_succeeds_with_spherical_kmeans() {
-    let store = fresh_store();
+    fresh_store();
     // Distinct non-zero cosine directions so a rebuild can form >= 2 clusters.
     for (v, dir) in [
         (1u32, [1.0f32, 0.0, 0.0, 0.0]),
@@ -1993,17 +1697,14 @@ fn cosine_rebuild_succeeds_with_spherical_kmeans() {
         (3, [-1.0, 0.0, 0.0, 0.0]),
         (4, [0.0, -1.0, 0.0, 0.0]),
     ] {
-        store
-            .vector_upsert(
-                shard_canister(),
-                &upsert_vec_from(v, 1, &dir, VectorMetric::Cosine),
-            )
-            .unwrap();
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(v, 1, &dir, VectorMetric::Cosine),
+        )
+        .unwrap();
     }
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("cosine rebuild starts");
-    let status = drive_steps(&store, INDEX_ID);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("cosine rebuild starts");
+    let status = drive_steps(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
     // Spherical k-means stores unit-normalized centroids.
     let centroids =
@@ -2018,7 +1719,7 @@ fn cosine_rebuild_succeeds_with_spherical_kmeans() {
     }
     // Every live subject got a shadow slot at the target version.
     for v in 1..=4u32 {
-        let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
+        let entry = subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
         assert_eq!(
             entry.shadow_slot.map(|s| s.index_version),
             Some(TARGET_V as u32)
@@ -2026,27 +1727,22 @@ fn cosine_rebuild_succeeds_with_spherical_kmeans() {
     }
     // Publish, then the nlist>1 cosine index uses the partition scan (Phase 2) and still returns
     // 1 − cos ordering.
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    drive_cleanup(&store, INDEX_ID);
-    let result = store
-        .vector_search(&search_metric_from(
-            &[1.0f32; DIMS as usize],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect("partitioned cosine search");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
+    let result = vector_search(&search_metric_from(
+        &[1.0f32; DIMS as usize],
+        10,
+        VectorMetric::Cosine,
+    ))
+    .expect("partitioned cosine search");
     assert!(!result.hits.is_empty());
 }
 
 #[test]
 fn lazy_def_inherits_metric_from_first_op() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    let def = store.def_for_test(INDEX_ID).expect("def");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).unwrap();
+    let def = def_for_test(INDEX_ID).expect("def");
     assert_eq!(def.metric, VectorMetric::L2Squared);
 }
 
@@ -2080,9 +1776,9 @@ fn tuned(eps_query: f32) -> SearchTuning {
 
 #[test]
 fn partition_scan_parity_with_exact_at_eps_infinity() {
-    let store = fresh_store();
+    fresh_store();
     // Index 1: partitioned (nlist = 2).
-    store.seed_ivf_for_test(
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2092,7 +1788,7 @@ fn partition_scan_parity_with_exact_at_eps_infinity() {
     // Index 2: degenerate (nlist = 1) so vector_search uses the exact subject-map scan.
     let exact_index = INDEX_ID + 100;
     let exact_vectors: Vec<_> = clustered_vectors();
-    store.seed_ivf_for_test(
+    seed_ivf_for_test(
         exact_index,
         VectorEncoding::F32,
         DIMS,
@@ -2100,12 +1796,11 @@ fn partition_scan_parity_with_exact_at_eps_infinity() {
         &exact_vectors,
     );
 
-    let partitioned = store
-        .vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY))
-        .expect("partition scan");
+    let partitioned =
+        vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY)).expect("partition scan");
     let mut exact_req = search_value(0.5, 10);
     exact_req.index_id = exact_index;
-    let exact = store.vector_search(&exact_req).expect("exact scan");
+    let exact = vector_search(&exact_req).expect("exact scan");
 
     let p: Vec<_> = partitioned
         .hits
@@ -2119,8 +1814,8 @@ fn partition_scan_parity_with_exact_at_eps_infinity() {
 
 #[test]
 fn partition_scan_eps_zero_selects_single_partition() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2128,9 +1823,7 @@ fn partition_scan_eps_zero_selects_single_partition() {
         &clustered_vectors(),
     );
     // Query near centroid 0: eps_query = 0 selects partition 0 only.
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(0.0))
-        .expect("partition scan");
+    let result = vector_search_tuned(&search_nonzero(0.0, 10), tuned(0.0)).expect("partition scan");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
         subjects,
@@ -2143,8 +1836,8 @@ fn partition_scan_eps_zero_selects_single_partition() {
 
 #[test]
 fn partition_scan_isolation_other_partition_not_scored() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2152,9 +1845,7 @@ fn partition_scan_isolation_other_partition_not_scored() {
         &clustered_vectors(),
     );
     // Query near centroid 1: eps_query = 0 selects partition 1 only.
-    let result = store
-        .vector_search_tuned(&search_value(10.0, 10), tuned(0.0))
-        .expect("partition scan");
+    let result = vector_search_tuned(&search_value(10.0, 10), tuned(0.0)).expect("partition scan");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
         subjects,
@@ -2165,8 +1856,8 @@ fn partition_scan_isolation_other_partition_not_scored() {
 
 #[test]
 fn partition_scan_default_eps_zero_used_by_vector_search() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2174,9 +1865,7 @@ fn partition_scan_default_eps_zero_used_by_vector_search() {
         &clustered_vectors(),
     );
     // Default eps_query = 0.0 scans only the nearest partition (query 0.5 is nearest centroid 0).
-    let result = store
-        .vector_search(&search_value(0.5, 10))
-        .expect("default search");
+    let result = vector_search(&search_value(0.5, 10)).expect("default search");
     assert_eq!(
         result.hits.len(),
         2,
@@ -2192,8 +1881,8 @@ fn partition_scan_default_eps_zero_used_by_vector_search() {
 
 #[test]
 fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2205,13 +1894,10 @@ fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
     // true top-4. Raising eps past the boundary distance (121 / 81 - 1 ≈ 0.49) recovers full recall,
     // matching the exact scan. This is the recall/cost tradeoff slice 6 tunes the default by.
     let req = search_value(5.5, 4);
-    let eps0 = store.vector_search(&req).expect("default eps=0 search");
-    let eps05 = store
-        .vector_search_tuned(&req, tuned(0.5))
-        .expect("eps=0.5 search");
-    let exact = store
-        .vector_search_tuned(&req, tuned(f32::INFINITY))
-        .expect("eps=INF exact-parity search");
+    let eps0 = vector_search(&req).expect("default eps=0 search");
+    let eps05 = vector_search_tuned(&req, tuned(0.5)).expect("eps=0.5 search");
+    let exact =
+        vector_search_tuned(&req, tuned(f32::INFINITY)).expect("eps=INF exact-parity search");
     assert_eq!(
         eps0.hits.len(),
         2,
@@ -2229,18 +1915,15 @@ fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
 fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
     use crate::facade::stable::subject_store;
     use crate::records::{FixedSubjectMapEntry, SubjectKey};
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         &two_clusters(),
         &clustered_vectors(),
     );
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(1))
-        .expect("seeded entry");
+    let entry = subject_entry_for_test(INDEX_ID, subject(1)).expect("seeded entry");
     // The search no longer consults the subject map: it scores every non-tombstoned row, relying on
     // the write-path invariant. Even if the subject-map entry is marked deleted (without the row being
     // tombstoned, which the write path would do), the non-tombstoned row is still scored.
@@ -2252,8 +1935,7 @@ fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
         },
     )
     .expect("insert deleted entry");
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
+    let result = vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
@@ -2265,9 +1947,8 @@ fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
 fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
     use crate::facade::stable::subject_store;
     use crate::records::SubjectKey;
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2277,8 +1958,7 @@ fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
     // Drop the subject-map entry for subject 1: its slab row is still non-tombstoned and is scored.
     subject_store::remove(&SubjectKey::new(INDEX_ID, subject(1)))
         .expect("remove subject-map fixture");
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
+    let result = vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
@@ -2288,18 +1968,15 @@ fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
 fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
     use crate::facade::stable::subject_store;
     use crate::records::{FixedSubjectMapEntry, SlotRef, SubjectKey};
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         &two_clusters(),
         &clustered_vectors(),
     );
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(1))
-        .expect("seeded entry");
+    let entry = subject_entry_for_test(INDEX_ID, subject(1)).expect("seeded entry");
     let live_slot = entry.slot.expect("live slot");
     // Point the subject map at an out-of-range slot (positional drift). The search no longer consults
     // the subject map, so the non-tombstoned row at the seeded position is still scored.
@@ -2315,8 +1992,7 @@ fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
         },
     )
     .expect("insert drifted entry");
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
+    let result = vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
@@ -2325,9 +2001,8 @@ fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
 fn stale_centroids_fall_back_to_exact_scan() {
     use crate::facade::stable::IVF_CENTROID_META;
     use crate::records::IvfCentroidMeta;
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
@@ -2347,9 +2022,7 @@ fn stale_centroids_fall_back_to_exact_scan() {
     });
     // eps_query = 0 would restrict to one partition if the partition scan ran; the exact fallback
     // returns all four regardless.
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(0.0))
-        .expect("exact fallback");
+    let result = vector_search_tuned(&search_nonzero(0.0, 10), tuned(0.0)).expect("exact fallback");
     assert_eq!(
         result.hits.len(),
         4,
@@ -2359,18 +2032,14 @@ fn stale_centroids_fall_back_to_exact_scan() {
 
 #[test]
 fn exact_scan_chunk_boundary_accumulates_top_k_across_chunks() {
-    let store = fresh_store();
+    fresh_store();
     // More live subjects than the exact scan's SCAN_CHUNK (4096), valued by vertex id. A query at
     // 4096.0 puts the nearest hit (v4096) in the second chunk and a top-k hit (v4095) in the first
     // chunk, so the global top-3 must accumulate correctly across the chunk flush.
     for v in 0..5000u32 {
-        store
-            .vector_upsert(shard_canister(), &upsert_vec(v, 1, v as f32))
-            .expect("upsert");
+        vector_upsert(shard_canister(), &upsert_vec(v, 1, v as f32)).expect("upsert");
     }
-    let result = store
-        .vector_search(&search_value(4096.0, 3))
-        .expect("exact scan");
+    let result = vector_search(&search_value(4096.0, 3)).expect("exact scan");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
         subjects,
@@ -2382,15 +2051,15 @@ fn exact_scan_chunk_boundary_accumulates_top_k_across_chunks() {
 #[test]
 #[should_panic(expected = "must be >= 0")]
 fn tuned_negative_eps_query_panics() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         &two_clusters(),
         &clustered_vectors(),
     );
-    let _ = store.vector_search_tuned(&search_nonzero(0.0, 10), tuned(-1.0));
+    let _ = vector_search_tuned(&search_nonzero(0.0, 10), tuned(-1.0));
 }
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
@@ -2404,24 +2073,17 @@ const TARGET_V: u64 = 2;
 
 /// Seeds `count` live subjects via production upserts with distinct values `0.0..count` so a rebuild
 /// can sample distinct centroids. Returns nothing; subjects are `subject(1..=count)`.
-fn seed_distinct(store: &VectorCanisterStore, count: u32) {
+fn seed_distinct(count: u32) {
     for v in 1..=count {
-        store
-            .vector_upsert(shard_canister(), &upsert_vec(v, 1, (v - 1) as f32))
-            .expect("seed upsert");
+        vector_upsert(shard_canister(), &upsert_vec(v, 1, (v - 1) as f32)).expect("seed upsert");
     }
 }
 
 /// Drives `admin_vector_rebuild_step` (small batch to exercise cursor resumption) until the phase
 /// leaves `Sampling`/`Building`, returning the terminal status.
-fn drive_steps(
-    store: &VectorCanisterStore,
-    index_id: u32,
-) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
+fn drive_steps(index_id: u32) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
     for _ in 0..100_000 {
-        let status = store
-            .admin_vector_rebuild_step(router(), index_id, 1)
-            .expect("step");
+        let status = admin_vector_rebuild_step(router(), index_id, 1).expect("step");
         match status.phase {
             VectorRebuildPhase::Sampling
             | VectorRebuildPhase::Training
@@ -2435,14 +2097,9 @@ fn drive_steps(
 /// Drives steps through `Sampling` + `Training` until the phase first reaches `Building` (centroids
 /// written, no subjects shadowed yet), returning that status. Panics if it terminates earlier (e.g.
 /// `Failed`).
-fn drive_into_building(
-    store: &VectorCanisterStore,
-    index_id: u32,
-) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
+fn drive_into_building(index_id: u32) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
     for _ in 0..100_000 {
-        let status = store
-            .admin_vector_rebuild_step(router(), index_id, 100)
-            .expect("step");
+        let status = admin_vector_rebuild_step(router(), index_id, 100).expect("step");
         match status.phase {
             VectorRebuildPhase::Sampling | VectorRebuildPhase::Training => continue,
             VectorRebuildPhase::Building => return status,
@@ -2454,11 +2111,9 @@ fn drive_into_building(
 
 /// Drives `admin_vector_rebuild_cleanup_step` (one unit at a time) until `Idle`, returning the step
 /// count so a test can assert teardown was bounded across multiple messages.
-fn drive_cleanup(store: &VectorCanisterStore, index_id: u32) -> u32 {
+fn drive_cleanup(index_id: u32) -> u32 {
     for steps in 1..=100_000u32 {
-        let status = store
-            .admin_vector_rebuild_cleanup_step(router(), index_id, 1)
-            .expect("cleanup");
+        let status = admin_vector_rebuild_cleanup_step(router(), index_id, 1).expect("cleanup");
         if status.phase == VectorRebuildPhase::Idle {
             return steps;
         }
@@ -2476,14 +2131,10 @@ fn target_centroid_count(index_id: u32, version: u64, nlist: u32) -> u32 {
 
 #[test]
 fn rebuild_start_is_o1_and_enters_sampling() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let status = store
-        .admin_vector_rebuild_status(router(), INDEX_ID)
-        .expect("status");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = admin_vector_rebuild_status(router(), INDEX_ID).expect("status");
     assert_eq!(status.phase, VectorRebuildPhase::Sampling);
     assert_eq!(status.target_index_version, TARGET_V);
     assert_eq!(
@@ -2499,12 +2150,10 @@ fn rebuild_start_is_o1_and_enters_sampling() {
 
 #[test]
 fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let status = drive_steps(&store, INDEX_ID);
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = drive_steps(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
     assert_eq!(
         target_centroid_count(INDEX_ID, TARGET_V, 2),
@@ -2513,7 +2162,7 @@ fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
     );
     // Every live subject has a shadow slot at the target version.
     for v in 1..=4u32 {
-        let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
+        let entry = subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
         let shadow = entry.shadow_slot.expect("shadow slot");
         assert_eq!(shadow.index_version, TARGET_V as u32);
     }
@@ -2521,22 +2170,18 @@ fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
 
 #[test]
 fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges() {
-    let store = fresh_store();
+    fresh_store();
     for vertex_id in 1..=3 {
-        store
-            .vector_upsert(shard_canister(), &upsert_vec(vertex_id, 1, 0.0))
+        vector_upsert(shard_canister(), &upsert_vec(vertex_id, 1, 0.0))
             .expect("seed first cluster");
     }
     for vertex_id in 4..=6 {
-        store
-            .vector_upsert(shard_canister(), &upsert_vec(vertex_id, 1, 10.0))
+        vector_upsert(shard_canister(), &upsert_vec(vertex_id, 1, 10.0))
             .expect("seed second cluster");
     }
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        drive_into_building(&store, INDEX_ID).phase,
+        drive_into_building(INDEX_ID).phase,
         VectorRebuildPhase::Building
     );
 
@@ -2544,15 +2189,13 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
     // in the first appended partition batch, leaving one linked prefix row and two unlinked rows
     // that the Building compensation must tombstone.
     crate::facade::store::mutation::arm_subject_insert_failure(1);
-    let error = store
-        .rebuild_step_with_budget(INDEX_ID, 100, u64::MAX)
+    let error = rebuild_step_with_budget(INDEX_ID, 100, u64::MAX)
         .expect_err("second Building subject link fails");
     assert_eq!(error, VectorCanisterError::StableGrowFailed);
 
     let linked_slots: Vec<_> = (1..=6)
         .filter_map(|vertex_id| {
-            store
-                .subject_entry_for_test(INDEX_ID, subject(vertex_id))
+            subject_entry_for_test(INDEX_ID, subject(vertex_id))
                 .expect("seeded subject")
                 .shadow_slot
         })
@@ -2560,7 +2203,7 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
     assert_eq!(linked_slots.len(), 1, "only the committed prefix is linked");
     assert_eq!(linked_slots[0].index_version, TARGET_V as u32);
     assert!(
-        store.read_slot_bytes(INDEX_ID, linked_slots[0]).is_some(),
+        read_slot_bytes(INDEX_ID, linked_slots[0]).is_some(),
         "the linked prefix remains live"
     );
     let target_live_after_failure = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
@@ -2580,13 +2223,11 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
     );
 
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish retry");
-    drive_cleanup(&store, INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish retry");
+    drive_cleanup(INDEX_ID);
 
     let target_live_after_cleanup = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
         (0..2)
@@ -2599,8 +2240,7 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
             .sum::<u64>()
     });
     assert_eq!(target_live_after_cleanup, 6, "one live row per subject");
-    let result = store
-        .vector_search_tuned(&search_value(5.0, 10), tuned(f32::INFINITY))
+    let result = vector_search_tuned(&search_value(5.0, 10), tuned(f32::INFINITY))
         .expect("search after cleanup");
     assert_eq!(result.hits.len(), 6);
     for vertex_id in 1..=6 {
@@ -2613,9 +2253,8 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
             1,
             "subject {vertex_id} appears exactly once"
         );
-        let entry = store
-            .subject_entry_for_test(INDEX_ID, subject(vertex_id))
-            .expect("subject survives cleanup");
+        let entry =
+            subject_entry_for_test(INDEX_ID, subject(vertex_id)).expect("subject survives cleanup");
         assert_eq!(
             entry.slot.map(|slot| slot.index_version),
             Some(TARGET_V as u32)
@@ -2626,39 +2265,34 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
 
 #[test]
 fn rebuild_start_rejects_invalid_params() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
+    fresh_store();
+    seed_distinct(4);
     // nlist < 2
     assert_eq!(
-        store
-            .admin_start_vector_rebuild(router(), INDEX_ID, 1, 100)
-            .unwrap_err(),
+        admin_start_vector_rebuild(router(), INDEX_ID, 1, 100).unwrap_err(),
         VectorCanisterError::InvalidRebuildParams
     );
     // sample_limit < nlist
     assert_eq!(
-        store
-            .admin_start_vector_rebuild(router(), INDEX_ID, 4, 3)
-            .unwrap_err(),
+        admin_start_vector_rebuild(router(), INDEX_ID, 4, 3).unwrap_err(),
         VectorCanisterError::InvalidRebuildParams
     );
     // nlist > MAX_NLIST
     assert_eq!(
-        store
-            .admin_start_vector_rebuild(
-                router(),
-                INDEX_ID,
-                super::MAX_NLIST + 1,
-                super::MAX_NLIST + 1
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild(
+            router(),
+            INDEX_ID,
+            super::MAX_NLIST + 1,
+            super::MAX_NLIST + 1
+        )
+        .unwrap_err(),
         VectorCanisterError::InvalidRebuildParams
     );
 }
 
 #[test]
 fn rebuild_start_rejects_oversized_combined_state() {
-    let store = fresh_store();
+    fresh_store();
     // A large-dim index whose combined state `nlist * (pool_stride + centroid_stride) + overhead`
     // (native-width candidate-pool floor + trained f32 centroids + encoding overhead) exceeds the
     // combined rebuild-state envelope even though `nlist <= MAX_NLIST`, because the strides scale
@@ -2676,17 +2310,14 @@ fn rebuild_start_rejects_oversized_combined_state() {
         bytes: vec![0u8; stride],
         remove: false,
     };
-    store
-        .vector_upsert(shard_canister(), &op)
-        .expect("seed large-dim upsert");
+    vector_upsert(shard_canister(), &op).expect("seed large-dim upsert");
     assert!(
         2 * super::MAX_NLIST as u64 * stride as u64 + super::MAX_REBUILD_STATE_OVERHEAD_BYTES
             > super::MAX_REBUILD_STATE_BYTES,
         "fixture must exceed the combined-state cap"
     );
     assert_eq!(
-        store
-            .admin_start_vector_rebuild(router(), INDEX_ID, super::MAX_NLIST, super::MAX_NLIST)
+        admin_start_vector_rebuild(router(), INDEX_ID, super::MAX_NLIST, super::MAX_NLIST)
             .unwrap_err(),
         VectorCanisterError::InvalidRebuildParams
     );
@@ -2697,29 +2328,22 @@ fn rebuild_step_and_cleanup_accept_oversized_caller_budget() {
     // A huge caller budget (`u32::MAX`) is clamped, never rejected: step/cleanup still succeed and
     // drive the rebuild to completion. (The exact `1..=MAX_REBUILD_STEP_WORK` clamp is unit-tested in
     // `rebuild::tests::clamp_step_work_bounds_caller_budget`.)
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let mut status = store
-        .admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX)
-        .expect("step accepts u32::MAX");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let mut status =
+        admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX).expect("step accepts u32::MAX");
     while matches!(
         status.phase,
         VectorRebuildPhase::Sampling | VectorRebuildPhase::Training | VectorRebuildPhase::Building
     ) {
-        status = store
-            .admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX)
-            .expect("step accepts u32::MAX");
+        status =
+            admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX).expect("step accepts u32::MAX");
     }
     assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
     for _ in 0..100_000 {
-        let status = store
-            .admin_vector_rebuild_cleanup_step(router(), INDEX_ID, u32::MAX)
+        let status = admin_vector_rebuild_cleanup_step(router(), INDEX_ID, u32::MAX)
             .expect("cleanup accepts u32::MAX");
         if status.phase == VectorRebuildPhase::Idle {
             return;
@@ -2733,18 +2357,14 @@ fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
     // With a tiny injected byte budget (one vector's worth), each `Sampling`/`Building` step buffers
     // exactly one vector and breaks, so the contract "a step does not finish in one message; a cursor
     // survives" is observable on a small fixture (no `MAX_REBUILD_STEP_WORK`-sized seeding needed).
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     let one_vector = STRIDE as u64;
 
     // First sampling step buffers exactly one vector -> one distinct candidate (the per-step byte
     // budget truncates work; the pool keeps filling across steps).
-    let status = store
-        .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
-        .expect("sampling step");
+    let status = rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector).expect("sampling step");
     assert_eq!(status.phase, VectorRebuildPhase::Sampling);
     assert_eq!(
         status.candidates_collected, 1,
@@ -2768,19 +2388,15 @@ fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
             "unexpected phase {:?}",
             status.phase
         );
-        status = store
-            .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
-            .expect("bounded step");
+        status = rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector).expect("bounded step");
     }
     assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
 
     // The byte-bounded build is equivalent to an unbounded one: parity after publish holds.
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    drive_cleanup(&store, INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
     for v in 1..=4u32 {
-        let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
+        let entry = subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
         let slot = entry.slot.expect("collapsed live slot");
         assert_eq!(slot.index_version, TARGET_V as u32);
         assert_eq!(entry.shadow_slot, None);
@@ -2789,138 +2405,102 @@ fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
 
 #[test]
 fn rebuild_already_active_is_rejected() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        store
-            .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-            .unwrap_err(),
+        admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).unwrap_err(),
         VectorCanisterError::RebuildAlreadyActive
     );
 }
 
 #[test]
 fn rebuild_sampling_fails_on_insufficient_distinct_vectors_then_recovers() {
-    let store = fresh_store();
+    fresh_store();
     // Three live subjects but only ONE distinct value: cannot form 2 distinct centroids.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(1, 1, 5.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(2, 1, 5.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(3, 1, 5.0))
-        .unwrap();
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let status = drive_steps(&store, INDEX_ID);
+    vector_upsert(shard_canister(), &upsert_vec(1, 1, 5.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(2, 1, 5.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(3, 1, 5.0)).unwrap();
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = drive_steps(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::Failed);
 
     // Failed recovers to Idle via abort (O(1), nothing persisted), then a new rebuild can start.
-    store
-        .admin_abort_vector_rebuild(router(), INDEX_ID)
-        .expect("abort failed");
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort failed");
     assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        admin_vector_rebuild_status(router(), INDEX_ID)
             .unwrap()
             .phase,
         VectorRebuildPhase::Idle
     );
     // Add two distinct values so a fresh rebuild can now sample 2 centroids.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(10, 1, 0.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(11, 1, 1.0))
-        .unwrap();
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("restart after recovery");
+    vector_upsert(shard_canister(), &upsert_vec(10, 1, 0.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(11, 1, 1.0)).unwrap();
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("restart after recovery");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
 }
 
 #[test]
 fn publish_rejected_before_ready() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     // Still Sampling.
     assert_eq!(
-        store
-            .admin_publish_vector_rebuild(router(), INDEX_ID)
-            .unwrap_err(),
+        admin_publish_vector_rebuild(router(), INDEX_ID).unwrap_err(),
         VectorCanisterError::RebuildNotReadyToPublish
     );
 }
 
 #[test]
 fn publish_switches_to_partition_search_with_exact_parity() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    let before = store.vector_search(&search_value(1.5, 10)).expect("exact");
+    fresh_store();
+    seed_distinct(4);
+    let before = vector_search(&search_value(1.5, 10)).expect("exact");
 
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
 
-    let def = store.def_for_test(INDEX_ID).unwrap();
+    let def = def_for_test(INDEX_ID).unwrap();
     assert_eq!(def.active_index_version, TARGET_V);
     assert_eq!(def.nlist, 2);
 
     // Default search now runs the partition scan. The default `eps_query = 0.0` is a recall knob
     // (nearest partition only), so exact parity is asserted at the full scan (`eps_query = INFINITY`),
     // which is independent of the candidate-pool iteration order.
-    let after = store
-        .vector_search_tuned(&search_value(1.5, 10), tuned(f32::INFINITY))
+    let after = vector_search_tuned(&search_value(1.5, 10), tuned(f32::INFINITY))
         .expect("partition full scan");
     assert_eq!(after.hits, before.hits);
 }
 
 #[test]
 fn upsert_during_building_survives_publish() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     // Reach Building (centroids written), then insert a new subject mid-rebuild.
-    let status = drive_into_building(&store, INDEX_ID);
+    let status = drive_into_building(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::Building);
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
-        .expect("dual-write upsert");
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0)).expect("dual-write upsert");
+    let entry = subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
     assert!(
         entry.shadow_slot.is_some(),
         "dual-write created a shadow slot"
     );
 
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    let after = store.vector_search(&search_value(1.0, 10)).expect("search");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    let after = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(
         after.hits.iter().any(|h| h.subject == subject(99)),
         "subject inserted during Building is searchable after publish"
@@ -2929,17 +2509,13 @@ fn upsert_during_building_survives_publish() {
 
 #[test]
 fn detach_during_building_purges_active_and_shadow_slots() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    drive_into_building(&store, INDEX_ID);
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
-        .expect("dual-write upsert");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_into_building(INDEX_ID);
+    vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0)).expect("dual-write upsert");
 
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
     let active_slot = entry.slot.expect("active slot");
     let shadow_slot = entry.shadow_slot.expect("shadow slot");
     assert_ne!(
@@ -2947,40 +2523,34 @@ fn detach_during_building_purges_active_and_shadow_slots() {
         "test requires distinct physical rows"
     );
 
-    let result = store
-        .detach_shard_step_for_test(ShardId::new(0), None, 20_000)
-        .expect("detach step");
+    let result = detach_shard_step_for_test(ShardId::new(0), None, 20_000).expect("detach step");
     assert!(result.done);
     assert!(
-        store.read_slot_bytes(INDEX_ID, active_slot).is_none(),
+        read_slot_bytes(INDEX_ID, active_slot).is_none(),
         "detach tombstones the active row"
     );
     assert!(
-        store.read_slot_bytes(INDEX_ID, shadow_slot).is_none(),
+        read_slot_bytes(INDEX_ID, shadow_slot).is_none(),
         "detach tombstones the shadow row"
     );
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(99))
-            .is_none(),
+        subject_entry_for_test(INDEX_ID, subject(99)).is_none(),
         "detach removes the subject row"
     );
 
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    let after_publish = store.vector_search(&search_value(1.0, 10)).expect("search");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    let after_publish = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(
         after_publish.hits.is_empty(),
         "all detached-shard subjects stay excluded after publish"
     );
 
-    drive_cleanup(&store, INDEX_ID);
-    let after_cleanup = store.vector_search(&search_value(1.0, 10)).expect("search");
+    drive_cleanup(INDEX_ID);
+    let after_cleanup = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(
         after_cleanup.hits.is_empty(),
         "all detached-shard subjects stay excluded after cleanup"
@@ -2989,18 +2559,16 @@ fn detach_during_building_purges_active_and_shadow_slots() {
 
 #[test]
 fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
+    fresh_store();
+    seed_distinct(4);
 
-    let d1_first = store
-        .detach_shard_step_for_test(ShardId::new(0), None, 1)
-        .expect("begin D1");
+    let d1_first = detach_shard_step_for_test(ShardId::new(0), None, 1).expect("begin D1");
     let d1_cursor = d1_first.next.expect("D1 remains bounded");
     let d1_generation = d1_cursor
         .detach_generation
         .expect("fresh D1 cursor has a generation");
     assert_eq!(
-        store.admin_attach_shard_canister(
+        admin_attach_shard_canister(
             router(),
             GraphId::from_raw(1),
             ShardId::new(0),
@@ -3009,8 +2577,7 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
         Err(VectorCanisterError::DetachInProgress)
     );
 
-    let d1_restart = store
-        .detach_shard_step_for_test(ShardId::new(0), None, 1)
+    let d1_restart = detach_shard_step_for_test(ShardId::new(0), None, 1)
         .expect("restart D1 from the beginning");
     assert_eq!(
         d1_restart
@@ -3023,54 +2590,47 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
     let mut resume = d1_restart.next;
     let mut steps = 0u32;
     while let Some(cursor) = resume {
-        resume = store
-            .detach_shard_step_for_test(ShardId::new(0), Some(cursor), 20_000)
+        resume = detach_shard_step_for_test(ShardId::new(0), Some(cursor), 20_000)
             .expect("complete D1")
             .next;
         steps += 1;
         assert!(steps < 100, "D1 did not converge");
     }
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), Some(d1_cursor.clone()), 1),
+        detach_shard_step_for_test(ShardId::new(0), Some(d1_cursor.clone()), 1),
         Err(VectorCanisterError::LegacyOrStaleDetachCursor),
         "a completed D1 rejects its last issued cursor"
     );
 
-    store
-        .admin_attach_shard_canister(
-            router(),
-            GraphId::from_raw(1),
-            ShardId::new(0),
-            shard_canister(),
-        )
-        .expect("reattach after D1 completion");
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start rebuild");
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_canister(),
+    )
+    .expect("reattach after D1 completion");
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start rebuild");
     assert_eq!(
-        drive_into_building(&store, INDEX_ID).phase,
+        drive_into_building(INDEX_ID).phase,
         VectorRebuildPhase::Building
     );
     for vertex_id in 100..120 {
-        store
-            .vector_upsert(
-                shard_canister(),
-                &upsert_vec(vertex_id, 1, vertex_id as f32),
-            )
-            .expect("dual-write post-reattach subject");
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec(vertex_id, 1, vertex_id as f32),
+        )
+        .expect("dual-write post-reattach subject");
     }
 
-    let d2 = store
-        .detach_shard_step_for_test(ShardId::new(0), None, 1)
-        .expect("begin D2");
+    let d2 = detach_shard_step_for_test(ShardId::new(0), None, 1).expect("begin D2");
     let d2_cursor = d2.next.expect("D2 remains bounded");
     let d2_generation = d2_cursor
         .detach_generation
         .expect("fresh D2 cursor has a generation");
     assert!(d2_generation > d1_generation);
     assert_eq!(
-        store.admin_attach_shard_canister(
+        admin_attach_shard_canister(
             router(),
             GraphId::from_raw(1),
             ShardId::new(0),
@@ -3081,21 +2641,21 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
 
     let (survivor_id, before_entry) = (100..120)
         .find_map(|vertex_id| {
-            let entry = store.subject_entry_for_test(INDEX_ID, subject(vertex_id))?;
+            let entry = subject_entry_for_test(INDEX_ID, subject(vertex_id))?;
             (entry.slot.is_some() && entry.shadow_slot.is_some() && entry.slot != entry.shadow_slot)
                 .then_some((vertex_id, entry))
         })
         .expect("a budget-1 D2 leaves a dual-written subject live");
     let active_slot = before_entry.slot.expect("survivor active slot");
     let shadow_slot = before_entry.shadow_slot.expect("survivor shadow slot");
-    let before_active_bytes = store.read_slot_bytes(INDEX_ID, active_slot);
-    let before_shadow_bytes = store.read_slot_bytes(INDEX_ID, shadow_slot);
+    let before_active_bytes = read_slot_bytes(INDEX_ID, active_slot);
+    let before_shadow_bytes = read_slot_bytes(INDEX_ID, shadow_slot);
     let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
     let mut stale_d1 = d1_cursor;
     stale_d1.resume_key = vec![0xff];
 
     assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), Some(stale_d1), 1),
+        detach_shard_step_for_test(ShardId::new(0), Some(stale_d1), 1),
         Err(VectorCanisterError::LegacyOrStaleDetachCursor)
     );
     assert_eq!(
@@ -3104,17 +2664,17 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
         "stale D1 does not change the active D2 lifecycle"
     );
     assert_eq!(
-        store.subject_entry_for_test(INDEX_ID, subject(survivor_id)),
+        subject_entry_for_test(INDEX_ID, subject(survivor_id)),
         Some(before_entry),
         "stale D1 does not remove the reattached subject"
     );
     assert_eq!(
-        store.read_slot_bytes(INDEX_ID, active_slot),
+        read_slot_bytes(INDEX_ID, active_slot),
         before_active_bytes,
         "stale D1 leaves the active row live"
     );
     assert_eq!(
-        store.read_slot_bytes(INDEX_ID, shadow_slot),
+        read_slot_bytes(INDEX_ID, shadow_slot),
         before_shadow_bytes,
         "stale D1 leaves the distinct shadow row live"
     );
@@ -3122,35 +2682,30 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
 
 #[test]
 fn dual_write_shadow_append_failure_rolls_back_insert() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    drive_into_building(&store, INDEX_ID); // -> Building (dual-write)
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_into_building(INDEX_ID); // -> Building (dual-write)
 
-    let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
+    let live_before = partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
 
     // Inject a slab `grow` failure for the shadow append: the active append (1st) succeeds, the
     // shadow append (2nd) fails. This is the StableGrowFailed branch normal unit tests cannot reach.
     crate::facade::stable::page_store::arm_append_failure(1);
-    let err = store
-        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+    let err = vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
         .expect_err("shadow grow failure propagates");
     assert_eq!(err, VectorCanisterError::StableGrowFailed);
 
     // Insert path commits the id/subject maps only after both appends succeed, so a new subject must
     // leave no map entry behind.
     assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(99))
-            .is_none(),
+        subject_entry_for_test(INDEX_ID, subject(99)).is_none(),
         "no subject map entry created on rollback"
     );
     // The active row was appended then tombstoned, so live accounting is restored (not a live-counted
     // orphan polluting partition health).
     assert_eq!(
-        store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
+        partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
         live_before,
         "active live_len restored after rollback"
     );
@@ -3158,32 +2713,29 @@ fn dual_write_shadow_append_failure_rolls_back_insert() {
 
 #[test]
 fn dual_write_shadow_append_failure_rolls_back_update() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    drive_into_building(&store, INDEX_ID); // -> Building (dual-write)
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_into_building(INDEX_ID); // -> Building (dual-write)
 
-    let before = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    let before = subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
     let old_slot = before.slot.expect("seeded subject is live");
-    let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
+    let live_before = partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
 
     // Inject a slab `grow` failure for the shadow append (active append succeeds first).
     crate::facade::stable::page_store::arm_append_failure(1);
-    let err = store
-        .vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
+    let err = vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
         .expect_err("shadow grow failure propagates");
     assert_eq!(err, VectorCanisterError::StableGrowFailed);
 
     // The subject clock still points at the original live slot — no partial commit to a
     // tombstoned/new slot.
-    let after = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    let after = subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
     assert_eq!(after.slot, Some(old_slot), "old slot stays live");
     assert_eq!(after.shadow_slot, None, "no shadow recorded");
     // The new active row was appended then tombstoned: net live_len unchanged.
     assert_eq!(
-        store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
+        partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
         live_before,
         "active live_len restored after rollback"
     );
@@ -3194,29 +2746,28 @@ fn newer_stamp_upsert_commit_failure_keeps_old_slot_live() {
     // GAP-2026-08-07-001 regression: a newer-stamp upsert whose subject-map commit fails must leave
     // the old slot live (it is tombstoned only after a successful commit), not pointing at a
     // tombstoned row.
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    let before = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    fresh_store();
+    seed_distinct(4);
+    let before = subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
     let old_slot = before.slot.expect("seeded subject is live");
-    let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
+    let live_before = partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
 
     // Force the subject-map commit to fail after the new active row is appended.
     crate::facade::store::mutation::arm_subject_insert_failure(0);
-    let err = store
-        .vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
+    let err = vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
         .expect_err("subject-map commit failure propagates");
     assert_eq!(err, VectorCanisterError::StableGrowFailed);
 
     // The old subject entry and its live slot are preserved — the old slot must NOT be tombstoned.
-    let after = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    let after = subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
     assert_eq!(after.slot, Some(old_slot), "old slot stays live");
     assert!(
-        store.read_slot_bytes(INDEX_ID, old_slot).is_some(),
+        read_slot_bytes(INDEX_ID, old_slot).is_some(),
         "old row remains live and searchable"
     );
     // The appended-then-tombstoned new row restores live accounting.
     assert_eq!(
-        store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
+        partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
         live_before,
         "live_len restored after commit rollback"
     );
@@ -3224,24 +2775,18 @@ fn newer_stamp_upsert_commit_failure_keeps_old_slot_live() {
 
 #[test]
 fn remove_during_building_does_not_resurrect_after_publish() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    drive_into_building(&store, INDEX_ID); // -> Building
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_into_building(INDEX_ID); // -> Building
     // Remove subject 4 while dual-writing.
-    store
-        .vector_remove(shard_canister(), &remove_op(4, 2))
-        .expect("remove during building");
+    vector_remove(shard_canister(), &remove_op(4, 2)).expect("remove during building");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    let after = store.vector_search(&search_value(3.0, 10)).expect("search");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    let after = vector_search(&search_value(3.0, 10)).expect("search");
     assert!(
         !after.hits.iter().any(|h| h.subject == subject(4)),
         "removed subject must not resurrect after publish"
@@ -3250,28 +2795,22 @@ fn remove_during_building_does_not_resurrect_after_publish() {
 
 #[test]
 fn mutation_during_cleaning_collapses_on_touch() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
     // Now in Cleaning; subject 2 is not yet collapsed (slot @ old version, shadow @ target).
-    let pre = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    let pre = subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
     assert_eq!(pre.slot.unwrap().index_version, 1);
     assert_eq!(pre.shadow_slot.unwrap().index_version, TARGET_V as u32);
 
     // Touch subject 2: a newer-version upsert must operate on the target version and collapse it.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(2, 2, 1.0))
-        .expect("upsert during cleaning");
-    let post = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(2, 2, 1.0)).expect("upsert during cleaning");
+    let post = subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
     assert_eq!(
         post.slot.unwrap().index_version,
         TARGET_V as u32,
@@ -3280,77 +2819,60 @@ fn mutation_during_cleaning_collapses_on_touch() {
     assert_eq!(post.shadow_slot, None, "shadow cleared on touch");
 
     // Cleanup finishes and search stays correct.
-    drive_cleanup(&store, INDEX_ID);
-    let after = store.vector_search(&search_value(1.0, 10)).expect("search");
+    drive_cleanup(INDEX_ID);
+    let after = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(after.hits.iter().any(|h| h.subject == subject(2)));
 }
 
 #[test]
 fn cleanup_is_bounded_and_resumable_to_idle() {
-    let store = fresh_store();
-    seed_distinct(&store, 6);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(6);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    let steps = drive_cleanup(&store, INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    let steps = drive_cleanup(INDEX_ID);
     assert!(steps > 1, "teardown spanned multiple bounded steps");
     // Old-version page meta is gone; the index is fully on the target version.
     let old_pages = PAGE_STORE.with_borrow(|s| s.version_page_count(INDEX_ID, 1));
     assert_eq!(old_pages, 0, "old-version page meta dropped");
-    let after = store
-        .vector_search_tuned(&search_value(2.0, 10), tuned(f32::INFINITY))
-        .expect("search");
+    let after = vector_search_tuned(&search_value(2.0, 10), tuned(f32::INFINITY)).expect("search");
     assert_eq!(after.hits.len(), 6);
 }
 
 #[test]
 fn abort_during_building_is_bounded_and_leaves_active_unchanged() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    let before = store.vector_search(&search_value(1.5, 10)).expect("exact");
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let status = drive_into_building(&store, INDEX_ID);
+    fresh_store();
+    seed_distinct(4);
+    let before = vector_search(&search_value(1.5, 10)).expect("exact");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = drive_into_building(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::Building);
-    store
-        .admin_abort_vector_rebuild(router(), INDEX_ID)
-        .expect("abort");
-    drive_cleanup(&store, INDEX_ID);
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");
+    drive_cleanup(INDEX_ID);
 
     // Active version unchanged; shadow pages and centroids gone.
-    let def = store.def_for_test(INDEX_ID).unwrap();
+    let def = def_for_test(INDEX_ID).unwrap();
     assert_eq!(def.active_index_version, 1);
     assert_eq!(def.nlist, 1);
     assert_eq!(target_centroid_count(INDEX_ID, TARGET_V, 2), 0);
-    let after = store.vector_search(&search_value(1.5, 10)).expect("exact");
+    let after = vector_search(&search_value(1.5, 10)).expect("exact");
     assert_eq!(after.hits, before.hits, "active search unchanged by abort");
     // A fresh rebuild can start again.
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("restart after abort");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("restart after abort");
 }
 
 #[test]
 fn abort_from_sampling_is_immediate_idle() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    store
-        .admin_abort_vector_rebuild(router(), INDEX_ID)
-        .expect("abort from sampling");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort from sampling");
     assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        admin_vector_rebuild_status(router(), INDEX_ID)
             .unwrap()
             .phase,
         VectorRebuildPhase::Idle
@@ -3359,25 +2881,19 @@ fn abort_from_sampling_is_immediate_idle() {
 
 #[test]
 fn post_publish_nlist_gt_1_upsert_assigns_nearest_partition() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    drive_cleanup(&store, INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
 
     // Index is now published nlist=2 with no active rebuild. A new upsert must assign by centroid.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(50, 1, 0.0))
-        .expect("post-publish upsert");
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(50)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(50, 1, 0.0)).expect("post-publish upsert");
+    let entry = subject_entry_for_test(INDEX_ID, subject(50)).unwrap();
     let slot = entry.slot.unwrap();
     assert_eq!(slot.index_version, TARGET_V as u32);
     // Furthest-point seeding on values {0..3} with nlist=2 gives centroids [2.5 (p0), 0.5 (p1)], so
@@ -3386,90 +2902,63 @@ fn post_publish_nlist_gt_1_upsert_assigns_nearest_partition() {
         slot.partition_id, 1,
         "value 0 lands in the nearest-centroid partition"
     );
-    let after = store
-        .vector_search(&search_nonzero(0.0, 10))
-        .expect("search");
+    let after = vector_search(&search_nonzero(0.0, 10)).expect("search");
     assert!(after.hits.iter().any(|h| h.subject == subject(50)));
 }
 
 #[test]
 fn second_rebuild_from_partitioned_active() {
-    let store = fresh_store();
-    seed_distinct(&store, 6);
+    fresh_store();
+    seed_distinct(6);
     // First rebuild to nlist=2 and fully publish + clean.
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start 1");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start 1");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish 1");
-    drive_cleanup(&store, INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish 1");
+    drive_cleanup(INDEX_ID);
     // Full-scan parity baseline (eps_query = INFINITY), independent of the candidate-pool order.
-    let before = store
-        .vector_search_tuned(&search_value(2.5, 10), tuned(f32::INFINITY))
-        .expect("full scan");
+    let before =
+        vector_search_tuned(&search_value(2.5, 10), tuned(f32::INFINITY)).expect("full scan");
 
     // Second rebuild to nlist=3 from the partitioned (nlist=2) active version.
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
-        .expect("start 2");
+    admin_start_vector_rebuild(router(), INDEX_ID, 3, 100).expect("start 2");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish 2");
-    let def = store.def_for_test(INDEX_ID).unwrap();
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish 2");
+    let def = def_for_test(INDEX_ID).unwrap();
     assert_eq!(def.active_index_version, 3);
     assert_eq!(def.nlist, 3);
-    drive_cleanup(&store, INDEX_ID);
+    drive_cleanup(INDEX_ID);
 
     // Parity to the pre-second-rebuild result at nprobe = nlist (full scan).
-    let after = store
-        .vector_search_tuned(&search_value(2.5, 10), tuned(f32::INFINITY))
-        .expect("tuned");
+    let after = vector_search_tuned(&search_value(2.5, 10), tuned(f32::INFINITY)).expect("tuned");
     assert_eq!(after.hits, before.hits);
 }
 
 #[test]
 fn publish_succeeds_with_an_empty_partition() {
-    let store = fresh_store();
+    fresh_store();
     // Subjects: values 0, 10, 5, 0, 10. The val-5 subject (3) becomes one target centroid's source
     // but is removed during Building, leaving that centroid's partition empty.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(1, 1, 0.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(2, 1, 10.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(3, 1, 5.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(4, 1, 0.0))
-        .unwrap();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(5, 1, 10.0))
-        .unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(1, 1, 0.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(2, 1, 10.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(3, 1, 5.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(4, 1, 0.0)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(5, 1, 10.0)).unwrap();
 
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
-        .expect("start");
+    admin_start_vector_rebuild(router(), INDEX_ID, 3, 100).expect("start");
     // Sampling collects the three distinct candidates; Training writes the three centroids and enters
     // Building (each distinct candidate seeds and stays its own centroid).
-    let status = drive_into_building(&store, INDEX_ID);
+    let status = drive_into_building(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::Building);
     // Remove the val-5 subject so no live vector is nearest to the 5.0 centroid.
-    store
-        .vector_remove(shard_canister(), &remove_op(3, 2))
-        .expect("remove val-5");
+    vector_remove(shard_canister(), &remove_op(3, 2)).expect("remove val-5");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
 
@@ -3498,13 +2987,10 @@ fn publish_succeeds_with_an_empty_partition() {
         assert_eq!(head.live_len, 2, "remaining partition keeps two live rows");
     }
 
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish tolerates empty partition");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish tolerates empty partition");
     // Full-scan search returns the four remaining live subjects.
-    let after = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
-        .expect("search");
+    let after =
+        vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY)).expect("search");
     assert_eq!(after.hits.len(), 4);
 }
 
@@ -3512,17 +2998,13 @@ fn publish_succeeds_with_an_empty_partition() {
 
 #[test]
 fn sampling_collects_more_than_nlist_candidates() {
-    let store = fresh_store();
+    fresh_store();
     // Eight distinct live vectors but only nlist=2: sampling collects the whole bounded pool, not
     // just two, before entering Training (ADR 0031 Slice 8, P3).
-    seed_distinct(&store, 8);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    seed_distinct(8);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     // One large sampling step exhausts the (8-subject) range -> Training with all 8 candidates.
-    let status = store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("sampling step");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("sampling step");
     assert_eq!(status.phase, VectorRebuildPhase::Training);
     assert_eq!(
         status.candidates_collected, 8,
@@ -3533,13 +3015,11 @@ fn sampling_collects_more_than_nlist_candidates() {
 
 #[test]
 fn training_produces_nlist_valid_centroids() {
-    let store = fresh_store();
-    seed_distinct(&store, 8);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(8);
+    admin_start_vector_rebuild(router(), INDEX_ID, 3, 100).expect("start");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
     assert_eq!(
@@ -3560,13 +3040,11 @@ fn training_produces_nlist_valid_centroids() {
 #[test]
 fn training_is_deterministic() {
     fn run() -> Vec<Vec<u8>> {
-        let store = fresh_store();
-        seed_distinct(&store, 8);
-        store
-            .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
-            .expect("start");
+        fresh_store();
+        seed_distinct(8);
+        admin_start_vector_rebuild(router(), INDEX_ID, 3, 100).expect("start");
         assert_eq!(
-            drive_steps(&store, INDEX_ID).phase,
+            drive_steps(INDEX_ID).phase,
             VectorRebuildPhase::ReadyToPublish
         );
         IVF_CENTROIDS.with_borrow(|m| {
@@ -3590,15 +3068,11 @@ fn training_is_deterministic() {
 
 #[test]
 fn training_writes_no_pages_or_centroids() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     // One step completes Sampling and enters Training (iteration 0).
-    let status = store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("step");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("step");
     assert_eq!(status.phase, VectorRebuildPhase::Training);
     // Centroids live in the durable state record until the transition to Building; nothing is
     // published to IVF_CENTROIDS or VECTOR_PAGE_META during Training.
@@ -3613,71 +3087,54 @@ fn training_writes_no_pages_or_centroids() {
 
 #[test]
 fn abort_from_training_is_immediate_idle() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let status = store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("step");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("step");
     assert_eq!(status.phase, VectorRebuildPhase::Training);
-    store
-        .admin_abort_vector_rebuild(router(), INDEX_ID)
-        .expect("abort from training");
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort from training");
     assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        admin_vector_rebuild_status(router(), INDEX_ID)
             .unwrap()
             .phase,
         VectorRebuildPhase::Idle
     );
     // O(1) recovery: a fresh rebuild can start again.
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("restart after abort");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("restart after abort");
 }
 
 #[test]
 fn upsert_during_training_is_active_only_then_shadowed_by_building() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    let status = store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("step");
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("step");
     assert_eq!(status.phase, VectorRebuildPhase::Training);
     // A new subject upserted during Training is active-only (no shadow slot yet).
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
-        .expect("active-only upsert");
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0)).expect("active-only upsert");
+    let entry = subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
     assert!(
         entry.shadow_slot.is_none(),
         "mutation during Training is active-only"
     );
     // Building walks every live subject and shadows it; publish makes it searchable.
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    let entry = subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
     assert!(
         entry.shadow_slot.is_some(),
         "Building shadows the Training-era mutation"
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    let after = store.vector_search(&search_value(1.0, 10)).expect("search");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    let after = vector_search(&search_value(1.0, 10)).expect("search");
     assert!(after.hits.iter().any(|h| h.subject == subject(99)));
 }
 
 #[test]
 fn partition_health_reports_skew_and_empty_partitions() {
-    let store = fresh_store();
+    fresh_store();
     // Three centroids [0, 10, 20]; populate only the first two (3 rows near 0, 1 row near 10), so
     // partition 2 stays empty and partition 0 is the skew peak.
     let centroids = vec![cvec(0.0), cvec(10.0), cvec(20.0)];
@@ -3687,11 +3144,9 @@ fn partition_health_reports_skew_and_empty_partitions() {
         (subject(3), cvec(0.2)),
         (subject(4), cvec(10.0)),
     ];
-    store.seed_ivf_for_test(INDEX_ID, VectorEncoding::F32, DIMS, &centroids, &vectors);
+    seed_ivf_for_test(INDEX_ID, VectorEncoding::F32, DIMS, &centroids, &vectors);
 
-    let health = store
-        .admin_vector_partition_health(router(), INDEX_ID)
-        .expect("health");
+    let health = admin_vector_partition_health(router(), INDEX_ID).expect("health");
     assert_eq!(health.nlist, 3);
     assert_eq!(
         health.partitions_examined, 2,
@@ -3710,37 +3165,28 @@ fn partition_health_reports_skew_and_empty_partitions() {
 
 #[test]
 fn partition_health_unknown_index_errors() {
-    let store = fresh_store();
+    fresh_store();
     assert_eq!(
-        store
-            .admin_vector_partition_health(router(), 999)
-            .unwrap_err(),
+        admin_vector_partition_health(router(), 999).unwrap_err(),
         VectorCanisterError::UnknownIndex
     );
 }
 
 #[test]
 fn slab_stats_dual_write_rollback_keeps_live_and_counts_tombstone() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
-    drive_into_building(&store, INDEX_ID); // -> Building (dual-write)
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_into_building(INDEX_ID); // -> Building (dual-write)
 
-    let before = store
-        .admin_vector_slab_stats(router(), Some(INDEX_ID))
-        .expect("stats");
+    let before = admin_vector_slab_stats(router(), Some(INDEX_ID)).expect("stats");
     // Force the shadow append to fail; the active append succeeds first and is then rolled back
     // (tombstoned) by vector_upsert.
     crate::facade::stable::page_store::arm_append_failure(1);
-    let err = store
-        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+    let err = vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
         .expect_err("shadow grow failure propagates");
     assert_eq!(err, VectorCanisterError::StableGrowFailed);
-    let after = store
-        .admin_vector_slab_stats(router(), Some(INDEX_ID))
-        .expect("stats");
+    let after = admin_vector_slab_stats(router(), Some(INDEX_ID)).expect("stats");
 
     assert_eq!(
         after.scope.physical_live_row_count, before.scope.physical_live_row_count,
@@ -3755,22 +3201,18 @@ fn slab_stats_dual_write_rollback_keeps_live_and_counts_tombstone() {
 
 #[test]
 fn slab_stats_rejects_non_router_caller() {
-    let store = fresh_store();
+    fresh_store();
     assert_eq!(
-        store
-            .admin_vector_slab_stats(shard_canister(), None)
-            .unwrap_err(),
+        admin_vector_slab_stats(shard_canister(), None).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
 }
 
 #[test]
 fn slab_stats_step_rejects_non_router_caller() {
-    let store = fresh_store();
+    fresh_store();
     assert_eq!(
-        store
-            .admin_vector_slab_stats_step(shard_canister(), None, 10, None)
-            .unwrap_err(),
+        admin_vector_slab_stats_step(shard_canister(), None, 10, None).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
 }
@@ -3790,12 +3232,8 @@ fn trigger_policy() -> VectorMaintenancePolicy {
 }
 
 /// Page-meta health scoped to the active version with the given tombstone load.
-fn attested_page(
-    store: &VectorCanisterStore,
-    total_rows: u64,
-    tombstoned_rows: u64,
-) -> VectorPartitionPageHealth {
-    let def = store.def_for_test(INDEX_ID).expect("def");
+fn attested_page(total_rows: u64, tombstoned_rows: u64) -> VectorPartitionPageHealth {
+    let def = def_for_test(INDEX_ID).expect("def");
     VectorPartitionPageHealth {
         index_id: INDEX_ID,
         index_version: def.active_index_version,
@@ -3808,18 +3246,15 @@ fn attested_page(
 
 #[test]
 fn partition_health_step_facade_resolves_active_version_and_merges() {
-    let store = fresh_store();
-    seed_distinct(&store, 4); // 4 live rows, version 1, degenerate partition 0
+    fresh_store();
+    seed_distinct(4); // 4 live rows, version 1, degenerate partition 0
     // Re-upsert subject 1 at a newer embedding_version: tombstones the old row, appends a new one.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(1, 2, 5.0))
-        .expect("re-upsert");
+    vector_upsert(shard_canister(), &upsert_vec(1, 2, 5.0)).expect("re-upsert");
 
     let mut merged = VectorPartitionPageHealth::default();
     let mut cursor: Option<Vec<u8>> = None;
     loop {
-        let step = store
-            .admin_vector_partition_health_step(router(), INDEX_ID, cursor.clone(), 1)
+        let step = admin_vector_partition_health_step(router(), INDEX_ID, cursor.clone(), 1)
             .expect("health step");
         merged.index_id = step.partial.index_id;
         merged.index_version = step.partial.index_version;
@@ -3845,40 +3280,34 @@ fn partition_health_step_facade_resolves_active_version_and_merges() {
 
 #[test]
 fn partition_health_step_facade_rejects_non_router_and_unknown_index() {
-    let store = fresh_store();
-    seed_distinct(&store, 2);
+    fresh_store();
+    seed_distinct(2);
     assert_eq!(
-        store
-            .admin_vector_partition_health_step(shard_canister(), INDEX_ID, None, 10)
-            .unwrap_err(),
+        admin_vector_partition_health_step(shard_canister(), INDEX_ID, None, 10).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
     assert_eq!(
-        store
-            .admin_vector_partition_health_step(router(), 999, None, 10)
-            .unwrap_err(),
+        admin_vector_partition_health_step(router(), 999, None, 10).unwrap_err(),
         VectorCanisterError::UnknownIndex
     );
 }
 
 #[test]
 fn trigger_healthy_does_not_start_rebuild() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    let rec = store
-        .admin_start_vector_rebuild_if_recommended(
-            router(),
-            INDEX_ID,
-            attested_page(&store, 1_000, 100), // 10% < recommended
-            trigger_policy(),
-            Some(2),
-            100,
-        )
-        .expect("trigger");
+    fresh_store();
+    seed_distinct(4);
+    let rec = admin_start_vector_rebuild_if_recommended(
+        router(),
+        INDEX_ID,
+        attested_page(1_000, 100), // 10% < recommended
+        trigger_policy(),
+        Some(2),
+        100,
+    )
+    .expect("trigger");
     assert_eq!(rec, VectorMaintenanceRecommendation::Healthy);
     assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        admin_vector_rebuild_status(router(), INDEX_ID)
             .expect("status")
             .phase,
         VectorRebuildPhase::Idle,
@@ -3888,44 +3317,39 @@ fn trigger_healthy_does_not_start_rebuild() {
 
 #[test]
 fn trigger_required_starts_rebuild_at_target_nlist() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    let rec = store
-        .admin_start_vector_rebuild_if_recommended(
-            router(),
-            INDEX_ID,
-            attested_page(&store, 1_000, 600), // 60% >= required
-            trigger_policy(),
-            Some(2),
-            100,
-        )
-        .expect("trigger");
+    fresh_store();
+    seed_distinct(4);
+    let rec = admin_start_vector_rebuild_if_recommended(
+        router(),
+        INDEX_ID,
+        attested_page(1_000, 600), // 60% >= required
+        trigger_policy(),
+        Some(2),
+        100,
+    )
+    .expect("trigger");
     assert_eq!(rec, VectorMaintenanceRecommendation::RebuildRequired);
-    let status = store
-        .admin_vector_rebuild_status(router(), INDEX_ID)
-        .expect("status");
+    let status = admin_vector_rebuild_status(router(), INDEX_ID).expect("status");
     assert_eq!(status.phase, VectorRebuildPhase::Sampling);
     assert_eq!(status.target_index_version, TARGET_V);
 }
 
 #[test]
 fn trigger_recommended_starts_rebuild() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
-    let rec = store
-        .admin_start_vector_rebuild_if_recommended(
-            router(),
-            INDEX_ID,
-            attested_page(&store, 1_000, 300), // 30%: recommended band
-            trigger_policy(),
-            Some(2),
-            100,
-        )
-        .expect("trigger");
+    fresh_store();
+    seed_distinct(4);
+    let rec = admin_start_vector_rebuild_if_recommended(
+        router(),
+        INDEX_ID,
+        attested_page(1_000, 300), // 30%: recommended band
+        trigger_policy(),
+        Some(2),
+        100,
+    )
+    .expect("trigger");
     assert_eq!(rec, VectorMaintenanceRecommendation::RebuildRecommended);
     assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        admin_vector_rebuild_status(router(), INDEX_ID)
             .expect("status")
             .phase,
         VectorRebuildPhase::Sampling
@@ -3934,113 +3358,107 @@ fn trigger_recommended_starts_rebuild() {
 
 #[test]
 fn trigger_degenerate_nlist_without_target_is_rejected() {
-    let store = fresh_store();
-    seed_distinct(&store, 4); // def.nlist == 1
+    fresh_store();
+    seed_distinct(4); // def.nlist == 1
     assert_eq!(
-        store
-            .admin_start_vector_rebuild_if_recommended(
-                router(),
-                INDEX_ID,
-                attested_page(&store, 1_000, 600),
-                trigger_policy(),
-                None, // no target, and def.nlist == 1 -> cannot default
-                100,
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            attested_page(1_000, 600),
+            trigger_policy(),
+            None, // no target, and def.nlist == 1 -> cannot default
+            100,
+        )
+        .unwrap_err(),
         VectorCanisterError::InvalidRebuildParams
     );
 }
 
 #[test]
 fn trigger_rejects_stale_page_health() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
+    fresh_store();
+    seed_distinct(4);
     // Wrong active version on the page health is rejected (the skew summary is recomputed
     // server-side, so it has no stale surface of its own).
-    let mut stale_page = attested_page(&store, 1_000, 600);
+    let mut stale_page = attested_page(1_000, 600);
     stale_page.index_version = 999;
     assert_eq!(
-        store
-            .admin_start_vector_rebuild_if_recommended(
-                router(),
-                INDEX_ID,
-                stale_page,
-                trigger_policy(),
-                Some(2),
-                100,
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            stale_page,
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .unwrap_err(),
         VectorCanisterError::StaleMaintenanceHealth
     );
     // Wrong index_id on the page health is likewise rejected.
-    let mut foreign_page = attested_page(&store, 1_000, 600);
+    let mut foreign_page = attested_page(1_000, 600);
     foreign_page.index_id = INDEX_ID + 1;
     assert_eq!(
-        store
-            .admin_start_vector_rebuild_if_recommended(
-                router(),
-                INDEX_ID,
-                foreign_page,
-                trigger_policy(),
-                Some(2),
-                100,
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            foreign_page,
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .unwrap_err(),
         VectorCanisterError::StaleMaintenanceHealth
     );
 }
 
 #[test]
 fn trigger_rejects_invalid_policy() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
+    fresh_store();
+    seed_distinct(4);
     let mut bad = trigger_policy();
     bad.recommended_tombstone_ratio_bps = 6_000;
     bad.required_tombstone_ratio_bps = 5_000;
     assert_eq!(
-        store
-            .admin_start_vector_rebuild_if_recommended(
-                router(),
-                INDEX_ID,
-                attested_page(&store, 1_000, 600),
-                bad,
-                Some(2),
-                100,
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            attested_page(1_000, 600),
+            bad,
+            Some(2),
+            100,
+        )
+        .unwrap_err(),
         VectorCanisterError::InvalidMaintenancePolicy
     );
 }
 
 #[test]
 fn trigger_rejects_non_router_and_unknown_index() {
-    let store = fresh_store();
-    seed_distinct(&store, 4);
+    fresh_store();
+    seed_distinct(4);
     assert_eq!(
-        store
-            .admin_start_vector_rebuild_if_recommended(
-                shard_canister(),
-                INDEX_ID,
-                attested_page(&store, 1_000, 600),
-                trigger_policy(),
-                Some(2),
-                100,
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild_if_recommended(
+            shard_canister(),
+            INDEX_ID,
+            attested_page(1_000, 600),
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .unwrap_err(),
         VectorCanisterError::Unauthorized
     );
-    let empty = fresh_store();
+    fresh_store();
     assert_eq!(
-        empty
-            .admin_start_vector_rebuild_if_recommended(
-                router(),
-                INDEX_ID,
-                VectorPartitionPageHealth::default(),
-                trigger_policy(),
-                Some(2),
-                100,
-            )
-            .unwrap_err(),
+        admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            VectorPartitionPageHealth::default(),
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .unwrap_err(),
         VectorCanisterError::UnknownIndex
     );
 }
@@ -4049,47 +3467,39 @@ fn trigger_rejects_non_router_and_unknown_index() {
 
 #[test]
 fn centroid_cache_warmup_then_status_reports_one_entry() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         &two_clusters(),
         &clustered_vectors(),
     );
-    let before = store
-        .admin_vector_centroid_cache_status(router())
-        .expect("status");
+    let before = admin_vector_centroid_cache_status(router()).expect("status");
     assert_eq!(before.entries, 0);
     assert_eq!(before.bytes, 0);
     assert_eq!(before.max_bytes, 8 * 1024 * 1024);
 
-    let after = store
-        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-        .expect("warmup");
+    let after = admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
     assert_eq!(after.entries, 1);
     assert!(after.bytes > 0, "a warmed nlist=2 set occupies heap bytes");
 }
 
 #[test]
 fn centroid_cache_search_parity_cold_vs_warm() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         &two_clusters(),
         &clustered_vectors(),
     );
-    let cold = store
-        .vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY))
-        .expect("cold scan");
-    store
-        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-        .expect("warmup");
-    let warm = store
-        .vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY))
-        .expect("warm scan");
+    let cold =
+        vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY)).expect("cold scan");
+    admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
+    let warm =
+        vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY)).expect("warm scan");
     let cold_hits: Vec<_> = cold.hits.iter().map(|h| (h.subject, h.distance)).collect();
     let warm_hits: Vec<_> = warm.hits.iter().map(|h| (h.subject, h.distance)).collect();
     assert_eq!(cold_hits, warm_hits, "warm cache yields identical results");
@@ -4097,31 +3507,25 @@ fn centroid_cache_search_parity_cold_vs_warm() {
 
 #[test]
 fn centroid_cache_clear_empties() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
+    fresh_store();
+    seed_ivf_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         &two_clusters(),
         &clustered_vectors(),
     );
-    store
-        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-        .expect("warmup");
-    let cleared = store
-        .admin_vector_centroid_cache_clear(router())
-        .expect("clear");
+    admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
+    let cleared = admin_vector_centroid_cache_clear(router()).expect("clear");
     assert_eq!(cleared.entries, 0);
     assert_eq!(cleared.bytes, 0);
 }
 
 #[test]
 fn centroid_cache_warmup_skips_degenerate_index() {
-    let store = fresh_store();
-    seed_distinct(&store, 4); // degenerate nlist = 1
-    let status = store
-        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-        .expect("warmup");
+    fresh_store();
+    seed_distinct(4); // degenerate nlist = 1
+    let status = admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
     assert_eq!(
         status.entries, 0,
         "a degenerate index has no centroid set to cache"
@@ -4130,75 +3534,57 @@ fn centroid_cache_warmup_skips_degenerate_index() {
 
 #[test]
 fn centroid_cache_warmup_unknown_index_errors() {
-    let store = fresh_store();
+    fresh_store();
     assert_eq!(
-        store
-            .admin_vector_centroid_cache_warmup(router(), 999)
-            .unwrap_err(),
+        admin_vector_centroid_cache_warmup(router(), 999).unwrap_err(),
         VectorCanisterError::UnknownIndex
     );
 }
 
 #[test]
 fn centroid_cache_endpoints_reject_non_router() {
-    let store = fresh_store();
+    fresh_store();
     assert_eq!(
-        store
-            .admin_vector_centroid_cache_warmup(shard_canister(), INDEX_ID)
-            .unwrap_err(),
+        admin_vector_centroid_cache_warmup(shard_canister(), INDEX_ID).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
     assert_eq!(
-        store
-            .admin_vector_centroid_cache_clear(shard_canister())
-            .unwrap_err(),
+        admin_vector_centroid_cache_clear(shard_canister()).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
     assert_eq!(
-        store
-            .admin_vector_centroid_cache_status(shard_canister())
-            .unwrap_err(),
+        admin_vector_centroid_cache_status(shard_canister()).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
 }
 
 #[test]
 fn centroid_cache_publish_invalidates_warmed_entry() {
-    let store = fresh_store();
-    seed_distinct(&store, 6); // degenerate nlist = 1, version 1
+    fresh_store();
+    seed_distinct(6); // degenerate nlist = 1, version 1
     // First rebuild to nlist = 2 and publish so the active set is partitioned + ready.
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    drive_cleanup(&store, INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
     assert_eq!(
-        store
-            .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+        admin_vector_centroid_cache_warmup(router(), INDEX_ID)
             .expect("warmup")
             .entries,
         1
     );
     // A second rebuild + publish flips the active generation and must drop the warmed entry.
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect("start 2");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start 2");
     assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
+        drive_steps(INDEX_ID).phase,
         VectorRebuildPhase::ReadyToPublish
     );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish 2");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish 2");
     assert_eq!(
-        store
-            .admin_vector_centroid_cache_status(router())
+        admin_vector_centroid_cache_status(router())
             .expect("status")
             .entries,
         0,
@@ -4238,15 +3624,14 @@ fn maint_req() -> VectorMaintenanceStepRequest {
 
 /// Seeds `live` distinct live rows then creates `tombstones` extra tombstoned rows by re-upserting
 /// subject 1 at increasing embedding_versions (each re-upsert tombstones the prior row).
-fn seed_live_and_tombstones(store: &VectorCanisterStore, live: u32, tombstones: u32) {
-    seed_distinct(store, live);
+fn seed_live_and_tombstones(live: u32, tombstones: u32) {
+    seed_distinct(live);
     for k in 0..tombstones {
-        store
-            .vector_upsert(
-                shard_canister(),
-                &upsert_vec(1, 2 + k as u64, 100.0 + k as f32),
-            )
-            .expect("tombstone re-upsert");
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec(1, 2 + k as u64, 100.0 + k as f32),
+        )
+        .expect("tombstone re-upsert");
     }
 }
 
@@ -4260,65 +3645,51 @@ fn set_active_version(index_id: u32, version: u64) {
 
 #[test]
 fn maintenance_step_scans_then_reports_healthy_and_resets() {
-    let store = fresh_store();
-    seed_distinct(&store, 4); // 4 live rows, no tombstones -> healthy
+    fresh_store();
+    seed_distinct(4); // 4 live rows, no tombstones -> healthy
 
     // First step (from Idle) runs one scan step; the single degenerate page exhausts immediately.
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("scan step"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("scan step"),
         VectorMaintenanceStepResult::Scanning { exhausted: true }
     );
     // Second step recommends from the exhausted scan: healthy -> reset to Idle.
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("recommend step"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("recommend step"),
         VectorMaintenanceStepResult::Healthy
     );
     assert_eq!(
-        store
-            .admin_vector_maintenance_status(router(), INDEX_ID)
-            .expect("status"),
+        admin_vector_maintenance_status(router(), INDEX_ID).expect("status"),
         VectorMaintenanceState::Idle
     );
 }
 
 #[test]
 fn maintenance_step_drives_required_rebuild_to_awaiting_publish_then_publishes() {
-    let store = fresh_store();
-    seed_live_and_tombstones(&store, 4, 4); // 50% tombstones -> RebuildRequired
+    fresh_store();
+    seed_live_and_tombstones(4, 4); // 50% tombstones -> RebuildRequired
 
     // Scan exhausts, then the recommendation starts a rebuild at the target nlist.
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("scan"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("scan"),
         VectorMaintenanceStepResult::Scanning { exhausted: true }
     );
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("recommend"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("recommend"),
         VectorMaintenanceStepResult::RebuildStarted(
             VectorMaintenanceRecommendation::RebuildRequired
         )
     );
     // Starting the rebuild clears the scan state (the rebuild state machine now drives).
     assert_eq!(
-        store
-            .admin_vector_maintenance_status(router(), INDEX_ID)
-            .expect("status"),
+        admin_vector_maintenance_status(router(), INDEX_ID).expect("status"),
         VectorMaintenanceState::Idle
     );
 
     // Each step drives one bounded rebuild unit until it stops at ReadyToPublish (publish is explicit).
     let mut awaiting = false;
     for _ in 0..100_000 {
-        match store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("rebuild step")
+        match admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("rebuild step")
         {
             VectorMaintenanceStepResult::RebuildAdvanced(_) => continue,
             VectorMaintenanceStepResult::AwaitingPublish(status) => {
@@ -4333,14 +3704,11 @@ fn maintenance_step_drives_required_rebuild_to_awaiting_publish_then_publishes()
 
     // The step must never auto-publish: another step still reports AwaitingPublish.
     assert!(matches!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("still awaiting"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("still awaiting"),
         VectorMaintenanceStepResult::AwaitingPublish(_)
     ));
     assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        admin_vector_rebuild_status(router(), INDEX_ID)
             .expect("status")
             .phase,
         VectorRebuildPhase::ReadyToPublish,
@@ -4348,20 +3716,16 @@ fn maintenance_step_drives_required_rebuild_to_awaiting_publish_then_publishes()
     );
 
     // Explicit publish flips the active generation; subsequent steps drive cleanup to Idle.
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish");
-    let def = store.def_for_test(INDEX_ID).expect("def");
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    let def = def_for_test(INDEX_ID).expect("def");
     assert_eq!(def.active_index_version, TARGET_V);
     assert_eq!(def.nlist, 2);
 
     let mut cleaned = false;
     for _ in 0..100_000 {
-        let result = store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("cleanup step");
-        if store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
+        let result =
+            admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("cleanup step");
+        if admin_vector_rebuild_status(router(), INDEX_ID)
             .expect("status")
             .phase
             == VectorRebuildPhase::Idle
@@ -4385,8 +3749,8 @@ fn maintenance_step_drives_required_rebuild_to_awaiting_publish_then_publishes()
 
 #[test]
 fn maintenance_step_fails_closed_then_recovers_via_reset() {
-    let store = fresh_store();
-    seed_live_and_tombstones(&store, 4, 4); // 50% tombstones, degenerate nlist = 1
+    fresh_store();
+    seed_live_and_tombstones(4, 4); // 50% tombstones, degenerate nlist = 1
 
     // No explicit target on a degenerate (nlist=1) index: the rebuild start rejects nlist < 2.
     let req = VectorMaintenanceStepRequest {
@@ -4394,15 +3758,10 @@ fn maintenance_step_fails_closed_then_recovers_via_reset() {
         ..maint_req()
     };
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, req)
-            .expect("scan"),
+        admin_vector_maintenance_step(router(), INDEX_ID, req).expect("scan"),
         VectorMaintenanceStepResult::Scanning { exhausted: true }
     );
-    match store
-        .admin_vector_maintenance_step(router(), INDEX_ID, req)
-        .expect("failing recommend")
-    {
+    match admin_vector_maintenance_step(router(), INDEX_ID, req).expect("failing recommend") {
         VectorMaintenanceStepResult::Failed(failure) => {
             assert_eq!(failure.code, VectorCanisterError::InvalidRebuildParams);
             assert!(!failure.message.is_empty());
@@ -4410,46 +3769,34 @@ fn maintenance_step_fails_closed_then_recovers_via_reset() {
         other => panic!("expected Failed, got {other:?}"),
     }
     assert!(matches!(
-        store
-            .admin_vector_maintenance_status(router(), INDEX_ID)
-            .expect("status"),
+        admin_vector_maintenance_status(router(), INDEX_ID).expect("status"),
         VectorMaintenanceState::Failed(_)
     ));
 
     // A failed state is a no-op until an explicit reset.
     assert!(matches!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, req)
-            .expect("no-op"),
+        admin_vector_maintenance_step(router(), INDEX_ID, req).expect("no-op"),
         VectorMaintenanceStepResult::Failed(_)
     ));
 
-    store
-        .admin_vector_maintenance_reset(router(), INDEX_ID)
-        .expect("reset");
+    admin_vector_maintenance_reset(router(), INDEX_ID).expect("reset");
     assert_eq!(
-        store
-            .admin_vector_maintenance_status(router(), INDEX_ID)
-            .expect("status"),
+        admin_vector_maintenance_status(router(), INDEX_ID).expect("status"),
         VectorMaintenanceState::Idle
     );
     // Maintenance resumes after reset (with a valid target this time).
     assert!(matches!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("resume"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("resume"),
         VectorMaintenanceStepResult::Scanning { .. }
     ));
 }
 
 #[test]
 fn maintenance_scan_restarts_on_stale_cursor_after_version_flip() {
-    let store = fresh_store();
+    fresh_store();
     // 1 slot/page so 4 rows span 4 pages, forcing a multi-step (non-exhausting) scan.
-    store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80)
-        .expect("create");
-    seed_distinct(&store, 4);
+    create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80).expect("create");
+    seed_distinct(4);
 
     // One bounded page (scan_max_pages = 1): the scan does not exhaust and persists a Some cursor.
     let req = VectorMaintenanceStepRequest {
@@ -4457,9 +3804,7 @@ fn maintenance_scan_restarts_on_stale_cursor_after_version_flip() {
         ..maint_req()
     };
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, req)
-            .expect("scan 1"),
+        admin_vector_maintenance_step(router(), INDEX_ID, req).expect("scan 1"),
         VectorMaintenanceStepResult::Scanning { exhausted: false }
     );
 
@@ -4468,15 +3813,10 @@ fn maintenance_scan_restarts_on_stale_cursor_after_version_flip() {
 
     // The next scan step sees InvalidStatsCursor and restarts cleanly from the lower bound.
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, req)
-            .expect("restart"),
+        admin_vector_maintenance_step(router(), INDEX_ID, req).expect("restart"),
         VectorMaintenanceStepResult::Scanning { exhausted: false }
     );
-    match store
-        .admin_vector_maintenance_status(router(), INDEX_ID)
-        .expect("status")
-    {
+    match admin_vector_maintenance_status(router(), INDEX_ID).expect("status") {
         VectorMaintenanceState::Scanning {
             cursor,
             exhausted,
@@ -4492,14 +3832,12 @@ fn maintenance_scan_restarts_on_stale_cursor_after_version_flip() {
 
 #[test]
 fn maintenance_exhausted_scan_restarts_on_version_flip_before_recommending() {
-    let store = fresh_store();
-    seed_distinct(&store, 4); // single degenerate page -> scan exhausts in one step
+    fresh_store();
+    seed_distinct(4); // single degenerate page -> scan exhausts in one step
 
     // Drive the scan to exhausted (recommendation would happen on the next step).
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("scan"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("scan"),
         VectorMaintenanceStepResult::Scanning { exhausted: true }
     );
 
@@ -4509,15 +3847,10 @@ fn maintenance_exhausted_scan_restarts_on_version_flip_before_recommending() {
     // The generation guard at the exhausted->recommend boundary catches the flip and restarts the
     // scan instead of recommending against the stale merged page health.
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("restart"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("restart"),
         VectorMaintenanceStepResult::Scanning { exhausted: false }
     );
-    match store
-        .admin_vector_maintenance_status(router(), INDEX_ID)
-        .expect("status")
-    {
+    match admin_vector_maintenance_status(router(), INDEX_ID).expect("status") {
         VectorMaintenanceState::Scanning {
             cursor,
             exhausted,
@@ -4533,39 +3866,29 @@ fn maintenance_exhausted_scan_restarts_on_version_flip_before_recommending() {
     // A freshly restarted scan (cursor=None, exhausted=false) performs a scan step, not a
     // recommendation, even though it could otherwise immediately judge an (empty) new version.
     assert!(matches!(
-        store
-            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
-            .expect("scan again"),
+        admin_vector_maintenance_step(router(), INDEX_ID, maint_req()).expect("scan again"),
         VectorMaintenanceStepResult::Scanning { .. }
     ));
 }
 
 #[test]
 fn maintenance_endpoints_reject_non_router_and_unknown_index() {
-    let store = fresh_store();
-    seed_distinct(&store, 2);
+    fresh_store();
+    seed_distinct(2);
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(shard_canister(), INDEX_ID, maint_req())
-            .unwrap_err(),
+        admin_vector_maintenance_step(shard_canister(), INDEX_ID, maint_req()).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
     assert_eq!(
-        store
-            .admin_vector_maintenance_step(router(), 999, maint_req())
-            .unwrap_err(),
+        admin_vector_maintenance_step(router(), 999, maint_req()).unwrap_err(),
         VectorCanisterError::UnknownIndex
     );
     assert_eq!(
-        store
-            .admin_vector_maintenance_status(shard_canister(), INDEX_ID)
-            .unwrap_err(),
+        admin_vector_maintenance_status(shard_canister(), INDEX_ID).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
     assert_eq!(
-        store
-            .admin_vector_maintenance_reset(shard_canister(), INDEX_ID)
-            .unwrap_err(),
+        admin_vector_maintenance_reset(shard_canister(), INDEX_ID).unwrap_err(),
         VectorCanisterError::Unauthorized
     );
 }
@@ -4573,7 +3896,7 @@ fn maintenance_endpoints_reject_non_router_and_unknown_index() {
 // --- ADR 0034 Slice 6: candidate-restricted vector search tests ---
 #[test]
 fn candidate_search_accepts_vertex_only_subjects() {
-    let store = fresh_store();
+    fresh_store();
     let mut req = search_value(0.0, 10);
     // VectorSubject currently only has the Vertex variant; this smoke test confirms the typed
     // contract is accepted. When a non-vertex variant is added, add an explicit rejection test.
@@ -4581,13 +3904,13 @@ fn candidate_search_accepts_vertex_only_subjects() {
         shard_id: ShardId::new(0),
         vertex_id: 0,
     }]);
-    let result = store.vector_search(&req).expect("vertex-only is accepted");
+    let result = vector_search(&req).expect("vertex-only is accepted");
     assert!(result.hits.is_empty());
 }
 
 #[test]
 fn candidate_search_validates_shape_before_physical_def() {
-    let store = fresh_store();
+    fresh_store();
     // No upsert, so there is no physical def for INDEX_ID. An oversized allowlist must still fail.
     let mut req = search_value(0.0, 10);
     let too_many: Vec<VectorSubject> = (0..MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32 + 1)
@@ -4597,38 +3920,28 @@ fn candidate_search_validates_shape_before_physical_def() {
         })
         .collect();
     req.candidate_subjects = Some(too_many);
-    let err = store
-        .vector_search(&req)
-        .expect_err("oversized on empty index");
+    let err = vector_search(&req).expect_err("oversized on empty index");
     assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 
     // Duplicate candidates on an empty index also fail.
     let mut req = search_value(0.0, 10);
     req.candidate_subjects = Some(vec![subject(7), subject(7)]);
-    let err = store
-        .vector_search(&req)
-        .expect_err("duplicate on empty index");
+    let err = vector_search(&req).expect_err("duplicate on empty index");
     assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 }
 
 #[test]
 fn candidate_search_restricts_top_k_to_allowlist() {
-    let store = fresh_store();
+    fresh_store();
     // Three vectors at 0.0, 1.0, 2.0. Query at 0.0, top_k=2.
     // Unrestricted would return vertices 7 (distance 0) and 8 (distance 1).
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0))
-        .expect("upsert 7");
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 1.0))
-        .expect("upsert 8");
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(9, 1, 2.0))
-        .expect("upsert 9");
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0)).expect("upsert 7");
+    vector_upsert(shard_canister(), &upsert_vec(8, 1, 1.0)).expect("upsert 8");
+    vector_upsert(shard_canister(), &upsert_vec(9, 1, 2.0)).expect("upsert 9");
 
     let mut req = search_value(0.0, 2);
     req.candidate_subjects = Some(vec![subject(8), subject(9)]);
-    let result = store.vector_search(&req).expect("candidate search");
+    let result = vector_search(&req).expect("candidate search");
     assert_eq!(result.hits.len(), 2);
     assert_eq!(result.hits[0].subject, subject(8));
     assert_eq!(result.hits[1].subject, subject(9));
@@ -4638,70 +3951,54 @@ fn candidate_search_restricts_top_k_to_allowlist() {
 
 #[test]
 fn candidate_search_empty_allowlist_returns_no_hits() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .expect("upsert");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).expect("upsert");
     let mut req = search_value(0.0, 10);
     req.candidate_subjects = Some(vec![]);
-    let result = store.vector_search(&req).expect("empty candidate search");
+    let result = vector_search(&req).expect("empty candidate search");
     assert!(result.hits.is_empty());
 }
 
 #[test]
 fn candidate_search_skips_absent_and_deleted_subjects() {
-    let store = fresh_store();
+    fresh_store();
     // Live subject 7.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .expect("upsert 7");
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).expect("upsert 7");
     // Absent subject 8 is not in the index.
     // Deleted subject 9.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(9, 1, 2.0))
-        .expect("upsert 9");
-    store
-        .vector_remove(shard_canister(), &remove_op(9, 2))
-        .expect("remove 9");
+    vector_upsert(shard_canister(), &upsert_vec(9, 1, 2.0)).expect("upsert 9");
+    vector_remove(shard_canister(), &remove_op(9, 2)).expect("remove 9");
 
     let mut req = search_value(0.0, 10);
     req.candidate_subjects = Some(vec![subject(7), subject(8), subject(9)]);
-    let result = store.vector_search(&req).expect("candidate search");
+    let result = vector_search(&req).expect("candidate search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].subject, subject(7));
 }
 
 #[test]
 fn candidate_search_preserves_none_as_unrestricted_path() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0))
-        .expect("upsert 7");
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 1.0))
-        .expect("upsert 8");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0)).expect("upsert 7");
+    vector_upsert(shard_canister(), &upsert_vec(8, 1, 1.0)).expect("upsert 8");
 
     let req = search_value(0.0, 10);
     assert!(req.candidate_subjects.is_none());
-    let result = store.vector_search(&req).expect("unrestricted search");
+    let result = vector_search(&req).expect("unrestricted search");
     assert_eq!(result.hits.len(), 2);
     assert_eq!(result.hits[0].subject, subject(7));
 }
 
 #[test]
 fn candidate_scan_page_major_matches_exact_scan_across_pages() {
-    let store = fresh_store();
+    fresh_store();
     // d = 4 F32: pad stride 16, meta 4. A small page budget forces 2 rows per page, so five rows
     // span three pages ([0,1], [2,3], [4]) and the candidate scan must bulk-read every page.
-    store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80)
-        .expect("create");
-    assert_eq!(store.def_for_test(INDEX_ID).unwrap().slots_per_page, 2);
+    create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80).expect("create");
+    assert_eq!(def_for_test(INDEX_ID).unwrap().slots_per_page, 2);
 
     for (v, value) in [(0u32, 0.0f32), (1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0)] {
-        store
-            .vector_upsert(shard_canister(), &upsert_vec(v, 1, value))
-            .expect("upsert");
+        vector_upsert(shard_canister(), &upsert_vec(v, 1, value)).expect("upsert");
     }
 
     // Query at 4.0 puts vertex 4 (the last row, last page) in the top-3, so a page-major scan that
@@ -4709,10 +4006,8 @@ fn candidate_scan_page_major_matches_exact_scan_across_pages() {
     let allowlist: Vec<VectorSubject> = (0..5).map(subject).collect();
     let mut req = search_value(4.0, 3);
     req.candidate_subjects = Some(allowlist);
-    let batched = store.vector_search(&req).expect("batched candidate scan");
-    let exact = store
-        .vector_search(&search_value(4.0, 3))
-        .expect("exact scan");
+    let batched = vector_search(&req).expect("batched candidate scan");
+    let exact = vector_search(&search_value(4.0, 3)).expect("exact scan");
     assert_eq!(
         batched.hits, exact.hits,
         "page-major candidate scan must equal the exact read_row_bytes scan across pages"
@@ -4728,27 +4023,26 @@ fn candidate_scan_page_major_matches_exact_scan_across_pages() {
 
 #[test]
 fn candidate_scan_with_membership_matches_resolve_based() {
-    let store = fresh_store();
+    fresh_store();
     // Distinct subjects 1..8 (values 0.0..7.0); a large allowlist (>= live/2) is the scan-with-
     // membership regime, and it must produce the same top-k as the resolve-based path.
-    seed_distinct(&store, 8);
+    seed_distinct(8);
     let allowlist: Vec<VectorSubject> = (0..8).map(|v| subject(v + 1)).collect();
     let query = search_value(4.0, 5);
     let qv = super::search::decode_f32(&query.query);
-    let resolve = store
-        .candidate_subject_scan(
-            INDEX_ID,
-            1,
-            &qv,
-            VectorMetric::L2Squared,
-            VectorEncoding::F32,
-            &allowlist,
-            5,
-            0.0,
-            &[],
-            1.0,
-        )
-        .expect("resolve-based");
+    let resolve = candidate_subject_scan(
+        INDEX_ID,
+        1,
+        &qv,
+        VectorMetric::L2Squared,
+        VectorEncoding::F32,
+        &allowlist,
+        5,
+        0.0,
+        &[],
+        1.0,
+    )
+    .expect("resolve-based");
     let membership = super::search::candidate_scan_with_membership(
         INDEX_ID,
         1,
@@ -4770,7 +4064,7 @@ fn candidate_scan_with_membership_matches_resolve_based() {
 
 #[test]
 fn candidate_search_rejects_oversized_allowlist() {
-    let store = fresh_store();
+    fresh_store();
     let mut req = search_value(0.0, 10);
     let too_many: Vec<VectorSubject> = (0..MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32 + 1)
         .map(|i| VectorSubject::Vertex {
@@ -4779,19 +4073,17 @@ fn candidate_search_rejects_oversized_allowlist() {
         })
         .collect();
     req.candidate_subjects = Some(too_many);
-    let err = store.vector_search(&req).expect_err("oversized allowlist");
+    let err = vector_search(&req).expect_err("oversized allowlist");
     assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 }
 
 #[test]
 fn candidate_search_rejects_duplicate_subjects() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .expect("upsert");
+    fresh_store();
+    vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0)).expect("upsert");
     let mut req = search_value(0.0, 10);
     req.candidate_subjects = Some(vec![subject(7), subject(7)]);
-    let err = store.vector_search(&req).expect_err("duplicate candidates");
+    let err = vector_search(&req).expect_err("duplicate candidates");
     assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 }
 
@@ -4813,50 +4105,35 @@ mod i8_tests {
         values.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
 
-    fn i8_upsert(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        vertex_id: u32,
-        stamp: u64,
-        values: &[f32],
-        metric: VectorMetric,
-    ) {
-        store
-            .vector_upsert(
-                shard_canister(),
-                &VectorEmbeddingSyncOp {
-                    index_id,
-                    embedding_name_id: 0,
-                    subject: subject(vertex_id),
-                    mutation_id: stamp,
-                    encoding: VectorEncoding::I8,
-                    dims: DIMS,
-                    metric,
-                    bytes: i8_bytes(values),
-                    remove: false,
-                },
-            )
-            .expect("i8 upsert");
-    }
-
-    fn i8_search(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        values: &[f32],
-        metric: VectorMetric,
-        top_k: u32,
-    ) -> Vec<u32> {
-        let res = store
-            .vector_search(&VectorSearchRequest {
+    fn i8_upsert(index_id: u32, vertex_id: u32, stamp: u64, values: &[f32], metric: VectorMetric) {
+        vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
                 index_id,
-                query: i8_bytes(values),
+                embedding_name_id: 0,
+                subject: subject(vertex_id),
+                mutation_id: stamp,
                 encoding: VectorEncoding::I8,
                 dims: DIMS,
                 metric,
-                top_k,
-                candidate_subjects: None,
-            })
-            .expect("i8 search");
+                bytes: i8_bytes(values),
+                remove: false,
+            },
+        )
+        .expect("i8 upsert");
+    }
+
+    fn i8_search(index_id: u32, values: &[f32], metric: VectorMetric, top_k: u32) -> Vec<u32> {
+        let res = vector_search(&VectorSearchRequest {
+            index_id,
+            query: i8_bytes(values),
+            encoding: VectorEncoding::I8,
+            dims: DIMS,
+            metric,
+            top_k,
+            candidate_subjects: None,
+        })
+        .expect("i8 search");
         res.hits
             .iter()
             .map(|h| match h.subject {
@@ -4865,12 +4142,7 @@ mod i8_tests {
             .collect()
     }
 
-    fn row_payload_aux(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        slot: SlotRef,
-    ) -> (Vec<u8>, [u8; 8]) {
-        let _ = store;
+    fn row_payload_aux(index_id: u32, slot: SlotRef) -> (Vec<u8>, [u8; 8]) {
         PAGE_STORE
             .with_borrow(|s| s.read_row_bytes(index_id, slot))
             .map(|(_, bytes, aux)| (bytes, aux))
@@ -4879,7 +4151,7 @@ mod i8_tests {
 
     #[test]
     fn i8_ingest_and_search_parity_with_f32() {
-        let store = fresh_store();
+        fresh_store();
         let vectors: Vec<Vec<f32>> = vec![
             vec![1.0, 2.0, 3.0, 4.0],
             vec![4.0, 3.0, 2.0, 1.0],
@@ -4887,33 +4159,24 @@ mod i8_tests {
             vec![2.0, 2.0, 2.0, 0.0],
         ];
         for (i, v) in vectors.iter().enumerate() {
-            store
-                .vector_upsert(
-                    shard_canister(),
-                    &upsert_vec_from((i + 1) as u32, 1, v, VectorMetric::L2Squared),
-                )
-                .unwrap();
-            i8_upsert(
-                &store,
-                I8_INDEX,
-                (i + 1) as u32,
-                1,
-                v,
-                VectorMetric::L2Squared,
-            );
+            vector_upsert(
+                shard_canister(),
+                &upsert_vec_from((i + 1) as u32, 1, v, VectorMetric::L2Squared),
+            )
+            .unwrap();
+            i8_upsert(I8_INDEX, (i + 1) as u32, 1, v, VectorMetric::L2Squared);
         }
         let q = [2.0f32, 2.0, 2.0, 2.0];
-        let f32_top = store
-            .vector_search(&VectorSearchRequest {
-                index_id: INDEX_ID,
-                query: i8_bytes(&q),
-                encoding: VectorEncoding::F32,
-                dims: DIMS,
-                metric: VectorMetric::L2Squared,
-                top_k: 4,
-                candidate_subjects: None,
-            })
-            .unwrap();
+        let f32_top = vector_search(&VectorSearchRequest {
+            index_id: INDEX_ID,
+            query: i8_bytes(&q),
+            encoding: VectorEncoding::F32,
+            dims: DIMS,
+            metric: VectorMetric::L2Squared,
+            top_k: 4,
+            candidate_subjects: None,
+        })
+        .unwrap();
         let f32_order: Vec<u32> = f32_top
             .hits
             .iter()
@@ -4921,15 +4184,14 @@ mod i8_tests {
                 VectorSubject::Vertex { vertex_id, .. } => vertex_id,
             })
             .collect();
-        let i8_order = i8_search(&store, I8_INDEX, &q, VectorMetric::L2Squared, 4);
+        let i8_order = i8_search(I8_INDEX, &q, VectorMetric::L2Squared, 4);
         assert_eq!(f32_order, i8_order, "I8 top-k ordering matches F32");
     }
 
     #[test]
     fn i8_def_uses_meta8_and_consistent_slots_per_page() {
-        let store = fresh_store();
+        fresh_store();
         i8_upsert(
-            &store,
             I8_INDEX,
             1,
             1,
@@ -4958,12 +4220,10 @@ mod i8_tests {
     fn i8_d1536_rows_are_quarter_width_and_page_capacity_rises_fourfold() {
         const D1536_F32: u32 = 8;
         const D1536_I8: u32 = 9;
-        let store = fresh_store();
-        store
-            .create_index_for_test(D1536_F32, VectorEncoding::F32, 1536, 64 * 1024)
+        fresh_store();
+        create_index_for_test(D1536_F32, VectorEncoding::F32, 1536, 64 * 1024)
             .expect("f32 d1536 index");
-        store
-            .create_index_for_test(D1536_I8, VectorEncoding::I8, 1536, 64 * 1024)
+        create_index_for_test(D1536_I8, VectorEncoding::I8, 1536, 64 * 1024)
             .expect("i8 d1536 index");
         let f32_def = definition_store::get(D1536_F32)
             .expect("definition store available")
@@ -4985,60 +4245,50 @@ mod i8_tests {
 
     #[test]
     fn i8_zero_l2_vector_is_accepted_and_nearest() {
-        let store = fresh_store();
+        fresh_store();
         i8_upsert(
-            &store,
             I8_INDEX,
             1,
             1,
             &[0.0, 0.0, 0.0, 0.0],
             VectorMetric::L2Squared,
         );
-        let top = i8_search(
-            &store,
-            I8_INDEX,
-            &[1.0, 1.0, 1.0, 1.0],
-            VectorMetric::L2Squared,
-            1,
-        );
+        let top = i8_search(I8_INDEX, &[1.0, 1.0, 1.0, 1.0], VectorMetric::L2Squared, 1);
         assert_eq!(top, vec![1], "zero L2 I8 vector is nearest");
     }
 
     #[test]
     fn i8_ingest_rejects_wrong_wire_width() {
-        let store = fresh_store();
+        fresh_store();
         i8_upsert(
-            &store,
             I8_INDEX,
             1,
             1,
             &[1.0, 2.0, 3.0, 4.0],
             VectorMetric::L2Squared,
         );
-        let err = store
-            .vector_upsert(
-                shard_canister(),
-                &VectorEmbeddingSyncOp {
-                    index_id: I8_INDEX,
-                    embedding_name_id: 0,
-                    subject: subject(2),
-                    mutation_id: 1,
-                    encoding: VectorEncoding::I8,
-                    dims: DIMS,
-                    metric: VectorMetric::L2Squared,
-                    bytes: vec![0u8; 3],
-                    remove: false,
-                },
-            )
-            .unwrap_err();
+        let err = vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id: I8_INDEX,
+                embedding_name_id: 0,
+                subject: subject(2),
+                mutation_id: 1,
+                encoding: VectorEncoding::I8,
+                dims: DIMS,
+                metric: VectorMetric::L2Squared,
+                bytes: vec![0u8; 3],
+                remove: false,
+            },
+        )
+        .unwrap_err();
         assert_eq!(err, VectorCanisterError::ByteWidthMismatch);
     }
 
     #[test]
     fn i8_idempotency_noop_then_conflict_on_different_payload() {
-        let store = fresh_store();
+        fresh_store();
         i8_upsert(
-            &store,
             I8_INDEX,
             1,
             1,
@@ -5047,7 +4297,6 @@ mod i8_tests {
         );
         // Byte-identical replay at the same stamp: no-op (no MutationStampConflict).
         i8_upsert(
-            &store,
             I8_INDEX,
             1,
             1,
@@ -5055,49 +4304,46 @@ mod i8_tests {
             VectorMetric::L2Squared,
         );
         // Same stamp, different payload: conflict.
-        let err = store
-            .vector_upsert(
-                shard_canister(),
-                &VectorEmbeddingSyncOp {
-                    index_id: I8_INDEX,
-                    embedding_name_id: 0,
-                    subject: subject(1),
-                    mutation_id: 1,
-                    encoding: VectorEncoding::I8,
-                    dims: DIMS,
-                    metric: VectorMetric::L2Squared,
-                    bytes: i8_bytes(&[5.0, 6.0, 7.0, 8.0]),
-                    remove: false,
-                },
-            )
-            .unwrap_err();
+        let err = vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id: I8_INDEX,
+                embedding_name_id: 0,
+                subject: subject(1),
+                mutation_id: 1,
+                encoding: VectorEncoding::I8,
+                dims: DIMS,
+                metric: VectorMetric::L2Squared,
+                bytes: i8_bytes(&[5.0, 6.0, 7.0, 8.0]),
+                remove: false,
+            },
+        )
+        .unwrap_err();
         assert_eq!(err, VectorCanisterError::MutationStampConflict);
     }
 
     #[test]
     fn i8_rebuild_building_carries_bytes_and_scale() {
-        let store = fresh_store();
+        fresh_store();
         for (v, vals) in [
             (1u32, [1.0f32, 2.0, 3.0, 4.0]),
             (2, [4.0, 3.0, 2.0, 1.0]),
             (3, [0.0, 1.0, 2.0, 3.0]),
             (4, [3.0, 2.0, 1.0, 0.0]),
         ] {
-            i8_upsert(&store, I8_INDEX, v, 1, &vals, VectorMetric::L2Squared);
+            i8_upsert(I8_INDEX, v, 1, &vals, VectorMetric::L2Squared);
         }
-        store
-            .admin_start_vector_rebuild(router(), I8_INDEX, 2, 100)
-            .expect("start");
-        let status = drive_steps(&store, I8_INDEX);
+        admin_start_vector_rebuild(router(), I8_INDEX, 2, 100).expect("start");
+        let status = drive_steps(I8_INDEX);
         assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
         // Every live subject's shadow row must carry the SAME (bytes, scale) as its active row: a
         // double-quantize or a scale recompute would make these differ.
         for v in 1..=4u32 {
-            let entry = store.subject_entry_for_test(I8_INDEX, subject(v)).unwrap();
+            let entry = subject_entry_for_test(I8_INDEX, subject(v)).unwrap();
             let active = entry.slot.expect("active slot");
             let shadow = entry.shadow_slot.expect("shadow slot");
-            let (active_bytes, active_aux) = row_payload_aux(&store, I8_INDEX, active);
-            let (shadow_bytes, shadow_aux) = row_payload_aux(&store, I8_INDEX, shadow);
+            let (active_bytes, active_aux) = row_payload_aux(I8_INDEX, active);
+            let (shadow_bytes, shadow_aux) = row_payload_aux(I8_INDEX, shadow);
             assert_eq!(
                 active_bytes, shadow_bytes,
                 "I8 bytes carried forward (no double-quantize)"
@@ -5111,10 +4357,9 @@ mod i8_tests {
 
     #[test]
     fn i8_rebuild_start_accepts_nlist_above_the_f32_pool_ceiling() {
-        let store = fresh_store();
+        fresh_store();
         const D1536_I8: u32 = 9;
-        store
-            .create_index_for_test(D1536_I8, VectorEncoding::I8, 1536, 64 * 1024)
+        create_index_for_test(D1536_I8, VectorEncoding::I8, 1536, 64 * 1024)
             .expect("i8 d1536 index");
         let dims = 1536u16;
         // An I8 d1536 stored row is 1536 bytes wide; its trained centroids are canonical f32.
@@ -5138,12 +4383,10 @@ mod i8_tests {
                 <= MAX_REBUILD_TRAINING_DISTANCE_OPS,
             "fixture must satisfy the per-iteration op budget"
         );
-        store
-            .admin_start_vector_rebuild(router(), D1536_I8, nlist, nlist)
+        admin_start_vector_rebuild(router(), D1536_I8, nlist, nlist)
             .expect("I8 rebuild accepted above the all-f32 pool ceiling");
         assert_eq!(
-            store
-                .admin_vector_rebuild_status(router(), D1536_I8)
+            admin_vector_rebuild_status(router(), D1536_I8)
                 .expect("status")
                 .phase,
             VectorRebuildPhase::Sampling
@@ -5153,7 +4396,7 @@ mod i8_tests {
     #[test]
     fn i8_rebuild_frozen_candidates_resume_deterministically_mid_training() {
         fn run() -> Vec<Vec<u8>> {
-            let store = fresh_store();
+            fresh_store();
             for (v, vals) in [
                 (1u32, [1.0f32, 2.0, 3.0, 4.0]),
                 (2, [4.0, 3.0, 2.0, 1.0]),
@@ -5162,19 +4405,15 @@ mod i8_tests {
                 (5, [2.0, 0.0, 1.0, 2.0]),
                 (6, [0.0, 3.0, 0.0, 1.0]),
             ] {
-                i8_upsert(&store, I8_INDEX, v, 1, &vals, VectorMetric::L2Squared);
+                i8_upsert(I8_INDEX, v, 1, &vals, VectorMetric::L2Squared);
             }
-            store
-                .admin_start_vector_rebuild(router(), I8_INDEX, 3, 100)
-                .expect("start");
+            admin_start_vector_rebuild(router(), I8_INDEX, 3, 100).expect("start");
             // One subject per message: every phase transition persists the frozen stored-form pool
             // into `VECTOR_REBUILD_STATE` and the next message reloads it, so Training always runs
             // over candidates that round-tripped through Candid put/get.
             let mut saw_training_pool = false;
             loop {
-                let status = store
-                    .admin_vector_rebuild_step(router(), I8_INDEX, 1)
-                    .expect("stepped");
+                let status = admin_vector_rebuild_step(router(), I8_INDEX, 1).expect("stepped");
                 match status.phase {
                     VectorRebuildPhase::Training => {
                         saw_training_pool = true;
@@ -5189,9 +4428,7 @@ mod i8_tests {
                 }
             }
             assert!(saw_training_pool, "rebuild must pass through Training");
-            store
-                .admin_publish_vector_rebuild(router(), I8_INDEX)
-                .expect("publish");
+            admin_publish_vector_rebuild(router(), I8_INDEX).expect("publish");
             IVF_CENTROIDS.with_borrow(|m| {
                 (0..3)
                     .map(|p| {
@@ -5240,51 +4477,37 @@ mod i8_tests {
         }
     }
 
-    fn f32_upsert(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        vertex_id: u32,
-        values: &[f32],
-        metric: VectorMetric,
-    ) {
+    fn f32_upsert(index_id: u32, vertex_id: u32, values: &[f32], metric: VectorMetric) {
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        store
-            .vector_upsert(
-                shard_canister(),
-                &VectorEmbeddingSyncOp {
-                    index_id,
-                    embedding_name_id: 0,
-                    subject: subject(vertex_id),
-                    mutation_id: 1,
-                    encoding: VectorEncoding::F32,
-                    dims: values.len() as u16,
-                    metric,
-                    bytes,
-                    remove: false,
-                },
-            )
-            .expect("f32 upsert");
-    }
-
-    fn f32_topk(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        values: &[f32],
-        metric: VectorMetric,
-        top_k: u32,
-    ) -> Vec<u32> {
-        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let res = store
-            .vector_search(&VectorSearchRequest {
+        vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
                 index_id,
-                query: bytes,
+                embedding_name_id: 0,
+                subject: subject(vertex_id),
+                mutation_id: 1,
                 encoding: VectorEncoding::F32,
                 dims: values.len() as u16,
                 metric,
-                top_k,
-                candidate_subjects: None,
-            })
-            .expect("f32 search");
+                bytes,
+                remove: false,
+            },
+        )
+        .expect("f32 upsert");
+    }
+
+    fn f32_topk(index_id: u32, values: &[f32], metric: VectorMetric, top_k: u32) -> Vec<u32> {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let res = vector_search(&VectorSearchRequest {
+            index_id,
+            query: bytes,
+            encoding: VectorEncoding::F32,
+            dims: values.len() as u16,
+            metric,
+            top_k,
+            candidate_subjects: None,
+        })
+        .expect("f32 search");
         res.hits
             .iter()
             .map(|h| match h.subject {
@@ -5293,51 +4516,37 @@ mod i8_tests {
             .collect()
     }
 
-    fn i8_upsert_d(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        vertex_id: u32,
-        values: &[f32],
-        metric: VectorMetric,
-    ) {
+    fn i8_upsert_d(index_id: u32, vertex_id: u32, values: &[f32], metric: VectorMetric) {
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        store
-            .vector_upsert(
-                shard_canister(),
-                &VectorEmbeddingSyncOp {
-                    index_id,
-                    embedding_name_id: 0,
-                    subject: subject(vertex_id),
-                    mutation_id: 1,
-                    encoding: VectorEncoding::I8,
-                    dims: values.len() as u16,
-                    metric,
-                    bytes,
-                    remove: false,
-                },
-            )
-            .expect("i8 upsert");
-    }
-
-    fn i8_search_d(
-        store: &VectorCanisterStore,
-        index_id: u32,
-        values: &[f32],
-        metric: VectorMetric,
-        top_k: u32,
-    ) -> Vec<u32> {
-        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let res = store
-            .vector_search(&VectorSearchRequest {
+        vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
                 index_id,
-                query: bytes,
+                embedding_name_id: 0,
+                subject: subject(vertex_id),
+                mutation_id: 1,
                 encoding: VectorEncoding::I8,
                 dims: values.len() as u16,
                 metric,
-                top_k,
-                candidate_subjects: None,
-            })
-            .expect("i8 search");
+                bytes,
+                remove: false,
+            },
+        )
+        .expect("i8 upsert");
+    }
+
+    fn i8_search_d(index_id: u32, values: &[f32], metric: VectorMetric, top_k: u32) -> Vec<u32> {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let res = vector_search(&VectorSearchRequest {
+            index_id,
+            query: bytes,
+            encoding: VectorEncoding::I8,
+            dims: values.len() as u16,
+            metric,
+            top_k,
+            candidate_subjects: None,
+        })
+        .expect("i8 search");
         res.hits
             .iter()
             .map(|h| match h.subject {
@@ -5353,12 +4562,7 @@ mod i8_tests {
 
     /// Reports I8 vs F32 recall@k and asserts a conservative floor (regression guard; adoption of
     /// I8 is the operator's decision, informed by the reported number).
-    fn run_recall(
-        store: &VectorCanisterStore,
-        dims: u16,
-        rng_seed: u64,
-        metric: VectorMetric,
-    ) -> (f32, f32) {
+    fn run_recall(dims: u16, rng_seed: u64, metric: VectorMetric) -> (f32, f32) {
         let n = 512u32;
         let queries = 32u32;
         let mut rng = XorShift64(rng_seed);
@@ -5370,8 +4574,8 @@ mod i8_tests {
             } else {
                 g
             };
-            f32_upsert(store, INDEX_ID, v, &vals, metric);
-            i8_upsert_d(store, I8_INDEX, v, &vals, metric);
+            f32_upsert(INDEX_ID, v, &vals, metric);
+            i8_upsert_d(I8_INDEX, v, &vals, metric);
         }
         let (mut r10, mut r100) = (0.0f32, 0.0f32);
         for _ in 0..queries {
@@ -5382,8 +4586,8 @@ mod i8_tests {
             } else {
                 g
             };
-            let f = f32_topk(store, INDEX_ID, &q, metric, 100);
-            let i = i8_search_d(store, I8_INDEX, &q, metric, 100);
+            let f = f32_topk(INDEX_ID, &q, metric, 100);
+            let i = i8_search_d(I8_INDEX, &q, metric, 100);
             r10 += overlap(&f[..10], &i[..10]) as f32 / 10.0;
             r100 += overlap(&f, &i) as f32 / 100.0;
         }
@@ -5392,8 +4596,8 @@ mod i8_tests {
 
     #[test]
     fn i8_recall_vs_f32_gaussian_l2() {
-        let store = fresh_store();
-        let (r10, r100) = run_recall(&store, 256, 0xDEAD_BEEF, VectorMetric::L2Squared);
+        fresh_store();
+        let (r10, r100) = run_recall(256, 0xDEAD_BEEF, VectorMetric::L2Squared);
         eprintln!("I8 recall L2 gaussian d=256: recall@10={r10:.4} recall@100={r100:.4}");
         assert!(
             r10 >= 0.90 && r100 >= 0.90,
@@ -5403,8 +4607,8 @@ mod i8_tests {
 
     #[test]
     fn i8_recall_vs_f32_unit_sphere_cosine() {
-        let store = fresh_store();
-        let (r10, r100) = run_recall(&store, 256, 0xFEED_FACE, VectorMetric::Cosine);
+        fresh_store();
+        let (r10, r100) = run_recall(256, 0xFEED_FACE, VectorMetric::Cosine);
         eprintln!("I8 recall cosine unit-sphere d=256: recall@10={r10:.4} recall@100={r100:.4}");
         assert!(
             r10 >= 0.90 && r100 >= 0.90,
@@ -5413,7 +4617,6 @@ mod i8_tests {
     }
 
     fn i8_search_tuned(
-        store: &VectorCanisterStore,
         index_id: u32,
         values: &[f32],
         metric: VectorMetric,
@@ -5421,20 +4624,19 @@ mod i8_tests {
         eps: f32,
     ) -> Vec<u32> {
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let res = store
-            .vector_search_tuned(
-                &VectorSearchRequest {
-                    index_id,
-                    query: bytes,
-                    encoding: VectorEncoding::I8,
-                    dims: values.len() as u16,
-                    metric,
-                    top_k,
-                    candidate_subjects: None,
-                },
-                tuned(eps),
-            )
-            .expect("i8 tuned search");
+        let res = vector_search_tuned(
+            &VectorSearchRequest {
+                index_id,
+                query: bytes,
+                encoding: VectorEncoding::I8,
+                dims: values.len() as u16,
+                metric,
+                top_k,
+                candidate_subjects: None,
+            },
+            tuned(eps),
+        )
+        .expect("i8 tuned search");
         res.hits
             .iter()
             .map(|h| match h.subject {
@@ -5448,38 +4650,27 @@ mod i8_tests {
     /// (partition full scan at `eps = INF` equals the pre-publish exact scan).
     #[test]
     fn i8_rebuild_publish_cleanup_full_lifecycle() {
-        let store = fresh_store();
+        fresh_store();
         for (v, vals) in [
             (1u32, [1.0f32, 2.0, 3.0, 4.0]),
             (2, [4.0, 3.0, 2.0, 1.0]),
             (3, [0.0, 1.0, 2.0, 3.0]),
             (4, [3.0, 2.0, 1.0, 0.0]),
         ] {
-            i8_upsert_d(&store, I8_INDEX, v, &vals, VectorMetric::L2Squared);
+            i8_upsert_d(I8_INDEX, v, &vals, VectorMetric::L2Squared);
         }
         // Exact scan before rebuild (nlist=1).
-        let before = i8_search_d(
-            &store,
-            I8_INDEX,
-            &[1.5, 1.5, 1.5, 1.5],
-            VectorMetric::L2Squared,
-            10,
-        );
+        let before = i8_search_d(I8_INDEX, &[1.5, 1.5, 1.5, 1.5], VectorMetric::L2Squared, 10);
         // Rebuild to nlist=2 and drive to ReadyToPublish.
-        store
-            .admin_start_vector_rebuild(router(), I8_INDEX, 2, 100)
-            .expect("start");
+        admin_start_vector_rebuild(router(), I8_INDEX, 2, 100).expect("start");
         assert_eq!(
-            drive_steps(&store, I8_INDEX).phase,
+            drive_steps(I8_INDEX).phase,
             VectorRebuildPhase::ReadyToPublish
         );
         // Publish switches active to the rebuilt nlist=2 partition scan.
-        store
-            .admin_publish_vector_rebuild(router(), I8_INDEX)
-            .expect("publish");
+        admin_publish_vector_rebuild(router(), I8_INDEX).expect("publish");
         // Full partition scan (eps=INF) matches the pre-publish exact scan.
         let after = i8_search_tuned(
-            &store,
             I8_INDEX,
             &[1.5, 1.5, 1.5, 1.5],
             VectorMetric::L2Squared,
@@ -5491,10 +4682,9 @@ mod i8_tests {
             "I8 search parity across publish (full partition scan)"
         );
         // Cleanup to Idle (old version dropped).
-        drive_cleanup(&store, I8_INDEX);
+        drive_cleanup(I8_INDEX);
         // Search still works and matches after cleanup.
         let after_cleanup = i8_search_tuned(
-            &store,
             I8_INDEX,
             &[1.5, 1.5, 1.5, 1.5],
             VectorMetric::L2Squared,

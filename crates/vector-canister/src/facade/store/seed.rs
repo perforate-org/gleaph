@@ -12,8 +12,9 @@
 //! assignment is owned by Slice 7 (alongside the dual-write rebuild); tests/bench never mutate a
 //! seeded partitioned index.
 
+use super::mutation::append_slot;
 use super::search::encode_f32;
-use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION, VectorCanisterStore};
+use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION};
 use crate::encoding::EncodingRecord;
 use crate::facade::stable::definition_store;
 use crate::facade::stable::subject_store;
@@ -28,6 +29,8 @@ use ic_stable_vector_page_store::PageLayout;
 use ic_stable_vector_page_store::kernel::l2_squared_f32;
 
 /// Index of the centroid nearest to the encoded `vector_bytes` (the assigned partition id).
+// Reachable only from cfg(test) callers and generated benches.
+#[cfg_attr(not(test), allow(dead_code))] // reachable from cfg(test) fixtures﻿
 fn nearest_partition(centroids: &[Vec<f32>], vector_bytes: &[u8]) -> u32 {
     let mut best = 0u32;
     let mut best_d = f32::INFINITY;
@@ -41,124 +44,119 @@ fn nearest_partition(centroids: &[Vec<f32>], vector_bytes: &[u8]) -> u32 {
     best
 }
 
-impl VectorCanisterStore {
-    /// Seeds a trained, partitioned `ivf_flat` index for tests and benchmarks.
-    ///
-    /// Writes the def (`nlist == centroids.len()`), the centroids, ready centroid metadata, and one
-    /// live slot per vector assigned to its nearest centroid partition, plus the subject map and both
-    /// reverse maps. The result is a read-only fixture (see module docs); callers must not mutate it
-    /// through the production path afterwards.
-    ///
-    /// # Panics
-    /// Panics if `centroids` is empty, if any centroid or vector length mismatches `dims`, or if the
-    /// page-capacity computation rejects the stride.
-    pub fn seed_ivf_for_test(
-        &self,
-        index_id: u32,
-        encoding: VectorEncoding,
-        dims: u16,
-        centroids: &[Vec<f32>],
-        vectors: &[(VectorSubject, Vec<f32>)],
-    ) {
-        self.seed_ivf_with_metric_for_test(
+/// Seeds a trained, partitioned `ivf_flat` index for tests and benchmarks.
+///
+/// Writes the def (`nlist == centroids.len()`), the centroids, ready centroid metadata, and one
+/// live slot per vector assigned to its nearest centroid partition, plus the subject map and both
+/// reverse maps. The result is a read-only fixture (see module docs); callers must not mutate it
+/// through the production path afterwards.
+///
+/// # Panics
+/// Panics if `centroids` is empty, if any centroid or vector length mismatches `dims`, or if the
+/// page-capacity computation rejects the stride.
+pub(crate) fn seed_ivf_for_test(
+    index_id: u32,
+    encoding: VectorEncoding,
+    dims: u16,
+    centroids: &[Vec<f32>],
+    vectors: &[(VectorSubject, Vec<f32>)],
+) {
+    seed_ivf_with_metric_for_test(
+        index_id,
+        encoding,
+        dims,
+        VectorMetric::L2Squared,
+        centroids,
+        vectors,
+    );
+}
+
+/// Seeded variant that pins a specific metric on the def (e.g. `Cosine` tests).
+pub(crate) fn seed_ivf_with_metric_for_test(
+    index_id: u32,
+    encoding: VectorEncoding,
+    dims: u16,
+    metric: VectorMetric,
+    centroids: &[Vec<f32>],
+    vectors: &[(VectorSubject, Vec<f32>)],
+) {
+    assert!(!centroids.is_empty(), "seed requires at least one centroid");
+    let nlist = centroids.len() as u32;
+    // Every width comes from the encoding record (the single width source of truth, ADR 0064
+    // §8); seeded pages use one run on a single shard.
+    let record = EncodingRecord::from_parts(encoding, dims).expect("seed encoding valid");
+    let stride_bytes = record.stride_bytes;
+    let pad_stride_bytes = record.pad_stride_bytes;
+    let meta_stride_bytes = record.meta_stride();
+    let run_capacity = 1u32;
+    let slots_per_page = PageLayout::max_capacity_for(
+        DEFAULT_MAX_PAGE_BYTES as usize,
+        pad_stride_bytes,
+        meta_stride_bytes,
+        run_capacity,
+    )
+    .expect("seed page capacity below one slot");
+    for c in centroids {
+        assert_eq!(c.len(), dims as usize, "centroid dims mismatch");
+    }
+
+    let active = INITIAL_INDEX_VERSION;
+
+    // Centroids + ready metadata.
+    IVF_CENTROIDS.with_borrow_mut(|m| {
+        for (p, centroid) in centroids.iter().enumerate() {
+            m.insert(
+                PartitionKey::new(index_id, active, p as u32),
+                encode_f32(centroid),
+            );
+        }
+    });
+    IVF_CENTROID_META.with_borrow_mut(|meta| {
+        meta.insert(
             index_id,
-            encoding,
-            dims,
-            VectorMetric::L2Squared,
-            centroids,
-            vectors,
-        );
-    }
-
-    /// Seeded variant that pins a specific metric on the def (e.g. `Cosine` tests).
-    pub fn seed_ivf_with_metric_for_test(
-        &self,
-        index_id: u32,
-        encoding: VectorEncoding,
-        dims: u16,
-        metric: VectorMetric,
-        centroids: &[Vec<f32>],
-        vectors: &[(VectorSubject, Vec<f32>)],
-    ) {
-        assert!(!centroids.is_empty(), "seed requires at least one centroid");
-        let nlist = centroids.len() as u32;
-        // Every width comes from the encoding record (the single width source of truth, ADR 0064
-        // §8); seeded pages use one run on a single shard.
-        let record = EncodingRecord::from_parts(encoding, dims).expect("seed encoding valid");
-        let stride_bytes = record.stride_bytes;
-        let pad_stride_bytes = record.pad_stride_bytes;
-        let meta_stride_bytes = record.meta_stride();
-        let run_capacity = 1u32;
-        let slots_per_page = PageLayout::max_capacity_for(
-            DEFAULT_MAX_PAGE_BYTES as usize,
-            pad_stride_bytes,
-            meta_stride_bytes,
-            run_capacity,
+            IvfCentroidMeta {
+                centroid_ready: true,
+                trained_index_version: active,
+            },
         )
-        .expect("seed page capacity below one slot");
-        for c in centroids {
-            assert_eq!(c.len(), dims as usize, "centroid dims mismatch");
-        }
+    });
 
-        let active = INITIAL_INDEX_VERSION;
+    // The def is persisted last, but the slab `append_row` needs `slots_per_page`/`stride_bytes`,
+    // so build it up front and reuse it.
+    let def = VectorIndexDef {
+        kind: VectorIndexKind::IvfFlat,
+        encoding,
+        dims,
+        metric,
+        nlist,
+        active_index_version: active,
+        stride_bytes,
+        pad_stride_bytes,
+        meta_stride_bytes,
+        run_capacity,
+        max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
+        slots_per_page,
+    };
 
-        // Centroids + ready metadata.
-        IVF_CENTROIDS.with_borrow_mut(|m| {
-            for (p, centroid) in centroids.iter().enumerate() {
-                m.insert(
-                    PartitionKey::new(index_id, active, p as u32),
-                    encode_f32(centroid),
-                );
-            }
-        });
-        IVF_CENTROID_META.with_borrow_mut(|meta| {
-            meta.insert(
-                index_id,
-                IvfCentroidMeta {
-                    centroid_ready: true,
-                    trained_index_version: active,
-                },
-            )
-        });
-
-        // The def is persisted last, but the slab `append_row` needs `slots_per_page`/`stride_bytes`,
-        // so build it up front and reuse it.
-        let def = VectorIndexDef {
-            kind: VectorIndexKind::IvfFlat,
-            encoding,
-            dims,
-            metric,
-            nlist,
-            active_index_version: active,
-            stride_bytes,
-            pad_stride_bytes,
-            meta_stride_bytes,
-            run_capacity,
-            max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
-            slots_per_page,
-        };
-
-        // Live slots, assigned to the nearest centroid partition.
-        for (subject, vector) in vectors {
-            assert_eq!(vector.len(), dims as usize, "vector dims mismatch");
-            let encoded = encode_f32(vector);
-            let partition_id = nearest_partition(centroids, &encoded);
-            let slot = self
-                .append_slot(index_id, active, partition_id, &def, *subject, &encoded)
-                .expect("seed append");
-            subject_store::insert(
-                SubjectKey::new(index_id, *subject),
-                FixedSubjectMapEntry {
-                    stamp: 1,
-                    deleted: false,
-                    slot: Some(slot),
-                    shadow_slot: None,
-                },
-            )
-            .expect("seed insert");
-        }
-
-        // Persist the def last.
-        definition_store::insert(index_id, def).expect("seed def insert");
+    // Live slots, assigned to the nearest centroid partition.
+    for (subject, vector) in vectors {
+        assert_eq!(vector.len(), dims as usize, "vector dims mismatch");
+        let encoded = encode_f32(vector);
+        let partition_id = nearest_partition(centroids, &encoded);
+        let slot = append_slot(index_id, active, partition_id, &def, *subject, &encoded)
+            .expect("seed append");
+        subject_store::insert(
+            SubjectKey::new(index_id, *subject),
+            FixedSubjectMapEntry {
+                stamp: 1,
+                deleted: false,
+                slot: Some(slot),
+                shadow_slot: None,
+            },
+        )
+        .expect("seed insert");
     }
+
+    // Persist the def last.
+    definition_store::insert(index_id, def).expect("seed def insert");
 }

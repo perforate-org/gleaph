@@ -3,6 +3,7 @@ use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_GC_CURSOR, VECTOR_MAINTENANCE_STATE,
     VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SHARD_WATERMARKS, subject_store,
 };
+use crate::facade::store::mutation::{def_for_test, subject_entry_for_test, vector_upsert};
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED};
 use crate::records::{IvfCentroidMeta, PartitionKey, RawMaintenanceState, RawRebuildState};
 use gleaph_graph_kernel::vector_index::{
@@ -19,71 +20,66 @@ fn shard() -> Principal {
     Principal::from_slice(&[92])
 }
 
-fn fixture() -> VectorCanisterStore {
-    let store = VectorCanisterStore::new();
-    store
-        .reset_for_test_or_bench(&VectorCanisterInitArgs {
-            router_canister: router(),
-            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
-            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
-        })
-        .expect("fixture reset");
-    store.attach_single_shard_for_test(router(), ShardId::new(0), shard());
-    store
+fn fixture() {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("fixture reset");
+    attach_single_shard_for_test(router(), ShardId::new(0), shard());
 }
 
-fn upsert(store: &VectorCanisterStore) {
-    store
-        .vector_upsert(
-            shard(),
-            &VectorEmbeddingSyncOp {
-                index_id: INDEX_ID,
-                embedding_name_id: 0,
-                subject: VectorSubject::Vertex {
-                    shard_id: ShardId::new(0),
-                    vertex_id: 1,
-                },
-                mutation_id: 1,
-                encoding: VectorEncoding::F32,
-                dims: 4,
-                metric: VectorMetric::L2Squared,
-                bytes: vec![0; 16],
-                remove: false,
+fn upsert() {
+    vector_upsert(
+        shard(),
+        &VectorEmbeddingSyncOp {
+            index_id: INDEX_ID,
+            embedding_name_id: 0,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 1,
             },
-        )
-        .expect("seed definition-dependent state");
+            mutation_id: 1,
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            bytes: vec![0; 16],
+            remove: false,
+        },
+    )
+    .expect("seed definition-dependent state");
 }
 
 #[test]
 fn busy_coupled_handle_rejects_before_definition_write() {
-    let store = fixture();
-    upsert(&store);
+    fixture();
+    upsert();
     let incarnation = definition_store::incarnation_for_test_or_bench().expect("incarnation");
     let subject_incarnation =
         subject_store::incarnation_for_test_or_bench().expect("subject incarnation");
-    let definition = store.def_for_test(INDEX_ID).expect("definition");
+    let definition = def_for_test(INDEX_ID).expect("definition");
 
     IVF_CENTROID_META.with(|centroid_meta| {
         let _busy = centroid_meta.borrow_mut();
         assert_eq!(
-            store.reset_definition_domain(incarnation, subject_incarnation),
+            reset_definition_dependent_state(incarnation, subject_incarnation),
             Err(DefinitionDomainResetError::RegionHandleUnavailable(
                 "IVF_CENTROID_META"
             ))
         );
     });
 
-    assert_eq!(store.def_for_test(INDEX_ID), Some(definition));
+    assert_eq!(def_for_test(INDEX_ID), Some(definition));
     assert!(
-        store
-            .subject_entry_for_test(
-                INDEX_ID,
-                VectorSubject::Vertex {
-                    shard_id: ShardId::new(0),
-                    vertex_id: 1,
-                }
-            )
-            .is_some()
+        subject_entry_for_test(
+            INDEX_ID,
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 1,
+            }
+        )
+        .is_some()
     );
     assert_eq!(
         definition_store::incarnation_for_test_or_bench().expect("unchanged incarnation"),
@@ -93,8 +89,8 @@ fn busy_coupled_handle_rejects_before_definition_write() {
 
 #[test]
 fn successful_reset_clears_coupled_state_and_preserves_independent_lifecycle_state() {
-    let store = fixture();
-    upsert(&store);
+    fixture();
+    upsert();
     let partition = PartitionKey::new(INDEX_ID, 0, 0);
     IVF_CENTROID_META.with_borrow_mut(|meta| {
         meta.insert(
@@ -137,13 +133,12 @@ fn successful_reset_clears_coupled_state_and_preserves_independent_lifecycle_sta
     let subject_incarnation =
         subject_store::incarnation_for_test_or_bench().expect("subject incarnation");
     assert_eq!(
-        store
-            .reset_definition_domain(incarnation, subject_incarnation)
+        reset_definition_dependent_state(incarnation, subject_incarnation)
             .expect("coordinated reset"),
         incarnation + 1
     );
 
-    assert!(store.def_for_test(INDEX_ID).is_none());
+    assert!(def_for_test(INDEX_ID).is_none());
     assert!(IVF_CENTROID_META.with_borrow(|state| state.is_empty()));
     assert!(IVF_CENTROIDS.with_borrow(|state| state.is_empty()));
     assert!(subject_store::is_empty_for_test().expect("subject map empty"));
