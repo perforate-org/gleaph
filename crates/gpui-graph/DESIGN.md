@@ -2288,8 +2288,17 @@ The following should remain intentionally open until implementation and profilin
 ## Layout
 
 - ForceAtlas2 default settings,
-- convergence thresholds,
+- ~~convergence thresholds~~ (implemented: FA2 local speed adaptation —
+  per-node swinging/traction balance with a carried convergence factor,
+  a displacement dead-band so equilibrium noise cannot prevent settling,
+  and `slowDown` as the global movement divisor via `with_slow_down`.
+  Measured on the 256-leaf ring fixture: 1007 iterations to settle under
+  the previous damped-velocity integration, 953 under adaptive speed),
 - iteration budget,
+- uniform-grid layouts never report `Settled` under default settings
+  (open: a residual limit cycle, pre-existing — measured >4000 iterations
+  under both integrations; canonical constant-magnitude gravity was tested
+  and did not fix it. Probe: the ignored `grid_settle_probe` test),
 - ~~Barnes-Hut quadtree~~ (implemented in `ForceAtlas2`: flat-arena quadtree,
   FA2 degree mass, exact chains at the depth floor for coincident nodes,
   parity-tested against brute force; opt-in via

@@ -24,7 +24,7 @@ use glam::Vec2;
 use gpui_graph::graph::{EdgeDirection, Graph, NodeId};
 use gpui_graph::layout::{
     ForceAtlas2, LayoutBudget, LayoutEdge, LayoutEngine, LayoutGraph, LayoutIndex, LayoutNode,
-    LayoutState,
+    LayoutProgress, LayoutState,
 };
 
 /// A prepared layout problem plus its dense projection.
@@ -230,5 +230,60 @@ fn bench_force_atlas2_step(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_force_atlas2_step);
+/// Iteration cap for a settle run so a pathological configuration cannot run
+/// away; a healthy layout settles far below it.
+const SETTLE_ITERATION_CAP: u32 = 2000;
+
+fn settle_bench(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    id: BenchmarkId,
+    case: &BenchCase,
+) {
+    group.bench_with_input(id, case, |b, case| {
+        b.iter(|| {
+            let mut engine = ForceAtlas2::default();
+            let mut state = case.state.clone();
+            engine.rebuild(&case.graph, &mut state);
+            let budget = LayoutBudget { max_iterations: 1 };
+            let mut iters = 0u32;
+            while iters < SETTLE_ITERATION_CAP
+                && engine.step(&case.graph, &mut state, budget) != LayoutProgress::Settled
+            {
+                iters += 1;
+            }
+            std::hint::black_box(iters);
+        })
+    });
+}
+
+/// Time-to-settle, not per-step cost: this is the metric adaptive speed
+/// targets (fewer iterations to convergence without oscillation), and it is
+/// the baseline any integration change must be judged against.
+fn bench_force_atlas2_settle(c: &mut Criterion) {
+    let mut group = c.benchmark_group("force_atlas2_settle");
+    group.sample_size(10);
+    settle_bench(
+        &mut group,
+        BenchmarkId::new("grid", "20x20"),
+        &BenchCase::grid(20),
+    );
+    settle_bench(
+        &mut group,
+        BenchmarkId::new("grid", "40x40"),
+        &BenchCase::grid(40),
+    );
+    settle_bench(
+        &mut group,
+        BenchmarkId::new("hub", "256"),
+        &BenchCase::hub(256),
+    );
+    settle_bench(
+        &mut group,
+        BenchmarkId::new("hub", "1024"),
+        &BenchCase::hub(1024),
+    );
+    group.finish();
+}
+
+criterion_group!(benches, bench_force_atlas2_step, bench_force_atlas2_settle);
 criterion_main!(benches);

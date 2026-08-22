@@ -29,16 +29,16 @@ use glam::Vec2;
 use super::graph::{LayoutGraph, LayoutIndex, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
 
-/// Velocity damping per iteration. Values below 1 dissipate energy so the
-/// layout converges instead of oscillating forever around an equilibrium.
-const DAMPING: f32 = 0.5;
-/// Maximum per-iteration step (world units) a node may move, so a single
-/// strong force cannot fling a node across the graph in one frame.
+/// Maximum per-iteration displacement (world units) a node may move, so a
+/// single strong force (e.g. two coincident nodes) cannot fling it across the
+/// graph in one frame. A safety cap layered on top of FA2 local speed
+/// adaptation, which already shrinks movement as oscillation grows.
 const MAX_STEP: f32 = 0.1;
-/// Velocity magnitude below which a node's velocity is zeroed. Without this
-/// dead-band, the force model keeps re-injecting a tiny velocity at the
-/// equilibrium and the node jitters forever instead of settling.
-const VELOCITY_EPSILON: f32 = 0.01;
+/// Desired displacement below which a node rests for the iteration. FA2 has
+/// no intrinsic decay, so residual force noise at an equilibrium would keep
+/// every node micro-jittering forever and the layout could never report
+/// settled (Gephi sidesteps this by running a fixed iteration count).
+const DISPLACEMENT_EPSILON: f32 = 0.01;
 
 /// Component-wise [`f32::algebraic_add`].
 #[inline]
@@ -420,9 +420,9 @@ pub struct ForceAtlas2 {
     gravity: f32,
     /// Use `log(1 + dist)` attraction instead of linear attraction.
     lin_log: bool,
-    /// Simulation speed: how much of the accumulated force is added to velocity
-    /// each iteration.
-    speed: f32,
+    /// Divisor applied to every node's per-iteration movement (FA2
+    /// `slowDown`). Values above 1 slow global progress; below 1 risk jitter.
+    slow_down: f32,
     /// Distance beyond which two nodes no longer repel each other. Repulsion
     /// falls off as `1/dist^2`, so beyond this radius it is negligible; the
     /// spatial grid only tests nodes within this radius, making repulsion
@@ -430,8 +430,12 @@ pub struct ForceAtlas2 {
     repulsion_radius: f32,
     /// Total displacement below which the layout is considered settled.
     settled_threshold: f32,
-    /// Per-node velocity, algorithm-specific state (§11.4).
-    velocity: Vec<Vec2>,
+    /// Per-node FA2 convergence factor in `(0, 1]`, algorithm-specific state
+    /// (§11.4): carries local speed adaptation across iterations.
+    convergence: Vec<f32>,
+    /// Previous iteration's force vector per node, used for the swinging /
+    /// traction balance (§11.4).
+    prev_forces: Vec<Vec2>,
     /// Reused per-iteration force buffer, so `iterate` does not allocate.
     forces: Vec<Vec2>,
     /// Spatial hash for the repulsion pass on small graphs, rebuilt each
@@ -467,10 +471,11 @@ impl Default for ForceAtlas2 {
             scaling: 1.0,
             gravity: 0.1,
             lin_log: false,
-            speed: 0.1,
+            slow_down: 1.0,
             repulsion_radius: 100.0,
             settled_threshold: 0.001,
-            velocity: Vec::new(),
+            convergence: Vec::new(),
+            prev_forces: Vec::new(),
             forces: Vec::new(),
             grid: RepulsionGrid::new(100.0),
             tree: BhTree::default(),
@@ -500,10 +505,10 @@ impl ForceAtlas2 {
         self
     }
 
-    /// Set the simulation speed: how much of the accumulated force is added to
-    /// velocity each iteration.
-    pub fn with_speed(mut self, speed: f32) -> Self {
-        self.speed = speed;
+    /// Set the FA2 `slowDown` divisor applied to every node's per-iteration
+    /// movement.
+    pub fn with_slow_down(mut self, slow_down: f32) -> Self {
+        self.slow_down = slow_down;
         self
     }
 
@@ -544,10 +549,13 @@ impl LayoutEngine for ForceAtlas2 {
     fn rebuild(&mut self, graph: &LayoutGraph, state: &mut LayoutState) {
         // Rebuild algorithm-specific state. Positions are owned by the scene
         // and preserved across rebuilds (§11.6). Tunable parameters (scaling,
-        // gravity, speed, ...) are preserved across rebuilds.
+        // gravity, slowDown, ...) are preserved across rebuilds.
         let n = graph.node_count();
-        self.velocity.resize(n, Vec2::ZERO);
         self.forces.resize(n, Vec2::ZERO);
+        self.prev_forces.resize(n, Vec2::ZERO);
+        // Fresh nodes start fully adaptive; established nodes keep their
+        // adapted factor across incremental topology changes.
+        self.convergence.resize(n, 1.0);
         // FA2 mass = degree + 1: every incident edge counts, directed or not.
         self.masses.clear();
         self.masses.resize(n, 1.0);
@@ -569,8 +577,9 @@ impl LayoutEngine for ForceAtlas2 {
         if n == 0 {
             return LayoutProgress::Settled;
         }
-        if self.velocity.len() != n {
-            self.velocity.resize(n, Vec2::ZERO);
+        if self.convergence.len() != n {
+            self.convergence.resize(n, 1.0);
+            self.prev_forces.resize(n, Vec2::ZERO);
             self.forces.resize(n, Vec2::ZERO);
         }
         if self.masses.len() != n {
@@ -667,6 +676,10 @@ impl ForceAtlas2 {
 
         // Gravity: pull every node toward the origin, weighted by its mass
         // like the repulsion it balances (FA2 keeps the two consistent).
+        // Known divergence from the reference implementation, which uses a
+        // constant-magnitude pull along the unit direction (§37); switching
+        // was tested and did not affect settling, so the cheaper spring form
+        // stays until that investigation concludes.
         for (force, (pos, mass)) in forces
             .iter_mut()
             .zip(state.positions.iter().zip(&self.masses))
@@ -677,35 +690,52 @@ impl ForceAtlas2 {
             );
         }
 
-        // Integrate velocity and apply it, respecting pins. Velocity accumulates
-        // force and is damped each iteration, so the system loses energy and
-        // converges to an equilibrium instead of oscillating forever around it.
+        // Apply forces with FA2 local speed adaptation. There is no global
+        // velocity: each node moves along its current force vector by an
+        // amount adapted from how much its force changed between iterations
+        // (`swinging`, mass-weighted) versus its steady pull (`traction`).
+        // The per-node `convergence` factor carries the adaptation across
+        // iterations, so oscillating regions slow themselves down and the
+        // layout converges instead of jittering around an equilibrium.
         let mut total = 0.0f32;
-        for (i, force) in forces.iter().enumerate() {
+        for (i, &force) in forces.iter().enumerate() {
             if state.is_pinned(LayoutIndex(i as u32)) {
                 continue;
             }
-            let v = &mut self.velocity[i];
-            *v = algebraic_add(*v, algebraic_mul_scalar(*force, self.speed));
-            // Damping by 1/2 is exactly representable, so plain multiplication
-            // is exact and needs no algebraic relaxation.
-            *v *= DAMPING;
-            let len = v.length();
-            if len < VELOCITY_EPSILON {
-                // Dead-band: below the epsilon the node is effectively at rest.
-                // Zero it so the layout can report settled instead of jittering
-                // forever around the equilibrium.
-                *v = Vec2::ZERO;
+            let prev = self.prev_forces[i];
+            let swing_root = algebraic_sub(prev, force)
+                .length()
+                .algebraic_mul(self.masses[i])
+                .sqrt();
+            let swing_denom = swing_root.algebraic_add(1.0);
+            let traction = algebraic_add(prev, force).length() * 0.5;
+            let nodespeed = self.convergence[i]
+                .algebraic_mul((1.0 + traction).ln())
+                .algebraic_div(swing_denom);
+            // Update convergence from this iteration's balance before moving;
+            // clamped to 1 so adaptation never amplifies beyond raw forces.
+            self.convergence[i] = nodespeed
+                .algebraic_mul(force.length_squared())
+                .algebraic_div(swing_denom)
+                .sqrt()
+                .min(1.0);
+            self.prev_forces[i] = force;
+            // Dead-band: below the epsilon the node is effectively at rest.
+            // Freeze it so equilibrium noise cannot jitter it forever and the
+            // layout can report settled. State above stays fresh, so a real
+            // force (drag, topology change) moves it again immediately.
+            let desired = force.length().algebraic_mul(nodespeed / self.slow_down);
+            if desired < DISPLACEMENT_EPSILON {
                 continue;
             }
-            // Cap the per-iteration step so a single strong force cannot
-            // fling a node across the graph in one frame.
-            let step = len.min(MAX_STEP);
-            // `v / len * step == v * (step / len)`: one division.
-            let scaled_step = step.algebraic_div(len);
-            state.positions[i] =
-                algebraic_add(state.positions[i], algebraic_mul_scalar(*v, scaled_step));
-            total = total.algebraic_add(step);
+            // [`MAX_STEP`] applies only when one iteration would otherwise
+            // fling the node across the graph.
+            let shrink = (MAX_STEP / desired).min(1.0);
+            state.positions[i] = algebraic_add(
+                state.positions[i],
+                algebraic_mul_scalar(force, nodespeed * shrink / self.slow_down),
+            );
+            total = total.algebraic_add(desired.algebraic_mul(shrink));
         }
         total
     }
@@ -892,11 +922,95 @@ mod tests {
         }
     }
 
+    /// Step with default settings until [`LayoutProgress::Settled`], capped
+    /// at 4000 iterations. Returns the iteration count.
+    fn run_until_settled((lg, mut state): (LayoutGraph, LayoutState)) -> u32 {
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        let budget = LayoutBudget { max_iterations: 1 };
+        for iters in 1..=4000 {
+            if fa.step(&lg, &mut state, budget) == LayoutProgress::Settled {
+                return iters;
+            }
+        }
+        4000
+    }
+
+    #[test]
+    fn settles_within_iteration_budget() {
+        // Termination contract: default settings must settle bounded shapes
+        // well below the probe budget. Counts are printed so convergence
+        // behavior stays observable when tuning the force model.
+        let hub_iters = run_until_settled(build_ring_hub(256));
+        println!("hub/256 settled in {hub_iters} iterations");
+        assert!(
+            hub_iters < 1500,
+            "hub should settle well below the budget, took {hub_iters}"
+        );
+    }
+
+    /// Build a hub graph whose leaves sit on a ring of radius 100.
+    fn build_ring_hub(leaves_count: usize) -> (LayoutGraph, LayoutState) {
+        let mut g = Graph::new();
+        let center = g.add_node(());
+        let leaves: Vec<_> = (0..leaves_count).map(|_| g.add_node(())).collect();
+        for &leaf in &leaves {
+            g.add_edge(center, leaf, EdgeDirection::Undirected, ());
+        }
+        let (lg, mut state) = project(&g);
+        for (i, leaf) in leaves.iter().enumerate() {
+            let idx = lg.node_ids.iter().position(|&id| id == *leaf).unwrap();
+            let a = (i as f32 / leaves_count as f32) * std::f32::consts::TAU;
+            state.positions[idx] = Vec2::new(a.cos() * 100.0, a.sin() * 100.0);
+        }
+        let center_idx = lg.node_ids.iter().position(|&id| id == center).unwrap();
+        state.positions[center_idx] = Vec2::ZERO;
+        (lg, state)
+    }
+
+    /// Probe for the §37 open item: uniform grid layouts never report
+    /// `Settled` under default settings — a residual limit cycle that
+    /// predates adaptive speed (measured >4000 iterations under both the
+    /// damped-velocity and FA2-adaptive integrations; canonical
+    /// constant-magnitude gravity was tested and did not fix it). Run while
+    /// investigating: `cargo test -p gpui-graph --lib grid_settle_probe --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "grid layouts do not settle under default settings yet (§37)"]
+    fn grid_settle_probe() {
+        let mut g = Graph::new();
+        let side = 20;
+        let mut ids: Vec<Vec<_>> = (0..side).map(|_| Vec::new()).collect();
+        for row in &mut ids {
+            for _ in 0..side {
+                row.push(g.add_node(()));
+            }
+        }
+        for y in 0..side {
+            for x in 0..side {
+                if x + 1 < side {
+                    g.add_edge(ids[y][x], ids[y][x + 1], EdgeDirection::Undirected, ());
+                }
+                if y + 1 < side {
+                    g.add_edge(ids[y][x], ids[y + 1][x], EdgeDirection::Undirected, ());
+                }
+            }
+        }
+        let (lg, mut state) = project(&g);
+        for y in 0..side {
+            for x in 0..side {
+                state.positions[y * side + x] = Vec2::new(x as f32 * 40.0, y as f32 * 40.0);
+            }
+        }
+        let iters = run_until_settled((lg, state));
+        println!("grid/20x20 settled in {iters} iterations");
+    }
+
     #[test]
     fn layout_converges_instead_of_oscillating() {
-        // A small graph with a hub and several neighbors. With velocity damping,
-        // the layout must eventually settle rather than oscillate forever around
-        // an equilibrium (which would leave the nodes jittering).
+        // A small graph with a hub and several neighbors. With FA2 local speed
+        // adaptation, the layout must eventually settle rather than oscillate
+        // forever around an equilibrium (which would leave nodes jittering).
         let mut g = Graph::new();
         let ids: Vec<_> = (0..6).map(|_| g.add_node(())).collect();
         for i in 1..ids.len() {
@@ -920,7 +1034,7 @@ mod tests {
         assert_eq!(
             progress,
             LayoutProgress::Settled,
-            "layout should converge with velocity damping"
+            "layout should converge with FA2 adaptive speed"
         );
     }
 }
