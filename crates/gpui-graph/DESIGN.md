@@ -979,17 +979,18 @@ as part of the `gpui-graph` public surface.
 This keeps the layout implementation replaceable.
 
 Execution model (§37): every force phase and the movement pass are data-parallel
-per node under rayon. Workers never share accumulators — grid repulsion scans
-each node's own 3×3 neighborhood single-sided (the same qualifying pairs and
-saturated impulses as the former double-sided pair walk, evaluated once per
-endpoint), Barnes-Hut resolves one root descent per node with thread-local
-stacks, and attraction gathers each node's incident pulls through a CSR
-adjacency (`attr_offsets` / `attr_targets`, one entry per incident edge
+per node under rayon at or above `PAR_MIN_NODES` (4096 nodes); below it,
+serial drivers run the same physics with cheaper scheduling. Parallel workers
+never share accumulators — grid repulsion scans each node's own 3×3
+neighborhood single-sided, Barnes-Hut resolves one root descent per node with
+thread-local stacks, and attraction gathers each node's incident pulls through
+a CSR adjacency (`attr_offsets` / `attr_targets`, one entry per incident edge
 endpoint, so duplicate edges pull exactly as before). The adjacency refresh is
 keyed on the projection's `topology_revision` with length guards, so
 incremental topology updates that arrive without an engine rebuild stay
-correct. Settling iteration counts on the contract shapes were unchanged by the
-rewrite (hub/256: 24 iterations; grid/20x20: 593).
+correct. Contract settling counts: hub/256 24 iterations, grid/20x20 591.
+Measured speedups concentrate on dense large graphs; sparse uniform grids on
+the exact-grid path remain serial-baseline-adjacent at best (§37).
 
 ---
 
@@ -2347,15 +2348,25 @@ The following should remain intentionally open until implementation and profilin
   only touches local neighborhoods),
 - Barnes-Hut activation policy (topology-aware threshold),
 - ~~parallel force evaluation~~ (implemented: every FA2 phase and the
-  movement pass are data-parallel per node under rayon — grid repulsion
-  single-sided per-node neighborhood scans, Barnes-Hut per-node descents with
-  thread-local stacks, attraction gathered per node over a CSR adjacency
-  refreshed by `topology_revision`, movement applied through zipped disjoint
-  slices. Contract settling counts unchanged: hub/256 24 iterations,
-  grid/20x20 593. Per-step speedups are expected to scale with core count on
-  the large bench cases; final numbers pending a re-run of
-  `layout_bench` on an idle machine — the post-change run coincided with a
-  system load average of ~140 and was discarded as contention noise),
+  movement pass are data-parallel per node under rayon at or above
+  `PAR_MIN_NODES` (4096) — Barnes-Hut per-node descents with thread-local
+  stacks, grid repulsion single-sided per-node neighborhood scans, attraction
+  gathered per node over a CSR adjacency refreshed by `topology_revision`,
+  movement applied through zipped disjoint slices. Below the threshold,
+  serial drivers run the same physics: the grid pair walk (one distance
+  evaluation shared by both endpoints, sequential cell traversal — measured
+  ~3x faster than per-node scans at small scale), a shared-stack BH walk, and
+  a serial movement loop. Measured (layout_bench, same machine back-to-back):
+  ≤1024 nodes are at serial baseline parity (grid/20x20 210 µs → 216 µs,
+  hub/256 167 µs → 178 µs, hub/1024 2.28 ms → 2.27 ms); dense large graphs
+  win big (hub/4096 38.8 ms → ~13–16 ms, grid_bh/100x100 32.8 ms → 13.2 ms,
+  hub_bh/4096 11.9 ms → 7.9 ms); random/5000 is parity-to-slightly-better.
+  Known residual: sparse uniform grids on the exact-grid path regress
+  (~1.3–1.7x at 10k nodes) because per-node scans double pair evaluations and
+  pay binary searches per node while the work per node is tiny — node count
+  alone cannot separate that topology from dense hubs, so this folds into the
+  topology-aware activation policy below. Contract settling counts:
+  hub/256 24 iterations, grid/20x20 591),
 - dynamic incremental engine updates,
 - hierarchical layout,
 - Sugiyama layout,

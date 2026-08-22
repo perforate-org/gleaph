@@ -27,12 +27,16 @@
 //! apply FA2 degree mass (degree + 1).
 //!
 //! Execution model: every force phase and the movement pass are data-parallel
-//! per node (rayon). Workers never share accumulators — grid repulsion scans
-//! each node's own 3×3 neighborhood single-sided, Barnes-Hut resolves one root
-//! descent per node with thread-local stacks, and attraction gathers each
-//! node's incident pulls through a CSR adjacency refreshed whenever the
-//! projection's topology revision changes. A qualifying pair's arithmetic may
-//! be evaluated twice (once per endpoint); that buys race-free parallel writes
+//! per node (rayon) at or above [`PAR_MIN_NODES`]; below it, serial drivers
+//! run the same physics with the cheaper scheduling the scale allows — the
+//! grid pair walk shares one distance evaluation between both endpoints
+//! instead of the parallel path's per-node single-sided scans. Parallel
+//! workers never share accumulators: grid repulsion scans each node's own 3×3
+//! neighborhood single-sided, Barnes-Hut resolves one root descent per node
+//! with thread-local stacks, and attraction gathers each node's incident pulls
+//! through a CSR adjacency refreshed whenever the projection's topology
+//! revision changes. A qualifying pair's arithmetic may be evaluated twice
+//! under rayon (once per endpoint); that buys race-free parallel writes
 //! without per-thread force buffers or atomics.
 //!
 //! Numerical note: the force model computes through [`f32::algebraic_*`]
@@ -89,6 +93,16 @@ const MIN_DISTANCE: f32 = 1.0;
 /// above the measured equilibrium jitter band (~0.011–0.017), which would
 /// otherwise straddle a smaller threshold and flicker on/off forever.
 const DISPLACEMENT_EPSILON: f32 = 0.1;
+/// Node count at or above which force phases run on rayon workers instead of
+/// identical serial drivers over the same per-node kernels. Measured crossover
+/// (layout_bench): at ≤2500 nodes the per-pass thread wake/join cost dominates
+/// the iteration work itself — hub/256 went 167 µs → 1.60 ms and grid/20x20
+/// 210 µs → 1.57 ms when unconditionally parallel — while ≥4096 nodes win on
+/// favorable topologies (hub/4096 38.8 ms → 11.9 ms, grid_bh/100x100 32.8 ms
+/// → 11.3 ms). Like `bh_threshold`, this is a node-count proxy whose outcome
+/// topology modulates (sparse uniform grids gain least); a finer activation
+/// policy stays deferred (§37). Scheduling differs only — physics does not.
+const PAR_MIN_NODES: usize = 4096;
 
 /// Component-wise [`f32::algebraic_add`].
 #[inline]
@@ -115,9 +129,7 @@ fn cell_key(cx: i32, cy: i32) -> u64 {
 }
 
 /// Neighbor offsets that visit each adjacent cell pair exactly once: together
-/// with their negations they cover all eight Moore directions. Test-only since
-/// the parallel pass scans per node instead of enumerating pairs.
-#[cfg(test)]
+/// with their negations they cover all eight Moore directions.
 const FORWARD_STENCIL: [(i32, i32); 4] = [(1, 0), (1, 1), (0, 1), (1, -1)];
 
 /// A uniform spatial hash over node positions, rebuilt every iteration into
@@ -187,10 +199,13 @@ impl RepulsionGrid {
         self.offsets[lo] as usize..self.offsets[hi] as usize
     }
 
-    /// Visit every unordered pair of nodes whose cells are adjacent or equal.
-    /// Test-only oracle for [`Self::accumulate_node`]: the engine's parallel
-    /// pass scans per node instead of enumerating pairs.
-    #[cfg(test)]
+    /// Visit every unordered pair of nodes whose cells are adjacent or equal,
+    /// applying `visit` once per pair. The serial repulsion driver: pairs share
+    /// one distance evaluation between both endpoints and cells are walked
+    /// sequentially, which measures ~3x faster than per-node neighborhood
+    /// scans below [`PAR_MIN_NODES`]. The parallel driver uses
+    /// [`Self::accumulate_node`] instead because shared accumulators cannot be
+    /// written from many threads.
     fn for_each_pair(&self, visit: &mut impl FnMut(usize, usize)) {
         for ci in 0..self.cells.len() {
             let cx = (self.cells[ci] >> 32) as u32 as i32;
@@ -218,8 +233,8 @@ impl RepulsionGrid {
     /// cells adjacent to — and including — `i`'s own cell. Single-sided mirror
     /// of [`Self::for_each_pair`]: exactly the same neighbor pairs contribute
     /// with the same saturated-magnitude impulse, but each worker touches only
-    /// its own accumulator, so the pass parallelizes without races at the cost
-    /// of evaluating each qualifying pair twice (once per endpoint).
+    /// its own accumulator, so the parallel pass needs no races at the cost of
+    /// evaluating each qualifying pair twice (once per endpoint).
     fn accumulate_node(
         &self,
         i: usize,
@@ -818,20 +833,28 @@ impl ForceAtlas2 {
         // Repulsion: below the Barnes-Hut threshold, nodes repel within
         // `repulsion_radius` through the exact CSR grid (O(N·k)); at or above
         // it, the quadtree approximates all-pairs long-range repulsion in
-        // O(N·log N). Both apply FA2 degree mass. Both run one worker task
-        // per node over disjoint accumulators.
+        // O(N·log N). Both apply FA2 degree mass. Both run one task per node
+        // over disjoint accumulators when [`PAR_MIN_NODES`] is met.
         let n = state.positions.len();
+        let parallel = n >= PAR_MIN_NODES;
         if n >= self.bh_threshold {
             let mut tree = std::mem::take(&mut self.tree);
             tree.build(&state.positions, &self.masses);
             let (positions, masses, theta, scaling) =
                 (&state.positions, &self.masses, self.theta, self.scaling);
-            forces
-                .par_iter_mut()
-                .enumerate()
-                .for_each_init(Vec::new, |stack, (i, force)| {
-                    *force = tree.node_repulsion(i, positions, masses, theta, scaling, stack);
-                });
+            if parallel {
+                forces
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each_init(Vec::new, |stack, (i, force)| {
+                        *force = tree.node_repulsion(i, positions, masses, theta, scaling, stack);
+                    });
+            } else {
+                let mut stack: Vec<usize> = Vec::new();
+                for (i, force) in forces.iter_mut().enumerate() {
+                    *force = tree.node_repulsion(i, positions, masses, theta, scaling, &mut stack);
+                }
+            }
             self.tree = tree;
         } else {
             let mut grid = std::mem::take(&mut self.grid);
@@ -842,9 +865,30 @@ impl ForceAtlas2 {
                 self.scaling,
                 self.repulsion_radius,
             );
-            forces.par_iter_mut().enumerate().for_each(|(i, force)| {
-                *force = grid.accumulate_node(i, positions, masses, scaling, radius);
-            });
+            if parallel {
+                forces.par_iter_mut().enumerate().for_each(|(i, force)| {
+                    *force = grid.accumulate_node(i, positions, masses, scaling, radius);
+                });
+            } else {
+                // Serial pair walk: one distance evaluation shared by both
+                // endpoints and sequential cell traversal — measurably faster
+                // than per-node scans at this scale.
+                grid.for_each_pair(&mut |i, j| {
+                    let delta = algebraic_sub(positions[i], positions[j]);
+                    let dist = delta.length();
+                    if dist == 0.0 || dist > radius {
+                        return;
+                    }
+                    let eff = dist.max(MIN_DISTANCE);
+                    let strength = scaling
+                        .algebraic_mul(masses[i])
+                        .algebraic_mul(masses[j])
+                        .algebraic_div(eff.algebraic_mul(eff));
+                    let impulse = algebraic_mul_scalar(delta, strength / dist);
+                    forces[i] = algebraic_add(forces[i], impulse);
+                    forces[j] = algebraic_sub(forces[j], impulse);
+                });
+            }
             self.grid = grid;
         }
 
@@ -856,21 +900,22 @@ impl ForceAtlas2 {
         let lin_log = self.lin_log;
         let (offsets, targets, positions) =
             (&self.attr_offsets, &self.attr_targets, &state.positions);
-        forces.par_iter_mut().enumerate().for_each(|(i, force)| {
-            let mut acc = *force;
-            for entry in &targets[offsets[i] as usize..offsets[i + 1] as usize] {
-                let delta = algebraic_sub(positions[*entry as usize], positions[i]);
-                let dist = delta.length().max(MIN_DISTANCE);
-                let fa = if lin_log {
-                    (1.0f32.algebraic_add(dist)).ln()
-                } else {
-                    dist
-                };
-                // `dir * fa == delta * (fa / dist)`: one division instead of two.
-                acc = algebraic_add(acc, algebraic_mul_scalar(delta, fa.algebraic_div(dist)));
+        let gather_attraction = |force: &mut Vec2, i: usize| {
+            *force = algebraic_add(
+                *force,
+                attraction_pull(lin_log, offsets, targets, positions, i),
+            );
+        };
+        if parallel {
+            forces
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, force)| gather_attraction(force, i));
+        } else {
+            for (i, force) in forces.iter_mut().enumerate() {
+                gather_attraction(force, i);
             }
-            *force = acc;
-        });
+        }
 
         // Gravity: pull every node toward the origin, weighted by its mass,
         // with CONSTANT magnitude along the unit direction like the FA2
@@ -896,70 +941,144 @@ impl ForceAtlas2 {
         // iterations, so oscillating regions slow themselves down and the
         // layout converges instead of jittering around an equilibrium.
         //
-        // Parallel over nodes: each worker owns its node's convergence,
-        // previous force, and position through zipped disjoint slices; skipped
-        // nodes contribute zero to the displacement total. Pinned nodes return
-        // before touching their adaptive state, keeping it frozen until
-        // unpinned.
+        // Both drivers iterate zipped disjoint slices so each node's adaptive
+        // state has exactly one owner; skipped nodes contribute zero to the
+        // displacement total. Pinned nodes return before touching their
+        // adaptive state, keeping it frozen until unpinned.
         let cooling = self.cooling;
         let slow_down = self.slow_down;
         let (forces_ref, masses_ref) = (&self.forces, &self.masses);
         let pinned = &state.pinned;
         let convergence = &mut self.convergence;
         let prev_forces = &mut self.prev_forces;
-        let total: f32 = state
-            .positions
-            .par_iter_mut()
-            .zip(convergence.par_iter_mut())
-            .zip(prev_forces.par_iter_mut())
-            .enumerate()
-            .map(|(i, ((position, convergence_i), prev_force))| {
-                let force = forces_ref[i];
-                if pinned[i] {
-                    return 0.0;
-                }
-                let prev = *prev_force;
-                let swing_root = algebraic_sub(prev, force)
-                    .length()
-                    .algebraic_mul(masses_ref[i])
-                    .sqrt();
-                let swing_denom = swing_root.algebraic_add(1.0);
-                let traction = algebraic_add(prev, force).length() * 0.5;
-                let nodespeed = (*convergence_i)
-                    .algebraic_mul((1.0 + traction).ln())
-                    .algebraic_div(swing_denom);
-                // Update convergence from this iteration's balance before moving;
-                // clamped to 1 so adaptation never amplifies beyond raw forces.
-                *convergence_i = nodespeed
-                    .algebraic_mul(force.length_squared())
-                    .algebraic_div(swing_denom)
-                    .sqrt()
-                    .min(1.0);
-                *prev_force = force;
-                // Dead-band: below the epsilon the node is effectively at rest.
-                // Freeze it so equilibrium noise cannot jitter it forever and the
-                // layout can report settled. State above stays fresh, so a real
-                // force (drag, topology change) moves it again immediately.
-                let desired = force
-                    .length()
-                    .algebraic_mul(nodespeed * cooling / slow_down);
-                if desired < DISPLACEMENT_EPSILON {
-                    return 0.0;
-                }
-                // [`MAX_STEP`] applies only when one iteration would otherwise
-                // fling the node across the graph.
-                let shrink = (MAX_STEP / desired).min(1.0);
-                *position = algebraic_add(
-                    *position,
-                    algebraic_mul_scalar(force, nodespeed * shrink * cooling / slow_down),
+        let total: f32 = if parallel {
+            state
+                .positions
+                .par_iter_mut()
+                .zip(convergence.par_iter_mut())
+                .zip(prev_forces.par_iter_mut())
+                .enumerate()
+                .map(|(i, ((position, convergence_i), prev_force))| {
+                    apply_node_motion(
+                        forces_ref[i],
+                        masses_ref[i],
+                        pinned[i],
+                        cooling,
+                        slow_down,
+                        position,
+                        convergence_i,
+                        prev_force,
+                    )
+                })
+                .sum()
+        } else {
+            let mut total = 0.0f32;
+            for (i, ((position, convergence_i), prev_force)) in state
+                .positions
+                .iter_mut()
+                .zip(convergence.iter_mut())
+                .zip(prev_forces.iter_mut())
+                .enumerate()
+            {
+                total += apply_node_motion(
+                    forces_ref[i],
+                    masses_ref[i],
+                    pinned[i],
+                    cooling,
+                    slow_down,
+                    position,
+                    convergence_i,
+                    prev_force,
                 );
-                desired.algebraic_mul(shrink)
-            })
-            .sum();
+            }
+            total
+        };
         // Global cooling decays once per iteration, after applying movements.
         self.cooling = (self.cooling * COOLING_FACTOR).max(0.0);
         total
     }
+}
+
+/// Attraction pull received by node `i`, gathered over the CSR adjacency:
+/// one pull per incident edge endpoint, so duplicate edges pull twice and a
+/// self-loop contributes a zero-length pull.
+fn attraction_pull(
+    lin_log: bool,
+    offsets: &[u32],
+    targets: &[u32],
+    positions: &[Vec2],
+    i: usize,
+) -> Vec2 {
+    let mut acc = Vec2::ZERO;
+    for entry in &targets[offsets[i] as usize..offsets[i + 1] as usize] {
+        let delta = algebraic_sub(positions[*entry as usize], positions[i]);
+        let dist = delta.length().max(MIN_DISTANCE);
+        let fa = if lin_log {
+            (1.0f32.algebraic_add(dist)).ln()
+        } else {
+            dist
+        };
+        // `dir * fa == delta * (fa / dist)`: one division instead of two.
+        acc = algebraic_add(acc, algebraic_mul_scalar(delta, fa.algebraic_div(dist)));
+    }
+    acc
+}
+
+/// FA2 local speed adaptation applied to one node: updates its carried
+/// convergence factor and previous force, moves its position along the force
+/// vector, and returns its clamped displacement contribution. Shared kernel
+/// behind the serial and parallel drivers; mutable node state arrives as
+/// disjoint references so neither driver duplicates the physics.
+#[allow(clippy::too_many_arguments)]
+fn apply_node_motion(
+    force: Vec2,
+    mass: f32,
+    pinned: bool,
+    cooling: f32,
+    slow_down: f32,
+    position: &mut Vec2,
+    convergence_i: &mut f32,
+    prev_force: &mut Vec2,
+) -> f32 {
+    if pinned {
+        return 0.0;
+    }
+    let prev = *prev_force;
+    let swing_root = algebraic_sub(prev, force)
+        .length()
+        .algebraic_mul(mass)
+        .sqrt();
+    let swing_denom = swing_root.algebraic_add(1.0);
+    let traction = algebraic_add(prev, force).length() * 0.5;
+    let nodespeed = (*convergence_i)
+        .algebraic_mul((1.0 + traction).ln())
+        .algebraic_div(swing_denom);
+    // Update convergence from this iteration's balance before moving;
+    // clamped to 1 so adaptation never amplifies beyond raw forces.
+    *convergence_i = nodespeed
+        .algebraic_mul(force.length_squared())
+        .algebraic_div(swing_denom)
+        .sqrt()
+        .min(1.0);
+    *prev_force = force;
+    // Dead-band: below the epsilon the node is effectively at rest. Freeze it
+    // so equilibrium noise cannot jitter it forever and the layout can report
+    // settled. State above stays fresh, so a real force (drag, topology
+    // change) moves it again immediately.
+    let desired = force
+        .length()
+        .algebraic_mul(nodespeed * cooling / slow_down);
+    if desired < DISPLACEMENT_EPSILON {
+        return 0.0;
+    }
+    // [`MAX_STEP`] applies only when one iteration would otherwise fling the
+    // node across the graph.
+    let shrink = (MAX_STEP / desired).min(1.0);
+    *position = algebraic_add(
+        *position,
+        algebraic_mul_scalar(force, nodespeed * shrink * cooling / slow_down),
+    );
+    desired.algebraic_mul(shrink)
 }
 
 #[cfg(test)]
