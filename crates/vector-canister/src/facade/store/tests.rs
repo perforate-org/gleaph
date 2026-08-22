@@ -2646,9 +2646,10 @@ fn rebuild_start_rejects_invalid_params() {
 #[test]
 fn rebuild_start_rejects_oversized_combined_state() {
     let store = fresh_store();
-    // A large-dim index whose `2 * nlist * stride + overhead` (candidate-pool floor + trained
-    // centroids + encoding overhead) exceeds the combined rebuild-state envelope even though
-    // `nlist <= MAX_NLIST`, because `stride_bytes` scales with dims (ADR 0031 Slice 8, P2/P3).
+    // A large-dim index whose combined state `nlist * (pool_stride + centroid_stride) + overhead`
+    // (native-width candidate-pool floor + trained f32 centroids + encoding overhead) exceeds the
+    // combined rebuild-state envelope even though `nlist <= MAX_NLIST`, because the strides scale
+    // with dims (ADR 0031 Slice 8, P2/P3).
     let big_dims: u16 = 2100; // stride = 8400 bytes (F32)
     let stride = big_dims as usize * 4;
     let op = VectorEmbeddingSyncOp {
@@ -4785,6 +4786,10 @@ fn candidate_search_rejects_duplicate_subjects() {
 mod i8_tests {
     use super::*;
     use crate::facade::stable::{PAGE_STORE, definition_store};
+    use crate::facade::store::{
+        MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES,
+        MAX_REBUILD_TRAINING_DISTANCE_OPS,
+    };
     use crate::records::SlotRef;
 
     /// A distinct index id so an `I8` def is created without colliding with the F32 `INDEX_ID` fixtures.
@@ -5089,6 +5094,106 @@ mod i8_tests {
                 "I8 scale carried forward (not recomputed)"
             );
         }
+    }
+
+    #[test]
+    fn i8_rebuild_start_accepts_nlist_above_the_f32_pool_ceiling() {
+        let store = fresh_store();
+        const D1536_I8: u32 = 9;
+        store
+            .create_index_for_test(D1536_I8, VectorEncoding::I8, 1536, 64 * 1024)
+            .expect("i8 d1536 index");
+        let dims = 1536u16;
+        // An I8 d1536 stored row is 1536 bytes wide; its trained centroids are canonical f32.
+        let pool_stride = 1536u64;
+        let centroid_stride = u64::from(dims) * 4;
+        let nlist = 700u32;
+        // The previous budget charged both pool and centroids at f32 width and rejected this nlist;
+        // the split budget charges the pool at native width and accepts it.
+        assert!(
+            2 * u64::from(nlist) * centroid_stride + MAX_REBUILD_STATE_OVERHEAD_BYTES
+                > MAX_REBUILD_STATE_BYTES,
+            "fixture must be rejected by the all-f32 budget"
+        );
+        assert!(
+            u64::from(nlist) * (pool_stride + centroid_stride) + MAX_REBUILD_STATE_OVERHEAD_BYTES
+                <= MAX_REBUILD_STATE_BYTES,
+            "fixture must satisfy the split pool/centroid budget"
+        );
+        assert!(
+            u64::from(nlist) * u64::from(nlist) * u64::from(dims)
+                <= MAX_REBUILD_TRAINING_DISTANCE_OPS,
+            "fixture must satisfy the per-iteration op budget"
+        );
+        store
+            .admin_start_vector_rebuild(router(), D1536_I8, nlist, nlist)
+            .expect("I8 rebuild accepted above the all-f32 pool ceiling");
+        assert_eq!(
+            store
+                .admin_vector_rebuild_status(router(), D1536_I8)
+                .expect("status")
+                .phase,
+            VectorRebuildPhase::Sampling
+        );
+    }
+
+    #[test]
+    fn i8_rebuild_frozen_candidates_resume_deterministically_mid_training() {
+        fn run() -> Vec<Vec<u8>> {
+            let store = fresh_store();
+            for (v, vals) in [
+                (1u32, [1.0f32, 2.0, 3.0, 4.0]),
+                (2, [4.0, 3.0, 2.0, 1.0]),
+                (3, [0.0, 1.0, 2.0, 3.0]),
+                (4, [3.0, 2.0, 1.0, 0.0]),
+                (5, [2.0, 0.0, 1.0, 2.0]),
+                (6, [0.0, 3.0, 0.0, 1.0]),
+            ] {
+                i8_upsert(&store, I8_INDEX, v, 1, &vals, VectorMetric::L2Squared);
+            }
+            store
+                .admin_start_vector_rebuild(router(), I8_INDEX, 3, 100)
+                .expect("start");
+            // One subject per message: every phase transition persists the frozen stored-form pool
+            // into `VECTOR_REBUILD_STATE` and the next message reloads it, so Training always runs
+            // over candidates that round-tripped through Candid put/get.
+            let mut saw_training_pool = false;
+            loop {
+                let status = store
+                    .admin_vector_rebuild_step(router(), I8_INDEX, 1)
+                    .expect("stepped");
+                match status.phase {
+                    VectorRebuildPhase::Training => {
+                        saw_training_pool = true;
+                        assert_eq!(
+                            status.candidates_collected, 6,
+                            "the frozen pool survives each persist/reload intact"
+                        );
+                    }
+                    VectorRebuildPhase::Sampling | VectorRebuildPhase::Building => {}
+                    VectorRebuildPhase::ReadyToPublish => break,
+                    other => panic!("unexpected phase {other:?}"),
+                }
+            }
+            assert!(saw_training_pool, "rebuild must pass through Training");
+            store
+                .admin_publish_vector_rebuild(router(), I8_INDEX)
+                .expect("publish");
+            IVF_CENTROIDS.with_borrow(|m| {
+                (0..3)
+                    .map(|p| {
+                        m.get(&PartitionKey::new(I8_INDEX, TARGET_V, p))
+                            .expect("centroid")
+                    })
+                    .collect()
+            })
+        }
+        let first = run();
+        let second = run();
+        assert_eq!(
+            first, second,
+            "I8 rebuild from reloaded stored-form candidates is deterministic"
+        );
     }
 
     // -------------------------------------------------------------------------------------------

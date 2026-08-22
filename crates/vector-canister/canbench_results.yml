@@ -2,1359 +2,1359 @@ benches:
   bench_centroid_cache_warmup_d768_nlist64:
     total:
       calls: 1
-      instructions: 2165547
+      instructions: 2173142
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_centroid_cache_warmup_d768_nlist64:
         calls: 1
-        instructions: 2164290
+        instructions: 2171885
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d128_c1024_k10:
     total:
       calls: 1
-      instructions: 6314647
+      instructions: 6314761
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d128_c1024_k10:
         calls: 1
-        instructions: 6313296
+        instructions: 6313410
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 5636651
+        instructions: 5636713
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 1437126
+        instructions: 1437180
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d128_c1024_k100:
     total:
       calls: 1
-      instructions: 6743674
+      instructions: 6743698
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d128_c1024_k100:
         calls: 1
-        instructions: 6742323
+        instructions: 6742347
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 6065547
+        instructions: 6065519
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 1820253
+        instructions: 1820217
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d128_c128_k10:
     total:
       calls: 1
-      instructions: 948500
+      instructions: 948566
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d128_c128_k10:
         calls: 1
-        instructions: 947149
+        instructions: 947215
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 852459
+        instructions: 852473
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 339575
+        instructions: 339581
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d128_c128_k100:
     total:
       calls: 1
-      instructions: 1257720
+      instructions: 1257696
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d128_c128_k100:
         calls: 1
-        instructions: 1256364
+        instructions: 1256340
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 1161749
+        instructions: 1161673
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 603142
+        instructions: 603058
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d128_c4096_k10:
     total:
       calls: 1
-      instructions: 8668872
+      instructions: 8668675
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d128_c4096_k10:
         calls: 1
-        instructions: 8667584
+        instructions: 8667387
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d128_c4096_k100:
     total:
       calls: 1
-      instructions: 9096501
+      instructions: 9096214
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d128_c4096_k100:
         calls: 1
-        instructions: 9095506
+        instructions: 9095219
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d384_c1024_k10:
     total:
       calls: 1
-      instructions: 7690678
+      instructions: 7690796
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d384_c1024_k10:
         calls: 1
-        instructions: 7689327
+        instructions: 7689445
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 7006191
+        instructions: 7006257
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 2806666
+        instructions: 2806724
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d384_c128_k10:
     total:
       calls: 1
-      instructions: 1197557
+      instructions: 1197623
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d384_c128_k10:
         calls: 1
-        instructions: 1196206
+        instructions: 1196272
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 1095116
+        instructions: 1095130
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 582232
+        instructions: 582238
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d384_c4096_k10:
     total:
       calls: 1
-      instructions: 13145273
+      instructions: 13145085
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d384_c4096_k10:
         calls: 1
-        instructions: 13144016
+        instructions: 13143828
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d768_c1024_k10:
     total:
       calls: 1
-      instructions: 9867833
+      instructions: 9868595
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d768_c1024_k10:
         calls: 1
-        instructions: 9866482
+        instructions: 9867244
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 9174480
+        instructions: 9175190
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 4975489
+        instructions: 4976191
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d768_c128_k10:
     total:
       calls: 1
-      instructions: 1581053
+      instructions: 1581207
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d768_c128_k10:
         calls: 1
-        instructions: 1579702
+        instructions: 1579856
         heap_increase: 0
         stable_memory_increase: 0
       filtered_resolve:
         calls: 1
-        instructions: 1469012
+        instructions: 1469114
         heap_increase: 0
         stable_memory_increase: 0
       filtered_score:
         calls: 1
-        instructions: 956171
+        instructions: 956265
         heap_increase: 0
         stable_memory_increase: 0
   bench_filtered_search_d768_c4096_k10:
     total:
       calls: 1
-      instructions: 19897344
+      instructions: 19897148
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_filtered_search_d768_c4096_k10:
         calls: 1
-        instructions: 19896349
+        instructions: 19896153
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cache_cold_d128_nlist64_eps1:
     total:
       calls: 1
-      instructions: 2745847
+      instructions: 2745327
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cache_cold_d128_nlist64_eps1:
         calls: 1
-        instructions: 2744852
+        instructions: 2744332
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cache_cold_d768_nlist64_eps1:
     total:
       calls: 1
-      instructions: 5434508
+      instructions: 5449661
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cache_cold_d768_nlist64_eps1:
         calls: 1
-        instructions: 5433513
+        instructions: 5448666
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cache_warm_d128_nlist64_eps1:
     total:
       calls: 1
-      instructions: 538261
+      instructions: 538333
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cache_warm_d128_nlist64_eps1:
         calls: 1
-        instructions: 537136
+        instructions: 537208
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cache_warm_d768_nlist64_eps1:
     total:
       calls: 1
-      instructions: 1721355
+      instructions: 1721446
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cache_warm_d768_nlist64_eps1:
         calls: 1
-        instructions: 1720230
+        instructions: 1720321
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cosine_d1536_nlist64_eps0:
     total:
       calls: 1
-      instructions: 11036914
+      instructions: 11070279
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cosine_d1536_nlist64_eps0:
         calls: 1
-        instructions: 11035789
+        instructions: 11069154
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cosine_d1536_nlist64_eps05:
     total:
       calls: 1
-      instructions: 59851541
+      instructions: 59887511
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cosine_d1536_nlist64_eps05:
         calls: 1
-        instructions: 59850416
+        instructions: 59886386
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_cosine_d1536_nlist64_epsinf:
     total:
       calls: 1
-      instructions: 59848256
+      instructions: 59884226
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_cosine_d1536_nlist64_epsinf:
         calls: 1
-        instructions: 59847131
+        instructions: 59883101
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist16_eps0:
     total:
       calls: 1
-      instructions: 1597109
+      instructions: 1599580
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist16_eps0:
         calls: 1
-        instructions: 1596114
+        instructions: 1598585
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist16_eps05:
     total:
       calls: 1
-      instructions: 2323758
+      instructions: 2326239
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist16_eps05:
         calls: 1
-        instructions: 2322763
+        instructions: 2325244
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist16_eps1:
     total:
       calls: 1
-      instructions: 2323758
+      instructions: 2326239
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist16_eps1:
         calls: 1
-        instructions: 2322763
+        instructions: 2325244
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist16_epsinf:
     total:
       calls: 1
-      instructions: 7342483
+      instructions: 7345235
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist16_epsinf:
         calls: 1
-        instructions: 7341488
+        instructions: 7344240
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist64_eps0:
     total:
       calls: 1
-      instructions: 2874304
+      instructions: 2874418
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist64_eps0:
         calls: 1
-        instructions: 2873309
+        instructions: 2873423
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist64_eps05:
     total:
       calls: 1
-      instructions: 3084996
+      instructions: 3085144
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist64_eps05:
         calls: 1
-        instructions: 3084001
+        instructions: 3084149
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d128_nlist64_eps1:
     total:
       calls: 1
-      instructions: 3084996
+      instructions: 3085144
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d128_nlist64_eps1:
         calls: 1
-        instructions: 3084001
+        instructions: 3084149
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist16_eps0:
     total:
       calls: 1
-      instructions: 10319942
+      instructions: 10327795
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist16_eps0:
         calls: 1
-        instructions: 10318728
+        instructions: 10326581
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist16_eps05:
     total:
       calls: 1
-      instructions: 16681899
+      instructions: 16689817
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist16_eps05:
         calls: 1
-        instructions: 16680904
+        instructions: 16688822
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist16_eps1:
     total:
       calls: 1
-      instructions: 16681899
+      instructions: 16689817
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist16_eps1:
         calls: 1
-        instructions: 16680904
+        instructions: 16688822
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist16_epsinf:
     total:
       calls: 1
-      instructions: 43402674
+      instructions: 43411195
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist16_epsinf:
         calls: 1
-        instructions: 43401679
+        instructions: 43410200
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist256_eps0:
     total:
       calls: 1
-      instructions: 32448029
+      instructions: 32589346
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist256_eps0:
         calls: 1
-        instructions: 32447034
+        instructions: 32588351
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist256_eps05:
     total:
       calls: 1
-      instructions: 32890775
+      instructions: 33032126
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist256_eps05:
         calls: 1
-        instructions: 32889780
+        instructions: 33031131
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist256_eps1:
     total:
       calls: 1
-      instructions: 32890775
+      instructions: 33032126
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist256_eps1:
         calls: 1
-        instructions: 32889780
+        instructions: 33031131
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist64_eps0:
     total:
       calls: 1
-      instructions: 9505498
+      instructions: 9538203
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist64_eps0:
         calls: 1
-        instructions: 9504503
+        instructions: 9537208
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist64_eps05:
     total:
       calls: 1
-      instructions: 11140299
+      instructions: 11173034
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist64_eps05:
         calls: 1
-        instructions: 11139304
+        instructions: 11172039
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d1536_nlist64_eps1:
     total:
       calls: 1
-      instructions: 11140299
+      instructions: 11173034
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d1536_nlist64_eps1:
         calls: 1
-        instructions: 11139304
+        instructions: 11172039
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d384_nlist16_eps0:
     total:
       calls: 1
-      instructions: 3200517
+      instructions: 3204219
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d384_nlist16_eps0:
         calls: 1
-        instructions: 3199392
+        instructions: 3203094
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d384_nlist16_eps05:
     total:
       calls: 1
-      instructions: 4957406
+      instructions: 4961116
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d384_nlist16_eps05:
         calls: 1
-        instructions: 4956411
+        instructions: 4960121
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d384_nlist64_eps1:
     total:
       calls: 1
-      instructions: 4713171
+      instructions: 4719851
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d384_nlist64_eps1:
         calls: 1
-        instructions: 4712176
+        instructions: 4718856
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d768_nlist16_eps0:
     total:
       calls: 1
-      instructions: 5573961
+      instructions: 5579120
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d768_nlist16_eps0:
         calls: 1
-        instructions: 5572966
+        instructions: 5578125
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d768_nlist16_eps05:
     total:
       calls: 1
-      instructions: 8875241
+      instructions: 8880466
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d768_nlist16_eps05:
         calls: 1
-        instructions: 8874116
+        instructions: 8879341
         heap_increase: 0
         stable_memory_increase: 0
   bench_ivf_d768_nlist64_eps1:
     total:
       calls: 1
-      instructions: 6967900
+      instructions: 6983740
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_ivf_d768_nlist64_eps1:
         calls: 1
-        instructions: 6966905
+        instructions: 6982745
         heap_increase: 0
         stable_memory_increase: 0
   bench_maintenance_step_awaiting_publish_d128_nlist16:
     total:
       calls: 1
-      instructions: 715986
+      instructions: 801827
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       bench_maintenance_step_awaiting_publish_d128_nlist16:
         calls: 1
-        instructions: 714926
+        instructions: 800764
         heap_increase: 0
         stable_memory_increase: 128
   bench_maintenance_step_rebuild_d128_nlist16:
     total:
       calls: 1
-      instructions: 40743492
+      instructions: 41091378
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       bench_maintenance_step_rebuild_d128_nlist16:
         calls: 1
-        instructions: 40741973
+        instructions: 41089859
         heap_increase: 0
         stable_memory_increase: 128
       rebuild_building:
         calls: 1
-        instructions: 39468386
+        instructions: 39679347
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 1
-        instructions: 32492563
+        instructions: 32629397
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 1
-        instructions: 4529355
+        instructions: 4560285
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 1
-        instructions: 6751508
+        instructions: 6818966
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 1
-        instructions: 545311
+        instructions: 592379
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 1
-        instructions: 356176
+        instructions: 401050
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15115783
+        instructions: 15240525
         heap_increase: 0
         stable_memory_increase: 0
   bench_maintenance_step_scan_d128:
     total:
       calls: 1
-      instructions: 322631
+      instructions: 322779
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       bench_maintenance_step_scan_d128:
         calls: 1
-        instructions: 321558
+        instructions: 321706
         heap_increase: 0
         stable_memory_increase: 128
   bench_partition_health_scan_d128:
     total:
       calls: 1
-      instructions: 26105
+      instructions: 26159
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_partition_health_scan_d128:
         calls: 1
-        instructions: 24980
+        instructions: 25034
         heap_increase: 0
         stable_memory_increase: 0
   bench_partition_health_scan_tombstoned_d128:
     total:
       calls: 1
-      instructions: 38529
+      instructions: 38580
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_partition_health_scan_tombstoned_d128:
         calls: 1
-        instructions: 37404
+        instructions: 37455
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_building_step_d128_nlist16:
     total:
       calls: 1
-      instructions: 40392291
+      instructions: 40684642
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_rebuild_building_step_d128_nlist16:
         calls: 1
-        instructions: 40390840
+        instructions: 40683191
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building:
         calls: 1
-        instructions: 39483608
+        instructions: 39683834
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 1
-        instructions: 32508025
+        instructions: 32633516
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 1
-        instructions: 4530288
+        instructions: 4560285
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 1
-        instructions: 6751117
+        instructions: 6819334
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 1
-        instructions: 545143
+        instructions: 592379
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 1
-        instructions: 356176
+        instructions: 401050
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15137296
+        instructions: 15243277
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_full_clustered_d128_nlist16:
     total:
       calls: 1
-      instructions: 258019643
-      heap_increase: 18
+      instructions: 268985471
+      heap_increase: 40
       stable_memory_increase: 0
     scopes:
       bench_rebuild_full_clustered_d128_nlist16:
         calls: 1
-        instructions: 258018063
-        heap_increase: 18
+        instructions: 268983891
+        heap_increase: 40
         stable_memory_increase: 0
       rebuild_building:
         calls: 2
-        instructions: 41000796
+        instructions: 41252175
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 2
-        instructions: 32640321
+        instructions: 32827248
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 2
-        instructions: 5584192
+        instructions: 5653394
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 2
-        instructions: 7848942
+        instructions: 7914470
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 5
-        instructions: 11035919
-        heap_increase: 18
+        instructions: 12218162
+        heap_increase: 40
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 5
-        instructions: 126607669
+        instructions: 136715704
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling:
         calls: 1
-        instructions: 21571224
+        instructions: 21708448
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling_dedup:
         calls: 1
-        instructions: 3097994
+        instructions: 3168175
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling_read:
         calls: 1
-        instructions: 3279773
+        instructions: 3261325
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling_scan:
         calls: 1
-        instructions: 18467166
+        instructions: 18534187
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 2
-        instructions: 55776648
+        instructions: 54929441
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 2
-        instructions: 27191087
+        instructions: 24904370
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 2
-        instructions: 195261
+        instructions: 195323
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15196289
+        instructions: 15366301
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_full_clustered_d384_nlist16:
     total:
       calls: 1
-      instructions: 638481472
-      heap_increase: 66
+      instructions: 649131117
+      heap_increase: 128
       stable_memory_increase: 0
     scopes:
       bench_rebuild_full_clustered_d384_nlist16:
         calls: 1
-        instructions: 638479892
-        heap_increase: 66
+        instructions: 649129537
+        heap_increase: 128
         stable_memory_increase: 0
       rebuild_building:
         calls: 2
-        instructions: 66039716
+        instructions: 66145801
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 2
-        instructions: 54738696
+        instructions: 54899598
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 2
-        instructions: 8292320
+        instructions: 8310263
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 2
-        instructions: 10624221
+        instructions: 10574520
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 5
-        instructions: 23964578
-        heap_increase: 50
+        instructions: 26461030
+        heap_increase: 112
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 5
-        instructions: 370424576
+        instructions: 380535180
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling:
         calls: 1
-        instructions: 27961815
+        instructions: 27998021
         heap_increase: 16
         stable_memory_increase: 0
       rebuild_sampling_dedup:
         calls: 1
-        instructions: 7043261
+        instructions: 7051415
         heap_increase: 16
         stable_memory_increase: 0
       rebuild_sampling_read:
         calls: 1
-        instructions: 5725002
+        instructions: 5667522
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling_scan:
         calls: 1
-        instructions: 20912488
+        instructions: 20940518
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 2
-        instructions: 147987139
+        instructions: 145745936
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 2
-        instructions: 70054991
+        instructions: 65555002
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 2
-        instructions: 501731
+        instructions: 499802
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15155047
+        instructions: 15298770
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_full_clustered_d768_nlist64:
     total:
       calls: 1
-      instructions: 1123771120
-      heap_increase: 77
+      instructions: 1128235522
+      heap_increase: 78
       stable_memory_increase: 0
     scopes:
       bench_rebuild_full_clustered_d768_nlist64:
         calls: 1
-        instructions: 1123769540
-        heap_increase: 77
+        instructions: 1128233942
+        heap_increase: 78
         stable_memory_increase: 0
       rebuild_building:
         calls: 2
-        instructions: 140582597
+        instructions: 140999065
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 2
-        instructions: 120337906
+        instructions: 120749297
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 2
-        instructions: 13349841
+        instructions: 13230724
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 2
-        instructions: 15710693
+        instructions: 15647811
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 5
-        instructions: 28971384
+        instructions: 29611479
         heap_increase: 74
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 5
-        instructions: 430922873
+        instructions: 436706812
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling:
         calls: 1
-        instructions: 74565855
-        heap_increase: 3
+        instructions: 74622125
+        heap_increase: 4
         stable_memory_increase: 0
       rebuild_sampling_dedup:
         calls: 1
-        instructions: 49247875
-        heap_increase: 3
+        instructions: 49257411
+        heap_increase: 4
         stable_memory_increase: 0
       rebuild_sampling_read:
         calls: 1
-        instructions: 10124415
+        instructions: 10085614
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling_scan:
         calls: 1
-        instructions: 25311914
+        instructions: 25358626
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 2
-        instructions: 444836683
+        instructions: 442264932
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 2
-        instructions: 109964950
+        instructions: 105416433
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 2
-        instructions: 3828579
+        instructions: 3823488
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15014073
+        instructions: 15396512
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_full_d128_nlist16:
     total:
       calls: 1
-      instructions: 741501507
-      heap_increase: 23
+      instructions: 775755016
+      heap_increase: 36
       stable_memory_increase: 0
     scopes:
       bench_rebuild_full_d128_nlist16:
         calls: 1
-        instructions: 741499927
-        heap_increase: 23
+        instructions: 775753436
+        heap_increase: 36
         stable_memory_increase: 0
       rebuild_building:
         calls: 2
-        instructions: 40021379
+        instructions: 40072525
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 2
-        instructions: 32758680
+        instructions: 32846658
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 2
-        instructions: 4570291
+        instructions: 4531038
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 2
-        instructions: 6806585
+        instructions: 6765433
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 11
-        instructions: 35064135
-        heap_increase: 18
+        instructions: 38380432
+        heap_increase: 31
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 11
-        instructions: 505715811
+        instructions: 545404889
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling:
         calls: 1
-        instructions: 19980625
+        instructions: 20120765
         heap_increase: 5
         stable_memory_increase: 0
       rebuild_sampling_dedup:
         calls: 1
-        instructions: 3099535
+        instructions: 3170349
         heap_increase: 5
         stable_memory_increase: 0
       rebuild_sampling_read:
         calls: 1
-        instructions: 2612812
+        instructions: 2596768
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling_scan:
         calls: 1
-        instructions: 16874749
+        instructions: 16944136
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 8
-        instructions: 138685682
+        instructions: 129617638
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 8
-        instructions: 109738118
+        instructions: 99280419
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 8
-        instructions: 777881
+        instructions: 779475
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15188050
+        instructions: 15318814
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_full_d384_nlist16:
     total:
       calls: 1
-      instructions: 2021118066
-      heap_increase: 113
+      instructions: 2048956876
+      heap_increase: 150
       stable_memory_increase: 0
     scopes:
       bench_rebuild_full_d384_nlist16:
         calls: 1
-        instructions: 2021116486
-        heap_increase: 113
+        instructions: 2048955296
+        heap_increase: 150
         stable_memory_increase: 0
       rebuild_building:
         calls: 2
-        instructions: 65086374
+        instructions: 64955771
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 2
-        instructions: 54566824
+        instructions: 54514669
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 2
-        instructions: 7582063
+        instructions: 7576511
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 2
-        instructions: 9918729
+        instructions: 9840802
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 11
-        instructions: 81850634
-        heap_increase: 75
+        instructions: 85968251
+        heap_increase: 112
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 11
-        instructions: 1485896106
+        instructions: 1526381881
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling:
         calls: 1
-        instructions: 26431084
+        instructions: 26478332
         heap_increase: 38
         stable_memory_increase: 0
       rebuild_sampling_dedup:
         calls: 1
-        instructions: 7031563
+        instructions: 7044371
         heap_increase: 23
         stable_memory_increase: 0
       rebuild_sampling_read:
         calls: 1
-        instructions: 5131707
+        instructions: 5080564
         heap_increase: 15
         stable_memory_increase: 0
       rebuild_sampling_scan:
         calls: 1
-        instructions: 19393455
+        instructions: 19427873
         heap_increase: 15
         stable_memory_increase: 0
       rebuild_training:
         calls: 8
-        instructions: 359761817
+        instructions: 342944527
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 8
-        instructions: 281008998
+        instructions: 261748197
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 8
-        instructions: 2000294
+        instructions: 2000616
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 15250099
+        instructions: 15143766
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_full_d768_nlist64:
     total:
       calls: 1
-      instructions: 4279854899
-      heap_increase: 287
+      instructions: 4291529090
+      heap_increase: 288
       stable_memory_increase: 0
     scopes:
       bench_rebuild_full_d768_nlist64:
         calls: 1
-        instructions: 4279853319
-        heap_increase: 287
+        instructions: 4291527510
+        heap_increase: 288
         stable_memory_increase: 0
       rebuild_building:
         calls: 2
-        instructions: 136874999
+        instructions: 137163711
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_append:
         calls: 2
-        instructions: 118657306
+        instructions: 118960517
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_read:
         calls: 2
-        instructions: 11683409
+        instructions: 11687176
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_building_scan:
         calls: 2
-        instructions: 14023755
+        instructions: 14013614
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 10
-        instructions: 140176190
+        instructions: 140876990
         heap_increase: 202
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 10
-        instructions: 2689507754
+        instructions: 2725106772
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_sampling:
         calls: 1
-        instructions: 35977920
-        heap_increase: 85
+        instructions: 36022098
+        heap_increase: 86
         stable_memory_increase: 0
       rebuild_sampling_dedup:
         calls: 1
-        instructions: 12930869
-        heap_increase: 47
+        instructions: 12942497
+        heap_increase: 48
         stable_memory_increase: 0
       rebuild_sampling_read:
         calls: 1
-        instructions: 8779224
+        instructions: 8726191
         heap_increase: 38
         stable_memory_increase: 0
       rebuild_sampling_scan:
         calls: 1
-        instructions: 23040985
+        instructions: 23073513
         heap_increase: 38
         stable_memory_increase: 0
       rebuild_training:
         calls: 7
-        instructions: 1273408266
+        instructions: 1248330636
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 7
-        instructions: 676851324
+        instructions: 648259432
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 7
-        instructions: 13432847
+        instructions: 13401554
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1024
-        instructions: 14978931
+        instructions: 15245623
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_training_step_d128_nlist16:
     total:
       calls: 1
-      instructions: 107528703
+      instructions: 113000706
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_rebuild_training_step_d128_nlist16:
         calls: 1
-        instructions: 107527292
+        instructions: 112999295
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 1
-        instructions: 4022428
+        instructions: 4471868
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 1
-        instructions: 62298406
+        instructions: 67335466
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 1
-        instructions: 41201201
+        instructions: 41186670
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 1
-        instructions: 13978474
+        instructions: 12612422
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 1
-        instructions: 98676
+        instructions: 97319
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_training_step_d384_nlist16:
     total:
       calls: 1
-      instructions: 305376716
-      heap_increase: 49
+      instructions: 309201241
+      heap_increase: 25
       stable_memory_increase: 0
     scopes:
       bench_rebuild_training_step_d384_nlist16:
         calls: 1
-        instructions: 305375305
-        heap_increase: 49
+        instructions: 309199830
+        heap_increase: 25
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 1
-        instructions: 11133884
-        heap_increase: 49
+        instructions: 9928150
+        heap_increase: 25
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 1
-        instructions: 183120902
+        instructions: 188123136
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 1
-        instructions: 111115449
+        instructions: 111143459
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 1
-        instructions: 35766498
+        instructions: 33354137
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 1
-        instructions: 250056
+        instructions: 249968
         heap_increase: 0
         stable_memory_increase: 0
   bench_rebuild_training_step_d768_nlist64:
     total:
       calls: 1
-      instructions: 1044854970
+      instructions: 1050157390
       heap_increase: 52
       stable_memory_increase: 0
     scopes:
       bench_rebuild_training_step_d768_nlist64:
         calls: 1
-        instructions: 1044853559
+        instructions: 1050155979
         heap_increase: 52
         stable_memory_increase: 0
       rebuild_persist_state:
         calls: 1
-        instructions: 18731012
+        instructions: 19098854
         heap_increase: 52
         stable_memory_increase: 0
       rebuild_read_state:
         calls: 1
-        instructions: 364561562
+        instructions: 369647655
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training:
         calls: 1
-        instructions: 661555840
+        instructions: 661404254
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_assign:
         calls: 1
-        instructions: 97199289
+        instructions: 93117479
         heap_increase: 0
         stable_memory_increase: 0
       rebuild_training_recompute:
         calls: 1
-        instructions: 1920543
+        instructions: 1913773
         heap_increase: 0
         stable_memory_increase: 0
   bench_remove_normal_d128:
     total:
       calls: 1
-      instructions: 83531
+      instructions: 83961
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_remove_normal_d128:
         calls: 1
-        instructions: 82200
+        instructions: 82630
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1
-        instructions: 13848
+        instructions: 13993
         heap_increase: 0
         stable_memory_increase: 0
   bench_subject_map_get_d128:
@@ -1372,7 +1372,7 @@ benches:
   bench_upsert_dualwrite_d128_nlist16:
     total:
       calls: 1
-      instructions: 780963
+      instructions: 825657
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -1383,7 +1383,7 @@ benches:
         stable_memory_increase: 0
       append_head_insert:
         calls: 2
-        instructions: 19331
+        instructions: 19918
         heap_increase: 0
         stable_memory_increase: 0
       append_header_read:
@@ -1393,17 +1393,17 @@ benches:
         stable_memory_increase: 0
       append_meta_get:
         calls: 2
-        instructions: 16996
+        instructions: 16909
         heap_increase: 0
         stable_memory_increase: 0
       append_meta_insert:
         calls: 2
-        instructions: 65122
+        instructions: 65079
         heap_increase: 0
         stable_memory_increase: 0
       append_reserve_page:
         calls: 1
-        instructions: 6420
+        instructions: 6428
         heap_increase: 0
         stable_memory_increase: 0
       append_row_write:
@@ -1418,32 +1418,32 @@ benches:
         stable_memory_increase: 0
       bench_upsert_dualwrite_d128_nlist16:
         calls: 1
-        instructions: 779322
+        instructions: 824016
         heap_increase: 0
         stable_memory_increase: 0
       sync_append_row:
         calls: 2
-        instructions: 146096
+        instructions: 146613
         heap_increase: 0
         stable_memory_increase: 0
       sync_caller_check:
         calls: 1
-        instructions: 3864
+        instructions: 3851
         heap_increase: 0
         stable_memory_increase: 0
       sync_def_ensure:
         calls: 1
-        instructions: 3831
+        instructions: 3884
         heap_increase: 0
         stable_memory_increase: 0
       sync_def_get:
         calls: 1
-        instructions: 2381
+        instructions: 2425
         heap_increase: 0
         stable_memory_increase: 0
       sync_prepare:
         calls: 2
-        instructions: 2919
+        instructions: 2784
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_get:
@@ -1453,13 +1453,13 @@ benches:
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1
-        instructions: 14938
+        instructions: 14957
         heap_increase: 0
         stable_memory_increase: 0
   bench_upsert_normal_d128:
     total:
       calls: 1
-      instructions: 123846
+      instructions: 124229
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -1470,7 +1470,7 @@ benches:
         stable_memory_increase: 0
       append_head_insert:
         calls: 1
-        instructions: 10579
+        instructions: 10748
         heap_increase: 0
         stable_memory_increase: 0
       append_header_read:
@@ -1480,12 +1480,12 @@ benches:
         stable_memory_increase: 0
       append_meta_get:
         calls: 2
-        instructions: 16205
+        instructions: 16245
         heap_increase: 0
         stable_memory_increase: 0
       append_meta_insert:
         calls: 1
-        instructions: 30337
+        instructions: 30379
         heap_increase: 0
         stable_memory_increase: 0
       append_row_write:
@@ -1500,27 +1500,27 @@ benches:
         stable_memory_increase: 0
       bench_upsert_normal_d128:
         calls: 1
-        instructions: 122205
+        instructions: 122588
         heap_increase: 0
         stable_memory_increase: 0
       sync_append_row:
         calls: 1
-        instructions: 78050
+        instructions: 78301
         heap_increase: 0
         stable_memory_increase: 0
       sync_caller_check:
         calls: 1
-        instructions: 3895
+        instructions: 3882
         heap_increase: 0
         stable_memory_increase: 0
       sync_def_ensure:
         calls: 1
-        instructions: 3831
+        instructions: 3884
         heap_increase: 0
         stable_memory_increase: 0
       sync_def_get:
         calls: 1
-        instructions: 2381
+        instructions: 2425
         heap_increase: 0
         stable_memory_increase: 0
       sync_prepare:
@@ -1535,266 +1535,266 @@ benches:
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 1
-        instructions: 14650
+        instructions: 14742
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_cosine_d128_k10:
     total:
       calls: 1
-      instructions: 6184824
+      instructions: 6186140
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_cosine_d128_k10:
         calls: 1
-        instructions: 6183567
+        instructions: 6184883
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_cosine_d128_k100:
     total:
       calls: 1
-      instructions: 6213053
+      instructions: 6213019
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_cosine_d128_k100:
         calls: 1
-        instructions: 6211796
+        instructions: 6211762
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_cosine_d1536_k10:
     total:
       calls: 1
-      instructions: 48114229
+      instructions: 48115552
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_cosine_d1536_k10:
         calls: 1
-        instructions: 48112972
+        instructions: 48114295
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_cosine_d1536_k100:
     total:
       calls: 1
-      instructions: 48141688
+      instructions: 48141661
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_cosine_d1536_k100:
         calls: 1
-        instructions: 48140431
+        instructions: 48140404
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_cosine_i8_d1536_k10:
     total:
       calls: 1
-      instructions: 24677401
+      instructions: 24678726
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_cosine_i8_d1536_k10:
         calls: 1
-        instructions: 24676276
+        instructions: 24677601
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_cosine_i8_d1536_k100:
     total:
       calls: 1
-      instructions: 24703863
+      instructions: 24703838
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_cosine_i8_d1536_k100:
         calls: 1
-        instructions: 24702738
+        instructions: 24702713
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d128_k10:
     total:
       calls: 1
-      instructions: 4628703
+      instructions: 4628759
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d128_k10:
         calls: 1
-        instructions: 4627446
+        instructions: 4627502
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d128_k100:
     total:
       calls: 1
-      instructions: 5054386
+      instructions: 5054352
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d128_k100:
         calls: 1
-        instructions: 5053129
+        instructions: 5053095
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d1536_k10:
     total:
       calls: 1
-      instructions: 29316666
+      instructions: 29316729
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d1536_k10:
         calls: 1
-        instructions: 29315409
+        instructions: 29315472
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d1536_k100:
     total:
       calls: 1
-      instructions: 33987828
+      instructions: 33987801
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d1536_k100:
         calls: 1
-        instructions: 33986571
+        instructions: 33986544
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d384_k10:
     total:
       calls: 1
-      instructions: 9104859
+      instructions: 9104924
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d384_k10:
         calls: 1
-        instructions: 9103734
+        instructions: 9103799
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d384_k100:
     total:
       calls: 1
-      instructions: 10287459
+      instructions: 10287434
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d384_k100:
         calls: 1
-        instructions: 10286334
+        instructions: 10286309
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d768_k10:
     total:
       calls: 1
-      instructions: 15855266
+      instructions: 15855323
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d768_k10:
         calls: 1
-        instructions: 15854009
+        instructions: 15854066
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_d768_k100:
     total:
       calls: 1
-      instructions: 18194045
+      instructions: 18194012
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_d768_k100:
         calls: 1
-        instructions: 18192920
+        instructions: 18192887
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_i8_d1536_k10:
     total:
       calls: 1
-      instructions: 10502671
+      instructions: 10502736
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_i8_d1536_k10:
         calls: 1
-        instructions: 10501546
+        instructions: 10501611
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_search_i8_d1536_k100:
     total:
       calls: 1
-      instructions: 12914450
+      instructions: 12914425
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_vector_search_i8_d1536_k100:
         calls: 1
-        instructions: 12913325
+        instructions: 12913300
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_sync_batch_outcome_256:
     total:
       calls: 1
-      instructions: 33683644
+      instructions: 33703833
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       sync_def_create:
         calls: 1
-        instructions: 47827
+        instructions: 48012
         heap_increase: 0
         stable_memory_increase: 0
       sync_def_get:
         calls: 8
-        instructions: 22607
+        instructions: 22957
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 256
-        instructions: 4314839
+        instructions: 4332543
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_sync_batch_outcome_256_768_dims:
     total:
       calls: 1
-      instructions: 36910873
+      instructions: 36931391
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       sync_def_create:
         calls: 1
-        instructions: 48097
+        instructions: 48277
         heap_increase: 0
         stable_memory_increase: 0
       sync_def_get:
         calls: 8
-        instructions: 22607
+        instructions: 22957
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 256
-        instructions: 4356411
+        instructions: 4374115
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_sync_batch_outcome_256_768_dims_mixed:
     total:
       calls: 1
-      instructions: 44270236
+      instructions: 44334531
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       sync_def_get:
         calls: 8
-        instructions: 19048
+        instructions: 19400
         heap_increase: 0
         stable_memory_increase: 0
       sync_subject_insert:
         calls: 256
-        instructions: 4525195
+        instructions: 4548634
         heap_increase: 0
         stable_memory_increase: 0
   bench_vector_sync_batch_outcome_encode:
     total:
       calls: 1
-      instructions: 225199
+      instructions: 224821
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

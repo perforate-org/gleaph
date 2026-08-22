@@ -70,8 +70,9 @@ pub(crate) const MAX_REBUILD_STEP_VECTOR_BYTES: u64 = 8 * 1024 * 1024;
 /// rebuild-state envelope (ADR 0031 Slice 7/8). This is an encoded `to_bytes().len()` cap (it
 /// accounts for enum/vec-length/nested-vec overhead), not a raw-vector-bytes cap. The `Training`
 /// value holds both the candidate pool and the trained centroids, so the candidate pool is sized to
-/// reserve `nlist * stride_bytes` (centroids) plus [`MAX_REBUILD_STATE_OVERHEAD_BYTES`] inside this
-/// envelope; the sampling->`Training` transition additionally re-checks the encoded length and
+/// reserve `nlist * dims * 4` canonical-f32 centroid bytes plus [`MAX_REBUILD_STATE_OVERHEAD_BYTES`]
+/// inside this envelope (the pool itself is charged at the index's native stored row width); the
+/// sampling->`Training` transition additionally re-checks the encoded length and
 /// fails closed (`InvalidRebuildParams`) rather than trapping if it would exceed the cap.
 pub(crate) const MAX_REBUILD_STATE_BYTES: u64 = 8 * 1024 * 1024;
 

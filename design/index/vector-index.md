@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 01:45:08 UTC +0000
+Anchor timestamp: 2026-08-22 02:46:09 UTC +0000
 
 ## Status
 
@@ -425,12 +425,12 @@ parents' children and recurse to the leaves.
 - **Flat is the degenerate case (`levels = 1`)** — one level of `nlist` centroids, no fine training,
   single-stage selection, behaviorally identical to the non-hierarchical design. The same code path
   serves both, so designing the hierarchy from the start does **not** force a 2-level deployment.
-- **Why from the start**: the 8 MiB training envelope is a _per-training-job_ bound, so the ≈677
-  `nlist` ceiling at `d = 1536` applies **per level**, not globally. A hierarchy restores trainable
-  centroid counts and avoids the flat candidate-pool degeneration (pool ≈ `nlist` → k-means
-  degrades to sampled centroids) at the design target. Retrofitting level semantics later would
-  touch partition keys, centroid metadata, the rebuild state machine, the search path, and the
-  definition config at once.
+- **Why from the start**: the 8 MiB training envelope is a _per-training-job_ bound, so the
+  encoding-dependent `nlist` ceiling at `d = 1536` (≈677 for F32) applies **per level**, not
+  globally. A hierarchy restores trainable centroid counts and avoids the flat candidate-pool
+  degeneration (pool ≈ `nlist` → k-means degrades to sampled centroids) at the design target.
+  Retrofitting level semantics later would touch partition keys, centroid metadata, the rebuild state
+  machine, the search path, and the definition config at once.
 - **Deployment stays measured**: `levels = 1` (flat behavior) is the default until the scan-cost
   measurement at the target scale justifies `levels = 2` (e.g., 64×64). The L1 centroid table is
   the Router's future routing index for partition-based multi-canister dispatch.
@@ -458,6 +458,9 @@ extent compaction: tail-only allocation grows the slab, and the Slice 9/10 tombs
 bounds it (`slab ≤ live/(1 − r)` for trigger ratio `r`).
 
 Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
+`Sampling` freezes each candidate in its **native stored form** (row bytes + aux scale, deduped on
+the pair; an `I8` row is never expanded to f32). f32 exists transiently inside centroid
+seeding/training, and the trained centroids are canonical f32 end to end.
 
 During `Building`, if the kth subject-store link fails after a partition batch append, the linked
 prefix is preserved while the current row and every unlinked suffix row are tombstoned; the original
@@ -528,9 +531,11 @@ Prepared now:
 | 6     | closure replication (coarse-level, opt-in)                                         | Slice 11+ candidate                                                                                             |
 | —     | `ivf_pq`, global HNSW                                                              | **deferred** (PQ recall; HNSW: random reads, unbounded instruction budget, delete repair, cross-canister edges) |
 
-At `d = 1536` a single training job is bounded to ≈677 centroids by the 8 MiB envelope; with the
-level-generic structure this becomes a **per-level** bound, restoring trainable counts. A raw
-candidate region remains the documented fallback if per-job pools still bind.
+At `d = 1536` a single training job is bounded by the 8 MiB envelope, which charges the sampled
+pool at its native stored row width and the centroids at f32 width: an F32 job is bounded to ≈677
+centroids, while an I8 job's state ceiling rises above `MAX_NLIST` and the per-iteration
+distance-op budget binds first. With the level-generic structure this becomes a **per-level**
+bound. A raw candidate region remains the documented fallback if per-job pools still bind.
 
 ## Research grounding
 
@@ -556,9 +561,11 @@ observation. This link does not amend the planned vector boundary above.
 
 ## Open items
 
-1. **Per-level `nlist` under the 8 MiB envelope**: the level-generic structure makes the ≈677 ceiling
-   a per-training-job bound; a hierarchy restores trainable counts at `d = 1536`. A raw candidate
-   region remains the documented fallback if per-job pools still bind.
+1. **Per-level `nlist` under the 8 MiB envelope**: the level-generic structure makes the
+   encoding-dependent per-training-job ceiling (≈677 for F32 at `d = 1536`; higher for I8, where the
+   per-iteration op budget binds before the envelope) a per-level bound; a hierarchy restores
+   trainable counts at `d = 1536`. A raw candidate region remains the documented fallback if per-job
+   pools still bind.
 2. **Hierarchy deployment timing** (**Slice 6 decision: ship `levels = 1` / flat, defer `levels = 2`**):
    the flat `ivf_flat` model stays the deployed form; enabling `levels = 2` (e.g. 64×64) follows the
    scan-cost measurement at the target scale. Slice 6 measured ~164K instructions per scanned row at

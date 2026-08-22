@@ -34,8 +34,9 @@ use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE,
 };
 use crate::records::{
-    FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionKey, RawRebuildState, SlotRef,
-    SubjectKey, SubjectScanCursor, SubjectScanScope, VectorRebuildStateRecord,
+    FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionKey, RawRebuildState,
+    RebuildCandidate, SlotRef, SubjectKey, SubjectScanCursor, SubjectScanScope, VectorIndexDef,
+    VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -107,20 +108,23 @@ pub(super) fn partition_health_summary(
 }
 
 /// Whether a rebuild's `Training` phase is feasible within the bounded-state and bounded-per-message
-/// contracts for the given target `nlist`/`stride_bytes`/`dims` (ADR 0031 Slice 8). Both must hold;
-/// `admin_start_vector_rebuild` rejects with `InvalidRebuildParams` otherwise:
+/// contracts for the given target `nlist`/`dims` and the pool vs centroid widths (ADR 0031 Slice 8).
+/// Both must hold; `admin_start_vector_rebuild` rejects with `InvalidRebuildParams` otherwise:
 ///
-/// - **Combined-state (P2):** `2 * nlist * stride_bytes + MAX_REBUILD_STATE_OVERHEAD_BYTES <=
-///   MAX_REBUILD_STATE_BYTES`. The `+ overhead` term matches the `candidate_pool_cap` reservation,
+/// - **Combined-state (P2):** `nlist * (pool_stride + centroid_stride) +
+///   MAX_REBUILD_STATE_OVERHEAD_BYTES <= MAX_REBUILD_STATE_BYTES`. The pool is charged at the index's
+///   native stored row width (`pad_stride_bytes`) and the centroids at canonical-f32 width
+///   (`dims * 4`), so an `I8` index pays one native-width pool copy plus one f32 centroid set, not
+///   two f32-width copies. The `+ overhead` term matches the `candidate_pool_cap` reservation,
 ///   guaranteeing the pool can hold `>= nlist` candidates alongside the trained centroids.
 /// - **Per-iteration work (P1):** `nlist * nlist * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`, so
 ///   `>= nlist` candidates can be sampled and one k-means-lite iteration over them stays within the
 ///   per-message op budget.
-fn training_start_feasible(nlist: u32, stride_bytes: u32, dims: u16) -> bool {
+fn training_start_feasible(nlist: u32, pool_stride: u32, centroid_stride: u32, dims: u16) -> bool {
     let nlist = nlist as u64;
     let state_ok = nlist
-        .checked_mul(stride_bytes as u64)
-        .and_then(|x| x.checked_mul(2))
+        .checked_mul(pool_stride as u64)
+        .and_then(|x| x.checked_add(nlist.checked_mul(centroid_stride as u64)?))
         .and_then(|x| x.checked_add(MAX_REBUILD_STATE_OVERHEAD_BYTES))
         .is_some_and(|x| x <= MAX_REBUILD_STATE_BYTES);
     let ops_ok = nlist
@@ -131,15 +135,17 @@ fn training_start_feasible(nlist: u32, stride_bytes: u32, dims: u16) -> bool {
 }
 
 /// Bounded distinct candidate-pool size (count) for `Training`: the smaller of the byte-budget cap
-/// (reserving `nlist` centroids + encoding overhead inside [`MAX_REBUILD_STATE_BYTES`], P2) and the
-/// distance-op cap (so one iteration's `candidate_count * nlist * dims` stays within
-/// [`MAX_REBUILD_TRAINING_DISTANCE_OPS`], P1). For any params accepted by `training_start_feasible`
-/// this is `>= nlist` (ADR 0031 Slice 8).
-fn candidate_pool_cap(nlist: u32, stride_bytes: u32, dims: u16) -> usize {
+/// (reserving `nlist` centroids at canonical-f32 width + encoding overhead inside
+/// [`MAX_REBUILD_STATE_BYTES`], P2) and the distance-op cap (so one iteration's
+/// `candidate_count * nlist * dims` stays within [`MAX_REBUILD_TRAINING_DISTANCE_OPS`], P1). The
+/// remaining bytes are divided by the native stored row width (`pool_stride`), since each candidate
+/// freezes its stored bytes. For any params accepted by `training_start_feasible` this is
+/// `>= nlist` (ADR 0031 Slice 8).
+fn candidate_pool_cap(nlist: u32, pool_stride: u32, centroid_stride: u32, dims: u16) -> usize {
     let nlist = nlist as u64;
-    let stride = (stride_bytes as u64).max(1);
+    let stride = (pool_stride as u64).max(1);
     let dims = (dims as u64).max(1);
-    let centroid_bytes = nlist.saturating_mul(stride);
+    let centroid_bytes = nlist.saturating_mul(centroid_stride as u64);
     let pool_bytes = MAX_REBUILD_STATE_BYTES
         .saturating_sub(centroid_bytes)
         .saturating_sub(MAX_REBUILD_STATE_OVERHEAD_BYTES);
@@ -323,22 +329,29 @@ fn next_subject_page(
 /// deterministic variant); each subsequent centroid is the candidate farthest from the already-chosen
 /// set (ties broken by candidate index). This spreads the initial centroids across the pool, which
 /// improves the k-means result and lets the early-convergence exit in [`VectorCanisterStore::training_step`]
-/// fire sooner. Cost is `O(nlist * n * dims)` — roughly one training iteration — so it is amortized by
-/// the reduction in iterations for separated data.
-fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<Vec<u8>> {
+/// fire sooner. The stored-form pool is decoded to canonical f32 once, transiently (the durable
+/// candidates stay frozen); cost is `O(nlist * n * dims)` — roughly one training iteration — so it is
+/// amortized by the reduction in iterations for separated data.
+fn furthest_point_seed(
+    candidates: &[RebuildCandidate],
+    nlist: usize,
+    def: &VectorIndexDef,
+) -> Vec<Vec<u8>> {
     let n = candidates.len();
     if n == 0 {
         return Vec::new();
     }
+    let decoded: Vec<Vec<u8>> = candidates
+        .iter()
+        .map(|c| stored_to_f32_bytes(def, &c.stored, &c.aux))
+        .collect();
     if n <= nlist {
-        return candidates.to_vec();
+        return decoded;
     }
+    let dims = def.dims;
 
     let zero: Vec<f32> = vec![0.0; dims as usize];
-    let norms: Vec<f32> = candidates
-        .iter()
-        .map(|c| l2_squared_f32(c, &zero))
-        .collect();
+    let norms: Vec<f32> = decoded.iter().map(|c| l2_squared_f32(c, &zero)).collect();
     let mut dist = vec![f32::INFINITY; n];
     let mut chosen = vec![false; n];
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(nlist);
@@ -349,10 +362,10 @@ fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<V
         .expect("non-empty candidates");
     chosen[first] = true;
     let mut chosen_count = 1usize;
-    out.push(candidates[first].clone());
-    let first_decoded = decode_f32(&candidates[first]);
+    out.push(decoded[first].clone());
+    let first_decoded = decode_f32(&decoded[first]);
     for i in 0..n {
-        dist[i] = l2_squared_f32(&candidates[i], &first_decoded);
+        dist[i] = l2_squared_f32(&decoded[i], &first_decoded);
     }
 
     // Subsequent: candidate farthest from the chosen set (ties -> lowest index).
@@ -363,10 +376,10 @@ fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<V
             .expect("more candidates than nlist");
         chosen[next] = true;
         chosen_count += 1;
-        out.push(candidates[next].clone());
-        let next_decoded = decode_f32(&candidates[next]);
+        out.push(decoded[next].clone());
+        let next_decoded = decode_f32(&decoded[next]);
         for i in 0..n {
-            let d = l2_squared_f32(&candidates[i], &next_decoded);
+            let d = l2_squared_f32(&decoded[i], &next_decoded);
             if d < dist[i] {
                 dist[i] = d;
             }
@@ -437,10 +450,15 @@ impl VectorCanisterStore {
             return Err(VectorCanisterError::InvalidRebuildParams);
         }
         // Bound the combined durable rebuild state (candidate pool + trained centroids) and the
-        // per-iteration `Training` work; both scale with `dims`. Rebuild candidates and centroids are
-        // always canonical f32 (`dims * 4` bytes each), regardless of the stored encoding (an I8
-        // row is dequantized to f32 before sampling/training), so the budget uses the f32 width.
-        if !training_start_feasible(nlist, u32::from(def.dims) * 4, def.dims) {
+        // per-iteration `Training` work; both scale with `dims`. The pool freezes native stored rows
+        // (the index's `pad_stride_bytes` width); the trained centroids are always canonical f32
+        // (`dims * 4` bytes each), so the state budget charges pool and centroid widths separately.
+        if !training_start_feasible(
+            nlist,
+            def.pad_stride_bytes,
+            u32::from(def.dims) * 4,
+            def.dims,
+        ) {
             return Err(VectorCanisterError::InvalidRebuildParams);
         }
         if !matches!(rebuild_state_of(index_id), VectorRebuildStateRecord::Idle) {
@@ -635,14 +653,19 @@ impl VectorCanisterStore {
             .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
-        // Candidates are stored as canonical f32 (`dims * 4` bytes each), even for an I8 index (rows
-        // are dequantized before sampling), so the pool cap uses the f32 width.
-        let pool_cap = candidate_pool_cap(nlist, u32::from(def.dims) * 4, def.dims);
+        // Candidates freeze native stored rows (the index's `pad_stride_bytes` width), while the
+        // trained centroids are canonical f32, so the pool cap charges those widths separately.
+        let pool_cap = candidate_pool_cap(
+            nlist,
+            def.pad_stride_bytes,
+            u32::from(def.dims) * 4,
+            def.dims,
+        );
 
         let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
         let mut range_exhausted = false;
         let mut bytes_buffered = 0u64;
-        let mut live_bytes: Vec<Vec<u8>> = Vec::new();
+        let mut live_rows: Vec<RebuildCandidate> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_sampling_scan");
@@ -708,7 +731,7 @@ impl VectorCanisterStore {
                 }
             }
             // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
-            // each sampled row's bytes into `live_bytes`. A slot at/after `row_count` or tombstoned
+            // each sampled row's bytes into `live_rows`. A slot at/after `row_count` or tombstoned
             // is dropped, matching the per-subject `read_row_bytes` `None` path.
             {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -730,12 +753,12 @@ impl VectorCanisterStore {
                             if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
                                 continue;
                             }
-                            // Sampling trains on canonical f32: an `I8` row is dequantized with its
-                            // aux scale so centroids live in the same space the search scores in.
-                            let info = scratch.row_info(slot.slot);
-                            let bytes =
-                                stored_to_f32_bytes(&def, scratch.vec_slice(slot.slot), &info.aux);
-                            live_bytes.push(bytes);
+                            // Sampling freezes each row in its native stored form (bytes + aux
+                            // scale); f32 exists only transiently inside seed/Training computation.
+                            live_rows.push(RebuildCandidate {
+                                stored: scratch.vec_slice(slot.slot).to_vec(),
+                                aux: scratch.row_info(slot.slot).aux,
+                            });
                         }
                     }
                     i = end;
@@ -745,22 +768,23 @@ impl VectorCanisterStore {
 
         // Distinct membership via a transient set seeded from the existing pool (P1): keeps the
         // per-step dedup cost ~O(total candidate bytes) instead of `candidates.contains` being
-        // O(existing candidates * vector_width) for every new candidate. The set is heap-only; the
-        // durable state stays `Vec<Vec<u8>>`.
+        // O(existing candidates * vector_width) for every new candidate. The key is the whole
+        // `(stored bytes, aux)` pair: identical quantized bytes under different scales are distinct
+        // vectors. The set is heap-only; the durable state stays `Vec<RebuildCandidate>`.
         let mut pool_cap_reached = candidates.len() >= pool_cap;
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_sampling_dedup");
-            let mut seen: RapidHashSet<Vec<u8>> =
-                RapidHashSet::with_capacity(candidates.len() + live_bytes.len());
+            let mut seen: RapidHashSet<RebuildCandidate> =
+                RapidHashSet::with_capacity(candidates.len() + live_rows.len());
             seen.extend(candidates.iter().cloned());
-            for bytes in live_bytes {
+            for row in live_rows {
                 if candidates.len() >= pool_cap {
                     pool_cap_reached = true;
                     break;
                 }
-                if seen.insert(bytes.clone()) {
-                    candidates.push(bytes);
+                if seen.insert(row.clone()) {
+                    candidates.push(row);
                     if candidates.len() >= pool_cap {
                         pool_cap_reached = true;
                     }
@@ -841,7 +865,7 @@ impl VectorCanisterStore {
         // leaves the centroids unchanged the assignment is stable and k-means has converged: a
         // further iteration would reproduce the same centroids, so stopping early is exact.
         if centroids.is_empty() {
-            centroids = furthest_point_seed(&candidates, nlist_usize, def.dims);
+            centroids = furthest_point_seed(&candidates, nlist_usize, &def);
         }
         // The centroids used for this iteration's assignment.
         let prev_centroids = centroids.clone();
@@ -854,7 +878,16 @@ impl VectorCanisterStore {
             let decoded_centroids: Vec<Vec<f32>> =
                 centroids.iter().map(|c| decode_f32(c)).collect();
             for cand in &candidates {
-                let v = decode_f32(cand);
+                // Each candidate is decoded from its frozen stored form exactly once per iteration;
+                // the assignment scores canonical f32 bytes against the f32 centroids. An `F32` row
+                // already is canonical f32, so its bytes are borrowed without a copy; only an `I8`
+                // row materializes a transient dequantized buffer.
+                let v = match def.encoding {
+                    VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
+                    VectorEncoding::I8 => {
+                        Cow::Owned(stored_to_f32_bytes(&def, &cand.stored, &cand.aux))
+                    }
+                };
                 let mut best = 0usize;
                 let mut best_d = f32::INFINITY;
                 for (p, centroid) in decoded_centroids.iter().enumerate() {
@@ -862,7 +895,7 @@ impl VectorCanisterStore {
                     // running best cannot be the nearest (L2 partial sums are monotone), so skip it.
                     // A tie does not trigger the strict-exceeds exit, preserving the lowest-id
                     // tie-break; a non-finite centroid is skipped (a NaN distance never beats `best_d`).
-                    let Some(d) = l2_squared_f32_early_exit(cand, centroid, best_d) else {
+                    let Some(d) = l2_squared_f32_early_exit(&v, centroid, best_d) else {
                         continue;
                     };
                     if d < best_d {
@@ -870,8 +903,8 @@ impl VectorCanisterStore {
                         best = p;
                     }
                 }
-                for (acc, x) in sums[best].iter_mut().zip(v.iter()) {
-                    *acc += *x;
+                for (acc, x) in sums[best].iter_mut().zip(v.as_chunks::<4>().0) {
+                    *acc += f32::from_le_bytes(*x);
                 }
                 counts[best] += 1;
             }
@@ -1576,24 +1609,25 @@ mod tests {
     #[test]
     fn training_start_feasible_enforces_both_bounds() {
         // Tiny config: well within both the combined-state and op budgets.
-        assert!(training_start_feasible(2, 16, 4));
+        assert!(training_start_feasible(2, 16, 16, 4));
 
-        // Combined-state (P2): `2 * nlist * stride + overhead > MAX_REBUILD_STATE_BYTES` is rejected.
+        // Combined-state (P2): `nlist * (pool_stride + centroid_stride) + overhead >
+        // MAX_REBUILD_STATE_BYTES` is rejected.
         let stride = 4 * 1050u32; // dims = 1050
         let nlist = 1024u32;
         assert!(
-            2 * nlist as u64 * stride as u64 + MAX_REBUILD_STATE_OVERHEAD_BYTES
+            nlist as u64 * (stride as u64 + stride as u64) + MAX_REBUILD_STATE_OVERHEAD_BYTES
                 > MAX_REBUILD_STATE_BYTES,
             "fixture must exceed the combined-state cap"
         );
-        assert!(!training_start_feasible(nlist, stride, 1050));
+        assert!(!training_start_feasible(nlist, stride, stride, 1050));
 
-        // Op budget (P1) in isolation: a small stride keeps the state cap satisfied while
+        // Op budget (P1) in isolation: small strides keep the state cap satisfied while
         // `nlist^2 * dims` exceeds the per-iteration op budget. (`nlist` here is only used to drive
         // the pure check; the caller separately clamps `nlist <= MAX_NLIST`.)
         let nlist = 40_000u32;
         assert!(
-            2 * nlist as u64 * 4 + MAX_REBUILD_STATE_OVERHEAD_BYTES <= MAX_REBUILD_STATE_BYTES,
+            nlist as u64 * (4 + 4) + MAX_REBUILD_STATE_OVERHEAD_BYTES <= MAX_REBUILD_STATE_BYTES,
             "fixture must satisfy the combined-state cap"
         );
         // dims = 1, so `nlist^2 * dims` is just `nlist^2`.
@@ -1601,12 +1635,12 @@ mod tests {
             nlist as u64 * nlist as u64 > MAX_REBUILD_TRAINING_DISTANCE_OPS,
             "fixture must exceed the op budget"
         );
-        assert!(!training_start_feasible(nlist, 4, 1));
+        assert!(!training_start_feasible(nlist, 4, 4, 1));
     }
 
     #[test]
     fn encoded_training_state_stays_within_cap() {
-        use crate::records::VectorRebuildStateRecord;
+        use crate::records::{RebuildCandidate, VectorRebuildStateRecord};
         use ic_stable_structures::storable::Storable;
         // Near-worst case: a wide stride so a full candidate pool plus `nlist` centroids sits right
         // under the envelope. The Candid-encoded length (enum tag + vec-length + nested-vec
@@ -1615,13 +1649,16 @@ mod tests {
         let nlist = 16u32;
         let dims = 768u16;
         let stride = 4 * dims as u32;
-        assert!(training_start_feasible(nlist, stride, dims));
-        let pool = candidate_pool_cap(nlist, stride, dims);
-        let candidates: Vec<Vec<u8>> = (0..pool)
+        assert!(training_start_feasible(nlist, stride, stride, dims));
+        let pool = candidate_pool_cap(nlist, stride, stride, dims);
+        let candidates: Vec<RebuildCandidate> = (0..pool)
             .map(|i| {
                 let mut v = vec![0u8; stride as usize];
                 v[0..4].copy_from_slice(&(i as u32).to_le_bytes());
-                v
+                RebuildCandidate {
+                    stored: v,
+                    aux: [0u8; 8],
+                }
             })
             .collect();
         let centroids: Vec<Vec<u8>> = (0..nlist as usize)
@@ -1645,12 +1682,24 @@ mod tests {
     #[test]
     fn candidate_pool_cap_is_at_least_nlist_when_feasible() {
         // For any params accepted by `training_start_feasible`, the pool can hold `>= nlist`
-        // candidates (so sampling can reach `Training` rather than always failing).
-        for (nlist, stride, dims) in [(2u32, 16u32, 4u16), (16, 512, 128), (64, 3072, 768)] {
-            assert!(training_start_feasible(nlist, stride, dims));
+        // candidates (so sampling can reach `Training` rather than always failing). Symmetric
+        // strides model an F32 index; the asymmetric pair models an I8 index whose native pool
+        // width is a quarter of the f32 centroid width.
+        for (nlist, pool_stride, centroid_stride, dims) in [
+            (2u32, 16u32, 16u32, 4u16),
+            (16, 512, 512, 128),
+            (64, 3072, 3072, 768),
+            (64, 768, 3072, 768),
+        ] {
+            assert!(training_start_feasible(
+                nlist,
+                pool_stride,
+                centroid_stride,
+                dims
+            ));
             assert!(
-                candidate_pool_cap(nlist, stride, dims) >= nlist as usize,
-                "pool cap below nlist for ({nlist}, {stride}, {dims})"
+                candidate_pool_cap(nlist, pool_stride, centroid_stride, dims) >= nlist as usize,
+                "pool cap below nlist for ({nlist}, {pool_stride}, {centroid_stride}, {dims})"
             );
         }
     }

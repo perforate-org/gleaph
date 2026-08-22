@@ -2,8 +2,8 @@
 
 Date: 2026-08-07
 Status: Partially Implemented (design contract; Router direct-ingestion durability slice implemented)
-Last revised: 2026-08-21
-Anchor timestamp: 2026-08-21 23:14:00 UTC +0000
+Last revised: 2026-08-22
+Anchor timestamp: 2026-08-22 02:46:09 UTC +0000
 
 > **Summary.** The vector canister owns the only durable embedding bytes; Graph holds zero
 > embedding state. Router-issued nonzero `mutation_id` stamps order direct ingestion against Graph
@@ -238,7 +238,9 @@ constraints — naming is revisited after the implementation proves distinctive 
 ### Negative / costs
 
 - Recovery on total vector-canister loss requires client re-ingestion.
-- Per-training-job `nlist` bound at `d = 1536` (≈677 per job under the 8 MiB envelope); the
+- Per-training-job `nlist` bound at `d = 1536` under the 8 MiB envelope, which charges the sampled
+  pool at native stored-row width and the centroids at f32 width (≈677 per F32 job; an I8 job's
+  state ceiling rises above `MAX_NLIST`, where the per-iteration op budget binds first); the
   level-generic structure makes it a per-level bound, restoring trainable counts (raw candidate
   region remains the documented fallback).
 - Label loss removes embeddings (IC deviation from the industry "data outlives labels" model).

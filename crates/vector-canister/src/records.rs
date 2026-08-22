@@ -600,16 +600,28 @@ impl StableMapValue for PartitionHead {
     const VALUE_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTVAL-0";
 }
 
+/// One frozen rebuild candidate: a live row's native stored bytes plus its row-meta aux (the `I8`
+/// scale; zero for `F32`). The pool snapshots Sampling-time values and stays immutable into
+/// `Training` even though dual-write mutations keep mutating live rows mid-rebuild.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, CandidType, Serialize, Deserialize)]
+pub struct RebuildCandidate {
+    /// The row's stored vector bytes (`stride_bytes` wide), verbatim from the page store.
+    pub stored: Vec<u8>,
+    /// The row's page-store aux (the `I8` quantization scale; zero for `F32`).
+    pub aux: [u8; 8],
+}
+
 /// Durable per-index rebuild lifecycle (`VECTOR_REBUILD_STATE`, ADR 0031 Slice 7/8).
 ///
 /// Every long-running phase carries a resume cursor (subject keys / page keys as `Storable` bytes)
 /// so each `*_step` honors the bounded-execution contract. `Sampling.candidates` accumulates a
-/// bounded distinct candidate pool, then `Training` refines `nlist` centroids from it with
-/// deterministic k-means-lite before they are written to `IVF_CENTROIDS` on the transition to
-/// `Building` (ADR 0031 Slice 8). The combined durable `Training` value (`candidates + centroids`)
-/// is bounded by `MAX_REBUILD_STATE_BYTES`; the candidate pool is sized to reserve room for the
-/// centroids and encoding overhead inside that envelope. `Cleaning`/`Aborting` carry the `nlist`
-/// they must tear down because `publish` overwrites `def.nlist`.
+/// bounded distinct candidate pool of native stored rows ([`RebuildCandidate`]), then `Training`
+/// refines `nlist` canonical-f32 centroids from it with deterministic k-means-lite before they are
+/// written to `IVF_CENTROIDS` on the transition to `Building` (ADR 0031 Slice 8). The combined
+/// durable `Training` value (`candidates + centroids`) is bounded by `MAX_REBUILD_STATE_BYTES`; the
+/// candidate pool is sized to reserve room for the centroids and encoding overhead inside that
+/// envelope. `Cleaning`/`Aborting` carry the `nlist` they must tear down because `publish`
+/// overwrites `def.nlist`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VectorRebuildStateRecord {
     #[default]
@@ -620,14 +632,14 @@ pub enum VectorRebuildStateRecord {
         sample_limit: u32,
         cursor: Option<SubjectScanCursor>,
         subjects_scanned: u64,
-        candidates: Vec<Vec<u8>>,
+        candidates: Vec<RebuildCandidate>,
     },
     Training {
         target_index_version: u64,
         nlist: u32,
         sample_limit: u32,
         iteration: u32,
-        candidates: Vec<Vec<u8>>,
+        candidates: Vec<RebuildCandidate>,
         centroids: Vec<Vec<u8>>,
     },
     Building {
@@ -1050,14 +1062,36 @@ mod tests {
                     target_index_version: 2,
                 })),
                 subjects_scanned: 17,
-                candidates: vec![vec![0u8; 16], vec![1u8; 16]],
+                candidates: vec![
+                    RebuildCandidate {
+                        stored: vec![0u8; 16],
+                        aux: [0u8; 8],
+                    },
+                    RebuildCandidate {
+                        stored: vec![1u8; 16],
+                        aux: [7u8; 8],
+                    },
+                ],
             },
             VectorRebuildStateRecord::Training {
                 target_index_version: 2,
                 nlist: 2,
                 sample_limit: 1024,
                 iteration: 3,
-                candidates: vec![vec![0u8; 16], vec![1u8; 16], vec![2u8; 16]],
+                candidates: vec![
+                    RebuildCandidate {
+                        stored: vec![0u8; 16],
+                        aux: [0u8; 8],
+                    },
+                    RebuildCandidate {
+                        stored: vec![1u8; 16],
+                        aux: [7u8; 8],
+                    },
+                    RebuildCandidate {
+                        stored: vec![2u8; 16],
+                        aux: [9u8; 8],
+                    },
+                ],
                 centroids: vec![vec![0u8; 16], vec![1u8; 16]],
             },
             VectorRebuildStateRecord::Building {
