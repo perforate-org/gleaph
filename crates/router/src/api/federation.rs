@@ -1,7 +1,7 @@
 //! L3 federation surface (ADR 0056 §5).
 //!
 //! Client-invisible: the graph/index/vector canisters and operator deep tooling. Shard resolution,
-//! catalogs, `router_ack`, vector wiring, physical diagnostics, manual rebuild control, and
+//! catalogs, vector wiring, physical diagnostics, manual rebuild control, and
 //! maintenance policy CRUD. Useful-but-unused operator functionality is retained here rather than
 //! deleted. `provision_graph` is a documented-internal seam (Slice A) kept only for `adr0035`
 //! outbound/ack coverage; it is removed in Slice B.
@@ -692,14 +692,4 @@ async fn provision_graph(
     let caller = ic_cdk::api::msg_caller();
     auth::require_admin(&caller)?;
     crate::provisioning::graph::provision_graph_flow(caller, args).await
-}
-
-/// Internal callback: the configured Provision canister acknowledges a completed
-/// provisioning job and asks the Router to commit the terminal catalog state.
-#[update]
-fn router_ack(
-    ack: gleaph_graph_kernel::provisioning::wire::RouterProvisionAck,
-) -> Result<gleaph_graph_kernel::provisioning::wire::RouterAckResponse, RouterError> {
-    use crate::provisioning::ack_handler::handle_router_ack;
-    handle_router_ack(ic_cdk::api::msg_caller(), ack)
 }

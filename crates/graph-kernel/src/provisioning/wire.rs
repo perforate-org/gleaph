@@ -6,13 +6,12 @@ use sha2::{Digest, Sha256};
 use crate::entry::GraphId;
 use crate::provisioning::{LogicalResource, ProvisioningIntentKey};
 
-/// Derive the canonical `request_id` for a provisioning intent from its content.
+/// Derive the deterministic routing key for a graph/resource provisioning intent.
 ///
-/// The id is the SHA-256 of `(graph_name, requested_resources)`, so identical content always
-/// yields the same id (idempotency) and different content yields a different id (conflict
-/// detection). This replaces the former `graph_name + "-" + request_fingerprint` string
-/// concatenation and removes the redundant `request_fingerprint` field entirely: the id itself
-/// is the content fingerprint, fixed at 32 bytes.
+/// The id hashes only `(graph_name, requested_resources)`. It groups retries at one stable key but
+/// is not the request's full semantic identity: Router Map 45 compares caller, owner, canonical
+/// admins, the exact Provision target, and the byte-exact resolved envelope before replay. The
+/// fixed-width hash replaces the former `graph_name + "-" + request_fingerprint` string key.
 pub fn provisioning_request_id(
     graph_name: &str,
     requested_resources: &[ProvisionableResource],
@@ -54,33 +53,22 @@ pub struct ProvisionResult {
     pub terminal_outcome: ProvisionResultOutcome,
 }
 
-/// Response returned by the Router canister `router_ack` callback.
-///
-/// A successful response denotes that the Router catalog is durably in `Completed` for this
-/// request and version. The ack cannot be lost: subsequent `router_ack` calls with the same
-/// `(request_id, deployment_id, accepted_registry_version)` return the same response, while
-/// a different version returns `AckConflict { stored }`.
-///
-/// `completed` is implied `true` on the Router side: the callback only succeeds after the
-/// Router has durably committed the ack version. The Provision canister receives this value
-/// back and uses `accepted_registry_version` as the authoritative registry watermark.
-///
-/// Protocol invariant: registry versions start at 1; version 0 is reserved as "unset" and
-/// must not appear in ack payloads. The Router rejects any ack with
-/// `accepted_registry_version == 0` as `InvalidState`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct RouterAckResponse {
-    pub accepted_registry_version: u64,
+pub struct RouterRegistrationAck {
+    pub deployment_id: String,
+    pub request_id: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct RouterProvisionAck {
-    // `deployment_id` is required so the canonical ProvisionJobRequestKey
-    // (request_id, deployment_id) can be formed without ambiguity across
-    // deployment bindings. This is the only Slice 1 wire-shape change.
-    pub deployment_id: String,
-    pub request_id: [u8; 32],
-    pub accepted_registry_version: u64,
+pub enum RouterRegistrationAckResponse {
+    Applied,
+    Replay,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum RouterRegistrationAckResult {
+    Ok(RouterRegistrationAckResponse),
+    Err(ProvisionIngressError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -97,7 +85,6 @@ pub struct ProvisionRequest {
     pub install_args: Vec<Vec<u8>>,
     pub authorized_caller: Principal,
     pub release_id: String,
-    pub router_callback_principal: Principal,
 }
 
 // === Moved from gleaph-provision canister/mod.rs (Plan 0058 P1-1) =============
@@ -115,7 +102,6 @@ pub enum ProvisionIngressError {
     InvalidState,
     StateAdvanceFailed,
     ResultMappingError,
-    AckConflict { stored: u64 },
     IntentLockHeld,
     InvalidResources { reason: String },
 }
@@ -135,7 +121,6 @@ pub struct ProvisionJobSummary {
     pub state: String,
     pub active_resource_index: u32,
     pub completed_effect_count: u32,
-    pub accepted_registry_version: Option<u64>,
 }
 
 /// Admission response returned by `accept_envelope`. Distinct from the
@@ -155,4 +140,53 @@ pub enum ProvisionAcceptResponse {
         intent_lock_count: u32,
         created_resources: Vec<CreatedResource>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::types::TypeInner;
+
+    fn labels<T: CandidType>() -> Vec<String> {
+        let mut labels = match T::ty().as_ref() {
+            TypeInner::Record(fields) | TypeInner::Variant(fields) => fields
+                .iter()
+                .map(|field| field.id.to_string())
+                .collect::<Vec<String>>(),
+            other => panic!("expected record or variant, got {other:?}"),
+        };
+        labels.sort();
+        labels
+    }
+
+    #[test]
+    fn graph_registration_ack_candid_shape_is_exact_and_versionless() {
+        assert_eq!(
+            labels::<RouterRegistrationAck>(),
+            ["deployment_id", "request_id"]
+        );
+        assert_eq!(
+            labels::<RouterRegistrationAckResponse>(),
+            ["Applied", "Replay"]
+        );
+    }
+
+    #[test]
+    fn provision_request_candid_shape_has_no_callback_field() {
+        let fields = labels::<ProvisionRequest>();
+        assert_eq!(
+            fields,
+            [
+                "authorized_caller",
+                "deployment_id",
+                "graph_name",
+                "install_args",
+                "intent_key",
+                "release_id",
+                "request_id",
+                "requested_resources",
+                "reserved_graph_id",
+            ]
+        );
+    }
 }

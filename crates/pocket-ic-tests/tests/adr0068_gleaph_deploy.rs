@@ -119,7 +119,6 @@ fn gleaph_deploy_registers_account_and_hands_over_bootstrap() {
                 install_args: vec![vec![0u8; 0]],
                 authorized_caller: user_principal(),
                 release_id: "rel2".to_owned(),
-                router_callback_principal: account,
             })
             .unwrap(),
         )

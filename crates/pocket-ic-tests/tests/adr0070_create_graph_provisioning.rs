@@ -12,7 +12,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus};
-use gleaph_graph_kernel::federation::RouterError;
+use gleaph_graph_kernel::federation::{RouterError, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
@@ -20,9 +20,8 @@ use gleaph_migration_api::{
 };
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
-    AdminInstallDeploymentBindingArgs, ArtifactId, ArtifactPublishMetadataArgs,
-    ArtifactUploadChunkArgs, CanisterKind, DeploymentBinding, ReleaseActivateArgs, ReleaseId,
-    ReleasePublishArgs, sha256,
+    ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
+    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
 use gleaph_router::RouterInitArgs;
 
@@ -31,11 +30,6 @@ const CHUNK_SIZE: usize = 1024 * 1024;
 struct Env {
     pic: pocket_ic::PocketIc,
     admin: Principal,
-    /// A second Router admin whose deployment is separately bound on Provision. Used to prove
-    /// the global single-home rule across two creators without depending on the deferred
-    /// Provision->Router ack loop (ADR 0035 records the outbound ack as a later slice), which
-    /// currently holds the first creator's GraphShard(0) intent lock until the ledger slice lands.
-    admin2: Principal,
     router: Principal,
     provision: Principal,
 }
@@ -43,7 +37,6 @@ struct Env {
 fn env() -> Env {
     let pic = new_pocket_ic();
     let admin = Principal::from_slice(&[0x64; 29]);
-    let admin2 = Principal::from_slice(&[0x65; 29]);
     let router = pic.create_canister();
     pic.add_cycles(router, 2_000_000_000_000);
 
@@ -59,32 +52,12 @@ fn env() -> Env {
     let provision = install_provision_canister(&pic, binding);
     pic.add_cycles(provision, 100_000_000_000_000);
 
-    // Bind the second creator's deployment so its CREATE GRAPH admission passes trust checks.
-    let bytes = pic
-        .update_call(
-            provision,
-            admin,
-            "admin_install_deployment_binding",
-            Encode!(&AdminInstallDeploymentBindingArgs {
-                deployment_id: admin2.to_text(),
-                router_principal: router,
-                governance_principal: admin,
-                binding_version: 2,
-                bootstrap_principal: None,
-            })
-            .expect("encode admin_install_deployment_binding"),
-        )
-        .unwrap_or_else(|e| panic!("admin_install_deployment_binding: {e:?}"));
-    let _: Result<gleaph_provision::types::BootstrapAuthEntry, gleaph_provision::types::AdminInstallError> =
-        Decode!(&bytes, Result<gleaph_provision::types::BootstrapAuthEntry, gleaph_provision::types::AdminInstallError>)
-            .expect("decode admin_install_deployment_binding");
-
     pic.install_canister(
         router,
         wasm_bytes("ROUTER_WASM"),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
-            initial_admins: vec![admin2],
+            initial_admins: vec![],
             provision_canister: Some(provision),
         })
         .expect("encode router init"),
@@ -94,7 +67,6 @@ fn env() -> Env {
     Env {
         pic,
         admin,
-        admin2,
         router,
         provision,
     }
@@ -278,6 +250,21 @@ fn get_graph_as(env: &Env, caller: Principal, name: &str) -> GraphRegistryEntry 
         .expect("graph `{name}` must be registered")
 }
 
+fn list_shards(env: &Env, graph_name: &str) -> Vec<ShardRegistryEntry> {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "list_shards",
+            Encode!(&graph_name.to_owned()).expect("encode list_shards"),
+        )
+        .unwrap_or_else(|error| panic!("list_shards({graph_name}) on router: {error:?}"));
+    Decode!(&bytes, Result<Vec<ShardRegistryEntry>, RouterError>)
+        .expect("decode list_shards")
+        .expect("list_shards must succeed")
+}
+
 #[test]
 fn create_graph_provisions_shard_and_sets_home_graph() {
     let env = env();
@@ -300,22 +287,38 @@ fn create_graph_provisions_shard_and_sets_home_graph() {
         entry.is_home,
         "first CREATE GRAPH must set is_home on the created graph"
     );
+    let first_shards = list_shards(&env, "demo");
+    assert_eq!(first_shards.len(), 1);
+    let first_shard = &first_shards[0];
+    assert_eq!(first_shard.graph_id, entry.graph_id);
+    assert_eq!(first_shard.shard_id, ShardId::new(0));
+    assert_eq!(first_shard.graph_canister, entry.canister_id);
+    assert_ne!(first_shard.graph_canister, Principal::anonymous());
 
-    // A second graph must not steal the single home slot (global single home, ADR 0070). The
-    // second creator is a different deployment because the deferred Provision->Router ack loop
-    // (ADR 0035 later slice) holds the first creator's GraphShard(0) intent lock.
+    // The completed Router -> Provision ACK releases the caller/deployment's GraphShard(0) lock,
+    // so the same caller can provision a second graph without stealing the single home slot.
     let ddl2 = "CREATE GRAPH TYPE t2 { NODE City } NEXT CREATE GRAPH other TYPED t2";
-    let result = gql_mutate_as(&env, env.admin2, ddl2);
+    let result = gql_mutate(&env, ddl2);
     assert!(
         result.is_ok(),
         "second CREATE GRAPH must succeed: {result:?}"
     );
-    let second = get_graph_as(&env, env.admin2, "other");
+    let second = get_graph(&env, "other");
     assert!(
         !second.is_home,
         "a later CREATE GRAPH must not reassign the home slot"
     );
-    assert!(get_graph(&env, "demo").is_home);
+    let first_after_second = get_graph(&env, "demo");
+    assert!(first_after_second.is_home);
+    assert_eq!(first_after_second.graph_id, entry.graph_id);
+    let second_shards = list_shards(&env, "other");
+    assert_eq!(second_shards.len(), 1);
+    let second_shard = &second_shards[0];
+    assert_eq!(second_shard.graph_id, second.graph_id);
+    assert_eq!(second_shard.shard_id, ShardId::new(0));
+    assert_eq!(second_shard.graph_canister, second.canister_id);
+    assert_ne!(entry.graph_id, second.graph_id);
+    assert_ne!(first_shard.graph_canister, second_shard.graph_canister);
 
     // Re-creating a bound name takes the binding-only catalog path and fails closed without
     // re-provisioning (no OR REPLACE / IF NOT EXISTS).

@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-08-16 10:12:10 UTC +0000
-Anchor timestamp: 2026-08-16 10:12:10 UTC +0000
+Last revised: 2026-08-22 19:59:13 UTC +0000
+Anchor timestamp: 2026-08-22 19:59:13 UTC +0000
 
 ## Context
 
@@ -28,15 +28,16 @@ Router adds a provisioning-request catalog separate from `GraphRegistryEntry`:
 ```text
 ProvisioningIntentKey = (deployment_id, resource_kind, logical_resource_key)
 RouterProvisioningRequest = {
-  request_id, caller, graph_name, reserved_graph_id?,
-  requested_resources, state, provision_receipt?
+  request_id, caller, owner, admins,
+  provision_target, resolved_request_bytes,
+  state, created_at_ns
 }
 ```
 
-`request_id` is the SHA-256 of `(graph_name, requested_resources)` — a content hash. Identical
-content always yields the same id (idempotency) and different content yields a different id
-(conflict detection), so no separate `request_fingerprint` field is needed. The id is fixed at
-32 bytes across every Router/Provision map and wire type.
+`request_id` is the SHA-256 of `(graph_name, requested_resources)`. It is a fixed-width,
+deterministic partial routing key across every Router/Provision map and wire type, not the full
+semantic request identity. Router Map 45 compares caller, owner, canonical admins, the exact
+Provision target, and the byte-exact resolved envelope; any same-key mismatch is a conflict.
 
 This record can exist before a canister id exists. Router creates `GraphRegistryEntry` and related
 shard/index catalog records only after Provision reports installed canisters. The existing
@@ -52,17 +53,17 @@ After authenticating the caller and reserving graph identity, Router sends a res
 ProvisionRequest = {
   deployment_id, request_id,
   intent_key, reserved_graph_id?, graph_name,
-  requested_resources,
-  authorized_caller, release_id,
-  router_callback_principal
+  requested_resources, install_args,
+  authorized_caller, release_id
 }
 ```
 
 Provision accepts envelopes only from the Router principal registered for `deployment_id`. It does
-not read Router tenancy state or re-derive authorization. The same `request_id` (content hash)
-returns the existing job/receipt idempotently; different content yields a different id, so a
-conflict is detected by the id itself. A durable intent lock rejects or joins a distinct request id
-targeting the same unfinished `ProvisioningIntentKey`.
+not read Router tenancy state or re-derive authorization. The same `(request_id, deployment_id)`
+joins an existing job only when the immutable encoded request digest also matches. Router replay
+likewise compares caller, owner, canonical admins, the exact Provision target, and the exact stored
+encoded request bytes. A durable intent lock rejects a distinct request targeting the same unfinished
+`ProvisioningIntentKey`.
 
 The `deployment_id -> Router principal, governance principal` binding is canonical Provision
 bootstrap configuration, written only by the governance/recovery principal. It is authentication
@@ -77,11 +78,13 @@ ProvisionResult = {
   created_resources[{kind, canister_id, artifact_hash}],
   terminal_outcome
 }
-RouterProvisionAck = { deployment_id, request_id, accepted_registry_version }  (P1-3: the only Slice 1 wire-shape change; makes ACK addressing unambiguous across deployments)
+RouterRegistrationAck = { deployment_id, request_id }
+RouterRegistrationAckResponse = Applied | Replay
 ```
 
-Router verifies the intent lock, atomically commits the affected Router catalogs,
-then returns the acknowledgement. Provision records `Completed` only after receiving that ack.
+Router verifies its exact owned intent lock, reconciles the Graph and `GraphShard(0)` catalog rows,
+then sends registration completion. Provision records `Completed` only after authenticating the
+deployment-bound Router and atomically releasing the exact Map 2/3 rows owned by that job.
 
 ### Durable job state
 
@@ -90,7 +93,7 @@ Provision persists the next state before each remote effect and the observed res
 ```text
 Submitted -> Reserved -> CreatePending -> CanisterCreated
           -> InstallPending -> Installed
-          -> RouterRegistrationPending -> RouterAckPending -> Completed
+          -> RouterRegistrationPending -> Completed
 ```
 
 If creation or installation succeeds but a later step fails, the job resumes from the persisted
@@ -111,7 +114,7 @@ The resource selection policy for those requests is defined separately by [ADR 0
 | Provision owns request idempotency, effect progress, and receipts, but no graph RBAC or routing map. | Provision stable job store and API |
 | A request cannot create twice after any successful management-canister call. | Persisted effect state and stored canister id |
 | Concurrent requests cannot provision the same logical intent independently. | Provision intent lock |
-| Completion means Router has acknowledged its canonical catalog update. | Provision `RouterAckPending -> Completed` transition |
+| Completion means Router reconciled its canonical catalog update and sent registration completion. | Provision `RouterRegistrationPending -> Completed` transition |
 
 ## Alternatives
 
@@ -131,7 +134,7 @@ before this proposal can be accepted.
 
 **Partially Implemented (2026-07-05).** This slice adds the Router-owned provisioning-request
 catalog (three stable-memory regions and the `RouterProvisioningRequestStore` API) and all
-ADR 0035 wire types (`ProvisionRequest`, `ProvisionResult`, `RouterProvisionAck`,
+ADR 0035 wire types (`ProvisionRequest`, `ProvisionResult`, `RouterRegistrationAck`,
 `ProvisionableResource`, etc.).
 
 Slice 2 (2026-07-05) scaffolds the Provision canister: the `gleaph-provision` crate, the
@@ -144,34 +147,40 @@ state-machine transitions, intent locks, and governance authorization.
 Slice 3 (2026-07-05) moves the six ADR 0035 Candid wire types into the neutral
 `gleaph_graph_kernel::provisioning::wire` owner, adds the Provision ingress/query/ack handler
 **foundation** (`accept_envelope_with_caller`, `query_job_with_caller`,
-`router_ack_with_caller`) and a hand-written `provision.did` that defines the service surface.
+`complete_graph_registration_with_caller`) and a hand-written `provision.did` that defines the service surface.
 
 Slice 4 (2026-07-06) implements the callable canister endpoints by adding `#[init]`,
 `#[post_upgrade]`, `#[update]`, and `#[query]` annotations to
 `crates/provision/src/lib.rs`; a thin `msg_caller()` shim in
 `crates/provision/src/canister/handlers.rs`; `ic-cdk-macros` and `ic_cdk::export_candid!()`;
 and a rewritten `provision.did` that declares `ProvisionIngressError`, `ProvisionInitArgs`,
-and the named `ProvisionIngressResult` / `RouterAckResult` variant types. Durable bootstrap
+and the named `ProvisionIngressResult` / `RouterRegistrationAckResult` variant types. Durable bootstrap
 persists across upgrades via the stable-memory-backed `DeploymentTrustStore` (StableBTreeMap
 region 0); the durable bootstrap authority region for post-init installs is explicitly deferred
 to a separate durable-authority slice.
-`ProvisionJobRecord` gains `accepted_registry_version: Option<u64>` (round-trips inside the
-existing `ProvisionJobStableRecord::V1` Candid body, no wrapper bump required for development
-data). `ProvisionJobStore` extends `put`, `remove`, `intent_lock_count_for_record`,
+`ProvisionJobRecord` stores the immutable encoded-request digest inside the current development
+layout. `ProvisionJobStore` extends `put`, `remove`, `intent_lock_count_for_record`,
 `has_live_job_for_deployment`, and `insert_with_intent_locks`; the stale `get_by_request_id`
 request-id-only scan is removed. Admin binding mutation via a public ingress surface is planned
 for a separate durable-authority slice and is not implemented in this slice. Initial bindings are
-seeded through `init(ProvisionInitArgs)` (durable-bootstrap model). `router_ack` uses the
-exact canonical key `get_by_request(request_id, deployment_id)` and implements durable,
-idempotent replay (`Completed` + matching version returns the ack; differing version returns
-`AckConflict`; wrong state returns `InvalidState`).
+seeded through `init(ProvisionInitArgs)` (durable-bootstrap model). Registration completion
+authenticates before exact canonical lookup, returns `Applied` for fresh completion, and returns
+`Replay` for a completed job without inspecting or mutating later Map 2/3 rows.
 
 `ProvisionableResourceKind` and `ProvisioningIntentKey` are single-sourced in
 `gleaph_graph_kernel::provisioning` and re-exported by both `gleaph-router` and
 `gleaph-provision`; `ProvisioningIntentKey::new` is public so both canisters can construct
 the shared key. The `completed_effect_count` increment rule is provisional pending ADR 0035
 implementation notes.
-Slice 5 (2026-07-06) adds the Router outbound accept_envelope send (Router -> Provision cross-canister call), moving ProvisionAcceptResponse, ProvisionJobSummary, ProvisionIngressError, and ProvisionIngressResult into the shared gleaph_graph_kernel::provisioning::wire module and adding a Router-side provision_graph ingress endpoint with durable ROUTER_PROVISION_CONFIG stable rehydration. Slice 6 (2026-07-07) implements the Router-side receiver for the Provision -> Router `router_ack` callback, adds the `RouterAckResponse` wire type, extends `RouterError` with `AckConflict` and `InvalidState`, advances the Router-side `RouterProvisioningRequest` catalog from `AwaitingAck` to `Completed` with durable `accepted_registry_version`, replaces the zero-byte intent-lock marker with owner-identity-bound `IntentLockOwner` so preflight and release are owner-scoped, releases Router-side intent locks symmetrically with the Provision side, and adds four-branch invocation-owned rollback of the `AwaitingAck` record when `provision_graph`'s outbound `send_accept_envelope` fails (rollback only if the current operation inserted the record AND it is still in `AwaitingAck`; pre-existing `AwaitingAck`, `Completed`, and all other states are preserved). The Provision canister outbound cross-canister `router_ack` call remains deferred to Slice 6+; artifact catalog, lifecycle controller policy, and cycle algebra remain proposed.
+Slice 5 (2026-07-06) adds the Router outbound `accept_envelope` send and durable Provision target
+rehydration. The current convergence slice (2026-08-22) keeps a single Router-to-Provision direction:
+Map 45 persists the immutable Graph identity plus exact target/envelope bytes; ambiguous transport,
+reply, or decode loss preserves Maps 45–47; only an invocation-owned, typed pre-effect rejection may
+roll back a new row. Accepted and Replay share one Graph-owned reconciler, and Router sends
+`complete_graph_registration` only after exact Graph and shard postconditions hold. Applied or replayed
+completion advances Map 45 to `Completed` and releases only its exact Map 47 lock. Property and Vector
+registration completion remain deferred owner slices. Artifact catalog, lifecycle controller policy,
+and cycle algebra remain proposed.
 
 Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISION_BOOTSTRAP_AUTH`, MemoryId 4) as a true `StableCell<Option<BootstrapAuthorityRecord>>` singleton and a separate per-governance audit log (`PROVISION_BOOTSTRAP_AUDIT_LOG`, MemoryId 5) as a `StableBTreeMap<Principal, BootstrapAuthHistory>`, adds the `ProvisionBootstrapAuthStore` facade, the `DeploymentTrustStore::admin_upsert` governance-agnostic overwrite method, the `admin_install_deployment_binding` #[update] ingress endpoint with the bootstrap-or-stored-governance decision tree, and the 10 unit tests plus 2 PocketIC scenarios that prove audit-before-return and upgrade durability. The deferred durable-authority slice from Slice 4 is now implemented.
 
@@ -189,9 +198,9 @@ the Router receives each installed canister id and artifact hash. `RouterInitArg
 `GraphInitArgs`, and `IndexInitArgs` move to `gleaph_graph_kernel::provisioning::init_args` so
 the Router (and Account, for first-Router issuance) can construct install args without depending
 on the graph/graph-index crates. A no-active-release guard aborts before any management call,
-leaving the job `Reserved` (the path PocketIC admission tests exercise). The Provision -> Router
-outbound `router_ack` call remains deferred to a later slice; the Router advances to
-`RouterAckPending` only after it has durably registered the returned canisters. ADR 0037
+leaving the job `Reserved` (the path callable-endpoint PocketIC admission tests exercise). For the
+canonical Graph bootstrap, Router reconciles the returned canister and sends versionless registration
+completion while Provision is `RouterRegistrationPending`. ADR 0037
 lifecycle (stop/delete/reconciliation) and ADR 0038 cycle reservation remain proposed.
 
 Slice 8 also wires the Router side of the created-resources handoff. `provision_graph` registers
@@ -262,10 +271,10 @@ Today Provision accepts envelopes only from the Router principal registered for 
 
 ### 2. First-issuance result callback to Account
 
-Provision must deliver the first-issuance result to **Account** (so Account can
-`register_router`), not only via the existing Router-bound `router_ack`. This is a new callback
-surface on Provision. The existing `router_ack` to the Router continues to apply to subsequent
-graph / shard / index issuance under ADR 0035.
+Provision must eventually deliver the first-issuance result to **Account** so Account can
+`register_router`. That Account result-delivery surface remains outside the implemented Graph-only
+registration completion. Subsequent Graph bootstrap completion uses Router-to-Provision
+`complete_graph_registration`; Property and Vector completion remain deferred.
 
 ### 3. `deployment_id` derivation
 

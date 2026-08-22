@@ -173,7 +173,7 @@ async fn register_provisioned_graph(
     match response {
         types::ProvisionGraphResponse::Accepted { .. }
         | types::ProvisionGraphResponse::Replay { .. }
-        | types::ProvisionGraphResponse::Completed { .. } => Ok(()),
+        | types::ProvisionGraphResponse::Completed => Ok(()),
     }
 }
 

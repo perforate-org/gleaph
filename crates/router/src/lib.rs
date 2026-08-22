@@ -172,6 +172,27 @@ pub(crate) fn resolve_provision_canister_for_upgrade(
 ic_cdk::export_candid!();
 
 #[cfg(test)]
+mod candid_tests {
+    use candid_parser::{IDLProg, check_prog};
+
+    #[test]
+    fn router_export_service_has_no_inbound_router_ack() {
+        let generated = super::__export_service();
+        let ast: IDLProg = generated.parse().expect("generated Router Candid parses");
+        let mut env = candid::TypeEnv::new();
+        let actor = check_prog(&mut env, &ast)
+            .expect("generated Router Candid is valid")
+            .expect("Router exports a service");
+        let methods = env.as_service(&actor).expect("Router actor service");
+        let names: Vec<&str> = methods.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(
+            !names.contains(&"router_ack"),
+            "unexpected methods: {names:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod provision_config_upgrade_tests {
     use super::*;
     use crate::facade::stable::provision_config::{

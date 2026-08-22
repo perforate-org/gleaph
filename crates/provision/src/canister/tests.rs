@@ -5,15 +5,16 @@ use super::{
     ProvisionResultOutcome, accept_envelope_with_caller,
     admin_install_deployment_binding_with_caller, artifact_get_status,
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    build_record_from_request, complete_bootstrap_with_caller, query_job_with_caller,
-    record_to_result, release_activate_with_caller, release_get_active,
-    release_install_with_caller, release_publish_with_caller, router_ack_with_caller,
+    build_record_from_request, complete_bootstrap_with_caller,
+    complete_graph_registration_with_caller, query_job_with_caller, record_to_result,
+    release_activate_with_caller, release_get_active, release_install_with_caller,
+    release_publish_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::store::{
-    DeploymentTrustStore, ProvisionJobStore, reset_all_maps, set_force_advance_error,
+    DeploymentTrustStore, ProvisionJobStore, reopen_provisioning_regions_for_test, reset_all_maps,
 };
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
@@ -21,9 +22,9 @@ use crate::types::{
     DeploymentBinding, InstallError, JobState, LogicalResource, ProvisionAdminError,
     ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource, ProvisioningIntentKey,
     ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs,
-    RouterProvisionAck, sha256,
+    RouterRegistrationAck, RouterRegistrationAckResponse, sha256,
 };
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
@@ -87,7 +88,6 @@ fn test_request(
         install_args: resources.iter().map(|_| vec![0u8; 0]).collect(),
         authorized_caller: pid(30),
         release_id: "r1".to_owned(),
-        router_callback_principal: pid(40),
     }
 }
 
@@ -99,7 +99,7 @@ fn insert_binding_and_init(deployment_id: &str) -> (DeploymentTrustStore, Provis
     (deployment_store, ProvisionJobStore::new())
 }
 
-fn advance_to_ack_pending(
+fn advance_to_registration_pending(
     store: &ProvisionJobStore,
     key: &ProvisionJobRequestKey,
     mut now_ns: u64,
@@ -111,11 +111,10 @@ fn advance_to_ack_pending(
         JobState::InstallPending,
         JobState::Installed,
         JobState::RouterRegistrationPending,
-        JobState::RouterAckPending,
     ];
     for step in &steps {
         let current = store.get_by_request_key(key).unwrap().current_state;
-        if current == JobState::RouterAckPending {
+        if current == JobState::RouterRegistrationPending {
             break;
         }
         if current == *step {
@@ -126,32 +125,6 @@ fn advance_to_ack_pending(
             .unwrap();
         now_ns += 1;
     }
-}
-
-fn complete_record(
-    store: &ProvisionJobStore,
-    key: &ProvisionJobRequestKey,
-    version: u64,
-    now_ns: u64,
-) {
-    let mut record = store.get_by_request_key(key).unwrap();
-    for resource in &mut record.resources {
-        resource.canister_id = Some(pid(42));
-        resource.artifact_hash = Some([0xAB; 32]);
-    }
-    store.put(key, record);
-    router_ack_with_caller(
-        router_principal(),
-        store,
-        &DeploymentTrustStore::new(),
-        RouterProvisionAck {
-            deployment_id: "dep-a".to_owned(),
-            request_id: key.request_id,
-            accepted_registry_version: version,
-        },
-        now_ns,
-    )
-    .unwrap();
 }
 
 // === accept_envelope =========================================================
@@ -477,7 +450,6 @@ fn test_provision_query_returns_redacted_view() {
     .unwrap();
     assert_eq!(view.request_id, test_request_id("req-a"));
     assert_eq!(view.state_name, "Reserved");
-    assert!(view.has_router_callback);
     assert!(view.is_authorized_caller);
 }
 
@@ -499,28 +471,27 @@ fn test_provision_query_unknown_deployment_returns_not_found() {
     assert_eq!(result, Err(ProvisionQueryError::UnknownDeployment));
 }
 
-// === router_ack ==============================================================
+// === complete_graph_registration ============================================
 
 #[test]
-fn test_provision_router_ack_not_found() {
+fn registration_ack_authenticates_before_exact_lookup() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
-    let result = router_ack_with_caller(
-        router_principal(),
+    let result = complete_graph_registration_with_caller(
+        other_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("missing"),
-            accepted_registry_version: 1,
         },
         1,
     );
-    assert_eq!(result, Err(ProvisionIngressError::NotFound));
+    assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
 }
 
 #[test]
-fn test_provision_router_ack_wrong_router_rejected() {
+fn registration_ack_wrong_router_rejected() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -538,15 +509,14 @@ fn test_provision_router_ack_wrong_router_rejected() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    let result = router_ack_with_caller(
+    advance_to_registration_pending(&store, &key, 10);
+    let result = complete_graph_registration_with_caller(
         other_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("req-a"),
-            accepted_registry_version: 1,
         },
         20,
     );
@@ -554,7 +524,7 @@ fn test_provision_router_ack_wrong_router_rejected() {
 }
 
 #[test]
-fn test_provision_router_ack_invalid_state() {
+fn registration_ack_invalid_state() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -572,14 +542,13 @@ fn test_provision_router_ack_invalid_state() {
     ))
     .unwrap();
     // Record is in Reserved after accept.
-    let result = router_ack_with_caller(
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("req-a"),
-            accepted_registry_version: 1,
         },
         2,
     );
@@ -587,7 +556,7 @@ fn test_provision_router_ack_invalid_state() {
 }
 
 #[test]
-fn test_provision_router_ack_persists_registry_version() {
+fn registration_ack_fresh_co_writes_completed_and_owned_row_release() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -605,26 +574,30 @@ fn test_provision_router_ack_persists_registry_version() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    let result = router_ack_with_caller(
+    advance_to_registration_pending(&store, &key, 10);
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("req-a"),
-            accepted_registry_version: 7,
         },
         20,
     )
     .unwrap();
-    assert!(result.completed);
-    assert_eq!(result.accepted_registry_version, 7);
+    assert_eq!(result, RouterRegistrationAckResponse::Applied);
     let record = store
         .get_by_request(&test_request_id("req-a"), "dep-a")
         .unwrap();
     assert_eq!(record.current_state, JobState::Completed);
-    assert_eq!(record.accepted_registry_version, Some(7));
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        None
+    );
     assert!(!store.intent_locked(&ProvisioningIntentKey::new(
         "dep-a",
         LogicalResource::GraphShard(ShardId::new(0))
@@ -632,7 +605,7 @@ fn test_provision_router_ack_persists_registry_version() {
 }
 
 #[test]
-fn test_provision_router_ack_missing_lock_returns_invalid_state() {
+fn registration_ack_fresh_requires_map2_owner_and_map3_presence() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -650,19 +623,18 @@ fn test_provision_router_ack_missing_lock_returns_invalid_state() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
+    advance_to_registration_pending(&store, &key, 10);
     // Release the lock behind the store's back.
     let lock_key =
         ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
     assert!(store.release_intent_lock(&lock_key));
-    let result = router_ack_with_caller(
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("req-a"),
-            accepted_registry_version: 1,
         },
         20,
     );
@@ -670,7 +642,7 @@ fn test_provision_router_ack_missing_lock_returns_invalid_state() {
 }
 
 #[test]
-fn test_provision_router_ack_idempotent_replay() {
+fn registration_ack_idempotent_replay() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -688,13 +660,12 @@ fn test_provision_router_ack_idempotent_replay() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    let ack = RouterProvisionAck {
+    advance_to_registration_pending(&store, &key, 10);
+    let ack = RouterRegistrationAck {
         deployment_id: "dep-a".to_owned(),
         request_id: test_request_id("req-a"),
-        accepted_registry_version: 7,
     };
-    let first = router_ack_with_caller(
+    let first = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
@@ -702,14 +673,20 @@ fn test_provision_router_ack_idempotent_replay() {
         20,
     )
     .unwrap();
-    let second =
-        router_ack_with_caller(router_principal(), &store, &deployment_store, ack, 21).unwrap();
-    assert_eq!(first, second);
-    assert_eq!(second.accepted_registry_version, 7);
+    let second = complete_graph_registration_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        ack,
+        21,
+    )
+    .unwrap();
+    assert_eq!(first, RouterRegistrationAckResponse::Applied);
+    assert_eq!(second, RouterRegistrationAckResponse::Replay);
 }
 
 #[test]
-fn test_provision_router_ack_completed_replay_returns_ok() {
+fn registration_ack_completed_replay_returns_replay() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -727,26 +704,24 @@ fn test_provision_router_ack_completed_replay_returns_ok() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    complete_record(&store, &key, 5, 30);
-    let result = router_ack_with_caller(
+    advance_to_registration_pending(&store, &key, 10);
+    store.complete_graph_registration(&key, 30).unwrap();
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("req-a"),
-            accepted_registry_version: 5,
         },
         31,
     )
     .unwrap();
-    assert!(result.completed);
-    assert_eq!(result.accepted_registry_version, 5);
+    assert_eq!(result, RouterRegistrationAckResponse::Replay);
 }
 
 #[test]
-fn test_provision_router_ack_completed_version_conflict_returns_ack_conflict() {
+fn registration_ack_completed_replay_preserves_new_foreign_rows() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -764,63 +739,40 @@ fn test_provision_router_ack_completed_version_conflict_returns_ack_conflict() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    complete_record(&store, &key, 5, 30);
-    let result = router_ack_with_caller(
-        router_principal(),
-        &store,
-        &deployment_store,
-        RouterProvisionAck {
-            deployment_id: "dep-a".to_owned(),
-            request_id: test_request_id("req-a"),
-            accepted_registry_version: 9,
-        },
-        31,
-    );
+    advance_to_registration_pending(&store, &key, 10);
     assert_eq!(
-        result,
-        Err(ProvisionIngressError::AckConflict { stored: 5 })
+        store.complete_graph_registration(&key, 20),
+        Ok(RouterRegistrationAckResponse::Applied)
     );
-}
 
-#[test]
-fn test_provision_router_ack_state_advance_failed_returns_state_advance_failed() {
-    reset_all_maps();
-    let (deployment_store, store) = insert_binding_and_init("dep-a");
-    let req = test_request(
-        "dep-a",
-        "req-a",
-        "fp-a",
-        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
-    );
-    block_on(accept_envelope_with_caller(
+    let intent = ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
+    let foreign = ProvisionJobRequestKey::new(&test_request_id("foreign"), "dep-a");
+    store.set_intent_owner_for_test(intent.clone(), Some(foreign.clone()));
+    store.set_intent_lock_for_test(intent.clone(), true);
+
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        req,
-        1,
-    ))
-    .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    set_force_advance_error(true);
-    let result = router_ack_with_caller(
-        router_principal(),
-        &store,
-        &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-a".to_owned(),
             request_id: test_request_id("req-a"),
-            accepted_registry_version: 1,
         },
-        20,
+        21,
     );
-    assert_eq!(result, Err(ProvisionIngressError::StateAdvanceFailed));
-    set_force_advance_error(false);
+    assert_eq!(result, Ok(RouterRegistrationAckResponse::Replay));
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        Some(foreign)
+    );
+    assert!(store.intent_locked(&intent));
 }
 
 #[test]
-fn test_provision_router_ack_unknown_deployment() {
+fn registration_ack_unknown_deployment() {
     reset_all_maps();
     init::init(init::ProvisionInitArgs {
         bootstrap_bindings: vec![],
@@ -838,14 +790,13 @@ fn test_provision_router_ack_unknown_deployment() {
         1,
     );
     store.insert_or_idempotent(record).unwrap();
-    let result = router_ack_with_caller(
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "dep-orphan".to_owned(),
             request_id: test_request_id("req-o"),
-            accepted_registry_version: 1,
         },
         2,
     );
@@ -1131,7 +1082,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
 }
 
 #[test]
-fn test_provision_router_ack_cross_deployment_ambiguity() {
+fn registration_ack_uses_exact_cross_deployment_key() {
     reset_all_maps();
 
     // Seed two deployments with different router principals.
@@ -1156,7 +1107,7 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
     let deployment_store = DeploymentTrustStore::new();
     let store = ProvisionJobStore::new();
 
-    // A1: (r1, d1) and A2: (r1, d2), both in RouterAckPending.
+    // A1: (r1, d1) and A2: (r1, d2), both await Router registration completion.
     let req1 = test_request(
         "d1",
         "r1",
@@ -1188,44 +1139,41 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
 
     let key1 = ProvisionJobRequestKey::new(&test_request_id("r1"), "d1");
     let key2 = ProvisionJobRequestKey::new(&test_request_id("r1"), "d2");
-    advance_to_ack_pending(&store, &key1, 10);
-    advance_to_ack_pending(&store, &key2, 20);
+    advance_to_registration_pending(&store, &key1, 10);
+    advance_to_registration_pending(&store, &key2, 20);
 
     // D1's router attempts to ack (r1, d2). The handler resolves the record by
     // the canonical (request_id, deployment_id) key, then authenticates against the
     // stored router principal for d2 (which is other_principal). D1's router is
-    // rejected with NotAuthorized; A2 remains RouterAckPending.
-    let result = router_ack_with_caller(
+    // rejected with NotAuthorized; A2 remains pending.
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "d2".to_owned(),
             request_id: test_request_id("r1"),
-            accepted_registry_version: 1,
         },
         30,
     );
     assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
     let a2_before = store.get_by_request(&test_request_id("r1"), "d2").unwrap();
-    assert_eq!(a2_before.current_state, JobState::RouterAckPending);
+    assert_eq!(a2_before.current_state, JobState::RouterRegistrationPending);
 
     // Correct ack (r1, d1) advances A1.
-    let result = router_ack_with_caller(
+    let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        RouterProvisionAck {
+        RouterRegistrationAck {
             deployment_id: "d1".to_owned(),
             request_id: test_request_id("r1"),
-            accepted_registry_version: 7,
         },
         31,
     );
-    assert!(result.unwrap().completed);
+    assert_eq!(result.unwrap(), RouterRegistrationAckResponse::Applied);
     let a1_after = store.get_by_request(&test_request_id("r1"), "d1").unwrap();
     assert_eq!(a1_after.current_state, JobState::Completed);
-    assert_eq!(a1_after.accepted_registry_version, Some(7));
 }
 
 #[test]
@@ -1244,73 +1192,95 @@ fn test_provision_init_seeds_bootstrap_bindings_and_survives_upgrade() {
 }
 
 #[test]
-fn test_provision_router_ack_ack_conflict_after_durable_completion() {
+fn accept_same_key_altered_envelope_conflicts_without_second_effect() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+        vec![
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
+            test_resource(LogicalResource::PropertyIndex(
+                gleaph_graph_kernel::federation::IndexClusterId::new(0),
+            )),
+        ],
     );
     block_on(accept_envelope_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        req,
+        req.clone(),
         1,
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
+    let before_maps = store.provisioning_maps_snapshot_for_test();
+    let before_effect_count = store
+        .get_by_request_key(&key)
+        .unwrap()
+        .completed_effect_count;
+    let changed_fields: [(&str, fn(&mut ProvisionRequest)); 6] = [
+        ("intent", |altered| {
+            altered.intent_key = ProvisioningIntentKey::new(
+                "dep-a",
+                LogicalResource::PropertyIndex(
+                    gleaph_graph_kernel::federation::IndexClusterId::new(0),
+                ),
+            );
+        }),
+        ("reserved graph", |altered| {
+            altered.reserved_graph_id = Some(gleaph_graph_kernel::entry::GraphId::from_raw(77));
+        }),
+        ("resources", |altered| {
+            altered.requested_resources[1] = test_resource(LogicalResource::VectorIndex(
+                gleaph_graph_kernel::federation::VectorIndexId::new(9),
+            ));
+        }),
+        ("install bytes", |altered| {
+            altered.install_args[0] = vec![0xAA, 0xBB];
+        }),
+        ("authorized caller", |altered| {
+            altered.authorized_caller = pid(31);
+        }),
+        ("release id", |altered| {
+            altered.release_id = "r2".to_owned();
+        }),
+    ];
 
-    // First ack persists version 7 and advances to Completed.
-    let first = router_ack_with_caller(
-        router_principal(),
-        &store,
-        &deployment_store,
-        RouterProvisionAck {
-            deployment_id: "dep-a".to_owned(),
-            request_id: test_request_id("req-a"),
-            accepted_registry_version: 7,
-        },
-        20,
-    )
-    .unwrap();
-    assert_eq!(first.accepted_registry_version, 7);
-
-    let record = store
-        .get_by_request(&test_request_id("req-a"), "dep-a")
-        .unwrap();
-    assert_eq!(record.current_state, JobState::Completed);
-    assert_eq!(record.accepted_registry_version, Some(7));
-
-    // Second ack with a different version must conflict against the durable stored version.
-    let result = router_ack_with_caller(
-        router_principal(),
-        &store,
-        &deployment_store,
-        RouterProvisionAck {
-            deployment_id: "dep-a".to_owned(),
-            request_id: test_request_id("req-a"),
-            accepted_registry_version: 9,
-        },
-        21,
-    );
-    assert_eq!(
-        result,
-        Err(ProvisionIngressError::AckConflict { stored: 7 })
-    );
-
-    // The durable record must still retain the first ack's version.
-    let record = store
-        .get_by_request(&test_request_id("req-a"), "dep-a")
-        .unwrap();
-    assert_eq!(record.accepted_registry_version, Some(7));
+    for (field, mutate) in changed_fields {
+        let mut altered = req.clone();
+        mutate(&mut altered);
+        let result = block_on(accept_envelope_with_caller(
+            router_principal(),
+            &store,
+            &deployment_store,
+            altered,
+            2,
+        ));
+        assert_eq!(
+            result,
+            Err(ProvisionIngressError::Conflict),
+            "changed {field} must conflict at the same canonical key"
+        );
+        assert_eq!(
+            store.provisioning_maps_snapshot_for_test(),
+            before_maps,
+            "changed {field} must preserve Maps 1, 2, and 3 exactly"
+        );
+        assert_eq!(
+            store
+                .get_by_request_key(&key)
+                .unwrap()
+                .completed_effect_count,
+            before_effect_count,
+            "changed {field} must not add a management effect"
+        );
+    }
 }
 
 #[test]
-fn test_provision_router_ack_completed_then_retry_returns_replay() {
+fn registration_ack_completed_then_retry_returns_replay() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request(
@@ -1328,13 +1298,12 @@ fn test_provision_router_ack_completed_then_retry_returns_replay() {
     ))
     .unwrap();
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
-    advance_to_ack_pending(&store, &key, 10);
-    let ack = RouterProvisionAck {
+    advance_to_registration_pending(&store, &key, 10);
+    let ack = RouterRegistrationAck {
         deployment_id: "dep-a".to_owned(),
         request_id: test_request_id("req-a"),
-        accepted_registry_version: 5,
     };
-    let first = router_ack_with_caller(
+    let first = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
@@ -1342,11 +1311,16 @@ fn test_provision_router_ack_completed_then_retry_returns_replay() {
         20,
     )
     .unwrap();
-    let second =
-        router_ack_with_caller(router_principal(), &store, &deployment_store, ack, 21).unwrap();
-    assert_eq!(first, second);
-    assert!(second.completed);
-    assert_eq!(second.accepted_registry_version, 5);
+    let second = complete_graph_registration_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        ack,
+        21,
+    )
+    .unwrap();
+    assert_eq!(first, RouterRegistrationAckResponse::Applied);
+    assert_eq!(second, RouterRegistrationAckResponse::Replay);
 }
 
 // === helpers / record_to_result / get_by_request_id ==========================
@@ -1451,16 +1425,13 @@ fn test_provision_error_variant_coverage_map() {
             ProvisionIngressError::Conflict => {
                 "test_provision_accept_conflict_different_fingerprint"
             }
-            ProvisionIngressError::NotFound => "test_provision_router_ack_not_found",
-            ProvisionIngressError::InvalidState => "test_provision_router_ack_invalid_state",
+            ProvisionIngressError::NotFound => "registration_ack_not_found",
+            ProvisionIngressError::InvalidState => "registration_ack_invalid_state",
             ProvisionIngressError::StateAdvanceFailed => {
                 "test_provision_router_ack_state_advance_failed_returns_state_advance_failed"
             }
             ProvisionIngressError::ResultMappingError => {
                 "test_provision_record_to_result_completed_with_missing_canister_id"
-            }
-            ProvisionIngressError::AckConflict { .. } => {
-                "test_provision_router_ack_completed_version_conflict_returns_ack_conflict"
             }
             ProvisionIngressError::IntentLockHeld => {
                 "test_provision_no_partial_writes_on_lock_failure"
@@ -1488,7 +1459,6 @@ fn test_provision_error_variant_coverage_map() {
     assert!(!ingress_name(ProvisionIngressError::InvalidState).is_empty());
     assert!(!ingress_name(ProvisionIngressError::StateAdvanceFailed).is_empty());
     assert!(!ingress_name(ProvisionIngressError::ResultMappingError).is_empty());
-    assert!(!ingress_name(ProvisionIngressError::AckConflict { stored: 0 }).is_empty());
     assert!(!ingress_name(ProvisionIngressError::IntentLockHeld).is_empty());
     assert!(
         !ingress_name(ProvisionIngressError::InvalidResources {
@@ -2135,10 +2105,10 @@ fn release_install_audit_log_survives_handler_return() {
     assert_eq!(install.target_canister, Some(target));
 }
 
-/// With an active release seeded, a fresh `accept_envelope` drives the job through create +
-/// install to `RouterAckPending` and returns a created resource with a canister id and hash.
+/// The production owner lifecycle survives a Map 1/2/3 reopen, replays without repeating effects,
+/// completes with exact owned-row release, and leaves a later request's rows untouched.
 #[test]
-fn accept_envelope_drives_deploy_to_router_ack_pending() {
+fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effects() {
     reset_all_maps();
     seed_bootstrap();
     let r = release_id("release-deploy");
@@ -2153,24 +2123,27 @@ fn accept_envelope_drives_deploy_to_router_ack_pending() {
         "fp-deploy",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
+    let expected_digest = sha256(&candid::Encode!(&req).unwrap());
     let resp = block_on(accept_envelope_with_caller(
         router_principal(),
         &store,
         &deployment_store,
-        req,
+        req.clone(),
         1,
     ))
     .unwrap();
-    match resp {
+    let accepted_resources = match resp {
         ProvisionAcceptResponse::Accepted {
             job_view,
             created_resources,
-            ..
+            intent_lock_count,
         } => {
             assert_eq!(
                 job_view.state, "RouterRegistrationPending",
                 "deploy must advance to RouterRegistrationPending"
             );
+            assert_eq!(job_view.completed_effect_count, 3);
+            assert_eq!(intent_lock_count, 1);
             assert_eq!(created_resources.len(), 1);
             let created = &created_resources[0];
             assert_eq!(
@@ -2179,36 +2152,146 @@ fn accept_envelope_drives_deploy_to_router_ack_pending() {
             );
             assert_ne!(created.canister_id, Principal::anonymous());
             assert!(!created.artifact_hash.is_empty());
+            created_resources
         }
         other => panic!("expected Accepted with created resources, got {other:?}"),
-    }
+    };
 
-    // The job record persisted the canister id and hash.
-    let record = store
+    let pending_record = store
         .get_by_request(&test_request_id("req-deploy"), "dep-a")
         .unwrap();
-    assert_eq!(record.current_state, JobState::RouterRegistrationPending);
-    let entry = &record.resources[0];
-    assert!(entry.canister_id.is_some());
-    assert!(entry.artifact_hash.is_some());
+    assert_eq!(
+        pending_record.current_state,
+        JobState::RouterRegistrationPending
+    );
+    assert_eq!(pending_record.completed_effect_count, 3);
+    assert_eq!(pending_record.immutable_request_digest, expected_digest);
+    assert_eq!(pending_record.resources.len(), accepted_resources.len());
+    assert_eq!(
+        pending_record.resources[0].logical_resource,
+        accepted_resources[0].logical_resource
+    );
+    assert_eq!(
+        pending_record.resources[0].canister_id,
+        Some(accepted_resources[0].canister_id)
+    );
+    assert_eq!(
+        pending_record.resources[0].artifact_hash,
+        Some(accepted_resources[0].artifact_hash)
+    );
+    let pending_maps = store.provisioning_maps_snapshot_for_test();
 
-    // Router acks after registering the created canister; the ack completes the job and releases
-    // the intent locks.
-    let ack = RouterProvisionAck {
+    reopen_provisioning_regions_for_test();
+    let reopened_store = ProvisionJobStore::new();
+    let reopened_deployment_store = DeploymentTrustStore::new();
+    assert_eq!(
+        reopened_store.provisioning_maps_snapshot_for_test(),
+        pending_maps,
+        "Maps 1, 2, and 3 must reopen over the same stable bytes"
+    );
+
+    let replay = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &reopened_store,
+        &reopened_deployment_store,
+        req.clone(),
+        2,
+    ))
+    .unwrap();
+    match replay {
+        ProvisionAcceptResponse::Replay {
+            job_view,
+            intent_lock_count,
+            created_resources,
+        } => {
+            assert_eq!(job_view.state, "RouterRegistrationPending");
+            assert_eq!(job_view.completed_effect_count, 3);
+            assert_eq!(intent_lock_count, 1);
+            assert_eq!(created_resources, accepted_resources);
+        }
+        other => panic!("expected durable admission Replay, got {other:?}"),
+    }
+    assert_eq!(
+        reopened_store.provisioning_maps_snapshot_for_test(),
+        pending_maps,
+        "admission replay must not repeat an effect or rewrite durable state"
+    );
+
+    let ack = RouterRegistrationAck {
         deployment_id: "dep-a".to_owned(),
         request_id: test_request_id("req-deploy"),
-        accepted_registry_version: 1,
     };
-    router_ack_with_caller(router_principal(), &store, &deployment_store, ack, 2).unwrap();
-    let record = store
+    assert_eq!(
+        complete_graph_registration_with_caller(
+            router_principal(),
+            &reopened_store,
+            &reopened_deployment_store,
+            ack.clone(),
+            3,
+        ),
+        Ok(RouterRegistrationAckResponse::Applied)
+    );
+    let completed_record = reopened_store
         .get_by_request(&test_request_id("req-deploy"), "dep-a")
         .unwrap();
-    assert_eq!(record.current_state, JobState::Completed);
+    assert_eq!(completed_record.current_state, JobState::Completed);
+    assert_eq!(completed_record.resources, pending_record.resources);
+    assert_eq!(completed_record.completed_effect_count, 3);
+    assert_eq!(completed_record.immutable_request_digest, expected_digest);
     let intent_key =
         ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
+    assert_eq!(
+        reopened_store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        None,
+        "Applied must release the exact Map 2 owner"
+    );
     assert!(
-        !store.intent_locked(&intent_key),
-        "ack must release intent locks"
+        !reopened_store.intent_locked(&intent_key),
+        "Applied must release Map 3"
+    );
+
+    let mut later_req = req;
+    later_req.request_id = test_request_id("later-request");
+    let later_key = ProvisionJobRequestKey::new(&later_req.request_id, "dep-a");
+    let later_accept = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &reopened_store,
+        &reopened_deployment_store,
+        later_req,
+        4,
+    ))
+    .unwrap();
+    assert!(matches!(
+        later_accept,
+        ProvisionAcceptResponse::Accepted { .. }
+    ));
+    assert_eq!(
+        reopened_store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        Some(later_key)
+    );
+    assert!(reopened_store.intent_locked(&intent_key));
+    let before_completed_replay = reopened_store.provisioning_maps_snapshot_for_test();
+
+    assert_eq!(
+        complete_graph_registration_with_caller(
+            router_principal(),
+            &reopened_store,
+            &reopened_deployment_store,
+            ack,
+            5,
+        ),
+        Ok(RouterRegistrationAckResponse::Replay)
+    );
+    assert_eq!(
+        reopened_store.provisioning_maps_snapshot_for_test(),
+        before_completed_replay,
+        "Completed replay must not inspect, release, or rewrite a later request's Map 2/3 rows"
     );
 }
 

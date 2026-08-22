@@ -2,7 +2,8 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::wire::{
-    ProvisionAcceptResponse, ProvisionIngressError, ProvisionIngressResult,
+    ProvisionAcceptResponse, ProvisionIngressError, ProvisionIngressResult, RouterRegistrationAck,
+    RouterRegistrationAckResponse, RouterRegistrationAckResult,
 };
 
 use crate::types::RouterOutboundError;
@@ -12,20 +13,45 @@ use crate::types::RouterOutboundError;
 /// transport failures map to `CallFailed`.
 pub(crate) async fn send_accept_envelope(
     provision_canister: Principal,
-    mut request: gleaph_graph_kernel::provisioning::wire::ProvisionRequest,
+    resolved_request_bytes: Vec<u8>,
 ) -> Result<ProvisionAcceptResponse, RouterOutboundError> {
     use ic_cdk::call::Call;
 
-    // The Router itself is the callback target for the Provision canister's ack.
-    request.router_callback_principal = ic_cdk::api::canister_self();
-
     Call::unbounded_wait(provision_canister, "accept_envelope")
-        .with_args(&(request,))
+        .take_raw_args(resolved_request_bytes)
         .await
         .map_err(|e| map_call_error(&e))?
         .candid::<ProvisionIngressResult>()
         .map_err(|e| RouterOutboundError::EncodingFailed(e.to_string()))
         .and_then(classify_ingress_result)
+}
+
+pub(crate) async fn send_registration_ack(
+    provision_canister: Principal,
+    ack: RouterRegistrationAck,
+) -> Result<RouterRegistrationAckResponse, RouterOutboundError> {
+    use ic_cdk::call::Call;
+
+    Call::unbounded_wait(provision_canister, "complete_graph_registration")
+        .with_args(&(ack,))
+        .await
+        .map_err(|error| {
+            RouterOutboundError::CallFailed(format!(
+                "complete_graph_registration call failed: {error:?}"
+            ))
+        })?
+        .candid::<RouterRegistrationAckResult>()
+        .map_err(|error| RouterOutboundError::EncodingFailed(error.to_string()))
+        .and_then(classify_registration_ack_result)
+}
+
+fn classify_registration_ack_result(
+    result: RouterRegistrationAckResult,
+) -> Result<RouterRegistrationAckResponse, RouterOutboundError> {
+    match result {
+        RouterRegistrationAckResult::Ok(response) => Ok(response),
+        RouterRegistrationAckResult::Err(error) => Err(map_ingress_error(error)),
+    }
 }
 
 pub(crate) fn map_call_error(e: &impl std::fmt::Debug) -> RouterOutboundError {
@@ -44,11 +70,21 @@ pub(crate) fn classify_ingress_result(
 pub(crate) fn map_ingress_error(err: ProvisionIngressError) -> RouterOutboundError {
     match err {
         ProvisionIngressError::UnknownDeployment => RouterOutboundError::UnknownDeployment,
-        ProvisionIngressError::Conflict | ProvisionIngressError::IntentLockHeld => {
-            RouterOutboundError::Conflict
+        ProvisionIngressError::NotAuthorized
+        | ProvisionIngressError::IntentLockHeld
+        | ProvisionIngressError::InvalidResources { .. } => {
+            RouterOutboundError::ProvenPreEffectRejection(format!("{err:?}"))
         }
+        ProvisionIngressError::Conflict => RouterOutboundError::Conflict,
         _ => RouterOutboundError::IngressRejected(format!("{err:?}")),
     }
+}
+
+pub(crate) fn is_proven_pre_effect_rejection(error: &RouterOutboundError) -> bool {
+    matches!(
+        error,
+        RouterOutboundError::UnknownDeployment | RouterOutboundError::ProvenPreEffectRejection(_)
+    )
 }
 
 #[cfg(test)]
@@ -67,7 +103,6 @@ mod tests {
                 state: "Reserved".to_owned(),
                 active_resource_index: 0,
                 completed_effect_count: 0,
-                accepted_registry_version: None,
             },
             intent_lock_count: 1,
             created_resources: vec![],
@@ -115,27 +150,33 @@ mod tests {
 
     #[test]
     fn test_sender_conflict_mapping() {
-        for src in [
-            ProvisionIngressError::Conflict,
-            ProvisionIngressError::IntentLockHeld,
-        ] {
-            let err = roundtrip_and_classify(ProvisionIngressResult::Err(src.clone()))
+        let err =
+            roundtrip_and_classify(ProvisionIngressResult::Err(ProvisionIngressError::Conflict))
                 .expect_err("conflict variant must be an error");
-            assert_eq!(err, RouterOutboundError::Conflict, "variant {src:?}");
-        }
+        assert_eq!(err, RouterOutboundError::Conflict);
     }
 
     #[test]
     fn test_sender_ingress_rejected_mapping() {
         let err = roundtrip_and_classify(ProvisionIngressResult::Err(
-            ProvisionIngressError::InvalidResources {
-                reason: "bad resource".to_owned(),
-            },
+            ProvisionIngressError::InvalidState,
         ))
-        .expect_err("InvalidResources must be rejected");
+        .expect_err("InvalidState must be rejected");
         assert!(
-            matches!(&err, RouterOutboundError::IngressRejected(s) if s.contains("InvalidResources")),
+            matches!(&err, RouterOutboundError::IngressRejected(s) if s.contains("InvalidState")),
             "non-specialized ingress error must map to IngressRejected: {err:?}"
         );
+    }
+
+    #[test]
+    fn registration_ack_decodes_applied_and_replay() {
+        for response in [
+            RouterRegistrationAckResponse::Applied,
+            RouterRegistrationAckResponse::Replay,
+        ] {
+            let encoded = Encode!(&RouterRegistrationAckResult::Ok(response.clone())).unwrap();
+            let decoded = Decode!(&encoded, RouterRegistrationAckResult).unwrap();
+            assert_eq!(classify_registration_ack_result(decoded), Ok(response));
+        }
     }
 }

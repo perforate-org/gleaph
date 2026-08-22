@@ -6,18 +6,19 @@
 
 use crate::canister::{
     ArtifactUpload, ProvisionIngressError, ProvisionIngressResult, ProvisionJobView,
-    RouterAckResult, accept_envelope_with_caller, admin_install_deployment_binding_with_caller,
-    artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
-    artifact_upload_chunk_with_caller, complete_bootstrap_with_caller, query_job_with_caller,
+    RouterRegistrationAckResult, accept_envelope_with_caller,
+    admin_install_deployment_binding_with_caller, artifact_audit_history_with_caller,
+    artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    complete_bootstrap_with_caller, complete_graph_registration_with_caller, query_job_with_caller,
     release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, router_ack_with_caller,
+    release_publish_with_caller,
 };
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactAuditEntry, ArtifactError, ArtifactId,
     ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, InstallError,
     ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterProvisionAck,
+    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -53,14 +54,22 @@ pub fn query_job_handler(request_id: [u8; 32], deployment_id: String) -> Option<
     query_job_with_caller(caller, &store, &deployment_store, request_id, deployment_id).ok()
 }
 
-/// Authorize `router_ack` from the IC runtime and forward to the handler.
-pub fn router_ack_handler(ack: RouterProvisionAck) -> RouterAckResult {
+/// Authorize Router registration completion from the IC runtime and forward to the handler.
+pub fn complete_graph_registration_handler(
+    ack: RouterRegistrationAck,
+) -> RouterRegistrationAckResult {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     let deployment_store = DeploymentTrustStore::new();
-    match router_ack_with_caller(caller, &store, &deployment_store, ack, crate::ic_time_ns()) {
-        Ok(v) => RouterAckResult::Ok(v),
-        Err(e) => RouterAckResult::Err(e),
+    match complete_graph_registration_with_caller(
+        caller,
+        &store,
+        &deployment_store,
+        ack,
+        crate::ic_time_ns(),
+    ) {
+        Ok(v) => RouterRegistrationAckResult::Ok(v),
+        Err(e) => RouterRegistrationAckResult::Err(e),
     }
 }
 

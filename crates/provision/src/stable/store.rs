@@ -15,7 +15,8 @@ use super::memory::{
 use super::release::reset_release_maps;
 use crate::types::{
     DeploymentBinding, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
-    ProvisionJobRequestKey, ProvisioningIntentKey, is_legal_transition, is_terminal_state,
+    ProvisionJobRequestKey, ProvisioningIntentKey, RouterRegistrationAckResponse,
+    is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -47,6 +48,15 @@ pub(crate) fn reset_all_maps() {
     reset_release_maps();
     reset_artifact_audit_log();
     set_force_advance_error(false);
+}
+
+/// Re-open the canonical job map and both derived intent regions over their existing stable
+/// memories, mirroring a canister upgrade without clearing any persisted rows.
+#[cfg(test)]
+pub(crate) fn reopen_provisioning_regions_for_test() {
+    JOB_BY_REQUEST.with(|slot| slot.replace(init_job_by_request()));
+    JOB_BY_DEPLOYMENT.with(|slot| slot.replace(init_job_by_deployment()));
+    INTENT_LOCK.with(|slot| slot.replace(init_job_intent_lock()));
 }
 
 /// Deployment trust binding store (stable region 0).
@@ -151,6 +161,29 @@ impl ProvisionJobStore {
         Self
     }
 
+    #[cfg(test)]
+    pub(crate) fn provisioning_maps_snapshot_for_test(
+        &self,
+    ) -> (
+        Vec<(ProvisionJobRequestKey, ProvisionJobRecord)>,
+        Vec<(ProvisioningIntentKey, ProvisionJobRequestKey)>,
+        Vec<ProvisioningIntentKey>,
+    ) {
+        let jobs = JOB_BY_REQUEST.with_borrow(|map| {
+            map.iter()
+                .map(|entry| (entry.key().clone(), entry.value()))
+                .collect()
+        });
+        let owners = JOB_BY_DEPLOYMENT.with_borrow(|map| {
+            map.iter()
+                .map(|entry| (entry.key().clone(), entry.value()))
+                .collect()
+        });
+        let markers =
+            INTENT_LOCK.with_borrow(|map| map.iter().map(|entry| entry.key().clone()).collect());
+        (jobs, owners, markers)
+    }
+
     /// Insert a job record idempotently. Same request_id returns the existing record.
     pub fn insert_or_idempotent(
         &self,
@@ -190,16 +223,22 @@ impl ProvisionJobStore {
         // 1. Idempotency pre-check (read-only so far).
         let existing = JOB_BY_REQUEST.with_borrow(|map| map.get(&key));
         if let Some(existing) = existing {
-            return Ok(InsertWithLocksOutcome::IdempotentReplay(existing));
+            return if existing.immutable_request_digest == record.immutable_request_digest {
+                Ok(InsertWithLocksOutcome::IdempotentReplay(existing))
+            } else {
+                Err(InsertWithLocksError::Conflict)
+            };
         }
 
-        // 2. Lock preflight (read-only so far).
+        // 2. Derived owner and lock preflight (read-only so far).
         for resource in &record.resources {
             let intent_key = ProvisioningIntentKey {
                 deployment_id: record.deployment_id.clone(),
                 logical_resource: resource.logical_resource,
             };
-            if INTENT_LOCK.with_borrow(|map| map.contains_key(&intent_key)) {
+            if JOB_BY_DEPLOYMENT.with_borrow(|map| map.contains_key(&intent_key))
+                || INTENT_LOCK.with_borrow(|map| map.contains_key(&intent_key))
+            {
                 return Err(InsertWithLocksError::IntentLockHeld);
             }
         }
@@ -428,6 +467,37 @@ impl ProvisionJobStore {
         JOB_BY_DEPLOYMENT.with_borrow(|map| map.get(&intent_key))
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_intent_owner_for_test(
+        &self,
+        intent_key: ProvisioningIntentKey,
+        owner: Option<ProvisionJobRequestKey>,
+    ) {
+        JOB_BY_DEPLOYMENT.with_borrow_mut(|map| match owner {
+            Some(owner) => {
+                map.insert(intent_key, owner);
+            }
+            None => {
+                map.remove(&intent_key);
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_intent_lock_for_test(
+        &self,
+        intent_key: ProvisioningIntentKey,
+        present: bool,
+    ) {
+        INTENT_LOCK.with_borrow_mut(|map| {
+            if present {
+                map.insert(intent_key, ProvisionIntentLockMarker);
+            } else {
+                map.remove(&intent_key);
+            }
+        });
+    }
+
     /// Count how many of the intent locks derived from `record.resources` are currently held.
     pub fn intent_lock_count_for_record(&self, record: &ProvisionJobRecord) -> usize {
         INTENT_LOCK.with_borrow(|map| {
@@ -443,6 +513,64 @@ impl ProvisionJobStore {
                 })
                 .count()
         })
+    }
+
+    /// Complete one Graph registration after Router catalog reconciliation.
+    ///
+    /// Fresh completion preflights every Map 2 owner and Map 3 marker before the first mutation,
+    /// then writes Map 1 `Completed` and removes exactly those owned derived rows. Completed replay
+    /// does not inspect or mutate Map 2/3, so rows acquired later by another request survive.
+    pub fn complete_graph_registration(
+        &self,
+        key: &ProvisionJobRequestKey,
+        now_ns: u64,
+    ) -> Result<RouterRegistrationAckResponse, CompleteGraphRegistrationError> {
+        let mut record = JOB_BY_REQUEST
+            .with_borrow(|map| map.get(key))
+            .ok_or(CompleteGraphRegistrationError::NotFound)?;
+
+        if record.current_state == JobState::Completed {
+            return Ok(RouterRegistrationAckResponse::Replay);
+        }
+        if record.current_state != JobState::RouterRegistrationPending {
+            return Err(CompleteGraphRegistrationError::InvalidState);
+        }
+
+        let intent_keys: Vec<ProvisioningIntentKey> = record
+            .resources
+            .iter()
+            .map(|resource| ProvisioningIntentKey {
+                deployment_id: record.deployment_id.clone(),
+                logical_resource: resource.logical_resource,
+            })
+            .collect();
+        let exact_rows_present = intent_keys.iter().all(|intent_key| {
+            JOB_BY_DEPLOYMENT.with_borrow(|map| map.get(intent_key).as_ref() == Some(key))
+                && INTENT_LOCK.with_borrow(|map| map.contains_key(intent_key))
+        });
+        if !exact_rows_present {
+            return Err(CompleteGraphRegistrationError::InvalidState);
+        }
+
+        record.current_state = JobState::Completed;
+        record.last_transition_ns = now_ns;
+        JOB_BY_REQUEST.with_borrow_mut(|map| {
+            map.insert(key.clone(), record);
+        });
+        JOB_BY_DEPLOYMENT.with_borrow_mut(|map| {
+            for intent_key in &intent_keys {
+                if map.get(intent_key).as_ref() == Some(key) {
+                    map.remove(intent_key);
+                }
+            }
+        });
+        INTENT_LOCK.with_borrow_mut(|map| {
+            for intent_key in &intent_keys {
+                map.remove(intent_key);
+            }
+        });
+
+        Ok(RouterRegistrationAckResponse::Applied)
     }
 
     /// True if any non-terminal job exists for `deployment_id`.
@@ -475,6 +603,12 @@ pub enum InsertWithLocksOutcome {
 pub enum InsertWithLocksError {
     Conflict,
     IntentLockHeld,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompleteGraphRegistrationError {
+    NotFound,
+    InvalidState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -194,7 +194,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         owner: caller,
         admins: std::collections::BTreeSet::new(),
     };
-    let response = crate::provisioning::graph::provision_graph_flow(caller, args).await?;
+    let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
         crate::types::ProvisionGraphResponse::Accepted {
             created_resources, ..
@@ -208,7 +208,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
                 )
             }),
         crate::types::ProvisionGraphResponse::Replay { .. }
-        | crate::types::ProvisionGraphResponse::Completed { .. } => {
+        | crate::types::ProvisionGraphResponse::Completed => {
             // A replayed/acknowledged admission means a prior call already provisioned the canister;
             // resolve it from the catalog.
             vector_index_catalog::graph_single_target(graph_id).ok_or_else(|| {
@@ -415,7 +415,7 @@ async fn provision_index_canisters(
         owner: caller,
         admins: std::collections::BTreeSet::new(),
     };
-    let response = crate::provisioning::graph::provision_graph_flow(caller, args).await?;
+    let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
         crate::types::ProvisionGraphResponse::Accepted {
             created_resources, ..
@@ -438,7 +438,7 @@ async fn provision_index_canisters(
             }
             Ok(out)
         }
-        crate::types::ProvisionGraphResponse::Completed { .. } => {
+        crate::types::ProvisionGraphResponse::Completed => {
             // A replayed/acknowledged admission means a prior call already provisioned and
             // assigned the canisters; resolve them from the graph's index_cluster.
             let cluster = RouterStore::new().graph_index_cluster(graph_id)?;

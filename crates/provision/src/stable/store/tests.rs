@@ -50,7 +50,7 @@ fn test_request_id(label: &str) -> [u8; 32] {
 fn test_record_with_resources(
     request_id: &str,
     deployment_id: &str,
-    _fingerprint: &str,
+    fingerprint: &str,
     resources: &[LogicalResource],
 ) -> ProvisionJobRecord {
     let intent_key = if resources.is_empty() {
@@ -72,7 +72,7 @@ fn test_record_with_resources(
         graph_name: "test-graph".to_owned(),
         authorized_caller: test_principal(0),
         release_id: "r1".to_owned(),
-        router_callback_principal: test_principal(1),
+        immutable_request_digest: sha256(fingerprint.as_bytes()),
         resources: resources
             .iter()
             .map(|logical_resource| ResourceJobEntry {
@@ -84,7 +84,6 @@ fn test_record_with_resources(
         current_state: JobState::Submitted,
         active_resource_index: 0,
         completed_effect_count: 0,
-        accepted_registry_version: None,
         created_at_ns: 1_700_000_000_000_000_000,
         last_transition_ns: 0,
     }
@@ -209,7 +208,6 @@ fn test_advance_state_full_machine() {
         JobState::InstallPending,
         JobState::Installed,
         JobState::RouterRegistrationPending,
-        JobState::RouterAckPending,
         JobState::Completed,
     ];
     for (i, step) in steps.iter().enumerate() {
@@ -242,6 +240,81 @@ fn test_advance_state_invalid_transition() {
     let unchanged = store.get_by_request_key(&key).unwrap();
     assert_eq!(unchanged.current_state, JobState::Submitted);
     assert_eq!(unchanged.last_transition_ns, 0);
+}
+
+#[test]
+fn complete_graph_registration_is_preflight_then_co_write() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let record = test_record_with_resources(
+        "req-ack",
+        "dep-a",
+        "envelope-a",
+        &[LogicalResource::GraphShard(ShardId::new(0))],
+    );
+    let key = ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id);
+    store.insert_with_intent_locks(record, 1).unwrap();
+    for state in [
+        JobState::CreatePending,
+        JobState::CanisterCreated,
+        JobState::InstallPending,
+        JobState::Installed,
+        JobState::RouterRegistrationPending,
+    ] {
+        store.advance_state(&key, state, None, 2).unwrap();
+    }
+
+    let intent = ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
+    let foreign = ProvisionJobRequestKey::new(&test_request_id("foreign"), "dep-a");
+    store.set_intent_owner_for_test(intent.clone(), Some(foreign.clone()));
+    assert_eq!(
+        store.complete_graph_registration(&key, 3),
+        Err(super::CompleteGraphRegistrationError::InvalidState)
+    );
+    assert_eq!(
+        store.get_by_request_key(&key).unwrap().current_state,
+        JobState::RouterRegistrationPending
+    );
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        Some(foreign)
+    );
+    assert!(store.intent_locked(&intent));
+
+    store.set_intent_owner_for_test(intent.clone(), Some(key.clone()));
+    store.set_intent_lock_for_test(intent.clone(), false);
+    assert_eq!(
+        store.complete_graph_registration(&key, 4),
+        Err(super::CompleteGraphRegistrationError::InvalidState)
+    );
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        Some(key.clone())
+    );
+
+    store.set_intent_lock_for_test(intent.clone(), true);
+    assert_eq!(
+        store.complete_graph_registration(&key, 5),
+        Ok(gleaph_graph_kernel::provisioning::wire::RouterRegistrationAckResponse::Applied)
+    );
+    assert_eq!(
+        store.get_by_request_key(&key).unwrap().current_state,
+        JobState::Completed
+    );
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            LogicalResource::GraphShard(ShardId::new(0)),
+        ),
+        None
+    );
+    assert!(!store.intent_locked(&intent));
 }
 
 #[test]

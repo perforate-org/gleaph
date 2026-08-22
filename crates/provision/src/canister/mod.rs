@@ -4,7 +4,7 @@
 //! drive every authorization and idempotency branch. Callable canister endpoints
 //! (`#[init]`/`#[query]`/`#[update]` annotations) remain a follow-up slice.
 
-use candid::{CandidType, Principal};
+use candid::{CandidType, Encode, Principal};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashSet;
@@ -20,8 +20,9 @@ use crate::types::{
     JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
     MAX_ARTIFACT_SEMANTIC_VERSION_LEN, ProvisionAdminError, ProvisionJobRecord,
     ProvisionJobRequestKey, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
-    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId,
-    ReleaseManifest, ReleasePublishArgs, ResourceJobEntry, RouterProvisionAck, sha256, state_name,
+    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest,
+    ReleasePublishArgs, ResourceJobEntry, RouterRegistrationAck, RouterRegistrationAckResponse,
+    sha256, state_name,
 };
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, InstallError,
@@ -59,17 +60,11 @@ fn append_artifact_audit(
 
 // Re-export the shared Candid wire surface from the neutral graph-kernel crate.
 // These types are single-sourced in `gleaph_graph_kernel::provisioning::wire` so the
-// Router canister can decode `accept_envelope` responses without depending on this crate.
+// Router canister can decode provisioning responses without depending on this crate.
 pub use gleaph_graph_kernel::provisioning::wire::{
     ProvisionAcceptResponse, ProvisionIngressError, ProvisionIngressResult, ProvisionJobSummary,
+    RouterRegistrationAckResult,
 };
-
-/// Candid wire Result for `router_ack`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum RouterAckResult {
-    Ok(ProvisionRouterAckResult),
-    Err(ProvisionIngressError),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProvisionQueryError {
@@ -89,10 +84,8 @@ pub struct ProvisionJobView {
     pub state_name: String,
     pub active_resource_index: u32,
     pub completed_effect_count: u32,
-    pub accepted_registry_version: Option<u64>,
     pub resources: Vec<ResourceJobView>,
     pub is_authorized_caller: bool,
-    pub has_router_callback: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -102,15 +95,11 @@ pub struct ResourceJobView {
     pub artifact_hash: Option<[u8; 32]>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ProvisionRouterAckResult {
-    pub completed: bool,
-    pub accepted_registry_version: u64,
-}
-
 // === Helpers =================================================================
 
 pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> ProvisionJobRecord {
+    let immutable_request_digest =
+        sha256(&Encode!(&req).expect("encode immutable ProvisionRequest comparison envelope"));
     ProvisionJobRecord {
         request_id: req.request_id,
         deployment_id: req.deployment_id,
@@ -119,7 +108,7 @@ pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> P
         graph_name: req.graph_name,
         authorized_caller: req.authorized_caller,
         release_id: req.release_id,
-        router_callback_principal: req.router_callback_principal,
+        immutable_request_digest,
         resources: req
             .requested_resources
             .into_iter()
@@ -132,7 +121,6 @@ pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> P
         current_state: JobState::Submitted,
         active_resource_index: 0,
         completed_effect_count: 0,
-        accepted_registry_version: None,
         created_at_ns: now_ns,
         last_transition_ns: now_ns,
     }
@@ -191,7 +179,6 @@ pub(crate) fn build_job_summary(record: &ProvisionJobRecord) -> ProvisionJobSumm
         state: state_name(&record.current_state).to_owned(),
         active_resource_index: record.active_resource_index as u32,
         completed_effect_count: record.completed_effect_count,
-        accepted_registry_version: record.accepted_registry_version,
     }
 }
 
@@ -204,7 +191,6 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
         state_name: state_name(&record.current_state).to_owned(),
         active_resource_index: record.active_resource_index as u32,
         completed_effect_count: record.completed_effect_count,
-        accepted_registry_version: record.accepted_registry_version,
         resources: record
             .resources
             .iter()
@@ -215,7 +201,6 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
             })
             .collect(),
         is_authorized_caller: record.authorized_caller != Principal::anonymous(),
-        has_router_callback: record.router_callback_principal != Principal::anonymous(),
     }
 }
 
@@ -276,7 +261,7 @@ pub(crate) async fn accept_envelope_with_caller(
         Ok(crate::stable::store::InsertWithLocksOutcome::InsertedFresh(updated)) => {
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
             //    InstallPending -> Installed for each resource, recording canister_id and
-            //    artifact_hash, then advance to RouterAckPending.
+            //    artifact_hash, then advance to RouterRegistrationPending.
             let created =
                 deploy_job_resources(store, &req, binding.governance_principal, now_ns).await;
             let updated = store
@@ -325,7 +310,8 @@ pub(crate) async fn accept_envelope_with_caller(
 /// processed in sequence: advance to `CreatePending`, call `create_canister`, record the
 /// canister id (advancing to `CanisterCreated`), advance to `InstallPending`, install the
 /// release artifact, record its hash (advancing to `Installed`). After the last resource,
-/// advance to `RouterAckPending`. Returns the created resources in `requested_resources` order.
+/// advance to `RouterRegistrationPending`. Returns the created resources in
+/// `requested_resources` order.
 ///
 /// A management-canister failure at any step aborts the remaining resources and leaves the job
 /// in a non-terminal state (the created prefix is preserved for reconciliation). The caller's
@@ -480,18 +466,13 @@ pub(crate) fn query_job_with_caller(
     Ok(build_job_view(&record, caller))
 }
 
-pub(crate) fn router_ack_with_caller(
+pub(crate) fn complete_graph_registration_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
     deployment_store: &DeploymentTrustStore,
-    ack: RouterProvisionAck,
+    ack: RouterRegistrationAck,
     now_ns: u64,
-) -> Result<ProvisionRouterAckResult, ProvisionIngressError> {
-    let mut record = store
-        .get_by_request(&ack.request_id, &ack.deployment_id)
-        .ok_or(ProvisionIngressError::NotFound)?;
-    let key = ProvisionJobRequestKey::new(&ack.request_id, &ack.deployment_id);
-
+) -> Result<RouterRegistrationAckResponse, ProvisionIngressError> {
     let binding = deployment_store
         .get(&ack.deployment_id)
         .ok_or(ProvisionIngressError::UnknownDeployment)?;
@@ -499,66 +480,17 @@ pub(crate) fn router_ack_with_caller(
         return Err(ProvisionIngressError::NotAuthorized);
     }
 
-    // Idempotent replay branches before the fresh-ack path.
-    if record.current_state == JobState::Completed {
-        match record.accepted_registry_version {
-            Some(stored) if stored == ack.accepted_registry_version => {
-                return Ok(ProvisionRouterAckResult {
-                    completed: true,
-                    accepted_registry_version: stored,
-                });
-            }
-            Some(stored) => {
-                return Err(ProvisionIngressError::AckConflict { stored });
-            }
-            None => return Err(ProvisionIngressError::InvalidState),
-        }
-    }
-
-    // The Router registers the returned canisters in its catalogs and then acks. Both the
-    // `RouterRegistrationPending` (deploy just completed, Router about to register+ack) and
-    // `RouterAckPending` (replay after an interrupted ack) states are valid ack entry points.
-    if !matches!(
-        record.current_state,
-        JobState::RouterRegistrationPending | JobState::RouterAckPending
-    ) {
-        return Err(ProvisionIngressError::InvalidState);
-    }
-
-    // Preflight the lock invariant before any durable write. A RouterAckPending
-    // record must have all of its intent locks held; a missing lock indicates
-    // state corruption, not a recoverable flow.
-    for resource in &record.resources {
-        let lock_key = ProvisioningIntentKey {
-            deployment_id: record.deployment_id.clone(),
-            logical_resource: resource.logical_resource,
-        };
-        if !store.intent_locked(&lock_key) {
-            return Err(ProvisionIngressError::InvalidState);
-        }
-    }
-
-    record.accepted_registry_version = Some(ack.accepted_registry_version);
-    store.put(&key, record.clone());
-
-    // The Router registers the created canisters and then acks. A fresh deploy leaves the job in
-    // `RouterRegistrationPending`; advance through `RouterAckPending` to `Completed`. A replay of
-    // an interrupted ack arrives already in `RouterAckPending`.
-    if record.current_state == JobState::RouterRegistrationPending {
-        store
-            .advance_state(&key, JobState::RouterAckPending, None, now_ns)
-            .map_err(|_| ProvisionIngressError::StateAdvanceFailed)?;
-    }
+    let key = ProvisionJobRequestKey::new(&ack.request_id, &ack.deployment_id);
     store
-        .advance_state(&key, JobState::Completed, None, now_ns)
-        .map_err(|_| ProvisionIngressError::StateAdvanceFailed)?;
-
-    let _released = store.clear_intent_locks_for_record(&record);
-
-    Ok(ProvisionRouterAckResult {
-        completed: true,
-        accepted_registry_version: ack.accepted_registry_version,
-    })
+        .complete_graph_registration(&key, now_ns)
+        .map_err(|error| match error {
+            crate::stable::store::CompleteGraphRegistrationError::NotFound => {
+                ProvisionIngressError::NotFound
+            }
+            crate::stable::store::CompleteGraphRegistrationError::InvalidState => {
+                ProvisionIngressError::InvalidState
+            }
+        })
 }
 
 /// Complete the bootstrap trust handover: clear `bootstrap_principal` so the Account no longer

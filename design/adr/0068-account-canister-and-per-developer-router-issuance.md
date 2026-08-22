@@ -2,8 +2,8 @@
 
 Date: 2026-08-14
 Status: proposed
-Last revised: 2026-08-21 18:13:59 UTC +0000
-Anchor timestamp: 2026-08-21 18:13:59 UTC +0000
+Last revised: 2026-08-22 19:59:13 UTC +0000
+Anchor timestamp: 2026-08-22 19:59:13 UTC +0000
 
 ## Context
 
@@ -90,13 +90,13 @@ Account ──▶ Provision: accept_envelope (Account is the deployment trust su
 Provision ──▶ Account: issuance result callback → Account: register_router(id, "default", canister)
 
 # After issuance: trust handed over to the issued Router
-Provision ──▶ Router: router_ack (existing ADR 0035; Router now owns the deployment binding)
-Router ──▶ Provision: subsequent graph / shard / index issuance (ADR 0035 unchanged)
+Router ──▶ Provision: subsequent graph issuance and versionless completion (ADR 0035)
 ```
 
 This keeps the **Account boundary intact**: Account does not own graph topology. It is the issuance
-authority only during the bootstrap handover; once the Router exists, the existing ADR 0035 trust
-and ack model applies unchanged.
+authority only during the bootstrap handover; once the Router exists, Router owns Graph admission,
+topology reconciliation, and the Router-to-Provision completion call. Delivery of the initial
+`ProvisionResult` back to Account remains outside the current Graph-only completion slice.
 
 ### Account canister API
 

@@ -13,7 +13,8 @@ pub use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
 pub use gleaph_graph_kernel::provisioning::wire::{
     CreatedResource, ProvisionAcceptResponse, ProvisionRequest, ProvisionResult,
-    ProvisionResultOutcome, ProvisionableResource, RouterProvisionAck,
+    ProvisionResultOutcome, ProvisionableResource, RouterRegistrationAck,
+    RouterRegistrationAckResponse,
 };
 pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentKey};
 use gleaph_graph_kernel::vector_index::{
@@ -1977,16 +1978,12 @@ pub(crate) enum RouterProvisioningRequestState {
 pub(crate) struct RouterProvisioningRequest {
     pub request_id: [u8; 32],
     pub caller: Principal,
-    pub graph_name: String,
-    pub reserved_graph_id: Option<GraphId>,
-    pub requested_resources: Vec<ProvisionableResource>,
+    pub owner: Principal,
+    pub admins: BTreeSet<Principal>,
+    pub provision_target: Principal,
+    /// Exact Candid argument bytes dispatched to Provision. Retry sends these bytes verbatim.
+    pub resolved_request_bytes: Vec<u8>,
     pub state: RouterProvisioningRequestState,
-    pub provision_receipt: Option<ProvisionResult>,
-    /// Registry version accepted from the Provision canister via `router_ack`.
-    /// `#[serde(default)]` preserves serde-only paths; Candid optional-field backward
-    /// compatibility handles the stable V1 wrapper round-trip for existing development data.
-    #[serde(default)]
-    pub accepted_registry_version: Option<u64>,
     pub created_at_ns: u64,
 }
 
@@ -2702,6 +2699,7 @@ mod tests {
 pub enum RouterOutboundError {
     CallFailed(String),
     UnknownDeployment,
+    ProvenPreEffectRejection(String),
     Conflict,
     IngressRejected(String),
     EncodingFailed(String),
@@ -2736,9 +2734,7 @@ pub enum ProvisionGraphResponse {
         created_resources: Vec<gleaph_graph_kernel::provisioning::wire::CreatedResource>,
     },
     /// The request already reached durable `Completed` state on a prior call.
-    /// Re-sending the accept envelope is not performed; the stored accepted registry
-    /// version is returned as an idempotent success.
-    Completed { accepted_registry_version: u64 },
+    Completed,
 }
 
 #[cfg(test)]
@@ -2792,7 +2788,6 @@ mod outbound_tests {
             state: "Submitted".to_owned(),
             active_resource_index: 0,
             completed_effect_count: 0,
-            accepted_registry_version: None,
         };
         let response = ProvisionGraphResponse::Accepted {
             job_view: summary.clone(),
@@ -2804,9 +2799,7 @@ mod outbound_tests {
             Decode!(&bytes, ProvisionGraphResponse).expect("decode ProvisionGraphResponse");
         assert_eq!(decoded, response);
 
-        let completed_response = ProvisionGraphResponse::Completed {
-            accepted_registry_version: 7,
-        };
+        let completed_response = ProvisionGraphResponse::Completed;
         let bytes = Encode!(&completed_response).expect("encode ProvisionGraphResponse Completed");
         let decoded: ProvisionGraphResponse = Decode!(&bytes, ProvisionGraphResponse)
             .expect("decode ProvisionGraphResponse Completed");

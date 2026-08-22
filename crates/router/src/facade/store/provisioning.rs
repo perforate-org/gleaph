@@ -9,6 +9,7 @@
 // callback paths in later slices; allow dead_code while they remain crate-internal in Slice 1.
 #![allow(dead_code)]
 
+use candid::Decode;
 use std::collections::HashSet;
 
 use crate::facade::stable::{
@@ -18,6 +19,7 @@ use crate::types::{
     IntentLockOwner, ProvisioningByGraphKey, ProvisioningIntentKey, ProvisioningRequestKey,
     RouterProvisioningRequest, RouterProvisioningRequestState,
 };
+use gleaph_graph_kernel::provisioning::wire::ProvisionRequest;
 
 /// Failure modes for `RouterProvisioningRequestStore::insert`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +28,10 @@ pub(crate) enum InsertError {
     IntentConflict,
     /// The request contains duplicate `(kind, logical_resource_key)` resources.
     InvalidDuplicateIntent,
+    /// The encoded envelope is invalid, oversized, or disagrees with the Map 45 key.
+    InvalidEnvelope,
+    /// The same request key was reused with different immutable semantic identity.
+    IdentityConflict,
 }
 
 /// Ownership signal returned by `RouterProvisioningRequestStore::insert`.
@@ -45,15 +51,56 @@ pub(crate) enum ClearError {
     NotFound,
 }
 
-/// Failure modes for `RouterProvisioningRequestStore::commit_ack`.
+/// Failure modes for `RouterProvisioningRequestStore::complete_request`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AckCommitError {
+pub(crate) enum CompletionError {
     /// No canonical record exists for the supplied key.
     NotFound(String),
     /// The record is not in a state that allows an ack commit or replay.
     InvalidState(String),
-    /// The record is already `Completed` with a different registry version.
-    Conflict { stored: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PendingGraphLookupError {
+    InconsistentDerivedState,
+    InvalidEnvelope,
+}
+
+fn decode_and_validate_envelope(
+    record: &RouterProvisioningRequest,
+    deployment_id: &str,
+) -> Result<ProvisionRequest, InsertError> {
+    if record.resolved_request_bytes.len()
+        > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        || record.provision_target == candid::Principal::anonymous()
+    {
+        return Err(InsertError::InvalidEnvelope);
+    }
+    let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
+        .map_err(|_| InsertError::InvalidEnvelope)?;
+    if envelope.request_id != record.request_id
+        || envelope.deployment_id != deployment_id
+        || envelope.intent_key.deployment_id != deployment_id
+        || !envelope
+            .requested_resources
+            .iter()
+            .any(|resource| resource.logical_resource == envelope.intent_key.logical_resource)
+    {
+        return Err(InsertError::InvalidEnvelope);
+    }
+    Ok(envelope)
+}
+
+fn immutable_identity_matches(
+    existing: &RouterProvisioningRequest,
+    candidate: &RouterProvisioningRequest,
+) -> bool {
+    existing.request_id == candidate.request_id
+        && existing.caller == candidate.caller
+        && existing.owner == candidate.owner
+        && existing.admins == candidate.admins
+        && existing.provision_target == candidate.provision_target
+        && existing.resolved_request_bytes == candidate.resolved_request_bytes
 }
 
 /// Stateless facade over the Router provisioning-request catalog.
@@ -63,6 +110,14 @@ pub(crate) struct RouterProvisioningRequestStore;
 impl RouterProvisioningRequestStore {
     pub(crate) const fn new() -> Self {
         Self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_lengths_for_test(&self) -> (u64, u64, u64) {
+        let requests = ROUTER_PROVISIONING_REQUESTS.with_borrow(|map| map.len());
+        let by_graph = ROUTER_PROVISIONING_BY_GRAPH.with_borrow(|map| map.len());
+        let intent_locks = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|map| map.len());
+        (requests, by_graph, intent_locks)
     }
 
     /// Insert or idempotently return an existing request.
@@ -79,9 +134,11 @@ impl RouterProvisioningRequestStore {
         deployment_id: &str,
         req: RouterProvisioningRequest,
     ) -> Result<InsertionOutcome, InsertError> {
+        let envelope = decode_and_validate_envelope(&req, deployment_id)?;
+
         // 1. Reject duplicate resource intents inside the same request.
         let mut seen = HashSet::new();
-        for resource in &req.requested_resources {
+        for resource in &envelope.requested_resources {
             if !seen.insert(resource.logical_resource) {
                 return Err(InsertError::InvalidDuplicateIntent);
             }
@@ -89,15 +146,17 @@ impl RouterProvisioningRequestStore {
 
         let request_key = ProvisioningRequestKey::new(&req.request_id, deployment_id);
 
-        // 2. Idempotency check on the canonical record. `request_id` is the content hash, so a
-        //    matching key already implies identical content; no separate fingerprint is needed.
+        // 2. Same-key replay must preserve the complete immutable semantic identity.
         let existing = ROUTER_PROVISIONING_REQUESTS.with_borrow(|map| map.get(&request_key));
         if let Some(existing) = existing {
-            return Ok(InsertionOutcome::Existing(existing));
+            if immutable_identity_matches(&existing, &req) {
+                return Ok(InsertionOutcome::Existing(existing));
+            }
+            return Err(InsertError::IdentityConflict);
         }
 
         // 3. Preflight every derived intent lock.
-        let intent_keys: Vec<ProvisioningIntentKey> = req
+        let intent_keys: Vec<ProvisioningIntentKey> = envelope
             .requested_resources
             .iter()
             .map(|r| ProvisioningIntentKey::new(deployment_id, r.logical_resource))
@@ -114,7 +173,7 @@ impl RouterProvisioningRequestStore {
 
         // 4. Write canonical record, secondary index, and all intent locks synchronously.
         let graph_key =
-            ProvisioningByGraphKey::new(deployment_id, &req.graph_name, &req.request_id);
+            ProvisioningByGraphKey::new(deployment_id, &envelope.graph_name, &req.request_id);
         let lock_owner = IntentLockOwner::new(request_key.clone());
         ROUTER_PROVISIONING_REQUESTS.with_borrow_mut(|map| {
             map.insert(request_key.clone(), req.clone());
@@ -158,6 +217,54 @@ impl RouterProvisioningRequestStore {
             .with_borrow(|map| keys.into_iter().filter_map(|k| map.get(&k)).collect())
     }
 
+    /// Resolve an in-flight exact GraphShard(0) request through both derived Maps 46 and 47.
+    /// Map 47 absence means no pending owner (Completed requests intentionally release it).
+    pub(crate) fn pending_graph_bootstrap(
+        &self,
+        deployment_id: &str,
+        graph_name: &str,
+    ) -> Result<Option<RouterProvisioningRequest>, PendingGraphLookupError> {
+        let intent_key = ProvisioningIntentKey::new(
+            deployment_id,
+            gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
+                gleaph_graph_kernel::federation::ShardId::new(0),
+            ),
+        );
+        let Some(owner) =
+            ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| locks.get(&intent_key))
+        else {
+            return Ok(None);
+        };
+        if owner.request_key.deployment_id != deployment_id {
+            return Err(PendingGraphLookupError::InconsistentDerivedState);
+        }
+
+        let graph_key =
+            ProvisioningByGraphKey::new(deployment_id, graph_name, &owner.request_key.request_id);
+        let indexed = ROUTER_PROVISIONING_BY_GRAPH.with_borrow(|map| map.get(&graph_key));
+        if indexed.as_ref() != Some(&owner.request_key) {
+            return Err(PendingGraphLookupError::InconsistentDerivedState);
+        }
+        let record = ROUTER_PROVISIONING_REQUESTS
+            .with_borrow(|map| map.get(&owner.request_key))
+            .ok_or(PendingGraphLookupError::InconsistentDerivedState)?;
+        let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
+            .map_err(|_| PendingGraphLookupError::InvalidEnvelope)?;
+        let exact_shape = envelope.graph_name == graph_name
+            && envelope.deployment_id == deployment_id
+            && envelope.requested_resources.len() == 1
+            && envelope.install_args.len() == 1
+            && matches!(
+                envelope.requested_resources[0].logical_resource,
+                gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(shard)
+                    if shard == gleaph_graph_kernel::federation::ShardId::new(0)
+            );
+        if !exact_shape || record.state != RouterProvisioningRequestState::AwaitingAck {
+            return Err(PendingGraphLookupError::InconsistentDerivedState);
+        }
+        Ok(Some(record))
+    }
+
     pub(crate) fn intent_locked(
         &self,
         key: &ProvisioningIntentKey,
@@ -178,13 +285,15 @@ impl RouterProvisioningRequestStore {
         let Some(record) = maybe_record else {
             return Err(ClearError::NotFound);
         };
+        let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
+            .expect("stored Map 45 envelope must decode");
 
         let deployment_id = request_key.deployment_id.clone();
         let graph_key =
-            ProvisioningByGraphKey::new(&deployment_id, &record.graph_name, &record.request_id);
+            ProvisioningByGraphKey::new(&deployment_id, &envelope.graph_name, &record.request_id);
 
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
-            for resource in &record.requested_resources {
+            for resource in &envelope.requested_resources {
                 let key = ProvisioningIntentKey::new(&deployment_id, resource.logical_resource);
                 locks.remove(&key);
             }
@@ -225,7 +334,7 @@ impl RouterProvisioningRequestStore {
     /// Release every intent lock that is owned by the supplied request.
     ///
     /// Only removes locks whose stored owner matches the record's owner identity. Locks held by
-    /// another request are left untouched. Used by `commit_ack` after advancing a record to
+    /// another request are left untouched. Used by `complete_request` after advancing a record to
     /// terminal `Completed` state so the same resource can be re-provisioned later (symmetric
     /// with the Provision-side `clear_intent_locks_for_record`).
     pub(crate) fn release_intent_locks_owned_by(
@@ -233,12 +342,14 @@ impl RouterProvisioningRequestStore {
         deployment_id: &str,
         record: &RouterProvisioningRequest,
     ) {
+        let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
+            .expect("stored Map 45 envelope must decode");
         let expected_owner = IntentLockOwner::new(ProvisioningRequestKey::new(
             &record.request_id,
             deployment_id,
         ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
-            for resource in &record.requested_resources {
+            for resource in &envelope.requested_resources {
                 let key = ProvisioningIntentKey::new(deployment_id, resource.logical_resource);
                 if locks
                     .get(&key)
@@ -250,65 +361,34 @@ impl RouterProvisioningRequestStore {
         });
     }
 
-    /// Commit the Router-side ack and advance the provisioning request to terminal `Completed`.
-    ///
-    /// Performs the state machine atomically with respect to the caller-visible `Result`:
-    /// 1. Read the canonical record and every intent-lock owner.
-    /// 2. Validate state (`Completed` replay/conflict, `AwaitingAck` preflight).
-    /// 3. Build the updated `Completed` record with `accepted_registry_version`.
-    /// 4. Apply all mutations (record update + owner-scoped lock release) in order.
-    /// 5. Return `Ok` only after **all** mutations succeed.
-    ///
-    /// No mutation may be followed by a fallible operation that returns `Err`. If any step
-    /// fails before mutations, this function returns `Err` without writing. If a mutation
-    /// itself could fail, the function must trap, because the IC does not roll back a regular
-    /// `Result::Err`.
-    ///
-    /// State machine:
-    /// - `Completed` + matching version  -> Ok(record) (idempotent replay)
-    /// - `Completed` + differing version -> Err(AckCommitError::Conflict { stored })
-    /// - `Completed` + no version        -> Err(AckCommitError::InvalidState)
-    /// - `AwaitingAck` + all locks owned -> write Completed + version, release locks, Ok(record)
-    /// - `AwaitingAck` + missing/wrong-owner locks -> Err(AckCommitError::InvalidState)
-    /// - any other state                 -> Err(AckCommitError::InvalidState)
-    pub(crate) fn commit_ack(
+    /// Complete the Router orchestration record after Provision applied or replayed the
+    /// registration ACK. All lock-owner checks precede the first mutation.
+    pub(crate) fn complete_request(
         &self,
         key: &ProvisioningRequestKey,
-        accepted_registry_version: u64,
-    ) -> Result<RouterProvisioningRequest, AckCommitError> {
+    ) -> Result<RouterProvisioningRequest, CompletionError> {
         let maybe_record = ROUTER_PROVISIONING_REQUESTS.with_borrow(|map| map.get(key));
         let Some(record) = maybe_record else {
-            return Err(AckCommitError::NotFound(format!(
+            return Err(CompletionError::NotFound(format!(
                 "no provisioning request for {}/{:02x?}",
                 key.deployment_id, key.request_id
             )));
         };
 
-        // Replay / conflict branches for already-Completed records.
         if record.state == RouterProvisioningRequestState::Completed {
-            match record.accepted_registry_version {
-                Some(stored) if stored == accepted_registry_version => return Ok(record),
-                Some(stored) => {
-                    return Err(AckCommitError::Conflict { stored });
-                }
-                None => {
-                    return Err(AckCommitError::InvalidState(
-                        "completed record missing accepted_registry_version".to_owned(),
-                    ));
-                }
-            }
+            return Ok(record);
         }
 
         if record.state != RouterProvisioningRequestState::AwaitingAck {
-            return Err(AckCommitError::InvalidState(format!(
+            return Err(CompletionError::InvalidState(format!(
                 "expected AwaitingAck, got {:?}",
                 record.state
             )));
         }
 
-        // Preflight: every intent lock derived from this record must still be held AND owned
-        // by this record.
-        let intent_keys: Vec<ProvisioningIntentKey> = record
+        let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
+            .map_err(|_| CompletionError::InvalidState("invalid stored envelope".to_owned()))?;
+        let intent_keys: Vec<ProvisioningIntentKey> = envelope
             .requested_resources
             .iter()
             .map(|r| ProvisioningIntentKey::new(&key.deployment_id, r.logical_resource))
@@ -322,16 +402,13 @@ impl RouterProvisioningRequestStore {
             })
         });
         if !all_owned {
-            return Err(AckCommitError::InvalidState(
+            return Err(CompletionError::InvalidState(
                 "AwaitingAck record missing or not owning intent locks".to_owned(),
             ));
         }
 
-        // Atomic write: update the canonical record to Completed + accepted version, then
-        // release the now-unnecessary intent locks. Both happen in the same message execution.
         let mut updated = record.clone();
         updated.state = RouterProvisioningRequestState::Completed;
-        updated.accepted_registry_version = Some(accepted_registry_version);
         ROUTER_PROVISIONING_REQUESTS.with_borrow_mut(|map| {
             map.insert(key.clone(), updated.clone());
         });

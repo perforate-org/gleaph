@@ -22,7 +22,11 @@ mod tests {
             "admin_install_deployment_binding must be in the public ingress surface in this slice; got {:?}",
             names
         );
-        for required in ["accept_envelope", "query_job", "router_ack"] {
+        for required in [
+            "accept_envelope",
+            "query_job",
+            "complete_graph_registration",
+        ] {
             assert!(
                 names.contains(&required),
                 "missing method {} in provision.did; got {:?}",
@@ -71,7 +75,7 @@ mod tests {
         for required in [
             "accept_envelope",
             "query_job",
-            "router_ack",
+            "complete_graph_registration",
             "admin_install_deployment_binding",
             "artifact_publish_metadata",
             "artifact_upload_chunk",
@@ -174,7 +178,9 @@ mod tests {
             "ProvisionIngressError",
             "ProvisionInitArgs",
             "ProvisionIngressResult",
-            "RouterAckResult",
+            "RouterRegistrationAck",
+            "RouterRegistrationAckResponse",
+            "RouterRegistrationAckResult",
             "BootstrapAuthEntry",
             "BootstrapAuthAction",
             "AdminInstallDeploymentBindingArgs",
@@ -254,6 +260,72 @@ mod tests {
             generated_did, handwritten_did,
             "generated service (after normalization) must match hand-written provision.did"
         );
+    }
+
+    #[test]
+    fn registration_ack_service_shape_is_exact() {
+        use candid::types::{Type, TypeInner};
+
+        fn resolve<'a>(env: &'a candid::TypeEnv, ty: &'a Type) -> &'a Type {
+            let mut current = ty;
+            while let TypeInner::Var(name) = current.as_ref() {
+                current = env.0.get(name).expect("referenced Candid type");
+            }
+            current
+        }
+
+        fn labels(env: &candid::TypeEnv, ty: &Type) -> Vec<String> {
+            let mut labels = match resolve(env, ty).as_ref() {
+                TypeInner::Record(fields) | TypeInner::Variant(fields) => fields
+                    .iter()
+                    .map(|field| field.id.to_string())
+                    .collect::<Vec<_>>(),
+                other => panic!("expected record or variant, got {other:?}"),
+            };
+            labels.sort();
+            labels
+        }
+
+        let generated = crate::export_service_string();
+        let ast: IDLProg = generated.parse().expect("generated Candid parses");
+        let mut env = candid::TypeEnv::new();
+        let actor = check_prog(&mut env, &ast)
+            .expect("generated Candid checks")
+            .expect("generated service actor");
+        let methods = env.as_service(&actor).expect("Provision service");
+        let names: Vec<&str> = methods.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"complete_graph_registration"));
+        assert!(!names.contains(&"router_ack"));
+
+        let method = methods
+            .iter()
+            .find(|(name, _)| name == "complete_graph_registration")
+            .map(|(_, ty)| ty)
+            .expect("registration completion method");
+        let function = match resolve(&env, method).as_ref() {
+            TypeInner::Func(function) => function,
+            other => panic!("expected function, got {other:?}"),
+        };
+        assert_eq!(function.args.len(), 1);
+        assert_eq!(function.rets.len(), 1);
+        assert_eq!(
+            labels(&env, &function.args[0]),
+            ["deployment_id", "request_id"]
+        );
+        assert_eq!(labels(&env, &function.rets[0]), ["Err", "Ok"]);
+
+        let result = resolve(&env, &function.rets[0]);
+        let ok_type = match result.as_ref() {
+            TypeInner::Variant(fields) => {
+                &fields
+                    .iter()
+                    .find(|field| field.id.to_string() == "Ok")
+                    .expect("Ok variant")
+                    .ty
+            }
+            other => panic!("expected result variant, got {other:?}"),
+        };
+        assert_eq!(labels(&env, ok_type), ["Applied", "Replay"]);
     }
 
     fn reachable_type_names(

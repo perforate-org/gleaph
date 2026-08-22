@@ -2,8 +2,8 @@
 
 Date: 2026-08-01
 Status: implemented
-Last revised: 2026-08-15 22:59:22 UTC +0000
-Anchor timestamp: 2026-08-15 22:59:22 UTC +0000
+Last revised: 2026-08-22 19:59:13 UTC +0000
+Anchor timestamp: 2026-08-22 19:59:13 UTC +0000
 
 ## Context
 
@@ -23,10 +23,9 @@ found roughly 40 methods with zero callers, and several groups that duplicate on
   `gql_execute` (non-idempotent) and `force_gql_execute` have no callers; the non-idempotent
   `prepared_update` / `prepared_query_as_update` have no callers; the four `prepared_upsert*`
   variants collapse to one.
-- **The provisioning flow does not complete.** `provision_graph` sends an envelope and the
-  `router_ack` callback advances only the `RouterProvisioningRequest` record. The graph registry is
-  never written: `ProvisioningState::Pending` / `Failed` are never set anywhere in `crates/router`.
-  A provisioned graph is never actually registered.
+- **The original provisioning flow did not complete.** The current Graph bootstrap path sends one
+  exact `GraphShard(0)` envelope, reconciles the returned topology, then calls Provision's
+  versionless `complete_graph_registration` endpoint. Router exposes no reverse ack endpoint.
 - The JS SDK and CDK now connect to the Router operation surface; generated bindings and conformance
   tests are maintained as part of the same breaking release set.
 - The project is pre-release; breaking public-surface changes are accepted without compatibility
@@ -52,7 +51,7 @@ internals.
 | ---------------------- | ------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | L1 client (data plane) | `api/client.rs`     | applications, new SDK                               | GQL read/write, prepared operations, `vector_search`, mutation status                       |
 | L2 control plane       | `api/control.rs`    | CLI, graph-admin UI                                 | graph lifecycle, RBAC, schema, vector semantic management, maintenance, diagnostics summary |
-| L3 federation          | `api/federation.rs` | graph/index/vector canisters, operator deep tooling | shard resolution, catalog, `router_ack`, vector wiring, physical diagnostics                |
+| L3 federation          | `api/federation.rs` | graph/index/vector canisters, operator deep tooling | shard resolution, catalog, vector wiring, physical diagnostics                              |
 
 Layout:
 
@@ -155,7 +154,7 @@ Notes:
 
 | Group                       | API                                                                                                                                                                                                                                                                      |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Registry / catalog          | `get_graph_id`, `get_shard`, `list_shards`, `get_indexed_property_catalog`, `get_id_encoding_key`, `register_shard`, `unregister_shard`, `update_graph_status`, `check_registry_invariants`, `sweep_expired_mutation_keys`, `router_ack`                                 |
+| Registry / catalog          | `get_graph_id`, `get_shard`, `list_shards`, `get_indexed_property_catalog`, `get_id_encoding_key`, `register_shard`, `unregister_shard`, `update_graph_status`, `check_registry_invariants`, `sweep_expired_mutation_keys`                                               |
 | Vector wiring               | `set_vector_index_target`, `attach_vector_shard`, `get_vector_index_target`, `get_vector_index_status`, `set_vector_dispatch_enabled`, `get_vector_dispatch_enabled`, `advance_vector_index_backfill`                                                                    |
 | Vector physical diagnostics | `get_vector_partition_health`, `scan_partition_health`, `get_vector_slab_stats`, `scan_slab_stats`, `get_vector_centroid_cache`, `warm_vector_centroid_cache`, `clear_vector_centroid_cache`                                                                             |
 | Maintenance deep            | `set_vector_maintenance_policy`, `disable_vector_maintenance_policy`, `delete_vector_maintenance_policy`, `get_vector_maintenance_policy`, `list_vector_maintenance_policies`, `advance_vector_maintenance`, `reset_vector_maintenance`, `get_vector_maintenance_status` |
@@ -164,8 +163,8 @@ Notes:
 
 Notes:
 
-- These are the graph/index/vector canister call sites (shard resolution, catalogs), the
-  Provision-to-Router callback (`router_ack`), and operator deep tooling. The vector canister stays
+- These are the graph/index/vector canister call sites (shard resolution and catalogs) and operator
+  deep tooling. Provision completion is Router-owned orchestration, not an inbound L3 callback. The vector canister stays
   router-guarded, so the L3 forwards are the only operator entry points to it.
 - `admin_start_vector_rebuild_if_recommended` is removed from the Router surface; the push model
   (`advance_vector_maintenance`) applies the recommendation internally. `admin_vector_maintenance_status`
@@ -174,8 +173,7 @@ Notes:
 ### 6. `register_graph` folds provisioning
 
 `register_graph(intent)` replaces `admin_register_graph` and `provision_graph` on the public
-surface; the provisioning protocol becomes an internal implementation detail. `router_ack` remains
-an L3 callback. Implemented in two slices:
+surface; the provisioning protocol becomes an internal implementation detail. Implemented in two slices:
 
 **Slice A — dev-mode full registration + provisioning-state machine (no wire change).**
 
@@ -203,17 +201,14 @@ vec record { shard_id : nat32; graph_canister : principal; index_canister : prin
   documented-internal L3 seam through Slice A (so the `adr0035` outbound/ack E2E coverage keeps
   running unchanged) and is removed in Slice B when the new flow replaces it.
 
-**Slice B — provisioning integration (implemented 2026-08-15; synchronous registration).**
+**Slice B — provisioning integration (implemented 2026-08-15; completion convergence revised 2026-08-22).**
 
-The original Slice B plan routed the deployed topology through the ack callback
-(`RouterProvisionAck.shards`, reserved_graph_id link, non-async register on ack). The implemented
-integration instead folds provisioning into `register_graph` **synchronously**, because the
-`accept_envelope` deploy is synchronous (ADR 0035 Slice 8): the Provision canister returns the
-installed canister ids in `created_resources` on the admission response, so there is no separate
-ack to carry topology. The synchronous choice keeps admission → deploy → register in one call
-and avoids an intermediate "admitted but not yet registered" state. Deferred to a future slice:
-a fully asynchronous saga (heartbeat/outbound-ack driven deploy) would reintroduce the ack
-topology transport and split registration onto the Router's `router_ack` callback.
+The current Graph path folds the returned topology into Router registration, reconciles a missing
+graph or exact shard row after response loss, and then calls Provision's versionless
+`complete_graph_registration`. `Accepted` and `Replay` share that reconciler. Ambiguous admission or
+completion transport loss retains the canonical request and its locks for public retry. A retry
+resolves Maps 46/47 back to Map 45 before the existing-graph early return and sends only the exact
+stored target and envelope bytes. Property- and Vector-index completion remain outside this slice.
 
 Implemented behavior:
 
@@ -221,10 +216,9 @@ Implemented behavior:
   `provision_canister` configured it folds into the provisioning flow; `deployment_id` derives
   from the caller's owner principal (ADR 0068), `request_fingerprint` from the graph name, and
   `release_id` defaults to `"default"`.
-- The shared admission flow lives in `crate::provisioning::graph::provision_graph_flow`: it seeds
-  the `RouterProvisioningRequest`, sends `accept_envelope`, and on a fresh `Accepted` with non-empty
-  `created_resources` registers the graph and its shards (via
-  `admin_register_graph_with_random_key` / `admin_register_shard`).
+- The shared admission flow lives in `crate::provisioning::graph`: the Graph-specific wrapper admits
+  only `[GraphShard(0)]`, persists the caller/owner/admins plus exact target and envelope in Map 45,
+  sends `accept_envelope`, reconciles the exact Graph topology, and completes the Provision record.
 - `provision_graph` remains as a thin L3 seam that delegates to the same flow, retained so the
   `adr0035_router_outbound_accept_envelope.rs` E2E coverage runs unchanged.
 - `unregister_graph` is unchanged for now; symmetric Provision teardown notification is a future

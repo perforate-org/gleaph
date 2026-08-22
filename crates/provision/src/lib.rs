@@ -14,7 +14,8 @@ pub mod canister;
 mod candid;
 
 use crate::canister::{
-    ProvisionIngressError, ProvisionIngressResult, ProvisionJobView, RouterAckResult, handlers,
+    ProvisionIngressError, ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
+    handlers,
 };
 use crate::types::AdminInstallError;
 use crate::types::{
@@ -22,7 +23,7 @@ use crate::types::{
     ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
     BootstrapAuthEntry, InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult,
     ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
-    RouterProvisionAck,
+    RouterRegistrationAck,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -47,8 +48,8 @@ fn query_job(request_id: [u8; 32], deployment_id: String) -> Option<ProvisionJob
 }
 
 #[update]
-fn router_ack(ack: RouterProvisionAck) -> RouterAckResult {
-    handlers::router_ack_handler(ack)
+fn complete_graph_registration(ack: RouterRegistrationAck) -> RouterRegistrationAckResult {
+    handlers::complete_graph_registration_handler(ack)
 }
 
 #[update]
@@ -122,7 +123,7 @@ ic_cdk::export_candid!();
 ///
 /// Mirrors `crates/router/src/facade/store.rs:121-128`: returns `ic_cdk::api::time()` on
 /// `wasm`, `0` on `not(target_family = "wasm")`. Used by the `handlers` module for
-/// `accept_envelope` and `router_ack` transition timestamps; also used by unit tests that drive
+/// provisioning transition timestamps; also used by unit tests that drive
 /// `*_with_caller` directly.
 #[allow(dead_code)]
 pub(crate) fn ic_time_ns() -> u64 {

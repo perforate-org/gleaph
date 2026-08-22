@@ -150,8 +150,8 @@ pub(crate) fn resolve_router_with_caller(
 /// `ProvisionRequest` to the Provision canister's `accept_envelope`. Owner/admin only.
 ///
 /// `provision_canister` is the platform-fixed Provision canister id. `deployment_id` is the
-/// account id (Personal principal or Org generated id). The Router callback is the Account
-/// itself, so the first-issuance result returns here for `register_router`.
+/// account id (Personal principal or Org generated id). The response reports admission only;
+/// first-Router result delivery and `register_router` convergence remain a later Account slice.
 pub(crate) async fn authorize_router_issuance_with_caller(
     caller: Principal,
     account_id: &Principal,
@@ -206,7 +206,6 @@ async fn send_issuance_request(
         install_args,
         authorized_caller: caller,
         release_id: "default".to_owned(),
-        router_callback_principal: ic_cdk::api::canister_self(),
     };
 
     let result: ProvisionIngressResult =

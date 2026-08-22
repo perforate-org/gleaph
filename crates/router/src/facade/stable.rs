@@ -221,3 +221,11 @@ thread_local! {
     pub(crate) static ROUTER_EDGE_BACKFILL_STATE: RefCell<memory::StableEdgeBackfillStateMap> =
         RefCell::new(memory::init_edge_backfill_state());
 }
+
+#[cfg(test)]
+pub(crate) fn reopen_provisioning_regions_for_test() {
+    ROUTER_PROVISIONING_REQUESTS.with(|slot| slot.replace(memory::init_provisioning_requests()));
+    ROUTER_PROVISIONING_BY_GRAPH.with(|slot| slot.replace(memory::init_provisioning_by_graph()));
+    ROUTER_PROVISIONING_INTENT_LOCK
+        .with(|slot| slot.replace(memory::init_provisioning_intent_locks()));
+}

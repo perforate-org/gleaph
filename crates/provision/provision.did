@@ -168,7 +168,6 @@ type ProvisionAcceptResponse = variant {
 // Failure modes returned by the Provision canister `accept_envelope` ingress path.
 type ProvisionIngressError = variant {
   StateAdvanceFailed;
-  AckConflict : record { stored : nat64 };
   UnknownDeployment;
   ResultMappingError;
   NotFound;
@@ -191,7 +190,6 @@ type ProvisionJobSummary = record {
   active_resource_index : nat32;
   completed_effect_count : nat32;
   state : text;
-  accepted_registry_version : opt nat64;
   deployment_id : text;
 };
 type ProvisionJobView = record {
@@ -200,10 +198,8 @@ type ProvisionJobView = record {
   active_resource_index : nat32;
   resources : vec ResourceJobView;
   reserved_graph_id : opt nat32;
-  has_router_callback : bool;
   completed_effect_count : nat32;
   graph_name : text;
-  accepted_registry_version : opt nat64;
   state_name : text;
   deployment_id : text;
 };
@@ -211,7 +207,6 @@ type ProvisionRequest = record {
   request_id : blob;
   requested_resources : vec ProvisionableResource;
   reserved_graph_id : opt nat32;
-  router_callback_principal : principal;
   release_id : text;
   install_args : vec blob;
   graph_name : text;
@@ -219,9 +214,14 @@ type ProvisionRequest = record {
   deployment_id : text;
   authorized_caller : principal;
 };
-type ProvisionRouterAckResult = record {
-  completed : bool;
-  accepted_registry_version : nat64;
+type RouterRegistrationAck = record {
+  request_id : blob;
+  deployment_id : text;
+};
+type RouterRegistrationAckResponse = variant { Applied; Replay };
+type RouterRegistrationAckResult = variant {
+  Ok : RouterRegistrationAckResponse;
+  Err : ProvisionIngressError;
 };
 type ProvisionableResource = record {
   logical_resource : LogicalResource;
@@ -314,16 +314,6 @@ type Result_4 = variant { Ok; Err : ProvisionIngressError };
 type Result_5 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
 type Result_6 = variant { Ok : ReleaseInstallResult; Err : InstallError };
 type Result_7 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-// Candid wire Result for `router_ack`.
-type RouterAckResult = variant {
-  Ok : ProvisionRouterAckResult;
-  Err : ProvisionIngressError;
-};
-type RouterProvisionAck = record {
-  request_id : blob;
-  accepted_registry_version : nat64;
-  deployment_id : text;
-};
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
   admin_install_deployment_binding : (AdminInstallDeploymentBindingArgs) -> (
@@ -334,10 +324,12 @@ service : (ProvisionInitArgs) -> {
   artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_2);
   artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_3);
   complete_bootstrap : (text) -> (Result_4);
+  complete_graph_registration : (RouterRegistrationAck) -> (
+      RouterRegistrationAckResult,
+    );
   query_job : (blob, text) -> (opt ProvisionJobView) query;
   release_activate : (ReleaseActivateArgs) -> (Result_5);
   release_get_active : () -> (opt ReleaseActivateResult) query;
   release_install : (ReleaseInstallArgs) -> (Result_6);
   release_publish : (ReleasePublishArgs) -> (Result_7);
-  router_ack : (RouterProvisionAck) -> (RouterAckResult);
 }

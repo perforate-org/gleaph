@@ -14,7 +14,8 @@ pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentK
 
 pub use gleaph_graph_kernel::provisioning::wire::{
     CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
-    ProvisionableResource, RouterProvisionAck,
+    ProvisionableResource, RouterRegistrationAck, RouterRegistrationAckResponse,
+    RouterRegistrationAckResult,
 };
 
 // === Provision-local intent lock marker (P1-A) ===
@@ -123,15 +124,15 @@ pub struct ProvisionJobRecord {
     pub graph_name: String,
     pub authorized_caller: Principal,
     pub release_id: String,
-    pub router_callback_principal: Principal,
+    /// Digest of the complete immutable accepted request envelope. A same-key request with any
+    /// different effect-bearing field is a conflict and cannot join this job.
+    pub immutable_request_digest: [u8; 32],
     pub resources: Vec<ResourceJobEntry>,
     pub current_state: JobState,
     /// Tracks which resource is currently being processed (index into resources).
     pub active_resource_index: usize,
     /// Number of management-canister calls already completed for this job.
     pub completed_effect_count: u32,
-    /// Registry version accepted by the Router ack; None until the ack arrives.
-    pub accepted_registry_version: Option<u64>,
     /// Timestamp (IC NNS timestamp) when the job was created.
     pub created_at_ns: u64,
     /// Timestamp when the job last transitioned state.
@@ -173,7 +174,6 @@ pub enum JobState {
     InstallPending,
     Installed,
     RouterRegistrationPending,
-    RouterAckPending,
     Completed,
     Failed { reason: String },
 }
@@ -187,7 +187,6 @@ pub(crate) fn state_name(state: &JobState) -> &'static str {
         JobState::InstallPending => "InstallPending",
         JobState::Installed => "Installed",
         JobState::RouterRegistrationPending => "RouterRegistrationPending",
-        JobState::RouterAckPending => "RouterAckPending",
         JobState::Completed => "Completed",
         JobState::Failed { .. } => "Failed",
     }
@@ -208,8 +207,7 @@ pub(crate) fn is_terminal_state(state: &JobState) -> bool {
 //        CanisterCreated                    -> InstallPending
 //        InstallPending                     -> Installed
 //        Installed                          -> RouterRegistrationPending
-//        RouterRegistrationPending          -> RouterAckPending
-//        RouterAckPending                   -> Completed
+//        RouterRegistrationPending          -> Completed
 //
 //   2. Failure path: any non-terminal state may transition to `Failed { reason }`. The
 //      transition MUST record the reason. `Completed` and `Failed` are terminal — no
@@ -237,8 +235,7 @@ pub(crate) fn is_legal_transition(from: &JobState, to: &JobState) -> bool {
             | (CanisterCreated, InstallPending)
             | (InstallPending, Installed)
             | (Installed, RouterRegistrationPending)
-            | (RouterRegistrationPending, RouterAckPending)
-            | (RouterAckPending, Completed)
+            | (RouterRegistrationPending, Completed)
     )
 }
 

@@ -2,8 +2,8 @@
 
 Date: 2026-08-21
 Status: accepted (implemented; see Implementation status)
-Last revised: 2026-08-21 21:40:00 UTC +0000
-Anchor timestamp: 2026-08-21 04:19:53 UTC +0000
+Last revised: 2026-08-22 19:59:13 UTC +0000
+Anchor timestamp: 2026-08-22 19:59:13 UTC +0000
 
 ## Context
 
@@ -143,7 +143,8 @@ is the sole orchestrator of both the schema write and the issuance, so no new RB
 
 - `CREATE GRAPH` now has a side effect (canister issuance) when the name is unregistered. The GQL
   DDL is no longer purely local, so failure atomicity is weaker than a schema-only statement:
-  provisioning runs before the binding write and the binding is written only on a fresh `Accepted`.
+  provisioning runs before the binding write, which follows converged `Accepted` or `Replay`
+  registration.
 - A caller who creates a second graph does not get a second home; that is correct (one home per
   Router).
 - The CLI must route graph creation through GQL, so `gleaph deploy` no longer installs graph
@@ -184,7 +185,7 @@ is the sole orchestrator of both the schema write and the issuance, so no new RB
 - Fitness for purpose: removes a split API while reusing the existing provisioner, giving a usable
   default graph for queries.
 
-## Implementation status (2026-08-21)
+## Implementation status (2026-08-22)
 
 Implemented and covered by `crates/pocket-ic-tests/tests/adr0070_create_graph_provisioning.rs`
 (ad-hoc path + migration path against a real Provision release with the production graph and
@@ -197,7 +198,7 @@ index artifacts):
   context resolution, so the first-ever `CREATE GRAPH` needs no home graph) and schema migrations
   (`preprovision_unregistered_create_graphs` before the synchronous co-write; replays re-enter the
   bridge but short-circuit).
-- Home: `register_provisioned_graph` marks a fresh bootstrap `is_home` when no home exists yet;
+- Home: `reconcile_provisioned_graph` marks a fresh bootstrap `is_home` when no home exists yet;
   `ensure_graph_registration_slot_available` remains the single enforcement point (a concurrent
   home fails the registration closed after its entropy await).
 - Contract fixes this exposed:
@@ -207,11 +208,13 @@ index artifacts):
     implementation note in ADR 0054.
   - `RouterIndexLookup::from_shards` treats an indexless shard as "no target" instead of failing
     construction, so scans work before the first index attach.
-- Known interaction (recorded in `design/implementation-gaps.md`): until ADR 0035's deferred
-  Provision→Router outbound ack ships, a completed bootstrap keeps its intent locks held, so a
-  deployment that already created one graph cannot bootstrap a second `GraphShard(0)` under the
-  same caller principal. The demo is unaffected (one graph per project); the E2E uses a second
-  bound deployment to prove cross-creator single-home behavior.
+- Completion convergence: a retry resolves the pending Maps 46/47 indexes to the exact Map 45
+  request before the existing-graph early return. Router reconciles an absent graph or missing
+  exact shard row, then sends a versionless completion to Provision and releases only locks owned
+  by that request. The E2E creates both graphs with the same caller, resolves each exact
+  `GraphShard(0)`, asserts distinct graph ids and child canister principals, and proves the first
+  graph remains home. The implemented scope remains exactly one `GraphShard(0)`; Property- and
+  Vector-index completion are deferred.
 
 Migration step 5 targets: ADR 0013 §2.1 supersession note added; ADR 0054 status updated; ADR 0056
 §6 public-surface note added.

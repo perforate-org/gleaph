@@ -1,25 +1,18 @@
-//! PocketIC E2E for ADR 0035 Slices 5 and 6: Router outbound accept_envelope send and
-//! symmetric Provision -> Router `router_ack` callback.
+//! PocketIC E2E for ADR 0035 Router -> Provision admission and registration completion.
 //!
-//! One fresh PocketIC instance, six named scenarios:
+//! One fresh PocketIC instance covers the retained admission, authorization, and upgrade scenarios
+//! plus the canonical GraphShard(0) registration-ACK boundary.
 //!   1. install + bootstrap: install Router + Provision with a bootstrap binding that
 //!      authorizes the Router principal.
-//!   2. router outbound fresh admission: call `provision_graph` as the Router admin and
-//!      assert an `Accepted` response, then a second identical call asserts `Replay`.
+//!   2. router outbound fresh admission: call `provision_graph` as the Router admin, assert an
+//!      `Accepted` response, and observe the Provision job completed by Router's versionless ACK.
 //!   3. post-upgrade durable binding: upgrade the Router with `provision_canister: None`
 //!      and assert the durable stable binding still routes the next outbound call.
-//!   4. provision -> router ack: call `router_ack` as the Provision canister principal with
-//!      `accepted_registry_version=7` and assert `Ok(RouterAckResponse { accepted_registry_version: 7 })`.
-//!   5. router ack idempotent replay: repeat the same ack and assert `Ok` with the same version.
-//!   6. router ack version conflict: call `router_ack` with `accepted_registry_version=8` and
-//!      assert `Err(AckConflict { stored: 7 })`.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::provisioning::LogicalResource;
-use gleaph_graph_kernel::provisioning::wire::{
-    ProvisionJobSummary, ProvisionableResource, RouterAckResponse, RouterProvisionAck,
-};
+use gleaph_graph_kernel::provisioning::wire::{ProvisionJobSummary, ProvisionableResource};
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     AdminInstallDeploymentBindingArgs, AdminInstallError, ArtifactAuditAction,
@@ -63,6 +56,7 @@ fn install_router_and_provision() -> Env {
         bootstrap_principal: None,
     };
     let provision = install_provision_canister(&pic, binding);
+    pic.add_cycles(provision, 100_000_000_000_000);
 
     pic.install_canister(
         router,
@@ -105,25 +99,22 @@ fn call_provision_graph(
     .expect("decode provision_graph response")
 }
 
-fn call_router_ack(
+fn query_provision_job(
     env: &Env,
-    ack: &RouterProvisionAck,
-) -> Result<RouterAckResponse, gleaph_graph_kernel::federation::RouterError> {
+    request_id: [u8; 32],
+    deployment_id: &str,
+) -> Option<gleaph_provision::canister::ProvisionJobView> {
     let bytes = env
         .pic
-        .update_call(
-            env.router,
+        .query_call(
             env.provision,
-            "router_ack",
-            Encode!(ack).expect("encode router_ack"),
+            env.router,
+            "query_job",
+            Encode!(&request_id, &deployment_id.to_owned()).expect("encode query_job"),
         )
-        .unwrap_or_else(|e| panic!("router_ack on router: {e:?}"));
-
-    Decode!(
-        &bytes,
-        Result<RouterAckResponse, gleaph_graph_kernel::federation::RouterError>
-    )
-    .expect("decode router_ack response")
+        .unwrap_or_else(|e| panic!("query_job on provision: {e:?}"));
+    Decode!(&bytes, Option<gleaph_provision::canister::ProvisionJobView>)
+        .expect("decode query_job response")
 }
 
 fn call_admin_install(
@@ -149,13 +140,13 @@ fn call_admin_install(
 }
 
 #[test]
-fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability() {
+fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
     let env = install_router_and_provision();
-    let _ = env.provision;
+    activate_graph_release(&env);
 
     let args = ProvisionGraphArgs {
         deployment_id: "deploy-p0058".to_owned(),
-                graph_name: "p0058.graph".to_owned(),
+        graph_name: "p0058.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
@@ -167,59 +158,35 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     // Scenario 1: fresh admission returns Accepted.
     let first = call_provision_graph(&env, &args).expect("first provision_graph accepted");
-    let (state, intent_lock_count, _created_resources) = match first {
+    let (state, intent_lock_count, created_resources) = match first {
         ProvisionGraphResponse::Accepted {
             job_view: ProvisionJobSummary { state, .. },
             intent_lock_count,
             created_resources,
         } => (state, intent_lock_count, created_resources),
         ProvisionGraphResponse::Replay { .. } => panic!("first call must be Accepted"),
-        ProvisionGraphResponse::Completed { .. } => panic!("first call must not be Completed"),
+        ProvisionGraphResponse::Completed => panic!("first call must not be Completed"),
     };
     assert_eq!(
-        state, "Reserved",
-        "fresh admission reserves the intent lock before returning"
+        state, "RouterRegistrationPending",
+        "fresh admission reaches Router registration before returning"
     );
     assert_eq!(intent_lock_count, 1, "one intent lock for one resource");
+    assert_eq!(
+        created_resources.len(),
+        1,
+        "one GraphShard(0) was installed"
+    );
 
-    // Scenario 2: identical retry returns Replay.
+    let completed_job = query_provision_job(&env, expected_request_id(), "deploy-p0058")
+        .expect("Provision job exists");
+    assert_eq!(completed_job.state_name, "Completed");
+
+    // Scenario 2: identical retry observes Router's durable completion without redispatch.
     let second = call_provision_graph(&env, &args).expect("second provision_graph accepted");
     assert!(
-        matches!(second, ProvisionGraphResponse::Replay { .. }),
-        "second call must be Replay"
-    );
-
-    // Scenario 4: Provision -> Router ack with accepted_registry_version=7.
-    let ack = RouterProvisionAck {
-        deployment_id: "deploy-p0058".to_owned(),
-        request_id: expected_request_id(),
-        accepted_registry_version: 7,
-    };
-    let ack_response = call_router_ack(&env, &ack).expect("router_ack accepted");
-    assert_eq!(
-        ack_response.accepted_registry_version, 7,
-        "router_ack returns the accepted registry version"
-    );
-
-    // Scenario 5: idempotent replay returns the same version.
-    let ack_replay = call_router_ack(&env, &ack).expect("router_ack replay accepted");
-    assert_eq!(
-        ack_replay.accepted_registry_version, 7,
-        "router_ack replay returns the stored registry version"
-    );
-
-    // Scenario 6: differing registry version returns AckConflict.
-    let bad_ack = RouterProvisionAck {
-        deployment_id: "deploy-p0058".to_owned(),
-        request_id: expected_request_id(),
-        accepted_registry_version: 8,
-    };
-    let conflict =
-        call_router_ack(&env, &bad_ack).expect_err("router_ack must conflict on version mismatch");
-    assert_eq!(
-        conflict,
-        gleaph_graph_kernel::federation::RouterError::AckConflict { stored: 7 },
-        "router_ack conflict must report the stored version"
+        matches!(second, ProvisionGraphResponse::Completed),
+        "second call must return durable Completed"
     );
 
     // Scenario 7: admin_install_deployment_binding succeeds when called as the bootstrap
@@ -242,9 +209,9 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     let admin_installed_args = ProvisionGraphArgs {
         deployment_id: "deploy-admin-1".to_owned(),
-                graph_name: "admin1.graph".to_owned(),
+        graph_name: "admin1.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(10)),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
         authorized_caller: env.admin,
         release_id: "rel-admin-1".to_owned(),
@@ -277,9 +244,9 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     let missing_args = ProvisionGraphArgs {
         deployment_id: "deploy-admin-missing".to_owned(),
-                graph_name: "missing.graph".to_owned(),
+        graph_name: "missing.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(11)),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
         authorized_caller: env.admin,
         release_id: "rel-missing-1".to_owned(),
@@ -308,8 +275,9 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         .expect("upgrade router canister");
 
     let post_args = ProvisionGraphArgs {
-                requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
+        graph_name: "post-upgrade.graph".to_owned(),
+        requested_resources: vec![ProvisionableResource {
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
         ..args
     };
@@ -513,6 +481,40 @@ fn publish_verified_artifact(
         .expect("upload artifact chunk");
     }
     id
+}
+
+fn activate_graph_release(env: &Env) {
+    const CHUNK_SIZE: usize = 1024 * 1024;
+    let graph_wasm = wasm_bytes("GRAPH_WASM");
+    let graph_chunks: Vec<&[u8]> = graph_wasm.chunks(CHUNK_SIZE).collect();
+    let artifact_ids = vec![
+        publish_verified_artifact(env, CanisterKind::Graph, "graph-real", graph_chunks),
+        publish_verified_artifact(env, CanisterKind::Router, "router-unused", vec![b"router"]),
+        publish_verified_artifact(
+            env,
+            CanisterKind::PropertyIndex,
+            "property-unused",
+            vec![b"property"],
+        ),
+        publish_verified_artifact(
+            env,
+            CanisterKind::VectorCanister,
+            "vector-unused",
+            vec![b"vector"],
+        ),
+    ];
+    let release_id = gleaph_provision::types::ReleaseId("release-graph-boundary".to_owned());
+    call_release_publish(
+        env,
+        env.admin,
+        &ReleasePublishArgs {
+            release_id: release_id.clone(),
+            artifact_ids,
+        },
+    )
+    .expect("publish Graph boundary release");
+    call_release_activate(env, env.admin, &ReleaseActivateArgs { release_id })
+        .expect("activate Graph boundary release");
 }
 
 /// Scenario 9: artifact publish + upload chunks succeeds and writes audit entries.
