@@ -785,20 +785,30 @@ The architectural contract is more important than the specific initial Rust API.
 
 Incremental topology updates are optional for an engine.
 
-An engine may report:
+Implemented. On every topology change `GraphScene::rebuild_layout` projects
+the new dense graph and computes a remap table, then offers it to the active
+engine:
 
 ```rust
+pub struct LayoutDelta {
+    /// remap[new_index] == Some(old_index) for carried nodes,
+    /// None for freshly placed ones; removals are old indices
+    /// missing from the mapping (dense indices compact on removal).
+    pub remap: Vec<Option<u32>>,
+}
+
 pub enum LayoutSync {
     Applied,
     RebuildRequired,
 }
 ```
 
-`RebuildRequired` is a valid default.
+`RebuildRequired` is the trait default and the fail-closed answer: Fixed and
+SCC take it, as does ForceAtlas2 when a delta is malformed or the engine is
+parked inside a background flight (a flying snapshot belongs to the old
+topology and cannot be synced mid-air).
 
-A rebuild must not imply discarding existing positions.
-
-Instead:
+A rebuild must not imply discarding existing positions:
 
 ```text
 old nodes
@@ -813,6 +823,24 @@ layout engine
 simulation
     → continue
 ```
+
+ForceAtlas2 applies deltas incrementally. Cold start (first merge) is
+byte-equivalent to `rebuild` — shared `cold_start` helper, verified by unit
+test — so bench baselines are unaffected. Warm updates carry adapted
+per-node convergence factors through the remap (fresh nodes start fully
+adaptive), recompute masses from the current edge list in one pass
+(removed edges' endpoints are not recoverable post-mutation), reset global
+cooling like any topology change, and keep the adaptive Barnes-Hut decision
+warm: the cutoff path re-samples `pair_load` every iteration anyway, while
+Barnes-Hut stickiness extends across incremental merges until the next full
+rebuild (documented limitation). Localization of dynamic updates comes from
+carried adaptation, not from cooling policy.
+
+Behavioral contract (tested): after a settled ring gains one far node, the
+fresh node travels to its neighborhood while carried drift stays below the
+fresh travel; removals mid-run compact indices and settle with finite
+positions. Benches (`force_atlas2_dynamic`): sync beats full rebuild by
+~3% on hub/256+16 and ~7% on the stiff grid/20x20+20 equilibrium.
 
 ---
 
@@ -2436,6 +2464,13 @@ The following should remain intentionally open until implementation and profilin
   trait gained a `Send` supertrait; all engines qualify trivially. Covered
   by headless tests for apply-and-settle, stale-topology discard, and
   drag-epoch non-clobber),
+- ~~incremental engine topology updates~~ (implemented as
+  `LayoutEngine::apply_delta` + `LayoutDelta::remap`, §11.6: ForceAtlas2
+  carries adapted convergence factors through index permutations, recomputes
+  masses in one edge pass, keeps the adaptive Barnes-Hut decision warm;
+  Fixed/SCC keep the `RebuildRequired` default; a flight-parked engine falls
+  back to rebuild on completion. Benches show ~3-7% re-settle wins and
+  localized response to dynamic merges),
 - worker-based Web layout,
 - synchronization frequency,
 - frame-time budgeting.

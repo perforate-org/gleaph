@@ -22,17 +22,18 @@ use crate::graph::EdgeDirection;
 
 /// A topology change expressed in dense layout index space.
 ///
-/// Incremental topology updates are optional for an engine (§11.6).
+/// Incremental topology updates are optional for an engine (§11.6). The
+/// delta carries one mapping table instead of separate added/removed lists:
+/// every entry of the new projection points at its previous dense index,
+/// or [`None`] when the node is freshly placed. Removals appear as old
+/// indices missing from the mapping (dense indices compact on removal, so
+/// survivors may shift). Engines permute carried state through this table
+/// and reinitialize entries without a predecessor.
 #[derive(Debug, Clone, Default)]
 pub struct LayoutDelta {
-    /// Dense indices of nodes added since the last sync.
-    pub added_nodes: Vec<LayoutIndex>,
-    /// Dense indices of nodes removed since the last sync.
-    pub removed_nodes: Vec<LayoutIndex>,
-    /// Dense indices of edges added since the last sync.
-    pub added_edges: Vec<LayoutIndex>,
-    /// Dense indices of edges removed since the last sync.
-    pub removed_edges: Vec<LayoutIndex>,
+    /// `remap[new_index] == Some(old_index)` for carried-over nodes,
+    /// `None` for fresh ones.
+    pub remap: Vec<Option<u32>>,
 }
 
 /// How an engine handled an incremental topology update (§11.6).
@@ -92,8 +93,14 @@ pub trait LayoutEngine: Send {
 
     /// Apply an incremental topology change.
     ///
-    /// The default implementation reports [`LayoutSync::RebuildRequired`],
-    /// which is a valid default (§11.6).
+    /// `graph` and `state` describe the *new* projection; positions for
+    /// carried-over nodes are preserved by the scene, fresh nodes carry
+    /// their initial placement. An engine that returns
+    /// [`LayoutSync::Applied`] takes ownership of keeping every piece of its
+    /// derived state (masses, adaptive factors, spatial acceleration
+    /// structures) consistent with the new projection. Returning
+    /// [`LayoutSync::RebuildRequired`] delegates to [`LayoutEngine::rebuild`]
+    /// and is a valid default (§11.6).
     fn apply_delta(
         &mut self,
         graph: &LayoutGraph,

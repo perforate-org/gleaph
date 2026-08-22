@@ -23,8 +23,8 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use glam::Vec2;
 use gpui_graph::graph::{EdgeDirection, Graph, NodeId};
 use gpui_graph::layout::{
-    ForceAtlas2, LayoutBudget, LayoutEdge, LayoutEngine, LayoutGraph, LayoutIndex, LayoutNode,
-    LayoutProgress, LayoutState,
+    ForceAtlas2, LayoutBudget, LayoutDelta, LayoutEdge, LayoutEngine, LayoutGraph, LayoutIndex,
+    LayoutNode, LayoutProgress, LayoutState, LayoutSync,
 };
 
 /// A prepared layout problem plus its dense projection.
@@ -266,6 +266,113 @@ fn settle_bench(
 /// Time-to-settle, not per-step cost: this is the metric adaptive speed
 /// targets (fewer iterations to convergence without oscillation), and it is
 /// the baseline any integration change must be judged against.
+/// Time-to-settle after an incremental topology change (§11.6): the engine
+/// settles a hub graph, then 16 fresh leaves join. `hub_sync` applies the
+/// growth through [`LayoutEngine::apply_delta`] (adaptation carried over);
+/// `hub_rebuild` is the fallback path a non-syncing engine would take, full
+/// `rebuild` over the grown projection with positions preserved. The gap is
+/// the measured value of incremental state carrying.
+fn bench_force_atlas2_dynamic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("force_atlas2_dynamic");
+    group.sample_size(10);
+    let budget = LayoutBudget { max_iterations: 1 };
+
+    for (name, sync) in [("hub_sync", true), ("hub_rebuild", false)] {
+        group.bench_with_input(BenchmarkId::new(name, "256+16"), &sync, |b, &sync| {
+            b.iter(|| {
+                let base = BenchCase::hub(256);
+                let mut engine = ForceAtlas2::default();
+                let mut settled = base.state.clone();
+                engine.rebuild(&base.graph, &mut settled);
+                let mut iters = 0u32;
+                while iters < SETTLE_ITERATION_CAP
+                    && engine.step(&base.graph, &mut settled, budget) != LayoutProgress::Settled
+                {
+                    iters += 1;
+                }
+
+                // Grow the star by 16 leaves; carried nodes keep their
+                // indices because the builder appends new leaves last.
+                let grown = BenchCase::hub(272);
+                let mut grown_state = grown.state.clone();
+                let carried = settled.positions.len();
+                grown_state.positions[..carried].copy_from_slice(&settled.positions);
+                apply_growth(&mut engine, &grown.graph, &mut grown_state, carried, sync);
+                let mut iters = 0u32;
+                while iters < SETTLE_ITERATION_CAP
+                    && engine.step(&grown.graph, &mut grown_state, budget)
+                        != LayoutProgress::Settled
+                {
+                    iters += 1;
+                }
+                std::hint::black_box(iters);
+            })
+        });
+    }
+
+    // Stiff-equilibrium variant: a settled grid gains one extra row. Global
+    // reheat over a stiff equilibrium is exactly where carrying adapted
+    // factors should diverge from a full rebuild.
+    for (name, sync) in [("grid_sync", true), ("grid_rebuild", false)] {
+        group.bench_with_input(BenchmarkId::new(name, "20x20+20"), &sync, |b, &sync| {
+            b.iter(|| {
+                let base = BenchCase::grid(20);
+                let mut engine = ForceAtlas2::default();
+                let mut settled = base.state.clone();
+                engine.rebuild(&base.graph, &mut settled);
+                let mut iters = 0u32;
+                while iters < SETTLE_ITERATION_CAP
+                    && engine.step(&base.graph, &mut settled, budget) != LayoutProgress::Settled
+                {
+                    iters += 1;
+                }
+
+                // The builder appends the extra row last: first 400 indices
+                // are carried unchanged.
+                let grown = BenchCase::grid(21);
+                let mut grown_state = grown.state.clone();
+                let carried = settled.positions.len();
+                grown_state.positions[..carried].copy_from_slice(&settled.positions);
+                apply_growth(&mut engine, &grown.graph, &mut grown_state, carried, sync);
+
+                let mut iters = 0u32;
+                while iters < SETTLE_ITERATION_CAP
+                    && engine.step(&grown.graph, &mut grown_state, budget)
+                        != LayoutProgress::Settled
+                {
+                    iters += 1;
+                }
+                std::hint::black_box(iters);
+            })
+        });
+    }
+    group.finish();
+}
+
+/// Carry `carried` leading indices through the sync or the rebuild path;
+/// remaining graph nodes are treated as appended fresh ones.
+fn apply_growth(
+    engine: &mut ForceAtlas2,
+    graph: &LayoutGraph,
+    state: &mut LayoutState,
+    carried: usize,
+    sync: bool,
+) {
+    if sync {
+        let fresh = graph.node_count() - carried;
+        let remap: Vec<Option<u32>> = (0..carried as u32)
+            .map(Some)
+            .chain(std::iter::repeat_n(None, fresh))
+            .collect();
+        assert_eq!(
+            engine.apply_delta(graph, &LayoutDelta { remap }, state),
+            LayoutSync::Applied
+        );
+    } else {
+        engine.rebuild(graph, state);
+    }
+}
+
 fn bench_force_atlas2_settle(c: &mut Criterion) {
     let mut group = c.benchmark_group("force_atlas2_settle");
     group.sample_size(10);
@@ -292,5 +399,10 @@ fn bench_force_atlas2_settle(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_force_atlas2_step, bench_force_atlas2_settle);
+criterion_group!(
+    benches,
+    bench_force_atlas2_step,
+    bench_force_atlas2_settle,
+    bench_force_atlas2_dynamic
+);
 criterion_main!(benches);

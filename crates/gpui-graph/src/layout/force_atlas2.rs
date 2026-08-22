@@ -59,7 +59,7 @@ use glam::Vec2;
 use rayon::prelude::*;
 
 use super::graph::{Adjacency, LayoutGraph, LayoutIndex, LayoutState};
-use super::{LayoutBudget, LayoutEngine, LayoutProgress};
+use super::{LayoutBudget, LayoutDelta, LayoutEngine, LayoutProgress, LayoutSync};
 
 /// Maximum per-iteration displacement (world units) a node may move. The FA2
 /// reference has no such cap and relies purely on its speed formula; ours
@@ -760,25 +760,15 @@ impl ForceAtlas2 {
         self.theta = theta;
         self
     }
-}
 
-impl LayoutEngine for ForceAtlas2 {
-    fn rebuild(&mut self, graph: &LayoutGraph, state: &mut LayoutState) {
-        // Rebuild algorithm-specific state. Positions are owned by the scene
-        // and preserved across rebuilds (§11.6). Tunable parameters (scaling,
-        // gravity, slowDown, ...) are preserved across rebuilds.
+    /// Reset simulation energy and the adaptive repulsion decision for a
+    /// fresh run, sensing the initial placement so iteration 1 already takes
+    /// the right repulsion path — otherwise the densest graphs would pay one
+    /// full cutoff enumeration (their most expensive kind of iteration) just
+    /// to produce the signal. Shared by [`LayoutEngine::rebuild`] and the
+    /// cold-start branch of [`LayoutEngine::apply_delta`].
+    fn cold_start(&mut self, graph: &LayoutGraph, state: &LayoutState) {
         let n = graph.node_count();
-        self.forces.resize(n, Vec2::ZERO);
-        self.prev_forces.resize(n, Vec2::ZERO);
-        // Fresh nodes start fully adaptive; established nodes keep their
-        // adapted factor across incremental topology changes.
-        self.convergence.resize(n, 1.0);
-        // Topology changes get fresh layout energy and a fresh adaptive
-        // repulsion decision: density may have changed wholesale. Sensing
-        // the initial placement here means iteration 1 already takes the
-        // right repulsion path — otherwise the densest graphs would pay one
-        // full cutoff enumeration (their most expensive kind of iteration)
-        // just to produce the signal.
         self.cooling = 1.0;
         self.pair_load = 0.0;
         self.bh_active = false;
@@ -790,6 +780,19 @@ impl LayoutEngine for ForceAtlas2 {
             self.bh_active = self.pair_load >= AUTO_BH_ENGAGE;
             self.grid = grid;
         }
+    }
+}
+
+impl LayoutEngine for ForceAtlas2 {
+    fn rebuild(&mut self, graph: &LayoutGraph, state: &mut LayoutState) {
+        // Rebuild algorithm-specific state. Positions are owned by the scene
+        // and preserved across rebuilds (§11.6). Tunable parameters (scaling,
+        // gravity, slowDown, ...) are preserved across rebuilds.
+        let n = graph.node_count();
+        self.forces.resize(n, Vec2::ZERO);
+        self.prev_forces.resize(n, Vec2::ZERO);
+        self.convergence.resize(n, 1.0);
+        self.cold_start(graph, state);
         // FA2 mass = degree + 1: every incident edge counts, directed or not.
         self.masses.clear();
         self.masses.resize(n, 1.0);
@@ -797,8 +800,89 @@ impl LayoutEngine for ForceAtlas2 {
             self.masses[edge.source.0 as usize] += 1.0;
             self.masses[edge.target.0 as usize] += 1.0;
         }
+        self.tree.next_same.clear();
         self.tree.next_same.resize(n, NO_INDEX);
         let _ = state;
+    }
+
+    fn apply_delta(
+        &mut self,
+        graph: &LayoutGraph,
+        delta: &LayoutDelta,
+        state: &mut LayoutState,
+    ) -> LayoutSync {
+        let n = graph.node_count();
+        if delta.remap.len() != n {
+            // Malformed delta: fail closed to the full rebuild contract
+            // rather than corrupting per-index state.
+            return LayoutSync::RebuildRequired;
+        }
+
+        // Cold start (engine never initialized): identical physics to a
+        // full rebuild, so a first merge takes the same path whether it
+        // arrives as rebuild or as an incremental sync.
+        if self.convergence.is_empty() {
+            self.forces.resize(n, Vec2::ZERO);
+            self.prev_forces.resize(n, Vec2::ZERO);
+            self.convergence.resize(n, 1.0);
+            self.cold_start(graph, state);
+            self.masses.clear();
+            self.masses.resize(n, 1.0);
+            for edge in &graph.edges {
+                self.masses[edge.source.0 as usize] += 1.0;
+                self.masses[edge.target.0 as usize] += 1.0;
+            }
+            self.tree.next_same.clear();
+            self.tree.next_same.resize(n, NO_INDEX);
+            return LayoutSync::Applied;
+        }
+
+        // Warm incremental update: carry adapted per-node factors through
+        // the index permutation; fresh nodes start fully adaptive. This is
+        // what localizes the response to a dynamic update — established
+        // nodes keep their small adapted factors while new nodes fly at
+        // full speed.
+        let old_convergence = std::mem::take(&mut self.convergence);
+        self.convergence = delta
+            .remap
+            .iter()
+            .map(|prev| {
+                prev.and_then(|old| old_convergence.get(old as usize).copied())
+                    .unwrap_or(1.0)
+            })
+            .collect();
+
+        // Forces are per-iteration scratch. Masses derive from the current
+        // edge list (degree + 1) in one pass over edges the projection walk
+        // already had to touch: removed edges' endpoints are not recoverable
+        // after the mutation, so no cheaper incremental form stays correct.
+        self.forces.clear();
+        self.forces.resize(n, Vec2::ZERO);
+        self.prev_forces.clear();
+        self.prev_forces.resize(n, Vec2::ZERO);
+        self.masses.clear();
+        self.masses.resize(n, 1.0);
+        for edge in &graph.edges {
+            self.masses[edge.source.0 as usize] += 1.0;
+            self.masses[edge.target.0 as usize] += 1.0;
+        }
+        self.tree.next_same.clear();
+        self.tree.next_same.resize(n, NO_INDEX);
+
+        // Topology changes get fresh layout energy — the same contract as a
+        // rebuild. Localization comes from preserved adaptation, not from
+        // cooling: endpoints of new edges re-saturate their own convergence
+        // factor automatically as forces rise.
+        self.cooling = 1.0;
+
+        // Adaptive repulsion decision is kept warm. When the cutoff path is
+        // active, `pair_load` is re-sampled every iteration anyway, so the
+        // carried signal is at most one iteration stale; when Barnes-Hut is
+        // active, stickiness extends across incremental merges until the
+        // next full rebuild (documented limitation). No grid pre-warm sort:
+        // the next cutoff iteration rebuilds the grid from current positions
+        // regardless.
+        LayoutSync::Applied
     }
 
     fn step(
@@ -1164,6 +1248,142 @@ mod tests {
             .collect();
         let lg = LayoutGraph::new(vec![LayoutNode {}; node_ids.len()], edges, node_ids, 0);
         (lg, state)
+    }
+
+    #[test]
+    fn apply_delta_cold_start_matches_rebuild() {
+        let mut g = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let c = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Undirected, ());
+        g.add_edge(b, c, EdgeDirection::Undirected, ());
+        let (lg, mut state_a) = project(&g);
+        let mut state_b = state_a.clone();
+
+        // Same placement, different entry path.
+        let mut via_rebuild = ForceAtlas2::default();
+        via_rebuild.rebuild(&lg, &mut state_a);
+        let mut via_sync = ForceAtlas2::default();
+        let delta = crate::layout::LayoutDelta {
+            remap: vec![None, None, None],
+        };
+        assert_eq!(
+            via_sync.apply_delta(&lg, &delta, &mut state_b),
+            crate::layout::LayoutSync::Applied
+        );
+
+        assert_eq!(via_rebuild.cooling, via_sync.cooling);
+        assert_eq!(via_rebuild.pair_load, via_sync.pair_load);
+        assert_eq!(via_rebuild.bh_active, via_sync.bh_active);
+        assert_eq!(via_rebuild.masses, via_sync.masses);
+        assert_eq!(via_rebuild.convergence, via_sync.convergence);
+        assert_eq!(via_rebuild.forces, via_sync.forces);
+    }
+
+    #[test]
+    fn apply_delta_carries_adaptation_through_removal_permutation() {
+        let mut g = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let c = g.add_node(());
+        // Asymmetric chain so the three nodes adapt to distinct factors.
+        g.add_edge(a, b, EdgeDirection::Undirected, ());
+        g.add_edge(b, c, EdgeDirection::Undirected, ());
+        let (lg, mut state) = project(&g);
+        state.positions[0] = Vec2::new(-100.0, 0.0);
+        state.positions[1] = Vec2::new(0.0, 0.0);
+        state.positions[2] = Vec2::new(120.0, 0.0);
+
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        for _ in 0..50 {
+            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+        }
+        assert!(
+            (fa.convergence[0] - fa.convergence[1]).abs() > f32::EPSILON,
+            "expected distinct adapted factors"
+        );
+        let carried = fa.convergence[1];
+
+        // Remove node 0; node 1 compacts into its slot and a fresh node
+        // appears at the end.
+        let delta = crate::layout::LayoutDelta {
+            remap: vec![Some(1), Some(2), None],
+        };
+        let mut next = Graph::new();
+        let b2 = next.add_node(());
+        let c2 = next.add_node(());
+        let _d2 = next.add_node(());
+        next.add_edge(b2, c2, EdgeDirection::Undirected, ());
+        let (lg2, mut state2) = project(&next);
+        state2.positions[0] = state.positions[1];
+        state2.positions[1] = state.positions[2];
+        state2.positions[2] = Vec2::new(500.0, 500.0);
+        assert_eq!(
+            fa.apply_delta(&lg2, &delta, &mut state2),
+            crate::layout::LayoutSync::Applied
+        );
+        assert_eq!(fa.convergence[0], carried, "carried factor follows remap");
+        assert_eq!(fa.convergence[2], 1.0, "fresh node starts fully adaptive");
+        assert_eq!(fa.convergence.len(), 3);
+        assert_eq!(fa.masses[0], 2.0, "compacted node keeps its edge mass");
+        assert_eq!(fa.masses[1], 2.0);
+        assert_eq!(fa.masses[2], 1.0);
+    }
+
+    #[test]
+    fn apply_delta_masses_match_full_rebuild_after_edge_addition() {
+        let mut g = Graph::new();
+        let ids: Vec<_> = (0..4).map(|_| g.add_node(())).collect();
+        g.add_edge(ids[0], ids[1], EdgeDirection::Undirected, ());
+        let (lg, mut state) = project(&g);
+        for p in &mut state.positions {
+            *p = Vec2::new(p.x + 10.0, 10.0);
+        }
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        for _ in 0..5 {
+            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+        }
+
+        // Incremental: add two edges on top of the running engine.
+        let mut grown = Graph::new();
+        let grown_ids: Vec<_> = (0..4).map(|_| grown.add_node(())).collect();
+        grown.add_edge(grown_ids[0], grown_ids[1], EdgeDirection::Undirected, ());
+        grown.add_edge(grown_ids[1], grown_ids[2], EdgeDirection::Undirected, ());
+        grown.add_edge(grown_ids[2], grown_ids[3], EdgeDirection::Undirected, ());
+        let (lg_grown, mut state_grown) = project(&grown);
+        state_grown.positions.copy_from_slice(&state.positions);
+
+        let delta = crate::layout::LayoutDelta {
+            remap: vec![Some(0), Some(1), Some(2), Some(3)],
+        };
+        assert_eq!(
+            fa.apply_delta(&lg_grown, &delta, &mut state_grown),
+            crate::layout::LayoutSync::Applied
+        );
+
+        // Full rebuild over the same projection must derive identical masses.
+        let mut reference = ForceAtlas2::default();
+        reference.rebuild(&lg_grown, &mut state_grown);
+        assert_eq!(fa.masses, reference.masses);
+        assert_eq!(fa.masses[1], 3.0, "degree 2 endpoints carry mass 3");
+    }
+
+    #[test]
+    fn apply_delta_malformed_remap_fails_closed_to_rebuild() {
+        let mut g = Graph::new();
+        let _a = g.add_node(());
+        let _b = g.add_node(());
+        let (lg, mut state) = project(&g);
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        let delta = crate::layout::LayoutDelta { remap: vec![None] };
+        assert_eq!(
+            fa.apply_delta(&lg, &delta, &mut state),
+            crate::layout::LayoutSync::RebuildRequired
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::keyed_graph::KeyedGraph;
 use crate::layout::controller::{LayoutController, LayoutRunState};
 use crate::layout::graph::{LayoutEdge, LayoutGraph, LayoutIndex, LayoutNode, LayoutState};
 use crate::layout::placement::{Placement, Rng};
-use crate::layout::{LayoutBudget, LayoutEngine, LayoutProgress};
+use crate::layout::{LayoutBudget, LayoutDelta, LayoutEngine, LayoutProgress, LayoutSync};
 use crate::patch::{GraphBatch, GraphPatch};
 
 /// Per-node visualization state, stored separately from logical graph data
@@ -317,28 +317,36 @@ where
     /// state, preserving existing positions and assigning initial positions to
     /// new nodes (§11.6, §13).
     pub fn rebuild_layout(&mut self) {
-        let prev_ids: std::collections::HashSet<NodeId> =
-            self.layout_graph.node_ids.iter().copied().collect();
+        // Consume the old dense index so each new node can look up its
+        // previous layout index without building a second hash structure.
+        let prev_index_of = std::mem::take(&mut self.node_index);
         let new_ids: Vec<NodeId> = self.graph().nodes().map(|(id, _)| id).collect();
-        let index_of: std::collections::HashMap<NodeId, usize, S> =
-            new_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let mut index_of: std::collections::HashMap<NodeId, usize, S> =
+            std::collections::HashMap::with_capacity_and_hasher(new_ids.len(), S::default());
+        let mut remap = Vec::with_capacity(new_ids.len());
 
         let mut layout_state = LayoutState::new();
         layout_state.resize(new_ids.len());
         for (i, id) in new_ids.iter().enumerate() {
             let scene = self.node_scene.get(*id).copied().unwrap_or_default();
-            if prev_ids.contains(id) {
-                layout_state.positions[i] = scene.position;
+            let prev_index = prev_index_of.get(id).copied();
+            remap.push(prev_index.map(|index| index as u32));
+            let pos = if prev_index.is_some() {
+                // Carried node: the scene's canonical position survives the
+                // re-projection (§11.6).
+                scene.position
             } else {
                 let pos = self
                     .placement
                     .initial_position(&layout_state, &mut self.rng);
-                layout_state.positions[i] = pos;
                 if let Some(s) = self.node_scene.get_mut(*id) {
                     s.position = pos;
                 }
-            }
+                pos
+            };
+            layout_state.positions[i] = pos;
             layout_state.pinned.set(i, scene.pinned);
+            index_of.insert(*id, i);
         }
 
         let mut edges = Vec::new();
@@ -364,7 +372,22 @@ where
         );
         self.layout_state = layout_state;
         self.node_index = index_of;
-        self.rebuild_layout_engine();
+
+        // §11.6: offer the projection change to the active engine as an
+        // incremental update. Engines that cannot apply it incrementally
+        // (or a flight-parked engine, which cannot be synced mid-air) fall
+        // back to a full rebuild.
+        let delta = LayoutDelta { remap };
+        let synced = match self.engine.as_mut() {
+            Some(engine) => {
+                engine.apply_delta(&self.layout_graph, &delta, &mut self.layout_state)
+                    == LayoutSync::Applied
+            }
+            None => false,
+        };
+        if !synced {
+            self.rebuild_layout_engine();
+        }
         self.bump_geometry_revision();
         self.controller.notify_topology_changed();
     }
@@ -559,6 +582,167 @@ mod tests {
     use crate::layout::{FixedLayout, ForceAtlas2, SccLayoutEngine};
     use crate::runtime::GraphRuntime;
     use gpui::{AppContext, Entity, TestAppContext};
+
+    #[gpui::test]
+    /// §11.6 dynamic incremental update: a settled graph that gains one far
+    /// node must respond locally. The fresh node travels to its neighborhood
+    /// while carried nodes keep their adapted factors and barely move.
+    #[gpui::test]
+    fn incremental_merge_settles_locally(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let scene: Entity<Scene> =
+            cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        const RING: [&str; 12] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
+        const RING_EDGES: [&str; 12] = [
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11",
+        ];
+        scene.update(cx, |s, _| {
+            let mut batch = GraphBatch::new();
+            // A tightly connected ring: settles into a stable equilibrium.
+            for key in RING {
+                batch = batch.node(key, key);
+            }
+            for i in 0..12 {
+                batch = batch.edge(
+                    RING_EDGES[i],
+                    RING[i],
+                    RING[(i + 1) % 12],
+                    EdgeDirection::Undirected,
+                    "x",
+                );
+            }
+            s.merge(batch);
+        });
+
+        let mut settled_positions: Vec<Vec2> = Vec::new();
+        for _ in 0..600 {
+            let progress =
+                scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+            if progress == LayoutProgress::Settled {
+                break;
+            }
+            cx.run_until_parked();
+        }
+        scene.update(cx, |s, _| {
+            settled_positions = RING
+                .iter()
+                .map(|key| s.node_position(s.node_id(key).unwrap()).unwrap())
+                .collect();
+        });
+
+        // Add one fresh node bound to ring node 0; placement spreads it away.
+        scene.update(cx, |s, _| {
+            s.merge(GraphBatch::new().node("fresh", "F").edge(
+                "hook",
+                "fresh",
+                "0",
+                EdgeDirection::Undirected,
+                "x",
+            ));
+        });
+        let fresh_initial = scene.update(cx, |s, _| {
+            s.node_position(s.node_id(&"fresh").unwrap()).unwrap()
+        });
+
+        for _ in 0..600 {
+            let progress =
+                scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+            if progress == LayoutProgress::Settled {
+                break;
+            }
+            cx.run_until_parked();
+        }
+
+        scene.update(cx, |s, _| {
+            let fresh_final = s.node_position(s.node_id(&"fresh").unwrap()).unwrap();
+            let travel = (fresh_final - fresh_initial).length();
+            assert!(
+                travel > 1.0,
+                "fresh node must travel to its neighborhood, moved {travel}"
+            );
+
+            // Carried nodes keep their adapted convergence factors, so their
+            // response stays local even though the sync reset global cooling.
+            let mut max_carried_drift = 0.0f32;
+            for (i, before) in settled_positions.iter().enumerate() {
+                let after = s.node_position(s.node_id(&RING[i]).unwrap()).unwrap();
+                max_carried_drift = max_carried_drift.max((*before - after).length());
+            }
+            assert!(
+                max_carried_drift < travel,
+                "carried drift {max_carried_drift} must stay below fresh travel {travel}"
+            );
+            assert_eq!(s.layout_state(), LayoutRunState::Settled);
+        });
+    }
+
+    /// §11.6: removing a node from a running layout compacts dense indices;
+    /// the engine must keep stepping and settle with finite positions.
+    #[gpui::test]
+    fn removal_mid_run_resettles_with_compacted_indices(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let scene: Entity<Scene> =
+            cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        const CHAIN: [&str; 8] = ["n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7"];
+        const CHAIN_EDGES: [&str; 7] = ["c0", "c1", "c2", "c3", "c4", "c5", "c6"];
+        scene.update(cx, |s, _| {
+            let mut batch = GraphBatch::new();
+            for key in CHAIN {
+                batch = batch.node(key, key);
+            }
+            for i in 0..7 {
+                batch = batch.edge(
+                    CHAIN_EDGES[i],
+                    CHAIN[i],
+                    CHAIN[i + 1],
+                    EdgeDirection::Undirected,
+                    "x",
+                );
+            }
+            s.merge(batch);
+        });
+
+        // A few steps, then remove a middle node while the run is live.
+        for _ in 0..5 {
+            let progress =
+                scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+            if progress == LayoutProgress::Settled {
+                break;
+            }
+            cx.run_until_parked();
+        }
+        scene.update(cx, |s, _| {
+            s.apply(
+                crate::patch::GraphPatch::new()
+                    .node(crate::patch::NodePatch::Remove { key: CHAIN[3] }),
+            );
+        });
+
+        for _ in 0..300 {
+            let progress =
+                scene.update(cx, |s, cx| s.step_layout_async(LayoutBudget::default(), cx));
+            if progress == LayoutProgress::Settled {
+                break;
+            }
+            cx.run_until_parked();
+        }
+
+        scene.update(cx, |s, _| {
+            assert_eq!(s.layout_state(), LayoutRunState::Settled);
+            // Every surviving node keeps a finite position; n3 was removed.
+            for id in CHAIN {
+                let Some(node) = s.node_id(&id) else {
+                    assert_eq!(id, CHAIN[3], "only the removed node is gone");
+                    continue;
+                };
+                let p = s.node_position(node).unwrap();
+                assert!(
+                    p.x.is_finite() && p.y.is_finite(),
+                    "position for {id} must stay finite"
+                );
+            }
+        });
+    }
 
     #[gpui::test]
     fn background_step_applies_positions_and_settles(cx: &mut TestAppContext) {
