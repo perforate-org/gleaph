@@ -7,9 +7,9 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexBuildDmlRequest, IndexEqualSpec,
     IndexIntersectionRequest, IndexIntersectionResult, IndexPostingBatchProgress,
-    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupRangePageRequest, MAX_POSTING_PAGE_HITS,
-    PostingHit, PostingHitPage, PostingRangeRequest,
+    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEdgeRangePageRequest,
+    LookupEqualPageRequest, LookupPropertyIntersectionPageRequest, LookupRangePageRequest,
+    MAX_POSTING_PAGE_HITS, PostingHit, PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -221,6 +221,39 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
                     .map_err(|e| ic_wait_err("lookup_edge_equal_page", e))?
                     .candid()
                     .map_err(|_| ic_candid_decode_err("lookup_edge_equal_page"))?;
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
+        Ok(hits)
+    }
+
+    async fn lookup_edge_range(
+        &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+        property_id: u32,
+        req: &PostingRangeRequest,
+        label_id: Option<u16>,
+    ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
+        let mut hits = Vec::new();
+        let mut after = None;
+        loop {
+            let page: EdgePostingHitPage =
+                Call::bounded_wait(self.index_principal, "lookup_edge_range_page")
+                    .with_args(&(LookupEdgeRangePageRequest {
+                        physical_index_id,
+                        property_id,
+                        range: req.clone(),
+                        label_id,
+                        after,
+                        limit: INDEX_PAGE_LIMIT,
+                    },))
+                    .await
+                    .map_err(|e| ic_wait_err("lookup_edge_range_page", e))?
+                    .candid()
+                    .map_err(|_| ic_candid_decode_err("lookup_edge_range_page"))?;
             hits.extend(page.hits);
             if page.done {
                 break;

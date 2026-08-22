@@ -776,6 +776,41 @@ async fn lookup_edge_equal_wires<I: IndexLookup + ?Sized>(
     Ok(merged)
 }
 
+/// Drain edge range pages within the domain-clamped interval, sieving wire labels exactly like
+/// [`lookup_edge_equal_wires`] (ADR 0012 direction subset rule).
+async fn lookup_edge_range_wires<I: IndexLookup + ?Sized>(
+    index: &I,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    range: PostingRangeRequest,
+    wire_label_ids: &[u16],
+) -> Result<Vec<gleaph_graph_kernel::index::EdgePostingHit>, String> {
+    if wire_label_ids.is_empty() {
+        return index
+            .lookup_edge_range(physical_index_id, property_id, range, None)
+            .await;
+    }
+    let mut merged = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for &wire in wire_label_ids {
+        for hit in index
+            .lookup_edge_range(physical_index_id, property_id, range.clone(), Some(wire))
+            .await?
+        {
+            let key = (
+                hit.shard_id,
+                hit.owner_vertex_id,
+                hit.label_id,
+                hit.slot_index,
+            );
+            if seen.insert(key) {
+                merged.push(hit);
+            }
+        }
+    }
+    Ok(merged)
+}
+
 async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
@@ -813,6 +848,36 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
             )
             .await?,
         )),
+        IndexAnchor::EdgeRange(crate::seed::EdgeRangeSeedProbe {
+            physical_index_id,
+            property_id,
+            bound_bytes,
+            bound,
+            wire_label_ids,
+            ..
+        }) => {
+            // Clamp the one-sided bound to the literal's comparison-domain interval so a
+            // mixed-type property cannot leak wrong-domain rows through the seeded path.
+            let (low, high) = gleaph_gql::value_index_key::range_bounds_for_encoded_key(
+                bound_bytes,
+                bound.to_cmp(),
+            )
+            .map_err(|e| format!("edge range seed probe bound is not supported: {e}"))?;
+            if low >= high {
+                // Empty clamped interval: no posting can satisfy the comparison.
+                return Ok(SeedHits::Edges(Vec::new()));
+            }
+            Ok(SeedHits::Edges(
+                lookup_edge_range_wires(
+                    index,
+                    *physical_index_id,
+                    *property_id,
+                    PostingRangeRequest::Between { low, high },
+                    wire_label_ids,
+                )
+                .await?,
+            ))
+        }
         IndexAnchor::Range(probe) => {
             // Clamp the one-sided bound to the literal's comparison-domain interval so a
             // mixed-type property cannot leak wrong-domain rows through the seeded path.
@@ -7733,6 +7798,16 @@ mod tests {
             Box::pin(async move { Ok(Vec::new()) })
         }
 
+        fn lookup_edge_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
         fn count_postings_by_value(
             &self,
             _physical_index_id: PhysicalIndexId,
@@ -7853,6 +7928,16 @@ mod tests {
             _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_edge_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
             _label_id: Option<u16>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
@@ -8075,6 +8160,16 @@ mod tests {
             _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_edge_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
             _label_id: Option<u16>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
@@ -9547,6 +9642,22 @@ mod tests {
     struct RangeRecordingIndex {
         ranges:
             std::rc::Rc<std::cell::RefCell<Vec<gleaph_graph_kernel::index::PostingRangeRequest>>>,
+        edge_ranges: std::rc::Rc<
+            std::cell::RefCell<
+                Vec<(
+                    u32,
+                    gleaph_graph_kernel::index::PostingRangeRequest,
+                    Option<u16>,
+                )>,
+            >,
+        >,
+        edge_hits: std::rc::Rc<std::cell::RefCell<Vec<gleaph_graph_kernel::index::EdgePostingHit>>>,
+    }
+
+    impl RangeRecordingIndex {
+        fn record_edge_hit(&self, hit: gleaph_graph_kernel::index::EdgePostingHit) {
+            self.edge_hits.borrow_mut().push(hit);
+        }
     }
 
     impl IndexLookup for RangeRecordingIndex {
@@ -9595,6 +9706,21 @@ mod tests {
             _label_id: Option<u16>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_edge_range(
+            &self,
+            physical_index_id: PhysicalIndexId,
+            property_id: u32,
+            range: gleaph_graph_kernel::index::PostingRangeRequest,
+            label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            let _ = physical_index_id;
+            self.edge_ranges
+                .borrow_mut()
+                .push((property_id, range, label_id));
+            let hits = self.edge_hits.borrow().clone();
+            Box::pin(async move { Ok(hits) })
         }
 
         fn count_postings_by_value(
@@ -9736,5 +9862,100 @@ mod tests {
         .expect("probe lookup");
         assert!(matches!(&hits, SeedHits::Vertices(v) if v.is_empty()));
         assert!(index.ranges.borrow().is_empty());
+    }
+
+    #[test]
+    fn edge_range_seed_probe_executes_domain_clamped_between_per_wire_label() {
+        use gleaph_graph_kernel::index::EdgePostingHit;
+
+        let index = RangeRecordingIndex::default();
+        // One distinct hit per wire label proves the sieve fans out; the duplicate proves the
+        // `(shard, owner, label, slot)` dedupe.
+        for (owner, slot) in [(7u32, 1u32), (8, 0), (7, 1)] {
+            index.record_edge_hit(EdgePostingHit {
+                shard_id: ShardId::new(0),
+                owner_vertex_id: owner,
+                label_id: if owner == 8 { 0x8002 } else { 0x8001 },
+                slot_index: slot,
+            });
+        }
+        let bound_bytes = gleaph_gql::value_to_index_key_bytes(&Value::Int64(5))
+            .unwrap()
+            .unwrap();
+        let anchor = crate::seed::IndexAnchor::EdgeRange(crate::seed::EdgeRangeSeedProbe {
+            variable: "e".into(),
+            property: "weight".into(),
+            property_id: 9,
+            physical_index_id: PhysicalIndexId::new(3).unwrap(),
+            bound_bytes: bound_bytes.clone(),
+            bound: crate::seed::SeedRangeBound::Gt,
+            wire_label_ids: vec![0x8001, 0x8002],
+        });
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let hits = futures::executor::block_on(super::lookup_anchor_hits(
+            &index,
+            &anchor,
+            &[],
+            &mut metrics,
+        ))
+        .expect("edge range probe lookup");
+        let SeedHits::Edges(edges) = &hits else {
+            panic!("expected edge hits, got {hits:?}");
+        };
+        assert_eq!(
+            edges.len(),
+            2,
+            "duplicate posting across wire labels must dedupe"
+        );
+
+        let recorded = index.edge_ranges.borrow();
+        assert_eq!(
+            recorded.len(),
+            2,
+            "one clamped Between request per wire label"
+        );
+        for (property_id, request, label) in recorded.iter() {
+            assert_eq!(*property_id, 9);
+            let gleaph_graph_kernel::index::PostingRangeRequest::Between { low, high } = request
+            else {
+                panic!("edge range probe must issue a clamped Between, got {request:?}");
+            };
+            // Strictly-above 5 starts past the bound; the NUMERIC domain ceiling is tag 2 + 1.
+            assert!(
+                low.as_slice() > bound_bytes.as_slice(),
+                "low must exclude the strict bound"
+            );
+            assert_eq!(high, &vec![3], "high must clamp to the NUMERIC ceiling");
+            assert!(
+                *label == Some(0x8001) || *label == Some(0x8002),
+                "wire label sieve must reach the index call, got {label:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_range_seed_probe_empty_clamped_interval_issues_no_lookup() {
+        let index = RangeRecordingIndex::default();
+        let anchor = crate::seed::IndexAnchor::EdgeRange(crate::seed::EdgeRangeSeedProbe {
+            variable: "e".into(),
+            property: "seen_at".into(),
+            property_id: 4,
+            physical_index_id: PhysicalIndexId::new(1).unwrap(),
+            bound_bytes: gleaph_gql::value_to_index_key_bytes(&Value::DateTime(i64::MAX, u32::MAX))
+                .unwrap()
+                .unwrap(),
+            bound: crate::seed::SeedRangeBound::Gt,
+            wire_label_ids: Vec::new(),
+        });
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let hits = futures::executor::block_on(super::lookup_anchor_hits(
+            &index,
+            &anchor,
+            &[],
+            &mut metrics,
+        ))
+        .expect("edge range probe lookup");
+        assert!(matches!(&hits, SeedHits::Edges(v) if v.is_empty()));
+        assert!(index.edge_ranges.borrow().is_empty());
     }
 }

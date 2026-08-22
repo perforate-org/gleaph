@@ -29,7 +29,7 @@ fn property_id_for_scan(
 }
 
 /// Resolve the scan literal/parameter to its [`Value`].
-fn resolve_scan_bound_value(
+pub(crate) fn resolve_scan_bound_value(
     sv: &ScanValue,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Value, PlanQueryError> {

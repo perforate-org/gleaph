@@ -37,6 +37,8 @@ pub enum IndexAnchor {
     EdgeEqual(EdgeSeedProbe),
     /// Single range `IndexScan` bound (`lookup_range`, one-sided only).
     Range(RangeSeedProbe),
+    /// Leading one-sided range `EdgeIndexScan` (`lookup_edge_range`, domain-clamped at execution).
+    EdgeRange(EdgeRangeSeedProbe),
     /// Multiple equality arms (`lookup_intersection`).
     Intersection {
         variable: String,
@@ -61,6 +63,7 @@ impl IndexAnchor {
             Self::Equal(probe) => probe.variable.as_str(),
             Self::EdgeEqual(probe) => probe.variable.as_str(),
             Self::Range(probe) => probe.variable.as_str(),
+            Self::EdgeRange(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
             Self::Label { variable, .. } => variable.as_str(),
             Self::LabelIntersection { variable, .. } => variable.as_str(),
@@ -255,6 +258,26 @@ pub struct EdgeSeedProbe {
     pub wire_label_ids: Vec<u16>,
 }
 
+/// One-sided ordered range `EdgeIndexScan` anchor (`lookup_edge_range`).
+///
+/// Carries the encoded bound plus its comparison direction; the comparison-domain interval is
+/// derived at collection time through the shared `gql::range_bounds` helper (the same drain+clamp
+/// contract as [`RangeSeedProbe`]). The struct stays `Hash`-stable for anchor cache keys.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EdgeRangeSeedProbe {
+    pub variable: String,
+    pub property: String,
+    pub property_id: u32,
+    /// Router-owned physical posting namespace selected from one Active catalog row.
+    pub physical_index_id: PhysicalIndexId,
+    /// Encoded bound bytes (`value_to_index_key_bytes` encoding).
+    pub bound_bytes: Vec<u8>,
+    /// Bound comparison direction.
+    pub bound: SeedRangeBound,
+    /// Wire label ids to scan in graph-index (ADR 0012); empty means unfiltered.
+    pub wire_label_ids: Vec<u16>,
+}
+
 impl SeedProbe {
     /// Returns `Some` only when the anchor is a single equality `IndexScan`.
     #[cfg_attr(not(test), expect(dead_code, reason = "test and tooling helper"))]
@@ -270,6 +293,7 @@ impl SeedProbe {
                 Some(IndexAnchor::Range(_))
                 | Some(IndexAnchor::Intersection { .. })
                 | Some(IndexAnchor::EdgeEqual(_))
+                | Some(IndexAnchor::EdgeRange(_))
                 | Some(IndexAnchor::Label { .. })
                 | Some(IndexAnchor::LabelIntersection { .. })
                 | None => None,
@@ -293,21 +317,40 @@ pub(crate) fn index_anchor_from_prefix_ops(
                 variable,
                 property,
                 value,
+                cmp,
                 ..
             },
             PlanOp::EdgeBindEndpoints {
                 label, direction, ..
             },
-        ] => Ok(Some(edge_equal_anchor(
-            store,
-            graph_id,
-            parameters,
-            variable,
-            property.as_ref(),
-            value,
-            label.as_ref().map(|l| l.as_ref()),
-            Some(*direction),
-        )?)),
+        ] => {
+            let edge_label = label.as_ref().map(|l| l.as_ref());
+            let query_direction = Some(*direction);
+            match cmp {
+                CmpOp::Eq => Ok(Some(edge_equal_anchor(
+                    store,
+                    graph_id,
+                    parameters,
+                    variable,
+                    property.as_ref(),
+                    value,
+                    edge_label,
+                    query_direction,
+                )?)),
+                CmpOp::Ne => Ok(None),
+                _ => edge_range_anchor(
+                    store,
+                    graph_id,
+                    parameters,
+                    variable,
+                    property.as_ref(),
+                    value,
+                    *cmp,
+                    edge_label,
+                    query_direction,
+                ),
+            }
+        }
         _ => Ok(None),
     }
 }
@@ -379,6 +422,73 @@ fn variable_from_expr(expr: &Expr) -> Option<&str> {
         ExprKind::Variable(name) => Some(name.as_str()),
         _ => None,
     }
+}
+
+/// Build an edge range anchor from a leading non-Eq `EdgeIndexScan` bound.
+///
+/// Returns `Ok(None)` when the literal's comparison domain cannot form a domain-clamped
+/// interval (Bool/List/Record/Path/Extension/Duration): such predicates cannot seed a
+/// shard and must be answered by the non-index filter path instead.
+#[allow(clippy::too_many_arguments)]
+fn edge_range_anchor(
+    store: &RouterStore,
+    graph_id: GraphId,
+    params: &BTreeMap<String, Value>,
+    variable: impl AsRef<str>,
+    property: impl AsRef<str>,
+    value: &ScanValue,
+    cmp: CmpOp,
+    edge_label: Option<&str>,
+    query_direction: Option<EdgeDirection>,
+) -> Result<Option<IndexAnchor>, RouterError> {
+    let Some(bound) = SeedRangeBound::try_from_cmp(cmp) else {
+        return Err(RouterError::InvalidArgument(format!(
+            "edge range seed anchor requires a one-sided comparison, got {cmp:?}"
+        )));
+    };
+    let bound_bytes = resolve_scan_value(value, params)?
+        .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+    if gleaph_gql::value_index_key::range_bounds_for_encoded_key(&bound_bytes, bound.to_cmp())
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let property_id = store
+        .lookup_property_id(graph_id, property.as_ref())
+        .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
+        .raw();
+    let edge_label_id = edge_label
+        .map(|label| {
+            store
+                .lookup_edge_label_id(graph_id, label)
+                .map(|id| id.raw())
+                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))
+        })
+        .transpose()?;
+    let physical_index_id = indexed_catalog::active_edge_physical_index(
+        graph_id,
+        edge_label_id,
+        PropertyId::from_raw(property_id),
+        query_direction,
+    )?;
+    let wire_label_ids = match (edge_label, query_direction) {
+        (Some(label), Some(direction)) => {
+            let catalog = store
+                .lookup_edge_label_id(graph_id, label)
+                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))?;
+            wire_labels_for_query(catalog, direction)
+        }
+        _ => Vec::new(),
+    };
+    Ok(Some(IndexAnchor::EdgeRange(EdgeRangeSeedProbe {
+        variable: variable.as_ref().to_string(),
+        property: property.as_ref().to_string(),
+        property_id,
+        physical_index_id,
+        bound_bytes,
+        bound,
+        wire_label_ids,
+    })))
 }
 
 /// Leading plan ops that establish index/label membership for one variable.
@@ -648,6 +758,7 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                 variable,
                 property,
                 value,
+                cmp,
                 ..
             } => {
                 if !record_bound_var(&mut bound_var, variable)? {
@@ -661,9 +772,8 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                     } => Some((label.as_ref(), *direction)),
                     _ => None,
                 });
-                push_unique_anchor(
-                    &mut anchors,
-                    edge_equal_anchor(
+                let anchor = match cmp {
+                    CmpOp::Eq => Some(edge_equal_anchor(
                         store,
                         graph_id,
                         params,
@@ -672,8 +782,23 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                         value,
                         edge_label.map(|(label, _)| label),
                         edge_label.map(|(_, direction)| direction),
+                    )?),
+                    CmpOp::Ne => None,
+                    _ => edge_range_anchor(
+                        store,
+                        graph_id,
+                        params,
+                        variable,
+                        property.as_ref(),
+                        value,
+                        *cmp,
+                        edge_label.map(|(label, _)| label),
+                        edge_label.map(|(_, direction)| direction),
                     )?,
-                );
+                };
+                if let Some(anchor) = anchor {
+                    push_unique_anchor(&mut anchors, anchor);
+                }
                 break;
             }
             PlanOp::IndexScan { .. } | PlanOp::IndexIntersection { .. } => {
@@ -1082,8 +1207,9 @@ fn extract_from_op(
             variable,
             property,
             value,
+            cmp,
             ..
-        } => Ok(Some(edge_equal_anchor(
+        } if *cmp == CmpOp::Eq => Ok(Some(edge_equal_anchor(
             store,
             graph_id,
             parameters,
@@ -1093,6 +1219,23 @@ fn extract_from_op(
             None,
             None,
         )?)),
+        PlanOp::EdgeIndexScan {
+            variable,
+            property,
+            value,
+            cmp,
+            ..
+        } if matches!(cmp, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) => edge_range_anchor(
+            store,
+            graph_id,
+            parameters,
+            variable,
+            property.as_ref(),
+            value,
+            *cmp,
+            None,
+            None,
+        ),
         PlanOp::HashJoin { left, right, .. } => {
             if let Some(p) = extract_from_ops(left, parameters, store, graph_id)? {
                 return Ok(Some(p));
@@ -1225,7 +1368,8 @@ mod tests {
     use gleaph_graph_kernel::index::EdgePostingHit;
 
     use super::{
-        IndexAnchor, SeedAnchorSet, SeedProbe, seeds_for_local_shard, seeds_for_local_shard_edges,
+        IndexAnchor, SeedAnchorSet, SeedProbe, SeedRangeBound, seeds_for_local_shard,
+        seeds_for_local_shard_edges,
     };
     use crate::facade::store::RouterStore;
     use crate::planner_stats::RouterGraphStats;
@@ -1601,6 +1745,7 @@ mod tests {
                 variable: Rc::from("e"),
                 property: Rc::from("weight"),
                 value: ScanValue::Literal(Value::Int64(5)),
+                cmp: CmpOp::Eq,
                 property_projection: None,
             },
             PlanOp::EdgeBindEndpoints {
@@ -1660,5 +1805,130 @@ mod tests {
             err.to_string()
                 .contains("index value key exceeds maximum encoded size")
         );
+    }
+
+    #[test]
+    fn edge_range_scan_anchor_lowers_one_sided_bound_with_wire_labels() {
+        use gleaph_gql::types::EdgeDirection;
+        use gleaph_gql_planner::plan::EdgeLabelRef;
+
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "weight",
+        );
+        store
+            .admin_intern_edge_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "KNOWS",
+            )
+            .expect("intern edge label");
+        crate::facade::store::catalog_test_support::register_active_edge_index(
+            &store, graph_id, "KNOWS", "weight",
+        );
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::EdgeIndexScan {
+                variable: Rc::from("e"),
+                property: Rc::from("weight"),
+                value: ScanValue::Literal(Value::Int64(3)),
+                cmp: CmpOp::Gt,
+                property_projection: None,
+            },
+            PlanOp::EdgeBindEndpoints {
+                edge: Rc::from("e"),
+                near: Rc::from("a"),
+                far: Rc::from("b"),
+                direction: EdgeDirection::PointingRight,
+                label: Some(EdgeLabelRef::from("KNOWS")),
+                near_property_projection: None,
+                far_property_projection: None,
+                hop_aux_binding: None,
+            },
+        ]);
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("edge range anchor");
+        let IndexAnchor::EdgeRange(probe) = anchor else {
+            panic!("expected EdgeRange anchor");
+        };
+        assert_eq!(probe.variable, "e");
+        assert_eq!(probe.property_id, 1);
+        assert_eq!(probe.bound, SeedRangeBound::Gt);
+        assert_eq!(
+            probe.bound_bytes,
+            gleaph_gql::value_to_index_key_bytes(&Value::Int64(3))
+                .unwrap()
+                .unwrap()
+        );
+        // The bound must realize a domain-clamped interval; otherwise the anchor is invalid.
+        assert!(
+            gleaph_gql::value_index_key::range_bounds_for_encoded_key(
+                &probe.bound_bytes,
+                probe.bound.to_cmp(),
+            )
+            .is_ok()
+        );
+        assert_eq!(probe.wire_label_ids, vec![0x8001]);
+    }
+
+    #[test]
+    fn edge_range_scan_anchor_skips_unsupported_comparison_domain() {
+        use gleaph_gql::types::EdgeDirection;
+        use gleaph_gql_planner::plan::EdgeLabelRef;
+
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "flag",
+        );
+        store
+            .admin_intern_edge_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "KNOWS",
+            )
+            .expect("intern edge label");
+        crate::facade::store::catalog_test_support::register_active_edge_index(
+            &store, graph_id, "KNOWS", "flag",
+        );
+        // Bool cannot form a domain-clamped interval: no seed anchor may be produced so the
+        // query falls back to non-seeded execution and the residual filter decides.
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::EdgeIndexScan {
+                variable: Rc::from("e"),
+                property: Rc::from("flag"),
+                value: ScanValue::Literal(Value::Bool(true)),
+                cmp: CmpOp::Gt,
+                property_projection: None,
+            },
+            PlanOp::EdgeBindEndpoints {
+                edge: Rc::from("e"),
+                near: Rc::from("a"),
+                far: Rc::from("b"),
+                direction: EdgeDirection::PointingRight,
+                label: Some(EdgeLabelRef::from("KNOWS")),
+                near_property_projection: None,
+                far_property_projection: None,
+                hop_aux_binding: None,
+            },
+        ]);
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor resolution succeeds");
+        assert!(anchor.is_none(), "unsupported domain must not seed a shard");
     }
 }

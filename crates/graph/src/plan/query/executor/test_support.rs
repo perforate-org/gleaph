@@ -54,7 +54,9 @@ pub use gleaph_gql_planner::plan::{
 };
 pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
 pub use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
-pub use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
+pub use gleaph_graph_kernel::index::{
+    EdgePostingHit, IndexIntersectionRequest, PostingHit, PostingRangeRequest,
+};
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 pub use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
 pub use ic_stable_lara::VertexId;
@@ -70,6 +72,10 @@ pub struct MockPropertyIndex {
     pub equal_calls: RefCell<Vec<(u32, Vec<u8>)>>,
     pub range_calls: RefCell<Vec<(u32, PostingRangeRequest)>>,
     pub intersection_calls: RefCell<Vec<IndexIntersectionRequest>>,
+    /// Recorded `(property_id, request, label_id)` edge range calls.
+    pub edge_range_calls: RefCell<Vec<(u32, PostingRangeRequest, Option<u16>)>>,
+    /// Hits returned by [`PropertyIndexLookup::lookup_edge_range`].
+    pub edge_range_hits: RefCell<Vec<EdgePostingHit>>,
 }
 
 impl MockPropertyIndex {
@@ -156,6 +162,19 @@ impl PropertyIndexLookup for MockPropertyIndex {
             .borrow_mut()
             .push((property_id, req.clone()));
         Ok(self.range_hits.borrow().clone())
+    }
+
+    async fn lookup_edge_range(
+        &self,
+        _physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        req: &PostingRangeRequest,
+        label_id: Option<u16>,
+    ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
+        self.edge_range_calls
+            .borrow_mut()
+            .push((property_id, req.clone(), label_id));
+        Ok(self.edge_range_hits.borrow().clone())
     }
 
     async fn lookup_intersection(

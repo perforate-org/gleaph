@@ -93,11 +93,13 @@ impl<'a> Decoder<'a> {
                 variable,
                 property,
                 value,
+                cmp,
                 property_projection,
             } => PlanOp::EdgeIndexScan {
                 variable: rc_str(variable),
                 property: rc_str(property),
                 value: decode_scan_value(value)?,
+                cmp: *cmp,
                 property_projection: decode_str_slice(property_projection),
             },
             PlanOpWire::EdgeBindEndpoints {

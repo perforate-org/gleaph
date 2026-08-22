@@ -67,6 +67,22 @@ pub trait GraphStats {
         self.is_edge_property_indexed(property)
     }
 
+    /// Whether a one-sided range predicate on an edge property can push down into ordered edge
+    /// postings for the given label and query direction.
+    ///
+    /// Defaults to `false` so providers must opt in; implementations should mirror their
+    /// `is_edge_property_indexed_for` membership when every Active edge index is order-preserving
+    /// encoded and range-capable.
+    fn is_edge_property_range_indexed_for(
+        &self,
+        label: Option<&str>,
+        property: &str,
+        direction: gleaph_gql::types::EdgeDirection,
+    ) -> bool {
+        let _ = (label, property, direction);
+        false
+    }
+
     /// Whether an edge property has an index.
     fn is_edge_property_indexed(&self, property: &str) -> bool {
         let _ = property;
@@ -236,6 +252,17 @@ impl GraphStats for TableStats {
                     && edge_property == property
                     && edge_index_applies_to_query(*index_direction, direction)
             })
+    }
+
+    fn is_edge_property_range_indexed_for(
+        &self,
+        label: Option<&str>,
+        property: &str,
+        direction: EdgeDirection,
+    ) -> bool {
+        // Every edge index row in `TableStats` is order-preserving encoded and range-capable,
+        // so range capability mirrors the directional equality membership exactly.
+        self.is_edge_property_indexed_for(label, property, direction)
     }
 
     fn edge_endpoint_labels(&self, edge_label: &str) -> Option<(Vec<String>, Vec<String>)> {

@@ -80,11 +80,13 @@ impl Encoder {
                 variable,
                 property,
                 value,
+                cmp,
                 property_projection,
             } => PlanOpWire::EdgeIndexScan {
                 variable: variable.to_string(),
                 property: property.to_string(),
                 value: encode_scan_value(value)?,
+                cmp: *cmp,
                 property_projection: opt_str_slice(property_projection),
             },
             PlanOp::EdgeBindEndpoints {

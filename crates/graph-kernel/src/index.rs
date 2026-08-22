@@ -943,6 +943,21 @@ pub struct LookupEdgeEqualPageRequest {
     pub after: Option<EdgePostingCursor>,
     pub limit: u32,
 }
+
+/// Paginated ordered range export over encoded values for one edge property bucket.
+///
+/// Scans `(physical_index_id, property_id, value, ...)` value intervals in edge posting key
+/// order; hits outside `label_id`, when set, are sieved inside the index canister. The resume
+/// cursor is the last returned hit's full edge posting key.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEdgeRangePageRequest {
+    pub physical_index_id: PhysicalIndexId,
+    pub property_id: u32,
+    pub range: PostingRangeRequest,
+    pub label_id: Option<u16>,
+    pub after: Option<EdgePostingCursor>,
+    pub limit: u32,
+}
 /// Batch paginated equality export for many vertex `(property_id, value)` buckets in one call.
 ///
 /// Buckets are answered in `specs` order at **bucket granularity**: a bucket is either fully

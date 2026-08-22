@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-08-20
-Anchor timestamp: 2026-08-20 14:53:06 UTC +0000
+Last updated: 2026-08-22
+Anchor timestamp: 2026-08-22 13:29:10 UTC +0000
 
 ## Status
 
@@ -24,9 +24,39 @@ The range storage primitive is implemented with ordered posting scans
 vertex range endpoints, and normal `MATCH` planning selects range anchors
 through the same Active vertex catalog projection as equality, with the Router
 seeding graph shards via `IndexAnchor::Range` (GAP-2026-07-29-002, closed
-2026-08-21). Edge postings currently expose equality but not a corresponding
-range endpoint. See [implementation-gaps.md](../implementation-gaps.md)
-GAP-2026-07-29-003.
+2026-08-21). Edge postings expose the same ordered contract through the
+paginated `lookup_edge_range_page` endpoint and `IndexAnchor::EdgeRange`
+(GAP-2026-07-29-003, closed 2026-08-22).
+
+**Edge ranges — Implemented (drain+clamp decision).** Edge property range
+predicates are served from ordered edge postings on both execution paths:
+
+- graph-index scans `(physical_index_id, property_id, value, ...)` value
+  intervals of `INDEX_EDGE_POSTINGS` in full edge posting key order via
+  `lookup_edge_range_page` (`PostingRangeRequest` bounds, optional wire-label
+  sieve applied inside the index call, cursor-clamped resumable pages). The
+  half-open key bounds live in one owner next to the vertex bounds
+  (`crates/graph-index/src/posting_range.rs`).
+- The Router projects edge range capability from the same Active edge catalog
+  membership as equality (`is_edge_property_range_indexed_for`, fail-closed for
+  unindexed properties), lowers a leading one-sided indexed edge predicate to
+  `PlanOp::EdgeIndexScan { cmp }` (equality wins first; two-sided bounds ride
+  residual conjunction like GAP-002), seeds shards through
+  `IndexAnchor::EdgeRange`, and collects hits **drain+clamp**: every page is
+  drained within the comparison-domain-clamped interval, then rows bind.
+  IC query execution is one-shot per call, so no cursor state survives the
+  call; residual predicates stay as filters exactly like the vertex
+  two-sided-bounds note in GAP-002. Wire label sieving (ADR 0012 direction
+  subset rule) is preserved by fanning one drained lookup out per wire label
+  with `(shard_id, owner_vertex_id, label_id, slot_index)` deduplication.
+- The single-shard executor derives the same clamped `Between` interval through
+  the shared helper for supported literal domains; an empty clamped interval is
+  answered as zero candidates, and unsupported domains (Bool/List/Record/Path/
+  Extension/Duration) fall back to the canonical `EDGE_PROPERTIES` filtered
+  superset scan with the plan's residual filter deciding exact matches.
+
+See [implementation-gaps.md](../implementation-gaps.md)
+GAP-2026-07-29-003 for evidence links.
 
 **Comparison-domain bounds (canonical owner: `gleaph_gql::value_index_key`).**
 Every consumer derives `property OP <literal>` scan intervals through one
@@ -171,6 +201,7 @@ An index canister holds postings for shards attached to **one graph's index clus
 | `lookup_equal_page`              | Implemented | Paginated equality export (`after` + `limit`); the seed-routing read path                                                                                                                                                                                                                                          |
 | `lookup_range_page`              | Implemented | Paginated range export over encoded values (`after` + `limit`)                                                                                                                                                                                                                                                     |
 | `lookup_edge_equal_page`         | Implemented | Paginated edge equality export (`after` + `limit`)                                                                                                                                                                                                                                                                 |
+| `lookup_edge_range_page`         | Implemented | Paginated ordered edge range export over encoded values (`PostingRangeRequest` bounds, optional wire-label sieve, `after` + `limit`)                                                                                                                                                                                |
 | `lookup_equal_batch`             | Implemented | Batched equality export for many vertex buckets in one call: bucket-granular response admission under the shared inter-canister payload budget, `next` resume cursor (slice `specs[next..]`), per-bucket `done`/cursor continuation through `lookup_equal_page`; the seed-routing fast path for multi-anchor items |
 | `lookup_edge_equal_batch`        | Implemented | Batched edge equality export with the same bucket-granular budget admission and `next` resume contract as `lookup_equal_batch`                                                                                                                                                                                     |
 | `lookup_intersection`            | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md))                                                                                                                                                           |

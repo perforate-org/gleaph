@@ -5,7 +5,7 @@ use crate::facade::catalog_edge_label_from_wire;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use gleaph_graph_kernel::entry::PropertyId;
-use gleaph_graph_kernel::index::EdgePostingHit;
+use gleaph_graph_kernel::index::{EdgePostingHit, PostingRangeRequest};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
@@ -101,6 +101,90 @@ pub(crate) fn lookup_edge_equal_local_sync(
         ));
     }
     Ok(scan_store_edge_equal(property_id, expected, label_id))
+}
+
+/// Shard-local ordered edge range over the domain-clamped `[low, high)` encoded interval.
+///
+/// Falls back to a canonical `EDGE_PROPERTIES` filtered scan when no graph-index client is
+/// wired; the caller keeps the original predicate as a residual filter, so the fallback only
+/// needs to produce a superset of the matching edges.
+pub(crate) async fn lookup_edge_range_local(
+    index: Option<&dyn PropertyIndexLookup>,
+    property_id: PropertyId,
+    low: &[u8],
+    high: &[u8],
+    label_id: Option<u16>,
+) -> Result<Vec<LocalEdgePosting>, PlanQueryError> {
+    if let Some(ix) = index {
+        let physical_index_ids = match label_id {
+            Some(wire_label_id) => crate::index::catalog_context::active_edge_physical_index_ids(
+                wire_label_id,
+                property_id,
+            ),
+            None => crate::index::catalog_context::active_edge_physical_index_ids_for_property(
+                property_id,
+            ),
+        };
+        if physical_index_ids.is_empty() {
+            return Err(PlanQueryError::UnsupportedOp(
+                "EdgeIndex(no active physical index namespace)",
+            ));
+        }
+        let request = PostingRangeRequest::Between {
+            low: low.to_vec(),
+            high: high.to_vec(),
+        };
+        let mut hits: Vec<EdgePostingHit> = Vec::new();
+        for physical_index_id in physical_index_ids {
+            for hit in ix
+                .lookup_edge_range(physical_index_id, property_id.raw(), &request, label_id)
+                .await?
+            {
+                if !hits.contains(&hit) {
+                    hits.push(hit);
+                }
+            }
+        }
+        let shard_id = ix.local_shard_id();
+        return Ok(hits
+            .into_iter()
+            .filter(|hit| hit.shard_id == shard_id)
+            .map(|hit| LocalEdgePosting {
+                owner_vertex_id: VertexId::from(hit.owner_vertex_id),
+                label_id: wire_label_id_for_local_edge(hit.label_id),
+                slot_index: hit.slot_index,
+            })
+            .collect());
+    }
+    Ok(
+        GraphStore::collect_edges_matching_indexed_property_where(property_id, label_id, |bytes| {
+            bytes >= low && bytes < high
+        })
+        .into_iter()
+        .map(|(owner_vertex_id, label_id, slot_index)| LocalEdgePosting {
+            owner_vertex_id,
+            label_id,
+            slot_index,
+        })
+        .collect(),
+    )
+}
+
+/// Superset candidate scan for literals whose comparison domain cannot form an ordered
+/// interval: every local edge holding the property. The plan retains the original predicate
+/// as a residual filter, so this only has to produce a superset of matching edges.
+pub(crate) fn lookup_edge_range_fallback_local(
+    property_id: PropertyId,
+    label_id: Option<u16>,
+) -> Vec<LocalEdgePosting> {
+    GraphStore::collect_edges_matching_indexed_property_where(property_id, label_id, |_| true)
+        .into_iter()
+        .map(|(owner_vertex_id, label_id, slot_index)| LocalEdgePosting {
+            owner_vertex_id,
+            label_id,
+            slot_index,
+        })
+        .collect()
 }
 
 fn scan_store_edge_equal(

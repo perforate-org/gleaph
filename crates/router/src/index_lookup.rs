@@ -11,8 +11,8 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualBatchRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupRangePageRequest,
+    LookupEdgeRangePageRequest, LookupEqualBatchRequest, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest, LookupRangePageRequest,
     LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
     MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PhysicalIndexId, PostingHit, PostingRangeRequest,
     ValuePostingCount, ValuePostingCountPage,
@@ -199,6 +199,38 @@ async fn collect_edge_equal_hits_paged(
                 physical_index_id,
                 property_id,
                 value: value.clone(),
+                label_id,
+                after,
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        hits.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(hits)
+}
+
+/// Collect all edge range hits for `(property_id, range[, label_id])` on one index canister by
+/// paging until the interval is exhausted (drain+clamp: the caller binds rows and keeps residual
+/// predicates as filters; no cursor state survives the call).
+async fn collect_edge_range_hits_paged(
+    client: &RouterIndexClient,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    range: PostingRangeRequest,
+    label_id: Option<u16>,
+) -> Result<Vec<EdgePostingHit>, String> {
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page = client
+            .lookup_edge_range_page(LookupEdgeRangePageRequest {
+                physical_index_id,
+                property_id,
+                range: range.clone(),
                 label_id,
                 after,
                 limit: INDEX_LOOKUP_PAGE_LIMIT,
@@ -475,6 +507,15 @@ pub(crate) trait IndexLookup {
         label_id: Option<u16>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>>;
 
+    /// Collect every edge posting whose encoded key satisfies the ordered range request.
+    fn lookup_edge_range(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        range: PostingRangeRequest,
+        label_id: Option<u16>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>>;
+
     fn count_postings_by_value(
         &self,
         physical_index_id: PhysicalIndexId,
@@ -589,6 +630,22 @@ impl IndexLookup for RouterIndexClient {
             physical_index_id,
             property_id,
             value,
+            label_id,
+        ))
+    }
+
+    fn lookup_edge_range(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        range: PostingRangeRequest,
+        label_id: Option<u16>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+        Box::pin(collect_edge_range_hits_paged(
+            self,
+            physical_index_id,
+            property_id,
+            range,
             label_id,
         ))
     }
@@ -760,6 +817,32 @@ impl IndexLookup for RouterIndexLookup {
                         physical_index_id,
                         property_id,
                         value.clone(),
+                        label_id,
+                    )
+                    .await?,
+                );
+            }
+            Ok(merge_edge_posting_hits(self.retain_live_edge_hits(merged)))
+        })
+    }
+
+    fn lookup_edge_range(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        range: PostingRangeRequest,
+        label_id: Option<u16>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+        let targets = self.targets.clone();
+        Box::pin(async move {
+            let mut merged = Vec::new();
+            for principal in targets {
+                merged.extend(
+                    collect_edge_range_hits_paged(
+                        &RouterIndexClient::new(principal),
+                        physical_index_id,
+                        property_id,
+                        range.clone(),
                         label_id,
                     )
                     .await?,

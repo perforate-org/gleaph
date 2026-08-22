@@ -274,12 +274,14 @@ fn format_op(op: &PlanOp) -> String {
             variable,
             property,
             value,
+            cmp,
             property_projection,
         } => {
             format!(
-                "EdgeIndexScan({}, {} = {}){}",
+                "EdgeIndexScan({}, {} {} {}){}",
                 variable,
                 property,
+                format_cmp(cmp),
                 format_scan_value(value),
                 format_property_projection(property_projection.as_deref())
             )

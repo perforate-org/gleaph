@@ -1828,7 +1828,6 @@ fn leading_edge_index_scan_supports_undirected_pattern() {
     ));
 
     let plan = plan_query_with_stats("MATCH ()~[e:REL {weight: 7}]~(b:User) RETURN e, b", &stats);
-
     assert!(
         matches!(
             plan.ops.first(),
@@ -1851,6 +1850,110 @@ fn leading_edge_index_scan_supports_undirected_pattern() {
             })
         ),
         "expected Undirected EdgeBindEndpoints, ops={:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn match_edge_range_anchor_emits_leading_scan_and_retains_residual_filter() {
+    let mut stats = TableStats::default();
+    stats.directional_edge_indexes.push((
+        "REL".to_owned(),
+        "weight".to_owned(),
+        EdgeDirection::PointingRight,
+    ));
+
+    let plan = plan_query_with_stats(
+        "MATCH ()-[e:REL]->(b:User) WHERE e.weight >= 7 RETURN e, b",
+        &stats,
+    );
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::EdgeIndexScan {
+                property,
+                value,
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "weight"
+                && matches!(value, ScanValue::Literal(gleaph_gql::Value::Int64(7)))
+        ),
+        "expected leading EdgeIndexScan(weight >= 7), ops={:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
+        "expected EdgeBindEndpoints after the range scan, ops={:?}",
+        plan.ops
+    );
+    // Drain+clamp contract: the original predicate stays in the plan as a residual filter so
+    // executor-side fallbacks and seeded skips never lose exact semantics.
+    let residual = plan.ops.iter().any(|op| match op {
+        PlanOp::PropertyFilter { predicates, .. } => predicates.iter().any(|p| {
+            matches!(&p.kind, ExprKind::Compare { op: CmpOp::Ge, .. })
+                && expr_mentions_edge_weight(&p.kind)
+        }),
+        _ => false,
+    });
+    assert!(
+        residual,
+        "range predicate must remain as a residual PropertyFilter, ops={:?}",
+        plan.ops
+    );
+}
+
+fn expr_mentions_edge_weight(kind: &ExprKind) -> bool {
+    match kind {
+        ExprKind::PropertyAccess { property, .. } => property == "weight",
+        ExprKind::Compare { left, right, .. } => {
+            expr_mentions_edge_weight(&left.kind) || expr_mentions_edge_weight(&right.kind)
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn match_edge_equality_wins_over_range_in_leading_edge_scan() {
+    let mut stats = TableStats::default();
+    stats.directional_edge_indexes.push((
+        "REL".to_owned(),
+        "weight".to_owned(),
+        EdgeDirection::PointingRight,
+    ));
+
+    let plan = plan_query_with_stats(
+        "MATCH ()-[e:REL]->(b:User) WHERE e.weight = 3 AND e.weight >= 7 RETURN e, b",
+        &stats,
+    );
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::EdgeIndexScan { cmp: CmpOp::Eq, .. })
+        ),
+        "equality must win the leading edge scan, ops={:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn match_unindexed_edge_range_does_not_emit_index_scan() {
+    let stats = TableStats::default();
+
+    let plan = plan_query_with_stats(
+        "MATCH ()-[e:REL]->(b:User) WHERE e.weight >= 7 RETURN e, b",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+        "unindexed edge range must not emit EdgeIndexScan, ops={:?}",
         plan.ops
     );
 }

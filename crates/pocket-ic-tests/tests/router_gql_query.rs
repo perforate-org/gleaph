@@ -1947,3 +1947,189 @@ fn single_shard_cypher_label_and_type_projections() {
     let typ_row = decode_single_value_row(&typ);
     assert_eq!(typ_row.get("typ"), Some(&Value::Text("KNOWS".to_string())));
 }
+
+/// One-sided and two-sided range predicates on an indexed edge property must return the exact
+/// expected edge sets through the seeded single-shard path (GAP-2026-07-29-003).
+#[test]
+fn single_shard_edge_index_match_range() {
+    const EDGE_RANGE_LABEL: &str = "RangeKnowsSingle";
+    let env = install_single_shard_federation();
+    let weight = ensure_property(&env, "weight");
+    let label = ensure_edge_label(&env, EDGE_RANGE_LABEL);
+
+    // Create before inserts so every edge is posted into the ordered edge index.
+    create_edge_property_index(
+        &env,
+        "pocket_ic_edge_range_weight",
+        EDGE_RANGE_LABEL,
+        "weight",
+        "edge_range_create_weight",
+    );
+
+    const WEIGHT_A: i64 = 10;
+    const WEIGHT_B: i64 = 20;
+    const WEIGHT_C: i64 = 30;
+    const WEIGHT_D: i64 = 40;
+    for value in [WEIGHT_A, WEIGHT_B, WEIGHT_C, WEIGHT_D] {
+        let source = e2e_insert_vertex(&env, env.graph_source);
+        let target = e2e_insert_vertex(&env, env.graph_source);
+        e2e_insert_directed_edge_with_property(
+            &env,
+            env.graph_source,
+            source.local_vertex_id,
+            target.local_vertex_id,
+            label.raw(),
+            weight.raw(),
+            value,
+        );
+    }
+
+    let assert_range_matches = |query: String, expected_weights: &[i64], context: &str| {
+        let result = gql_query_as_admin(&env, &query);
+        let mut got: Vec<i64> = value_rows_from_result(&result)
+            .into_iter()
+            .map(|row| match row.get("w") {
+                Some(Value::Int64(value)) => *value,
+                other => panic!("{context}: expected int column, got {other:?}"),
+            })
+            .collect();
+        got.sort_unstable();
+        let mut expected = expected_weights.to_vec();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "{context}");
+    };
+
+    // One-sided bounds in both directions.
+    assert_range_matches(
+        format!(
+            "MATCH ()-[e:{EDGE_RANGE_LABEL}]->() WHERE e.weight >= {WEIGHT_C} RETURN e.weight AS w"
+        ),
+        &[WEIGHT_C, WEIGHT_D],
+        "edge Ge one-sided range",
+    );
+    assert_range_matches(
+        format!(
+            "MATCH ()-[e:{EDGE_RANGE_LABEL}]->() WHERE e.weight > {WEIGHT_C} RETURN e.weight AS w"
+        ),
+        &[WEIGHT_D],
+        "edge Gt one-sided range",
+    );
+    assert_range_matches(
+        format!(
+            "MATCH ()-[e:{EDGE_RANGE_LABEL}]->() WHERE e.weight <= {WEIGHT_B} RETURN e.weight AS w"
+        ),
+        &[WEIGHT_A, WEIGHT_B],
+        "edge Le one-sided range",
+    );
+    assert_range_matches(
+        format!(
+            "MATCH ()-[e:{EDGE_RANGE_LABEL}]->() WHERE e.weight < {WEIGHT_B} RETURN e.weight AS w"
+        ),
+        &[WEIGHT_A],
+        "edge Lt one-sided range",
+    );
+
+    // Two-sided AND form.
+    assert_range_matches(
+        format!(
+            "MATCH ()-[e:{EDGE_RANGE_LABEL}]->() WHERE e.weight >= {WEIGHT_B} AND e.weight <= {WEIGHT_C} \
+             RETURN e.weight AS w"
+        ),
+        &[WEIGHT_B, WEIGHT_C],
+        "edge two-sided range conjunction",
+    );
+}
+
+/// Federated edge range: one indexed directed edge per shard must both satisfy the seeded
+/// domain-clamped range, and a same-property Text posting must never leak into a numeric
+/// literal's result set (0270 comparison-domain clamp reused across shards).
+#[test]
+fn federated_edge_index_match_range_with_domain_clamp() {
+    const FED_RANGE_LABEL: &str = "FederatedRangeKnows";
+    let env = install_federation();
+    let weight = ensure_property(&env, "weight");
+    let label = ensure_edge_label(&env, FED_RANGE_LABEL);
+
+    create_edge_property_index(
+        &env,
+        "pocket_ic_federated_edge_range_weight",
+        FED_RANGE_LABEL,
+        "weight",
+        "federated_edge_range_create_weight",
+    );
+
+    // One numeric edge per shard.
+    for (shard, value) in [(env.graph_source, 100i64), (env.graph_dest, 200i64)] {
+        let source = e2e_insert_vertex(&env, shard);
+        let target = e2e_insert_vertex(&env, shard);
+        e2e_insert_directed_edge_with_property(
+            &env,
+            shard,
+            source.local_vertex_id,
+            target.local_vertex_id,
+            label.raw(),
+            weight.raw(),
+            value,
+        );
+    }
+
+    // Mixed-domain leakage reuse: TEXT postings under the same property on both shards.
+    let mut text_mutation_key = 0usize;
+    for _shard in [env.graph_source, env.graph_dest] {
+        text_mutation_key += 1;
+        gql_mutate_as_admin(
+            &env,
+            &format!("INSERT (:Person)-[:{FED_RANGE_LABEL} {{weight: 'alpha'}}]->(:Project)"),
+            &format!("federated_edge_range_text_insert_{text_mutation_key}"),
+        );
+    }
+    let assert_weights = |query: String, expected: &[i64], context: &str| {
+        let result = gql_query_as_admin(&env, &query);
+        let mut got: Vec<i64> = Vec::new();
+        for row in value_rows_from_result(&result) {
+            match row.get("w") {
+                // Any non-numeric row inside a numeric literal's result set is exactly the
+                // mixed-domain leakage this assertion exists to catch.
+                Some(Value::Int64(value)) => got.push(*value),
+                other => panic!("{context}: wrong-domain row leaked: {other:?}"),
+            }
+        }
+        got.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "{context}");
+    };
+
+    assert_weights(
+        format!("MATCH ()-[e:{FED_RANGE_LABEL}]->() WHERE e.weight >= 150 RETURN e.weight AS w"),
+        &[200],
+        "federated edge Ge across shards excludes text rows",
+    );
+    assert_weights(
+        format!("MATCH ()-[e:{FED_RANGE_LABEL}]->() WHERE e.weight < 150 RETURN e.weight AS w"),
+        &[100],
+        "federated edge Lt across shards excludes text rows",
+    );
+
+    // The text literal's own domain returns exactly the text rows (one per shard), proving
+    // the clamp is per-literal rather than property-global.
+    let text_result = gql_query_as_admin(
+        &env,
+        &format!(
+            "MATCH ()-[e:{FED_RANGE_LABEL}]->() WHERE e.weight >= 'alpha' RETURN e.weight AS w"
+        ),
+    );
+    let mut got_text: Vec<String> = Vec::new();
+    for row in value_rows_from_result(&text_result) {
+        match row.get("w") {
+            Some(Value::Text(text)) => got_text.push(text.clone()),
+            other => panic!("text range leaked a wrong-domain row: {other:?}"),
+        }
+    }
+    got_text.sort();
+    assert_eq!(
+        got_text,
+        vec!["alpha".to_string(), "alpha".to_string()],
+        "text literal range returns exactly the two text rows (one per shard)"
+    );
+}

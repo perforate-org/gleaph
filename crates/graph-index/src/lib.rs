@@ -40,14 +40,14 @@ pub use gleaph_graph_kernel::index::{
     IndexEqualSpec, IndexLabelIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation,
     IndexSubject, LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
     LabelPostingCursor, LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult,
-    LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    PhysicalIndexId, PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
-    PropertyPostingCursor, RegisterIndexBuildRequest, ValuePostingCountCursor,
-    ValuePostingCountPage,
+    LookupEdgeEqualPageRequest, LookupEdgeRangePageRequest, LookupEqualBatchRequest,
+    LookupEqualBatchResult, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
+    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    LookupValuePostingCountPageRequest, PhysicalIndexId, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyIntersectionPage, PropertyPostingCursor,
+    RegisterIndexBuildRequest, ValuePostingCountCursor, ValuePostingCountPage,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -306,6 +306,11 @@ fn lookup_edge_equal_batch(req: LookupEdgeEqualBatchRequest) -> LookupEdgeEqualB
 #[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePostingHitPage {
     canister::lookup_edge_equal_page(req)
+}
+
+#[query(guard = "guard_router_or_attached_shard_canister")]
+fn lookup_edge_range_page(req: LookupEdgeRangePageRequest) -> EdgePostingHitPage {
+    canister::lookup_edge_range_page(req)
 }
 
 #[query(guard = "guard_router_or_attached_shard_canister")]

@@ -607,6 +607,110 @@ fn executes_datetime_range_index_scan_with_subtype_pinned_between() {
 }
 
 #[test]
+fn executes_edge_range_index_scan_with_domain_clamped_between() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let a = store
+        .insert_vertex_named(["EdgeRangeA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["EdgeRangeB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    store
+        .insert_directed_edge_named(a, b, Some("EdgeRangeRel"), [("weight", Value::Int64(9))])
+        .expect("edge");
+    let pid = crate::test_labels::property_id_for_name("weight").raw();
+    let index = MockPropertyIndex::default();
+    let plan = plan(vec![PlanOp::EdgeIndexScan {
+        variable: "e".into(),
+        property: "weight".into(),
+        value: ScanValue::Literal(Value::Int64(5)),
+        cmp: CmpOp::Ge,
+        property_projection: None,
+    }]);
+
+    let _catalog = crate::test_labels::enter_indexed_edge_property_named("weight");
+    pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute edge range index scan");
+
+    // The one-sided predicate pushes down as a Between interval clamped to the NUMERIC domain
+    // with no label sieve (endpoint binding owns label matching), mirroring the vertex scan.
+    let calls = index.edge_range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, pid);
+    assert_eq!(calls[0].2, None);
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: value_to_index_key_bytes(&Value::Int64(5)).unwrap().unwrap(),
+            high: vec![TAG_NUMERIC + 1],
+        }
+    );
+}
+
+#[test]
+fn edge_range_unsupported_domain_falls_back_to_store_scan_without_index_call() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let a = store
+        .insert_vertex_named(["EdgeRangeFallA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["EdgeRangeFallB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    store
+        .insert_directed_edge_named(
+            a,
+            b,
+            Some("EdgeRangeFallRel"),
+            [("weight", Value::Int64(9))],
+        )
+        .expect("first edge");
+    let c = store
+        .insert_vertex_named(["EdgeRangeFallC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    store
+        .insert_directed_edge_named(
+            a,
+            c,
+            Some("EdgeRangeFallRel"),
+            [("weight", Value::Int64(3))],
+        )
+        .expect("second edge");
+
+    let index = MockPropertyIndex::default();
+    // Bool has no ordered comparison domain: the executor must not push down an open-ended or
+    // clamped request; it scans the canonical EDGE_PROPERTIES superset instead and the plan's
+    // residual filter decides exact matches.
+    let plan = plan(vec![PlanOp::EdgeIndexScan {
+        variable: "e".into(),
+        property: "weight".into(),
+        value: ScanValue::Literal(Value::Bool(true)),
+        cmp: CmpOp::Gt,
+        property_projection: None,
+    }]);
+
+    let _catalog = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute edge range fallback scan");
+
+    assert!(index.edge_range_calls.borrow().is_empty());
+    assert_eq!(result.rows.len(), 2, "superset candidates bind both edges");
+}
+
+#[test]
 fn range_index_scan_returns_no_rows_for_empty_clamped_interval() {
     let store = GraphStore::new();
     configure_test_index(&store);
@@ -2139,6 +2243,7 @@ fn leading_edge_index_scan_binds_matching_edges_and_endpoints() {
             variable: "e".into(),
             property: "weight".into(),
             value: ScanValue::Literal(Value::Int64(5)),
+            cmp: CmpOp::Eq,
             property_projection: None,
         },
         PlanOp::EdgeBindEndpoints {
@@ -2206,6 +2311,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_inline_property_bytes() {
             variable: "e".into(),
             property: "weight".into(),
             value: ScanValue::Literal(Value::Int64(7)),
+            cmp: CmpOp::Eq,
             property_projection: None,
         },
         PlanOp::EdgeBindEndpoints {
@@ -2270,6 +2376,7 @@ fn leading_edge_bind_endpoints_honors_prebound_far_vertex() {
             variable: "e".into(),
             property: "weight".into(),
             value: ScanValue::Literal(Value::Int64(3)),
+            cmp: CmpOp::Eq,
             property_projection: None,
         },
         PlanOp::EdgeBindEndpoints {

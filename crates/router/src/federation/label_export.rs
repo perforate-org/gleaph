@@ -152,6 +152,21 @@ mod tests {
             Box::pin(async { Ok(Vec::new()) })
         }
 
+        fn lookup_edge_range(
+            &self,
+            _physical_index_id: PhysicalIndexId,
+            _property_id: u32,
+            _range: gleaph_graph_kernel::index::PostingRangeRequest,
+            _label_id: Option<u16>,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Vec<gleaph_graph_kernel::index::EdgePostingHit>, String>>
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
         fn count_postings_by_value(
             &self,
             _physical_index_id: PhysicalIndexId,

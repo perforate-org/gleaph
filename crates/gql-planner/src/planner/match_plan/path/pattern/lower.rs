@@ -3,7 +3,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use std::collections::BTreeSet;
 
 use super::super::super::result::flatten_conjunction;
-use super::super::filters::{parse_edge_var_property_equality, quantifier_to_var_len};
+use super::super::filters::{find_first_indexed_edge_range_in_conjunctions, quantifier_to_var_len};
 use crate::anchor::{self, extract_simple_label};
 use crate::path_extensions::{PathPatternExtensionContext, PlanBuildOptions, SingleEdgePathInfo};
 use crate::plan::*;
@@ -307,43 +307,52 @@ fn edge_has_indexed_scannable_equality(
     let Some(stats) = stats else {
         return false;
     };
+    let edge_label_binding = extract_simple_label(&edge.label);
+    let edge_label = edge_label_binding.as_deref();
     for p in &edge.properties {
-        if stats.is_edge_property_indexed_for(
-            extract_simple_label(&edge.label).as_deref(),
-            &p.name,
-            edge.direction,
-        ) && anchor::scan_value_from_expr(&p.value).is_some()
+        if stats.is_edge_property_indexed_for(edge_label, &p.name, edge.direction)
+            && anchor::scan_value_from_expr(&p.value).is_some()
         {
             return true;
         }
     }
     for c in where_conjuncts {
-        if let Some((v, prop, _)) = parse_edge_var_property_equality(c)
-            && v == edge_var
-            && stats.is_edge_property_indexed_for(
-                extract_simple_label(&edge.label).as_deref(),
-                &prop,
-                edge.direction,
-            )
-        {
+        if has_indexed_edge_bound(c, edge_var, edge_label, edge.direction, stats) {
             return true;
         }
     }
     if let Some(w) = &edge.where_clause {
         for c in flatten_conjunction(w) {
-            if let Some((v, prop, _)) = parse_edge_var_property_equality(&c)
-                && v == edge_var
-                && stats.is_edge_property_indexed_for(
-                    extract_simple_label(&edge.label).as_deref(),
-                    &prop,
-                    edge.direction,
-                )
-            {
+            if has_indexed_edge_bound(&c, edge_var, edge_label, edge.direction, stats) {
                 return true;
             }
         }
     }
     false
+}
+
+/// `true` when the conjunct binds an indexed equality or one-sided range bound on this edge.
+fn has_indexed_edge_bound(
+    conjunct: &Expr,
+    edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
+    stats: &dyn GraphStats,
+) -> bool {
+    if let Some((v, prop, _)) = super::super::filters::parse_edge_var_property_equality(conjunct)
+        && v == edge_var
+        && stats.is_edge_property_indexed_for(edge_label, &prop, edge_direction)
+    {
+        return true;
+    }
+    find_first_indexed_edge_range_in_conjunctions(
+        std::slice::from_ref(conjunct),
+        edge_var,
+        edge_label,
+        edge_direction,
+        stats,
+    )
+    .is_some()
 }
 
 pub(super) fn first_hop_supports_leading_edge_index(

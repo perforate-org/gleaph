@@ -556,6 +556,7 @@ pub(crate) fn execute_ops_from<'a>(
                     variable,
                     property,
                     value,
+                    cmp,
                     property_projection: _,
                 } => execute_edge_index_scan(
                     store,
@@ -565,6 +566,7 @@ pub(crate) fn execute_ops_from<'a>(
                     variable,
                     property,
                     value,
+                    *cmp,
                     parameters,
                 )?,
                 PlanOp::EdgeBindEndpoints {

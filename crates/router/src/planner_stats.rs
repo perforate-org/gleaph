@@ -266,6 +266,18 @@ impl GraphStats for RouterGraphStats {
             }
         }
     }
+
+    /// Every Active edge named index is order-preserving encoded and range-capable through the
+    /// edge range endpoint, so edge range capability mirrors equality membership from the same
+    /// Active catalog projection (fail-closed for unindexed properties).
+    fn is_edge_property_range_indexed_for(
+        &self,
+        label: Option<&str>,
+        property: &str,
+        direction: EdgeDirection,
+    ) -> bool {
+        self.is_edge_property_indexed_for(label, property, direction)
+    }
 }
 
 #[cfg(test)]
@@ -380,6 +392,23 @@ mod tests {
             Some("KNOWS"),
             "weight",
             EdgeDirection::Undirected,
+        ));
+        // Edge range capability mirrors the same Active membership source as equality,
+        // including the direction subset rule and fail-closed unindexed names.
+        assert!(stats.is_edge_property_range_indexed_for(
+            Some("KNOWS"),
+            "weight",
+            EdgeDirection::PointingRight,
+        ));
+        assert!(!stats.is_edge_property_range_indexed_for(
+            Some("KNOWS"),
+            "weight",
+            EdgeDirection::Undirected,
+        ));
+        assert!(!stats.is_edge_property_range_indexed_for(
+            Some("KNOWS"),
+            "missing",
+            EdgeDirection::PointingRight,
         ));
     }
     #[test]

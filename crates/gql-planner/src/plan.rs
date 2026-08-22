@@ -393,11 +393,14 @@ pub enum PlanOp {
         property_projection: Option<Rc<[Str]>>,
     },
 
-    /// Equality scan on an indexed edge property.
+    /// Ordered scan on an indexed edge property (`Eq` equality or a one-sided range bound).
+    /// Non-`Eq` bounds carry the original comparison so the executor can derive the
+    /// comparison-domain interval and the Router can lower an edge range seed anchor.
     EdgeIndexScan {
         variable: Str,
         property: Str,
         value: ScanValue,
+        cmp: CmpOp,
         property_projection: Option<Rc<[Str]>>,
     },
 

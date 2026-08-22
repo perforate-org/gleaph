@@ -150,6 +150,21 @@ pub trait PropertyIndexLookup {
         Ok(vec![])
     }
 
+    /// Ordered edge posting range over a domain-clamped `PostingRangeRequest::Between` interval.
+    /// The default keeps native/test clients fail-closed; production clients override it with
+    /// the paginated `lookup_edge_range_page` wire call.
+    async fn lookup_edge_range(
+        &self,
+        _physical_index_id: PhysicalIndexId,
+        _property_id: u32,
+        _req: &PostingRangeRequest,
+        _label_id: Option<u16>,
+    ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
+        Err(PlanQueryError::UnsupportedOp(
+            "edge range lookup is unavailable on this property-index client",
+        ))
+    }
+
     async fn posting_insert(
         &self,
         physical_index_id: PhysicalIndexId,

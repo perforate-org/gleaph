@@ -151,19 +151,14 @@ fn decode_edge_resume(
     Ok(Some(key))
 }
 
+use crate::posting_range::edge_property_bucket_end_exclusive;
+
 /// Exclusive upper bound for the contiguous `property_id` range of edge keys.
 fn edge_property_upper(
     physical_index_id: PhysicalIndexId,
     property_id: u32,
 ) -> Bound<EdgePostingKey> {
-    match property_id.checked_add(1) {
-        Some(next) => Bound::Excluded(EdgePostingKey::prefix_lower(physical_index_id, next, &[])),
-        None => physical_index_id
-            .checked_next()
-            .map_or(Bound::Unbounded, |next| {
-                Bound::Excluded(EdgePostingKey::prefix_lower(next, 0, &[]))
-            }),
-    }
+    edge_property_bucket_end_exclusive(physical_index_id, property_id)
 }
 
 impl IndexStore {

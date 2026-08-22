@@ -109,6 +109,9 @@ pub(super) fn emit_node_inline_filters(var: &str, node: &NodePattern, ops: &mut 
 #[derive(Default, Clone)]
 pub(super) struct EdgeFilterFusion {
     pub(super) indexed_equality: Option<(Str, ScanValue)>,
+    /// One-sided range bound fused into a leading `EdgeIndexScan`; the original predicate is
+    /// retained as a residual filter so correctness never depends on pushdown succeeding.
+    pub(super) indexed_range: Option<(Str, ScanValue, CmpOp)>,
     pub(super) edge_inline_property_predicate: Option<EdgeInlinePropertyPredicate>,
     pub(super) edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
     pub(super) skip_inline_prop: Option<String>,
@@ -207,6 +210,33 @@ pub(super) fn plan_edge_filter_fusion(
             conj.remove(idx);
             out.indexed_equality = Some((prop.into(), sv));
             out.edge_where_override = Some(conj);
+        }
+    }
+
+    // One-sided range fusion: the predicate stays in place (residual filter) so an
+    // executor-side fallback for unsupported comparison domains remains correct.
+    if out.indexed_equality.is_none() {
+        let edge_label_binding = extract_simple_label(&edge.label);
+        let edge_label = edge_label_binding.as_deref();
+        if let Some((prop, sv, cmp)) = find_first_indexed_edge_range_in_conjunctions(
+            where_conjuncts,
+            edge_var,
+            edge_label,
+            edge.direction,
+            stats,
+        ) {
+            out.indexed_range = Some((prop.into(), sv, cmp));
+        } else if let Some(where_clause) = edge.where_clause.as_ref() {
+            let conj = flatten_conjunction(where_clause);
+            if let Some((prop, sv, cmp)) = find_first_indexed_edge_range_in_conjunctions(
+                &conj,
+                edge_var,
+                edge_label,
+                edge.direction,
+                stats,
+            ) {
+                out.indexed_range = Some((prop.into(), sv, cmp));
+            }
         }
     }
 
@@ -350,6 +380,46 @@ pub(super) fn parse_edge_var_property_equality(expr: &Expr) -> Option<(String, S
         && let Some((v, property)) = edge_property_access_path(left)
     {
         return anchor::scan_value_from_expr(right).map(|sv| (v.clone(), property.clone(), sv));
+    }
+    None
+}
+
+/// Parse `e.prop <cmp> <literal|$param>` with a one-sided range comparison; the property side may
+/// also appear on the right (comparison flipped).
+pub(super) fn parse_edge_var_property_range(
+    expr: &Expr,
+) -> Option<(String, String, ScanValue, CmpOp)> {
+    if let ExprKind::Compare { left, op, right } = &expr.kind
+        && matches!(op, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge)
+    {
+        if let Some((v, property)) = edge_property_access_path(left)
+            && let Some(sv) = anchor::range_scan_value_from_expr(right)
+        {
+            return Some((v.clone(), property.clone(), sv, *op));
+        }
+        if let Some((v, property)) = edge_property_access_path(right)
+            && let Some(sv) = anchor::range_scan_value_from_expr(left)
+        {
+            return Some((v.clone(), property.clone(), sv, anchor::reverse_cmp(*op)));
+        }
+    }
+    None
+}
+
+pub(super) fn find_first_indexed_edge_range_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
+    stats: &dyn GraphStats,
+) -> Option<(String, ScanValue, CmpOp)> {
+    for c in conjuncts {
+        if let Some((v, p, sv, cmp)) = parse_edge_var_property_range(c)
+            && v == edge_var
+            && stats.is_edge_property_range_indexed_for(edge_label, &p, edge_direction)
+        {
+            return Some((p, sv, cmp));
+        }
     }
     None
 }

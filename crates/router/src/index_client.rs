@@ -141,6 +141,30 @@ impl RouterIndexClient {
         }
     }
 
+    pub async fn lookup_edge_range_page(
+        &self,
+        req: gleaph_graph_kernel::index::LookupEdgeRangePageRequest,
+    ) -> Result<EdgePostingHitPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let page: EdgePostingHitPage =
+                Call::bounded_wait(self.index_canister, "lookup_edge_range_page")
+                    .with_args(&(req,))
+                    .await
+                    .map_err(|e| format!("lookup_edge_range_page: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_edge_range_page decode: {e}"))?;
+            Ok(page)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_edge_range_page unavailable in native builds".into())
+        }
+    }
+
     pub async fn count_postings_by_value_page(
         &self,
         req: LookupValuePostingCountPageRequest,

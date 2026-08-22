@@ -223,19 +223,31 @@ pub(super) fn plan_path_term(
                         false,
                         &mut wc_clone,
                     );
+                    // Equality fuses first; a one-sided indexed range bound is the fallback.
+                    let leading_scan_bound = fusion_on_clone
+                        .indexed_equality
+                        .as_ref()
+                        .map(|(prop, value)| (prop.clone(), value.clone(), CmpOp::Eq))
+                        .or_else(|| {
+                            fusion_on_clone
+                                .indexed_range
+                                .as_ref()
+                                .map(|(prop, value, cmp)| (prop.clone(), value.clone(), *cmp))
+                        });
                     let use_leading = try_leading
-                        && fusion_on_clone.indexed_equality.is_some()
+                        && leading_scan_bound.is_some()
                         && var_len.is_none()
                         && label_expr.is_none();
 
                     if use_leading {
                         *where_conjuncts = wc_clone;
                         let (_, _, near_node) = pending_deferred_first_scan.take().unwrap();
-                        let (prop, scan_val) = fusion_on_clone.indexed_equality.as_ref().unwrap();
+                        let (prop, scan_val, scan_cmp) = leading_scan_bound.unwrap();
                         ops.push(PlanOp::EdgeIndexScan {
                             variable: edge_str.clone(),
                             property: prop.clone(),
                             value: scan_val.clone(),
+                            cmp: scan_cmp,
                             property_projection: None,
                         });
                         ops.push(PlanOp::EdgeBindEndpoints {

@@ -320,7 +320,7 @@ pub(crate) fn extract_equality_predicate(expr: &Expr) -> Option<(String, String)
     None
 }
 
-fn reverse_cmp(op: CmpOp) -> CmpOp {
+pub(crate) fn reverse_cmp(op: CmpOp) -> CmpOp {
     match op {
         CmpOp::Lt => CmpOp::Gt,
         CmpOp::Le => CmpOp::Ge,
@@ -330,7 +330,7 @@ fn reverse_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-fn range_scan_value_from_expr(expr: &Expr) -> Option<ScanValue> {
+pub(crate) fn range_scan_value_from_expr(expr: &Expr) -> Option<ScanValue> {
     match &expr.kind {
         ExprKind::Literal(value) => scan_value_from_literal_value(value),
         ExprKind::ListLiteral(_)

@@ -969,7 +969,7 @@ duplicate its state machine or ownership rules.
 | -------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
 | P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — GAP-2026-07-29-006; ADR 0059 production driver implemented, E2E validation pending |
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | GAP-2026-07-29-004 open; GAP-2026-07-29-002 closed 2026-08-21                                |
-| P1       | Add edge range postings, Router seed planning, and execution support                       | Open — GAP-2026-07-29-003                                                                    |
+| P1       | Add edge range postings, Router seed planning, and execution support                       | Closed 2026-08-22 — GAP-2026-07-29-003 (see entry)                                           |
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
 | P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Planned — GAP-2026-07-29-005                                                                 |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
@@ -1037,7 +1037,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-003 — Edge range index has no query/planner path
 
-- **Status:** Open
+- **Status:** Closed — implemented (2026-08-22)
 - **Severity:** P1 query capability
 - **Owner:** Graph-index edge posting API, Router edge seed planning, and Graph edge candidate execution
 - **Observed behavior:** Edge postings support equality lookup and paged equality lookup, but no
@@ -1046,15 +1046,31 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 - **Expected or needed behavior:** An edge property declared indexable should support the same
   encoded ordering contract for bounded range predicates, including label/direction scoping and
   resumable pages, before the planner emits an edge range scan.
-- **Evidence:** `crates/graph-index/src/facade/store/edge_postings.rs` exposes
-  `lookup_edge_equal` / `lookup_edge_equal_page`; `crates/router/src/planner_stats.rs` exposes only
-  edge equality membership; no `lookup_edge_range` symbol exists in `crates/graph-index` or
-  `crates/router`.
-- **Impact:** `COST BY e.stats.field` and edge filters can use an equality index, but a numeric range
-  predicate on an edge property cannot use the existing ordered posting storage.
-- **Next decision:** Reuse the existing sortable encoded value and `StableBTreeMap::range()`
-  primitive, adding an edge-specific cursor/request that preserves `(label_id, shard_id,
-owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
+- **Implemented behavior:** The ledger next-decision was adopted. graph-index gained the paginated
+  ordered endpoint `lookup_edge_range_page`
+  (`crates/graph-index/src/facade/store/edge_postings.rs`, key bounds derived in
+  `crates/graph-index/src/posting_range.rs::edge_posting_key_half_open_range`) preserving the full
+  `(physical_index_id, property_id, value, label_id, shard_id, owner_vertex_id, slot_index)` order
+  with an in-canister wire-label sieve and the existing direction subset rule; kernel request type
+  `LookupEdgeRangePageRequest` reuses `PostingRangeRequest` and the `EdgePostingCursor`. The Router
+  projects edge range capability from the same Active edge catalog membership as equality
+  (`RouterGraphStats::is_edge_property_range_indexed_for`, fail-closed), lowers one-sided leading
+  range predicates to `IndexAnchor::EdgeRange(EdgeRangeSeedProbe)` and executes them drain+clamp:
+  pages are drained within the 0270 comparison-domain interval (`gql::range_bounds_for_encoded_key`)
+  and residual predicates stay as filters — no cursor state survives the call. The planner emits
+  one-sided `PlanOp::EdgeIndexScan{cmp}` via the leading-edge fusion path (equality wins first),
+  retaining the original predicate as a residual filter. The single-shard executor clamps through
+  the shared helper and falls back to a canonical `EDGE_PROPERTIES` filtered superset scan for
+  unsupported comparison domains.
+- **Evidence:** storage contracts
+  `crates/graph-index/src/facade/store/tests.rs::lookup_edge_range_page_*`; router contracts
+  `crates/router/src/seed.rs::edge_range_scan_anchor_*`,
+  `crates/router/src/gql.rs::edge_range_seed_probe_*`; planner contracts
+  `crates/gql-planner/tests/planner_tests.rs::match_edge_range_anchor_*`; executor contract
+  `crates/graph/src/plan/query/executor/scan/tests.rs::executes_edge_range_index_scan_with_domain_clamped_between`;
+  runtime `crates/pocket-ic-tests/tests/router_gql_query.rs::single_shard_edge_index_match_range`
+  and `federated_edge_index_match_range_with_domain_clamp`.
+- **Next decision:** None open; `!=` complement policy remains Slice D.
 
 ### GAP-2026-07-29-004 — INLINE removal/NULL transitions need explicit posting semantics
 

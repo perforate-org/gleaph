@@ -1,11 +1,14 @@
-//! Leading-edge equality index scan and endpoint binding.
+//! Leading-edge equality/range index scan and endpoint binding.
 
 use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
+use gleaph_gql::ValueIndexKeyError;
+use gleaph_gql::ast::CmpOp;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
+use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::CsrEdge;
 
@@ -102,16 +105,21 @@ pub(crate) fn execute_edge_index_scan(
     variable: &Str,
     property: &Str,
     scan_value: &ScanValue,
+    cmp: CmpOp,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let property_id = gleaph_graph_kernel::entry::PropertyId::from_raw(property_id_for_scan(
         execution,
         property.as_ref(),
     )?);
-    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
-        return Ok(Vec::new());
+    let postings = if cmp == CmpOp::Eq {
+        let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
+            return Ok(Vec::new());
+        };
+        edge_lookup::lookup_edge_equal_local_sync(index, property_id, &expected, None)?
+    } else {
+        execute_edge_index_range_candidates(index, property_id, scan_value, cmp, parameters)?
     };
-    let postings = edge_lookup::lookup_edge_equal_local_sync(index, property_id, &expected, None)?;
     if postings.is_empty() {
         return Ok(Vec::new());
     }
@@ -131,6 +139,48 @@ pub(crate) fn execute_edge_index_scan(
         }
     }
     Ok(out)
+}
+
+/// Candidate postings for a one-sided range bound, mirroring the vertex scan contract:
+/// a comparison-domain-clamped `Between` interval when the literal's domain is ordered, zero
+/// candidates for an empty interval, and the filtered canonical-store superset (exactness
+/// enforced by the plan's residual filter) for unsupported domains.
+fn execute_edge_index_range_candidates(
+    index: Option<&dyn PropertyIndexLookup>,
+    property_id: gleaph_graph_kernel::entry::PropertyId,
+    scan_value: &ScanValue,
+    cmp: CmpOp,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Vec<edge_lookup::LocalEdgePosting>, PlanQueryError> {
+    let value = super::index::resolve_scan_bound_value(scan_value, parameters)?;
+    match gleaph_gql::value_index_key::range_bounds(&value, cmp) {
+        Ok((low, high)) if low < high => {
+            for bound in [&low, &high] {
+                if bound.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                    return Err(PlanQueryError::InvalidExpressionValue {
+                        expression: "index range bound exceeds maximum encoded size".to_owned(),
+                    });
+                }
+            }
+            pollster::block_on(edge_lookup::lookup_edge_range_local(
+                index,
+                property_id,
+                &low,
+                &high,
+                None,
+            ))
+        }
+        // The domain-clamped interval is empty: no posting can satisfy the comparison.
+        Ok(_) => Ok(Vec::new()),
+        // Unsupported comparison domain (Bool/List/Record/Path/Extension/Duration): do not
+        // push down; the plan's residual filter enforces the predicate over the candidates.
+        Err(ValueIndexKeyError::UnsupportedRangeDomain) => Ok(
+            edge_lookup::lookup_edge_range_fallback_local(property_id, None),
+        ),
+        Err(err) => Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("edge index scan range bound: {err}"),
+        }),
+    }
 }
 
 pub(crate) fn execute_edge_bind_endpoints(

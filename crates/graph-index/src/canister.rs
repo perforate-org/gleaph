@@ -14,13 +14,14 @@ use gleaph_graph_kernel::index::{
     IndexBuildDmlRequest, IndexBuildError, IndexBuildSealRequest, IndexBuildSealStatus,
     IndexBuildStatus, IndexPostingBatchProgress, IndexPostingMutation,
     LabelIntersectionPageRequest, LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult,
-    LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    PhysicalIndexId, PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
-    RegisterIndexBuildRequest, ValuePostingCountPage,
+    LookupEdgeEqualPageRequest, LookupEdgeRangePageRequest, LookupEqualBatchRequest,
+    LookupEqualBatchResult, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
+    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    LookupValuePostingCountPageRequest, PhysicalIndexId, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyIntersectionPage, RegisterIndexBuildRequest,
+    ValuePostingCountPage,
 };
 use ic_cdk::api::msg_caller;
 
@@ -459,6 +460,15 @@ pub(crate) fn lookup_edge_equal_batch(
 pub(crate) fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePostingHitPage {
     IndexStore::new()
         .lookup_edge_equal_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_edge_range_page(req: LookupEdgeRangePageRequest) -> EdgePostingHitPage {
+    IndexStore::new()
+        .lookup_edge_range_page(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

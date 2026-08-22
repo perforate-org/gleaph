@@ -1,9 +1,11 @@
-//! Half-open `[low, high)` bounds over [`PostingKey`] for ordering comparisons on encoded values.
+//! Half-open `[low, high)` bounds over [`PostingKey`] and [`EdgePostingKey`] for ordering
+//! comparisons on encoded values.
 //!
 //! The upper bound is a [`Bound`] so the terminal `(u64::MAX, u32::MAX)` property bucket — whose
 //! lexicographic successor does not exist — scans to `Bound::Unbounded` instead of being treated
 //! as empty. The purge module (`facade/store/posting_purge.rs`) uses the same pattern.
 
+use crate::edge_key::EdgePostingKey;
 use crate::key::PostingKey;
 use gleaph_graph_kernel::index::{PhysicalIndexId, PostingRangeRequest};
 use std::ops::Bound;
@@ -89,6 +91,88 @@ pub(crate) fn posting_key_half_open_range(
         PostingRangeRequest::Between { low, high } => {
             let low_key = PostingKey::prefix_lower(physical_index_id, property_id, low);
             let high_key = PostingKey::prefix_lower(physical_index_id, property_id, high);
+            (low_key, Bound::Excluded(high_key))
+        }
+    }
+}
+
+/// Exclusive upper bound for the contiguous `(physical_index_id, property_id)` range of edge keys.
+pub(crate) fn edge_property_bucket_end_exclusive(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+) -> Bound<EdgePostingKey> {
+    match property_id.checked_add(1) {
+        Some(next) => Bound::Excluded(EdgePostingKey::prefix_lower(physical_index_id, next, &[])),
+        None => physical_index_id
+            .checked_next()
+            .map_or(Bound::Unbounded, |next| {
+                Bound::Excluded(EdgePostingKey::prefix_lower(next, 0, &[]))
+            }),
+    }
+}
+
+fn edge_property_min(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    label_id: Option<u16>,
+) -> EdgePostingKey {
+    match label_id {
+        Some(label) => {
+            EdgePostingKey::prefix_lower_labeled(physical_index_id, property_id, &[], label)
+        }
+        None => EdgePostingKey::prefix_lower(physical_index_id, property_id, &[]),
+    }
+}
+
+fn edge_value_bound(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: &[u8],
+    label_id: Option<u16>,
+) -> EdgePostingKey {
+    match label_id {
+        Some(label) => {
+            EdgePostingKey::prefix_lower_labeled(physical_index_id, property_id, value, label)
+        }
+        None => EdgePostingKey::prefix_lower(physical_index_id, property_id, value),
+    }
+}
+
+/// Half-open edge posting key range `[low, high)` covering an encoded-value predicate for one
+/// edge property bucket. When `label_id` is set the bounds pin that wire label; postings with
+/// other labels inside the value interval are sieved by the caller during iteration.
+pub(crate) fn edge_posting_key_half_open_range(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    req: &PostingRangeRequest,
+    label_id: Option<u16>,
+) -> (EdgePostingKey, Bound<EdgePostingKey>) {
+    let high_bucket = edge_property_bucket_end_exclusive(physical_index_id, property_id);
+
+    match req {
+        PostingRangeRequest::Ge(b) => {
+            let low = edge_value_bound(physical_index_id, property_id, b, label_id);
+            (low, high_bucket)
+        }
+        PostingRangeRequest::Gt(b) => {
+            let low =
+                edge_value_bound(physical_index_id, property_id, &lex_succ_bytes(b), label_id);
+            (low, high_bucket)
+        }
+        PostingRangeRequest::Le(b) => {
+            let low = edge_property_min(physical_index_id, property_id, label_id);
+            let high =
+                edge_value_bound(physical_index_id, property_id, &lex_succ_bytes(b), label_id);
+            (low, Bound::Excluded(high))
+        }
+        PostingRangeRequest::Lt(b) => {
+            let low = edge_property_min(physical_index_id, property_id, label_id);
+            let high = edge_value_bound(physical_index_id, property_id, b, label_id);
+            (low, Bound::Excluded(high))
+        }
+        PostingRangeRequest::Between { low, high } => {
+            let low_key = edge_value_bound(physical_index_id, property_id, low, label_id);
+            let high_key = edge_value_bound(physical_index_id, property_id, high, label_id);
             (low_key, Bound::Excluded(high_key))
         }
     }

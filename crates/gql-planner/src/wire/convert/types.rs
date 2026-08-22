@@ -32,6 +32,7 @@ pub enum PlanOpWire {
         variable: String,
         property: String,
         value: ScanValueWire,
+        cmp: CmpOp,
         property_projection: Option<Vec<String>>,
     },
     EdgeBindEndpoints {
