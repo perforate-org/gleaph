@@ -245,6 +245,8 @@ If probe is **None**:
 
 **Implemented:** `IndexIntersection` anchors via `IndexAnchor::from_plans` and `lookup_intersection` with the same per-shard slice as `IndexScan`.
 
+**`!=` predicates never form anchors.** `CmpOp::Ne` is served by residual filtering over whatever scan produced candidates; this is recorded policy, not an omission — see [ADR 0072](../adr/0072-ne-complement-index-policy.md) for the decision, its NULL/three-valued-logic invariant, and the triggers that would reopen it.
+
 ## Target: Router owns index reads
 
 In the federation target, **graph shards do not call the index on the query hot path**. Router performs `lookup_equal` / `lookup_intersection`, slices `PostingHit` by `shard_id`, and passes seeds to each graph shard.
