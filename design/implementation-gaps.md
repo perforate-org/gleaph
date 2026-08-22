@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 12:52:45 UTC +0000
+Anchor timestamp: 2026-08-22 14:25:26 UTC +0000
 
 ## Status
 
@@ -669,7 +669,21 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-31-001 - Prepared sort variants are not retained in the heap cache
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22; bounded heap cache
+  `PREPARED_SORTED_CACHE` keyed by `(PreparedPlanKey, PreparedSortSignature)` — the signature is
+  validated once by `normalize_prepared_sort` (the single source of truth shared with AST
+  injection): direction text canonicalized case-insensitively, allowed keys exact-matched and
+  deduplicated, term order preserved because `ORDER BY a, b` and `ORDER BY b, a` are different
+  plans. Cap 128 entries with smallest-key eviction on insert; invalidated on upsert replacement,
+  `drop_prepared`, and post-upgrade rebuild (variants rebuild lazily). Stable storage keeps only
+  query source + metadata per ADR 0053's heap-cache principle, so no stable-layout change.
+  Measured `bench_prepared_sorted_variant_rebuild` 318.12K vs
+  `bench_prepared_sorted_variant_cache_hit` 29.50K instructions (~10.8x reduction).
+  Owning tests: hit-path mutation discriminator (`sorted_variant_cache_hits_normalized_signature`
+  fails if the wrapper re-plans), distinct term-order/direction entries, upsert/drop/upgrade
+  invalidation, cap eviction, and unchanged validation-error contracts. Router unfiltered
+  `canbench --persist` deferred while the crate's benchmark artifact carries a parallel stream's
+  in-flight measurements; resume with `cd crates/router && canbench --persist`.)
 - **Severity:** P2 prepared-query performance gap
 - **Owner:** Router prepared-query heap cache
 - **Observed behavior:** The Router keeps the unsorted prepared plan in the heap cache. When a caller supplies a non-empty sort specification, the Router validates the metadata and rebuilds a derived plan for that invocation; equivalent sort specifications are not cached as separate heap entries.

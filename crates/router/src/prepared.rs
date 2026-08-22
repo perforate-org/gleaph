@@ -36,21 +36,50 @@ use crate::vector_sync;
 
 const POST_UPGRADE_PREPARED_CACHE_LIMIT: usize = 32;
 
+/// Maximum number of derived sorted plans retained in heap cache. Insertion
+/// past this cap evicts the smallest `(plan, signature)` key, so a long-lived
+/// canister cannot grow the map without limit (GAP-2026-07-31-001).
+const PREPARED_SORTED_CACHE_LIMIT: usize = 128;
+
 /// Maximum number of operations accepted by one [`prepare`] batch (ADR 0061).
 pub const MAX_PREPARED_BATCH: usize = 32;
 
-#[derive(Clone)]
-struct PreparedQueryCache {
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedQueryCache {
     _program: gleaph_gql::ast::GqlProgram,
     _comments: Vec<gleaph_gql::token::Comment>,
-    plan: PhysicalPlan,
-    plan_blob: Vec<u8>,
+    pub(crate) plan: PhysicalPlan,
+    pub(crate) plan_blob: Vec<u8>,
     requires_write_path: bool,
 }
 
 enum PreparedCacheEntry {
     Ready(Box<PreparedQueryCache>),
     Failed(String),
+}
+
+/// One validated term of a caller-selected prepared ordering: the allowed key
+/// text plus its normalized direction.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PreparedSortTerm {
+    key: String,
+    descending: bool,
+}
+
+/// Cache-key identity of one normalized sort specification. Term order is
+/// preserved because `ORDER BY a ASC, b DESC` and `ORDER BY b DESC, a ASC`
+/// are different plans.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PreparedSortSignature(Vec<PreparedSortTerm>);
+
+thread_local! {
+    /// Derived sorted plans keyed by `(operation, normalized sort signature)`.
+    /// Heap-only derived state (ADR 0053): stable storage keeps only the query
+    /// source and metadata, and every entry rebuilds lazily after an upgrade
+    /// or an upsert invalidation.
+    static PREPARED_SORTED_CACHE:
+        RefCell<BTreeMap<(PreparedPlanKey, PreparedSortSignature), PreparedQueryCache>> =
+        const { RefCell::new(BTreeMap::new()) };
 }
 
 thread_local! {
@@ -228,7 +257,10 @@ pub(crate) fn prepare_batch_core(
     // Phase 2: commit every stable record and heap-cache entry only after all operations planned.
     for (key, record, cache) in committed {
         insert_prepared_plan(key.clone(), record);
-        insert_prepared_cache(key, PreparedCacheEntry::Ready(Box::new(cache)));
+        insert_prepared_cache(key.clone(), PreparedCacheEntry::Ready(Box::new(cache)));
+        // The source and metadata were just replaced: derived sorted plans of
+        // the previous generation must not survive.
+        invalidate_prepared_sorted_variants(&key);
     }
     Ok(())
 }
@@ -265,7 +297,7 @@ fn validate_prepared_metadata(
     Ok(())
 }
 
-fn build_prepared_cache(
+pub(crate) fn build_prepared_cache(
     query: &str,
     caller: Principal,
     forced_graph_id: Option<GraphId>,
@@ -339,6 +371,7 @@ fn prepare_cache_for_execution(
 /// pass prevents a large catalog from exhausting the post-upgrade instruction budget.
 pub(crate) fn rebuild_prepared_caches_after_upgrade() {
     PREPARED_QUERY_CACHE.with_borrow_mut(|cache| cache.clear());
+    PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| sorted.clear());
     let records = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
         plans
             .iter()
@@ -402,11 +435,18 @@ pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, Rou
 
 pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
+    drop_prepared_core(name)
+}
+
+/// Read-back for [`drop_prepared`], exposed separately so unit tests can drive
+/// it directly without an IC message context.
+fn drop_prepared_core(name: &str) -> Result<(), RouterError> {
     let key = PreparedPlanKey::new(name);
     if get_prepared_plan(&key).is_none() {
         return Err(RouterError::NotFound(format!("prepared query {name:?}")));
     }
     remove_prepared_plan(&key);
+    invalidate_prepared_sorted_variants(&key);
     Ok(())
 }
 
@@ -519,9 +559,14 @@ async fn prepared_run_unchecked(
     let graph_id = v1.graph_id;
     let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
     let cache = match sort {
-        Some(sort) if !sort.is_empty() => {
-            prepare_sorted_cache(&cache, v1.metadata.as_ref(), sort, caller, graph_id)?
-        }
+        Some(sort) if !sort.is_empty() => prepared_sorted_cache_for_execution(
+            &cache,
+            &key,
+            v1.metadata.as_ref(),
+            sort,
+            caller,
+            graph_id,
+        )?,
         _ => cache,
     };
     check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
@@ -579,27 +624,22 @@ async fn prepared_run_unchecked(
     .await
 }
 
-fn prepare_sorted_cache(
-    base: &PreparedQueryCache,
-    metadata: Option<&PreparedOperation>,
+/// Validate caller-supplied sort specifications against operation metadata and
+/// normalize them. This is the single source of truth for both the AST
+/// injection order and the sorted-plan cache-key identity: direction text is
+/// case-insensitively canonicalized, keys must be declared in `allowed_sorts`
+/// exactly once, and the caller's term order is preserved.
+fn normalize_prepared_sort(
+    metadata: &PreparedOperation,
     sort: &[PreparedSortSpec],
-    caller: Principal,
-    graph_id: GraphId,
-) -> Result<PreparedQueryCache, RouterError> {
-    let metadata = metadata.ok_or_else(|| {
-        RouterError::InvalidArgument("prepared sort requires operation metadata".into())
-    })?;
-    if metadata.kind != OperationKind::Query {
-        return Err(RouterError::InvalidArgument(
-            "prepared sort is only supported for query operations".into(),
-        ));
-    }
+) -> Result<(PreparedSortSignature, Vec<gleaph_gql::ast::SortItem>), RouterError> {
     let allowed: std::collections::BTreeSet<&str> = metadata
         .allowed_sorts
         .iter()
         .map(|key| key.key.as_str())
         .collect();
     let mut seen = std::collections::BTreeSet::new();
+    let mut terms = Vec::with_capacity(sort.len());
     let mut items = Vec::with_capacity(sort.len());
     for spec in sort {
         if !allowed.contains(spec.key.as_str()) {
@@ -614,9 +654,9 @@ fn prepare_sorted_cache(
                 spec.key
             )));
         }
-        let direction = match spec.direction.to_ascii_lowercase().as_str() {
-            "asc" | "ascending" => gleaph_gql::ast::SortDirection::Asc,
-            "desc" | "descending" => gleaph_gql::ast::SortDirection::Desc,
+        let descending = match spec.direction.to_ascii_lowercase().as_str() {
+            "asc" | "ascending" => false,
+            "desc" | "descending" => true,
             _ => {
                 return Err(RouterError::InvalidArgument(format!(
                     "invalid prepared sort direction {:?}",
@@ -624,13 +664,106 @@ fn prepare_sorted_cache(
                 )));
             }
         };
+        terms.push(PreparedSortTerm {
+            key: spec.key.clone(),
+            descending,
+        });
         items.push(gleaph_gql::ast::SortItem {
             span: gleaph_gql::token::Span::DUMMY,
             expr: gleaph_gql::ast::Expr::var(&spec.key),
-            direction: Some(direction),
+            direction: Some(if descending {
+                gleaph_gql::ast::SortDirection::Desc
+            } else {
+                gleaph_gql::ast::SortDirection::Asc
+            }),
             null_order: None,
         });
     }
+    Ok((PreparedSortSignature(terms), items))
+}
+
+fn cached_prepared_sorted_cache(
+    plan_key: &PreparedPlanKey,
+    signature: &PreparedSortSignature,
+) -> Option<PreparedQueryCache> {
+    PREPARED_SORTED_CACHE
+        .with_borrow(|cache| cache.get(&(plan_key.clone(), signature.clone())).cloned())
+}
+
+fn insert_prepared_sorted_cache(
+    plan_key: PreparedPlanKey,
+    signature: PreparedSortSignature,
+    cache: PreparedQueryCache,
+) {
+    PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| {
+        if sorted.len() >= PREPARED_SORTED_CACHE_LIMIT
+            && !sorted.contains_key(&(plan_key.clone(), signature.clone()))
+        {
+            sorted.pop_first();
+        }
+        sorted.insert((plan_key, signature), cache);
+    });
+}
+
+/// Drop every derived sorted plan for one operation. Called when an upsert
+/// replaces the underlying source or the operation is removed, so a stale
+/// derived plan can never outlive its base record.
+fn invalidate_prepared_sorted_variants(plan_key: &PreparedPlanKey) {
+    PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| {
+        let stale: Vec<_> = sorted
+            .keys()
+            .filter(|(key, _)| key == plan_key)
+            .cloned()
+            .collect();
+        for entry in stale {
+            sorted.remove(&entry);
+        }
+    });
+}
+
+/// Return the heap-cached derived plan for one normalized sort specification,
+/// rebuilding and caching it on miss (GAP-2026-07-31-001).
+pub(crate) fn prepared_sorted_cache_for_execution(
+    base: &PreparedQueryCache,
+    plan_key: &PreparedPlanKey,
+    metadata: Option<&PreparedOperation>,
+    sort: &[PreparedSortSpec],
+    caller: Principal,
+    graph_id: GraphId,
+) -> Result<PreparedQueryCache, RouterError> {
+    let metadata = metadata.ok_or_else(|| {
+        RouterError::InvalidArgument("prepared sort requires operation metadata".into())
+    })?;
+    if metadata.kind != OperationKind::Query {
+        return Err(RouterError::InvalidArgument(
+            "prepared sort is only supported for query operations".into(),
+        ));
+    }
+    let (signature, _) = normalize_prepared_sort(metadata, sort)?;
+    if let Some(cached) = cached_prepared_sorted_cache(plan_key, &signature) {
+        return Ok(cached);
+    }
+    let derived = prepare_sorted_cache(base, Some(metadata), sort, caller, graph_id)?;
+    insert_prepared_sorted_cache(plan_key.clone(), signature, derived.clone());
+    Ok(derived)
+}
+
+pub(crate) fn prepare_sorted_cache(
+    base: &PreparedQueryCache,
+    metadata: Option<&PreparedOperation>,
+    sort: &[PreparedSortSpec],
+    caller: Principal,
+    graph_id: GraphId,
+) -> Result<PreparedQueryCache, RouterError> {
+    let metadata = metadata.ok_or_else(|| {
+        RouterError::InvalidArgument("prepared sort requires operation metadata".into())
+    })?;
+    if metadata.kind != OperationKind::Query {
+        return Err(RouterError::InvalidArgument(
+            "prepared sort is only supported for query operations".into(),
+        ));
+    }
+    let (_signature, items) = normalize_prepared_sort(metadata, sort)?;
 
     let mut program = base._program.clone();
     let tx = program
@@ -707,7 +840,8 @@ mod tests {
     use crate::state::RouterError;
     use gleaph_graph_kernel::entry::GraphId;
     use gleaph_prepared_api::{
-        OperationKind, PreparedOperation, PreparedRegistration, ResultSchema, SemanticType,
+        Column, OperationKind, PreparedOperation, PreparedRegistration, PreparedSortSpec,
+        ResultSchema, SemanticType, SortKey,
     };
 
     #[test]
@@ -1073,5 +1207,306 @@ mod tests {
         home_graph(owner, "get-prepared-missing");
         let error = get_prepared_core("nope").expect_err("missing must fail");
         assert!(matches!(error, RouterError::NotFound(_)));
+    }
+}
+
+#[cfg(test)]
+mod sorted_variant_cache_tests {
+    use super::*;
+    use candid::Principal;
+    use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+    use gleaph_prepared_api::{Column, ResultSchema, SemanticType, SortKey};
+
+    /// Registers one graph and one query-kind prepared operation whose
+    /// `allowed_sorts` are `allowed_keys`, returning the pieces the execution
+    /// wrapper needs. The base plan is built through the production planning
+    /// seam so cache hits exercise the same shapes as runtime.
+    fn sorted_variant_fixture(
+        unique: &str,
+        graph_raw: u32,
+        query: &str,
+        allowed_keys: &[&str],
+    ) -> (
+        Principal,
+        GraphId,
+        PreparedPlanKey,
+        PreparedOperation,
+        PreparedQueryCache,
+    ) {
+        let store = crate::facade::store::RouterStore::new();
+        let owner = Principal::from_slice(&[11u8, graph_raw as u8, 0, 0, 0, 0, 0, 0, 0]);
+        let graph_id = GraphId::from_raw(graph_raw);
+        crate::facade::auth::grant_admins(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id,
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+                &format!("sorted-variant-{unique}"),
+            )
+            .expect("register fixture graph");
+        let metadata = PreparedOperation {
+            name: unique.to_string(),
+            description: None,
+            kind: OperationKind::Query,
+            parameters: vec![],
+            result: ResultSchema {
+                columns: vec![Column {
+                    name: "n".into(),
+                    semantic_type: SemanticType::Text,
+                    nullable: false,
+                }],
+            },
+            supports_consistency: false,
+            supports_idempotency: false,
+            allowed_sorts: allowed_keys
+                .iter()
+                .map(|key| SortKey {
+                    key: (*key).to_string(),
+                    label: None,
+                })
+                .collect(),
+        };
+        let key = PreparedPlanKey::new(unique);
+        insert_prepared_plan(
+            key.clone(),
+            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                graph_id,
+                query: query.to_string(),
+                metadata: Some(metadata.clone()),
+            }),
+        );
+        let (base, planned) =
+            build_prepared_cache(&query, owner, Some(graph_id)).expect("fixture base plan");
+        assert_eq!(planned, graph_id);
+        (owner, graph_id, key, metadata, base)
+    }
+
+    fn spec(key: &str, direction: &str) -> PreparedSortSpec {
+        PreparedSortSpec {
+            key: key.to_string(),
+            direction: direction.to_string(),
+        }
+    }
+
+    fn sorted_cache_len_for(key: &PreparedPlanKey) -> usize {
+        PREPARED_SORTED_CACHE.with_borrow(|sorted| sorted.keys().filter(|(k, _)| k == key).count())
+    }
+
+    /// The discriminator for the hit path: after the first call seeds the map,
+    /// the cached blob is mutated in place; a second call with an equivalent
+    /// but differently-cased direction must return the mutated blob. A wrong
+    /// implementation that re-plans instead of hitting the cache would return
+    /// a freshly encoded blob and fail.
+    #[test]
+    fn sorted_variant_cache_hits_normalized_signature() {
+        let (owner, graph_id, key, metadata, base) =
+            sorted_variant_fixture("hit", 4101, "MATCH (n:HitLabel) RETURN n", &["n"]);
+        let upper = vec![spec("n", "ASC")];
+        let lower = vec![spec("n", "ascending")];
+        let first = prepared_sorted_cache_for_execution(
+            &base,
+            &key,
+            Some(&metadata),
+            &upper,
+            owner,
+            graph_id,
+        )
+        .expect("first miss builds");
+        assert_eq!(sorted_cache_len_for(&key), 1);
+
+        let signature = PreparedSortSignature(vec![PreparedSortTerm {
+            key: "n".into(),
+            descending: false,
+        }]);
+        PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| {
+            let entry = sorted
+                .get_mut(&(key.clone(), signature))
+                .expect("cached entry");
+            entry.plan_blob = b"MUTATED".to_vec();
+        });
+
+        let second = prepared_sorted_cache_for_execution(
+            &base,
+            &key,
+            Some(&metadata),
+            &lower,
+            owner,
+            graph_id,
+        )
+        .expect("second call hits");
+        assert_eq!(second.plan_blob, b"MUTATED", "must reuse the heap entry");
+        assert_ne!(first.plan_blob, second.plan_blob);
+    }
+
+    #[test]
+    fn sorted_variant_term_order_and_direction_are_distinct_entries() {
+        let (owner, graph_id, key, metadata, base) = sorted_variant_fixture(
+            "distinct",
+            4102,
+            "MATCH (m:DistinctA), (n:DistinctB) RETURN m, n",
+            &["m", "n"],
+        );
+        let asc_first = vec![spec("m", "asc"), spec("n", "desc")];
+        let desc_first = vec![spec("n", "desc"), spec("m", "asc")];
+        for specs in [&asc_first, &desc_first] {
+            prepared_sorted_cache_for_execution(
+                &base,
+                &key,
+                Some(&metadata),
+                specs,
+                owner,
+                graph_id,
+            )
+            .expect("build variant");
+        }
+        assert_eq!(
+            sorted_cache_len_for(&key),
+            2,
+            "`ORDER BY m, n` and `ORDER BY n, m` are different plans"
+        );
+    }
+
+    /// Re-preparing an operation replaces its source/metadata generation, so
+    /// previously derived plans must be purged rather than served stale.
+    #[test]
+    fn upsert_invalidates_prior_sorted_variants() {
+        let (owner, graph_id, key, metadata, base) =
+            sorted_variant_fixture("upsert", 4103, "MATCH (n:UpsertLabel) RETURN n", &["n"]);
+        let specs = vec![spec("n", "desc")];
+        prepared_sorted_cache_for_execution(&base, &key, Some(&metadata), &specs, owner, graph_id)
+            .expect("seed variant");
+        assert_eq!(sorted_cache_len_for(&key), 1);
+
+        // The replacement generation carries no sort metadata at all; the
+        // invalidation contract must not depend on the new generation still
+        // supporting sorts.
+        prepare_batch_core(
+            &[PreparedRegistration {
+                name: "upsert".into(),
+                query: "MATCH (n:UpsertLabel) RETURN n".into(),
+                metadata: None,
+            }],
+            owner,
+        )
+        .expect("re-upsert");
+
+        assert_eq!(
+            sorted_cache_len_for(&key),
+            0,
+            "derived plans must not survive their source generation"
+        );
+    }
+
+    #[test]
+    fn drop_prepared_purges_sorted_variants() {
+        let (owner, graph_id, key, metadata, base) =
+            sorted_variant_fixture("drop", 4104, "MATCH (n:DropLabel) RETURN n", &["n"]);
+        let specs = vec![spec("n", "asc")];
+        prepared_sorted_cache_for_execution(&base, &key, Some(&metadata), &specs, owner, graph_id)
+            .expect("seed variant");
+        assert_eq!(sorted_cache_len_for(&key), 1);
+
+        drop_prepared_core("drop").expect("drop");
+        assert!(get_prepared_plan(&key).is_none());
+        assert_eq!(sorted_cache_len_for(&key), 0);
+    }
+
+    #[test]
+    fn post_upgrade_rebuild_clears_sorted_variants() {
+        let (owner, graph_id, key, metadata, base) =
+            sorted_variant_fixture("upgrade", 4105, "MATCH (n:UpgradeLabel) RETURN n", &["n"]);
+        let specs = vec![spec("n", "descending")];
+        prepared_sorted_cache_for_execution(&base, &key, Some(&metadata), &specs, owner, graph_id)
+            .expect("seed variant");
+        assert_eq!(sorted_cache_len_for(&key), 1);
+
+        rebuild_prepared_caches_after_upgrade();
+
+        assert_eq!(
+            sorted_cache_len_for(&key),
+            0,
+            "upgrade warmup rebuilds only base plans; variants rebuild lazily"
+        );
+    }
+
+    /// Fills the bounded map past its cap directly through the owning insert
+    /// helper and asserts deterministic eviction of the smallest key.
+    #[test]
+    fn sorted_cache_is_bounded_with_eviction() {
+        let (_owner, _graph_id, key, _metadata, base) =
+            sorted_variant_fixture("bounded", 4106, "MATCH (n:BoundedLabel) RETURN n", &["n"]);
+        let signature_base = |i: u8| {
+            PreparedSortSignature(vec![PreparedSortTerm {
+                key: format!("k{i}"),
+                descending: i % 2 == 1,
+            }])
+        };
+        for i in 0..=(super::PREPARED_SORTED_CACHE_LIMIT as u8) {
+            insert_prepared_sorted_cache(key.clone(), signature_base(i), base.clone());
+        }
+        PREPARED_SORTED_CACHE.with_borrow(|sorted| {
+            assert_eq!(sorted.len(), super::PREPARED_SORTED_CACHE_LIMIT);
+            let smallest = (key.clone(), signature_base(0));
+            assert!(
+                !sorted.contains_key(&smallest),
+                "the lexicographically smallest key is evicted first"
+            );
+        });
+    }
+
+    /// Error contracts are unchanged by the caching wrapper: non-query kinds
+    /// and undeclared keys reject before any cache lookup or insert.
+    #[test]
+    fn sorted_wrapper_preserves_validation_errors() {
+        let (_, _, err_key, mut update_meta, _) =
+            sorted_variant_fixture("errorsa", 4107, "MATCH (n:ErrorsALabel) RETURN n", &["n"]);
+        update_meta.kind = OperationKind::Update;
+        let specs = vec![spec("n", "asc")];
+        let error = prepared_sorted_cache_for_execution(
+            &sorted_variant_fixture("errorsb", 4108, "MATCH (n:ErrorsBLabel) RETURN n", &["n"]).4,
+            &err_key,
+            Some(&update_meta),
+            &specs,
+            Principal::anonymous(),
+            GraphId::from_raw(4107),
+        )
+        .expect_err("update kind must reject sort");
+        assert!(
+            matches!(error, RouterError::InvalidArgument(ref m) if m.contains("query operations")),
+            "unexpected error {error:?}"
+        );
+
+        let (_, graph_id, key, metadata, base) =
+            sorted_variant_fixture("errorsc", 4109, "MATCH (n:ErrorsCLabel) RETURN n", &["n"]);
+        let disallowed = vec![spec("zzz", "asc")];
+        let error = prepared_sorted_cache_for_execution(
+            &base,
+            &key,
+            Some(&metadata),
+            &disallowed,
+            Principal::anonymous(),
+            graph_id,
+        )
+        .expect_err("undeclared key must reject");
+        assert!(
+            matches!(error, RouterError::InvalidArgument(ref m) if m.contains("not allowed")),
+            "unexpected error {error:?}"
+        );
+        assert_eq!(
+            sorted_cache_len_for(&PreparedPlanKey::new("errorsa")),
+            0,
+            "failures never cache"
+        );
+        assert_eq!(sorted_cache_len_for(&key), 0, "failures never cache");
     }
 }

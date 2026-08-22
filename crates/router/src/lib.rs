@@ -7,6 +7,9 @@
 #[cfg(feature = "canbench")]
 mod bench;
 
+#[cfg(feature = "canbench")]
+mod bench_prepared;
+
 #[cfg(feature = "pocket-ic-e2e")]
 mod test_fault;
 
