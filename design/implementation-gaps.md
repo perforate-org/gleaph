@@ -110,20 +110,22 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-21-002 — Graph registration completion held bootstrap intent locks across a deployment's graph bootstraps
 
-- **Status:** In progress (implemented and PocketIC-validated in the working tree on 2026-08-22; required commit evidence pending)
+- **Status:** Resolved 2026-08-22 by `3ef8fe9d53f503b9663e1e5fe324741a16005559`
 - **Severity:** P2 provisioning lifecycle
 - **Owner:** Router Graph provisioning convergence and Provision's versionless `complete_graph_registration` endpoint
 - **Historical observed behavior (before the 2026-08-22 working-tree fix):** After a successful `CREATE GRAPH` bootstrap, the Router-side request record stayed `AwaitingAck` and its `(deployment_id, GraphShard(0))` intent lock stayed held because no Provision→Router ack arrived. A second `CREATE GRAPH` by the same caller principal failed with `Conflict("provisioning intent already locked")` indefinitely (`adr0070_create_graph_provisioning.rs` first exercised this as an infinite retry).
 - **Expected or needed behavior:** Once Router has reconciled the exact Graph topology, its versionless completion call must mark the Provision job `Completed` and release only that request's Map 2/3 and Map 47 rows, so sequential bootstraps converge.
-- **Evidence:** Exact owner tests cover retry-before-early-return, partial registration, lost response
-  replay, and owned release. The Provision lifecycle test drives the production accept and completion
-  handlers across an actual Map 1/2/3 reopen, preserves exact created resources, effect count, and
-  immutable-envelope digest on admission replay, and proves completed replay leaves a later request's
-  Map 2/3 rows unchanged. Both planned PocketIC runtime targets pass: same-caller consecutive graphs
-  and the real Router→Provision Candid completion boundary. A commit remains pending because this
-  task forbids staging or committing.
-- **Impact:** The working tree removes the one-graph-per-deployment restriction for the exact `GraphShard(0)` path. This ledger entry remains non-resolved until its required runtime and commit evidence exist.
-- **Next decision:** After an authorized commit exists, record its hash and mark this entry resolved.
+- **Evidence:** Fixing commit `3ef8fe9d53f503b9663e1e5fe324741a16005559`. Exact Router owner
+  tests cover retry-before-early-return, partial registration, lost-response replay, byte-exact reopen,
+  and owned Map 47 release. The Provision owner lifecycle test drives the production accept and
+  completion handlers across an actual Map 1/2/3 reopen, preserves exact created resources, effect
+  count, and immutable-envelope digest on admission replay, and proves completed replay leaves a later
+  request's Map 2/3 rows unchanged. On 2026-08-22 UTC, both focused PocketIC runtime targets passed:
+  `create_graph_provisions_shard_and_sets_home_graph` proved same-caller consecutive graphs, and
+  `router_graph_bootstrap_registration_ack_crosses_real_candid_boundary` proved the real
+  Router→Provision Candid completion boundary (1 passed, 0 failed for each target).
+- **Impact:** The exact `GraphShard(0)` path no longer has a one-graph-per-deployment restriction.
+  Property- and Vector-index completion remain deferred to their owner-specific slices.
 
 ### GAP-2026-08-21-001 — Anchored multi-DML roll-forward saga fails to converge on both shards
 
