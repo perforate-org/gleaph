@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 11:50:43 UTC +0000
+Anchor timestamp: 2026-08-22 12:52:45 UTC +0000
 
 ## Status
 
@@ -630,7 +630,20 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-11-004 — Non-tail homogeneous bypass insertion rewrites successor origins in `O(V)`
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22; eager promotion — the labeled insert dispatcher promotes a
+  non-tail default-bypass row to bucket mode via the existing preflighted
+  `promote_bypass_to_bucket_mode` transition before its next same-label insert, so slab-region
+  extension and the successor-origin bump only ever run while the row is the tail. Measured scale
+  probes `bench_labeled_non_tail_bypass_insert_256/1024/4096`: pre-fix 1.18M / 4.40M / 17.25M
+  instructions for 16 inserts (linear, ~263 instr/successor-row), post-fix 343K / 363K / 382K
+  (flat; +11% for 16× successors, bounded by the owning PMA leaf). Scan semantics reuse the
+  established promotion transition; no persisted row meaning, scan geometry, or PMA ownership
+  change, so no dedicated ADR is required. Owning tests:
+  `same_label_insert_into_non_tail_bypass_row_promotes_to_bucket_mode` (fails if the promotion
+  guard is removed — row would stay default-edge-labeled) and
+  `same_label_insert_into_tail_bypass_row_stays_in_bypass_mode`; contract documented in
+  [storage/lara.md](storage/lara.md) "Labeled LARA". A `debug_assert` on
+  `may_use_homogeneous_bypass` now guards `insert_homogeneous_bypass_edge` directly.)
 - **Severity:** P2 performance risk
 - **Owner:** `ic-stable-lara` labeled adjacency geometry
 - **Observed behavior:** after a homogeneous bypass edge insert,

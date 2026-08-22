@@ -2408,3 +2408,73 @@ fn bench_labeled_bypass_promotion() -> canbench_rs::BenchResult {
         black_box(graph.vertices().get(vid));
     })
 }
+
+/// Builds the non-tail homogeneous-bypass fixture: vertex 0 enters bypass mode
+/// as the tail and accumulates `seed_edges`, then `successors` empty default
+/// rows are appended so vertex 0 is no longer the tail. Every later insert
+/// into vertex 0 extends its bypass region into successor territory, which is
+/// exactly the shape that drives `bump_successor_origins_after_bypass_end`.
+fn populate_non_tail_bypass_graph(
+    successors: u64,
+) -> LabeledLaraGraph<BenchEdge, crate::VectorMemory> {
+    let graph = bench_graph(helper::LARGE_N.max(1 + successors) * 2);
+    graph
+        .push_vertex(LabeledVertex::default())
+        .expect("vertex 0");
+    graph
+        .enable_default_edge_bypass(VertexId::from(0))
+        .expect("enable bypass");
+    for i in 0..64u32 {
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                graph.default_label(),
+                BenchEdge(i),
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("seed bypass edge");
+    }
+    for _ in 0..successors {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    graph
+}
+
+/// GAP-2026-07-11-004 scale probe: repeated same-label inserts into a bypass
+/// vertex that stopped being the tail. Pre-fix, every insert rescans and
+/// rewrites all successor origins, so cost must grow linearly with the
+/// successor count; post-fix (eager promotion to bucket mode on first
+/// non-tail insert), the measured closure is one bounded promotion plus
+/// bucket-mode inserts whose cost does not grow with the successor count.
+fn bench_non_tail_bypass_insert(successors: u64) -> canbench_rs::BenchResult {
+    let graph = populate_non_tail_bypass_graph(successors);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("labeled_non_tail_bypass_insert");
+        for i in 0..16u32 {
+            let i = black_box(i);
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    graph.default_label(),
+                    BenchEdge(1_000_000 + i),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .expect("non-tail bypass insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_labeled_non_tail_bypass_insert_256() -> canbench_rs::BenchResult {
+    bench_non_tail_bypass_insert(helper::SMALL_N)
+}
+
+#[bench(raw)]
+fn bench_labeled_non_tail_bypass_insert_1024() -> canbench_rs::BenchResult {
+    bench_non_tail_bypass_insert(helper::MEDIUM_N)
+}
+
+#[bench(raw)]
+fn bench_labeled_non_tail_bypass_insert_4096() -> canbench_rs::BenchResult {
+    bench_non_tail_bypass_insert(helper::LARGE_N)
+}

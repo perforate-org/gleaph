@@ -245,16 +245,22 @@ where
         let edge_inline_property_width = edge.edge_inline_property_byte_width();
         let has_edge_inline_property = edge_inline_property_width != 0;
         if vertex.is_default_edge_labeled() {
-            if !has_edge_inline_property && label_id == self.bypass_storage_label_for(&vertex) {
-                self.insert_homogeneous_bypass_edge(src, label_id, edge)?;
-                return Ok(None);
-            }
             if has_edge_inline_property {
                 return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
                     bucket_width: 0,
                     edge_inline_property_width,
                 });
             }
+            if label_id == self.bypass_storage_label_for(&vertex)
+                && self.may_use_homogeneous_bypass(src)
+            {
+                self.insert_homogeneous_bypass_edge(src, label_id, edge)?;
+                return Ok(None);
+            }
+            // A same-label insert into a bypass row that stopped being the tail
+            // must not extend its slab region: every such insert would rescan
+            // and rewrite all later rows' origins. Promote once so the insert —
+            // and every future one for this row — takes the bounded bucket path.
             self.promote_bypass_to_bucket_mode(src)?;
             vertex = self.vertices.get(src);
         } else if vertex.degree() == 0

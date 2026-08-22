@@ -60,6 +60,11 @@ where
         label_id: BucketLabelKey,
         edge: E,
     ) -> Result<(), LabeledOperationError> {
+        // Extending the slab region is only sound while `src` is the tail: a
+        // non-tail region growth forces every later row's origin to be
+        // rescanned and rewritten (O(V) per insert). The dispatcher promotes
+        // non-tail bypass rows to bucket mode before reaching this path.
+        debug_assert!(self.may_use_homogeneous_bypass(src));
         let vertex = self.vertices.get(src);
         debug_assert!(vertex.is_default_edge_labeled());
         debug_assert_eq!(label_id, self.bypass_storage_label_for(&vertex));
@@ -1108,5 +1113,121 @@ mod tests {
 
         let reopened = reopen_failpoint_labeled_graph(&mems, undirected_default);
         assert_eq!(reopened.vertices().get(source), before_vertex);
+    }
+
+    /// A bypass row that stopped being the tail must promote to bucket mode on
+    /// the next same-label insert instead of extending its slab region. If the
+    /// dispatcher skipped the promotion guard, the insert would take the slab
+    /// path and leave the row default-edge-labeled, so the mode assertion below
+    /// fails — this is the discriminator for the O(V) successor-origin bump.
+    #[test]
+    fn same_label_insert_into_non_tail_bypass_row_promotes_to_bucket_mode() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let (graph, _mems) = failpoint_labeled_graph(default);
+        let hub = VertexId::from(0);
+        graph
+            .enable_default_edge_bypass(hub)
+            .expect("enable bypass on tail");
+        for target in 1..=4u32 {
+            graph
+                .insert_edge(
+                    hub,
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        assert!(graph.vertices().get(hub).is_default_edge_labeled());
+
+        // Append successors so the hub stops being the tail.
+        for _ in 0..3 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        assert!(!graph.may_use_homogeneous_bypass(hub));
+
+        graph
+            .insert_edge(
+                hub,
+                default,
+                TestEdge { target: 5 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("non-tail same-label insert");
+
+        assert!(
+            !graph.vertices().get(hub).is_default_edge_labeled(),
+            "row must be promoted out of bypass mode after a non-tail insert"
+        );
+        let edges: Vec<_> = graph
+            .iter_edges_for_label(hub, default)
+            .unwrap()
+            .into_iter()
+            .collect();
+        // Bucket-mode slab iteration is descending; the existing promotion
+        // transition (non-default label arriving) produces the same order, so
+        // this matches established semantics rather than introducing a change.
+        assert_eq!(
+            edges,
+            vec![
+                TestEdge { target: 5 },
+                TestEdge { target: 4 },
+                TestEdge { target: 3 },
+                TestEdge { target: 2 },
+                TestEdge { target: 1 },
+            ],
+            "promotion must carry every bypass edge into the bucket span"
+        );
+
+        // Further inserts stay in bounded bucket mode rather than re-entering
+        // the bypass path.
+        graph
+            .insert_edge(
+                hub,
+                default,
+                TestEdge { target: 6 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        assert!(!graph.vertices().get(hub).is_default_edge_labeled());
+        let edges: Vec<_> = graph
+            .iter_edges_for_label(hub, default)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            edges,
+            vec![
+                TestEdge { target: 6 },
+                TestEdge { target: 5 },
+                TestEdge { target: 4 },
+                TestEdge { target: 3 },
+                TestEdge { target: 2 },
+                TestEdge { target: 1 },
+            ]
+        );
+    }
+
+    /// While the row is still the tail, same-label inserts must keep the fast
+    /// bypass path (no promotion), preserving the existing hot-path contract.
+    #[test]
+    fn same_label_insert_into_tail_bypass_row_stays_in_bypass_mode() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let (graph, _mems) = failpoint_labeled_graph(default);
+        let hub = VertexId::from(0);
+        graph
+            .enable_default_edge_bypass(hub)
+            .expect("enable bypass");
+        graph
+            .insert_edge(
+                hub,
+                default,
+                TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        assert!(graph.may_use_homogeneous_bypass(hub));
+        assert!(graph.vertices().get(hub).is_default_edge_labeled());
+        assert_eq!(graph.vertices().get(hub).degree(), 1);
     }
 }
