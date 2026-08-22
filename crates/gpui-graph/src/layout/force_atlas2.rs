@@ -54,7 +54,7 @@ use glam::Vec2;
 #[cfg(not(target_family = "wasm"))]
 use rayon::prelude::*;
 
-use super::graph::{LayoutGraph, LayoutState};
+use super::graph::{Adjacency, LayoutGraph, LayoutIndex, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
 
 /// Maximum per-iteration displacement (world units) a node may move. The FA2
@@ -625,16 +625,6 @@ pub struct ForceAtlas2 {
     /// Global cooling multiplier in `(0, 1]` applied to every movement;
     /// decays each iteration and resets on rebuild (§37).
     cooling: f32,
-    /// CSR adjacency over the projection's edges for gather-based attraction:
-    /// `attr_targets[attr_offsets[i]..attr_offsets[i+1]]` holds one entry per
-    /// incident edge endpoint of node `i`, so duplicate edges pull twice just
-    /// as they did in the edge-list walk this replaces.
-    attr_offsets: Vec<u32>,
-    attr_targets: Vec<u32>,
-    /// Topology revision the current attraction adjacency was built from;
-    /// `u64::MAX` until the first build so an initial revision of 0 still
-    /// triggers it.
-    attr_revision: u64,
 }
 
 impl Default for ForceAtlas2 {
@@ -655,9 +645,6 @@ impl Default for ForceAtlas2 {
             theta: 1.0,
             masses: Vec::new(),
             cooling: 1.0,
-            attr_offsets: Vec::new(),
-            attr_targets: Vec::new(),
-            attr_revision: u64::MAX,
         }
     }
 }
@@ -742,7 +729,6 @@ impl LayoutEngine for ForceAtlas2 {
             self.masses[edge.target.0 as usize] += 1.0;
         }
         self.tree.next_same.resize(n, NO_INDEX);
-        self.refresh_attraction_adjacency(graph);
         let _ = state;
     }
 
@@ -767,11 +753,6 @@ impl LayoutEngine for ForceAtlas2 {
             self.masses.clear();
             self.masses.resize(n, 1.0);
         }
-        // Same staleness guard for the attraction adjacency: incremental
-        // topology updates may arrive without an engine rebuild, so the CSR
-        // is refreshed by revision check rather than trusted from rebuild.
-        self.refresh_attraction_adjacency(graph);
-
         let mut last_displacement = 0.0f32;
         for _ in 0..budget.max_iterations {
             last_displacement = self.iterate(graph, state);
@@ -793,46 +774,13 @@ impl LayoutEngine for ForceAtlas2 {
 }
 
 impl ForceAtlas2 {
-    /// Rebuild the attraction adjacency when the projection changed. Every
-    /// `step` pays only an O(1) revision-and-length check, so incremental
-    /// topology updates that arrive without [`LayoutEngine::rebuild`] stay
-    /// correct; the O(E) rebuild itself runs only on actual changes.
-    fn refresh_attraction_adjacency(&mut self, graph: &LayoutGraph) {
-        let n = graph.node_count();
-        let endpoints = 2 * graph.edge_count();
-        if self.attr_revision == graph.topology_revision
-            && self.attr_offsets.len() == n + 1
-            && self.attr_targets.len() == endpoints
-        {
-            return;
-        }
-        let mut offsets = vec![0u32; n + 1];
-        for edge in &graph.edges {
-            offsets[edge.source.0 as usize + 1] += 1;
-            offsets[edge.target.0 as usize + 1] += 1;
-        }
-        for window in 1..=n {
-            offsets[window] += offsets[window - 1];
-        }
-        let mut targets = vec![0u32; endpoints];
-        let mut cursor = offsets[..n].to_vec();
-        for edge in &graph.edges {
-            targets[cursor[edge.source.0 as usize] as usize] = edge.target.0;
-            cursor[edge.source.0 as usize] += 1;
-            targets[cursor[edge.target.0 as usize] as usize] = edge.source.0;
-            cursor[edge.target.0 as usize] += 1;
-        }
-        self.attr_offsets = offsets;
-        self.attr_targets = targets;
-        self.attr_revision = graph.topology_revision;
-    }
-
     /// Run a single force-model iteration, returning total displacement.
     ///
-    /// The projection is read only through engine-owned adjacency and buffers,
-    /// so the graph argument is unused here; `step` refreshes the attraction
-    /// adjacency against its revision.
-    fn iterate(&mut self, _graph: &LayoutGraph, state: &mut LayoutState) -> f32 {
+    /// Attraction gathers over the projection's own undirected incidence
+    /// adjacency ([`LayoutGraph::adjacency`]), which `GraphScene` rebuilds
+    /// wholesale on every topology change — no engine-side cache or revision
+    /// guard remains.
+    fn iterate(&mut self, graph: &LayoutGraph, state: &mut LayoutState) -> f32 {
         let forces = &mut self.forces;
         forces.fill(Vec2::ZERO);
 
@@ -901,18 +849,15 @@ impl ForceAtlas2 {
         }
 
         // Attraction: every edge pulls its endpoints together, gathered per
-        // node over the CSR adjacency so workers write disjoint accumulators.
-        // One entry per incident endpoint keeps duplicate-edge pull exact; a
-        // self-loop contributes a zero-length pull, exactly as the edge walk
-        // it replaces.
+        // node over the graph's undirected incidence adjacency so workers
+        // write disjoint accumulators. One entry per incident endpoint keeps
+        // duplicate-edge pull exact; a self-loop contributes a zero-length
+        // pull, exactly as the edge walk it replaces.
         let lin_log = self.lin_log;
-        let (offsets, targets, positions) =
-            (&self.attr_offsets, &self.attr_targets, &state.positions);
+        let adjacency = graph.adjacency();
+        let positions = &state.positions;
         let gather_attraction = |force: &mut Vec2, i: usize| {
-            *force = algebraic_add(
-                *force,
-                attraction_pull(lin_log, offsets, targets, positions, i),
-            );
+            *force = algebraic_add(*force, attraction_pull(lin_log, adjacency, positions, i));
         };
         if parallel {
             #[cfg(not(target_family = "wasm"))]
@@ -1032,18 +977,12 @@ impl ForceAtlas2 {
     }
 }
 
-/// Attraction pull received by node `i`, gathered over the CSR adjacency:
-/// one pull per incident edge endpoint, so duplicate edges pull twice and a
-/// self-loop contributes a zero-length pull.
-fn attraction_pull(
-    lin_log: bool,
-    offsets: &[u32],
-    targets: &[u32],
-    positions: &[Vec2],
-    i: usize,
-) -> Vec2 {
+/// Attraction pull received by node `i`, gathered over the undirected
+/// incidence adjacency: one pull per incident edge endpoint, so duplicate
+/// edges pull twice and a self-loop contributes a zero-length pull.
+fn attraction_pull(lin_log: bool, adjacency: &Adjacency, positions: &[Vec2], i: usize) -> Vec2 {
     let mut acc = Vec2::ZERO;
-    for entry in &targets[offsets[i] as usize..offsets[i + 1] as usize] {
+    for entry in adjacency.neighbors(LayoutIndex(i as u32)) {
         let delta = algebraic_sub(positions[*entry as usize], positions[i]);
         let dist = delta.length().max(MIN_DISTANCE);
         let fa = if lin_log {
@@ -1136,12 +1075,7 @@ mod tests {
                 }
             })
             .collect();
-        let lg = LayoutGraph {
-            nodes: vec![LayoutNode {}; node_ids.len()],
-            edges,
-            node_ids,
-            topology_revision: 0,
-        };
+        let lg = LayoutGraph::new(vec![LayoutNode {}; node_ids.len()], edges, node_ids, 0);
         (lg, state)
     }
 
@@ -1194,12 +1128,7 @@ mod tests {
 
     #[test]
     fn empty_graph_settles() {
-        let lg = LayoutGraph {
-            nodes: vec![],
-            edges: vec![],
-            node_ids: vec![],
-            topology_revision: 0,
-        };
+        let lg = LayoutGraph::new(vec![], vec![], vec![], 0);
         let mut state = LayoutState::new();
         let mut fa = ForceAtlas2::default();
         fa.rebuild(&lg, &mut state);
@@ -1293,61 +1222,6 @@ mod tests {
                 "node {i}: scan {got:?} vs pair {want:?} (err {err})"
             );
         }
-    }
-
-    #[test]
-    fn attraction_adjacency_lists_both_endpoints_per_edge() {
-        // Parallel edges pull twice, a self-loop contributes two zero-length
-        // endpoint entries, and every undirected edge appears under both ends.
-        let mut g = Graph::new();
-        let a = g.add_node(());
-        let b = g.add_node(());
-        let c = g.add_node(());
-        g.add_edge(a, b, EdgeDirection::Undirected, ());
-        g.add_edge(a, b, EdgeDirection::Undirected, ());
-        g.add_edge(b, c, EdgeDirection::Undirected, ());
-        g.add_edge(c, c, EdgeDirection::Undirected, ());
-
-        let (lg, mut state) = project(&g);
-        let mut fa = ForceAtlas2::default();
-        fa.rebuild(&lg, &mut state);
-
-        // Node order is a, b, c. Endpoint multisets:
-        // a: [b, b], b: [a, a, c], c: [b, c, c].
-        assert_eq!(fa.attr_offsets, vec![0, 2, 5, 8]);
-        assert_eq!(fa.attr_targets, vec![1, 1, 0, 0, 2, 1, 2, 2]);
-        assert_eq!(fa.attr_revision, lg.topology_revision);
-    }
-
-    #[test]
-    fn stale_topology_refreshes_attraction_adjacency_without_rebuild() {
-        // Incremental topology updates may bypass the engine's rebuild; the
-        // step-time revision check must still pick up the changed edges.
-        let mut g = Graph::new();
-        let a = g.add_node(());
-        let b = g.add_node(());
-        g.add_edge(a, b, EdgeDirection::Undirected, ());
-        let (mut lg, mut state) = project(&g);
-
-        let mut fa = ForceAtlas2::default();
-        fa.rebuild(&lg, &mut state);
-        assert_eq!(fa.attr_targets.len(), 2);
-
-        // Simulate an incremental delta: one more edge, no rebuild call.
-        lg.edges.push(crate::layout::graph::LayoutEdge {
-            source: crate::layout::LayoutIndex(1),
-            target: crate::layout::LayoutIndex(0),
-            direction: EdgeDirection::Undirected,
-        });
-        lg.topology_revision += 1;
-
-        fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
-        assert_eq!(fa.attr_revision, 1);
-        assert_eq!(fa.attr_targets.len(), 4);
-        assert!(
-            fa.attr_targets.starts_with(&[1]),
-            "original adjacency preserved at the front"
-        );
     }
 
     #[test]

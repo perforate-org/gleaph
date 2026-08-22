@@ -56,12 +56,7 @@ impl BenchCase {
             })
             .collect();
         Self {
-            graph: LayoutGraph {
-                nodes: vec![LayoutNode {}; node_ids.len()],
-                edges,
-                node_ids,
-                topology_revision: 0,
-            },
+            graph: LayoutGraph::new(vec![LayoutNode {}; node_ids.len()], edges, node_ids, 0),
             state,
         }
     }

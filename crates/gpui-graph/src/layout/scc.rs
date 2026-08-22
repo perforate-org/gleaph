@@ -22,9 +22,8 @@
 
 use glam::Vec2;
 
-use super::graph::{LayoutGraph, LayoutIndex, LayoutState};
+use super::graph::{Adjacency, AdjacencyMode, LayoutGraph, LayoutIndex, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
-use crate::graph::EdgeDirection;
 
 /// Horizontal spacing between SCC columns (world units).
 const COLUMN_SPACING: f32 = 220.0;
@@ -104,23 +103,16 @@ fn place_on_circle(center: Vec2, radius: f32, members: &[usize], state: &mut Lay
 
 /// Tarjan's strongly connected components of a directed graph.
 ///
-/// `graph.edges` gives connectivity: a directed edge contributes
-/// `source -> target`; an undirected edge contributes both directions. Nodes
-/// without incident edges form singleton components.
+/// Connectivity comes from the projection's successor view of `graph.edges`:
+/// a directed edge contributes `source -> target`; an undirected edge
+/// contributes both directions. Nodes without incident edges form singleton
+/// components.
 fn strongly_connected_components(graph: &LayoutGraph) -> Vec<Vec<usize>> {
     let n = graph.node_count();
     if n == 0 {
         return Vec::new();
     }
-    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for edge in &graph.edges {
-        let s = edge.source.0 as usize;
-        let t = edge.target.0 as usize;
-        adjacency[s].push(t);
-        if edge.direction == EdgeDirection::Undirected && t != s {
-            adjacency[t].push(s);
-        }
-    }
+    let adjacency = Adjacency::build(n, &graph.edges, AdjacencyMode::Successors);
 
     let mut index = vec![0usize; n];
     let mut lowlink = vec![0usize; n];
@@ -132,7 +124,7 @@ fn strongly_connected_components(graph: &LayoutGraph) -> Vec<Vec<usize>> {
     #[allow(clippy::too_many_arguments)]
     fn strong_connect(
         v: usize,
-        adjacency: &[Vec<usize>],
+        adjacency: &Adjacency,
         index: &mut [usize],
         lowlink: &mut [usize],
         on_stack: &mut [bool],
@@ -146,7 +138,8 @@ fn strongly_connected_components(graph: &LayoutGraph) -> Vec<Vec<usize>> {
         stack.push(v);
         on_stack[v] = true;
 
-        for &w in &adjacency[v] {
+        for &w in adjacency.neighbors(LayoutIndex(v as u32)) {
+            let w = w as usize;
             if index[w] == 0 {
                 strong_connect(
                     w, adjacency, index, lowlink, on_stack, stack, next_index, components,
@@ -290,23 +283,13 @@ mod tests {
                 }
             })
             .collect();
-        let lg = LayoutGraph {
-            nodes: vec![LayoutNode {}; count],
-            edges: layout_edges,
-            node_ids,
-            topology_revision: 0,
-        };
+        let lg = LayoutGraph::new(vec![LayoutNode {}; count], layout_edges, node_ids, 0);
         (lg, state)
     }
 
     #[test]
     fn empty_graph_settles() {
-        let lg = LayoutGraph {
-            nodes: vec![],
-            edges: vec![],
-            node_ids: vec![],
-            topology_revision: 0,
-        };
+        let lg = LayoutGraph::new(vec![], vec![], vec![], 0);
         let mut state = LayoutState::new();
         let mut layout = SccLayoutEngine;
         layout.rebuild(&lg, &mut state);

@@ -93,12 +93,7 @@ where
             keyed: KeyedGraph::with_hasher(hasher.clone()),
             node_scene: SecondaryMap::new(),
             edge_scene: SecondaryMap::new(),
-            layout_graph: LayoutGraph {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                node_ids: Vec::new(),
-                topology_revision: 0,
-            },
+            layout_graph: LayoutGraph::new(Vec::new(), Vec::new(), Vec::new(), 0),
             layout_state: LayoutState::new(),
             node_index: std::collections::HashMap::with_hasher(hasher),
             engine: Box::new(crate::layout::FixedLayout),
@@ -316,12 +311,12 @@ where
             });
         }
 
-        self.layout_graph = LayoutGraph {
-            nodes: vec![LayoutNode {}; new_ids.len()],
+        self.layout_graph = LayoutGraph::new(
+            vec![LayoutNode {}; new_ids.len()],
             edges,
-            node_ids: new_ids,
-            topology_revision: self.topology_revision,
-        };
+            new_ids,
+            self.topology_revision,
+        );
         self.layout_state = layout_state;
         self.node_index = index_of;
         self.rebuild_layout_engine();

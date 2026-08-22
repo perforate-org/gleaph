@@ -663,8 +663,19 @@ pub struct LayoutGraph {
 
     pub node_ids: Vec<NodeId>,
     pub topology_revision: u64,
+    adjacency: Adjacency, // derived, private
 }
 ```
+
+`LayoutGraph::new` derives the per-node neighbor views (`Adjacency`) from the
+edge list at construction; `GraphScene` rebuilds the whole projection on every
+topology change, so the views cannot go stale. Two semantics exist because two
+consumers need them (§11.5, §15.3): `Incident` — every edge contributes both
+endpoints regardless of direction, what force-based gathering consumes — and
+`Successors` — directed edges flow `source → target`, undirected edges both
+ways, what reachability algorithms consume. The builder is the single owner of
+CSR alignment and of where [`EdgeDirection`] semantics are interpreted;
+engines read slices instead of rebuilding bespoke adjacency.
 
 A dense index is used internally:
 
@@ -985,11 +996,12 @@ builds (the demo/social embed: unknown-unknown, WASI, and any future
 wasm64) link no rayon and run the serial drivers at every graph size. Parallel workers never share accumulators — grid repulsion scans each node's own 3×3
 neighborhood single-sided, Barnes-Hut resolves one root descent per node with
 thread-local stacks, and attraction gathers each node's incident pulls through
-a CSR adjacency (`attr_offsets` / `attr_targets`, one entry per incident edge
-endpoint, so duplicate edges pull exactly as before). The adjacency refresh is
-keyed on the projection's `topology_revision` with length guards, so
-incremental topology updates that arrive without an engine rebuild stay
-correct. Contract settling counts: hub/256 24 iterations, grid/20x20 591.
+the projection's own undirected incidence adjacency
+(`LayoutGraph::adjacency`, one entry per incident edge endpoint, so duplicate
+edges pull exactly as before). Because `GraphScene` rebuilds the projection
+wholesale on every topology change, the engine holds no adjacency cache and no
+revision guard. Contract settling counts: hub/256 24 iterations, grid/20x20
+591.
 Measured speedups concentrate on dense large graphs; sparse uniform grids on
 the exact-grid path remain serial-baseline-adjacent at best (§37).
 
@@ -2352,7 +2364,7 @@ The following should remain intentionally open until implementation and profilin
   movement pass are data-parallel per node under rayon at or above
   `PAR_MIN_NODES` (4096) — Barnes-Hut per-node descents with thread-local
   stacks, grid repulsion single-sided per-node neighborhood scans, attraction
-  gathered per node over a CSR adjacency refreshed by `topology_revision`,
+  gathered per node over the projection's own incidence adjacency,
   movement applied through zipped disjoint slices. Below the threshold,
   serial drivers run the same physics: the grid pair walk (one distance
   evaluation shared by both endpoints, sequential cell traversal — measured

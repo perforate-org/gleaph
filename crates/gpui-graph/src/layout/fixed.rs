@@ -39,12 +39,12 @@ mod tests {
     #[test]
     fn fixed_layout_never_moves_nodes() {
         let mut layout = FixedLayout;
-        let graph = LayoutGraph {
-            nodes: vec![Default::default(), Default::default()],
-            edges: vec![],
-            node_ids: vec![],
-            topology_revision: 0,
-        };
+        let graph = LayoutGraph::new(
+            vec![Default::default(), Default::default()],
+            vec![],
+            vec![],
+            0,
+        );
         let mut state = LayoutState::new();
         state.positions = vec![glam::Vec2::new(1.0, 2.0), glam::Vec2::new(3.0, 4.0)];
         state.pinned.resize(2, false);
