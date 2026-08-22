@@ -10,8 +10,12 @@ gpui.workspace = true
 slotmap = "1.1"
 bitvec = "1.1"
 glam = "0.33"
-rayon = "1.12"
 web-time.workspace = true
+
+# Rayon drives worker OS threads, which do not exist on wasm32; wasm embeds
+# take the engine's serial drivers at every graph size instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.12"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

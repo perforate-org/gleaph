@@ -980,8 +980,9 @@ This keeps the layout implementation replaceable.
 
 Execution model (§37): every force phase and the movement pass are data-parallel
 per node under rayon at or above `PAR_MIN_NODES` (4096 nodes); below it,
-serial drivers run the same physics with cheaper scheduling. Parallel workers
-never share accumulators — grid repulsion scans each node's own 3×3
+serial drivers run the same physics with cheaper scheduling. wasm32 builds
+(the demo/social embed) link no rayon and run the serial drivers at every
+graph size. Parallel workers never share accumulators — grid repulsion scans each node's own 3×3
 neighborhood single-sided, Barnes-Hut resolves one root descent per node with
 thread-local stacks, and attraction gathers each node's incident pulls through
 a CSR adjacency (`attr_offsets` / `attr_targets`, one entry per incident edge

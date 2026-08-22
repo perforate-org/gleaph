@@ -30,14 +30,15 @@
 //! per node (rayon) at or above [`PAR_MIN_NODES`]; below it, serial drivers
 //! run the same physics with the cheaper scheduling the scale allows — the
 //! grid pair walk shares one distance evaluation between both endpoints
-//! instead of the parallel path's per-node single-sided scans. Parallel
-//! workers never share accumulators: grid repulsion scans each node's own 3×3
-//! neighborhood single-sided, Barnes-Hut resolves one root descent per node
-//! with thread-local stacks, and attraction gathers each node's incident pulls
-//! through a CSR adjacency refreshed whenever the projection's topology
-//! revision changes. A qualifying pair's arithmetic may be evaluated twice
-//! under rayon (once per endpoint); that buys race-free parallel writes
-//! without per-thread force buffers or atomics.
+//! instead of the parallel path's per-node single-sided scans. wasm32 builds
+//! link no rayon at all (no worker threads exist there) and always take the
+//! serial drivers. Parallel workers never share accumulators: grid repulsion
+//! scans each node's own 3×3 neighborhood single-sided, Barnes-Hut resolves
+//! one root descent per node with thread-local stacks, and attraction gathers
+//! each node's incident pulls through a CSR adjacency refreshed whenever the
+//! projection's topology revision changes. A qualifying pair's arithmetic may
+//! be evaluated twice under rayon (once per endpoint); that buys race-free
+//! parallel writes without per-thread force buffers or atomics.
 //!
 //! Numerical note: the force model computes through [`f32::algebraic_*`]
 //! arithmetic (see the component-wise helpers below), which permits
@@ -50,17 +51,12 @@
 //! comparisons rely on stable operation-by-operation precision.
 
 use glam::Vec2;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 use super::graph::{LayoutGraph, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
 
-/// Maximum per-iteration displacement (world units) a node may move. The FA2
-/// reference has no such cap; ours guards against single-frame flings from
-/// clamp-floor impulses between coincident nodes (repulsion strength
-/// diverges as `1/dist²` below the distance floor). Sized large enough that
-/// early collapse/expand phases progress in multi-pixel strides — a tiny cap
-/// stretches those phases into thousands of cap-riding iterations.
 /// Maximum per-iteration displacement (world units) a node may move. The FA2
 /// reference has no such cap and relies purely on its speed formula; ours
 /// bounds the damage while mass-weighted repulsion is still violent early on
@@ -102,7 +98,12 @@ const DISPLACEMENT_EPSILON: f32 = 0.1;
 /// → 11.3 ms). Like `bh_threshold`, this is a node-count proxy whose outcome
 /// topology modulates (sparse uniform grids gain least); a finer activation
 /// policy stays deferred (§37). Scheduling differs only — physics does not.
+/// Irrelevant on wasm32, where rayon is not linked and every size is serial.
 const PAR_MIN_NODES: usize = 4096;
+
+/// Whether rayon workers exist on this target: wasm32 embeds have no OS
+/// worker threads and the dependency is not even linked there.
+const RAYON_AVAILABLE: bool = cfg!(not(target_arch = "wasm32"));
 
 /// Component-wise [`f32::algebraic_add`].
 #[inline]
@@ -234,7 +235,9 @@ impl RepulsionGrid {
     /// of [`Self::for_each_pair`]: exactly the same neighbor pairs contribute
     /// with the same saturated-magnitude impulse, but each worker touches only
     /// its own accumulator, so the parallel pass needs no races at the cost of
-    /// evaluating each qualifying pair twice (once per endpoint).
+    /// evaluating each qualifying pair twice (once per endpoint). Native-only:
+    /// wasm embeds always drive repulsion through [`Self::for_each_pair`].
+    #[cfg(not(target_arch = "wasm32"))]
     fn accumulate_node(
         &self,
         i: usize,
@@ -836,13 +839,14 @@ impl ForceAtlas2 {
         // O(N·log N). Both apply FA2 degree mass. Both run one task per node
         // over disjoint accumulators when [`PAR_MIN_NODES`] is met.
         let n = state.positions.len();
-        let parallel = n >= PAR_MIN_NODES;
+        let parallel = n >= PAR_MIN_NODES && RAYON_AVAILABLE;
         if n >= self.bh_threshold {
             let mut tree = std::mem::take(&mut self.tree);
             tree.build(&state.positions, &self.masses);
             let (positions, masses, theta, scaling) =
                 (&state.positions, &self.masses, self.theta, self.scaling);
             if parallel {
+                #[cfg(not(target_arch = "wasm32"))]
                 forces
                     .par_iter_mut()
                     .enumerate()
@@ -866,6 +870,7 @@ impl ForceAtlas2 {
                 self.repulsion_radius,
             );
             if parallel {
+                #[cfg(not(target_arch = "wasm32"))]
                 forces.par_iter_mut().enumerate().for_each(|(i, force)| {
                     *force = grid.accumulate_node(i, positions, masses, scaling, radius);
                 });
@@ -907,6 +912,7 @@ impl ForceAtlas2 {
             );
         };
         if parallel {
+            #[cfg(not(target_arch = "wasm32"))]
             forces
                 .par_iter_mut()
                 .enumerate()
@@ -951,6 +957,7 @@ impl ForceAtlas2 {
         let pinned = &state.pinned;
         let convergence = &mut self.convergence;
         let prev_forces = &mut self.prev_forces;
+        #[cfg(not(target_arch = "wasm32"))]
         let total: f32 = if parallel {
             state
                 .positions
@@ -972,6 +979,29 @@ impl ForceAtlas2 {
                 })
                 .sum()
         } else {
+            let mut total = 0.0f32;
+            for (i, ((position, convergence_i), prev_force)) in state
+                .positions
+                .iter_mut()
+                .zip(convergence.iter_mut())
+                .zip(prev_forces.iter_mut())
+                .enumerate()
+            {
+                total += apply_node_motion(
+                    forces_ref[i],
+                    masses_ref[i],
+                    pinned[i],
+                    cooling,
+                    slow_down,
+                    position,
+                    convergence_i,
+                    prev_force,
+                );
+            }
+            total
+        };
+        #[cfg(target_arch = "wasm32")]
+        let total: f32 = {
             let mut total = 0.0f32;
             for (i, ((position, convergence_i), prev_force)) in state
                 .positions
