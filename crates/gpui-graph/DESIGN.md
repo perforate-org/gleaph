@@ -2380,7 +2380,12 @@ The following should remain intentionally open until implementation and profilin
   ρ far above) flips to Barnes-Hut, which is also where the flip pays.
   Engaging at `rebuild` rather than first-step matters: otherwise the densest
   graphs pay their single most expensive iteration (a full cutoff
-  enumeration) just to produce the signal. `with_barnes_hut_threshold(n)`
+  enumeration) just to produce the signal. Mid-band shapes (hub/1024,
+  random/5000) flip their cutoff-vs-BH ordering between sessions within
+  ~10–25%, so the threshold deliberately sits on the safe side: staying on
+  cutoff there costs at most ~1.2x, while the policy must not miss the
+  hub/4096-class win (~1.5–2x) nor drag sparse grids onto Barnes-Hut
+  (~1.6x loss), which it does not.), `with_barnes_hut_threshold(n)`
   pins the old fixed node-count gate and disables adaptivity, which benches
   and the BH tolerance test use to measure one path in isolation.),
 - ~~parallel force evaluation~~ (implemented: every FA2 phase and the
