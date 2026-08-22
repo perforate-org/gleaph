@@ -26,19 +26,23 @@
 //! because it only wins on densely clustered topologies (§37). Both paths
 //! apply FA2 degree mass (degree + 1).
 //!
-//! Execution model: every force phase and the movement pass are data-parallel
-//! per node (rayon) at or above [`PAR_MIN_NODES`]; below it, serial drivers
-//! run the same physics with the cheaper scheduling the scale allows — the
-//! grid pair walk shares one distance evaluation between both endpoints
-//! instead of the parallel path's per-node single-sided scans. Wasm-family
-//! builds (browser, WASI) link no rayon at all — no OS worker threads exist
-//! there — and always take the serial drivers. Parallel workers never share accumulators: grid repulsion
-//! scans each node's own 3×3 neighborhood single-sided, Barnes-Hut resolves
-//! one root descent per node with thread-local stacks, and attraction gathers
-//! each node's incident pulls through a CSR adjacency refreshed whenever the
-//! projection's topology revision changes. A qualifying pair's arithmetic may
-//! be evaluated twice under rayon (once per endpoint); that buys race-free
-//! parallel writes without per-thread force buffers or atomics.
+//! Execution model: whether repulsion runs Barnes-Hut or the exact cutoff
+//! grid is decided adaptively from measured work ([`AUTO_BH_ENGAGE`]); a
+//! fixed activation point can be forced through
+//! [`ForceAtlas2::with_barnes_hut_threshold`]. Barnes-Hut descents, the
+//! movement pass, and attraction are data-parallel per node (rayon) at or
+//! above [`PAR_MIN_NODES`]; below it, serial drivers run the same physics
+//! with cheaper scheduling. The cutoff path always takes the serial pair
+//! walk: it shares one distance evaluation between both endpoints and beats
+//! per-node single-sided scans at every measured density (§37). Wasm-family
+//! builds (browser, WASI) link no rayon at all and always take the serial
+//! drivers. Parallel workers never share accumulators — Barnes-Hut resolves
+//! one root descent per node with thread-local stacks — and attraction
+//! gathers each node's incident pulls through a CSR adjacency refreshed
+//! whenever the projection's topology revision changes. A qualifying pair's
+//! arithmetic may be evaluated twice under rayon (once per endpoint); that
+//! buys race-free parallel writes without per-thread force buffers or
+//! atomics.
 //!
 //! Numerical note: the force model computes through [`f32::algebraic_*`]
 //! arithmetic (see the component-wise helpers below), which permits
@@ -107,6 +111,25 @@ const PAR_MIN_NODES: usize = 4096;
 /// (`target_family = "wasm"` also covers a future wasm64, which an arch
 /// check would miss.)
 const RAYON_AVAILABLE: bool = cfg!(not(target_family = "wasm"));
+
+/// Measured work ratio at which the exact cutoff grid hands repulsion to
+/// Barnes-Hut. The ratio is `candidate_pairs / (n * log2(n))`, counted while
+/// the pair walk enumerates cell-adjacent candidates — the enumeration the
+/// cutoff path actually pays for. Calibration (layout_bench, same run):
+/// grid/100x100 ~0.6, hub/256 ~3.4, random/5000 ~3.3 and hub/1024 ~11 all
+/// keep cutoff and measure faster with it; hub/4096 ~36 flips to Barnes-Hut
+/// and drops from ~14 ms to ~10.4 ms per step. The threshold sits between
+/// the last cutoff-favoring and first BH-favoring measurement, rounded to a
+/// round decade.
+const AUTO_BH_ENGAGE: f32 = 20.0;
+
+/// Pair-load ratio above which the parallel per-node scan pays for its
+/// doubled candidate evaluations; below it the serial pair walk wins because
+/// shared distance evaluations dominate when neighborhoods are thin.
+/// Calibration: random/5000 (~3.3) keeps its measured parallel win;
+/// grid/100x100 (~0.6) returns to its serial baseline instead of regressing
+/// ~1.4x (§37).
+const AUTO_BH_PARALLEL_FLOOR: f32 = 2.0;
 
 /// Component-wise [`f32::algebraic_add`].
 #[inline]
@@ -238,8 +261,10 @@ impl RepulsionGrid {
     /// of [`Self::for_each_pair`]: exactly the same neighbor pairs contribute
     /// with the same saturated-magnitude impulse, but each worker touches only
     /// its own accumulator, so the parallel pass needs no races at the cost of
-    /// evaluating each qualifying pair twice (once per endpoint). Native-only:
-    /// wasm embeds always drive repulsion through [`Self::for_each_pair`].
+    /// evaluating each qualifying pair twice (once per endpoint). Selected
+    /// only when neighborhoods carry enough work to amortize the doubled
+    /// evaluations ([`AUTO_BH_PARALLEL_FLOOR`]); otherwise the pair walk
+    /// drives. Native-only: wasm embeds always take the pair walk.
     #[cfg(not(target_family = "wasm"))]
     fn accumulate_node(
         &self,
@@ -278,6 +303,25 @@ impl RepulsionGrid {
             }
         }
         acc
+    }
+
+    /// Candidate pairs [`Self::for_each_pair`] would visit: within-cell
+    /// combinations plus forward-stencil cross-cell products. Exact
+    /// enumeration-cost sensor computable from the grid alone, without
+    /// touching node coordinates — this is what feeds the adaptive policy.
+    fn candidate_pairs(&self) -> u64 {
+        let mut total = 0u64;
+        for ci in 0..self.cells.len() {
+            let occ = (self.offsets[ci + 1] - self.offsets[ci]) as u64;
+            total += occ * (occ.saturating_sub(1)) / 2;
+            let cx = (self.cells[ci] >> 32) as u32 as i32;
+            let cy = self.cells[ci] as u32 as i32;
+            for (dx, dy) in FORWARD_STENCIL {
+                let neighbor = self.cell_entries(cx + dx, cy + dy);
+                total += occ * (neighbor.end - neighbor.start) as u64;
+            }
+        }
+        total
     }
 }
 
@@ -605,16 +649,22 @@ pub struct ForceAtlas2 {
     /// each iteration. Approximates all-pairs (long-range) repulsion in
     /// O(N·log N) via center-of-mass cells (§37).
     tree: BhTree,
-    /// Node count at or above which the Barnes-Hut path replaces the exact
-    /// radius-cutoff grid. Disabled by default (`usize::MAX`): the two paths
-    /// compute different amounts of work — the cutoff grid only touches each
-    /// node's local neighborhood, while the quadtree approximates all-pairs
-    /// long-range repulsion — so the grid wins wherever local density is low
-    /// (measured: up to ~6x faster on sparse uniform layouts), and the
-    /// quadtree wins where nodes cluster densely (measured: ~45% faster on a
-    /// 4096-leaf ring). Activation stays opt-in until a topology-aware
-    /// policy exists (§37).
-    bh_threshold: usize,
+    /// Fixed Barnes-Hut activation point. `None` (default) runs the adaptive
+    /// policy: repulsion starts on the exact cutoff grid, and once the pair
+    /// walk's measured candidate load reaches [`AUTO_BH_ENGAGE`] the engine
+    /// switches to Barnes-Hut for the rest of the run (a topology rebuild
+    /// resets it). `Some(n)` pins the old behavior — Barnes-Hut exactly at or
+    /// above `n` nodes, cutoff below — with no adaptivity; benches and
+    /// tolerance tests use this to measure a chosen path in isolation.
+    bh_threshold: Option<usize>,
+    /// Adaptive-policy state: whether Barnes-Hut is currently engaged. Only
+    /// meaningful while `bh_threshold` is `None`; reset by [`Self::rebuild`].
+    bh_active: bool,
+    /// Most recent measured pair-load ratio (`candidate_pairs / (n·log2 n)`)
+    /// from the last cutoff iteration. Fresh only on iterations the cutoff
+    /// path actually ran; while Barnes-Hut is engaged the value is stale
+    /// because no enumeration happens (documented stickiness, §37).
+    pair_load: f32,
     /// Barnes-Hut opening ratio: a cell merges into its center of mass when
     /// `side / distance < theta`. Values up to ~1.4 guarantee that a cell
     /// containing the query node is always subdivided (exact self-exclusion);
@@ -641,7 +691,9 @@ impl Default for ForceAtlas2 {
             forces: Vec::new(),
             grid: RepulsionGrid::new(100.0),
             tree: BhTree::default(),
-            bh_threshold: usize::MAX,
+            bh_threshold: None,
+            bh_active: false,
+            pair_load: 0.0,
             theta: 1.0,
             masses: Vec::new(),
             cooling: 1.0,
@@ -689,13 +741,15 @@ impl ForceAtlas2 {
         self
     }
 
-    /// Enable the Barnes-Hut repulsion path for graphs with at least
-    /// `threshold` nodes, replacing the exact radius-cutoff grid. The
-    /// quadtree approximates all-pairs long-range repulsion in O(N·log N),
-    /// so it pays off on densely clustered topologies (hub-and-ring, tight
-    /// communities) and loses to the cutoff grid on sparse uniform layouts.
+    /// Pin the Barnes-Hut activation at a fixed node count, disabling the
+    /// adaptive policy: repulsion uses the quadtree exactly when the graph
+    /// has at least `threshold` nodes. The quadtree approximates all-pairs
+    /// long-range repulsion in O(N·log N), so it pays off on densely
+    /// clustered topologies and loses to the cutoff grid on sparse uniform
+    /// layouts; the default adaptive policy measures that trade-off per run
+    /// instead of guessing from `n` alone.
     pub fn with_barnes_hut_threshold(mut self, threshold: usize) -> Self {
-        self.bh_threshold = threshold;
+        self.bh_threshold = Some(threshold);
         self
     }
 
@@ -719,8 +773,23 @@ impl LayoutEngine for ForceAtlas2 {
         // Fresh nodes start fully adaptive; established nodes keep their
         // adapted factor across incremental topology changes.
         self.convergence.resize(n, 1.0);
-        // Topology changes get fresh layout energy.
+        // Topology changes get fresh layout energy and a fresh adaptive
+        // repulsion decision: density may have changed wholesale. Sensing
+        // the initial placement here means iteration 1 already takes the
+        // right repulsion path — otherwise the densest graphs would pay one
+        // full cutoff enumeration (their most expensive kind of iteration)
+        // just to produce the signal.
         self.cooling = 1.0;
+        self.pair_load = 0.0;
+        self.bh_active = false;
+        if self.bh_threshold.is_none() && n > 0 {
+            let mut grid = std::mem::take(&mut self.grid);
+            grid.rebuild(&state.positions, self.repulsion_radius);
+            self.pair_load =
+                grid.candidate_pairs() as f32 / (n as f32 * (n as f32).log2().max(1.0));
+            self.bh_active = self.pair_load >= AUTO_BH_ENGAGE;
+            self.grid = grid;
+        }
         // FA2 mass = degree + 1: every incident edge counts, directed or not.
         self.masses.clear();
         self.masses.resize(n, 1.0);
@@ -784,14 +853,18 @@ impl ForceAtlas2 {
         let forces = &mut self.forces;
         forces.fill(Vec2::ZERO);
 
-        // Repulsion: below the Barnes-Hut threshold, nodes repel within
-        // `repulsion_radius` through the exact CSR grid (O(N·k)); at or above
-        // it, the quadtree approximates all-pairs long-range repulsion in
-        // O(N·log N). Both apply FA2 degree mass. Both run one task per node
-        // over disjoint accumulators when [`PAR_MIN_NODES`] is met.
+        // Repulsion: Barnes-Hut approximates all-pairs long-range repulsion
+        // in O(N·log N) when engaged — by fixed override or, adaptively,
+        // once measured cutoff work crossed [`AUTO_BH_ENGAGE`] — and the
+        // exact grid otherwise repels within `repulsion_radius` (O(N·k)).
+        // Both apply FA2 degree mass.
         let n = state.positions.len();
         let parallel = n >= PAR_MIN_NODES && RAYON_AVAILABLE;
-        if n >= self.bh_threshold {
+        let use_bh = match self.bh_threshold {
+            Some(threshold) => n >= threshold,
+            None => self.bh_active,
+        };
+        if use_bh {
             let mut tree = std::mem::take(&mut self.tree);
             tree.build(&state.positions, &self.masses);
             let (positions, masses, theta, scaling) =
@@ -820,15 +893,18 @@ impl ForceAtlas2 {
                 self.scaling,
                 self.repulsion_radius,
             );
-            if parallel {
+            // Driver choice follows measured neighborhood work: thin
+            // neighborhoods keep the pair walk (shared distance evaluations,
+            // sequential traversal), thick ones pay for per-node scans that
+            // parallelize race-free. The decision uses the previous
+            // iteration's load; positions move by at most [`MAX_STEP`] per
+            // iteration, so one step of lag is safe.
+            if parallel && self.pair_load >= AUTO_BH_PARALLEL_FLOOR {
                 #[cfg(not(target_family = "wasm"))]
                 forces.par_iter_mut().enumerate().for_each(|(i, force)| {
                     *force = grid.accumulate_node(i, positions, masses, scaling, radius);
                 });
             } else {
-                // Serial pair walk: one distance evaluation shared by both
-                // endpoints and sequential cell traversal — measurably faster
-                // than per-node scans at this scale.
                 grid.for_each_pair(&mut |i, j| {
                     let delta = algebraic_sub(positions[i], positions[j]);
                     let dist = delta.length();
@@ -844,6 +920,17 @@ impl ForceAtlas2 {
                     forces[i] = algebraic_add(forces[i], impulse);
                     forces[j] = algebraic_sub(forces[j], impulse);
                 });
+            }
+            // Fresh enumeration-cost sample regardless of which driver ran,
+            // so the adaptive policy never flies on stale data while the
+            // cutoff path is active.
+            self.pair_load =
+                grid.candidate_pairs() as f32 / (n as f32 * (n as f32).log2().max(1.0));
+            if self.bh_threshold.is_none() && self.pair_load >= AUTO_BH_ENGAGE {
+                // Engage for the rest of the run; a rebuild resets it. While
+                // Barnes-Hut runs no cutoff enumeration happens, so the load
+                // cannot be re-sampled (documented stickiness).
+                self.bh_active = true;
             }
             self.grid = grid;
         }
@@ -1288,6 +1375,88 @@ mod tests {
             }
         }
         4000
+    }
+
+    #[test]
+    fn adaptive_policy_engages_barnes_hut_on_dense_crowding() {
+        // Coincident nodes saturate the cutoff grid: every pair is a
+        // candidate, so one cutoff iteration must measure far above
+        // AUTO_BH_ENGAGE and flip the engine onto Barnes-Hut.
+        let (lg, mut state) = project(&{
+            let mut g = Graph::new();
+            let ids: Vec<_> = (0..512).map(|_| g.add_node(())).collect();
+            for w in ids.windows(2) {
+                g.add_edge(w[0], w[1], EdgeDirection::Undirected, ());
+            }
+            g
+        });
+        for p in &mut state.positions {
+            *p = Vec2::new(7.0, -3.0);
+        }
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        // The decision pre-warms from the initial placement, so iteration 1
+        // already takes the Barnes-Hut path instead of paying one full
+        // cutoff enumeration just to produce the signal.
+        assert!(
+            fa.bh_active,
+            "load {:.1} should exceed engage",
+            fa.pair_load
+        );
+    }
+
+    #[test]
+    fn adaptive_policy_keeps_sparse_graphs_on_cutoff() {
+        let (lg, mut state) = build_grid(20, 40.0);
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        for _ in 0..8 {
+            fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+        }
+        assert!(!fa.bh_active);
+        assert!(
+            fa.pair_load < AUTO_BH_ENGAGE,
+            "sparse grid load {:.1}",
+            fa.pair_load
+        );
+    }
+
+    #[test]
+    fn rebuild_resets_adaptive_repulsion_state() {
+        let (lg, mut state) = project(&{
+            let mut g = Graph::new();
+            let ids: Vec<_> = (0..512).map(|_| g.add_node(())).collect();
+            for w in ids.windows(2) {
+                g.add_edge(w[0], w[1], EdgeDirection::Undirected, ());
+            }
+            g
+        });
+        state.positions.fill(Vec2::ZERO);
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        assert!(fa.bh_active);
+
+        // Spreading the same graph out and rebuilding must re-decide from
+        // scratch: fresh placement, fresh policy.
+        let spread = (state.positions.len() as f32).sqrt().ceil() as i32;
+        for (i, p) in state.positions.iter_mut().enumerate() {
+            *p = Vec2::new(
+                (i as i32 % spread) as f32 * 60.0,
+                (i as i32 / spread) as f32 * 60.0,
+            );
+        }
+        fa.rebuild(&lg, &mut state);
+        assert!(!fa.bh_active, "load {:.1}", fa.pair_load);
+    }
+
+    #[test]
+    fn fixed_barnes_hut_threshold_bypasses_adaptive_state() {
+        let (lg, mut state) = build_grid(20, 40.0);
+        let mut fa = ForceAtlas2::default().with_barnes_hut_threshold(0);
+        fa.rebuild(&lg, &mut state);
+        fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+        // The override runs Barnes-Hut directly; adaptive state stays put.
+        assert!(!fa.bh_active);
     }
 
     #[test]

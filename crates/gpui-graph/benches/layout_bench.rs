@@ -187,6 +187,12 @@ fn bench_force_atlas2_step(c: &mut Criterion) {
             &default_engine,
             &BenchCase::hub(leaves),
         );
+        step_bench(
+            &mut group,
+            BenchmarkId::new("hub_bh", leaves.to_string()),
+            &bh_engine,
+            &BenchCase::hub(leaves),
+        );
     }
 
     // Large graphs: fewer samples to keep total run time bounded.
@@ -219,6 +225,12 @@ fn bench_force_atlas2_step(c: &mut Criterion) {
         &mut group,
         BenchmarkId::new("random", "5000"),
         &default_engine,
+        &BenchCase::random(5000),
+    );
+    step_bench(
+        &mut group,
+        BenchmarkId::new("random_bh", "5000"),
+        &bh_engine,
         &BenchCase::random(5000),
     );
 

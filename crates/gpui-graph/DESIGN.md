@@ -989,13 +989,19 @@ as part of the `gpui-graph` public surface.
 
 This keeps the layout implementation replaceable.
 
-Execution model (§37): every force phase and the movement pass are data-parallel
-per node under rayon at or above `PAR_MIN_NODES` (4096 nodes); below it,
-serial drivers run the same physics with cheaper scheduling. Wasm-family
-builds (the demo/social embed: unknown-unknown, WASI, and any future
-wasm64) link no rayon and run the serial drivers at every graph size. Parallel workers never share accumulators — grid repulsion scans each node's own 3×3
-neighborhood single-sided, Barnes-Hut resolves one root descent per node with
-thread-local stacks, and attraction gathers each node's incident pulls through
+Execution model (§37): whether repulsion runs Barnes-Hut or the exact cutoff
+grid is adaptive by default — a pair-load ratio sampled at rebuild and after
+every cutoff iteration flips dense runs to Barnes-Hut at `AUTO_BH_ENGAGE`
+(§37); `with_barnes_hut_threshold` pins a fixed gate. Barnes-Hut descents,
+attraction, and the movement pass are data-parallel per node under rayon at
+or above `PAR_MIN_NODES` (4096 nodes); the cutoff path picks its driver from
+measured neighborhood work (`AUTO_BH_PARALLEL_FLOOR`: thin neighborhoods take
+the serial pair walk). Below the node threshold everything is serial.
+Wasm-family builds (the demo/social embed: unknown-unknown, WASI, and any
+future wasm64) link no rayon and run the serial drivers at every graph size. Parallel workers never share accumulators — parallel cutoff
+repulsion scans each node's own 3×3 neighborhood single-sided, Barnes-Hut
+resolves one root descent per node with thread-local stacks, and attraction
+gathers each node's incident pulls through
 the projection's own undirected incidence adjacency
 (`LayoutGraph::adjacency`, one entry per incident edge endpoint, so duplicate
 edges pull exactly as before). Because `GraphScene` rebuilds the projection
@@ -2359,7 +2365,24 @@ The following should remain intentionally open until implementation and profilin
   a 4096-node dense ring, up to ~6x slower on sparse uniform grids, because
   the quadtree computes all-pairs long-range repulsion where the cutoff grid
   only touches local neighborhoods),
-- Barnes-Hut activation policy (topology-aware threshold),
+- ~~Barnes-Hut activation policy~~ (implemented: repulsion is adaptive by
+  default. The sensor is a pair-load ratio `ρ = candidate_pairs / (n·log2 n)`
+  where `candidate_pairs` is exactly the enumeration the cutoff pair walk
+  would visit — computable from the grid structure alone, without touching
+  coordinates. It is sampled once at `rebuild` from the initial placement and
+  refreshed after every cutoff iteration; when `ρ ≥ 20` the engine switches
+  to Barnes-Hut for the rest of the run (sticky: while Barnes-Hut runs no
+  enumeration happens, so expansion back to sparse is only re-detected at the
+  next topology rebuild — accepted v1 limitation, bounded at the measured
+  ~1.2x BH-vs-cutoff penalty on mid-density shapes). Calibration
+  (layout_bench): ρ ≈ 0.6–3 on grids/random/hub-256 and ≈ 11 on hub/1024 all
+  stay cutoff and measure faster there; only the densest shape (hub/4096,
+  ρ far above) flips to Barnes-Hut, which is also where the flip pays.
+  Engaging at `rebuild` rather than first-step matters: otherwise the densest
+  graphs pay their single most expensive iteration (a full cutoff
+  enumeration) just to produce the signal. `with_barnes_hut_threshold(n)`
+  pins the old fixed node-count gate and disables adaptivity, which benches
+  and the BH tolerance test use to measure one path in isolation.),
 - ~~parallel force evaluation~~ (implemented: every FA2 phase and the
   movement pass are data-parallel per node under rayon at or above
   `PAR_MIN_NODES` (4096) — Barnes-Hut per-node descents with thread-local
@@ -2374,12 +2397,15 @@ The following should remain intentionally open until implementation and profilin
   hub/256 167 µs → 178 µs, hub/1024 2.28 ms → 2.27 ms); dense large graphs
   win big (hub/4096 38.8 ms → ~13–16 ms, grid_bh/100x100 32.8 ms → 13.2 ms,
   hub_bh/4096 11.9 ms → 7.9 ms); random/5000 is parity-to-slightly-better.
-  Known residual: sparse uniform grids on the exact-grid path regress
-  (~1.3–1.7x at 10k nodes) because per-node scans double pair evaluations and
-  pay binary searches per node while the work per node is tiny — node count
-  alone cannot separate that topology from dense hubs, so this folds into the
-  topology-aware activation policy below. Contract settling counts:
-  hub/256 24 iterations, grid/20x20 591),
+  Residual resolved by the adaptive policy's second knob: the exact-grid
+  driver is chosen per step by measured neighborhood work — below
+  `AUTO_BH_PARALLEL_FLOOR` (thin neighborhoods, e.g. grid/100x100) the serial
+  pair walk runs and matches its original baseline; above it (e.g.
+  random/5000) per-node scans keep their measured parallel win. Contract
+  settling counts: hub/256 24 iterations, grid/20x20 597 — the count drifts
+  by single digits across refactors because `algebraic_*` reassociation
+  amplifies chaotically near the settling boundary; the contract is the
+  <1500 budget, not the exact digit),
 - dynamic incremental engine updates,
 - hierarchical layout,
 - Sugiyama layout,
