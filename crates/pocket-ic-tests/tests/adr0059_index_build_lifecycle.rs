@@ -40,40 +40,109 @@
 //!   `pic.upgrade_canister`; this slice upgrades all five federation canisters
 //!   mid-drive.
 //!
+//! # Edge-INLINE scenario-to-symbol map (GAP-2026-07-29-001)
+//!
+//! Verified by direct read at main `306f469c1` (2026-08-23); the inline
+//! scenarios below drive these committed symbols. **Status:** both scenarios
+//! are `#[ignore]`d because they exposed GAP-2026-08-22-001 — the migration
+//! path for DIRECTED edge builds terminates with `Failed(TargetRejected)`
+//! before any posting converges. They run explicitly via
+//! `cargo test ... --test adr0059_index_build_lifecycle -- --ignored` and are
+//! the owning regression proof for closing GAP-2026-07-29-001 once that
+//! identity contract is fixed.
+//!
+//! - Inline schema registration: typed-graph DDL (`CREATE GRAPH TYPE ... NEXT
+//!   CREATE GRAPH ... TYPED`) commits `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`
+//!   (`crates/router/src/facade/store/catalogs.rs`), which three consumers read:
+//!   migration scope resolution, atomic-insert width validation, and the DML
+//!   wire's resolved label table.
+//! - Migration scope resolution: `resolve_inline_projection`
+//!   (`facade/store/schema_migration/index.rs`) maps an eligible scalar inline
+//!   slot to `CanonicalInlineProjection { source_property_id, byte_offset: 0,
+//!   value_profile = source_profile }`; indexing a whole inline struct stays
+//!   rejected ("index a leaf field instead").
+//! - Domain selection: one physical index exports exactly one canonical domain.
+//!   A registered `scope.inline` selects Graph's `export_edge_inline_page`
+//!   (`crates/graph/src/index/canonical_export.rs`); without it the sidecar
+//!   page runs. The dual-domain cursor walk in
+//!   `edge_property_backfill.rs` belongs to the operator `advance_backfill`
+//!   repair API, separate from this lifecycle.
+//! - Enumeration identity: `export_edge_inline_page` visits outgoing rows only;
+//!   an undirected row is kept only when `canonical_undirected_owner(owner,
+//!   neighbor) == owner` (max endpoint), so each logical edge yields exactly one
+//!   `CanonicalIndexableFact::Edge` and mirror double-posting cannot arise.
+//!   graph-index binds every seeded fact to the registered target identity in
+//!   `prepare_fact_posting` (`build_state.rs`) before inserting the posting.
+//! - Read surfaces exercised post-Active: router planner stats project Active
+//!   directional edge memberships (`planner_stats.rs::is_edge_indexed_for`);
+//!   execution probes graph-index postings through `lookup_edge_equal_page` /
+//!   `lookup_edge_range_page` (`scan/edge_index.rs`, `expand/candidates.rs`).
+//! - Assertion surfaces used here: the projected catalog memberships
+//!   (`get_indexed_property_catalog(...).edge_indexes`), direct
+//!   `lookup_edge_equal_page` probes against both index canisters (posting
+//!   truth, shard and canonical-owner identity), and GQL equality/range rows.
+//! - Fixture symbols: directed seeds use `e2e_insert_directed_edge_with_inline_property`
+//!   (caller-supplied `RawU16` profile, ADR 0034 convention); undirected seeds
+//!   go through the router `atomic_insert` path with `directed: false` so the
+//!   Router-resolved profile validates the bytes and the ordered batch inserts
+//!   an undirected inline row.
+//!
 //! # Boundary notes
 //!
-//! - Edge-INLINE storage is not enumerated by the edge backfill; that hole is
-//!   GAP-2026-07-29-001 (Open) and is deliberately NOT asserted here. Edge
-//!   values are covered through sidecar (`EDGE_PROPERTIES`) seeding only.
 //! - With current page budgets one Build advance can seed tens of thousands of
-//!   facts, so fixture-scale data converges within a single advance round. The
-//!   upgrade scenario therefore proves persistence and resumption of the
-//!   registered build state across the upgrade boundary rather than partial-page
-//!   watermark resumption, which remains covered by graph-index worker units.
+//!   facts, so fixture-scale data converges within a single advance round (this
+//!   holds for edge builds as for vertex builds). The upgrade scenarios
+//!   therefore prove persistence and resumption of the registered build state
+//!   across the upgrade boundary rather than partial-page watermark resumption,
+//!   which remains covered by graph-index worker units.
 
 use candid::{Decode, Encode};
-use gleaph_gql::Value;
+use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::GqlWireRows;
-use gleaph_graph_kernel::federation::RouterError;
+use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_global_vertex_id};
 use gleaph_graph_kernel::index::{
-    IndexBuildStatus, IndexMaintenancePhase, IndexedPropertyCatalog, PhysicalIndexId,
+    EdgePostingHitPage, IndexBuildStatus, IndexMaintenancePhase, IndexedEdgeMembership,
+    IndexedPropertyCatalog, LookupEdgeEqualPageRequest, LookupEdgeRangePageRequest,
+    PhysicalIndexId, PostingRangeRequest,
 };
-use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_graph_kernel::plan_exec::{GqlQueryResult, MutationLifecyclePhase};
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
     SchemaMigrationRecordState,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, e2e_insert_directed_edge_with_property,
-    e2e_insert_vertex_with_label_and_property, ensure_edge_label, ensure_property,
-    ensure_vertex_label, gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_query_as_admin,
+    DEST_SHARD, FederationEnv, GRAPH_NAME, SOURCE_SHARD, atomic_insert_as_admin,
+    e2e_insert_directed_edge_with_inline_property, e2e_insert_directed_edge_with_property,
+    e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_property, ensure_edge_label,
+    ensure_property, ensure_vertex_label, federation_graph_element_id_encoding_key_bytes,
+    gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_query_as_admin,
     gql_query_as_admin_expect_err, install_federation, query_as_router, wasm_bytes,
+};
+use gleaph_router::types::{
+    AtomicInsertEdgeV1, AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertRequest,
+    AtomicInsertRequestV1,
 };
 
 const MIGRATION_ID: &str = "000101_adr0059_age";
 const AGE_INDEX_DDL: &str = "CREATE INDEX adr0059_person_age FOR (n:Person) ON (n.age)";
 const MAX_DRIVE_ROUNDS: usize = 32;
+
+const EDGE_INLINE_MIGRATION_ID: &str = "000102_adr0059_edge_inline";
+const EDGE_INLINE_UPGRADE_MIGRATION_ID: &str = "000103_adr0059_edge_inline_upgrade";
+const ROAD_LABEL: &str = "ROAD";
+const LINK_LABEL: &str = "LINK";
+const DISTANCE_PROPERTY: &str = "distance";
+/// Declares scalar `UINT16 INLINE` slots on a directed and an undirected edge
+/// type and binds them to the default federation graph. The typed binding is
+/// what registers the router inline schema that `resolve_inline_projection`
+/// and atomic-insert validation consume.
+const EDGE_INLINE_TYPE_DDL: &str = "CREATE GRAPH TYPE IF NOT EXISTS adr0059_road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city), UNDIRECTED EDGE Link LABEL LINK { distance UINT16 INLINE } CONNECTING (city ~ city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED adr0059_road_type";
+const ROAD_DISTANCE_DDL: &str =
+    "CREATE INDEX adr0059_road_distance FOR ()-[e:ROAD]-() ON (e.distance)";
+const LINK_DISTANCE_DDL: &str =
+    "CREATE INDEX adr0059_link_distance FOR () ~[e:LINK]~ () ON (e.distance)";
 
 fn migration_args(id: &str, statement: &str) -> ApplySchemaMigrationArgs {
     let selector = SchemaMigrationGraphSelector::Default;
@@ -173,7 +242,17 @@ fn int_column(env: &FederationEnv, query: &str) -> Vec<i64> {
             let value_row = row.try_into_value_row().expect("wire row to value row");
             match value_row.get("v").expect("column v") {
                 Value::Int64(v) => *v,
-                other => panic!("expected Int64 in column v, got {other:?}"),
+                Value::Int32(v) => i64::from(*v),
+                Value::Int16(v) => i64::from(*v),
+                Value::Int8(v) => i64::from(*v),
+                Value::Uint64(v) => i64::try_from(*v).expect("uint64 fits i64"),
+                Value::Uint32(v) => i64::from(*v),
+                // ADR 0034 scalar inline slots decode to the exact unsigned
+                // width (UINT16 INLINE projects Uint16), so the edge-INLINE
+                // scenarios read integer columns through this arm too.
+                Value::Uint16(v) => i64::from(*v),
+                Value::Uint8(v) => i64::from(*v),
+                other => panic!("expected an integer in column v, got {other:?}"),
             }
         })
         .collect()
@@ -205,6 +284,224 @@ fn seed_convergence_fixture(env: &FederationEnv) {
     // edge-INLINE completeness (GAP-2026-07-29-001 boundary).
     e2e_insert_directed_edge_with_property(env, env.graph_source, 0, 1, knows, weight, 7);
     e2e_insert_directed_edge_with_property(env, env.graph_dest, 0, 1, knows, weight, 8);
+}
+
+// ---------------------------------------------------------------------------
+// Edge-INLINE fixtures and assertion surfaces (GAP-2026-07-29-001)
+// ---------------------------------------------------------------------------
+
+fn u16_distance_profile() -> EdgeInlinePropertyProfile {
+    EdgeInlinePropertyProfile {
+        byte_width: 2,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
+    }
+}
+
+/// Sortable index key bytes for a `UINT16` inline literal; identical to what
+/// the export emits after decoding (`INDEX_KEY_NUMERIC` is width-agnostic).
+fn u16_distance_key(value: u16) -> Vec<u8> {
+    value_to_index_key_bytes(&Value::Uint16(value))
+        .expect("uint16 encodes")
+        .expect("non-null key")
+}
+
+/// Declares the typed inline schema on the default federation graph.
+fn declare_edge_inline_schema(env: &FederationEnv) {
+    gql_mutate_as_admin(env, EDGE_INLINE_TYPE_DDL, "adr0059_edge_inline_schema");
+}
+
+/// Seeds one directed `ROAD` edge carrying a `UINT16` inline `distance` on
+/// `shard`, between two fresh City-labeled vertices.
+fn seed_directed_road_edge(env: &FederationEnv, shard: candid::Principal, distance: u16) {
+    let city = ensure_vertex_label(env, "City").raw();
+    let road = ensure_edge_label(env, ROAD_LABEL).raw();
+    let source = e2e_insert_vertex_with_label(env, shard, city).local_vertex_id;
+    let target = e2e_insert_vertex_with_label(env, shard, city).local_vertex_id;
+    e2e_insert_directed_edge_with_inline_property(
+        env,
+        shard,
+        source,
+        target,
+        road,
+        distance.to_le_bytes().to_vec(),
+        u16_distance_profile(),
+    );
+}
+
+/// Seeds one undirected `LINK` edge carrying a `UINT16` inline `distance`
+/// through the router atomic-insert path (`directed: false`), which validates
+/// the bytes against the Router-resolved inline profile. Returns the two local
+/// endpoint ids so callers can assert the canonical max-endpoint owner.
+fn seed_undirected_link_edge(
+    env: &FederationEnv,
+    shard: candid::Principal,
+    distance: u16,
+    mutation_key: &str,
+) -> (u32, u32) {
+    let city = ensure_vertex_label(env, "City").raw();
+    let low = e2e_insert_vertex_with_label(env, shard, city);
+    let high = e2e_insert_vertex_with_label(env, shard, city);
+    let encoding_key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
+    let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
+        client_mutation_key: mutation_key.to_owned(),
+        graph_name: Some(GRAPH_NAME.to_owned()),
+        operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+            source: AtomicInsertEndpointV1::Existing(
+                encode_global_vertex_id(&encoding_key, low.global_vertex_id)
+                    .0
+                    .to_vec(),
+            ),
+            target: AtomicInsertEndpointV1::Existing(
+                encode_global_vertex_id(&encoding_key, high.global_vertex_id)
+                    .0
+                    .to_vec(),
+            ),
+            directed: false,
+            edge_label_name: Some(LINK_LABEL.to_owned()),
+            inline_property: Some(distance.to_le_bytes().to_vec()),
+            initial_edge_properties: Vec::new(),
+        })],
+    });
+    let status =
+        atomic_insert_as_admin(env, request).expect("undirected inline atomic insert commits");
+    assert_eq!(
+        status.status.phase,
+        MutationLifecyclePhase::Completed,
+        "undirected inline seed must complete durably"
+    );
+    (low.local_vertex_id, high.local_vertex_id)
+}
+
+/// Every projected edge membership from the router catalog.
+fn edge_memberships(env: &FederationEnv) -> Vec<IndexedEdgeMembership> {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "get_indexed_property_catalog",
+            Encode!(&GRAPH_NAME.to_string()).expect("encode graph name"),
+        )
+        .unwrap_or_else(|e| panic!("get_indexed_property_catalog on router: {e:?}"));
+    let catalog: Result<IndexedPropertyCatalog, RouterError> =
+        Decode!(&bytes, Result<IndexedPropertyCatalog, RouterError>)
+            .expect("decode get_indexed_property_catalog");
+    catalog.expect("catalog query ok").edge_indexes
+}
+
+fn edge_phase_for(
+    memberships: &[IndexedEdgeMembership],
+    label_raw: u16,
+    property_raw: u32,
+) -> Option<IndexMaintenancePhase> {
+    memberships
+        .iter()
+        .filter(|m| m.label_id == label_raw && m.property_id == property_raw)
+        .map(|m| m.phase)
+        .next()
+}
+
+fn projected_edge_physical_index(
+    memberships: &[IndexedEdgeMembership],
+    label_raw: u16,
+    property_raw: u32,
+) -> PhysicalIndexId {
+    memberships
+        .iter()
+        .find(|m| m.label_id == label_raw && m.property_id == property_raw)
+        .map(|m| m.physical_index_id)
+        .expect("a Building-or-later edge membership must be projected")
+}
+
+/// Bare-result graph-index page query (the lookup pages do not use the
+/// `Result<R, String>` envelope `query_as_router` decodes).
+fn edge_lookup_page<R: candid::CandidType + serde::de::DeserializeOwned>(
+    env: &FederationEnv,
+    method: &str,
+    request: impl candid::CandidType,
+) -> R {
+    let bytes = env
+        .pic
+        .query_call(
+            env.index,
+            env.router,
+            method,
+            Encode!(&request).expect("encode edge lookup request"),
+        )
+        .unwrap_or_else(|e| panic!("{method} on graph-index: {e:?}"));
+    Decode!(&bytes, R).unwrap_or_else(|_| panic!("decode {method}"))
+}
+
+/// All equality postings for one `(physical index, property, value)` bucket,
+/// following resume cursors to exhaustion. `label_id` stays `None` so the probe
+/// observes the stored label identities directly instead of assuming them.
+fn edge_equal_postings(
+    env: &FederationEnv,
+    physical_index_id: PhysicalIndexId,
+    property_raw: u32,
+    value: u16,
+) -> Vec<gleaph_graph_kernel::index::EdgePostingHit> {
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page: EdgePostingHitPage = edge_lookup_page(
+            env,
+            "lookup_edge_equal_page",
+            LookupEdgeEqualPageRequest {
+                physical_index_id,
+                property_id: property_raw,
+                value: u16_distance_key(value),
+                label_id: None,
+                after,
+                limit: 128,
+            },
+        );
+        hits.extend(page.hits);
+        if page.done {
+            return hits;
+        }
+        after = page.next;
+    }
+}
+
+/// All range postings over the half-open encoded interval `[low, high)`.
+fn edge_range_postings(
+    env: &FederationEnv,
+    physical_index_id: PhysicalIndexId,
+    property_raw: u32,
+    low: u16,
+    high: u16,
+) -> Vec<gleaph_graph_kernel::index::EdgePostingHit> {
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page: EdgePostingHitPage = edge_lookup_page(
+            env,
+            "lookup_edge_range_page",
+            LookupEdgeRangePageRequest {
+                physical_index_id,
+                property_id: property_raw,
+                range: PostingRangeRequest::Between {
+                    low: u16_distance_key(low),
+                    high: u16_distance_key(high),
+                },
+                label_id: None,
+                after,
+                limit: 128,
+            },
+        );
+        hits.extend(page.hits);
+        if page.done {
+            return hits;
+        }
+        after = page.next;
+    }
+}
+
+/// The combined migration statement: directed ROAD (both direction buckets) and
+/// undirected-only LINK sub-builds advance sequentially in payload order.
+fn edge_inline_statement() -> String {
+    format!("{ROAD_DISTANCE_DDL}\nNEXT {LINK_DISTANCE_DDL}")
 }
 
 #[test]
@@ -562,4 +859,311 @@ fn same_wasm_upgrade_mid_build_resumes_and_converges() {
     let mut eq115 = int_column(&env, "MATCH (n:Person) WHERE n.age = 115 RETURN n.age AS v");
     eq115.sort();
     assert_eq!(eq115, vec![115, 115]);
+}
+
+/// Drives the combined ROAD+LINK edge migration until every sub-build reaches
+/// `Applied`, collecting each membership's observed phases. Returns the final
+/// projected memberships so callers can resolve physical namespaces.
+fn drive_edge_inline_migration_to_applied(
+    env: &FederationEnv,
+    args: &ApplySchemaMigrationArgs,
+    road: u16,
+    link: u16,
+    distance: u32,
+) -> Vec<IndexedEdgeMembership> {
+    let mut road_phases: Vec<IndexMaintenancePhase> = Vec::new();
+    let mut link_phases: Vec<IndexMaintenancePhase> = Vec::new();
+    let mut rounds = 0_usize;
+    loop {
+        rounds += 1;
+        assert!(
+            rounds <= MAX_DRIVE_ROUNDS,
+            "edge migration did not converge"
+        );
+        let result = apply_once(env, args);
+        if let Some(phase) = edge_phase_for(&edge_memberships(env), road, distance)
+            && road_phases.last() != Some(&phase)
+        {
+            road_phases.push(phase);
+        }
+        if let Some(phase) = edge_phase_for(&edge_memberships(env), link, distance)
+            && link_phases.last() != Some(&phase)
+        {
+            link_phases.push(phase);
+        }
+        match result.status {
+            SchemaMigrationApplyStatus::Progress(_) => {}
+            SchemaMigrationApplyStatus::Applied => break,
+            SchemaMigrationApplyStatus::Replay => {
+                panic!("fresh migration cannot replay before reaching Applied")
+            }
+            other => panic!("edge migration terminated early: {other:?}"),
+        }
+    }
+    // Both sequential sub-builds traversed the full observable lifecycle.
+    for (name, phases) in [("ROAD", &road_phases), ("LINK", &link_phases)] {
+        assert!(
+            phases.contains(&IndexMaintenancePhase::Building),
+            "{name} lifecycle must pass Building, observed {phases:?}"
+        );
+        assert!(
+            phases.contains(&IndexMaintenancePhase::Sealing),
+            "{name} lifecycle must pass Sealing, observed {phases:?}"
+        );
+        assert_eq!(
+            phases.last(),
+            Some(&IndexMaintenancePhase::Active),
+            "{name} must end Active"
+        );
+    }
+    edge_memberships(env)
+}
+
+#[test]
+#[ignore = "exposes GAP-2026-08-22-001: the directed ROAD sub-build terminates with \
+            Failed(TargetRejected) because Graph export facts carry storage wire labels \
+            (catalog id | 0x8000) while the Router registers untagged catalog label ids, so \
+            graph-index's exact fact/target identity check rejects every seed page; run with \
+            --ignored until the identity contract is fixed"]
+fn edge_inline_create_index_migration_converges_active_with_complete_postings() {
+    let env = install_federation();
+    declare_edge_inline_schema(&env);
+    let road = ensure_edge_label(&env, ROAD_LABEL).raw();
+    let link = ensure_edge_label(&env, LINK_LABEL).raw();
+    let distance = ensure_property(&env, DISTANCE_PROPERTY).raw();
+
+    // Directed ROAD inline values across both shards; 30 appears twice on the
+    // source shard so equality multiplicity is observable.
+    for value in [10_u16, 20, 30, 30, 40] {
+        seed_directed_road_edge(&env, env.graph_source, value);
+    }
+    for value in [15_u16, 25, 35] {
+        seed_directed_road_edge(&env, env.graph_dest, value);
+    }
+    // One undirected LINK pair per shard for the canonical-owner rule.
+    let (src_low, src_high) =
+        seed_undirected_link_edge(&env, env.graph_source, 12, "adr0059_link_src");
+    let (dst_low, dst_high) =
+        seed_undirected_link_edge(&env, env.graph_dest, 28, "adr0059_link_dst");
+
+    let args = migration_args(EDGE_INLINE_MIGRATION_ID, &edge_inline_statement());
+    let memberships = drive_edge_inline_migration_to_applied(&env, &args, road, link, distance);
+
+    // Posting truth on the ROAD namespace: every seeded directed inline value
+    // converged exactly once per logical edge, per shard, with multiplicity.
+    let road_physical = projected_edge_physical_index(&memberships, road, distance);
+    for (value, expected_shard, expected_count) in [
+        (10_u16, SOURCE_SHARD, 1_usize),
+        (20, SOURCE_SHARD, 1),
+        (30, SOURCE_SHARD, 2),
+        (40, SOURCE_SHARD, 1),
+        (15, DEST_SHARD, 1),
+        (25, DEST_SHARD, 1),
+        (35, DEST_SHARD, 1),
+    ] {
+        let hits = edge_equal_postings(&env, road_physical, distance, value);
+        assert_eq!(
+            hits.len(),
+            expected_count,
+            "ROAD equality postings for {value}"
+        );
+        assert!(
+            hits.iter().all(|hit| hit.shard_id == expected_shard),
+            "ROAD postings for {value} must live on the seeding shard"
+        );
+    }
+    assert_eq!(
+        edge_range_postings(&env, road_physical, distance, 0, 1000).len(),
+        8,
+        "the full ROAD domain converges with no extra or missing postings"
+    );
+
+    // Undirected LINK postings: exactly one hit per logical pair, owned by the
+    // max endpoint — the E2E canonical-owner mirror of
+    // backfill_emits_only_the_canonical_undirected_owner.
+    let link_physical = projected_edge_physical_index(&memberships, link, distance);
+    for (value, expected_shard, low, high) in [
+        (12_u16, SOURCE_SHARD, src_low, src_high),
+        (28, DEST_SHARD, dst_low, dst_high),
+    ] {
+        let hits = edge_equal_postings(&env, link_physical, distance, value);
+        assert_eq!(
+            hits.len(),
+            1,
+            "undirected pair {value} posts once, no mirrors"
+        );
+        assert_eq!(hits[0].shard_id, expected_shard);
+        assert_eq!(
+            hits[0].owner_vertex_id,
+            low.max(high),
+            "the undirected canonical owner is the max endpoint"
+        );
+    }
+    assert_eq!(
+        edge_range_postings(&env, link_physical, distance, 0, 1000).len(),
+        2,
+        "both undirected pairs converge without duplicate identities"
+    );
+
+    // Equality completeness through GQL after Active, including multiplicity.
+    let mut eq30 = int_column(
+        &env,
+        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance = 30 RETURN e.distance AS v",
+    );
+    eq30.sort();
+    assert_eq!(
+        eq30,
+        vec![30, 30],
+        "both pre-existing inline 30s are visible"
+    );
+
+    // Range completeness through GQL: every seeded directed inline value inside
+    // the interval, exactly once per logical edge.
+    let mut range = int_column(
+        &env,
+        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance >= 10 AND e.distance < 40 RETURN e.distance AS v",
+    );
+    range.sort();
+    assert_eq!(range, vec![10, 15, 20, 25, 30, 30, 35]);
+
+    // Undirected reads observe each pair exactly once post-Active.
+    let eq12 = int_column(
+        &env,
+        "MATCH (a:City)-[e:LINK]-(b:City) WHERE e.distance = 12 RETURN e.distance AS v",
+    );
+    assert_eq!(
+        eq12,
+        vec![12],
+        "the undirected pair is visible exactly once"
+    );
+    let mut undirected_range = int_column(
+        &env,
+        "MATCH (a:City)-[e:LINK]-(b:City) WHERE e.distance >= 0 AND e.distance < 1000 RETURN e.distance AS v",
+    );
+    undirected_range.sort();
+    assert_eq!(undirected_range, vec![12, 28]);
+}
+
+#[test]
+#[ignore = "same root cause as the convergence scenario (GAP-2026-08-22-001): seeded_items \
+            never advances because every ROAD seed page is rejected by graph-index's exact \
+            fact/target label identity check; run with --ignored once that contract is fixed"]
+fn edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges() {
+    let env = install_federation();
+    declare_edge_inline_schema(&env);
+    let road = ensure_edge_label(&env, ROAD_LABEL).raw();
+    let link = ensure_edge_label(&env, LINK_LABEL).raw();
+    let distance = ensure_property(&env, DISTANCE_PROPERTY).raw();
+
+    // Inline-heavy build: 24 directed ROAD edges per shard plus one undirected
+    // LINK pair per shard.
+    for shard_graph in [env.graph_source, env.graph_dest] {
+        for base in [0_u16, 100] {
+            for offset in 0..12_u16 {
+                seed_directed_road_edge(&env, shard_graph, base + offset);
+            }
+        }
+    }
+    let (src_low, src_high) =
+        seed_undirected_link_edge(&env, env.graph_source, 200, "adr0059_upg_link_src");
+    let _ = seed_undirected_link_edge(&env, env.graph_dest, 220, "adr0059_upg_link_dst");
+
+    let args = migration_args(EDGE_INLINE_UPGRADE_MIGRATION_ID, &edge_inline_statement());
+
+    // Drive into Building and perform at least one Build advance so the
+    // graph-index build holds persisted seeded-item progress. The sequential
+    // payload advances ROAD first.
+    let mut rounds = 0_usize;
+    loop {
+        rounds += 1;
+        assert!(rounds <= MAX_DRIVE_ROUNDS, "never reached Building");
+        apply_once(&env, &args);
+        if edge_phase_for(&edge_memberships(&env), road, distance)
+            == Some(IndexMaintenancePhase::Building)
+        {
+            break;
+        }
+    }
+    let memberships_before = edge_memberships(&env);
+    let road_physical = projected_edge_physical_index(&memberships_before, road, distance);
+    loop {
+        let status = index_status_as_router(&env, road_physical);
+        if status.progress.seeded_items > 0 {
+            break;
+        }
+        rounds += 1;
+        assert!(rounds <= MAX_DRIVE_ROUNDS, "build never seeded any item");
+        apply_once(&env, &args);
+    }
+    let before_upgrade = index_status_as_router(&env, road_physical);
+    assert!(before_upgrade.progress.seeded_items > 0);
+
+    // Upgrade every federation canister to the same wasm mid-drive.
+    upgrade_federation_in_place(&env);
+
+    // The registered build state survived on graph-index.
+    let after_upgrade = index_status_as_router(&env, road_physical);
+    assert_eq!(
+        after_upgrade.progress.seeded_items, before_upgrade.progress.seeded_items,
+        "persisted build watermarks survive the upgrade boundary"
+    );
+
+    // Resume from persisted state and converge both sequential sub-builds.
+    loop {
+        rounds += 1;
+        assert!(
+            rounds <= MAX_DRIVE_ROUNDS,
+            "migration did not converge after upgrade"
+        );
+        let result = apply_once(&env, &args);
+        if matches!(
+            result.status,
+            SchemaMigrationApplyStatus::Applied | SchemaMigrationApplyStatus::Replay
+        ) {
+            break;
+        }
+        assert!(
+            !matches!(result.status, SchemaMigrationApplyStatus::Failed(_)),
+            "upgrade must not fail the resumable build"
+        );
+    }
+
+    // Completeness across both shards: all 48 directed inline values are
+    // visible through one full-range query and an equality spot check.
+    let mut full = int_column(
+        &env,
+        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance >= 0 AND e.distance < 200 RETURN e.distance AS v",
+    );
+    full.sort();
+    let expected: Vec<i64> = (0..12).chain(100..112).collect();
+    let mut expected_twice: Vec<i64> = expected
+        .iter()
+        .copied()
+        .chain(expected.iter().copied())
+        .collect();
+    expected_twice.sort();
+    assert_eq!(
+        full, expected_twice,
+        "every pre-existing inline value from both shards is visible"
+    );
+
+    let mut eq105 = int_column(
+        &env,
+        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance = 105 RETURN e.distance AS v",
+    );
+    eq105.sort();
+    assert_eq!(eq105, vec![105, 105]);
+
+    // The undirected pair resumed across the upgrade boundary too.
+    let eq200 = int_column(
+        &env,
+        "MATCH (a:City)-[e:LINK]-(b:City) WHERE e.distance = 200 RETURN e.distance AS v",
+    );
+    assert_eq!(eq200, vec![200]);
+    let link_memberships = edge_memberships(&env);
+    let link_physical = projected_edge_physical_index(&link_memberships, link, distance);
+    let hits = edge_equal_postings(&env, link_physical, distance, 200);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].shard_id, SOURCE_SHARD);
+    assert_eq!(hits[0].owner_vertex_id, src_low.max(src_high));
 }

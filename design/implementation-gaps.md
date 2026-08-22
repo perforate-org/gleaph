@@ -47,16 +47,83 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-2026-08-21-002 — Deferred Provision→Router outbound ack holds bootstrap intent locks across a deployment's graph bootstraps
+### GAP-2026-08-22-001 — Migration-driven directed edge builds reject at graph-index seeding: wire vs catalog label identity divergence
 
-- **Status:** Open (interaction surfaced by ADR 0070 implementation, 2026-08-21)
+- **Status:** Open (discovered 2026-08-22 by plan 0281's cross-canister scenarios; no production
+  code changed)
+- **Severity:** P0 index correctness — blocks the edge half of ADR 0059's lifecycle and therefore
+  the GAP-2026-07-29-001 E2E closure
+- **Owner:** The Router→Graph→graph-index edge build identity contract: Router registration
+  (`crates/router/src/index_catalog.rs::resolve_index_definition`,
+  `facade/store/schema_migration/index.rs::step_request`), Graph export fact emission
+  (`crates/graph/src/index/canonical_export.rs::export_edge_sidecar_page` /
+  `export_edge_inline_page`), and graph-index identity enforcement
+  (`crates/graph-index/src/facade/store/build_state.rs::prepare_fact_posting`)
+- **Observed behavior:** Both new PocketIC scenarios in
+  `crates/pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`
+  (`edge_inline_create_index_migration_converges_active_with_complete_postings`,
+  `edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges`, currently `#[ignore]`d) drive a
+  combined `CREATE INDEX ... FOR ()-[e:ROAD]-() ON (e.distance)` + undirected LINK migration
+  through `apply_schema_migration` over a two-shard federation with pre-existing inline edge
+  values. The first (directed ROAD) sub-build registers and reaches Building, then terminates with
+  `SchemaMigrationApplyStatus::Failed(TargetRejected)`; in the upgrade variant
+  `IndexBuildProgress.seeded_items` stays 0 until the round budget exhausts. Vertex builds are
+  unaffected (their facts carry no label).
+- **Mechanism (static chain, each link read directly on main `306f469c1`):**
+  1. The Router registers the build target with the untagged catalog label id:
+     `resolve_index_definition` uses `lookup_edge_label_id(...).raw()` and
+     `IndexDefRecord.label_id` persists it; `step_request` copies it into
+     `IndexBuildTarget::Edge { label_id }`.
+  2. Graph storage keys edges by tagged wire labels (`BUCKET_LABEL_DIRECTED_BIT = 0x8000`;
+     directed bucket key = catalog id | 0x8000, undirected = catalog id). Both edge export pages
+     emit facts whose `label_id` is that storage value (`key.label_id()` / `edge.label_id()`).
+  3. graph-index requires exact equality between fact label and registered target label
+     (`target_label == label_id`) and returns `InvalidIndexBuildTarget` otherwise.
+  4. `InvalidIndexBuildTarget` is not retryable, so the driver classifies it as
+     `MigrationFailureCode::TargetRejected`.
+  For a DIRECTED edge, wire (`id | 0x8000`) never equals the registered catalog id, so every seed
+  page rejects.
+- **Expected or needed behavior:** One owner must define the posting label identity end-to-end so
+  migration-seeded postings, DML-maintained postings, and read-side binding agree for both
+  directedness buckets. Note the same divergence family exists on the Active DML/read path today:
+  DML maintenance inserts postings under wire labels
+  (`crates/graph/src/index/edge_pending.rs::push_edge_index_op` receives the canonical wire label)
+  while expand lookups sieve with resolved catalog ids
+  (`plan/query/executor/expand/candidates.rs`), so directed-edge equality probes through
+  graph-index return zero hits and silently degrade to scan fallbacks
+  (`expand_candidates_via_equality_index` treats empty postings as "index did not own the lookup").
+  Single-shard lifecycle tests pass because of that fallback, masking the divergence.
+- **Evidence:** Scenario run 2026-08-22: inventory precondition `router_gql_query` 24 passed /
+  0 failed; `adr0059_index_build_lifecycle` 3 passed / 2 failed with
+  `Failed(TargetRejected)` and a stuck-at-zero `seeded_items`. Unit coverage gap: graph-index's
+  build-state tests use one arbitrary label id (9) for both target and facts, so the divergence
+  has no unit-level signal.
+- **Impact:** No index over a directed edge property can be created through the migration
+  lifecycle (terminal failure); GAP-2026-07-29-001 cannot close. Undirected-only registrations
+  happen to satisfy the numeric identity check but then bind read handles from catalog-id
+  postings, so fixing only the register side without owning the identity decision would leave
+  read binding broken for one bucket packing.
+- **Next decision:** Choose the single posting-label identity (wire-tagged everywhere — requiring
+  graph-index sieves/handles to normalize via `catalog_edge_label_from_wire`, or catalog ids
+  everywhere — requiring Graph facts and DML dispatch to translate at the boundary), fix the
+  non-conforming sides, then re-run the two ignored scenarios as the closing regression proof.
+
+### GAP-2026-08-21-002 — Graph registration completion held bootstrap intent locks across a deployment's graph bootstraps
+
+- **Status:** In progress (implemented and PocketIC-validated in the working tree on 2026-08-22; required commit evidence pending)
 - **Severity:** P2 provisioning lifecycle
-- **Owner:** Provision outbound ack dispatch (ADR 0035 records the cross-canister `router_ack` call as deferred to a later slice); affected surface is Router `provision_graph_flow` intent locks
-- **Observed behavior:** After a successful `CREATE GRAPH` bootstrap, the Router-side request record stays `AwaitingAck` and its `(deployment_id, GraphShard(0))` intent lock stays held because no Provision→Router ack ever arrives. A second `CREATE GRAPH` by the same caller principal fails with `Conflict("provisioning intent already locked")` indefinitely (`adr0070_create_graph_provisioning.rs` first exercised this as an infinite retry).
-- **Expected or needed behavior:** Once the job reaches terminal completion on the Provision side, the symmetric lock release must follow (ADR 0035 Slice 6 releases locks only inside `commit_ack` / `clear_intent_locks_for_record`), so sequential graph bootstraps under one deployment converge.
-- **Evidence:** `crates/router/src/facade/store/provisioning.rs::release_intent_locks_owned_by` is only reachable from `commit_ack`; no sender of Provision's `router_ack` ingress exists in the workspace.
-- **Impact:** One graph per deployment principal until the ack loop ships. The knowledge demo creates exactly one graph per project and is unaffected; multi-graph projects must bind additional deployments (the pattern the ADR 0070 E2E uses for its second creator).
-- **Next decision:** Implement the ADR 0035 later-slice outbound ack (heartbeat or post-register send), then re-run the ADR 0070 E2E with both graphs created by one caller.
+- **Owner:** Router Graph provisioning convergence and Provision's versionless `complete_graph_registration` endpoint
+- **Historical observed behavior (before the 2026-08-22 working-tree fix):** After a successful `CREATE GRAPH` bootstrap, the Router-side request record stayed `AwaitingAck` and its `(deployment_id, GraphShard(0))` intent lock stayed held because no Provision→Router ack arrived. A second `CREATE GRAPH` by the same caller principal failed with `Conflict("provisioning intent already locked")` indefinitely (`adr0070_create_graph_provisioning.rs` first exercised this as an infinite retry).
+- **Expected or needed behavior:** Once Router has reconciled the exact Graph topology, its versionless completion call must mark the Provision job `Completed` and release only that request's Map 2/3 and Map 47 rows, so sequential bootstraps converge.
+- **Evidence:** Exact owner tests cover retry-before-early-return, partial registration, lost response
+  replay, and owned release. The Provision lifecycle test drives the production accept and completion
+  handlers across an actual Map 1/2/3 reopen, preserves exact created resources, effect count, and
+  immutable-envelope digest on admission replay, and proves completed replay leaves a later request's
+  Map 2/3 rows unchanged. Both planned PocketIC runtime targets pass: same-caller consecutive graphs
+  and the real Router→Provision Candid completion boundary. A commit remains pending because this
+  task forbids staging or committing.
+- **Impact:** The working tree removes the one-graph-per-deployment restriction for the exact `GraphShard(0)` path. This ledger entry remains non-resolved until its required runtime and commit evidence exist.
+- **Next decision:** After an authorized commit exists, record its hash and mark this entry resolved.
 
 ### GAP-2026-08-21-001 — Anchored multi-DML roll-forward saga fails to converge on both shards
 
@@ -1040,7 +1107,7 @@ duplicate its state machine or ownership rules.
 
 | Priority | Work item                                                                                  | Current status                                                                               |
 | -------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — vertex/sidecar convergence closed 2026-08-22 via GAP-2026-07-29-006; edge INLINE enumeration remains open under GAP-2026-07-29-001 |
+| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Blocked — vertex/sidecar convergence closed 2026-08-22 via GAP-2026-07-29-006; edge INLINE E2E closure blocked by GAP-2026-08-22-001 (migration-driven directed edge builds reject at seeding) |
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | GAP-2026-07-29-004 open; GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Closed 2026-08-22 — GAP-2026-07-29-003 (see entry)                                           |
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
@@ -1078,7 +1145,13 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   `backfill_resume_walks_both_domains_without_duplicate_identities`,
   `unversioned_backfill_cursor_is_rejected`. Deferred: focused PocketIC E2E/upgrade validation
   of the full create-index lifecycle over inline data remains open follow-up, tracked by this
-  entry's Next decision context.)
+  entry's Next decision context. Update 2026-08-22 (plan 0281): that E2E slice is now written
+  (`edge_inline_create_index_migration_converges_active_with_complete_postings` and
+  `edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges` in
+  `crates/pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, currently `#[ignore]`d) but
+  exposed GAP-2026-08-22-001 — migration-driven DIRECTED edge builds reject at graph-index
+  seeding before any posting converges — so this entry stays open behind that fix; the two
+  scenarios are its closing regression proof.)
 - **Severity:** P0 index correctness
 - **Owner:** Router backfill orchestration and Graph inline-property backfill boundary
 - **Observed behavior:** The edge-property backfill scans canonical `EDGE_PROPERTIES` only. Existing
