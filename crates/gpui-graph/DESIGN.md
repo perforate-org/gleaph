@@ -2288,17 +2288,21 @@ The following should remain intentionally open until implementation and profilin
 ## Layout
 
 - ForceAtlas2 default settings,
-- ~~convergence thresholds~~ (implemented: FA2 local speed adaptation —
-  per-node swinging/traction balance with a carried convergence factor,
-  a displacement dead-band so equilibrium noise cannot prevent settling,
-  and `slowDown` as the global movement divisor via `with_slow_down`.
-  Measured on the 256-leaf ring fixture: 1007 iterations to settle under
-  the previous damped-velocity integration, 953 under adaptive speed),
 - iteration budget,
-- uniform-grid layouts never report `Settled` under default settings
-  (open: a residual limit cycle, pre-existing — measured >4000 iterations
-  under both integrations; canonical constant-magnitude gravity was tested
-  and did not fix it. Probe: the ignored `grid_settle_probe` test),
+- ~~convergence thresholds~~ (implemented: FA2 local speed adaptation —
+  per-node swinging/traction balance with a carried convergence factor —
+  plus two settling extensions the reference lacks because it never has to
+  report `Settled`: a displacement dead-band and a global cooling schedule
+  (`COOLING_FACTOR` decay per iteration, reset on rebuild) that guarantees
+  termination around stiff equilibria. Pairwise forces saturate at
+  `MIN_DISTANCE` in magnitude while keeping true directions, so overlapped
+  nodes separate at bounded strength. Measured iterations to settle:
+  hub/256 1007 → 24, grid/20x20 never (previously a >4000-iteration
+  transient under spring-law gravity and a step cap of 0.1) → 593.
+  Root causes of the old non-settling, fixed together: gravity magnitude
+  growing with distance saturated every node onto the tiny step cap; the
+  cap stretched the collapse into thousands of iterations; and the rest
+  dead-band sat inside the equilibrium jitter band),
 - ~~Barnes-Hut quadtree~~ (implemented in `ForceAtlas2`: flat-arena quadtree,
   FA2 degree mass, exact chains at the depth floor for coincident nodes,
   parity-tested against brute force; opt-in via

@@ -5,8 +5,19 @@
 //! implementation replaceable.
 //!
 //! This is a self-contained implementation of the ForceAtlas2 force model
-//! (repulsion, attraction, gravity) with adaptive speed and a convergence
-//! threshold.
+//! (repulsion, attraction, gravity) with FA2 local speed adaptation plus two
+//! settling extensions the reference lacks because Gephi runs a fixed
+//! iteration count while this engine must report `Settled`:
+//!
+//! - a displacement dead-band (nodes below [`DISPLACEMENT_EPSILON`] rest for
+//!   the iteration), and
+//! - a global cooling schedule ([`COOLING_FACTOR`] decay per iteration,
+//!   reset on rebuild), which guarantees termination even around stiff
+//!   equilibria where local adaptation alone cannot damp coherent jitter.
+//!
+//! Pairwise forces saturate at [`MIN_DISTANCE`]: magnitudes use the floored
+//! distance while directions stay true, so overlapped nodes push apart at
+//! bounded strength instead of exploding (`1/d²`) or going weightless.
 //!
 //! Repulsion runs on one of two paths, selected by node count: an exact
 //! radius-cutoff spatial grid (nodes beyond the radius do not interact; the
@@ -29,16 +40,44 @@ use glam::Vec2;
 use super::graph::{LayoutGraph, LayoutIndex, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
 
-/// Maximum per-iteration displacement (world units) a node may move, so a
-/// single strong force (e.g. two coincident nodes) cannot fling it across the
-/// graph in one frame. A safety cap layered on top of FA2 local speed
-/// adaptation, which already shrinks movement as oscillation grows.
-const MAX_STEP: f32 = 0.1;
+/// Maximum per-iteration displacement (world units) a node may move. The FA2
+/// reference has no such cap; ours guards against single-frame flings from
+/// clamp-floor impulses between coincident nodes (repulsion strength
+/// diverges as `1/dist²` below the distance floor). Sized large enough that
+/// early collapse/expand phases progress in multi-pixel strides — a tiny cap
+/// stretches those phases into thousands of cap-riding iterations.
+/// Maximum per-iteration displacement (world units) a node may move. The FA2
+/// reference has no such cap and relies purely on its speed formula; ours
+/// bounds the damage while mass-weighted repulsion is still violent early on
+/// (a degree-256 hub carries mass 257 and slams crowded neighbors hard).
+/// Sized so early spread/collapse phases progress in visible strides without
+/// letting saturated nodes teleport through each other every iteration.
+const MAX_STEP: f32 = 4.0;
+/// Per-iteration decay of the global cooling factor. FA2's local speed
+/// adaptation cannot damp coherent high-force oscillation (its convergence
+/// factor saturates whenever forces are large), so layouts around stiff,
+/// densely packed equilibria would jitter above the rest threshold forever.
+/// A global cooling schedule — the standard settling companion elsewhere
+/// (d3's alpha decay, OpenOrd annealing) — multiplies every movement and
+/// guarantees termination within ~`COOLING_FACTOR` decades of iterations.
+/// [`LayoutEngine::rebuild`] resets it, so topology changes get fresh energy.
+const COOLING_FACTOR: f32 = 0.995;
+/// Distance floor for pairwise forces: below one world unit, pairs interact
+/// as if exactly one unit apart. Repulsion magnitude `s·mi·mj/d²` otherwise
+/// diverges at touching distance, slamming dense clusters into a capped-
+/// speed chaos of clamp-floor impulses that never settles. The floor
+/// saturates the MAGNITUDE only (`s·mi·mj / MIN_DISTANCE²` applied along
+/// the true separation direction): flooring the distance inside the
+/// delta-scaled impulse would make overlapped pairs weightless instead.
+const MIN_DISTANCE: f32 = 1.0;
 /// Desired displacement below which a node rests for the iteration. FA2 has
-/// no intrinsic decay, so residual force noise at an equilibrium would keep
-/// every node micro-jittering forever and the layout could never report
-/// settled (Gephi sidesteps this by running a fixed iteration count).
-const DISPLACEMENT_EPSILON: f32 = 0.01;
+/// no intrinsic decay, so residual force noise around an equilibrium keeps
+/// every node micro-jittering forever; Gephi sidesteps this by running a
+/// fixed iteration count, we must report `Settled`. Sized at a tenth of a
+/// world unit — imperceptible at any reasonable viewport scale — and safely
+/// above the measured equilibrium jitter band (~0.011–0.017), which would
+/// otherwise straddle a smaller threshold and flicker on/off forever.
+const DISPLACEMENT_EPSILON: f32 = 0.1;
 
 /// Component-wise [`f32::algebraic_add`].
 #[inline]
@@ -373,12 +412,15 @@ impl BhTree {
                 let dist = delta.length();
                 let side = cell.half * 2.0;
                 if side < theta * dist {
-                    // Far enough: merge the whole subtree into its center of mass.
-                    // Same 0.01 distance floor as the exact paths.
-                    let dist = dist.max(0.01);
-                    let inv = scaling.algebraic_mul(masses[i]).algebraic_mul(cell.mass)
-                        / (dist * dist * dist);
-                    forces[i] = algebraic_add(forces[i], algebraic_mul_scalar(delta, inv));
+                    // Far enough: merge the whole subtree into its center of
+                    // mass. The floor saturates the magnitude only; direction
+                    // and criterion keep the true distance, so overlapping
+                    // clusters still push apart instead of going weightless.
+                    let eff = dist.max(MIN_DISTANCE);
+                    let strength =
+                        scaling.algebraic_mul(masses[i]).algebraic_mul(cell.mass) / (eff * eff);
+                    forces[i] =
+                        algebraic_add(forces[i], algebraic_mul_scalar(delta, strength / dist));
                 } else {
                     for &child in &cell.children {
                         if child != NO_INDEX {
@@ -404,10 +446,18 @@ impl BhTree {
             return;
         }
         let delta = algebraic_sub(positions[j], positions[i]);
-        // Same 0.01 distance floor as the grid path and the reference model.
-        let dist = delta.length().max(0.01);
-        let inv = scaling.algebraic_mul(masses[i]).algebraic_mul(masses[j]) / (dist * dist * dist);
-        forces[i] = algebraic_add(forces[i], algebraic_mul_scalar(delta, inv));
+        let dist = delta.length();
+        if dist == 0.0 {
+            // Exact coincidence has no separation direction; the reference
+            // implementation skips such pairs too.
+            return;
+        }
+        // The floor saturates the `1/d²` magnitude only; direction stays the
+        // true separation, so overlapped pairs keep pushing apart instead of
+        // going weightless below one world unit.
+        let eff = dist.max(MIN_DISTANCE);
+        let strength = scaling.algebraic_mul(masses[i]).algebraic_mul(masses[j]) / (eff * eff);
+        forces[i] = algebraic_add(forces[i], algebraic_mul_scalar(delta, strength / dist));
     }
 }
 
@@ -463,6 +513,9 @@ pub struct ForceAtlas2 {
     theta: f32,
     /// Node mass = degree + 1 (FA2 weighting): scales repulsion and gravity.
     masses: Vec<f32>,
+    /// Global cooling multiplier in `(0, 1]` applied to every movement;
+    /// decays each iteration and resets on rebuild (§37).
+    cooling: f32,
 }
 
 impl Default for ForceAtlas2 {
@@ -482,6 +535,7 @@ impl Default for ForceAtlas2 {
             bh_threshold: usize::MAX,
             theta: 1.0,
             masses: Vec::new(),
+            cooling: 1.0,
         }
     }
 }
@@ -556,6 +610,8 @@ impl LayoutEngine for ForceAtlas2 {
         // Fresh nodes start fully adaptive; established nodes keep their
         // adapted factor across incremental topology changes.
         self.convergence.resize(n, 1.0);
+        // Topology changes get fresh layout energy.
+        self.cooling = 1.0;
         // FA2 mass = degree + 1: every incident edge counts, directed or not.
         self.masses.clear();
         self.masses.resize(n, 1.0);
@@ -640,17 +696,20 @@ impl ForceAtlas2 {
             let masses = &self.masses;
             grid.for_each_pair(&mut |i, j| {
                 let delta = algebraic_sub(positions[i], positions[j]);
-                let dist = delta.length().max(0.01);
-                if dist > radius {
+                let dist = delta.length();
+                if dist == 0.0 || dist > radius {
                     return;
                 }
-                // `dir * force == delta * (scaling·m_i·m_j / dist³)`: one
-                // division per pair instead of three.
+                // `dir * force == delta * (strength / dist)` with the
+                // magnitude saturated at [`MIN_DISTANCE`]: overlapped pairs
+                // push apart at bounded strength instead of exploding or
+                // going weightless.
+                let eff = dist.max(MIN_DISTANCE);
                 let strength = scaling
                     .algebraic_mul(masses[i])
                     .algebraic_mul(masses[j])
-                    .algebraic_div(dist.algebraic_mul(dist).algebraic_mul(dist));
-                let impulse = algebraic_mul_scalar(delta, strength);
+                    .algebraic_div(eff.algebraic_mul(eff));
+                let impulse = algebraic_mul_scalar(delta, strength / dist);
                 forces[i] = algebraic_add(forces[i], impulse);
                 forces[j] = algebraic_sub(forces[j], impulse);
             });
@@ -662,7 +721,7 @@ impl ForceAtlas2 {
             let s = edge.source.0 as usize;
             let t = edge.target.0 as usize;
             let delta = algebraic_sub(state.positions[t], state.positions[s]);
-            let dist = delta.length().max(0.01);
+            let dist = delta.length().max(MIN_DISTANCE);
             let fa = if self.lin_log {
                 (1.0f32.algebraic_add(dist)).ln()
             } else {
@@ -674,20 +733,20 @@ impl ForceAtlas2 {
             forces[t] = algebraic_sub(forces[t], pull);
         }
 
-        // Gravity: pull every node toward the origin, weighted by its mass
-        // like the repulsion it balances (FA2 keeps the two consistent).
-        // Known divergence from the reference implementation, which uses a
-        // constant-magnitude pull along the unit direction (§37); switching
-        // was tested and did not affect settling, so the cheaper spring form
-        // stays until that investigation concludes.
+        // Gravity: pull every node toward the origin, weighted by its mass,
+        // with CONSTANT magnitude along the unit direction like the FA2
+        // reference. A spring-law pull growing with distance saturates every
+        // node onto the step cap and stretches the initial collapse into
+        // thousands of extra iterations.
         for (force, (pos, mass)) in forces
             .iter_mut()
             .zip(state.positions.iter().zip(&self.masses))
         {
-            *force = algebraic_sub(
-                *force,
-                algebraic_mul_scalar(*pos, self.gravity.algebraic_mul(*mass)),
-            );
+            let dist = pos.length();
+            if dist > 0.0 {
+                let factor = self.gravity.algebraic_mul(*mass).algebraic_div(dist);
+                *force = algebraic_sub(*force, algebraic_mul_scalar(*pos, factor));
+            }
         }
 
         // Apply forces with FA2 local speed adaptation. There is no global
@@ -724,7 +783,9 @@ impl ForceAtlas2 {
             // Freeze it so equilibrium noise cannot jitter it forever and the
             // layout can report settled. State above stays fresh, so a real
             // force (drag, topology change) moves it again immediately.
-            let desired = force.length().algebraic_mul(nodespeed / self.slow_down);
+            let desired = force
+                .length()
+                .algebraic_mul(nodespeed * self.cooling / self.slow_down);
             if desired < DISPLACEMENT_EPSILON {
                 continue;
             }
@@ -733,10 +794,12 @@ impl ForceAtlas2 {
             let shrink = (MAX_STEP / desired).min(1.0);
             state.positions[i] = algebraic_add(
                 state.positions[i],
-                algebraic_mul_scalar(force, nodespeed * shrink / self.slow_down),
+                algebraic_mul_scalar(force, nodespeed * shrink * self.cooling / self.slow_down),
             );
             total = total.algebraic_add(desired.algebraic_mul(shrink));
         }
+        // Global cooling decays once per iteration, after applying movements.
+        self.cooling = (self.cooling * COOLING_FACTOR).max(0.0);
         total
     }
 }
@@ -791,10 +854,11 @@ mod tests {
             progress = fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
         }
 
-        // Nodes should have moved closer together.
+        // Nodes should have moved closer together and settled: a two-node
+        // graph equilibrates quickly under adaptive speed plus cooling.
         let dist = (state.positions[0] - state.positions[1]).length();
         assert!(dist < 200.0, "distance should shrink, got {dist}");
-        assert!(matches!(progress, LayoutProgress::Running { .. }));
+        assert_eq!(progress, LayoutProgress::Settled);
     }
 
     #[test]
@@ -900,8 +964,12 @@ mod tests {
                     continue;
                 }
                 let d = pts[j] - pts[i];
-                let dist = d.length().max(0.01);
-                want[i] += d * (scaling * masses[i] * masses[j] / (dist * dist * dist));
+                let dist = d.length();
+                if dist == 0.0 {
+                    continue;
+                }
+                let eff = dist.max(MIN_DISTANCE);
+                want[i] += d * (scaling * masses[i] * masses[j] / (eff * eff) / dist);
             }
         }
 
@@ -938,14 +1006,21 @@ mod tests {
 
     #[test]
     fn settles_within_iteration_budget() {
-        // Termination contract: default settings must settle bounded shapes
-        // well below the probe budget. Counts are printed so convergence
-        // behavior stays observable when tuning the force model.
+        // Termination contract: default settings must settle both shape
+        // families well below the probe budget. Counts are printed so
+        // convergence behavior stays observable when tuning the force model.
         let hub_iters = run_until_settled(build_ring_hub(256));
         println!("hub/256 settled in {hub_iters} iterations");
         assert!(
             hub_iters < 1500,
             "hub should settle well below the budget, took {hub_iters}"
+        );
+
+        let grid_iters = run_until_settled(build_grid(20, 40.0));
+        println!("grid/20x20 settled in {grid_iters} iterations");
+        assert!(
+            grid_iters < 1500,
+            "grid should settle well below the budget, took {grid_iters}"
         );
     }
 
@@ -968,18 +1043,10 @@ mod tests {
         (lg, state)
     }
 
-    /// Probe for the §37 open item: uniform grid layouts never report
-    /// `Settled` under default settings — a residual limit cycle that
-    /// predates adaptive speed (measured >4000 iterations under both the
-    /// damped-velocity and FA2-adaptive integrations; canonical
-    /// constant-magnitude gravity was tested and did not fix it). Run while
-    /// investigating: `cargo test -p gpui-graph --lib grid_settle_probe --
-    /// --ignored --nocapture`.
-    #[test]
-    #[ignore = "grid layouts do not settle under default settings yet (§37)"]
-    fn grid_settle_probe() {
+    /// Build a `side x side` lattice graph with unit edges spaced `spacing`
+    /// world units apart.
+    fn build_grid(side: usize, spacing: f32) -> (LayoutGraph, LayoutState) {
         let mut g = Graph::new();
-        let side = 20;
         let mut ids: Vec<Vec<_>> = (0..side).map(|_| Vec::new()).collect();
         for row in &mut ids {
             for _ in 0..side {
@@ -999,11 +1066,10 @@ mod tests {
         let (lg, mut state) = project(&g);
         for y in 0..side {
             for x in 0..side {
-                state.positions[y * side + x] = Vec2::new(x as f32 * 40.0, y as f32 * 40.0);
+                state.positions[y * side + x] = Vec2::new(x as f32 * spacing, y as f32 * spacing);
             }
         }
-        let iters = run_until_settled((lg, state));
-        println!("grid/20x20 settled in {iters} iterations");
+        (lg, state)
     }
 
     #[test]
