@@ -29,6 +29,7 @@ pub(crate) enum InjectedFault {
 thread_local! {
     static FAULT: Cell<InjectedFault> = const { Cell::new(InjectedFault::None) };
     static ORDERED_FAULT: Cell<OrderedFaultState> = const { Cell::new(OrderedFaultState::new()) };
+    static EMBEDDING_STAMP_RESPONSE_LOSS: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +99,18 @@ pub(crate) fn ordered_dispatch_state() -> (u64, bool) {
         let current = state.get();
         (current.dispatch_count, current.reject_next_ordered_entry)
     })
+}
+
+/// Arm or clear a trap immediately before `stamp_embedding` returns its validated mutation id.
+pub(crate) fn set_embedding_stamp_response_loss(armed: bool) {
+    EMBEDDING_STAMP_RESPONSE_LOSS.with(|state| state.set(armed));
+}
+
+/// Trap after `stamp_embedding` has validated the request but before its reply reaches Router.
+pub(crate) fn maybe_trap_on_embedding_stamp_reply() {
+    if EMBEDDING_STAMP_RESPONSE_LOSS.with(Cell::get) {
+        ic_cdk::trap("pocket-ic-e2e injected fault: embedding stamp response loss");
+    }
 }
 
 /// Map a candid-friendly code to a fault (`0` clears). Unknown codes are rejected by the caller.

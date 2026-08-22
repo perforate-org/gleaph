@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
+Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
 
 ## Purpose
 
@@ -273,44 +273,45 @@ Internal bindings may stay lazy until output:
 
 The Router-admin endpoint `ingest_vertex_embeddings` resolves the opaque encoded vertex id, the
 registered embedding definition, and the target Graph/Vector canisters. It validates each value
-vector's dimension and finiteness before allocating a nonzero Router stamp or making a Graph call,
-then sends only metadata and the stamp to Graph. Graph `stamp_embedding` validates vertex
+vector's dimension and finiteness, then synchronously allocates every nonzero Router stamp together
+with one exact `AwaitingGraph` row in `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) before the first
+Graph await. The same admission operation revalidates the live shard, exact Graph and Vector
+targets, immutable definition, row capacity, and encoded size; a returned error changes neither the
+counter nor outbox. Router then sends only metadata and the stamp to Graph. Graph `stamp_embedding` validates vertex
 existence/tombstone state, required label membership, and payload-independent embedding
 metadata/encoding. This Graph call is validation-only: it does not write embedding bytes, a
 mutation-journal row, a derived-index outbox row, or a watermark.
 
-After **all successful Graph stamps for the request** are collected, the Router builds the complete
-`VectorEmbeddingSyncOp` values with the canonical F32 wire bytes, subject, definition, stamp, and
-exact Vector target. Immediately before the first Vector await, the Router synchronously revalidates
-every stamped operation against the current live shard row, exact attached target, and current
-immutable definition, then appends the validated batch to the stable Router
-`ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) in the same owner operation. This is the durable suffix
-owner for `DeferredForRepair`; no target is re-resolved from the mutable catalog during replay. The
-outbox is bounded to 1,024 rows and 2 MiB per encoded row, and no await can interleave revalidation
-with append. Its persisted value uses `StorableBound::Unbounded`; `VectorIngestOutboxState::encode_checked`
+An observed exact Graph acceptance transitions only the matching row to `AwaitingVector`; an
+observed logical rejection removes only that row. Transport/decode failure or response loss leaves
+`AwaitingGraph` unchanged. Recovery uses the persisted Graph target and metadata, and derives the
+complete `VectorEmbeddingSyncOp` from the same canonical row without resolving either target from
+mutable catalog state. The outbox is bounded to 1,024 rows and 2 MiB per encoded row. Its persisted
+value uses `StorableBound::Unbounded`; `VectorIngestOutboxState::encode_checked`
 enforces the shared 2 MiB admission ceiling before the first stable insertion, so that transport
 limit does not inflate `StableBTreeMap` node pages.
 
 The Router then calls the typed-only Vector endpoint `vector_sync_batch_outcome`.
 `Progress { applied }` acknowledges and
 removes exactly the committed prefix. `Terminal { failed_index: applied }` removes that prefix but
-retains the failed row and later suffix as `Pending`; all retained terminal/suffix entries are
-reported as `DeferredForRepair`, with no separate outer error. Transport,
+retains the failed row and later suffix as `Pending`. Transport,
 typed-unavailable, or malformed replies leave all submitted rows pending. The bounded recovery
-timer retries pending rows in exact immutable-target groups, up to 16 rows per tick, and Router
+timer retries both phases through their exact immutable targets, up to 16 rows per tick, and Router
 `post_upgrade` re-arms the timer. Appending work calls `recovery::arm_if_needed()`; an arm raised
 while a pass is awaiting a remote call is latched and re-arms the floor delay after an empty pass,
-preventing a lost wake. Each batch adaptively fits a prefix from a complete Candid encode below the
+preventing a lost wake. A heap-only guard excludes mutation IDs still driven by their originating
+API call from timer recovery; an upgrade clears the guard so durable rows resume automatically.
+Each batch adaptively fits a prefix from a complete Candid encode below the
 2 MiB hard ceiling, targeting the ceiling minus the fixed 500 KiB envelope headroom. The typed Vector
 driver processes internal chunks of at most 32 rows. This is durable at-least-once retry/convergence
 without a finite-time guarantee or client-level exactly-once semantics.
 
-The targeted PocketIC lifecycle gate passed with one test and four filtered:
+The targeted PocketIC lifecycle gates each ran one exact test and passed:
 `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
-(1 passed, 0 failed, 4 filtered, 17.95s). It manually drives the Graph and Router timer/recovery
-seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent replay. This
-targeted evidence does not prove autonomous wall-clock timer firing or deferred watermark/tombstone
-GC completion.
+and `graph_response_loss_preserves_pregraph_intent_across_router_upgrade -- --exact --nocapture`.
+Together they cover both intent phases, Router/Vector upgrades, exact GQL search, and idempotent
+replay. This targeted evidence does not prove autonomous wall-clock timer firing or
+watermark/tombstone GC completion.
 
 ## Error model
 

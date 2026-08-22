@@ -1169,7 +1169,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             53,
             StableMemoryClass::Canonical,
             "direct vector ingestion",
-            "mutation_id → one exact Vector target and VectorEmbeddingSyncOp; pending suffixes are retried by Router recovery; terminal outcomes retain the failed row and later suffix as Pending",
+            "mutation_id → exact Graph/Vector targets, canonical direct-ingestion inputs, and AwaitingGraph or AwaitingVector phase; Router recovery retries unresolved work and typed Vector acknowledgement removes only the exact applied prefix",
             RebuildPath::None,
         ),
     ],

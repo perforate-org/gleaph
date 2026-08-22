@@ -421,18 +421,17 @@ pub struct VertexEmbeddingIngestionArgs {
 pub enum VertexEmbeddingProjectionOutcome {
     /// The derived vector canister accepted the upsert in this message.
     Applied,
-    /// The derived vector operation was not acknowledged in this attempt (for example, the
-    /// canister was unreachable, unavailable, or returned a terminal admission result). The exact
-    /// operation remains durably owned by the Router repair outbox and will be retried automatically.
-    DeferredForRepair,
+    /// The Router durably owns a non-terminal intent that still awaits Graph validation or Vector
+    /// acknowledgement. The exact request will be retried automatically.
+    Pending,
 }
 
 /// Result of [`VertexEmbeddingIngestionArgs`].
 ///
 /// `embedding_version` is the Router-issued `mutation_id` validated by the graph; the graph does not
 /// store embedding values or versions. `Applied` means the vector canister committed the operation.
-/// `DeferredForRepair` means the Router durably owns the pending delivery, not that the vector value
-/// is already present.
+/// `Pending` means the Router durably owns the request, not that Graph validation has completed or
+/// the vector value is already present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VertexEmbeddingIngestionResult {
     pub embedding_version: u64,

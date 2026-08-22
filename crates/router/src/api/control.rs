@@ -358,32 +358,20 @@ fn validate_embedding_values(values: &[f32], dims: u16) -> Result<(), RouterErro
     Ok(())
 }
 
-type PreparedVertexEmbeddingGroups = std::collections::BTreeMap<
-    candid::Principal,
-    Vec<(
-        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
-        gleaph_graph_kernel::federation::ShardId,
-        usize,
-        Vec<u8>,
-    )>,
->;
-
-struct ResolvedVertexEmbeddingItem {
-    graph_canister: candid::Principal,
-    shard_id: gleaph_graph_kernel::federation::ShardId,
-    local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
-    original_index: usize,
-    bytes: Vec<u8>,
-}
+type PreparedVertexEmbeddingItems = Vec<(
+    crate::facade::stable::vector_ingest_outbox::NewVectorIngestIntent,
+    usize,
+)>;
 
 /// Validate and resolve the complete batch before consuming any mutation IDs.
-fn prepare_vertex_embedding_groups(
-    store: &RouterStore,
+fn prepare_vertex_embedding_items(
     items: Vec<types::AdminIngestVertexEmbeddingBatchItem>,
+    graph_id: gleaph_graph_kernel::entry::GraphId,
+    vector_target: candid::Principal,
     key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
     live_shards: &[gleaph_graph_kernel::federation::ShardRegistryEntry],
     spec: &gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec,
-) -> Result<PreparedVertexEmbeddingGroups, RouterError> {
+) -> Result<PreparedVertexEmbeddingItems, RouterError> {
     use gleaph_graph_kernel::federation::{EncodedVertexId, decode_global_vertex_id};
 
     let mut resolved = Vec::with_capacity(items.len());
@@ -411,30 +399,20 @@ fn prepare_vertex_embedding_groups(
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
-        resolved.push(ResolvedVertexEmbeddingItem {
-            graph_canister: shard.graph_canister,
-            shard_id: global_id.shard_id,
-            local_vertex_id: global_id.local_vertex_id,
-            original_index,
-            bytes,
-        });
-    }
-
-    let mut by_canister: PreparedVertexEmbeddingGroups = std::collections::BTreeMap::new();
-    for item in resolved {
-        let mutation_id = store.allocate_mutation_id()?;
-        by_canister.entry(item.graph_canister).or_default().push((
-            gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs {
-                local_vertex_id: item.local_vertex_id,
+        resolved.push((
+            crate::facade::stable::vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id,
+                graph_target: shard.graph_canister,
+                vector_target,
+                shard_id: global_id.shard_id,
+                local_vertex_id: global_id.local_vertex_id,
                 spec: spec.clone(),
-                mutation_id,
+                bytes,
             },
-            item.shard_id,
-            item.original_index,
-            item.bytes,
+            original_index,
         ));
     }
-    Ok(by_canister)
+    Ok(resolved)
 }
 
 /// Ingest finite F32 vertex embeddings via the Router-initiated two-call flow (ADR 0064 §6):
@@ -510,84 +488,89 @@ async fn ingest_vertex_embeddings(
 
     // Resolve and validate every item before allocating the first Router mutation ID. A malformed
     // suffix therefore cannot consume identities for a valid prefix.
-    let by_canister =
-        prepare_vertex_embedding_groups(&store, args.items, &key, &live_shards, &spec)?;
+    let prepared = prepare_vertex_embedding_items(
+        args.items,
+        graph_id,
+        vector_canister,
+        &key,
+        &live_shards,
+        &spec,
+    )?;
 
     let mut results: Vec<
         Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>,
     > = Vec::with_capacity(item_count);
     results.resize(item_count, Err("not dispatched".to_string()));
+    let pending_result = |mutation_id| {
+        Ok(
+            gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
+                embedding_version: mutation_id,
+                projection_outcome:
+                    gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::Pending,
+            },
+        )
+    };
 
-    // Phase 1: Router → Graph `stamp_embedding` (validate metadata against the mutation_id, no byte
-    // storage). Collect the consumed stamps per item.
-    let mut stamped: Vec<(
-        gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
-        usize,
-    )> = Vec::new();
-    for (graph_canister, mut group) in by_canister {
-        group.sort_by_key(|(_, _, original_index, _)| *original_index);
-        for (arg, shard_id, original_index, bytes) in group {
-            match crate::graph_client::stamp_embedding(graph_canister, arg.clone()).await {
-                Ok(stamp) => {
-                    stamped.push((
-                        gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
-                            index_id: spec.index_id,
-                            embedding_name_id: spec.embedding_name_id,
-                            subject: gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
-                                shard_id,
-                                vertex_id: arg.local_vertex_id,
-                            },
-                            mutation_id: stamp,
-                            encoding: spec.encoding,
-                            dims: spec.dims,
-                            metric: spec.metric,
-                            bytes,
-                            remove: false,
-                        },
-                        original_index,
-                    ));
+    // Allocate every stamp together with its exact durable intent before the first Graph await.
+    let (inputs, original_indices): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+    let admitted = crate::facade::stable::vector_ingest_outbox::admit_awaiting_graph(inputs)
+        .map_err(RouterError::Internal)?;
+    let _initial_delivery =
+        crate::facade::stable::vector_ingest_outbox::InitialDeliveryGuard::new(&admitted);
+
+    let mut vector_rows = Vec::new();
+    let mut has_pending_intent = false;
+    for (row, original_index) in admitted.into_iter().zip(original_indices) {
+        match crate::graph_client::stamp_embedding(row.graph_target, row.graph_args()).await {
+            Ok(crate::graph_client::GraphStampOutcome::Accepted(mutation_id)) => {
+                match crate::facade::stable::vector_ingest_outbox::observe_graph_accept(
+                    &row,
+                    mutation_id,
+                ) {
+                    Ok(next) => {
+                        results[original_index] = pending_result(row.mutation_id);
+                        has_pending_intent = true;
+                        vector_rows.push((next, original_index));
+                    }
+                    Err(_) => {
+                        results[original_index] = pending_result(row.mutation_id);
+                        has_pending_intent = true;
+                    }
                 }
-                Err(err) => {
-                    results[original_index] = Err(err);
+            }
+            Ok(crate::graph_client::GraphStampOutcome::Rejected(error)) => {
+                if crate::facade::stable::vector_ingest_outbox::observe_graph_reject(&row).is_ok() {
+                    results[original_index] = Err(error);
+                } else {
+                    results[original_index] = pending_result(row.mutation_id);
+                    has_pending_intent = true;
                 }
+            }
+            Err(_) => {
+                results[original_index] = pending_result(row.mutation_id);
+                has_pending_intent = true;
             }
         }
     }
 
-    // Phase 2: persist the exact stamped operations before the first Vector await. Graph stamps are
-    // validation-only effects for this path; the Router outbox is the durable owner if this call,
-    // the response, or the canister is lost.
-    if !stamped.is_empty() {
-        let submitted: Vec<crate::facade::stable::vector_ingest_outbox::VectorIngestOutboxRow> =
-            stamped
-                .iter()
-                .map(|(operation, _)| (operation.mutation_id, vector_canister, operation.clone()))
-                .collect();
-        crate::facade::stable::vector_ingest_outbox::append_pending_for_graph(graph_id, &submitted)
-            .map_err(RouterError::Internal)?;
+    if has_pending_intent {
         crate::recovery::arm_if_needed();
+    }
 
-        let ops: Vec<_> = submitted
+    if !vector_rows.is_empty() {
+        let submitted: Vec<_> = vector_rows.iter().map(|(row, _)| row.clone()).collect();
+        let operations: Vec<_> = submitted
             .iter()
-            .map(|(_, _, operation)| operation.clone())
+            .map(crate::facade::stable::vector_ingest_outbox::VectorIngestOutboxState::vector_operation)
             .collect();
-        let outcome = match crate::vector_sync::vector_sync_batch_outcome(vector_canister, ops)
-            .await
+        let outcome = match crate::vector_sync::vector_sync_batch_outcome(
+            vector_canister,
+            operations,
+        )
+        .await
         {
             Ok(outcome) => outcome,
-            Err(_) => {
-                // Transport and typed-unavailable failures leave every row pending. The recovery
-                // timer will retry the exact target and operation bytes.
-                for (operation, original_index) in &stamped {
-                    results[*original_index] = Ok(
-                        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
-                            embedding_version: operation.mutation_id,
-                            projection_outcome: gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::DeferredForRepair,
-                        },
-                    );
-                }
-                return Ok(results);
-            }
+            Err(_) => return Ok(results),
         };
         let applied = match outcome {
             gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome::Progress { applied }
@@ -597,30 +580,17 @@ async fn ingest_vertex_embeddings(
         };
         if crate::facade::stable::vector_ingest_outbox::apply_outcome(&submitted, outcome).is_err()
         {
-            // A malformed or stale typed reply is fail-closed: no row was changed, so every
-            // stamped operation remains a durable deferred repair.
-            for (operation, original_index) in &stamped {
-                results[*original_index] = Ok(
+            return Ok(results);
+        }
+        for (index, (row, original_index)) in vector_rows.into_iter().enumerate() {
+            if index < applied {
+                results[original_index] = Ok(
                     gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
-                        embedding_version: operation.mutation_id,
-                        projection_outcome: gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::DeferredForRepair,
+                        embedding_version: row.mutation_id,
+                        projection_outcome: gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::Applied,
                     },
                 );
             }
-            return Ok(results);
-        }
-        for (index, (op, original_index)) in stamped.into_iter().enumerate() {
-            let projection_outcome = if index < applied {
-                gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::Applied
-            } else {
-                gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::DeferredForRepair
-            };
-            results[original_index] = Ok(
-                gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
-                    embedding_version: op.mutation_id,
-                    projection_outcome,
-                },
-            );
         }
     }
 
@@ -996,7 +966,7 @@ fn test_force_reclaiming(
 
 #[cfg(test)]
 mod vertex_embedding_validation_tests {
-    use super::prepare_vertex_embedding_groups;
+    use super::prepare_vertex_embedding_items;
     use crate::facade::stable::vector_ingest_outbox;
     use crate::facade::store::RouterStore;
     use crate::init::RouterInitArgs;
@@ -1011,7 +981,7 @@ mod vertex_embedding_validation_tests {
         IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
     };
 
-    fn reset_router_state() -> RouterStore {
+    fn reset_router_state() {
         let store = RouterStore::new();
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
@@ -1019,7 +989,6 @@ mod vertex_embedding_validation_tests {
             provision_canister: None,
         });
         vector_ingest_outbox::clear_for_test();
-        store
     }
 
     fn spec() -> IndexedEmbeddingSpec {
@@ -1059,36 +1028,29 @@ mod vertex_embedding_validation_tests {
     }
 
     fn prepare(
-        store: &RouterStore,
         items: Vec<types::AdminIngestVertexEmbeddingBatchItem>,
-    ) -> Result<super::PreparedVertexEmbeddingGroups, RouterError> {
-        prepare_vertex_embedding_groups(
-            store,
+    ) -> Result<super::PreparedVertexEmbeddingItems, RouterError> {
+        prepare_vertex_embedding_items(
             items,
+            GraphId::from_raw(1),
+            Principal::self_authenticating([7; 32]),
             &ElementIdEncodingKey::host_test_fixture(),
             &[shard()],
             &spec(),
         )
     }
 
-    fn only_mutation_id(groups: super::PreparedVertexEmbeddingGroups) -> u64 {
-        let mut values = groups.into_values();
-        let group = values.next().expect("one graph target");
-        assert!(values.next().is_none(), "only one graph target expected");
-        assert_eq!(group.len(), 1, "only one prepared item expected");
-        group[0].0.mutation_id
+    fn mutation_counter() -> u64 {
+        crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get())
     }
 
     #[test]
     fn dimension_mismatch_rejects_before_router_side_effects() {
         let _guard = vector_ingest_outbox::test_lock();
-        let store = reset_router_state();
+        reset_router_state();
 
-        let error = prepare(
-            &store,
-            vec![item(1, vec![1.0, 2.0]), item(2, vec![1.0, 2.0, 3.0])],
-        )
-        .expect_err("invalid suffix must reject the complete Router batch");
+        let error = prepare(vec![item(1, vec![1.0, 2.0]), item(2, vec![1.0, 2.0, 3.0])])
+            .expect_err("invalid suffix must reject the complete Router batch");
         assert_eq!(
             error,
             RouterError::InvalidArgument(
@@ -1101,9 +1063,15 @@ mod vertex_embedding_validation_tests {
             "invalid values must not mutate the Router ingestion outbox"
         );
         assert_eq!(
-            only_mutation_id(prepare(&store, vec![item(3, vec![4.0, 5.0])]).expect("valid batch")),
-            1,
-            "the valid prefix of a rejected batch must not consume a mutation ID"
+            prepare(vec![item(3, vec![4.0, 5.0])])
+                .expect("valid batch")
+                .len(),
+            1
+        );
+        assert_eq!(
+            mutation_counter(),
+            0,
+            "preparation must not allocate a stamp"
         );
     }
 
@@ -1111,12 +1079,12 @@ mod vertex_embedding_validation_tests {
     fn non_finite_values_reject_before_router_side_effects() {
         let _guard = vector_ingest_outbox::test_lock();
         for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let store = reset_router_state();
+            reset_router_state();
 
-            let error = prepare(
-                &store,
-                vec![item(1, vec![1.0, 2.0]), item(2, vec![1.0, non_finite])],
-            )
+            let error = prepare(vec![
+                item(1, vec![1.0, 2.0]),
+                item(2, vec![1.0, non_finite]),
+            ])
             .expect_err("non-finite suffix must reject the complete Router batch");
             assert_eq!(
                 error,
@@ -1128,11 +1096,15 @@ mod vertex_embedding_validation_tests {
                 "invalid values must not mutate the Router ingestion outbox"
             );
             assert_eq!(
-                only_mutation_id(
-                    prepare(&store, vec![item(3, vec![4.0, 5.0])]).expect("valid batch"),
-                ),
-                1,
-                "the valid prefix of a rejected batch must not consume a mutation ID"
+                prepare(vec![item(3, vec![4.0, 5.0])])
+                    .expect("valid batch")
+                    .len(),
+                1
+            );
+            assert_eq!(
+                mutation_counter(),
+                0,
+                "preparation must not allocate a stamp"
             );
         }
     }

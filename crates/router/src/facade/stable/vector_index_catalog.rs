@@ -736,6 +736,38 @@ mod tests {
         .expect("register vector index")
     }
 
+    fn pending_intent(
+        graph: GraphId,
+        index_id: u32,
+        vector_target: Principal,
+        mutation_id: u64,
+        shard_id: u32,
+    ) -> super::super::vector_ingest_outbox::VectorIngestOutboxState {
+        let definition = get_vector_index(graph, index_id).expect("vector definition");
+        let dims = definition.dims;
+        super::super::vector_ingest_outbox::intent_for_test(
+            super::super::vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id: graph,
+                graph_target: Principal::from_slice(&[8; 29]),
+                vector_target,
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(shard_id),
+                local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId::from(1u32),
+                spec: IndexedEmbeddingSpec {
+                    embedding_name_id: definition.embedding_name_id.raw(),
+                    index_id: definition.index_id,
+                    kind: definition.kind,
+                    metric: definition.metric,
+                    encoding: definition.encoding,
+                    dims,
+                    labels: definition.labels,
+                },
+                bytes: vec![0; usize::from(dims) * 4],
+            },
+            mutation_id,
+            super::super::vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
+        )
+    }
+
     #[test]
     fn key_storable_roundtrip() {
         let key = VectorIndexKey::new(GraphId::from_raw(7), 42);
@@ -935,26 +967,9 @@ mod tests {
         assert!(sample_def(graph, 1, Some(current_target)));
         let before = get_vector_index(graph, 1).expect("definition before conflict");
 
-        let operation = gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
-            index_id: 1,
-            embedding_name_id: 1,
-            subject: gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
-                shard_id: gleaph_graph_kernel::federation::ShardId::new(1),
-                vertex_id: 1,
-            },
-            mutation_id: 1,
-            encoding: VectorEncoding::F32,
-            dims: 1,
-            metric: VectorMetric::L2Squared,
-            bytes: vec![0, 0, 0, 0],
-            remove: false,
-        };
-        super::super::vector_ingest_outbox::append_pending(&[(
-            operation.mutation_id,
-            current_target.canister,
-            operation,
-        )])
-        .expect("append pending ingestion");
+        let intent = pending_intent(graph, 1, current_target.canister, 1, 1);
+        super::super::vector_ingest_outbox::insert_intents_for_test(&[intent])
+            .expect("append pending ingestion");
         let pending_before = super::super::vector_ingest_outbox::scan(None, 16).0;
 
         let error = set_vector_index_target(graph, 1, replacement_target)
@@ -1172,26 +1187,9 @@ mod tests {
         let graph = GraphId::from_raw(920_008);
         assert!(sample_def(graph, 1, None));
         let before = list_vector_indexes(graph);
-        let operation = gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
-            index_id: 1,
-            embedding_name_id: before[0].embedding_name_id.raw(),
-            subject: gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
-                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vertex_id: 1,
-            },
-            mutation_id: 1,
-            encoding: VectorEncoding::F32,
-            dims: 16,
-            metric: VectorMetric::L2Squared,
-            bytes: vec![0; 16 * 4],
-            remove: false,
-        };
-        super::super::vector_ingest_outbox::append_pending(&[(
-            1,
-            Principal::from_slice(&[9; 29]),
-            operation,
-        )])
-        .expect("pending vector work");
+        let intent = pending_intent(graph, 1, Principal::from_slice(&[9; 29]), 1, 0);
+        super::super::vector_ingest_outbox::insert_intents_for_test(&[intent])
+            .expect("pending vector work");
 
         let err = purge_graph_vector_indexes(graph)
             .expect_err("pending vector work must block catalog purge");

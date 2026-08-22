@@ -1681,8 +1681,9 @@ pub struct AdminIngestVertexEmbeddingBatchItem {
 }
 
 /// Admin: ingest many finite F32 vertex embeddings through Router into the owning Graph shard(s)
-/// via the Router-initiated two-call flow (ADR 0064 §6): Router → Graph `stamp_embedding` (validate
-/// vertex metadata against a `mutation_id`, no byte storage), then Router → Vector (bytes + stamp).
+/// via the Router-initiated two-call flow (ADR 0064 §6). Router durably owns each allocated stamp
+/// before Graph `stamp_embedding` validates vertex metadata; accepted intents then proceed to
+/// Vector with bytes + stamp.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AdminIngestVertexEmbeddingBatchArgs {
     pub logical_graph_name: String,

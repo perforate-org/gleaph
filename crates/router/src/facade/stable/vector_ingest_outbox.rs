@@ -1,20 +1,24 @@
-//! Router-owned durable suffix for direct vertex-embedding ingestion.
+//! Router-owned durable intent for direct vertex-embedding ingestion.
 //!
-//! Graph stamps are validation-only effects for this path. Once all successful stamps have been
-//! collected, this map becomes the durable owner of the exact vector operations before the first
-//! Vector call. One row is one operation, keyed by its mutation id; no heap batch is persisted.
+//! One row owns an allocated mutation id before the first Graph await and remains authoritative
+//! until Graph rejects it or Vector acknowledges it. The row stores canonical inputs and derives
+//! the exact Graph and Vector wire requests for replay.
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSyncBatchOutcome};
+use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
+use gleaph_graph_kernel::vector_index::{
+    IndexedEmbeddingSpec, VectorEmbeddingSyncOp, VectorSubject, VectorSyncBatchOutcome,
+    VertexEmbeddingIngestionArgs,
+};
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ops::Bound;
 
-use crate::facade::stable::ROUTER_VECTOR_INGEST_OUTBOX;
+use crate::facade::stable::{ROUTER_MUTATION_COUNTER, ROUTER_VECTOR_INGEST_OUTBOX};
 use crate::facade::stable::{graph_catalog, vector_index_catalog};
 
 #[cfg(test)]
@@ -33,27 +37,87 @@ pub(crate) const MAX_VECTOR_INGEST_OUTBOX_ROWS: usize = 1024;
 pub(crate) const MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES: usize =
     gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 
-/// One durable pending direct-ingestion operation and its exact Vector target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub(crate) enum VectorIngestIntentPhase {
+    AwaitingGraph,
+    AwaitingVector,
+}
+
+/// Canonical inputs for one direct-ingestion intent before its mutation id is allocated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NewVectorIngestIntent {
+    pub(crate) graph_id: GraphId,
+    pub(crate) graph_target: Principal,
+    pub(crate) vector_target: Principal,
+    pub(crate) shard_id: ShardId,
+    pub(crate) local_vertex_id: LocalVertexId,
+    pub(crate) spec: IndexedEmbeddingSpec,
+    pub(crate) bytes: Vec<u8>,
+}
+
+/// One durable direct-ingestion intent and its exact Graph and Vector targets.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) struct VectorIngestOutboxState {
+    pub(crate) graph_id: GraphId,
+    pub(crate) graph_target: Principal,
     pub(crate) vector_target: Principal,
-    pub(crate) operation: VectorEmbeddingSyncOp,
+    pub(crate) shard_id: ShardId,
+    pub(crate) local_vertex_id: LocalVertexId,
+    pub(crate) spec: IndexedEmbeddingSpec,
+    pub(crate) mutation_id: u64,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) phase: VectorIngestIntentPhase,
 }
 
 impl VectorIngestOutboxState {
-    fn pending(vector_target: Principal, operation: VectorEmbeddingSyncOp) -> Self {
+    fn awaiting_graph(input: NewVectorIngestIntent, mutation_id: u64) -> Self {
         Self {
-            vector_target,
-            operation,
+            graph_id: input.graph_id,
+            graph_target: input.graph_target,
+            vector_target: input.vector_target,
+            shard_id: input.shard_id,
+            local_vertex_id: input.local_vertex_id,
+            spec: input.spec,
+            mutation_id,
+            bytes: input.bytes,
+            phase: VectorIngestIntentPhase::AwaitingGraph,
         }
     }
 
-    fn matches_pending(&self, vector_target: Principal, operation: &VectorEmbeddingSyncOp) -> bool {
-        self.vector_target == vector_target && self.operation == *operation
+    pub(crate) fn graph_args(&self) -> VertexEmbeddingIngestionArgs {
+        VertexEmbeddingIngestionArgs {
+            local_vertex_id: self.local_vertex_id,
+            spec: self.spec.clone(),
+            mutation_id: self.mutation_id,
+        }
     }
 
-    fn pending_parts(&self) -> (Principal, VectorEmbeddingSyncOp) {
-        (self.vector_target, self.operation.clone())
+    pub(crate) fn vector_operation(&self) -> VectorEmbeddingSyncOp {
+        VectorEmbeddingSyncOp {
+            index_id: self.spec.index_id,
+            embedding_name_id: self.spec.embedding_name_id,
+            subject: VectorSubject::Vertex {
+                shard_id: self.shard_id,
+                vertex_id: self.local_vertex_id,
+            },
+            mutation_id: self.mutation_id,
+            encoding: self.spec.encoding,
+            dims: self.spec.dims,
+            metric: self.spec.metric,
+            bytes: self.bytes.clone(),
+            remove: false,
+        }
+    }
+
+    fn matches(&self, expected: &Self) -> bool {
+        self == expected
+    }
+
+    fn awaiting_vector(&self) -> Self {
+        Self {
+            phase: VectorIngestIntentPhase::AwaitingVector,
+            ..self.clone()
+        }
     }
 
     fn encode_checked(&self) -> Result<Vec<u8>, String> {
@@ -89,37 +153,142 @@ impl Storable for VectorIngestOutboxState {
     }
 }
 
-pub(crate) type VectorIngestOutboxRow = (u64, Principal, VectorEmbeddingSyncOp);
+pub(crate) type VectorIngestOutboxRow = VectorIngestOutboxState;
 
-/// Append all successfully stamped operations after a read-only preflight. No stable row is
-/// changed when capacity, duplicate identity, or per-row encoding validation fails.
-pub(crate) fn append_pending(rows: &[VectorIngestOutboxRow]) -> Result<(), String> {
-    if rows.is_empty() {
-        return Ok(());
+thread_local! {
+    /// Heap-only exclusion for rows whose originating API call is still driving initial delivery.
+    /// An upgrade clears it, allowing durable recovery to resume every unresolved row.
+    static INITIAL_DELIVERY_ACTIVE: RefCell<BTreeSet<u64>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+pub(crate) struct InitialDeliveryGuard {
+    mutation_ids: Vec<u64>,
+}
+
+impl InitialDeliveryGuard {
+    pub(crate) fn new(rows: &[VectorIngestOutboxState]) -> Self {
+        let mutation_ids: Vec<_> = rows.iter().map(|row| row.mutation_id).collect();
+        INITIAL_DELIVERY_ACTIVE.with_borrow_mut(|active| {
+            for mutation_id in &mutation_ids {
+                assert!(
+                    active.insert(*mutation_id),
+                    "vector-ingest initial delivery already owns mutation_id {mutation_id}"
+                );
+            }
+        });
+        Self { mutation_ids }
+    }
+}
+
+impl Drop for InitialDeliveryGuard {
+    fn drop(&mut self) {
+        INITIAL_DELIVERY_ACTIVE.with_borrow_mut(|active| {
+            for mutation_id in &self.mutation_ids {
+                assert!(
+                    active.remove(mutation_id),
+                    "vector-ingest initial delivery lost mutation_id {mutation_id}"
+                );
+            }
+        });
+    }
+}
+
+fn initial_delivery_active(mutation_id: u64) -> bool {
+    INITIAL_DELIVERY_ACTIVE.with_borrow(|active| active.contains(&mutation_id))
+}
+
+fn validate_catalog_identity(input: &NewVectorIngestIntent) -> Result<(), String> {
+    let shard =
+        graph_catalog::lookup_shard_entry(input.graph_id, input.shard_id).ok_or_else(|| {
+            format!(
+                "vector-ingest outbox shard {:?} is not registered for graph {:?}",
+                input.shard_id, input.graph_id
+            )
+        })?;
+    if !shard.index_attached || shard.graph_canister != input.graph_target {
+        return Err(format!(
+            "vector-ingest outbox shard {:?} is not live at exact Graph target {}",
+            input.shard_id, input.graph_target
+        ));
+    }
+    if !shard.vector_index_attached || shard.vector_canister != Some(input.vector_target) {
+        return Err(format!(
+            "vector-ingest outbox shard {:?} is not attached to exact Vector target {}",
+            input.shard_id, input.vector_target
+        ));
     }
 
+    let definition = vector_index_catalog::get_vector_index(input.graph_id, input.spec.index_id)
+        .ok_or_else(|| {
+            format!(
+                "vector-ingest outbox index {} is not defined for graph {:?}",
+                input.spec.index_id, input.graph_id
+            )
+        })?;
+    let definition_target = definition
+        .target
+        .map(|target| target.canister)
+        .ok_or_else(|| {
+            format!(
+                "vector-ingest outbox index {} has no target",
+                input.spec.index_id
+            )
+        })?;
+    if definition_target != input.vector_target {
+        return Err(format!(
+            "vector-ingest outbox index {} is not attached to exact Vector target {}",
+            input.spec.index_id, input.vector_target
+        ));
+    }
+    if input.spec.embedding_name_id != definition.embedding_name_id.raw()
+        || input.spec.kind != definition.kind
+        || input.spec.encoding != definition.encoding
+        || input.spec.dims != definition.dims
+        || input.spec.metric != definition.metric
+        || input.spec.labels != definition.labels
+    {
+        return Err(format!(
+            "vector-ingest outbox intent does not match current definition {}",
+            input.spec.index_id
+        ));
+    }
+    Ok(())
+}
+
+/// Allocate a checked mutation-id range and persist every exact `AwaitingGraph` intent in one
+/// synchronous Router operation. All returned errors occur before the counter or outbox changes.
+pub(crate) fn admit_awaiting_graph(
+    inputs: Vec<NewVectorIngestIntent>,
+) -> Result<Vec<VectorIngestOutboxState>, String> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    for input in &inputs {
+        validate_catalog_identity(input)?;
+    }
+
+    let allocated_through = ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
     let mut identities = BTreeSet::new();
-    let prepared: Vec<_> = rows
-        .iter()
-        .map(|(mutation_id, vector_target, operation)| {
-            if *mutation_id == 0 {
-                return Err("vector-ingest outbox mutation_id must be nonzero".to_string());
-            }
-            if operation.mutation_id != *mutation_id {
-                return Err(format!(
-                    "vector-ingest outbox key {mutation_id} disagrees with operation mutation_id {}",
-                    operation.mutation_id
-                ));
-            }
-            if !identities.insert(*mutation_id) {
-                return Err(format!(
-                    "duplicate vector-ingest outbox mutation_id {mutation_id}"
-                ));
-            }
-            let state = VectorIngestOutboxState::pending(*vector_target, operation.clone());
-            state.encode_checked().map(|bytes| (state, bytes))
-        })
-        .collect::<Result<_, _>>()?;
+    let mut prepared = Vec::with_capacity(inputs.len());
+    for (offset, input) in inputs.into_iter().enumerate() {
+        let increment = u64::try_from(offset)
+            .map_err(|_| "vector-ingest mutation-id offset exceeds u64".to_string())?
+            .checked_add(1)
+            .ok_or_else(|| "vector-ingest mutation-id increment overflow".to_string())?;
+        let mutation_id = allocated_through
+            .checked_add(increment)
+            .ok_or_else(|| "vector-ingest mutation-id range exhausted".to_string())?;
+        if mutation_id == 0 || !identities.insert(mutation_id) {
+            return Err("vector-ingest mutation-id range is invalid".to_string());
+        }
+        let state = VectorIngestOutboxState::awaiting_graph(input, mutation_id);
+        state.encode_checked()?;
+        prepared.push(state);
+    }
+    let final_mutation_id = prepared
+        .last()
+        .expect("nonempty vector-ingest admission")
+        .mutation_id;
 
     ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
         let current_len = usize::try_from(table.len())
@@ -133,89 +302,72 @@ pub(crate) fn append_pending(rows: &[VectorIngestOutboxRow]) -> Result<(), Strin
                 MAX_VECTOR_INGEST_OUTBOX_ROWS, final_len
             ));
         }
-        for (mutation_id, _, _) in rows {
-            if table.get(mutation_id).is_some() {
+        for state in &prepared {
+            if table.get(&state.mutation_id).is_some() {
                 return Err(format!(
-                    "vector-ingest outbox mutation_id {mutation_id} already exists"
+                    "vector-ingest outbox mutation_id {} already exists",
+                    state.mutation_id
                 ));
             }
         }
 
-        // Every fallible check above completed before this first stable mutation.
-        for ((mutation_id, _, _), (state, _bytes)) in rows.iter().zip(prepared) {
+        // No fallible operation remains after this point.
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(final_mutation_id));
+        for state in &prepared {
             assert!(
-                table.insert(*mutation_id, state).is_none(),
+                table.insert(state.mutation_id, state.clone()).is_none(),
                 "vector-ingest outbox identity was inserted during preflight"
             );
+        }
+        Ok(prepared)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn insert_intents_for_test(rows: &[VectorIngestOutboxState]) -> Result<(), String> {
+    for row in rows {
+        if row.mutation_id == 0 {
+            return Err("vector-ingest outbox mutation_id must be nonzero".to_string());
+        }
+        row.encode_checked()?;
+    }
+    ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
+        let final_len = usize::try_from(table.len())
+            .map_err(|_| "vector-ingest outbox row count exceeds usize".to_string())?
+            .checked_add(rows.len())
+            .ok_or_else(|| "vector-ingest outbox row count overflow".to_string())?;
+        if final_len > MAX_VECTOR_INGEST_OUTBOX_ROWS {
+            return Err(format!(
+                "vector-ingest outbox capacity {} exceeded by {} rows",
+                MAX_VECTOR_INGEST_OUTBOX_ROWS, final_len
+            ));
+        }
+        for row in rows {
+            if table.get(&row.mutation_id).is_some() {
+                return Err(format!(
+                    "vector-ingest outbox mutation_id {} already exists",
+                    row.mutation_id
+                ));
+            }
+        }
+        for row in rows {
+            table.insert(row.mutation_id, row.clone());
         }
         Ok(())
     })
 }
 
-/// Revalidate and append direct-ingestion work for one graph in one synchronous Router operation.
-///
-/// Graph stamping happens across awaits, so the shard row, its exact attached Vector target, and
-/// the immutable definition may have changed before the suffix is admitted. This boundary owns the
-/// final check immediately before the first outbox write. No await can interleave the checks and
-/// [`append_pending`], and a failed check leaves both the catalog and the outbox unchanged.
-pub(crate) fn append_pending_for_graph(
-    graph_id: GraphId,
-    rows: &[VectorIngestOutboxRow],
-) -> Result<(), String> {
-    for (_, vector_target, operation) in rows {
-        let shard_id = operation.subject.shard_id();
-        let shard = graph_catalog::lookup_shard_entry(graph_id, shard_id).ok_or_else(|| {
-            format!(
-                "vector-ingest outbox shard {shard_id:?} is no longer registered for graph {graph_id:?}"
-            )
-        })?;
-        if !shard.index_attached {
-            return Err(format!(
-                "vector-ingest outbox shard {shard_id:?} is no longer live"
-            ));
-        }
-        if !shard.vector_index_attached || shard.vector_canister != Some(*vector_target) {
-            return Err(format!(
-                "vector-ingest outbox shard {shard_id:?} is not attached to exact target {vector_target}"
-            ));
-        }
-
-        let definition = vector_index_catalog::get_vector_index(graph_id, operation.index_id)
-            .ok_or_else(|| {
-                format!(
-                    "vector-ingest outbox index {} is no longer defined for graph {graph_id:?}",
-                    operation.index_id
-                )
-            })?;
-        let definition_target =
-            definition
-                .target
-                .map(|target| target.canister)
-                .ok_or_else(|| {
-                    format!(
-                        "vector-ingest outbox index {} has no immutable target",
-                        operation.index_id
-                    )
-                })?;
-        if definition_target != *vector_target {
-            return Err(format!(
-                "vector-ingest outbox index {} target changed from {vector_target} to {definition_target}",
-                operation.index_id
-            ));
-        }
-        if operation.embedding_name_id != definition.embedding_name_id.raw()
-            || operation.encoding != definition.encoding
-            || operation.dims != definition.dims
-            || operation.metric != definition.metric
-        {
-            return Err(format!(
-                "vector-ingest outbox operation does not match current definition {}",
-                operation.index_id
-            ));
-        }
+#[cfg(test)]
+pub(crate) fn intent_for_test(
+    input: NewVectorIngestIntent,
+    mutation_id: u64,
+    phase: VectorIngestIntentPhase,
+) -> VectorIngestOutboxState {
+    let state = VectorIngestOutboxState::awaiting_graph(input, mutation_id);
+    match phase {
+        VectorIngestIntentPhase::AwaitingGraph => state,
+        VectorIngestIntentPhase::AwaitingVector => state.awaiting_vector(),
     }
-
-    append_pending(rows)
 }
 
 /// Return whether bounded direct-ingestion work remains for an exact Vector target and shard.
@@ -225,9 +377,8 @@ pub(crate) fn append_pending_for_graph(
 /// state; a matching suffix must drain before the target/attachment identity can be detached.
 pub(crate) fn has_pending_for_target_shard(vector_target: Principal, shard_id: ShardId) -> bool {
     let (rows, _, _) = scan(None, MAX_VECTOR_INGEST_OUTBOX_ROWS);
-    rows.into_iter().any(|(_, target, operation)| {
-        target == vector_target && operation.subject.shard_id() == shard_id
-    })
+    rows.into_iter()
+        .any(|row| row.vector_target == vector_target && row.shard_id == shard_id)
 }
 
 /// Return whether any direct-ingestion suffix remains. Graph unregister uses this conservative
@@ -251,11 +402,71 @@ pub(crate) fn scan(
             let mutation_id = *entry.key();
             scanned = scanned.saturating_add(1);
             last_key = Some(mutation_id);
-            let (vector_target, operation) = entry.value().pending_parts();
-            rows.push((mutation_id, vector_target, operation));
+            let row = entry.value();
+            assert_eq!(
+                mutation_id, row.mutation_id,
+                "vector-ingest outbox key disagrees with canonical mutation id"
+            );
+            rows.push(row);
         }
     });
     (rows, last_key, scanned)
+}
+
+/// Apply an observed exact Graph acceptance to the submitted `AwaitingGraph` row.
+pub(crate) fn observe_graph_accept(
+    submitted: &VectorIngestOutboxState,
+    returned_mutation_id: u64,
+) -> Result<VectorIngestOutboxState, String> {
+    if submitted.phase != VectorIngestIntentPhase::AwaitingGraph {
+        return Err("Graph acceptance requires an AwaitingGraph intent".to_string());
+    }
+    if returned_mutation_id != submitted.mutation_id {
+        return Err(format!(
+            "Graph returned mutation_id {returned_mutation_id} for intent {}",
+            submitted.mutation_id
+        ));
+    }
+    ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
+        let current = table.get(&submitted.mutation_id).ok_or_else(|| {
+            format!(
+                "vector-ingest outbox row {} disappeared before Graph acceptance",
+                submitted.mutation_id
+            )
+        })?;
+        if !current.matches(submitted) {
+            return Err(format!(
+                "vector-ingest outbox row {} no longer matches Graph submission",
+                submitted.mutation_id
+            ));
+        }
+        let next = current.awaiting_vector();
+        table.insert(next.mutation_id, next.clone());
+        Ok(next)
+    })
+}
+
+/// Resolve an observed exact Graph rejection without creating Vector work.
+pub(crate) fn observe_graph_reject(submitted: &VectorIngestOutboxState) -> Result<(), String> {
+    if submitted.phase != VectorIngestIntentPhase::AwaitingGraph {
+        return Err("Graph rejection requires an AwaitingGraph intent".to_string());
+    }
+    ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
+        let current = table.get(&submitted.mutation_id).ok_or_else(|| {
+            format!(
+                "vector-ingest outbox row {} disappeared before Graph rejection",
+                submitted.mutation_id
+            )
+        })?;
+        if !current.matches(submitted) {
+            return Err(format!(
+                "vector-ingest outbox row {} no longer matches Graph submission",
+                submitted.mutation_id
+            ));
+        }
+        assert!(table.remove(&submitted.mutation_id).is_some());
+        Ok(())
+    })
 }
 
 /// Apply a validated Vector outcome to the exact pending snapshot used for the request. All row
@@ -271,13 +482,23 @@ pub(crate) fn apply_outcome(
     }
 
     ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| {
-        for (mutation_id, vector_target, operation) in submitted {
-            let state = table.get(mutation_id).ok_or_else(|| {
-                format!("vector-ingest outbox row {mutation_id} disappeared before outcome")
-            })?;
-            if !state.matches_pending(*vector_target, operation) {
+        for expected in submitted {
+            if expected.phase != VectorIngestIntentPhase::AwaitingVector {
                 return Err(format!(
-                    "vector-ingest outbox row {mutation_id} no longer matches submitted operation"
+                    "vector-ingest outbox row {} is not awaiting Vector",
+                    expected.mutation_id
+                ));
+            }
+            let state = table.get(&expected.mutation_id).ok_or_else(|| {
+                format!(
+                    "vector-ingest outbox row {} disappeared before outcome",
+                    expected.mutation_id
+                )
+            })?;
+            if !state.matches(expected) {
+                return Err(format!(
+                    "vector-ingest outbox row {} no longer matches submitted operation",
+                    expected.mutation_id
                 ));
             }
         }
@@ -287,9 +508,9 @@ pub(crate) fn apply_outcome(
             | VectorSyncBatchOutcome::Terminal { applied, .. } => applied as usize,
         };
 
-        for (mutation_id, _, _) in &submitted[..applied] {
+        for row in &submitted[..applied] {
             assert!(
-                table.remove(mutation_id).is_some(),
+                table.remove(&row.mutation_id).is_some(),
                 "validated vector-ingest outbox prefix row disappeared"
             );
         }
@@ -337,17 +558,40 @@ pub(crate) async fn run_recovery_pass(
         };
     }
 
-    let mut groups: BTreeMap<Principal, Vec<VectorIngestOutboxRow>> = BTreeMap::new();
+    let mut vector_rows = Vec::new();
+    let mut found = false;
     for row in rows {
-        groups.entry(row.1).or_default().push(row);
+        found = true;
+        if initial_delivery_active(row.mutation_id) {
+            continue;
+        }
+        match row.phase {
+            VectorIngestIntentPhase::AwaitingGraph => {
+                match crate::graph_client::stamp_embedding(row.graph_target, row.graph_args()).await
+                {
+                    Ok(crate::graph_client::GraphStampOutcome::Accepted(mutation_id)) => {
+                        if let Ok(next) = observe_graph_accept(&row, mutation_id) {
+                            vector_rows.push(next);
+                        }
+                    }
+                    Ok(crate::graph_client::GraphStampOutcome::Rejected(_)) => {
+                        let _ = observe_graph_reject(&row);
+                    }
+                    Err(_) => {}
+                }
+            }
+            VectorIngestIntentPhase::AwaitingVector => vector_rows.push(row),
+        }
     }
 
-    let mut found = false;
+    let mut groups: BTreeMap<Principal, Vec<VectorIngestOutboxRow>> = BTreeMap::new();
+    for row in vector_rows {
+        groups.entry(row.vector_target).or_default().push(row);
+    }
     for (vector_target, submitted) in groups {
-        found = true;
         let operations: Vec<_> = submitted
             .iter()
-            .map(|(_, _, operation)| operation.clone())
+            .map(VectorIngestOutboxState::vector_operation)
             .collect();
         let Ok(outcome) =
             crate::vector_sync::vector_sync_batch_outcome(vector_target, operations).await
@@ -371,9 +615,11 @@ pub(crate) async fn run_recovery_pass(
 mod tests {
     use super::*;
     use candid::Principal;
-    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
+    use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
     use gleaph_graph_kernel::vector_index::{
-        VectorEncoding, VectorMetric, VectorSubject, VectorSyncTerminalError,
+        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
+        VectorSyncTerminalError,
     };
     use ic_stable_structures::memory_manager::MemoryId;
     use ic_stable_structures::{BTreeMap, Cell, VectorMemory};
@@ -382,21 +628,61 @@ mod tests {
         Principal::from_slice(&[seed; 29])
     }
 
-    fn operation(mutation_id: u64, value: u8) -> VectorEmbeddingSyncOp {
-        VectorEmbeddingSyncOp {
-            index_id: 7,
+    fn spec() -> IndexedEmbeddingSpec {
+        IndexedEmbeddingSpec {
             embedding_name_id: 3,
-            subject: VectorSubject::Vertex {
-                shard_id: ShardId::new(2),
-                vertex_id: value as u32,
-            },
-            mutation_id,
+            index_id: 7,
+            kind: VectorIndexKind::IvfFlat,
+            metric: VectorMetric::L2Squared,
             encoding: VectorEncoding::F32,
             dims: 1,
-            metric: VectorMetric::L2Squared,
-            bytes: vec![value, 0, 0, 0],
-            remove: false,
+            labels: vec![VertexLabelId::from_raw(1)],
         }
+    }
+
+    fn intent(
+        mutation_id: u64,
+        value: u8,
+        phase: VectorIngestIntentPhase,
+    ) -> VectorIngestOutboxState {
+        let state = VectorIngestOutboxState::awaiting_graph(
+            NewVectorIngestIntent {
+                graph_id: GraphId::from_raw(1),
+                graph_target: target(9),
+                vector_target: target(1),
+                shard_id: ShardId::new(2),
+                local_vertex_id: LocalVertexId::from(value as u32),
+                spec: spec(),
+                bytes: vec![value, 0, 0, 0],
+            },
+            mutation_id,
+        );
+        match phase {
+            VectorIngestIntentPhase::AwaitingGraph => state,
+            VectorIngestIntentPhase::AwaitingVector => state.awaiting_vector(),
+        }
+    }
+
+    fn vector_intent(mutation_id: u64, value: u8) -> VectorIngestOutboxState {
+        intent(mutation_id, value, VectorIngestIntentPhase::AwaitingVector)
+    }
+
+    fn graph_intent(mutation_id: u64, value: u8) -> VectorIngestOutboxState {
+        intent(mutation_id, value, VectorIngestIntentPhase::AwaitingGraph)
+    }
+
+    #[test]
+    fn initial_delivery_guard_excludes_only_its_scoped_mutation_ids() {
+        let rows = [graph_intent(41, 1), graph_intent(42, 2)];
+        assert!(!initial_delivery_active(41));
+        {
+            let _guard = InitialDeliveryGuard::new(&rows);
+            assert!(initial_delivery_active(41));
+            assert!(initial_delivery_active(42));
+            assert!(!initial_delivery_active(43));
+        }
+        assert!(!initial_delivery_active(41));
+        assert!(!initial_delivery_active(42));
     }
 
     fn clear_production_rows() {
@@ -416,8 +702,8 @@ mod tests {
     fn append_uses_one_stable_owner_and_reopens() {
         let _guard = test_lock();
         clear_production_rows();
-        let row = (41, target(1), operation(41, 9));
-        append_pending(std::slice::from_ref(&row)).expect("append row");
+        let row = vector_intent(41, 9);
+        insert_intents_for_test(std::slice::from_ref(&row)).expect("append row");
         let (rows, _, _) = scan(None, 8);
         assert_eq!(rows, vec![row.clone()]);
         assert_eq!(total_len(), 1);
@@ -432,7 +718,7 @@ mod tests {
         let mut vector_index_allocator = Cell::init(manager.get(MemoryId::new(52)), 1u32);
         let mut map: BTreeMap<u64, VectorIngestOutboxState, _> =
             BTreeMap::init(manager.get(MemoryId::new(53)));
-        let state = VectorIngestOutboxState::pending(target(2), operation(42, 8));
+        let state = vector_intent(42, 8);
         vector_index_allocator.set(17);
         map.insert(42, state.clone());
         drop(map);
@@ -452,15 +738,55 @@ mod tests {
     }
 
     #[test]
+    fn graph_acceptance_transitions_exact_row_and_rejection_resolves_only_exact_row() {
+        let _guard = test_lock();
+        clear_production_rows();
+        let accepted = graph_intent(43, 8);
+        let rejected = graph_intent(44, 9);
+        insert_intents_for_test(&[accepted.clone(), rejected.clone()]).expect("seed intents");
+
+        let malformed = observe_graph_accept(&accepted, 99)
+            .expect_err("mismatched Graph stamp must fail closed");
+        assert!(malformed.contains("returned mutation_id"), "{malformed}");
+        assert_eq!(scan(None, 8).0, vec![accepted.clone(), rejected.clone()]);
+
+        let awaiting_vector =
+            observe_graph_accept(&accepted, accepted.mutation_id).expect("accept exact intent");
+        assert_eq!(
+            awaiting_vector.phase,
+            VectorIngestIntentPhase::AwaitingVector
+        );
+        assert_eq!(awaiting_vector.vector_operation().mutation_id, 43);
+        assert_eq!(awaiting_vector.vector_operation().bytes, accepted.bytes);
+
+        observe_graph_reject(&rejected).expect("reject exact intent");
+        assert_eq!(scan(None, 8).0, vec![awaiting_vector]);
+        clear_production_rows();
+    }
+
+    #[test]
+    fn stale_graph_callback_cannot_change_a_different_phase() {
+        let _guard = test_lock();
+        clear_production_rows();
+        let awaiting_graph = graph_intent(45, 7);
+        insert_intents_for_test(std::slice::from_ref(&awaiting_graph)).expect("seed intent");
+        let awaiting_vector = observe_graph_accept(&awaiting_graph, 45).expect("accept intent");
+
+        assert!(observe_graph_reject(&awaiting_graph).is_err());
+        assert_eq!(scan(None, 8).0, vec![awaiting_vector]);
+        clear_production_rows();
+    }
+
+    #[test]
     fn progress_removes_only_exact_applied_prefix_and_replay_is_idempotent() {
         let _guard = test_lock();
         clear_production_rows();
         let rows = vec![
-            (51, target(1), operation(51, 1)),
-            (52, target(1), operation(52, 2)),
-            (53, target(1), operation(53, 3)),
+            vector_intent(51, 1),
+            vector_intent(52, 2),
+            vector_intent(53, 3),
         ];
-        append_pending(&rows).expect("append rows");
+        insert_intents_for_test(&rows).expect("append rows");
         apply_outcome(&rows, VectorSyncBatchOutcome::Progress { applied: 1 })
             .expect("progress transition");
         let (remaining, _, _) = scan(None, 8);
@@ -479,11 +805,8 @@ mod tests {
     fn malformed_outcome_leaves_rows_unchanged() {
         let _guard = test_lock();
         clear_production_rows();
-        let rows = vec![
-            (61, target(1), operation(61, 1)),
-            (62, target(1), operation(62, 2)),
-        ];
-        append_pending(&rows).expect("append rows");
+        let rows = vec![vector_intent(61, 1), vector_intent(62, 2)];
+        insert_intents_for_test(&rows).expect("append rows");
         let error = apply_outcome(
             &rows,
             VectorSyncBatchOutcome::Terminal {
@@ -504,11 +827,11 @@ mod tests {
         let _guard = test_lock();
         clear_production_rows();
         let rows = vec![
-            (71, target(1), operation(71, 1)),
-            (72, target(1), operation(72, 2)),
-            (73, target(1), operation(73, 3)),
+            vector_intent(71, 1),
+            vector_intent(72, 2),
+            vector_intent(73, 3),
         ];
-        append_pending(&rows).expect("append rows");
+        insert_intents_for_test(&rows).expect("append rows");
         apply_outcome(
             &rows,
             VectorSyncBatchOutcome::Terminal {
@@ -523,12 +846,7 @@ mod tests {
         assert_eq!(next_scan, expected_scan);
         let expected_states = rows[1..]
             .iter()
-            .map(|(mutation_id, vector_target, operation)| {
-                (
-                    *mutation_id,
-                    VectorIngestOutboxState::pending(*vector_target, operation.clone()),
-                )
-            })
+            .map(|row| (row.mutation_id, row.clone()))
             .collect::<Vec<_>>();
         assert_eq!(production_snapshot(), expected_states);
         clear_production_rows();
@@ -539,55 +857,37 @@ mod tests {
         let _guard = test_lock();
         clear_production_rows();
         let rows: Vec<_> = (1..MAX_VECTOR_INGEST_OUTBOX_ROWS as u64)
-            .map(|mutation_id| (mutation_id, target(1), operation(mutation_id, 1)))
+            .map(|mutation_id| vector_intent(mutation_id, 1))
             .collect();
-        append_pending(&rows).expect("fill bounded outbox to one row below capacity");
+        insert_intents_for_test(&rows).expect("fill bounded outbox to one row below capacity");
         let before_late_failure = production_snapshot();
         let late_rows = vec![
-            (
-                MAX_VECTOR_INGEST_OUTBOX_ROWS as u64,
-                target(1),
-                operation(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64, 1),
-            ),
-            (
-                MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 + 1,
-                target(1),
-                operation(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 + 1, 1),
-            ),
+            vector_intent(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64, 1),
+            vector_intent(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 + 1, 1),
         ];
-        let error = append_pending(&late_rows).expect_err("late multirow capacity error");
+        let error = insert_intents_for_test(&late_rows).expect_err("late multirow capacity error");
         assert!(error.contains("capacity"));
         assert_eq!(production_snapshot(), before_late_failure);
 
-        let final_row = (
-            MAX_VECTOR_INGEST_OUTBOX_ROWS as u64,
-            target(1),
-            operation(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64, 1),
-        );
-        append_pending(std::slice::from_ref(&final_row)).expect("fill exact capacity");
+        let final_row = vector_intent(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64, 1);
+        insert_intents_for_test(std::slice::from_ref(&final_row)).expect("fill exact capacity");
         let full_snapshot = production_snapshot();
-        let extra = (
-            MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 + 1,
-            target(1),
-            operation(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 + 1, 1),
-        );
-        let error = append_pending(std::slice::from_ref(&extra)).expect_err("capacity error");
+        let extra = vector_intent(MAX_VECTOR_INGEST_OUTBOX_ROWS as u64 + 1, 1);
+        let error =
+            insert_intents_for_test(std::slice::from_ref(&extra)).expect_err("capacity error");
         assert!(error.contains("capacity"));
         assert_eq!(production_snapshot(), full_snapshot);
 
         clear_production_rows();
-        let existing = (8, target(1), operation(8, 1));
-        append_pending(std::slice::from_ref(&existing)).expect("seed existing row");
+        let existing = vector_intent(8, 1);
+        insert_intents_for_test(std::slice::from_ref(&existing)).expect("seed existing row");
         let before_oversized = production_snapshot();
-        let oversized = (
-            9,
-            target(1),
-            VectorEmbeddingSyncOp {
-                bytes: vec![0; MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES],
-                ..operation(9, 1)
-            },
-        );
-        let error = append_pending(std::slice::from_ref(&oversized)).expect_err("encoding error");
+        let oversized = VectorIngestOutboxState {
+            bytes: vec![0; MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES],
+            ..vector_intent(9, 1)
+        };
+        let error =
+            insert_intents_for_test(std::slice::from_ref(&oversized)).expect_err("encoding error");
         assert!(error.contains("encoding"));
         assert_eq!(production_snapshot(), before_oversized);
         clear_production_rows();
@@ -606,7 +906,7 @@ mod tests {
                 is_fixed_size: true
             }
         );
-        let state = VectorIngestOutboxState::pending(target(1), operation(101, 1));
+        let state = vector_intent(101, 1);
         assert!(
             state.encode_checked().expect("small row encoding").len()
                 <= MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES
@@ -617,15 +917,11 @@ mod tests {
     fn small_outbox_row_does_not_allocate_from_transport_ceiling() {
         let memory = VectorMemory::default();
         let mut map: BTreeMap<u64, VectorIngestOutboxState, _> = BTreeMap::init(memory.clone());
-        map.insert(
-            101,
-            VectorIngestOutboxState::pending(target(1), operation(101, 1)),
-        );
+        map.insert(101, vector_intent(101, 1));
 
-        // The old bounded value made one small-row insertion choose a page derived from the
-        // complete 2 MiB admission ceiling. Two times that allocation must exceed the ceiling.
-        // Read the backing memory directly so the assertion is independent of a page-size
-        // constant while remaining derived from the shared admission limit.
+        // Stable allocation must remain materially smaller than the independent 2 MiB transport
+        // admission ceiling. Read the backing memory directly so the assertion does not depend on
+        // a page-size constant.
         let allocated_bytes = memory.borrow().len() as u64;
         assert!(
             allocated_bytes.saturating_mul(2) < MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES as u64,
@@ -637,8 +933,11 @@ mod tests {
     fn recovery_transport_retains_exact_id_target_and_payload_for_retry() {
         let _guard = test_lock();
         clear_production_rows();
-        let row = (91, target(7), operation(91, 42));
-        append_pending(std::slice::from_ref(&row)).expect("append row");
+        let row = VectorIngestOutboxState {
+            vector_target: target(7),
+            ..vector_intent(91, 42)
+        };
+        insert_intents_for_test(std::slice::from_ref(&row)).expect("append row");
 
         let pass = futures::executor::block_on(run_recovery_pass(None, 8));
         assert_eq!(
@@ -648,10 +947,7 @@ mod tests {
                 found: true,
             }
         );
-        assert_eq!(
-            production_snapshot(),
-            vec![(91, VectorIngestOutboxState::pending(row.1, row.2.clone()),)]
-        );
+        assert_eq!(production_snapshot(), vec![(91, row.clone())]);
         let (reconstructed, _, _) = scan(None, 8);
         assert_eq!(reconstructed, vec![row]);
         clear_production_rows();

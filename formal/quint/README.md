@@ -1,5 +1,7 @@
 # Quint protocol pilot
 
+Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
+
 Status: **Experimental, non-blocking**. This directory contains bounded
 auxiliary specifications for the Router–Graph–Property Index projection and
 the Router–Graph `CanonicalPending` exact-replay boundary, plus a bounded
@@ -9,16 +11,18 @@ validation.
 
 ## Current production gate snapshot
 
-The targeted direct-ingestion PocketIC lifecycle gate passed independently of the Quint pilot:
+The targeted direct-ingestion PocketIC lifecycle gates passed independently of the Quint pilot:
 
 ```sh
 cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture
+cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion graph_response_loss_preserves_pregraph_intent_across_router_upgrade -- --exact --nocapture
 ```
 
-Result: **1 passed, 0 failed, 4 filtered, 17.95s**. The test manually drives the Graph and Router
-timer/recovery seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent
-replay. It does not prove autonomous wall-clock timer firing or deferred watermark/tombstone GC
-completion. `quint verify` remains unrun; this gate does not make the Quint pilot complete or normative.
+Each command ran exactly one test and passed. The first covers Vector unavailable recovery,
+Router/Vector upgrade, exact GQL search, and idempotent replay. The second loses a validated Graph
+response, upgrades Router with `AwaitingGraph`, and proves exact replay into Vector. These tests do
+not prove autonomous wall-clock timer firing or watermark/tombstone GC completion. `quint verify`
+remains unrun; these gates do not make the Quint pilot complete or normative.
 
 ## Current models
 
@@ -79,11 +83,11 @@ slice and must not duplicate those sources of truth.
 | Router–Graph–Property Index durable projection | **Modeled / experimental** | The tables below map the bounded two-mutation model to ADRs 0023/0024/0029, Graph outbox/repair owners, and twelve scenarios. | Preserve revise: no current Quint verify result and focused Rust/PocketIC comparisons remain not run. |
 | Router atomic_insert response loss while CanonicalPending | **Adopted / experimental** | ADR 0029 §2 and ADR 0049 §1558–1579 require exact journal reconciliation; the bounded model maps the implemented exact-receipt, explicit-`Absent`, background-query-only, and conflict boundaries. Commit `d700331c` plus the focused Rust/PocketIC comparisons are production evidence; this model remains non-normative. | Keep the one-request/one-shard boundary and record bounded formal results separately. Do not add CI or extend this slice to projection, retirement, routing/catalog mutation, or multi-shard behavior. |
 | ReadMode::AtLeast versus first-delivery outbox work | **Covered** | DerivedIndexOutbox and RepairJournal remain distinct owners; Graph MemoryId 52 stores one fixed key per qualifying source row and exposes their exact ordinary floor. Exact Graph owner tests plus the passing stopped-index/Graph-upgrade PocketIC lifecycle protect the contract. | No production prerequisite remains. Preserve `durableQueue` as a conceptual FIFO abstraction; keep this pilot `revise` until its independent formal gates are rerun. |
-| Router direct vector-ingest partial suffix | **Covered / modeled abstraction** | The typed-only `vector_sync_batch_outcome` path collects all successful Graph stamps, atomically revalidates lifecycle/target/definition, and persists an immutable target plus complete operation in the Router outbox before the first Vector await; terminal and later suffix rows remain `Pending`. The typed Vector driver chunks internally at 32 rows. The refined GC model covers a bounded two-operation exact prefix and retained suffix, but still abstracts Candid fitting and the production 32-row chunking mechanism. | GAP-2026-08-20-002 is **Resolved** for the targeted runtime gate. The gate manually drives the Graph/Router timer seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent replay; it does not prove autonomous timer firing or deferred watermark/tombstone GC completion. The Quint result is bounded protocol evidence, not a replacement for that runtime gate. |
+| Router direct vector-ingest partial suffix | **Covered / modeled abstraction** | MemoryId 53 now stores one canonical `AwaitingGraph \| AwaitingVector` intent with exact Graph/Vector targets, metadata, subject, bytes, and mutation ID. Router co-writes every allocated direct-ingestion stamp with `AwaitingGraph` before the first Graph await. Exact Graph observation transitions or resolves only that row; typed Vector acknowledgement removes only the exact applied prefix. The refined GC model covers the same bounded two-operation ownership partition and retained suffix, while abstracting Candid fitting and the production 32-row chunking mechanism. | GAP-2026-08-20-002 is **Resolved**. Owner-local tests cover atomic admission and exact phases; the focused PocketIC gate covers Graph response loss, Router upgrade, and replay. The Quint result remains bounded protocol evidence, not a replacement for runtime gates. |
 | Router shard identity across unregister/re-register | **Design/implementation prerequisite; later Quint candidate** | GlobalVertexId has only ShardId plus local id while the live catalog can reuse a numeric shard id. | GAP-2026-08-20-006: select never-reuse, incarnation, or equivalent principal-pinning semantics before stale-delivery tests. |
 | Property DROP INDEX retirement | **Rust-test-first + design/implementation prerequisite** | Catalog deletion precedes remote purge; purge progress is call-local; PhysicalIndexId namespaces can diverge for one logical property. | GAP-2026-08-20-005: define durable per-PhysicalIndexId retirement and first add same-property/two-index and lost-response regressions. |
 | Index-build label membership and Sealing admission | **Rust-test-first** | Property-transition admission exists, but label gain/loss does not emit exact BuildDml or reject before the canonical label change. | GAP-2026-07-29-006: add focused Graph-owner regressions before migration-lifecycle PocketIC validation. |
-| Vector Router watermark and tombstone retention | **Modeled / experimental; production deferred** | Router-originated watermark advancement remains disabled and production tombstone deletion remains conservatively paused. `router_vector_tombstone_gc.qnt` reproduces unsafe fence collection and stale resurrection under `MaxAcknowledged`; sampled and deterministic scenarios preserve safety under `Frozen` and the refined bounded `Contiguous` candidate. The candidate derives each lane frontier from the durable global allocation ceiling plus unresolved exact-lane intents, without a second settled-history owner. | Production still lacks an outbox phase before the Graph await and an authenticated per-target/shard frontier publication path. Settle those recovery, API, and stable-layout contracts before Rust implementation or resuming deletion. The model supplies no subject-map growth bound, exhaustive proof, or liveness guarantee. |
+| Vector Router watermark and tombstone retention | **Modeled / experimental; production deferred** | Router-originated watermark advancement remains disabled and production tombstone deletion remains conservatively paused. `router_vector_tombstone_gc.qnt` reproduces unsafe fence collection and stale resurrection under `MaxAcknowledged`; sampled and deterministic scenarios preserve safety under `Frozen` and the refined bounded `Contiguous` candidate. The candidate derives each lane frontier from the durable global allocation ceiling plus unresolved exact-lane intents, without a second settled-history owner. | Production now has the pre-Graph intent phase but still lacks an authenticated per-target/shard frontier publication path. Define and validate that API before advancing the Router watermark or resuming deletion. The model supplies no subject-map growth bound, exhaustive proof, or liveness guarantee. |
 | Ordinary CREATE INDEX | **Intentional / current** | Ordinary non-migration CREATE INDEX is immediately Active by the current DDL contract. | No new gap or Quint slice absent an ADR change or contradicting regression. |
 | bulk_load exact retry | **Intentional / current** | Exact append replay is intentionally client-driven by the durable bulk-load lifecycle. | No new gap or Quint slice absent an ADR change or contradicting regression. |
 | duplicate index-build pull | **Covered** | Direct exact-replay and conflict coverage protects duplicate build pulls. | No new gap or Quint slice absent an ADR change or contradicting regression. |
@@ -125,7 +129,7 @@ change safety, or physical subject-map bounds.
 | Quint symbol | Ownership and source correspondence |
 | --- | --- |
 | `routerState.allocatedThrough` | Bounded analogue of the existing durable `ROUTER_MUTATION_COUNTER`; unrelated allocated stamps are explicit non-vector gaps and cannot be reused. |
-| `routerState.intents` | Candidate extension of `ROUTER_VECTOR_INGEST_OUTBOX`: one exact operation, target/shard lane, and `AwaitingGraph` or `AwaitingVector` phase. Production ownership currently begins only after all successful Graph responses. |
+| `routerState.intents` | Bounded analogue of `ROUTER_VECTOR_INGEST_OUTBOX`: one exact canonical request, Graph/Vector target and shard lane, mutation ID, and `AwaitingGraph` or `AwaitingVector` phase. Production ownership begins synchronously with mutation-ID allocation before the first Graph await. |
 | `primaryMaxAcknowledged` / `secondaryMaxAcknowledged` | Model-only state for the rejected `MaxAcknowledged` comparison; not a proposed production owner. |
 | `vectorState.targetClock` / lane clocks | `VECTOR_SUBJECT_TO_ID` clocks applied by `crates/vector-canister/src/facade/store/mutation.rs`. |
 | lane Graph/Router watermarks | Bounded analogue of `ShardWatermarks` in `crates/vector-canister/src/facade/store/watermark.rs`; production Router watermark remains zero. |

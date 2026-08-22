@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
+Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
 
 ## Status
 
@@ -226,7 +226,7 @@ The implementation-gap ledger is the status authority for the following
 observations. These links do not amend the query contracts above.
 
 - [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Resolved in this patch**: exact MemoryId 52 Graph-owned floor plus the passing outbox-only stopped-index Graph-upgrade barrier regression.
-- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-reports-deferredforrepair-without-a-durable-suffix-owner) — **Resolved (targeted gate complete)**: the Router outbox, focused unit coverage, and targeted PocketIC lifecycle gate pass. The gate manually drives the Graph/Router timer seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent replay; it does not prove autonomous timer firing or deferred watermark/tombstone GC completion.
+- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-durable-intent-ownership) — **Resolved**: MemoryId 53 owns both pre-Graph and pre-Vector phases. Focused unit and PocketIC gates cover exact replay and Router upgrade; they do not prove autonomous timer firing or watermark/tombstone GC completion.
 - [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Resolved in `d700331c`**: exact completed-receipt adoption and trigger-aware `Absent` handling; focused Router and PocketIC reconciliation filters passed, while the later full PocketIC target remained non-terminal because of an unrelated HTTP-adapter failure.
 
 ## Related documents

@@ -624,9 +624,10 @@ pub(crate) fn init_edge_backfill_state() -> StableEdgeBackfillStateMap {
 mod tests {
     use super::*;
     use candid::Principal;
-    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
+    use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
     use gleaph_graph_kernel::vector_index::{
-        VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
     };
     use std::collections::HashSet;
 
@@ -660,21 +661,23 @@ mod tests {
 
         let mutation_id = 9_000_000_001;
         let state = super::super::vector_ingest_outbox::VectorIngestOutboxState {
+            graph_id: GraphId::from_raw(1),
+            graph_target: Principal::from_slice(&[8; 29]),
             vector_target: Principal::from_slice(&[9; 29]),
-            operation: VectorEmbeddingSyncOp {
-                index_id: 7,
+            shard_id: ShardId::new(2),
+            local_vertex_id: LocalVertexId::from(42u32),
+            spec: IndexedEmbeddingSpec {
                 embedding_name_id: 3,
-                subject: VectorSubject::Vertex {
-                    shard_id: ShardId::new(2),
-                    vertex_id: 42,
-                },
-                mutation_id,
+                index_id: 7,
+                kind: VectorIndexKind::IvfFlat,
                 encoding: VectorEncoding::F32,
                 dims: 1,
                 metric: VectorMetric::L2Squared,
-                bytes: vec![42, 0, 0, 0],
-                remove: false,
+                labels: vec![VertexLabelId::from_raw(1)],
             },
+            mutation_id,
+            bytes: vec![42, 0, 0, 0],
+            phase: super::super::vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
         };
         outbox.clear_new();
         allocator.set(4_100_000_007);

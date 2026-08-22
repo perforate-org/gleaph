@@ -524,6 +524,12 @@ fn e2e_arm_ordered_response_loss(code: u8) -> Result<(), String> {
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+fn e2e_arm_embedding_stamp_response_loss(armed: bool) {
+    canister::handlers::e2e_arm_embedding_stamp_response_loss(armed)
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 #[query(guard = "guard_control_plane_admin")]
 fn e2e_ordered_dispatch_state() -> Result<(u64, bool), String> {
     canister::handlers::e2e_ordered_dispatch_state()

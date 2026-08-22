@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
+Anchor timestamp: 2026-08-21 22:45:03 UTC +0000
 
 ## Status
 
@@ -60,25 +60,48 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-21-001 — Anchored multi-DML roll-forward saga fails to converge on both shards
 
-- **Status:** Open (failing at clean HEAD `7a75e9fd6`; verified 2026-08-21)
+- **Status:** Resolved 2026-08-22 (fix implemented on top of `7a75e9fd6` and validated there; commit pending at time of update)
 - **Severity:** P1 DML correctness signal
-- **Owner:** Router anchored DML dispatch / roll-forward saga and Graph shard-local bundle execution
+- **Owner:** Graph vertex-index membership resolution (`crates/graph/src/index/catalog_context.rs::vertex_index_memberships_for_labels`), shared by single DML, bulk insert, and backfill; E2E fixture catalog guards.
 - **Observed behavior:** In
-  `crates/pocket-ic-tests/tests/router_gql_query.rs`, three consolidated contracts fail at HEAD:
-  `router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga` (:535),
+  `crates/pocket-ic-tests/tests/router_gql_query.rs`, three consolidated contracts failed:
+  `router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga`,
   `router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry`,
   `router_recovers_non_terminal_federated_saga_via_idempotent_retry`. The two-shard bundle reports
-  `Completed`, but the post-commit read `MATCH (n {age: 6}) RETURN n` returns 0 rows instead of the
+  `Completed`, but the post-commit read `MATCH (n {age: 6}) RETURN n` returned 0 rows instead of the
   expected 2, so the SET did not survive on either shard despite the completed phase.
+- **Mechanism (probe-verified on `7a75e9fd6`):** Nothing removed the old posting. Fixture inserts
+  posted through `e2e_legacy_unlabeled_vertex_catalog_guard`, which rewrote every vertex
+  membership's `label_id` to 0 so unlabeled vertices matched the label-scoped index; bundle-time
+  SET resolved memberships against the true Router catalog, where the same unlabeled vertex
+  (`labels == []`) matched nothing, so neither remove-old nor add-new was ever enqueued
+  (`pending_min == None` because the queue was never populated). Post-bundle reads still seeded
+  from the stale posting (`lookup_equal` hits=2) but the shard-side residual equality filter
+  dropped the rows because canonical age had changed. The labeled variant failed admission for a
+  second reason: its fixture posted into a fabricated physical namespace (101) instead of the
+  Router-allocated namespace (1), so anchor lookups saw no hits.
 - **Expected or needed behavior:** A `Completed` roll-forward saga must leave both shards'
   anchor vertices updated; the read-back equality anchor must observe both.
-- **Evidence:** Reproduced on a clean worktree of `7a75e9fd6` (no working-tree changes), so the
-  failure predates concurrent in-flight edits. Single-shard anchored bundles
-  (`router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard`) pass.
-- **Impact:** Cross-shard anchored multi-DML writes are reported committed without observable
-  effect; idempotent-retry recovery contracts built on this path cannot be trusted until fixed.
-- **Next decision:** Bisect the commit that regressed shard-local SET application inside the
-  roll-forward segment, then restore convergence or fail the phase closed.
+- **Resolution:** `vertex_index_memberships_for_labels` now owns the maintenance rule in one
+  place: a vertex with no labels maintains every namespace indexing the property (legacy-unlabeled
+  contract, mirroring the Router's label-less superset anchor reads); labeled vertices maintain
+  wildcard plus exact-label memberships as before; a missing vertex row dispatches nothing. The
+  fixture-only wildcard rewrite and fabricated namespaces were deleted — fixtures fetch the real
+  Router catalog via `e2e_router_catalog_guard`. Regression origin diff-triaged to `04575f280`
+  (strict label-scoped DML membership resolution), not to the five commits named in plan 0269
+  Step 2; no bisect was needed.
+- **Owning regression tests:** graph-unit `unlabeled_legacy_set_reposts_remove_and_insert_into_label_scoped_membership`,
+  `labeled_set_reposts_only_into_its_own_label_membership`,
+  `remove_repost_removes_exactly_the_old_value_posting`,
+  `multi_label_vertex_sharing_one_namespace_pushes_no_duplicate_ops`,
+  `missing_vertex_row_dispatches_no_postings` (`catalog_context.rs` tests); PocketIC
+  `router_labeled_insert_set_repost_converges_across_shards` plus the restored saga trio in
+  `router_gql_query.rs` (20 passed / 0 failed at the fix).
+- **Evidence:** Probe instrumentation over a pinned worktree of `7a75e9fd6` (no working-tree
+  changes): fixture-phase `resolved=[(1,1)]` + `Insert` posting vs bundle-phase `resolved=[]`
+  twice per shard; zero index-canister vertex-posting mutations during the bundle; post-bundle
+  seed hits=2 sieved to 0 rows by the residual filter; labeled variant pre-bundle eq(5)=0 with
+  `ix batch phys=101`.
 
 ### GAP-2026-08-20-001 — AtLeast graph-index barrier ignores pending first-delivery outbox work
 
@@ -113,59 +136,35 @@ defect from being rediscovered without its prior reasoning.
   index-build generation visibility contract in their later slices; do not infer either from this
   ordinary Graph-owned floor.
 
-### GAP-2026-08-20-002 — Router direct vector ingestion durable suffix ownership
+### GAP-2026-08-20-002 — Router direct vector ingestion durable intent ownership
 
-- **Status:** Resolved (implementation and targeted PocketIC evidence complete)
+- **Status:** Resolved (implementation complete; final validation recorded in Plan 0270)
 - **Severity:** P0 durable derived-state contract
-- **Owner:** Router direct vector-ingestion API and its durable replay boundary
-- **Contract:** Every DeferredForRepair result must have a durable owner that
-  can replay the exact suffix after return, trap, or upgrade, or the public API must expose an
-  explicit caller-owned retry outcome instead.
-- **Implementation:** After **all successful Graph stamps** for a request, Router synchronously
-  revalidates the current live shard, exact attached target, and immutable definition, then appends
-  every exact operation to the canonical `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) before the first
-  typed-only `vector_sync_batch_outcome` await. Each row stores its nonzero `mutation_id`, immutable
-  Vector target, and complete operation bytes as `Pending`.
-  `Progress { applied }` removes only the exact committed prefix; `Terminal` removes that prefix
-  while retaining the failed row and later suffix as `Pending`/`DeferredForRepair`; transport,
-  typed-unavailable, or malformed replies leave the submitted rows pending. The Router recovery
-  timer scans at most 16 rows per tick, groups by the persisted target, and `post_upgrade` re-arms
-  the timer so replay uses the exact target and bytes. `arm_if_needed` latches work arriving while a
-  pass awaits a remote call and re-arms the floor delay after an empty pass, preventing a lost wake.
-  Batch requests adaptively fit complete Candid prefixes below the 2 MiB hard ceiling, targeting the
-  ceiling minus 500 KiB headroom. The outbox is capped at 1,024 rows; the typed Vector driver
-  processes internal chunks of at most 32 rows.
-- **Evidence:** `crates/router/src/facade/stable/vector_ingest_outbox.rs::{append_pending,
-  apply_outcome,run_recovery_pass}`; `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
-  `crates/router/src/recovery.rs`; `crates/router/src/vector_sync.rs`; and
-  `crates/vector-canister/src/canister.rs::vector_sync_batch_outcome`. Focused Router outbox tests
-  cover stable reopen, exact-prefix replay, malformed-outcome no-change, retained terminal/suffix,
-  immutable-target retry, and capacity/row-encoding preflight:
-  `append_uses_one_stable_owner_and_reopens`,
-  `progress_removes_only_exact_applied_prefix_and_replay_is_idempotent`,
-  `malformed_outcome_leaves_rows_unchanged`,
-  `terminal_removes_prefix_and_retains_failed_and_suffix_as_pending`,
-  `recovery_transport_retains_exact_id_target_and_payload_for_retry`, and
-  `append_capacity_and_row_encoding_are_preflighted_without_partial_write`.
-  The atomic live-target/definition revalidation and scheduler latch tests are
-  `vector_outbox_append_revalidates_live_target_and_definition_atomically`,
-  `append_after_idle_arms_and_running_append_latches_next_pass`, and
-  `arm_if_needed_arms_idle_and_latches_running_request`.
-- **Validation status:** The exact combined PocketIC lifecycle test passed with one test and four
-  filtered: `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
-  (1 passed, 0 failed, 4 filtered, 17.95s). Code inspection confirms that this combined test covers
-  Router upgrade, Vector reopen/rebind, manually driven Graph/Router recovery-timer seams, exact GQL
-  search, and idempotent replay. The focused Router outbox, revalidation, lost-wake, and adaptive-sizing
-  unit tests are present in the live tree. This targeted test does not prove autonomous wall-clock
-  timer firing or deferred watermark/tombstone GC completion.
-- **Impact:** The durable suffix owner now matches the `DeferredForRepair` contract and survives
-  return, transport failure, and trap boundaries; the stable reopen test, immutable target, lost-wake
-  arm latch, `post_upgrade` timer hook, and combined PocketIC lifecycle test cover the intended
-  manually driven recovery path. The public operation remains at-least-once retry/convergence with no finite-time
-  guarantee; it does not promise client-level exactly-once semantics.
-- **Next decision:** Keep the direct-ingestion outbox contract separate from the broader Vector
-  watermark/tombstone-retention and full vector redesign work; do not infer client-level exactly-once semantics from
-  the durable replay boundary.
+- **Owner:** Router direct vector-ingestion API and MemoryId 53 lifecycle
+- **Contract:** Every allocated direct-ingestion mutation ID is synchronously co-written with one
+  exact durable intent before the first Graph await. `Pending` is valid only while that intent is
+  `AwaitingGraph` or `AwaitingVector`.
+- **Implementation:** `admit_awaiting_graph` validates the full batch, live shard, exact Graph and
+  Vector targets, immutable definition, capacity, and encoded size before changing state. It then
+  co-writes the final `ROUTER_MUTATION_COUNTER` value and every canonical `AwaitingGraph` row with no
+  intervening await. Exact Graph acceptance changes only the matching row to `AwaitingVector`;
+  exact logical rejection removes only that row; transport/decode failure and response loss retain
+  it. Vector typed-prefix acknowledgement removes only applied `AwaitingVector` rows. Recovery uses
+  persisted targets and derives both wire requests from the canonical row.
+- **Evidence:** `crates/router/src/facade/stable/vector_ingest_outbox.rs::{admit_awaiting_graph,
+  observe_graph_accept,observe_graph_reject,apply_outcome,run_recovery_pass}` and
+  `crates/router/src/api/control.rs::ingest_vertex_embeddings`. Owner-local tests cover admission
+  atomicity, phase persistence, exact compare-before-transition, stale callbacks, reopen, Vector
+  prefix retention, malformed outcomes, and recovery scheduling. PocketIC
+  `graph_response_loss_preserves_pregraph_intent_across_router_upgrade` loses the Graph response,
+  upgrades Router with `AwaitingGraph`, clears the test seam, drives recovery, and proves exact
+  Vector visibility plus idempotent replay.
+- **Impact:** Restart or response loss cannot leave an allocated direct-ingestion stamp without a
+  durable owner. The public operation remains at-least-once retry/convergence with no finite-time or
+  client-level exactly-once guarantee.
+- **Next decision:** Add an authenticated per-target/shard contiguous Router frontier publication
+  path. Until then Router watermark publication stays disabled and Vector tombstone deletion stays
+  paused.
 
 ### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
 
@@ -772,19 +771,17 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 - **Expected or needed behavior:** an authorized caller should submit only graph name, opaque encoded
   vertex id, registered embedding name, and finite F32 values to the typed Router endpoint; Router
   should validate the value dimension/finiteness before stamp allocation and the Graph await, Graph
-  should validate vertex/tombstone/label and payload-independent embedding metadata, and Router
-  should persist an exact Vector target/operation before the first Vector await while distinguishing
-  an acknowledged prefix from a durable deferred suffix.
+  should validate vertex/tombstone/label and payload-independent embedding metadata, and every
+  allocated Router stamp should have one exact durable owner before the first Graph await.
 - **Resolution:** The typed Router `ingest_vertex_embeddings` flow validates the encoded id, live
   shard, registered
-  vector definition, value dimension, and finiteness before allocating a stamp or calling Graph;
-  Graph `stamp_embedding` validates existence/tombstone state, required labels, and
-  payload-independent embedding metadata/encoding, then returns a Router-issued stamp without
-  embedding-byte or journal writes. After all successful
-  stamps, Router atomically revalidates lifecycle/target/definition and persists each complete
-  operation in `ROUTER_VECTOR_INGEST_OUTBOX` before the first `vector_sync_batch_outcome` await.
-  Failed terminal/suffix rows remain `Pending` and are retried at-least-once; no finite-time or
-  client-level exactly-once guarantee is implied.
+  vector definition, value dimension, and finiteness, then synchronously co-writes the allocated
+  stamps and exact `AwaitingGraph` intents before the first Graph await. Graph `stamp_embedding`
+  validates existence/tombstone state, required labels, and payload-independent embedding
+  metadata/encoding, then returns the Router-issued stamp without embedding-byte or journal writes.
+  Exact acceptance transitions the row to `AwaitingVector`; exact rejection resolves it; unknown
+  Graph or Vector outcomes retain the applicable phase. No finite-time or client-level exactly-once
+  guarantee is implied.
 - **Evidence:** `crates/router/src/api/control.rs::ingest_vertex_embeddings`;
   `crates/graph/src/canister/handlers.rs::stamp_embedding`; and the focused Router/Vector unit
   coverage. The targeted PocketIC lifecycle gate for the current lane passes as recorded in
@@ -909,7 +906,7 @@ duplicate its state machine or ownership rules.
 | P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — GAP-2026-07-29-006; ADR 0059 production driver implemented, E2E validation pending |
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | GAP-2026-07-29-004 open; GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Open — GAP-2026-07-29-003                                                                    |
-| P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Open — GAP-2026-08-21-001 (failing at HEAD)                                                  |
+| P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
 | P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Planned — GAP-2026-07-29-005                                                                 |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |

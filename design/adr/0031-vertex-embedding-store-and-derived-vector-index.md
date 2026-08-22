@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
-Last revised: 2026-08-14 09:52:44 UTC +0000
+Last revised: 2026-08-21 22:45:03 UTC +0000
 
 > **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
 > replaces this design; the Slices 1–10 implementation is **completely discarded** (breaking layout
@@ -89,20 +89,20 @@ Last revised: 2026-08-14 09:52:44 UTC +0000
 >   worker) taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails
 >   closed while dispatch is not ready.
 >
-> **Plan 0048 (implemented): canonical vertex-embedding ingestion boundary.** Adds the missing
+> **Plan 0048 (implemented): vertex-embedding ingestion boundary.** Adds the missing
 > application-to-Gleaph write path for externally generated vertex embeddings. The Router admin
 > endpoint `admin_ingest_vertex_embedding` accepts a logical graph name, an opaque encoded vertex id,
 > a registered embedding name, and a finite `Vec<f32>`. Router decodes the vertex id with the graph
 > encoding key, validates the live shard and registered vector definition (dims, metric, encoding),
-> and dispatches a single canonical write to the owning Graph shard. The Graph endpoint
-> `admin_ingest_vertex_embedding` (Router-only caller) verifies vertex existence, installs the
-> supplied ephemeral indexed-embedding catalog, commits canonical bytes via the existing
-> `set_vertex_embedding` path, and attempts the derived vector-index projection. The result reports
-> the canonical `embedding_version` and an explicit `projection_outcome` of `Applied` or
-> `DeferredForRepair`, so callers do not retry a canonical write that has already committed when the
-> derived index is temporarily unreachable. Direct vector-canister seeding remains a test/index-only
-> path; product ingestion must flow through Router. Social-demo semantic retrieval remains a later
-> planned slice.
+> and validates every value before allocating mutation IDs. Router synchronously persists each exact
+> `AwaitingGraph` intent together with its allocated mutation ID before the first Graph await. Graph receives only the local vertex id,
+> authoritative embedding metadata, and Router-issued mutation ID; `stamp_embedding` verifies vertex
+> existence, tombstone state, required labels, and supported encoding without receiving or storing
+> embedding values. Router converts the validated values to bytes, durably records unacknowledged
+> delivery in its outbox, and sends them to Vector, which is the embedding-value source of truth. The
+> result reports the Router-issued `embedding_version` and an explicit `projection_outcome` of
+> `Applied` or `Pending`; the latter means Router durably owns work that may still await Graph
+> validation or Vector acknowledgement. Product ingestion flows through Router.
 >
 > **Slice 5 (implemented): exact `ivf_flat` search MVP (read path).** Slice 5 lands the first
 > production vector-search read path over the already-synced derived index, with **no stable-layout

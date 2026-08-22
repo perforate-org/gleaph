@@ -2,33 +2,25 @@
 
 Date: 2026-08-07
 Status: Partially Implemented (design contract; Router direct-ingestion durability slice implemented)
-Last revised: 2026-08-21 (EncodingRecord pad-stride widths: `align16(component_bytes × dims)`)
+Last revised: 2026-08-21
+Anchor timestamp: 2026-08-21 23:14:00 UTC +0000
 
-> **Summary.** Replaces the ADR 0031/0032/0033 vector-index design (Slices 1–10, **completely
-> discarded**) with a fresh ownership model and layout: the vector canister owns the only durable copy
-> of embedding bytes (the graph holds zero embedding state), ordering uses Router-issued nonzero
-> `mutation_id` stamps comparable with Graph DML removes, presence is determined by label sets on
-> index definitions, ingest is stamp-separated
-> so bytes cross the subnet once, and the physical page store is a new two-table format (layout version
-> 1, a breaking change). The current Router direct-ingestion path collects the successful Graph
-> stamps, synchronously revalidates the live lifecycle and immutable definition, and persists each
-> stamped operation to a Router-owned durable suffix before its first Vector await; the physical layer is split
-> into a domain-free crate
-> `ic-stable-vector-page-store`. The active design contract is `design/index/vector-index.md`.
+> **Summary.** The vector canister owns the only durable embedding bytes; Graph holds zero
+> embedding state. Router-issued nonzero `mutation_id` stamps order direct ingestion against Graph
+> DML removes. Router durably owns each direct-ingestion request before the first Graph await through
+> an exact `AwaitingGraph | AwaitingVector` intent in MemoryId 53. The physical page store is owned by
+> the domain-free `ic-stable-vector-page-store` crate. The active contract is
+> `design/index/vector-index.md`.
 
 ## Context
 
 Gleaph's vector search needs a durable home for embedding bytes and a search structure that is
-mutable, deterministic, instruction-bounded, and capable of scaling across canisters. The previous
-design (ADR 0031/0032/0033) placed canonical embedding bytes on graph shards and made the vector
-canister a derived candidate generator, fenced by `(incarnation, version)`.
-
-Three facts drove the redesign:
+mutable, deterministic, instruction-bounded, and capable of scaling across canisters. Three facts
+determine the ownership boundary:
 
 1. **Capacity.** At `d = 1536` (the design target), an `F32` embedding is 6,144 bytes/vertex. At
-   10⁸ subjects the vector slab alone exceeds one canister's 500 GiB; storing a second full copy on
-   the graph (the old canonical store) made the graph canister — already the fastest-growing canister
-   — pay the same bytes again, plus relay amplification on every ingest.
+   10⁸ subjects the vector slab alone exceeds one canister's 500 GiB; a second full copy on Graph
+   would duplicate those bytes and amplify every ingest.
 2. **Placement mismatch.** Embedding bytes are consumed only by the vector canister, and their search
    placement is by vector-space cluster, not by graph shard. A per-shard canonical store is the wrong
    home.
@@ -37,36 +29,6 @@ Three facts drove the redesign:
    (SOSP 2023) shows cluster-partitioned indexes stay mutable via boundary-only reassignment; HARMONY
    (ACM MOD 2025) shows dimension-split partitioning is communication-expensive but its early-stop
    pruning transfers.
-
-## Problem
-
-The old design's costs:
-
-- the graph canister held a full second copy of every embedding byte and relayed every ingest
-  payload (subnet byte volume ×2, graph stable writes, and graph-side instruction cost for bytes the
-  graph never queries);
-- the per-identity `(incarnation, version)` fence required a per-vertex embedding registry on the
-  graph (more graph-side vector state);
-- backfill-from-graph was the only recovery path, but the bytes lived in the wrong canister;
-- the physical layer (page chains in a global tail slab) had grown ad hoc, and the design had not
-  settled on encodings, row metadata, or a crate boundary.
-
-## Existing architecture assessment
-
-**Kept:**
-
-- canonical/derived separation (graph data canonical; search structures derived);
-- Router ownership of definitions, activation, orchestration, and (future) fan-out/merge;
-- the shadow-version rebuild with dual-write and atomic publish as the only compaction;
-- the search freshness contract (subject revalidation, no mid-scan truncation, deterministic top-k);
-- filtered search via the ADR 0034 candidate allowlist.
-
-**Discarded:**
-
-- the graph canonical embedding store (`VERTEX_EMBEDDINGS`, `VERTEX_EMBEDDING_INCARNATIONS`);
-- the `(incarnation, version)` fence and per-vertex graph registry;
-- byte-relaying ingest and the graph's durable byte outbox role;
-- the ADR 0032 page layout and the Slice 1–10 stable layout (breaking; dev data wiped).
 
 ## Decision
 
@@ -131,7 +93,8 @@ documented).
 ```text
 Router ── metadata + Router-issued stamp ─▶ Graph  (validate existence/labels/encoding; return stamp)
 Graph  ── VertexEmbeddingStamp {mutation_id} ────────────────────────────────────▶ Router
-Router ── Pending {mutation_id, exact target, exact op} ──────────────────────────▶ stable outbox
+Router ── AwaitingGraph {mutation_id, exact targets, metadata, bytes} ─────────────▶ stable outbox
+Router ── AwaitingVector {same canonical intent} ─────────────────────────────────▶ stable outbox
 Router ── exact pending prefix ────────────────────────────────────────────────────▶ Vector
 ```
 
@@ -139,61 +102,59 @@ Bytes cross the subnet **once**, never through the graph; the graph holds no byt
 `stamp_embedding` is validation-only in this path: Router has already checked value dimension and
 finiteness, while Graph checks vertex/tombstone state, required labels, and payload-independent
 embedding metadata/encoding. Graph returns the Router-issued stamp without a Graph journal,
-derived-index outbox, or watermark write. After **all successful Graph stamps for the request** are collected, the Router synchronously
-revalidates every operation against the current live shard row, exact attached target, and current
-immutable definition, then appends the exact `(mutation_id, vector target, VectorEmbeddingSyncOp)`
-rows to `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) in one owner operation **before the first
-Vector `vector_sync_batch_outcome` await**. No await can interleave this lifecycle revalidation and
-append. This stable outbox is the durable owner of every suffix that may be returned as
-`DeferredForRepair`; it pins the target and operation bytes rather than re-resolving them from
-mutable catalog state. Two calls is the minimum (the fence requires comparable ingest/DML stamps).
+derived-index outbox, or watermark write. Before the first Graph await, Router validates the complete
+batch, live shard, exact Graph/Vector targets, immutable definition, capacity, and encoded row size.
+It then synchronously co-writes the final mutation-counter value and every exact `AwaitingGraph`
+intent to `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53). An observed exact acceptance transitions only
+that row to `AwaitingVector`; an observed logical rejection removes only that row. Transport/decode
+failure or response loss leaves `AwaitingGraph` unchanged. Two calls are required because the fence
+requires comparable ingest/DML stamps.
 The graph's vector surface is `stamp_embedding` plus DML-driven removes (vertex delete, label loss),
 re-derivable from graph state.
 
 The outbox is bounded to `MAX_VECTOR_INGEST_OUTBOX_ROWS = 1024` rows. Each encoded row is
 prevalidated against `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` (2 MiB); capacity, duplicate
-identity, and row-encoding failures are checked before the first stable insertion. The persisted
-value uses `StorableBound::Unbounded`, because this transport/admission ceiling must not determine
+identity, and row-encoding failures are checked before the first stable insertion. Each row stores
+exact Graph/Vector targets, metadata, subject, bytes, mutation ID, and phase. The persisted value
+uses `StorableBound::Unbounded`, because this transport/admission ceiling must not determine
 the `StableBTreeMap` node page size; `VectorIngestOutboxState::encode_checked` remains the single
-write-boundary size check. Every persisted row is `Pending`; terminal outcomes leave the failed row
-and suffix in that same durable state.
+write-boundary size check. Public `Pending` means that one of the durable phases still owns the
+request.
 
 Only the typed `vector_sync_batch_outcome` endpoint is supported for batch synchronization. Its
 response is an exact-prefix acknowledgement. `Progress { applied }` removes only the first `applied`
 submitted rows; the unacknowledged suffix remains `Pending`. `Terminal { applied,
 failed_index: applied, error }` removes that prefix, while the failed row and every later row remain
-`Pending` in the durable suffix. The Router reports that retained terminal/suffix work as
-`DeferredForRepair`; it returns no separate outer error. A
-transport/unavailable or malformed response leaves every submitted row pending. The typed Vector
+`Pending` in the durable suffix. A transport/unavailable or malformed response leaves every
+submitted row pending. The typed Vector
 driver processes internal chunks of at most **32 rows**; the Router independently fits each complete
 Candid request below the 2 MiB ceiling. This is an at-least-once retry/convergence contract without
 a finite-time convergence guarantee or client-level exactly-once semantics.
 Vector's per-subject stamp makes replay idempotent when a successful Vector write is followed by
 response loss.
 
-Pending rows are retried by the Router's bounded recovery timer in groups keyed by their persisted
-Vector target. The direct-ingestion scan examines at most 16 rows per tick and retains the exact
-target and operation bytes; it never re-resolves a target from mutable catalog state. Appending a
+Both phases are retried by the Router's bounded recovery timer. `AwaitingGraph` uses the persisted
+Graph target; `AwaitingVector` rows are grouped by persisted Vector target. The direct-ingestion scan
+examines at most 16 rows per tick and never re-resolves a target from mutable catalog state. Appending a
 row calls `recovery::arm_if_needed()`. If an append occurs while a recovery pass is awaiting a
 remote call, the arm request is latched and the tick re-arms the floor delay even when that pass
-reported no work, preventing a lost wake. Router `init` and `post_upgrade` re-arm the same recovery
+reported no work, preventing a lost wake. A heap-only guard excludes rows still driven by their
+originating API call from timer recovery; an upgrade clears the guard and durable recovery resumes
+them. Router `init` and `post_upgrade` re-arm the same recovery
 lane because timers do not survive an upgrade. Each Vector batch measures the complete Candid
 request and adaptively fits a prefix below the 2 MiB hard ceiling, targeting the ceiling minus the
 fixed 500 KiB envelope headroom. Focused Router unit tests cover reopen, exact-prefix transitions,
 lost-wake re-arming, immutable target retention, and adaptive sizing. The targeted PocketIC lifecycle
-gate passed with one test and four filtered:
+gates each ran one exact test and passed:
 `cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
-(1 passed, 0 failed, 4 filtered, 17.95s). It manually drives the Graph and Router timer/recovery
-seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent replay. This
-targeted evidence does not prove autonomous wall-clock timer firing or deferred watermark/tombstone
-GC completion.
+and `graph_response_loss_preserves_pregraph_intent_across_router_upgrade -- --exact --nocapture`.
+Together they cover both intent phases, Router/Vector upgrades, exact GQL search, and idempotent
+replay. This targeted evidence does not prove autonomous wall-clock timer firing or
+watermark/tombstone GC completion.
 
-### 7. Fresh physical layout (two-table pages; run table; packed payload; version 1, breaking)
+### 7. Physical layout (two-table pages; run table; packed payload; version 1)
 
-Layout lineage restarts at version 1: slab/page headers use a 3-byte magic (`VSL`/`VPG`) plus a
-binary `u8` version byte `1`; the discarded ASCII magic (`VSL1`/`VPG1`) is rejected fail-closed.
-Dev stable data is wiped; the current cutover requires a fresh reinstall only, with no compatibility
-reader, migration, or backward-compatible endpoint.
+Slab/page headers use a 3-byte magic (`VSL`/`VPG`) plus a binary `u8` version byte `1`.
 
 ```text
 [PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
@@ -209,17 +170,18 @@ reader, migration, or backward-compatible endpoint.
   position); no per-row stamp/vector_id/generation.
 - Memory manager: `ic-stable-variable-memory-manager` with per-region bucket policies.
 
-### 8. EncodingRecord (multi-encoding; kernels; binary cosine)
+### 8. EncodingRecord (multi-encoding; kernels)
 
-`EncodingRecord { encoding, dims, stride_bytes, pad_stride_bytes, aux_bytes, binary_convention,
-kernel }` is a first-class concept (the LARA `label → width` generalization, owned by the vector
-canister). One index = one encoding = one stride. Widths derive from `(encoding, dims)`:
+`EncodingRecord { encoding, dims, stride_bytes, pad_stride_bytes, aux_bytes, kernel }` is a
+first-class concept (the LARA `label → width` generalization, owned by the vector canister). One
+index = one encoding = one stride. Widths derive from `(encoding, dims)`:
 `stride_bytes = component_bytes × dims` and `pad_stride_bytes = align16(stride_bytes)`, the 16-byte
-SIMD row alignment the page store stores as `row_stride`. Scoring materializes once per page read into the
-f32 scratch (except binary, scored via `i64.popcnt`). Binary cosine: `Bits01` → `n11·rq·rv`; `Signs`
-→ `1 − 2H/d` (cosine ≡ Hamming order). Aux defaults: `F32` 0 bytes (sub-square + early exit, or
-normalized dot), `I8` 4 bytes (scale, mandatory), binary 0 bytes; row-level pruning is an opt-in
-`+4/+8` bytes.
+SIMD row alignment the page store stores as `row_stride`. Scoring materializes once per page read into
+the f32 scratch. Implemented kernels: `F32Dot` (F32) and `UpcastF32Dot` (`I8`, fused i8×f32 with the
+per-row scale). Aux defaults: `F32` 0 bytes (sub-square + early exit, or normalized dot), `I8` 4 bytes
+(scale, mandatory); row-level pruning is an opt-in `+4/+8` bytes. A `Binary` encoding (bit-packed rows,
+popcount scoring) is future work and ships its own convention/kernel slice — the unconstructible
+`BinaryConvention`/`BinaryPopcnt` stack was removed in a dead-state sweep rather than kept unreachable.
 
 ### 9. Search algorithm (ivf_flat kind; SPANN blueprint; ε₂; sub-square + early exit)
 
@@ -247,9 +209,7 @@ canister-local; the run table's shard sharing becomes most effective. **B. Parti
 training, cross-canister rebuild, and a routing story (SPFresh/LIRE boundary-only reassignment makes
 the subject→canister routing index mostly static). Prepared now: Router resolution returns a target
 list with a global deterministic top-k merge contract; `VectorIndexOwnershipConfig` gains
-`index_group_size`/`group_index` (Option). No row-copy migration endpoint is implemented or
-supported by this cutover: the current vector layout and target assignment require a fresh reinstall,
-and any future split needs a separate ADR.
+`index_group_size`/`group_index` (Option). Any future split needs a separate ADR.
 
 ### 12. Crate boundary: `ic-stable-vector-page-store`
 
@@ -277,9 +237,7 @@ constraints — naming is revisited after the implementation proves distinctive 
 
 ### Negative / costs
 
-- Recovery on total vector-canister loss requires client re-ingestion (deviation from the
-  graph-backed recovery the old design had).
-- Breaking change: the Slices 1–10 implementation and layout are discarded.
+- Recovery on total vector-canister loss requires client re-ingestion.
 - Per-training-job `nlist` bound at `d = 1536` (≈677 per job under the 8 MiB envelope); the
   level-generic structure makes it a per-level bound, restoring trainable counts (raw candidate
   region remains the documented fallback).
@@ -290,7 +248,7 @@ constraints — naming is revisited after the implementation proves distinctive 
 
 | Alternative                                                           | Why rejected                                                                                                                                       |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Keep the graph canonical byte store (old design)                      | Capacity (2nd full copy in the fastest-growing canister), relay amplification, placement mismatch                                                  |
+| Keep the graph canonical byte store                                   | Capacity (2nd full copy in the fastest-growing canister), relay amplification, placement mismatch                                                  |
 | Dedicated embedding-store canister (bytes in a third canister)        | Extra canister role, provisioning, and a graph round-trip per write; deferred as an option if independent byte-tier destruction is ever required   |
 | Partition-based split now (option B)                                  | Global training, cross-canister rebuild, and derived routing are structural costs; deferred to a future ADR grounded in SPFresh/LIRE               |
 | LARA-ize the page store (PMA segments + free-span + compaction tiers) | Over-engineered for vectors: no middle insertion, no order preservation, rebuild is the natural compaction                                         |
@@ -310,9 +268,8 @@ constraints — naming is revisited after the implementation proves distinctive 
    the direct-ingest stamp is validation-only and does not update the existing DML mutation
    consumers.
 5. **[partial]** Rework the Router: label sets, target-list resolution, global merge contract,
-   immutable definition/shard target assignment, and the durable direct-ingestion suffix are
-   implemented. The current cutover has no row-copy migration or compatibility endpoint; a future
-   split requires a separate ADR and fresh installation.
+   immutable definition/shard target assignment, and both direct-ingestion intent phases are
+   implemented. A future split requires a separate ADR.
 6. **[planned]** Measure (canbench): scoring formulations, page scan cost at `d = 1536`, per-level
    `nlist` envelope; decide hierarchy deployment (`levels = 2`) and raw candidate region.
 

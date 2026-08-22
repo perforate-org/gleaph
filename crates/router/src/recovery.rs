@@ -418,26 +418,38 @@ mod tests {
     };
     use crate::facade::stable::vector_ingest_outbox;
     use candid::Principal;
-    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
+    use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
     use gleaph_graph_kernel::vector_index::{
-        VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
     };
 
-    fn operation(mutation_id: u64, vertex_id: u32) -> VectorEmbeddingSyncOp {
-        VectorEmbeddingSyncOp {
-            index_id: 7,
-            embedding_name_id: 3,
-            subject: VectorSubject::Vertex {
+    fn intent(
+        mutation_id: u64,
+        vertex_id: u32,
+        vector_target: Principal,
+    ) -> vector_ingest_outbox::VectorIngestOutboxState {
+        vector_ingest_outbox::intent_for_test(
+            vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id: GraphId::from_raw(1),
+                graph_target: Principal::from_slice(&[8; 29]),
+                vector_target,
                 shard_id: ShardId::new(2),
-                vertex_id,
+                local_vertex_id: LocalVertexId::from(vertex_id),
+                spec: IndexedEmbeddingSpec {
+                    embedding_name_id: 3,
+                    index_id: 7,
+                    kind: VectorIndexKind::IvfFlat,
+                    encoding: VectorEncoding::F32,
+                    dims: 1,
+                    metric: VectorMetric::L2Squared,
+                    labels: vec![VertexLabelId::from_raw(1)],
+                },
+                bytes: vec![vertex_id as u8, 0, 0, 0],
             },
             mutation_id,
-            encoding: VectorEncoding::F32,
-            dims: 1,
-            metric: VectorMetric::L2Squared,
-            bytes: vec![vertex_id as u8, 0, 0, 0],
-            remove: false,
-        }
+            vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
+        )
     }
 
     #[test]
@@ -462,8 +474,8 @@ mod tests {
             .with_borrow_mut(|scheduler| *scheduler = RecoverySchedulerState::default());
 
         let target = Principal::from_slice(&[7; 29]);
-        let first = (101, target, operation(101, 1));
-        vector_ingest_outbox::append_pending(std::slice::from_ref(&first))
+        let first = intent(101, 1, target);
+        vector_ingest_outbox::insert_intents_for_test(std::slice::from_ref(&first))
             .expect("append durable work while recovery is idle");
 
         // The production direct-ingestion owner calls arm_if_needed immediately after this append.
@@ -488,8 +500,8 @@ mod tests {
         );
 
         RECOVERY_SCHEDULER.with_borrow_mut(RecoverySchedulerState::begin_pass);
-        let second = (102, target, operation(102, 2));
-        vector_ingest_outbox::append_pending(std::slice::from_ref(&second))
+        let second = intent(102, 2, target);
+        vector_ingest_outbox::insert_intents_for_test(std::slice::from_ref(&second))
             .expect("append durable work while recovery is running");
         arm_if_needed();
         assert_eq!(

@@ -1935,6 +1935,8 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
         ));
     }
     // Return the validated mutation_id without changing Graph state. Vector orders by this stamp.
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::maybe_trap_on_embedding_stamp_reply();
     Ok(args.mutation_id)
 }
 
@@ -1977,32 +1979,6 @@ async fn e2e_router_catalog_guard(
     store: &GraphStore,
 ) -> Result<crate::index::catalog_context::CatalogGuard, String> {
     let catalog = fetch_e2e_router_catalog(store).await?;
-    Ok(crate::index::catalog_context::enter(catalog))
-}
-
-/// Install the Router catalog for legacy direct vertex-property fixtures.
-///
-/// These helpers intentionally create an unlabeled vertex and retain their existing wire shape.
-/// Projecting only the ephemeral vertex memberships to the explicit `label_id: 0` wildcard keeps
-/// their physical namespace, epoch, and maintenance phase from being replaced locally.
-#[cfg(feature = "pocket-ic-e2e")]
-async fn e2e_legacy_unlabeled_vertex_catalog_guard(
-    store: &GraphStore,
-) -> Result<crate::index::catalog_context::CatalogGuard, String> {
-    let catalog = fetch_e2e_router_catalog(store).await?;
-    let catalog = gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_indexes: catalog
-            .vertex_indexes
-            .into_iter()
-            .map(
-                |membership| gleaph_graph_kernel::index::IndexedVertexMembership {
-                    label_id: 0,
-                    ..membership
-                },
-            )
-            .collect(),
-        ..catalog
-    };
     Ok(crate::index::catalog_context::enter(catalog))
 }
 
@@ -2051,7 +2027,7 @@ pub async fn e2e_insert_vertex_with_property(
     use gleaph_graph_kernel::entry::PropertyId;
 
     let store = GraphStore::new();
-    let _catalog = e2e_legacy_unlabeled_vertex_catalog_guard(&store).await?;
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
@@ -2085,7 +2061,7 @@ pub async fn e2e_insert_vertex_with_two_properties(
     use gleaph_graph_kernel::entry::PropertyId;
 
     let store = GraphStore::new();
-    let _catalog = e2e_legacy_unlabeled_vertex_catalog_guard(&store).await?;
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
@@ -2161,7 +2137,7 @@ pub async fn e2e_insert_vertex_with_label(
 pub async fn e2e_insert_vertex_with_label_and_property(
     args: super::types::E2eInsertVertexWithLabelAndPropertyArgs,
 ) -> Result<super::types::E2eInsertVertexResult, String> {
-    use crate::index::{catalog_context, label_pending, pending};
+    use crate::index::{label_pending, pending};
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 
@@ -2178,17 +2154,7 @@ pub async fn e2e_insert_vertex_with_label_and_property(
         .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
-    let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
-            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
-                .expect("e2e physical id"),
-            catalog_epoch: 1,
-            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-            property_id: args.property_id,
-            label_id: args.label_id,
-        }],
-        ..Default::default()
-    });
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     store
         .set_vertex_property(vertex_id, property_id, Value::Int64(args.value))
         .map_err(|e| e.to_string())?;
@@ -2213,7 +2179,7 @@ pub async fn e2e_insert_vertex_with_label_and_property(
 pub async fn e2e_insert_vertex_with_label_and_two_properties(
     args: super::types::E2eInsertVertexWithLabelAndTwoPropertiesArgs,
 ) -> Result<super::types::E2eInsertVertexResult, String> {
-    use crate::index::{catalog_context, label_pending, pending};
+    use crate::index::{label_pending, pending};
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 
@@ -2229,27 +2195,7 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
     store
         .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
         .map_err(|e| e.to_string())?;
-    let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_indexes: vec![
-            gleaph_graph_kernel::index::IndexedVertexMembership {
-                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
-                    .expect("e2e physical id"),
-                catalog_epoch: 1,
-                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                property_id: args.property_a,
-                label_id: args.label_id,
-            },
-            gleaph_graph_kernel::index::IndexedVertexMembership {
-                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
-                    .expect("e2e physical id"),
-                catalog_epoch: 1,
-                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                property_id: args.property_b,
-                label_id: args.label_id,
-            },
-        ],
-        ..Default::default()
-    });
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     store
         .set_vertex_property(
             vertex_id,
@@ -2285,36 +2231,17 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
 pub async fn e2e_set_vertex_property(
     args: super::types::E2eSetVertexPropertyArgs,
 ) -> Result<(), String> {
-    use crate::index::{catalog_context, pending};
+    use crate::index::pending;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::PropertyId;
     use ic_stable_lara::VertexId;
 
     let store = GraphStore::new();
     let vertex_id = VertexId::from(args.local_vertex_id);
-    let vertex = store
+    let _vertex = store
         .vertex(vertex_id)
         .ok_or_else(|| "vertex must exist".to_string())?;
-    let labels = store.vertex_labels(vertex_id, vertex);
-    let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_indexes: labels
-            .into_iter()
-            .enumerate()
-            .map(
-                |(offset, label)| gleaph_graph_kernel::index::IndexedVertexMembership {
-                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(
-                        101 + offset as u64,
-                    )
-                    .expect("e2e physical id"),
-                    catalog_epoch: 1,
-                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                    property_id: args.property_id,
-                    label_id: label.raw(),
-                },
-            )
-            .collect(),
-        ..Default::default()
-    });
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     store
         .set_vertex_property(
             vertex_id,
@@ -2691,6 +2618,12 @@ pub fn e2e_arm_ordered_response_loss(code: u8) -> Result<(), String> {
         _ => return Err(format!("unknown ordered response-loss code {code}")),
     }
     Ok(())
+}
+
+/// Arm or clear the boundary used to lose validated embedding-stamp responses.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_arm_embedding_stamp_response_loss(armed: bool) {
+    crate::test_fault::set_embedding_stamp_response_loss(armed);
 }
 
 /// Return the ordered dispatch count and one-shot reject-next marker (PocketIC E2E only).

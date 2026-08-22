@@ -310,6 +310,17 @@ fn e2e_unbind_vector_definition_store(env: &FederationEnv, vector: Principal) {
         .expect("vector definition-store owner was not Ready");
 }
 
+fn set_embedding_stamp_response_loss(env: &FederationEnv, armed: bool) {
+    env.pic
+        .update_call(
+            env.graph_source,
+            env.router,
+            "e2e_arm_embedding_stamp_response_loss",
+            Encode!(&armed).expect("encode embedding-stamp response-loss flag"),
+        )
+        .expect("set embedding-stamp response-loss flag");
+}
+
 #[test]
 fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
     let env = install_single_shard_federation();
@@ -570,7 +581,7 @@ fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes()
     assert!(deferred.embedding_version > 0);
     assert_eq!(
         deferred.projection_outcome,
-        VertexEmbeddingProjectionOutcome::DeferredForRepair,
+        VertexEmbeddingProjectionOutcome::Pending,
         "unavailable Vector must defer the direct-ingest projection"
     );
 
@@ -632,6 +643,54 @@ fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes()
         router_vector_hit_count(&env, 7.0),
         1,
         "replaying an already acknowledged direct-ingest row must remain one exact hit"
+    );
+}
+
+#[test]
+fn graph_response_loss_preserves_pregraph_intent_across_router_upgrade() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
+    register(&env, vector);
+    fully_activate(&env, vector);
+
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let encoded = encode_vertex(&env, inserted.local_vertex_id);
+    set_embedding_stamp_response_loss(&env, true);
+
+    let pending = ingest(&env, encoded, vec![8.0; DIMS as usize]);
+    assert_eq!(
+        pending.projection_outcome,
+        VertexEmbeddingProjectionOutcome::Pending,
+        "a lost Graph response must leave Router as the durable non-terminal owner"
+    );
+    assert_eq!(
+        router_vector_hit_count(&env, 8.0),
+        0,
+        "Vector must not receive an intent before Graph acceptance is observed"
+    );
+
+    env.pic
+        .upgrade_canister(
+            env.router,
+            wasm_bytes("ROUTER_WASM"),
+            Encode!(&()).expect("encode router upgrade args"),
+            None,
+        )
+        .expect("upgrade Router with AwaitingGraph intent");
+    set_embedding_stamp_response_loss(&env, false);
+    run_router_recovery_timer(&env);
+
+    assert_eq!(
+        router_vector_hit_count(&env, 8.0),
+        1,
+        "recovery must replay the exact Graph request and Vector bytes after Router upgrade"
+    );
+    run_router_recovery_timer(&env);
+    assert_eq!(
+        router_vector_hit_count(&env, 8.0),
+        1,
+        "a later recovery lap must remain idempotent"
     );
 }
 

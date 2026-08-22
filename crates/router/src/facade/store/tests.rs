@@ -5438,7 +5438,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
     fn unregister_rejects_exact_pending_vector_work_without_lifecycle_mutation() {
         use crate::facade::stable::{ROUTER_SHARDS, vector_index_catalog, vector_ingest_outbox};
         use gleaph_graph_kernel::federation::GraphShardKey;
-        use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
+        use gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec;
 
         let _guard = vector_ingest_outbox::test_lock();
         let store = RouterStore::new();
@@ -5458,26 +5458,33 @@ pub(crate) mod graph_type_catalog_vocabulary {
         .expect("attach vector target");
 
         let definition = vector_index_catalog::get_vector_index(graph_id, 1).expect("definition");
-        let operation = VectorEmbeddingSyncOp {
-            index_id: 1,
-            embedding_name_id: definition.embedding_name_id.raw(),
-            subject: VectorSubject::Vertex {
-                shard_id: ShardId::new(0),
-                vertex_id: 17,
-            },
-            mutation_id: 71,
-            encoding: definition.encoding,
-            dims: definition.dims,
-            metric: definition.metric,
-            bytes: vec![0; usize::from(definition.dims) * 4],
-            remove: false,
-        };
-        vector_ingest_outbox::append_pending(&[(71, target, operation)])
-            .expect("seed exact pending vector work");
         let key = GraphShardKey::new(graph_id, ShardId::new(0));
         let before = ROUTER_SHARDS
             .with_borrow(|shards| shards.get(&key))
             .expect("shard before unregister");
+        let intent = vector_ingest_outbox::intent_for_test(
+            vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id,
+                graph_target: before.graph_canister,
+                vector_target: target,
+                shard_id: ShardId::new(0),
+                local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId::from(17u32),
+                spec: IndexedEmbeddingSpec {
+                    embedding_name_id: definition.embedding_name_id.raw(),
+                    index_id: definition.index_id,
+                    kind: definition.kind,
+                    metric: definition.metric,
+                    encoding: definition.encoding,
+                    dims: definition.dims,
+                    labels: definition.labels.clone(),
+                },
+                bytes: vec![0; usize::from(definition.dims) * 4],
+            },
+            71,
+            vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
+        );
+        vector_ingest_outbox::insert_intents_for_test(&[intent])
+            .expect("seed exact pending vector work");
         let pending_before = vector_ingest_outbox::scan(None, 16).0;
 
         let err = futures::executor::block_on(store.admin_unregister_shard(
@@ -5503,7 +5510,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
         use gleaph_graph_kernel::entry::EmbeddingNameId;
         use gleaph_graph_kernel::federation::GraphShardKey;
         use gleaph_graph_kernel::vector_index::{
-            VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+            IndexedEmbeddingSpec, VectorEncoding, VectorMetric,
         };
 
         let _guard = vector_ingest_outbox::test_lock();
@@ -5524,40 +5531,52 @@ pub(crate) mod graph_type_catalog_vocabulary {
         .expect("attach vector target");
 
         let definition = vector_index_catalog::get_vector_index(graph_id, 1).expect("definition");
-        let operation = |mutation_id| VectorEmbeddingSyncOp {
-            index_id: 1,
-            embedding_name_id: definition.embedding_name_id.raw(),
-            subject: VectorSubject::Vertex {
-                shard_id: ShardId::new(0),
-                vertex_id: 17,
-            },
-            mutation_id,
-            encoding: definition.encoding,
-            dims: definition.dims,
-            metric: definition.metric,
-            bytes: vec![0; usize::from(definition.dims) * 4],
-            remove: false,
-        };
-        vector_ingest_outbox::append_pending_for_graph(graph_id, &[(81, target, operation(81))])
-            .expect("valid live target and definition are accepted");
-        let before_rejection = vector_ingest_outbox::scan(None, 16).0;
-
         let key = GraphShardKey::new(graph_id, ShardId::new(0));
+        let graph_target = ROUTER_SHARDS
+            .with_borrow(|shards| shards.get(&key))
+            .expect("live shard")
+            .graph_canister;
+        let input = || vector_ingest_outbox::NewVectorIngestIntent {
+            graph_id,
+            graph_target,
+            vector_target: target,
+            shard_id: ShardId::new(0),
+            local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId::from(17u32),
+            spec: IndexedEmbeddingSpec {
+                embedding_name_id: definition.embedding_name_id.raw(),
+                index_id: definition.index_id,
+                kind: definition.kind,
+                metric: definition.metric,
+                encoding: definition.encoding,
+                dims: definition.dims,
+                labels: definition.labels.clone(),
+            },
+            bytes: vec![0; usize::from(definition.dims) * 4],
+        };
+        let first = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect("valid live target and definition are accepted")
+            .pop()
+            .expect("one admitted intent");
+        let before_rejection = vector_ingest_outbox::scan(None, 16).0;
+        let counter_before_rejection =
+            crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
+
         ROUTER_SHARDS.with_borrow_mut(|shards| {
             let mut entry = shards.get(&key).expect("shard row");
             entry.index_attached = false;
             shards.insert(key, entry);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(82, target, operation(82))],
-        )
-        .expect_err("a stale non-live shard must be rejected before append");
-        assert!(err.contains("no longer live"), "{err}");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("a stale non-live shard must be rejected before append");
+        assert!(err.contains("not live at exact Graph target"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
             before_rejection,
             "revalidation rejection must not partially append"
+        );
+        assert_eq!(
+            crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get()),
+            counter_before_rejection
         );
 
         ROUTER_SHARDS.with_borrow_mut(|shards| {
@@ -5573,12 +5592,9 @@ pub(crate) mod graph_type_catalog_vocabulary {
             entry.vector_index_attached = true;
             shards.insert(key, entry);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(83, target, operation(83))],
-        )
-        .expect_err("an attached target mismatch must be rejected before append");
-        assert!(err.contains("not attached to exact target"), "{err}");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("an attached target mismatch must be rejected before append");
+        assert!(err.contains("not attached to exact Vector target"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
             before_rejection,
@@ -5597,12 +5613,9 @@ pub(crate) mod graph_type_catalog_vocabulary {
             current.target = Some(vector_index_catalog::VectorIndexTarget { canister: target_b });
             definitions.insert(definition_key, current);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(84, target, operation(84))],
-        )
-        .expect_err("a definition target mismatch must be rejected before append");
-        assert!(err.contains("target changed"), "{err}");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("a definition target mismatch must be rejected before append");
+        assert!(err.contains("not attached to exact Vector target"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
             before_rejection,
@@ -5620,11 +5633,8 @@ pub(crate) mod graph_type_catalog_vocabulary {
                 EmbeddingNameId::from_raw(definition.embedding_name_id.raw() ^ 1);
             definitions.insert(definition_key, current);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(85, target, operation(85))],
-        )
-        .expect_err("an embedding-name mismatch must be rejected before append");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("an embedding-name mismatch must be rejected before append");
         assert!(err.contains("does not match current definition"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
@@ -5642,11 +5652,8 @@ pub(crate) mod graph_type_catalog_vocabulary {
             current.encoding = VectorEncoding::I8;
             definitions.insert(definition_key, current);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(86, target, operation(86))],
-        )
-        .expect_err("an encoding mismatch must be rejected before append");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("an encoding mismatch must be rejected before append");
         assert!(err.contains("does not match current definition"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
@@ -5664,11 +5671,8 @@ pub(crate) mod graph_type_catalog_vocabulary {
             current.dims = definition.dims.saturating_add(1);
             definitions.insert(definition_key, current);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(87, target, operation(87))],
-        )
-        .expect_err("a definition shape mismatch must be rejected before append");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("a definition shape mismatch must be rejected before append");
         assert!(err.contains("does not match current definition"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
@@ -5686,11 +5690,8 @@ pub(crate) mod graph_type_catalog_vocabulary {
             current.metric = VectorMetric::Cosine;
             definitions.insert(definition_key, current);
         });
-        let err = vector_ingest_outbox::append_pending_for_graph(
-            graph_id,
-            &[(88, target, operation(88))],
-        )
-        .expect_err("a metric mismatch must be rejected before append");
+        let err = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect_err("a metric mismatch must be rejected before append");
         assert!(err.contains("does not match current definition"), "{err}");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
@@ -5703,11 +5704,18 @@ pub(crate) mod graph_type_catalog_vocabulary {
             definitions.insert(definition_key, current);
         });
 
-        vector_ingest_outbox::append_pending_for_graph(graph_id, &[(89, target, operation(89))])
-            .expect("the exact live target and definition must be accepted");
+        assert_eq!(
+            crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get()),
+            counter_before_rejection,
+            "every rejected admission must preserve the mutation counter"
+        );
+        let second = vector_ingest_outbox::admit_awaiting_graph(vec![input()])
+            .expect("the exact live target and definition must be accepted")
+            .pop()
+            .expect("one admitted intent");
         assert_eq!(
             vector_ingest_outbox::scan(None, 16).0,
-            vec![(81, target, operation(81)), (89, target, operation(89)),],
+            vec![first, second],
             "an exact live match appends only after every revalidation passes"
         );
         vector_ingest_outbox::clear_for_test();

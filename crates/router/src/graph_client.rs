@@ -302,11 +302,41 @@ pub async fn backfill_edge_property_postings(
     call_graph_result(graph, "backfill_edge_property_postings", req).await
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(dead_code, reason = "constructed by the Graph canister reply on wasm")
+)]
+pub enum GraphStampOutcome {
+    Accepted(u64),
+    Rejected(String),
+}
+
+#[cfg(target_family = "wasm")]
 pub async fn stamp_embedding(
     graph: Principal,
     args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
-) -> Result<u64, String> {
-    call_graph_result(graph, "stamp_embedding", args).await
+) -> Result<GraphStampOutcome, String> {
+    use ic_cdk::call::Call;
+
+    let reply: Result<u64, String> = Call::bounded_wait(graph, "stamp_embedding")
+        .with_arg(&args)
+        .await
+        .map_err(|error| format!("graph stamp_embedding call failed: {error}"))?
+        .candid()
+        .map_err(|error| format!("graph stamp_embedding decode failed: {error}"))?;
+    Ok(match reply {
+        Ok(mutation_id) => GraphStampOutcome::Accepted(mutation_id),
+        Err(error) => GraphStampOutcome::Rejected(error),
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn stamp_embedding(
+    _graph: Principal,
+    _args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
+) -> Result<GraphStampOutcome, String> {
+    Err("graph stamp_embedding unavailable in native builds".to_string())
 }
 
 pub async fn finalize_bulk_ingest(
