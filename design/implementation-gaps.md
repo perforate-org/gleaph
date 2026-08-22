@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 18:49:58 UTC +0000
+Anchor timestamp: 2026-08-22 19:14:24 UTC +0000
 
 ## Status
 
@@ -801,7 +801,24 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-08-04-001 — `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` is defined but never consumed
 
-- **Status:** Open
+- **Status:** Resolved (2026-08-22; option (b) implemented. The between-chunk loop in
+  `execute_prepared_mutation` now runs the ADR 0042 between-wave check before every chunk via
+  `graph_batch_chunk_within_update_budget`, composing the crate's generalized `should_cutoff`
+  predicate with ceiling `MAX_UPDATE_CALL_INSTRUCTIONS` (40B), the new
+  `ROUTER_BATCH_CHUNK_WORK_INSTRUCTION_ESTIMATE` (50M: measured worst per-chunk Router work
+  37.34M from GAP-2026-07-17-001 evidence plus ~34% margin), and the previously-dead
+  `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` (4B) as the finalization reserve — so the constant
+  is consumed by the boundary it claims to protect, and the Router provably stops dispatching
+  rather than trapping at 40B regardless of Graph behavior. When the guard trips, deferred
+  operations surface as per-operation errors ("router update instruction budget guard stopped
+  chunk dispatch") through the same recovery path as chunk failures; resubmission completes
+  them idempotently via the mutation journal. The live counter comes from the now-ungated
+  `current_instruction_counter` (host builds return 0, so native tests exercise the untripped
+  path). Owning tests: `chunk_budget_allows_a_fresh_message`,
+  `chunk_budget_trips_at_and_past_the_exact_boundary` (pins the exact `>=` trip point against
+  dropped/reordered terms or a flipped comparison),
+  `chunk_budget_trips_when_only_headroom_remains`. Residual risk: loop wiring itself is not
+  natively testable without an inter-canister seam; the pure guard is fully pinned.)
 - **Severity:** P2 router budget-integrity gap (no current runtime risk; the shared headroom covers the
   path)
 - **Owner:** `gleaph-instruction-budget` constants and the Router chunk-dispatch loop

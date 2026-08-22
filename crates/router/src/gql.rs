@@ -4452,6 +4452,23 @@ async fn execute_prepared_mutation(
                 let mut remaining = group;
                 let mut size_hint = None;
                 while !remaining.is_empty() {
+                    // Between-chunk budget guard (ADR 0042 between-wave check): the whole
+                    // update message shares one call-context instruction ceiling, so before
+                    // starting another chunk the Router must be able to fit one more chunk
+                    // round plus its finalization reserve under the 40B cap. Deferred
+                    // operations surface as per-operation errors and are completed by
+                    // resubmitting the mutation (journal reconciliation is idempotent).
+                    if !graph_batch_chunk_within_update_budget(
+                        crate::current_instruction_counter(),
+                    ) {
+                        let err = format!(
+                            "router update instruction budget guard stopped chunk dispatch: {} operation(s) deferred; resubmit to complete",
+                            remaining.len()
+                        );
+                        results
+                            .extend(remaining.drain(..).map(|d| (d, Some(Err(err.clone())))));
+                        break;
+                    }
                     let (chunk_len, next_hint) = graph_batch_chunk_len_for_dispatches(
                         &remaining,
                         &build_execute_args,
@@ -4777,6 +4794,19 @@ async fn execute_prepared_mutation(
     );
 
     Ok(result)
+}
+
+/// Returns `true` when another dynamic Graph batch chunk fits the update message's
+/// instruction ceiling: used + one chunk round (measured worst-case Router work) + the
+/// `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` finalization reserve must stay under 40B.
+pub(crate) fn graph_batch_chunk_within_update_budget(used_instructions: u64) -> bool {
+    !gleaph_instruction_budget::should_cutoff(
+        gleaph_instruction_budget::MAX_UPDATE_CALL_INSTRUCTIONS,
+        used_instructions,
+        gleaph_instruction_budget::ROUTER_BATCH_CHUNK_WORK_INSTRUCTION_ESTIMATE,
+        gleaph_instruction_budget::ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM,
+        0,
+    )
 }
 
 pub(crate) fn graph_batch_chunk_len_for_dispatches(
@@ -9957,5 +9987,48 @@ mod tests {
         .expect("edge range probe lookup");
         assert!(matches!(&hits, SeedHits::Edges(v) if v.is_empty()));
         assert!(index.edge_ranges.borrow().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chunk_budget_tests {
+    use super::graph_batch_chunk_within_update_budget;
+    use gleaph_instruction_budget::{
+        MAX_UPDATE_CALL_INSTRUCTIONS, ROUTER_BATCH_CHUNK_WORK_INSTRUCTION_ESTIMATE,
+        ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM,
+    };
+
+    /// The guard must consume the previously-dead `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM`
+    /// (GAP-2026-08-04-001): the exact trip point is
+    /// `used + CHUNK_ESTIMATE + HEADROOM >= 40B`, so these boundary pins fail if any term is
+    /// dropped, reordered, or the comparison direction flips.
+    #[test]
+    fn chunk_budget_allows_a_fresh_message() {
+        assert!(graph_batch_chunk_within_update_budget(0));
+    }
+
+    #[test]
+    fn chunk_budget_trips_at_and_past_the_exact_boundary() {
+        // `should_cutoff` compares with `>=`: the boundary value itself already has zero
+        // slack, so the guard stops there and everything above it.
+        let boundary = MAX_UPDATE_CALL_INSTRUCTIONS
+            - ROUTER_BATCH_CHUNK_WORK_INSTRUCTION_ESTIMATE
+            - ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM;
+        assert!(boundary > 0);
+        assert!(graph_batch_chunk_within_update_budget(boundary - 1));
+        assert!(!graph_batch_chunk_within_update_budget(boundary));
+        assert!(!graph_batch_chunk_within_update_budget(boundary + 1));
+        // The headroom alone cannot start a chunk once it is the only thing left.
+        assert!(!graph_batch_chunk_within_update_budget(
+            MAX_UPDATE_CALL_INSTRUCTIONS
+        ));
+    }
+
+    #[test]
+    fn chunk_budget_trips_when_only_headroom_remains() {
+        // Once `used` reaches 40B - 4B, the entire remaining budget IS the reserve: the
+        // guard must stop so finalization, journal reads, and the response fit.
+        let used = MAX_UPDATE_CALL_INSTRUCTIONS - ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM;
+        assert!(!graph_batch_chunk_within_update_budget(used));
     }
 }

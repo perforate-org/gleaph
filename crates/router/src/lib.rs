@@ -81,7 +81,8 @@ use ic_cdk_macros::{init, post_upgrade};
 
 use crate::facade::auth;
 
-#[cfg(feature = "batch-instr-log")]
+/// Live Router update-message instruction usage. Wasm builds read the IC call-context
+/// counter; host builds (unit tests) return 0, so budget guards never trip natively.
 fn current_instruction_counter() -> u64 {
     gleaph_instruction_budget::call_context_instruction_counter()
 }

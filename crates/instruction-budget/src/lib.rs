@@ -30,7 +30,17 @@ pub const GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION: u64 = 500_000_000;
 pub const GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM: u64 = 2_000_000_000;
 
 /// Headroom reserved by Router's dynamic batch cutoff for dispatch and finalization.
+///
+/// Consumed by the Router between-chunk guard (`graph_batch_chunk_within_update_budget`,
+/// GAP-2026-08-04-001): dispatching another Graph batch chunk must leave this much of the
+/// 40B update ceiling for chunk-loop finalization, journal reads, token merge, and response
+/// encoding.
 pub const ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM: u64 = 4_000_000_000;
+
+/// Measured Router-side work to decide, encode-probe, and merge one dynamic Graph batch
+/// chunk (GAP-2026-07-17-001 canbench evidence: worst decision cost 37.34M instructions,
+/// ~34% margin). Consumed by `graph_batch_chunk_within_update_budget`.
+pub const ROUTER_BATCH_CHUNK_WORK_INSTRUCTION_ESTIMATE: u64 = 50_000_000;
 
 /// Conservative per-message cap for Graph's deferred LARA maintenance timer.
 pub const MAX_TIMER_MAINTENANCE_INSTRUCTIONS: u64 = 32_000_000_000;
