@@ -1698,6 +1698,10 @@ mod tests {
             topology_epoch: 1,
             prepared_at_ns: 1,
         };
+        // The Active Vertex row must survive the `vertex_leaf_projection` gate, whose reverse
+        // property-name lookup omits whole rows it cannot resolve; interning the flat leaf name
+        // keeps the fixture aligned with that fail-closed catalog contract.
+        let active_leaf_property = intern_property(graph, "active_leaf");
         let make_record =
             |physical_index_id, index_name_id, kind, property_id, lifecycle, build| {
                 ROUTER_NAMED_INDEXES.with_borrow_mut(|map| {
@@ -1724,7 +1728,7 @@ mod tests {
             101,
             1,
             IndexedPropertyKind::Vertex,
-            5,
+            active_leaf_property.raw(),
             IndexLifecycleState::Active {
                 catalog_epoch: 31,
                 activated_at_ns: 0,

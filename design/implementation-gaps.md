@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-23
-Anchor timestamp: 2026-08-23 13:11:17 UTC +0000
+Anchor timestamp: 2026-08-23 23:07:19 UTC +0000
 
 ## Status
 
@@ -46,6 +46,44 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-24-001 — Two stale router lib fixtures surfaced on the suite's first full run after the 8e392c127→ac380c4bb build-broken window
+
+- **Status:** Resolved (this commit)
+- **Severity:** P3 test fixture — the fail-closed verification logic was correct in both cases; no
+  production defect
+- **Owner:** `gleaph-router` native unit-test fixtures (`facade/stable/indexed_catalog.rs`,
+  `vector_sync.rs`)
+- **Observed behavior:** Once GAP-2026-08-23-001's ic0-context deferral unblocked
+  `cargo test -p gleaph-router --lib` on this host, the first clean full run failed 3 of 937 tests,
+  all stale fixtures rather than regressions:
+  1. `facade::stable::indexed_catalog::tests::maintenance_projection_preserves_namespace_phase_and_epoch`
+     asserted `vertex_indexes.len() == 1` but observed 0. Since
+     `8f3f5c1da fix(index): fail closed on inconsistent vertex leaf identities`, the catalog projection
+     requires `vertex_leaf_projection(graph_id, property_id)` to resolve the reverse property name and
+     omits whole rows it cannot resolve; the fixture inserted the physical-101 Active Vertex record with
+     property id 5 without interning any reverse name, so the row was (correctly) omitted.
+  2. `vector_sync::tests::frontier_response_loss_retains_exact_marker_snapshot` expected the publisher to
+     observe `(Principal([1;29]), ShardId(2), 52)` but saw no call. Since
+     `128940f51 feat(router): publish markerless vector lane frontiers`, frontier publication is
+     catalog-driven (`run_recovery_pass` → `run_catalog_frontier_pass` →
+     `graph_catalog::scan_attached_vector_lane`, which reads `ROUTER_SHARDS`); the test seeded only outbox
+     markers with no attached lane, so `publish_router_frontier` was unreachable. The third failure,
+     `resolved_rows_transition_to_awaiting_frontier_before_publish`, was lock-poison cascade from item 2's panic.
+- **Expected or needed behavior:** Fixtures must satisfy the current contracts without weakening any
+  assertion. Both verifications are intended fail-closed behavior: an unresolvable leaf identity omits the
+  catalog row whole instead of flattening it, and frontier publication requires a catalog-attached lane.
+- **Fix:** Item 1 interns the Active Vertex leaf's flat property name through the module's existing
+  `intern_property` helper and passes the returned id into the fixture record; the assertions key on
+  `physical_index_id`/`catalog_epoch` so they are property-id agnostic. Preparing/Aborting rows need no
+  name because `maintenance_phase` excludes them before projection, and the Building/Sealing rows are
+  Edge-kind. Item 2 adds a local `attach_catalog_lanes` helper in the vector_sync tests module (isomorphic
+  to the outbox-side fixture) registering exactly the `(Principal([1;29]), ShardId(2))` lane that
+  `intent()` targets; `clear_for_test()` already resets `FRONTIER_CATALOG_CURSOR`/`FRONTIER_LANE_PROGRESS`.
+  No assertion or verification path changed.
+- **Owning tests:** the two named tests plus the de-poisoned
+  `vector_sync::tests::resolved_rows_transition_to_awaiting_frontier_before_publish`; full
+  `cargo test -p gleaph-router --lib` green (937 passed).
 
 ### GAP-2026-08-23-004 — Router canister wasm exceeds the IC code-section limit once the ADR 0074 slice 2a grant grammar is linked
 

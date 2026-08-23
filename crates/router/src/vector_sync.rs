@@ -398,11 +398,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::stable::vector_ingest_outbox;
+    use crate::facade::stable::{ROUTER_SHARDS, vector_ingest_outbox};
     use candid::Principal;
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
-    use gleaph_graph_kernel::federation::LocalVertexId;
-    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::federation::{
+        GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
+    };
     use gleaph_graph_kernel::vector_index::{
         IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
     };
@@ -500,6 +501,32 @@ mod tests {
         vector_ingest_outbox::clear_for_test();
     }
 
+    /// Register catalog-attached shard lanes in `ROUTER_SHARDS`, the canonical source the
+    /// frontier discovery scan reads; mirrors the outbox-side fixture shape.
+    fn attach_catalog_lanes(lanes: &[(Principal, ShardId)]) {
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            shards.clear_new();
+            for (index, (vector_target, shard_id)) in lanes.iter().enumerate() {
+                let graph_id = GraphId::from_raw(100 + index as u32);
+                let key = GraphShardKey::new(graph_id, *shard_id);
+                shards.insert(
+                    key,
+                    ShardRegistryEntry {
+                        shard_id: *shard_id,
+                        graph_canister: Principal::from_slice(&[(100 + index) as u8; 29]),
+                        index_canister: Principal::management_canister(),
+                        graph_id,
+                        registered_at_ns: 0,
+                        index_attached: true,
+                        vector_canister: Some(*vector_target),
+                        vector_index_attached: true,
+                    }
+                    .into(),
+                );
+            }
+        });
+    }
+
     #[test]
     fn frontier_response_loss_retains_exact_marker_snapshot() {
         let _guard = vector_ingest_outbox::test_lock();
@@ -508,6 +535,9 @@ mod tests {
         let later_marker = intent(52, VectorIngestIntentPhase::AwaitingFrontier);
         vector_ingest_outbox::insert_intents_for_test(&[marker.clone(), later_marker.clone()])
             .expect("seed frontier markers");
+        // Frontier publication is catalog-driven: without this attached lane the recovery pass
+        // never reaches the publisher.
+        attach_catalog_lanes(&[(Principal::from_slice(&[1; 29]), ShardId::new(2))]);
         crate::facade::stable::ROUTER_MUTATION_COUNTER
             .with_borrow_mut(|counter| counter.set(later_marker.mutation_id));
         let before = vector_ingest_outbox::scan(None, 8).0;

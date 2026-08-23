@@ -9876,6 +9876,10 @@ mod tests {
         for (bound_value, bound, expected_low, expected_high) in cases {
             let index = RangeRecordingIndex::default();
             let anchor = range_probe_anchor(bound_value.clone(), bound);
+            #[cfg_attr(
+                not(feature = "batch-instr-log"),
+                allow(clippy::default_constructed_unit_structs)
+            )]
             let mut metrics = super::SeedResolutionMetrics::default();
             let hits = futures::executor::block_on(super::lookup_anchor_hits(
                 &index,
@@ -9906,6 +9910,10 @@ mod tests {
             Value::DateTime(i64::MAX, u32::MAX),
             crate::seed::SeedRangeBound::Gt,
         );
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
         let mut metrics = super::SeedResolutionMetrics::default();
         let hits = futures::executor::block_on(super::lookup_anchor_hits(
             &index,
@@ -9945,6 +9953,10 @@ mod tests {
             bound: crate::seed::SeedRangeBound::Gt,
             wire_label_ids: vec![0x8001, 0x8002],
         });
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
         let mut metrics = super::SeedResolutionMetrics::default();
         let hits = futures::executor::block_on(super::lookup_anchor_hits(
             &index,
@@ -10001,6 +10013,10 @@ mod tests {
             bound: crate::seed::SeedRangeBound::Gt,
             wire_label_ids: Vec::new(),
         });
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
         let mut metrics = super::SeedResolutionMetrics::default();
         let hits = futures::executor::block_on(super::lookup_anchor_hits(
             &index,
