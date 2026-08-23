@@ -129,6 +129,20 @@ pub fn grant_rows() -> Vec<GrantRowEntry> {
     ROUTER_AUTH_GRANTS.with_borrow(|grants| grants.rows())
 }
 
+/// Whether `caller` (or the `PUBLIC` baseline) holds at least one unexpired data-plane
+/// grant targeting `graph` (ADR 0074 slice 2b).
+///
+/// Backs the grant-derived arm of graph visibility in `facade::store::registry`: grantees
+/// of a shared graph may resolve it by name even though they are no tenant. The anonymous
+/// principal evaluates as the `PUBLIC` subject only.
+pub fn holds_any_graph_grant(graph_raw: u32, caller: &Principal) -> bool {
+    let now_ns = crate::facade::store::ic_time_ns();
+    ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+        grants.holds_any_graph_grant(GrantSubject::effective_for(caller), graph_raw, now_ns)
+            || grants.holds_any_graph_grant(GrantSubject::Public, graph_raw, now_ns)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

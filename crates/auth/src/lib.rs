@@ -681,6 +681,28 @@ impl<M: Memory> GrantState<M> {
             .contains_key(&GrantKey::new(privilege, &subject))
     }
 
+    /// Whether `subject` holds at least one unexpired data-plane grant targeting `graph`.
+    ///
+    /// Backs the grant-derived visibility arm of graph resolution (ADR 0074 slice 2b): a
+    /// grantee may resolve a shared graph by name even though they are no tenant. Expired
+    /// rows confer nothing (fail closed, same semantics as [`Self::holds`]).
+    pub fn holds_any_graph_grant(&self, subject: GrantSubject, graph: u32, now_ns: u64) -> bool {
+        // Canonical keys sort privilege-first, so a graph cannot be prefix-scanned; the row
+        // count is the number of distinct (privilege × subject) grants, which stays small.
+        self.grants.iter().any(|entry| {
+            let row = entry.value();
+            if row.expires_at_ns.is_some_and(|expiry| expiry < now_ns) {
+                return false;
+            }
+            match entry.key().decode() {
+                (Privilege::Graph(GraphPrivilege { graph: target, .. }), key_subject) => {
+                    target == graph && key_subject == subject
+                }
+                _ => false,
+            }
+        })
+    }
+
     /// All stored rows decoded to their canonical parts, ordered by canonical key.
     ///
     /// Backs owner-facing introspection surfaces. Malformed keys trap (see
@@ -988,6 +1010,54 @@ mod tests {
         assert!(grants.holds(GrantSubject::Public, &exec_priv("timed"), 100));
         assert!(!grants.holds(GrantSubject::Public, &exec_priv("timed"), 101));
         assert!(!grants.holds(GrantSubject::Public, &exec_priv("timed"), 1_000));
+    }
+
+    #[test]
+    fn holds_any_graph_grant_scopes_to_graph_subject_and_expiry() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(7);
+        let graph_traverse = |graph: u32| {
+            Privilege::Graph(GraphPrivilege {
+                graph,
+                operation: GraphOperation::Traverse(Some(Direction::Outgoing)),
+                resource: GraphResource::EdgeLabel(3),
+            })
+        };
+        // No rows at all: nothing is visible.
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 0));
+
+        grants
+            .grant(GrantSubject::Principal(p), &graph_traverse(9), None)
+            .expect("grant on graph 9");
+        assert!(grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 0));
+        // A different graph's row does not leak visibility.
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 8, 0));
+        // A different subject does not inherit the row.
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(principal(8)), 9, 0));
+        // Prepared-query EXECUTE rows are not graph data-plane grants.
+        grants
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None)
+            .expect("prepared execute grant");
+        assert!(
+            !grants.holds_any_graph_grant(GrantSubject::Principal(p), 7, 0),
+            "EXECUTE rows target no graph"
+        );
+
+        // Expired rows confer nothing; equality of expiry and now still holds.
+        grants.revoke(GrantSubject::Principal(p), &graph_traverse(9));
+        grants
+            .grant(GrantSubject::Principal(p), &graph_traverse(9), Some(50))
+            .expect("expiring grant");
+        assert!(grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 50));
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 51));
+
+        // The PUBLIC subject sees only PUBLIC rows.
+        grants
+            .grant(GrantSubject::Public, &graph_traverse(11), None)
+            .expect("public grant");
+        assert!(grants.holds_any_graph_grant(GrantSubject::Public, 11, 0));
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 11, 0));
     }
 
     #[test]

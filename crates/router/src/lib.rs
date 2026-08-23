@@ -14,6 +14,7 @@ mod bench_prepared;
 mod test_fault;
 
 mod api;
+mod authz;
 mod batch_wave;
 mod bulk_ingest_finalize;
 mod bulk_load;

@@ -2,12 +2,10 @@
 //!
 //! [ADR 0074] replaces the former role ladder: every gate names the narrowest governing
 //! capability, default is deny, and data-plane access flows through grants (`caller ∪
-//! PUBLIC`), never through administrative capabilities.
-//!
-//! **Interim narrowing (accepted for this slice; superseded by slice 2):** ad-hoc GQL
-//! admission requires the ADR 0028 tenancy predicate or non-empty caps instead of the
-//! former global Read tier. Today's shipped flows are owner-centric (per-developer routers,
-//! ADR 0068) and are unaffected.
+//! PUBLIC`), never through administrative capabilities. Data-plane admission itself is
+//! **plan-time** ([`crate::authz`], slice 2b): the pre-plan gate below only enforces the
+//! caps-governed `CALL` surface and ADR 0028 graph visibility (tenancy ∪ grant-derived),
+//! with non-disclosing `NotFound` for invisible graphs.
 //!
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
@@ -21,16 +19,21 @@ use crate::facade::auth;
 use crate::facade::stable::ROUTER_AUTH_GRANTS;
 use crate::state::RouterError;
 
-/// Ad-hoc GQL (`gql_query` / `gql_mutate`): interim ADR 0074 policy.
+/// Ad-hoc GQL (`gql_query` / `gql_mutate`) pre-plan admission.
 ///
-/// Admission is `(ADR 0028 tenancy predicate) OR (non-empty admin caps)`, with named-`CALL`
-/// programs additionally requiring `CALL_PROCEDURE` (unknown principals cannot run platform
-/// procedures). Per-graph data-modification privilege checking arrives with slice 2's
-/// plan-time enforcement; until then no read/write tier distinction is applied here.
+/// Two checks remain here after slice 2b:
 ///
-/// The tenancy arm resolves the program's effective graph through the same resolver used for
-/// execution, so a caller without tenancy gets the ADR 0028 `NotFound` non-disclosure error
-/// rather than a distinguishable authorization failure.
+/// 1. Named-`CALL` programs require the `CALL_PROCEDURE` capability (unknown principals
+///    cannot run platform procedures; ADR 0074 §1b keeps this conservative until
+///    procedures become catalog objects).
+/// 2. ADR 0028 graph visibility: resolution through the same resolver used for execution.
+///    Tenants pass; callers holding an unexpired data-plane grant row on the graph
+///    (`caller ∪ PUBLIC`) pass; everyone else receives the indistinguishable `NotFound`.
+///    Administrative capabilities confer no admission here.
+///
+/// Per-label / per-direction / per-property data-plane checking happens after the plan is
+/// built (`crate::authz::enforce_data_plane_authorization`); the former interim
+/// tenancy-or-caps shortcut that admitted any capability holder is deleted.
 pub fn authorize_adhoc_gql(
     caller: &Principal,
     flags: ProgramModificationFlags,
@@ -42,12 +45,9 @@ pub fn authorize_adhoc_gql(
     }
     if flags.has_authorization_modification {
         // GRANT/REVOKE authority is enforced per statement by the executor (ADR 0074 §5:
-        // registry-owner-only), so the interim caps/tenancy gate must not pre-empt it. A
-        // caps-less registry owner (e.g. via the CREATE GRAPH provisioning path) would
-        // otherwise be denied against their own graph.
-        return Ok(());
-    }
-    if !caps.is_empty() {
+        // registry-owner-only), so this gate must not pre-empt it. A caps-less registry
+        // owner (e.g. via the CREATE GRAPH provisioning path) would otherwise be denied
+        // against their own graph.
         return Ok(());
     }
     let store = crate::facade::store::RouterStore::new();
@@ -185,20 +185,81 @@ mod tests {
     }
 
     #[test]
-    fn any_caps_holder_may_run_read_and_write_adhoc_gql() {
-        // Interim policy: one narrow cap admits ad-hoc GQL; write-path privilege checking is
-        // slice-2 scope.
+    fn caps_alone_no_longer_admit_adhoc_gql() {
+        // Slice 2b: a capability holder without tenancy or grant rows is denied like any
+        // other invisible caller; caps never imply data access (ADR 0074 invariant 1).
         let p = principal(2);
         upsert_caps(p, AdminCaps::PREPARE_REGISTER);
         let read = parser_program("MATCH (n) RETURN n");
-        authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &read).expect("read ok");
+        assert!(matches!(
+            authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &read),
+            Err(RouterError::NotFound(_))
+        ));
 
         let write_flags = ProgramModificationFlags {
             has_data_modification: true,
             ..Default::default()
         };
         let write = parser_program("MATCH (n) SET n.x = 1");
-        authorize_adhoc_gql(&p, write_flags, &write).expect("write admitted under interim policy");
+        assert!(matches!(
+            authorize_adhoc_gql(&p, write_flags, &write),
+            Err(RouterError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn data_plane_grant_row_confers_adhoc_visibility() {
+        // A grantee is visible for ad-hoc admission (slice 2b); whether the query may run
+        // is decided later at plan time by the requirement evaluation.
+        let store = crate::facade::store::RouterStore::new();
+        let owner = principal(23);
+        crate::facade::auth::grant_admins(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                gleaph_gql_ic::graph_registry::GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: gleaph_gql_ic::graph_registry::GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: gleaph_gql_ic::graph_registry::ProvisioningState::None,
+                    is_home: true,
+                },
+                "rbac-grant-visibility",
+            )
+            .expect("register graph");
+        let graph_id =
+            crate::facade::stable::graph_catalog::lookup_graph_id("rbac-grant-visibility")
+                .expect("registered graph resolves");
+
+        // Without a grant row the graph is invisible to a stranger.
+        let stranger = principal(24);
+        let program = parser_program("MATCH (n) RETURN n");
+        assert!(matches!(
+            authorize_adhoc_gql(&stranger, ProgramModificationFlags::default(), &program),
+            Err(RouterError::NotFound(_))
+        ));
+
+        // An unexpired MATCH row makes it visible.
+        let grantee = principal(22);
+        ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
+            grants
+                .grant(
+                    GrantSubject::Principal(grantee),
+                    &Privilege::Graph(gleaph_auth::GraphPrivilege {
+                        graph: graph_id.raw(),
+                        operation: gleaph_auth::GraphOperation::Match,
+                        resource: gleaph_auth::GraphResource::VertexLabel(1),
+                    }),
+                    None,
+                )
+                .expect("explicit grant");
+        });
+        authorize_adhoc_gql(&grantee, ProgramModificationFlags::default(), &program)
+            .expect("grant row makes the graph visible");
     }
 
     #[test]
@@ -215,7 +276,31 @@ mod tests {
             Err(RouterError::Forbidden)
         ));
 
+        // With CALL_PROCEDURE the cap gate passes; admission still needs graph
+        // visibility, provided here by ownership of a registered graph. Registration is
+        // topology control, so the registrar holds MANAGE_FEDERATION while the owner
+        // stays caps-shaped like real dev-mode flows.
         upsert_caps(p, AdminCaps::PREPARE_REGISTER | AdminCaps::CALL_PROCEDURE);
+        let registrar = principal(30);
+        crate::facade::auth::grant_admins(&[registrar]);
+        let store = crate::facade::store::RouterStore::new();
+        store
+            .admin_register_graph(
+                registrar,
+                gleaph_gql_ic::graph_registry::GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    canister_id: Principal::management_canister(),
+                    owner: p,
+                    admins: Default::default(),
+                    status: gleaph_gql_ic::graph_registry::GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: gleaph_gql_ic::graph_registry::ProvisioningState::None,
+                    is_home: true,
+                },
+                "rbac-call-graph",
+            )
+            .expect("register graph");
         authorize_adhoc_gql(&p, flags, &call).expect("CALL_PROCEDURE admits named CALL");
     }
 
@@ -259,8 +344,9 @@ mod tests {
             )
             .expect("register graph");
 
-        // Tenancy arm: an owner with an empty capability set still runs ad-hoc GQL against
-        // the graph they own (ADR 0028 predicate arm of the interim policy).
+        // Visibility arm: an owner with an empty capability set is still admitted past
+        // the pre-plan gate for the graph they own (ADR 0028 predicate); data-plane
+        // coverage is decided at plan time via the same ownership anchor.
         assert_eq!(auth::caps_of(&owner), AdminCaps::empty());
         let program = parser_program("MATCH (n) RETURN n");
         authorize_adhoc_gql(&owner, ProgramModificationFlags::default(), &program)

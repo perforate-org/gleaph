@@ -605,6 +605,9 @@ async fn prepared_run_unchecked(
         )?,
         _ => cache,
     };
+    // ADR 0074 slice 2b: prepared execution inherits the same dynamic plan-time
+    // enforcement (SECURITY INVOKER); record-level static extraction remains slice 3.
+    crate::authz::enforce_data_plane_authorization(&store, &caller, graph_id, &cache.plan)?;
     check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =

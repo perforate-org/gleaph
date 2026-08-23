@@ -129,8 +129,13 @@ fn owner_grants_lists_and_revokes_traverse_outgoing() {
     );
     expect_grant_summary(&listed[0], GrantSubjectView::Principal(grantee.to_text()));
 
-    // A non-tenant cannot observe grant state (ADR 0028 non-disclosure shape).
-    let err = list_grants(&env, grantee).expect_err("stranger must not list grants");
+    // A grantee is now grant-visible (slice 2b), so the owner-only introspection surface
+    // answers the authority violation with Forbidden; a truly invisible stranger keeps
+    // the ADR 0028 indistinguishable NotFound.
+    let err = list_grants(&env, grantee).expect_err("grantee must not list grants");
+    assert!(matches!(err, RouterError::Forbidden), "got {err:?}");
+    let invisible = Principal::from_slice(&[0xCB; 29]);
+    let err = list_grants(&env, invisible).expect_err("invisible stranger must not list grants");
     assert!(matches!(err, RouterError::NotFound(_)), "got {err:?}");
 
     // Revoke removes exactly that row...
@@ -246,16 +251,26 @@ fn invalid_variants_fail_closed_before_mutation() {
         );
     }
 
-    // A complete stranger is denied with the ADR 0028 indistinguishable NotFound.
+    // A complete stranger is denied with the ADR 0028 indistinguishable NotFound...
+    // except that this fixture deliberately keeps a PUBLIC TRAVERSE row alive as the
+    // fail-closed survivor, and a PUBLIC row makes the graph visible (slice 2b). The
+    // grant attempt therefore surfaces the owner-authority Forbidden instead — still
+    // denied, still leaving the stored row set untouched.
     let err = mutate_err(
         &env,
         stranger(),
         &format!("GRANT READ ON GRAPH {GRAPH_NAME} NODES Person TO PUBLIC"),
     );
-    let RouterError::NotFound(graph_name) = err else {
-        panic!("expected NotFound for stranger, got {err:?}")
+    let RouterError::Forbidden = err else {
+        panic!("expected Forbidden for visible non-owner, got {err:?}")
     };
-    assert!(graph_name.contains(GRAPH_NAME), "got {graph_name}");
+    assert_eq!(
+        list_grants(&env, owner(&env))
+            .expect("post-stranger list")
+            .len(),
+        1,
+        "the rejected stranger attempt must not mutate stored grants"
+    );
 }
 
 #[test]

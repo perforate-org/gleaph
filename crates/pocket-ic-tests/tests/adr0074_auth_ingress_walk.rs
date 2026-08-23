@@ -180,8 +180,11 @@ fn ingress_walk_default_deny_plus_one_success_per_handler_family() {
 
     // --- 2. Prepared registration ---
     let reg = PreparedRegistration {
+        // Constant-only body: under slice-2b plan-time enforcement an anonymous caller
+        // holds no data-plane rows, so the published operation deliberately reads no
+        // graph elements; the family tests EXECUTE-publication, not scan semantics.
         name: "walk-q".into(),
-        query: "MATCH (n) RETURN 'walk' AS tag".into(),
+        query: "RETURN 'walk' AS tag".into(),
         metadata: None,
     };
     let prep_err = prepare_err(&env, anon, vec![reg.clone()]);
@@ -195,8 +198,9 @@ fn ingress_walk_default_deny_plus_one_success_per_handler_family() {
     let missing = prepared_query_err(&env, anon, "never-registered-walk-q");
     assert!(matches!(missing, RouterError::NotFound(_)));
     // Success path: the registered query executes anonymously through the PUBLIC seed.
+    // A constant-only RETURN yields exactly its single literal row.
     let result = prepared_query_with_params_as(&env, anon, "walk-q", Vec::new());
-    assert_eq!(result.row_count, 0);
+    assert_eq!(result.row_count, 1);
 
     // --- 4. Caps administration ---
     let stranger = Principal::from_slice(&[0x5A; 29]);

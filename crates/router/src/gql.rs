@@ -3117,6 +3117,14 @@ async fn run_gql_unchecked(
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         return match entry.dispatch {
             crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
+                // Cached plans re-enforce plan-time authorization for this caller before
+                // dispatch (the cache never widens what a caller may run).
+                crate::authz::enforce_data_plane_authorization(
+                    &store,
+                    &caller,
+                    entry.dispatch_graph_id,
+                    &plan,
+                )?;
                 let stats = graph_stats_for(entry.dispatch_graph_id);
                 dispatch_plan_blob_with_batch(
                     entry.dispatch_graph_id,
@@ -3132,6 +3140,7 @@ async fn run_gql_unchecked(
                 .await
             }
             crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
+                crate::authz::enforce_data_plane_authorization(&store, &caller, graph_id, &plan)?;
                 let stats = graph_stats_for(graph_id);
                 dispatch_plan_blob_with_batch(
                     graph_id,
@@ -3185,6 +3194,16 @@ async fn run_gql_unchecked(
         &mut typed,
     )?;
     let plan = build_router_block_plan(&dispatch.plan_block, schema, &stats)?;
+    // ADR 0074 slice 2b: plan-time data-plane enforcement. Every vertex label, edge
+    // label × direction, projected property, and mutation the plan demands must be covered
+    // by the caller's effective privileges (`caller ∪ PUBLIC`, ownership-derived tenancy);
+    // any uncovered demand fails uniformly before dispatch.
+    crate::authz::enforce_data_plane_authorization(
+        &store,
+        &caller,
+        dispatch.dispatch_graph_id,
+        &plan,
+    )?;
     let requires_write_path = plan.has_dml();
     if requires_write_path != flags.requires_write_path() {
         return Err(RouterError::InvalidArgument(

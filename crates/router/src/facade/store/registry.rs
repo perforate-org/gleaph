@@ -41,16 +41,24 @@ fn entry_names_tenant(entry: &GraphRegistryEntry, caller: Principal) -> bool {
 /// Per-graph tenancy predicate shared by name resolution and [`RouterStore::resolve_graph`].
 ///
 /// A caller may access a graph's metadata/routing data when it is the graph `owner`, listed in
-/// `admins`, a global canister `Admin` (superuser bypass), or the graph's own registered shard
-/// canister. The last case keeps federation/index-routing inter-canister calls working: shards
-/// call the router with their `graph_canister` principal, which is keyed in
-/// [`ROUTER_SHARD_BY_GRAPH`].
+/// `admins`, holds at least one unexpired data-plane grant on the graph (`caller ∪ PUBLIC`,
+/// ADR 0074 slice 2b), a global canister `Admin` (superuser bypass), or the graph's own
+/// registered shard canister. The last case keeps federation/index-routing inter-canister
+/// calls working: shards call the router with their `graph_canister` principal, which is keyed
+/// in [`ROUTER_SHARD_BY_GRAPH`].
+///
+/// Visibility is admission only: none of these arms authorize data-plane access, which is
+/// enforced at plan time against grant rows (`crate::authz`). Administrative capabilities
+/// reach metadata through the superuser arm but never the data plane (ADR 0074 invariant 1).
 fn caller_may_access_graph(
     entry: &GraphRegistryEntry,
     graph_id: GraphId,
     caller: Principal,
 ) -> bool {
     if auth::is_admin(&caller) || entry_names_tenant(entry, caller) {
+        return true;
+    }
+    if auth::holds_any_graph_grant(graph_id.raw(), &caller) {
         return true;
     }
     ROUTER_SHARD_BY_GRAPH
@@ -1084,7 +1092,10 @@ impl RouterStore {
         ROUTER_GRAPHS.with_borrow(|graphs| {
             for lazy in graphs.iter() {
                 let entry = lazy.value();
-                if caller != entry.owner && !entry.admins.contains(&caller) {
+                if caller != entry.owner
+                    && !entry.admins.contains(&caller)
+                    && !auth::holds_any_graph_grant(entry.graph_id.raw(), &caller)
+                {
                     continue;
                 }
                 if matches!(entry.status, GraphStatus::Active | GraphStatus::ReadOnly) {
@@ -1128,14 +1139,18 @@ impl RouterStore {
     /// Resolve HOME graph for `caller` (ADR 0011 §1.3).
     ///
     /// Prefer exactly one visible graph with `is_home`; otherwise fall back to the sole
-    /// visible graph (degenerate case A).
+    /// visible graph (degenerate case A). Visibility follows
+    /// [`Self::list_visible_graph_ids`]: tenancy plus grant-derived visibility.
     pub fn resolve_home_graph_id(&self, caller: Principal) -> Result<GraphId, RouterError> {
         let mut home_marked = Vec::new();
         let mut visible = Vec::new();
         ROUTER_GRAPHS.with_borrow(|graphs| {
             for lazy in graphs.iter() {
                 let entry = lazy.value();
-                if caller != entry.owner && !entry.admins.contains(&caller) {
+                if caller != entry.owner
+                    && !entry.admins.contains(&caller)
+                    && !auth::holds_any_graph_grant(entry.graph_id.raw(), &caller)
+                {
                     continue;
                 }
                 if !matches!(entry.status, GraphStatus::Active | GraphStatus::ReadOnly) {
