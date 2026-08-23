@@ -1655,7 +1655,7 @@ mod tests {
                 has_reverse: &no_reverse,
                 parallel: &no_parallel,
                 obstacles: &no_obstacles,
-                node_radius: 0.0,
+                obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
             },
             Some(old_cluster),

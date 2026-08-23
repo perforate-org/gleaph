@@ -109,21 +109,26 @@ where
         })
         .collect();
 
-    // The precise curve path for the candidate edges needs the same context the
-    // paint layer builds. Obstacles come from the scene's node positions.
-    // Filter explicitly by the same predicate `endpoints_in_field` uses
-    // below: `visible_nodes` may fall back to returning every node for a
-    // degenerate query, and the field must contain exactly what membership
-    // claims. Coordinates stay world until after the filter.
-    let obstacles_screen: Vec<Vec2> = synced
-        .visible_nodes(&bounds, margin)
+    // The precise curve path for a candidate edge must match the curve the
+    // paint layer drew this frame, so the field mirrors the paint layer's
+    // construction exactly: world coordinates over the viewport's visible
+    // bounds widened by the paint layer's collection margin, the same
+    // world-anchored lattice, and the same zoom-derived clearance. Filtering
+    // explicitly by that predicate also guards against `visible_nodes`
+    // falling back to every node on degenerate queries — the field must
+    // contain exactly what `endpoints_in_field` claims below.
+    let view_visible = viewport.visible_world_bounds();
+    let zoom = viewport.zoom().max(f32::EPSILON);
+    let screen_clearance = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
+    let obstacle_radius = screen_clearance / zoom;
+    let field_margin = style.node_radius * 2.0 + obstacle_radius;
+    let obstacles_world: Vec<Vec2> = synced
+        .visible_nodes(&view_visible, field_margin)
         .iter()
         .filter_map(|&id| node_position(id))
-        .filter(|world| crate::paint::point_in_bounds(*world, &bounds, margin))
-        .map(|world| viewport.world_to_screen(world))
+        .filter(|world| crate::paint::point_in_bounds(*world, &view_visible, field_margin))
         .collect();
-    let obstacle_radius = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
-    let obstacles_field = crate::paint::ObstacleField::new(&obstacles_screen, obstacle_radius);
+    let obstacles_field = crate::paint::ObstacleField::new(&obstacles_world, obstacle_radius);
 
     // Compute signed density only for the candidate edges (the grid is already
     // built over every edge's midpoint by the runtime).
@@ -147,10 +152,10 @@ where
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &obstacles_field,
-                node_radius: style.node_radius,
+                obstacle_radius,
                 endpoints_in_field: (
-                    crate::paint::point_in_bounds(prep.source[index], &bounds, margin),
-                    crate::paint::point_in_bounds(prep.target[index], &bounds, margin),
+                    crate::paint::point_in_bounds(prep.source[index], &view_visible, field_margin),
+                    crate::paint::point_in_bounds(prep.target[index], &view_visible, field_margin),
                 ),
             },
             graph,

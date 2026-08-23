@@ -170,7 +170,7 @@ fn bench_control_point(c: &mut Criterion) {
             has_reverse: &has_reverse,
             parallel: &parallel,
             obstacles: &obstacle_grid,
-            node_radius: 6.0,
+            obstacle_radius: 6.0 * 2.0 + 30.0,
             // The bench field spans every grid position, including this
             // edge's own endpoints.
             endpoints_in_field: (true, true),
@@ -191,7 +191,7 @@ fn bench_control_point(c: &mut Criterion) {
             has_reverse: &has_reverse,
             parallel: &parallel,
             obstacles: &empty_grid,
-            node_radius: 6.0,
+            obstacle_radius: 0.0,
             endpoints_in_field: (false, false),
         };
         group.bench_with_input(
@@ -220,7 +220,7 @@ fn bench_node_avoidance(c: &mut Criterion) {
             has_reverse: &has_reverse,
             parallel: &parallel,
             obstacles: &obstacle_grid,
-            node_radius: 6.0,
+            obstacle_radius: 6.0 * 2.0 + 30.0,
             // The bench field spans every grid position, including this
             // edge's own endpoints.
             endpoints_in_field: (true, true),
@@ -228,16 +228,14 @@ fn bench_node_avoidance(c: &mut Criterion) {
         let (s, t) = g.edges[0];
         let source = g.positions[&s];
         let target = g.positions[&t];
-        let dir = target - source;
-        let normal = Vec2::new(-dir.y, dir.x) / dir.length();
         group.bench_with_input(
             BenchmarkId::new("grid", format!("{}x{}", side, side)),
-            &(source, target, normal, &ctx),
-            |b, (s, t, n, ctx)| {
+            &(source, target, &ctx),
+            |b, (s, t, ctx)| {
                 b.iter(|| {
                     // Start from the chord midpoint, as the paint path does.
                     let mut control = (*s + *t) * 0.5;
-                    apply_node_avoidance(&mut control, *s, *t, *n, ctx);
+                    apply_node_avoidance(&mut control, *s, *t, ctx);
                     control
                 })
             },
@@ -292,7 +290,7 @@ fn bench_edge_path(c: &mut Criterion) {
             has_reverse: &has_reverse,
             parallel: &parallel,
             obstacles: &obstacle_grid,
-            node_radius: 6.0,
+            obstacle_radius: 6.0 * 2.0 + 30.0,
             // The bench field spans every grid position, including this
             // edge's own endpoints.
             endpoints_in_field: (true, true),

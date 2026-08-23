@@ -342,12 +342,21 @@ where
     }
 
     // An empty field used only for culling: the cull test only needs the
-    // curve's bounding box, so it skips node avoidance (which is applied
-    // later, when the edge is actually drawn). This keeps off-screen edges
-    // cheap. The same empty field also serves as the obstacle context when
-    // every visible edge is a straight-line-LOD edge (which never reads
-    // obstacles), so no obstacle field is built in the common zoomed-out case.
-    let obstacle_radius = style.node_radius * 2.0 + OBSTACLE_RADIUS;
+    // curve's bounding box, and avoidance now happens later in world space.
+    // The same empty field also serves as the obstacle context when every
+    // visible edge is a straight-line-LOD edge (which never reads obstacles),
+    // so no obstacle field is built in the common zoomed-out case.
+    //
+    // Nodes render at a fixed on-screen radius, so the clearance is defined on
+    // screen and converted to world units for this frame's field. The field's
+    // collection window widens by one clearance radius beyond the node-cull
+    // margin, so a node drifting across the boundary is already fully present
+    // (or fully absent) for every edge that can see it and shapes do not pop
+    // as the view pans.
+    let screen_clearance = style.node_radius * 2.0 + OBSTACLE_RADIUS;
+    let zoom = viewport.zoom().max(f32::EPSILON);
+    let obstacle_radius = screen_clearance / zoom;
+    let field_margin = margin + obstacle_radius;
     let empty_obstacle_field = ObstacleField::new(&[], obstacle_radius);
 
     // The zoom-invariant per-edge preprocessing comes from the runtime when
@@ -476,32 +485,28 @@ where
     let obstacles_field: ObstacleField = if curved_indices.is_empty() {
         empty_obstacle_field
     } else {
-        let mut obstacles_screen: Vec<Vec2> = Vec::new();
+        let mut obstacles_world: Vec<Vec2> = Vec::new();
         for id in &node_ids {
             let Some(world) = node_position(*id) else {
                 continue;
             };
-            if world.x < visible.min.x - margin
-                || world.x > visible.max.x + margin
-                || world.y < visible.min.y - margin
-                || world.y > visible.max.y + margin
-            {
+            if !point_in_bounds(world, &visible, field_margin) {
                 continue;
             }
-            obstacles_screen.push(viewport.world_to_screen(world));
+            obstacles_world.push(world);
         }
-        ObstacleField::new(&obstacles_screen, obstacle_radius)
+        ObstacleField::new(&obstacles_world, obstacle_radius)
     };
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
         let is_self_loop = edge.source == edge.target;
-        // The obstacle field was built from the nodes inside the visible
-        // bounds expanded by the margin, so an endpoint belongs to it exactly
-        // when the cull deemed it visible. Curve-visible edges with both
-        // endpoints outside read a field without them.
+        // Membership must mirror the field's own collection window above:
+        // an endpoint belongs to the field exactly when it passed the widened
+        // filter. Curve-visible edges with endpoints beyond it read a field
+        // without them.
         let endpoints_in_field = (
-            point_in_bounds(prep.source[*candidate_index], &visible, margin),
-            point_in_bounds(prep.target[*candidate_index], &visible, margin),
+            point_in_bounds(prep.source[*candidate_index], &visible, field_margin),
+            point_in_bounds(prep.target[*candidate_index], &visible, field_margin),
         );
         let path = edge_path(
             edge,
@@ -511,7 +516,7 @@ where
                 has_reverse,
                 parallel,
                 obstacles: &obstacles_field,
-                node_radius: style.node_radius,
+                obstacle_radius,
                 endpoints_in_field,
             },
             graph,
@@ -689,13 +694,17 @@ const CLUSTER_NORMAL_OFFSET: f32 = 0.3;
 /// per-edge cost is proportional to the fixed sample count only — never to the
 /// number of nearby nodes, whatever the graph density.
 ///
-/// Cells are addressed by direct index over the obstacles' bounding extent
-/// expanded by one kernel radius; samples outside the extent read zero. A
-/// pathologically wide extent grows the cell size instead of the allocation,
-/// bounding memory while queries stay correct. Splats accumulate in input
-/// order, row-major, so builds are deterministic. Like the bucket grid it
-/// replaced, coordinates live in whatever space the caller passes (screen
-/// space in the paint path) and `radius` uses the same unit.
+/// The raster is anchored to a global world lattice: the origin snaps down to
+/// a multiple of the cell size, so when the visible window moves its edges
+/// slide along that lattice while every interior cell center keeps its world
+/// position. A given world point therefore reads identical values regardless
+/// of pan, and curve shapes cannot wobble as the view moves; only the zoom
+/// level rescales the clearance (see [`apply_node_avoidance`]). Coordinates
+/// are world coordinates and `radius` is a world-space length. Samples
+/// outside the extent read zero; a pathologically wide extent grows the cell
+/// size instead of the allocation, bounding memory while queries stay
+/// correct. Splats accumulate in input order, row-major, so builds are
+/// deterministic.
 #[doc(hidden)]
 pub struct ObstacleField {
     /// Position of the outer corner of cell (0, 0).
@@ -763,18 +772,26 @@ impl ObstacleField {
         // Half a kernel radius per cell resolves the quadratic bump well
         // enough for bilinear sampling while bounding splat work.
         let mut cell = (radius * 0.5).max(1e-3);
-        let mut cols = (((max.x - min.x) / cell).floor() as u64) + 1;
-        let mut rows = (((max.y - min.y) / cell).floor() as u64) + 1;
+        // Snap the origin down onto a global lattice of cell multiples so the
+        // raster's phase never depends on which nodes happen to be visible,
+        // then grow the cell until the snapped window fits the cap.
         let cap = OBSTACLE_FIELD_MAX_CELLS as u64;
-        while cols.saturating_mul(rows) > cap {
+        let mut origin;
+        let mut cols;
+        let mut rows;
+        loop {
+            origin = Vec2::new((min.x / cell).floor() * cell, (min.y / cell).floor() * cell);
+            cols = (((max.x - origin.x) / cell).floor() as u64) + 1;
+            rows = (((max.y - origin.y) / cell).floor() as u64) + 1;
+            if cols.saturating_mul(rows) <= cap {
+                break;
+            }
             cell *= 1.1;
-            cols = (((max.x - min.x) / cell).floor() as u64) + 1;
-            rows = (((max.y - min.y) / cell).floor() as u64) + 1;
         }
         let cols = cols.min(u32::MAX as u64) as u32;
         let rows = rows.min(u32::MAX as u64) as u32;
         let mut field = Self {
-            origin: min,
+            origin,
             cols,
             rows,
             cell,
@@ -809,6 +826,11 @@ impl ObstacleField {
                 }
             }
         }
+    }
+
+    /// Whether the field holds no obstacles.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
     /// Bilinear field value at `point`; outside the extent this is zero.
@@ -1020,6 +1042,10 @@ where
 /// placed outside the cluster radius, so even a chord through the center bows
 /// outward rather than inward. The cluster bow is a fixed fraction of the edge
 /// length, independent of local density.
+///
+/// Obstacle avoidance is deliberately not applied here: [`edge_path`] runs it
+/// afterwards, in world space, where both coordinate systems are known (see
+/// [`apply_node_avoidance`]).
 #[doc(hidden)]
 pub fn edge_control_point(
     source: Vec2,
@@ -1106,9 +1132,7 @@ pub fn edge_control_point(
         // so the transition to a straight edge is continuous.
         let bow = (chord_dist * CLUSTER_GAIN + CLUSTER_BASE * radius) * adherence * arc_weight;
         let control_dist = chord_dist + bow;
-        let mut control = center + outward * control_dist + normal * normal_offset;
-        apply_node_avoidance(&mut control, source, target, normal, ctx);
-        return control;
+        return center + outward * control_dist + normal * normal_offset;
     }
     // Density bow: bow toward the side with fewer neighbor edges. The bow is a
     // fraction of edge length, so the curve shape is stable under zoom. When the
@@ -1117,39 +1141,46 @@ pub fn edge_control_point(
     let direction = if ctx.signed_density > 0.0 { -1.0 } else { 1.0 };
     let magnitude = (ctx.signed_density.abs() * BOW_DENSITY).min(BOW_MAX);
     let bow = direction * magnitude * len;
-    let mut control = midpoint + normal * (offset + bow);
-    apply_node_avoidance(&mut control, source, target, normal, ctx);
-    control
+    midpoint + normal * (offset + bow)
 }
 
 /// Push `control` away from node-dense regions along the chord, so the edge
-/// does not run through another node.
+/// does not run through another node's disc.
 ///
-/// Reads the obstacle field (see [`ObstacleField`]) at a fixed number of chord
-/// samples: the perpendicular field gradient steers the control point toward
-/// the sparse side, and a small fixed-side kick handles an obstacle sitting
-/// exactly on the chord. Where the previous per-obstacle model flipped push
-/// sides discontinuously at zero perpendicular distance, the field response is
-/// continuous, defaulting to `-normal` through the centered case. The total
-/// push is capped at half the chord length so a short edge never bows far
-/// beyond its own length. When an edge's endpoints are part of the field (see
-/// [`EdgeCurveContext::endpoints_in_field`]) their raster-matched
-/// contributions cancel, so an edge never deflects away from itself; trimming
-/// to the node boundary resolves the overlap instead.
+/// Operates entirely in world space: `control`, `source`, and `target` are
+/// world coordinates and the field is built over world positions on a global
+/// lattice ([`ObstacleField`]). Curve geometry is therefore a function of the
+/// world layout and the zoom level alone — panning cannot change a shape.
+/// The clearance tracks how big nodes are drawn: nodes render at a fixed
+/// on-screen radius, so builders derive [`EdgeCurveContext::obstacle_radius`]
+/// as `(screen clearance) / zoom`, keeping the on-screen clearance constant
+/// while the world geometry stays a deterministic function of zoom.
+///
+/// Reads the field at a fixed number of chord samples: the density
+/// difference across the chord's two sides steers toward the sparse side,
+/// and a symmetry-gated kick handles mass straddling the chord, defaulting
+/// to `-normal`. The total push is capped at half the chord length so a
+/// short edge never bows far beyond its own length. When an edge's endpoints
+/// are part of the field (see [`EdgeCurveContext::endpoints_in_field`]) their
+/// raster-matched contributions cancel, so an edge never deflects away from
+/// itself; trimming to the node boundary resolves the overlap instead.
 #[doc(hidden)]
 pub fn apply_node_avoidance(
     control: &mut Vec2,
     source: Vec2,
     target: Vec2,
-    normal: Vec2,
     ctx: &EdgeCurveContext<'_>,
 ) {
-    let influence_radius = ctx.node_radius * 2.0 + OBSTACLE_RADIUS;
+    let Some(len) = finite_chord_length(source, target) else {
+        return;
+    };
+    let dir = target - source;
+    let normal = Vec2::new(-dir.y, dir.x) / len;
     let push = ctx.obstacles.avoidance_push(
         source,
         target,
         normal,
-        influence_radius,
+        ctx.obstacle_radius,
         ctx.endpoints_in_field,
     );
     *control += push;
@@ -1173,11 +1204,13 @@ pub struct EdgeCurveContext<'a> {
     /// every group.
     pub parallel: &'a [Option<(usize, usize)>],
     /// A rasterized obstacle repulsion field over node positions the edge
-    /// should bow around, in the same coordinate space as the edge's
-    /// endpoints.
+    /// should bow around, in world coordinates on a globally anchored lattice
+    /// (see [`ObstacleField`]).
     pub obstacles: &'a ObstacleField,
-    /// Node radius, used to size the clearance around obstacle nodes.
-    pub node_radius: f32,
+    /// World-space obstacle clearance radius. Builders derive it as
+    /// `(screen clearance pixels) / zoom`, matching the fixed on-screen size
+    /// nodes are rendered at.
+    pub obstacle_radius: f32,
     /// Whether this edge's source and target nodes are part of the obstacle
     /// field, in `(source, target)` order. Avoidance cancels an endpoint's own
     /// field contribution only when it is actually present: a curve-visible
@@ -1247,7 +1280,7 @@ pub fn edge_curve_bbox(
             has_reverse,
             parallel,
             obstacles,
-            node_radius: 0.0,
+            obstacle_radius: 0.0,
             // The bbox bound is push-magnitude based (half the chord), so the
             // membership flags cannot change it; an empty membership is the
             // honest default for this bound-only context.
@@ -1259,7 +1292,7 @@ pub fn edge_curve_bbox(
             has_reverse,
             parallel,
             obstacles,
-            node_radius: 0.0,
+            obstacle_radius: 0.0,
             // The bbox bound is push-magnitude based (half the chord), so the
             // membership flags cannot change it; an empty membership is the
             // honest default for this bound-only context.
@@ -1299,10 +1332,10 @@ pub fn edge_path<N, E>(
     viewport: &Viewport,
     style: &GraphStyle,
 ) -> Vec<Bezier> {
-    let source =
-        viewport.world_to_screen(node_position(edge.source).expect("edge source has a position"));
-    let target =
-        viewport.world_to_screen(node_position(edge.target).expect("edge target has a position"));
+    let source_world = node_position(edge.source).expect("edge source has a position");
+    let target_world = node_position(edge.target).expect("edge target has a position");
+    let source = viewport.world_to_screen(source_world);
+    let target = viewport.world_to_screen(target_world);
     if !source.is_finite() || !target.is_finite() {
         return Vec::new();
     }
@@ -1355,6 +1388,18 @@ pub fn edge_path<N, E>(
                 * (desired_spacing - actual_spacing);
             control += normal * offset;
         }
+        // Obstacle avoidance runs in world space so curve shapes depend on the
+        // world layout and the zoom level alone, never on where the viewport
+        // sits (see `apply_node_avoidance`). With no obstacles the control
+        // point is left bit-for-bit untouched: the world roundtrip would
+        // otherwise inject float noise into extreme deep-zoom coordinates.
+        if !ctx.obstacles.is_empty() {
+            let mut control_world = viewport.screen_to_world(control);
+            apply_node_avoidance(&mut control_world, source_world, target_world, ctx);
+            control = viewport.world_to_screen(control_world);
+        }
+        #[cfg(test)]
+        eprintln!("DBG av post_screen={:?} zoom={}", control, viewport.zoom());
         let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
@@ -1717,7 +1762,7 @@ mod tests {
             has_reverse: &[false],
             parallel,
             obstacles: grid,
-            node_radius: 6.0,
+            obstacle_radius: 42.0,
             endpoints_in_field,
         }
     }
@@ -2912,18 +2957,25 @@ mod tests {
         );
     }
 
+    /// Run world-space avoidance for a chord from (0,0) to (100,0) with
+    /// `obstacles` in the field, returning the displaced control point.
+    fn avoid(obstacles: &[Vec2], flags: (bool, bool)) -> Vec2 {
+        let mut control = Vec2::new(50.0, 0.0);
+        apply_node_avoidance(
+            &mut control,
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            &ctx_in_field(0, 0.0, obstacles, &[None], flags),
+        );
+        control
+    }
+
     #[test]
     fn edge_bows_away_from_obstacle_node() {
-        // An edge from (0,0) to (100,0) with an obstacle node near its midpoint
-        // must bow its control point away from the obstacle.
-        let source = Vec2::new(0.0, 0.0);
-        let target = Vec2::new(100.0, 0.0);
-        let obstacle = Vec2::new(50.0, 0.0);
-        let control = edge_control_point(source, target, &ctx(0, 0.0, &[obstacle], &[None]), None);
-        // The control point must be pushed off the chord away from the
-        // obstacle, which sits exactly on it. The default side is `-normal`
-        // — downward here — matching the per-obstacle model this field
-        // replaced.
+        // An obstacle node sitting exactly on the chord must bow the control
+        // point off the chord, toward `-normal` — downward here — matching
+        // the default side of the per-obstacle model this field replaced.
+        let control = avoid(&[Vec2::new(50.0, 0.0)], (false, false));
         assert!(
             control.y < -1e-3,
             "edge should bow below, the default side for an obstacle on the chord (control={control:?})"
@@ -2935,24 +2987,12 @@ mod tests {
         // An obstacle above the chord pushes the control point below it, and a
         // mirrored obstacle below pushes above: the curve steers toward the
         // sparse side of its chord.
-        let source = Vec2::new(0.0, 0.0);
-        let target = Vec2::new(100.0, 0.0);
-        let above = edge_control_point(
-            source,
-            target,
-            &ctx(0, 0.0, &[Vec2::new(50.0, 12.0)], &[None]),
-            None,
-        );
+        let above = avoid(&[Vec2::new(50.0, 12.0)], (false, false));
         assert!(
             above.y < 0.0,
             "obstacle above should push the control point below (control={above:?})"
         );
-        let below = edge_control_point(
-            source,
-            target,
-            &ctx(0, 0.0, &[Vec2::new(50.0, -12.0)], &[None]),
-            None,
-        );
+        let below = avoid(&[Vec2::new(50.0, -12.0)], (false, false));
         assert!(
             below.y > 0.0,
             "obstacle below should push the control point above (control={below:?})"
@@ -2965,17 +3005,9 @@ mod tests {
         // raster-matched contributions cancel exactly, so a chord between two
         // nodes stays straight and trimming to the node boundary handles the
         // overlap instead.
-        let source = Vec2::new(0.0, 0.0);
-        let target = Vec2::new(100.0, 0.0);
-        let control = edge_control_point(
-            source,
-            target,
-            &ctx_in_field(0, 0.0, &[source, target], &[None], (true, true)),
-            None,
-        );
-        let mid = (source + target) * 0.5;
+        let control = avoid(&[Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)], (true, true));
         assert!(
-            (control - mid).length() < 1e-3,
+            (control - Vec2::new(50.0, 0.0)).length() < 1e-3,
             "own endpoints must not deflect their edge (control={control:?})"
         );
     }
@@ -2986,15 +3018,7 @@ mod tests {
         // is built without it. The membership flags say so, and no phantom
         // contribution may be cancelled: the chord still bows around a real
         // obstacle on it.
-        let source = Vec2::new(0.0, 0.0);
-        let target = Vec2::new(100.0, 0.0);
-        let obstacle = Vec2::new(50.0, 0.0);
-        let control = edge_control_point(
-            source,
-            target,
-            &ctx_in_field(0, 0.0, &[obstacle], &[None], (false, false)),
-            None,
-        );
+        let control = avoid(&[Vec2::new(50.0, 0.0)], (false, false));
         assert!(
             control.y < -1.0,
             "edge should bow below despite absent endpoints (control={control:?})"
@@ -3004,14 +3028,42 @@ mod tests {
     #[test]
     fn avoidance_ignores_distant_obstacles() {
         // Obstacles clustered far from the chord leave it untouched.
-        let source = Vec2::new(0.0, 0.0);
-        let target = Vec2::new(100.0, 0.0);
-        let far = Vec2::new(10000.0, 10000.0);
-        let control = edge_control_point(source, target, &ctx(0, 0.0, &[far], &[None]), None);
-        let mid = (source + target) * 0.5;
+        let control = avoid(&[Vec2::new(10000.0, 10000.0)], (false, false));
         assert!(
-            (control - mid).length() < 1e-3,
+            (control - Vec2::new(50.0, 0.0)).length() < 1e-3,
             "distant obstacles must not deflect the edge (control={control:?})"
+        );
+    }
+
+    #[test]
+    fn avoidance_is_pan_invariant() {
+        // Panning translates every world position by the same offset and
+        // slides the visible window across the raster's global lattice. The
+        // push for a given edge configuration must be identical under that
+        // translation whatever the lattice phase of the original placement —
+        // otherwise curves would wobble as the view moves.
+        let shift = Vec2::new(137.31, -91.73);
+        let push_at = |offset: Vec2| {
+            let source = offset;
+            let target = offset + Vec2::new(100.0, 0.0);
+            let obstacles = [
+                offset + Vec2::new(50.0, 12.0),
+                offset + Vec2::new(20.0, -30.0),
+            ];
+            let mut control = (source + target) * 0.5;
+            apply_node_avoidance(
+                &mut control,
+                source,
+                target,
+                &ctx_in_field(0, 0.0, &obstacles, &[None], (true, true)),
+            );
+            control - (source + target) * 0.5
+        };
+        let base = push_at(Vec2::ZERO);
+        let moved = push_at(shift);
+        assert!(
+            (base - moved).length() < 1e-3,
+            "panning must not change the avoidance push (base={base:?}, moved={moved:?})"
         );
     }
 
@@ -3314,7 +3366,7 @@ mod tests {
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &empty_obstacles,
-                node_radius: 0.0,
+                obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
             },
             None,
@@ -3332,7 +3384,7 @@ mod tests {
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &empty_obstacles,
-                node_radius: 0.0,
+                obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
             },
             None,
@@ -3593,7 +3645,7 @@ mod tests {
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &ObstacleField::new(&[], style.node_radius * 2.0 + OBSTACLE_RADIUS),
-                node_radius: style.node_radius,
+                obstacle_radius: style.node_radius * 2.0 + OBSTACLE_RADIUS,
                 endpoints_in_field: (false, false),
             },
             None,
@@ -3645,7 +3697,7 @@ mod tests {
                         has_reverse: &prep.has_reverse,
                         parallel: &prep.parallel,
                         obstacles: &empty_obstacles,
-                        node_radius: style.node_radius,
+                        obstacle_radius: style.node_radius * 2.0 + OBSTACLE_RADIUS,
                         endpoints_in_field: (false, false),
                     },
                     graph,
@@ -3757,7 +3809,7 @@ mod tests {
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &empty_obstacles,
-                node_radius: 0.0,
+                obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
             },
             None,
@@ -3814,7 +3866,7 @@ mod tests {
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &empty_obstacles,
-                node_radius: style.node_radius,
+                obstacle_radius: style.node_radius * 2.0 + OBSTACLE_RADIUS,
                 endpoints_in_field: (false, false),
             },
             graph,

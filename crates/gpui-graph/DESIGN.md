@@ -1338,17 +1338,30 @@ A per-edge query samples this field at a fixed number of chord points and
 derives one perpendicular push from the density difference across the chord's
 two sides plus a fixed-side kick for mass that straddles the chord — so the
 cost per edge is proportional to the sample count only, never to the number of
-nearby nodes, whatever the graph density. Where the previous per-obstacle model
-flipped push sides discontinuously at zero perpendicular distance (defaulting
-to `-normal`), the field response is continuous through that case with the same
-default side. An edge's own endpoints never deflect it: when they are part of
-the field (`EdgeCurveContext::endpoints_in_field`, truthfully reported by both
-the paint path and hit testing) their contribution is cancelled through
+nearby nodes, whatever the graph density. Avoidance runs in world space: the
+raster's origin snaps onto a global lattice of cell multiples, so panning only
+slides the visible window along that lattice and cannot change any curve's
+shape; shapes are a function of the world layout and the zoom level alone.
+Because nodes render at a fixed on-screen radius, builders derive the
+clearance as `(screen clearance) / zoom`, keeping the on-screen clearance
+constant while zoom remains the sole (and smooth) determinant of how much
+curves bow. Where the previous per-obstacle model flipped push sides
+discontinuously at zero perpendicular distance (defaulting to `-normal`), the
+field response is continuous through that case with the same default side. An
+edge's own endpoints never deflect it: when they are part of the field
+(`EdgeCurveContext::endpoints_in_field`) their contribution is cancelled through
 single-node sampling that matches the raster's discretization; a curve-visible
 edge with an off-screen endpoint reads a field built without it, and no phantom
-cancellation occurs. A pathologically wide extent grows the cell size instead
-of the allocation, bounding memory while queries stay correct, and out-of-range
-samples read zero. Candidate edge queries deduplicate through generation-stamped
+cancellation occurs. Hit testing mirrors the paint layer's field construction —
+same viewport region, widened collection margin, lattice, and clearance — so
+selectable geometry matches drawn geometry exactly. The collection window is
+widened by one clearance radius beyond the node-cull margin so nodes drifting
+across it are fully present or fully absent for every edge that can see them.
+A pathologically wide extent grows the cell size instead of the allocation,
+bounding memory while queries stay correct, and out-of-range samples read
+zero. With an empty field the control point passes through untouched (the
+world roundtrip would otherwise inject float noise into deep-zoom screen
+coordinates). Candidate edge queries deduplicate through generation-stamped
 stamps parallel to the edge list (`GraphRuntime::query_dedup`) rather than a hash
 set rebuilt per frame.
 
