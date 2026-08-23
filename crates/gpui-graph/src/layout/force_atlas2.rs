@@ -622,7 +622,7 @@ pub struct ForceAtlas2 {
     /// repulsion fades, so the raw balance rests an isolated connected pair
     /// (mass = degree + 1 = 2 on both ends) at
     /// `d* = (scaling * mass²)^(1/3)`. With the default below, `d*` equals
-    /// the rendered node diameter (`2 * node_radius` = 12 world units at the
+    /// the rendered node diameter (`2 * node_radius` = 6 world units at the
     /// canonical style), keeping typical sparse-graph equilibria outside
     /// marker overlap instead of collapsing into it. Extremely dense
     /// topologies exceed feasible packing density regardless of this factor —
@@ -691,8 +691,9 @@ pub struct ForceAtlas2 {
 impl Default for ForceAtlas2 {
     fn default() -> Self {
         Self {
-            // d* = (432 * 2²)^(1/3) = 12 world units: one rendered node diameter.
-            scaling: 432.0,
+            // d* = (54 * 2²)^(1/3) = 6 world units: one rendered node diameter
+            // at the canonical `node_radius` of 3.
+            scaling: 54.0,
             gravity: 0.1,
             lin_log: false,
             slow_down: 1.0,

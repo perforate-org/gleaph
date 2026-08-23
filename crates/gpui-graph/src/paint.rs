@@ -4163,15 +4163,16 @@ mod tests {
         let ids: Vec<NodeId> = g.nodes().map(|(id, _)| id).collect();
         let a = ids[0];
         let b = ids[1];
-        // Default threshold (0.0) disables edge omission: even a degenerate
-        // ~0.1px edge still produces a straight path (its chord is non-degenerate
-        // only at the node radius, which trims it; the trim may empty a sub-pixel
-        // edge, so use a small-but-renderable length).
+        // Default threshold (0.0) disables edge omission: even a short edge
+        // (20 units between centers, 10 after trimming to the node boundary
+        // gap) still produces a straight path. The distance must exceed twice
+        // the boundary offset (`node_radius + gap`), or the trim legitimately
+        // empties the path.
         let positions = move |id: NodeId| {
             if id == a {
                 Some(Vec2::new(0.0, 0.0))
             } else if id == b {
-                Some(Vec2::new(10.0, 0.0))
+                Some(Vec2::new(20.0, 0.0))
             } else {
                 None
             }

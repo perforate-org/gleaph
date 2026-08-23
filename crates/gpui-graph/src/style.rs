@@ -21,7 +21,9 @@ pub enum ArrowShape {
 /// Graph-specific appearance settings (§26.2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphStyle {
-    /// Node radius in pixels.
+    /// Node radius in world units; the on-screen radius scales with zoom.
+    /// The canonical default of 3 keeps an isolated connected pair resting at
+    /// one node diameter under the default ForceAtlas2 calibration (§15.1).
     pub node_radius: f32,
     /// On-screen diameter in pixels below which a node renders simplified (fill
     /// only, no stroke).
@@ -151,9 +153,9 @@ pub struct GraphStyle {
 impl Default for GraphStyle {
     fn default() -> Self {
         Self {
-            node_radius: 6.0,
+            node_radius: 3.0,
             node_simplify_threshold: 0.0,
-            node_min_screen_radius: 4.0,
+            node_min_screen_radius: 0.0,
             node_fill: hsla(0.6, 0.5, 0.6, 1.0),
             node_stroke_width: 1.0,
             node_stroke_color: hsla(0.0, 0.0, 0.1, 1.0),

@@ -2659,27 +2659,27 @@ mod tests {
         let trace = take_test_paint_trace();
         assert_eq!(trace.len(), 4);
         // A lone edge with no neighbors is straight. The arrow sits at the
-        // trimmed edge's end, just outside the target node (radius 6 + gap 2 =
-        // 8 from the node center at x=110), pointing left. The edge is trimmed
+        // trimmed edge's end, just outside the target node (radius 3 + gap 2 =
+        // 5 from the node center at x=110), pointing left. The edge is trimmed
         // to the same boundary. Compare with a small tolerance because the
         // boundary is found by binary search.
         let approx = |a: Vec2, b: Vec2| (a - b).length() < 1e-2;
         match &trace[0] {
             TestPaintPrimitive::Arrow { source, target } => {
-                assert!(approx(*source, Vec2::new(origin.x + 94.0, origin.y + 50.0)));
+                assert!(approx(*source, Vec2::new(origin.x + 97.0, origin.y + 50.0)));
                 assert!(approx(
                     *target,
-                    Vec2::new(origin.x + 102.0, origin.y + 50.0)
+                    Vec2::new(origin.x + 105.0, origin.y + 50.0)
                 ));
             }
             other => panic!("expected arrow, got {other:?}"),
         }
         match &trace[1] {
             TestPaintPrimitive::Edge { source, target } => {
-                assert!(approx(*source, Vec2::new(origin.x + 98.0, origin.y + 50.0)));
+                assert!(approx(*source, Vec2::new(origin.x + 95.0, origin.y + 50.0)));
                 assert!(approx(
                     *target,
-                    Vec2::new(origin.x + 102.0, origin.y + 50.0)
+                    Vec2::new(origin.x + 105.0, origin.y + 50.0)
                 ));
             }
             other => panic!("expected edge, got {other:?}"),
@@ -2687,15 +2687,15 @@ mod tests {
         assert_eq!(
             trace[2],
             TestPaintPrimitive::Node {
-                origin: Vec2::new(origin.x + 84.0, origin.y + 44.0),
-                size: Vec2::splat(12.0),
+                origin: Vec2::new(origin.x + 87.0, origin.y + 47.0),
+                size: Vec2::splat(6.0),
             }
         );
         assert_eq!(
             trace[3],
             TestPaintPrimitive::Node {
-                origin: Vec2::new(origin.x + 104.0, origin.y + 44.0),
-                size: Vec2::splat(12.0),
+                origin: Vec2::new(origin.x + 107.0, origin.y + 47.0),
+                size: Vec2::splat(6.0),
             }
         );
     }

@@ -1068,21 +1068,22 @@ the projection's own undirected incidence adjacency
 edges pull exactly as before). Because `GraphScene` rebuilds the projection
 wholesale on every topology change, the engine holds no adjacency cache and no
 revision guard. Contract settling counts come from
-`settles_within_iteration_budget`: hub/256 = 128
-iterations on the probe fixture (ring radius 100) and grid/20x20 = 471 — all far below
+`settles_within_iteration_budget`: hub/256 = 195
+iterations on the probe fixture (ring radius 100) and grid/20x20 = 528 — all far below
 the 1500-iteration budget.
 Measured speedups concentrate on dense large graphs; sparse uniform grids on
 the exact-grid path remain serial-baseline-adjacent at best (§37).
 
 Repulsion scaling is calibrated against world-sized nodes (§26.2): with
-`scaling = 432`, an isolated connected pair rests at exactly one rendered
-node diameter (`d* = (432 · 2²)^(1/3)` = 12 world units), and relaxed
-equilibrium edge lengths land around twice that across the fixture families —
-demo/24 ≈ 36 units, team/12 ≈ 30, hub/256 ≈ 74 (leaves around a massive hub
-remain partially overlapped: their packing density exceeds what any spacing
-floor allows), grid/20x20 ≈ 33 — versus 4–11 units under the pre-world-sizing
-default of 1, which collapsed relaxed layouts into overlapping marker discs
-once nodes stopped rendering at fixed pixel size.
+`scaling = 54`, an isolated connected pair rests at exactly one rendered
+node diameter (`d* = (54 · 2²)^(1/3)` = 6 world units at the canonical
+`node_radius` of 3), and relaxed equilibrium edge lengths land around
+2.5–3.5× that across the fixture families — demo/24 ≈ 18 units, team/12 ≈ 15,
+hub/256 ≈ 39 (leaves around a massive hub remain partially overlapped: their
+packing density exceeds what any spacing floor allows), grid/20x20 ≈ 21.
+Halving the canonical radius from the earlier 6-unit calibration (scaling 432)
+preserved every fixture ratio, confirming the pair-equilibrium derivation is
+scale-free.
 
 ---
 

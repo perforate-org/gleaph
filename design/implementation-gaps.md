@@ -70,6 +70,12 @@ defect from being rediscovered without its prior reasoning.
   settle iterations stayed far inside the contract budget (156 / 109 / 128 /
   471 against < 1500); `cargo test -p gpui-graph --lib` 217 passed including
   `settles_within_iteration_budget` and `slow_down_scales_per_iteration_motion`.
+- **Follow-up (2026-08-23, same day):** the canonical `node_radius` default was
+  halved to 3 (diameter 6 world units); by the same pair-equilibrium derivation
+  the FA2 scaling default moved 432 → 54 (`d* = (54·2²)^(1/3)` = 6). Fixture
+  ratios were preserved (demo/24 ratio 3.01 / team 2.50 / hub 6.45 / grid 3.47;
+  settle iterations 204 / 66 / 195 / 528), confirming the calibration is
+  scale-free. DESIGN.md §15.1 records the current numbers.
 - **Severity:** P2 visual quality — demo-scale graphs relax into overlapping node blobs over
   tens of seconds; static and freshly-opened views are unaffected.
 - **Owner:** `crates/gpui-graph/src/layout/force_atlas2.rs` force balance, against the
