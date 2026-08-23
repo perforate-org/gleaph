@@ -16,7 +16,7 @@ set -euo pipefail
 # and profiling output stay symbolized; it is a custom section and does not
 # count against the IC's install-time code-section limit. If a size lever ever
 # forces dropping it, record that decision in design/implementation-gaps.md
-# (GAP-2026-08-23-002 owns the standing measurements).
+# (GAP-2026-08-23-004 owns the standing measurements).
 #
 # Usage: postprocess-canister-wasm.sh MODULE.wasm [MODULE.wasm ...]
 

@@ -47,7 +47,7 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-2026-08-23-002 — Router canister wasm exceeds the IC code-section limit once the ADR 0074 slice 2a grant grammar is linked
+### GAP-2026-08-23-004 — Router canister wasm exceeds the IC code-section limit once the ADR 0074 slice 2a grant grammar is linked
 
 - **Status:** Closed (2026-08-23) via prerequisite plan `0288` (router wasm budget recovery).
   Decision: build-path unification plus release-profile levers instead of source-level
@@ -109,7 +109,7 @@ defect from being rediscovered without its prior reasoning.
   (~±500 KB observed); keep the ≥256 KiB headroom check per canister when touching canister
   features or toolchain versions, measured with `scripts/wasm-code-section-size.py`.
 
-### GAP-2026-08-23-001 — ForceAtlas2 equilibrium rests below the rendered node diameter once nodes are world-sized
+### GAP-2026-08-23-003 — ForceAtlas2 equilibrium rests below the rendered node diameter once nodes are world-sized
 
 - **Status:** Closed (2026-08-23). Decision: recalibrate the repulsion-scaling
   default so the force balance itself rests outside marker overlap

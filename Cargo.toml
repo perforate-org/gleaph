@@ -155,7 +155,7 @@ debug = "line-tables-only"
 # carry. No profile-level strip: release emits no debuginfo, and the wasm name
 # section is kept deliberately by scripts/postprocess-canister-wasm.sh
 # (--keep-name-section). Measurements: design/implementation-gaps.md
-# GAP-2026-08-23-002.
+# GAP-2026-08-23-004.
 [profile.release]
 lto = "fat"
 codegen-units = 1

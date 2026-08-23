@@ -4,7 +4,7 @@
 The Internet Computer enforces its install limit on the code section, which is
 smaller than the whole module, so budget checks measure the code section
 directly instead of the file size. See design/implementation-gaps.md
-GAP-2026-08-23-002 for the standing measurements.
+GAP-2026-08-23-004 for the standing measurements.
 
 Usage: wasm-code-section-size.py MODULE.wasm [MODULE.wasm ...]
 """
