@@ -140,4 +140,9 @@ thread_local! {
     // ADR 0064 §5: durable GC resume cursor (last examined SubjectKey).
     pub(crate) static VECTOR_GC_CURSOR: RefCell<memory::StableGcCursorCell> =
         RefCell::new(memory::init_gc_cursor());
+
+    // Plan 0278: durable slab dead-space compaction driver state (retired VECTOR_ID_TO_SUBJECT
+    // slot, MemoryId 11).
+    pub(crate) static VECTOR_SLAB_COMPACTION_STATE: RefCell<memory::StableSlabCompactionStateCell> =
+        RefCell::new(memory::init_slab_compaction_state());
 }
