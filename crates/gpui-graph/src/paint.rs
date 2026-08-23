@@ -782,6 +782,21 @@ const OBSTACLE_KICK_SYMMETRY_POWER: i32 = 6;
 /// point by roughly one influence radius before the length cap.
 const OBSTACLE_FIELD_SCALE: f32 = 4.0;
 
+/// Half-angle between the onigiri's up-axis and each of its two attach legs.
+/// Wider than the visual minimum so the two legs stay distinct at small
+/// screen radii.
+const SELF_LOOP_ATTACH_HALF_ANGLE: f32 = 0.6109; // 35 degrees
+/// Outward offset of the attach ring beyond the node's screen radius, in
+/// radii, keeping the loop clear of the node marker without detaching it.
+const SELF_LOOP_ATTACH_OFFSET_R: f32 = 0.35;
+/// Distance from the node center to the onigiri base, in node screen radii.
+/// Sized so the loop reads as its own shape rather than a cap hugging the
+/// marker (the previous zoom-proportional size made the whole loop barely
+/// larger than the node itself).
+const SELF_LOOP_BASE_DIST_R: f32 = 4.0;
+/// Onigiri base half width, in node screen radii.
+const SELF_LOOP_BASE_HALF_WIDTH_R: f32 = 1.9;
+
 #[doc(hidden)]
 impl ObstacleField {
     /// Build the field over `obstacles` with the given kernel `radius`.
@@ -1655,29 +1670,37 @@ pub(crate) fn self_loop_path<N, E>(
     // the node. The two sides leave and re-enter the node at two distinct
     // points on the node edge, both pointing toward the node center, so the
     // start and end are visually separate.
-    let r = style.node_screen_radius(viewport.zoom());
-    // Two points just outside the node's circumference, symmetric about the
-    // up-axis, angled 30° from the up-axis so they are distinct and point at
-    // the center. The small outward offset keeps the loop clear of the node.
-    let r_out = r + 2.0 * viewport.zoom();
-    let start = Vec2::new(-r_out * 0.5, -r_out * 0.866);
-    let end = Vec2::new(r_out * 0.5, -r_out * 0.866);
-    // The base size follows the graph's zoom linearly so the loop stays
-    // proportionate to the graph as it scales. The base is kept small so the
-    // loop does not dominate the node.
-    let scale = viewport.zoom();
-    let base_height = 8.5 * scale;
-    let base_half_width = 4.5 * scale;
+    // Every loop dimension is a multiple of the node's projected screen
+    // radius, capped at the same maximum as markers, so the onigiri stays
+    // proportionate to the marker it belongs to. The screen-radius floor
+    // (`node_min_screen_radius`) is deliberately NOT applied here: a loop
+    // whose reach keeps shrinking with zoom vanishes together with the graph
+    // at low zoom, which keeps every world-space self-loop cull margin a
+    // superset of what the loop can draw. Applying the floor would let a
+    // culled node's loop poke hundreds of world units back into the view.
+    // The base reaches well beyond the node so the loop reads as its own
+    // shape rather than a cap hugging the marker.
+    let r = (style.node_radius * viewport.zoom()).min(style.node_max_screen_radius);
+    let r_out = r * (1.0 + SELF_LOOP_ATTACH_OFFSET_R);
+    let (sin_attach, cos_attach) = SELF_LOOP_ATTACH_HALF_ANGLE.sin_cos();
+    let start = Vec2::new(-r_out * sin_attach, -r_out * cos_attach);
+    let end = Vec2::new(r_out * sin_attach, -r_out * cos_attach);
+    let base_half_width = SELF_LOOP_BASE_HALF_WIDTH_R * r;
+    let base_height = SELF_LOOP_BASE_DIST_R * r;
     let base_left = Vec2::new(-base_half_width, -base_height);
     let base_right = Vec2::new(base_half_width, -base_height);
     let base_mid = Vec2::new(0.0, -base_height);
 
-    // Average direction from the node to the other endpoints of its incident
-    // edges; the onigiri points opposite that average.
+    // The onigiri points into the largest angular gap between the node's
+    // other incident chords, so it dodges each neighbor edge directly.
+    // Averaging the directions instead could cancel for symmetric stars
+    // (four edges up/down/left/right average to zero) and leave the fallback
+    // direction pointing straight into an edge; gap bisection degrades to
+    // "opposite the single neighbor" when there is only one incident edge
+    // and falls back to up when the node has no other edges.
     let mut dir = Vec2::new(0.0, -1.0);
     if let Some(incident) = graph.incident_edges(node) {
-        let mut sum = Vec2::ZERO;
-        let mut count = 0usize;
+        let mut angles: Vec<f32> = Vec::new();
         for edge_id in incident {
             let Some(edge) = graph.edge(*edge_id) else {
                 continue;
@@ -1693,18 +1716,32 @@ pub(crate) fn self_loop_path<N, E>(
             let Some(other_world) = node_position(other) else {
                 continue;
             };
-            let other_screen = viewport.world_to_screen(other_world);
-            let delta = other_screen - node_pos;
-            if finite_chord_length(node_pos, other_screen).is_some() {
-                sum += delta.normalize();
-                count += 1;
+            let delta = viewport.world_to_screen(other_world) - node_pos;
+            if delta.is_finite() && delta.length_squared() > 1e-6 {
+                angles.push(delta.y.atan2(delta.x));
             }
         }
-        if count > 0 {
-            let avg = sum / count as f32;
-            if avg.is_finite() && avg.length_squared() > 0.0 {
-                dir = -avg.normalize();
+        if !angles.is_empty() {
+            angles.sort_by(|a, b| a.total_cmp(b));
+            let n = angles.len();
+            let mut best_gap = -1.0f32;
+            let mut best_mid = -core::f32::consts::FRAC_PI_2;
+            for i in 0..n {
+                let a = angles[i];
+                let b = angles[(i + 1) % n];
+                let gap = if i + 1 == n {
+                    b - a + core::f32::consts::TAU
+                } else {
+                    b - a
+                };
+                // Strict comparison keeps the first (lowest-angle) maximum on
+                // ties, which makes the choice deterministic.
+                if gap > best_gap {
+                    best_gap = gap;
+                    best_mid = a + gap * 0.5;
+                }
             }
+            dir = Vec2::from_angle(best_mid);
         }
     }
 
@@ -2090,10 +2127,11 @@ mod tests {
         // path may legitimately be empty (nothing drawable). When points do
         // exist they must hug the node's screen position.
         let node_screen = viewport.world_to_screen(positions(node).unwrap());
-        // Hug bound: effective (floored) node radius plus the loop's
-        // base/clearance paddings.
-        let r_eff = style.node_screen_radius(viewport.zoom());
-        let hug = r_eff + 12.0 * viewport.zoom() + 2.0;
+        // Hug bound: the loop extends at most ~4.5 loop radii from the center
+        // (base distance 4r plus curve bulge), where the loop radius follows
+        // the node's projected size without its screen floor.
+        let r_eff = (style.node_radius * viewport.zoom()).min(style.node_max_screen_radius);
+        let hug = r_eff * 4.6 + 2.0;
         let hug_bounds = WorldBounds {
             min: node_screen - Vec2::splat(hug),
             max: node_screen + Vec2::splat(hug),
@@ -2820,6 +2858,69 @@ mod tests {
     }
 
     #[test]
+    fn self_loop_dodges_every_neighbor_in_a_symmetric_star() {
+        // Four neighbors up/down/left/right make the average direction
+        // cancel to zero; the loop must still avoid ALL of them by pointing
+        // into a diagonal gap, not fall back onto one of the edges.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let c = g.add_node(());
+        let d = g.add_node(());
+        let e = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        g.add_edge(a, c, EdgeDirection::Directed, ());
+        g.add_edge(a, d, EdgeDirection::Directed, ());
+        g.add_edge(a, e, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| match id {
+            id if id == a => Some(Vec2::new(0.0, 0.0)),
+            id if id == b => Some(Vec2::new(100.0, 0.0)),
+            id if id == c => Some(Vec2::new(-100.0, 0.0)),
+            id if id == d => Some(Vec2::new(0.0, 100.0)),
+            id if id == e => Some(Vec2::new(0.0, -100.0)),
+            _ => None,
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(400.0, 400.0));
+        vp.focus(Vec2::new(0.0, 0.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_cluster_center: &no_clusters(),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+
+        let self_edge = frame
+            .edges
+            .iter()
+            .find(|edge| edge.path.len() > 1)
+            .expect("self-loop edge present");
+        let center = self_edge.source;
+        let base = self_edge.path[0].2;
+        let dir = (base - center).normalize();
+        for neighbor in [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(0.0, -1.0),
+        ] {
+            let angular = dir.dot(neighbor).abs();
+            assert!(
+                angular < (25.0f32).to_radians().cos(),
+                "loop direction {dir:?} must stay clear of neighbor {neighbor:?}"
+            );
+        }
+    }
+
+    #[test]
     fn self_loop_start_and_end_are_distinct_and_point_at_center() {
         let mut g: Graph<(), ()> = Graph::new();
         let a = g.add_node(());
@@ -2856,13 +2957,14 @@ mod tests {
             (start - end).length() > 1e-3,
             "start and end should be distinct"
         );
-        // Both lie just outside the node circumference (distance ~= radius + 2).
-        let radius = GraphStyle::default().node_radius;
+        // Both lie just outside the node circumference, on the attach ring.
+        let style = GraphStyle::default();
+        let expected = style.node_screen_radius(vp.zoom()) * (1.0 + SELF_LOOP_ATTACH_OFFSET_R);
         for p in [start, end] {
             let d = (p - center).length();
             assert!(
-                (d - (radius + 2.0)).abs() < 1e-2,
-                "endpoint should sit just outside the node edge, got {d}"
+                (d - expected).abs() < 1e-2,
+                "endpoint should sit on the attach ring just outside the node edge, got {d}"
             );
         }
         // Both point toward the node center: the vector from the endpoint to

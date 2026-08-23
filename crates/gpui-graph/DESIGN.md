@@ -1315,7 +1315,17 @@ quadratic Bézier control point:
   on world length, not on the viewport zoom); the non-clustered drawn edge uses
   the coordinate-scale correction so the spatial index, cull test, and drawn
   path agree at every zoom level,
-- a self-loop renders as an onigiri (rounded triangle) path.
+- a self-loop renders as an onigiri (rounded triangle) path. Its dimensions
+  are multiples of the node's projected screen radius (capped at the node's
+  max screen radius, with no min-radius floor so the loop vanishes with the
+  graph at low zoom and never escapes world-space cull margins): the base
+  sits four radii from the node center, the base half width is 1.9 radii,
+  and the two attach legs leave the marker just outside its circumference at
+  +/-35 degrees around the loop axis. The loop axis points into the largest
+  angular gap between the node's other incident chords, so it dodges each
+  neighbor edge directly; averaging incident directions instead could cancel
+  for symmetric stars and park the loop on top of an edge. With no other
+  incident edges the loop points up.
 
 Self-loops count toward the local density of nearby edges (their midpoint is the
 node center), so they push neighboring edges' bows away, but a self-loop's own
