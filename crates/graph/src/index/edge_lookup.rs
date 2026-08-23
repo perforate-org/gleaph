@@ -1,29 +1,34 @@
 //! Edge property equality lookups via graph-index or canonical `EDGE_PROPERTIES` scan.
+//!
+//! Label identity (GAP-2026-08-22-001): lookup callers and the index canister's sieve speak
+//! catalog ids; stored postings are wire-tagged. Membership resolution on this path matches
+//! catalog labels directly; translation between the spaces is owned by
+//! `gleaph_graph_kernel::entry`.
 
 use crate::facade::GraphStore;
-use crate::facade::catalog_edge_label_from_wire;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
-use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::index::{EdgePostingHit, PostingRangeRequest};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
 
-/// Catalog edge label id for graph-index postings (router seed lookup uses catalog ids).
-pub(crate) fn catalog_label_id_for_index_posting(wire_label_id: u16) -> u16 {
-    let wire = LaraLabelId::from_raw(wire_label_id);
-    catalog_edge_label_from_wire(wire)
-        .map(|id| id.raw())
-        .unwrap_or(wire_label_id)
+/// Both LARA bucket packings of one catalog label (kernel-owned identity rule): the
+/// undirected packing sorts before the directed one. The canonical-store fallback scans
+/// storage keys per packing because `EDGE_PROPERTIES` keys are wire-tagged.
+fn wire_packings(catalog_label_id: u16) -> [u16; 2] {
+    let label = EdgeLabelId::from_raw(catalog_label_id);
+    [
+        label.pack(EdgeDirectedness::Undirected).raw(),
+        label.pack(EdgeDirectedness::Directed).raw(),
+    ]
 }
 
-/// CSR wire label for local edge handles after reading catalog ids from graph-index.
-pub(crate) fn wire_label_id_for_local_edge(stored_label_id: u16) -> u16 {
-    if stored_label_id & BUCKET_LABEL_DIRECTED_BIT != 0 || stored_label_id == 0 {
-        stored_label_id
-    } else {
-        LaraLabelId::directed_from_index(stored_label_id).raw()
+/// Label arguments for one canonical-store scan pass: both packings for a catalog label,
+/// or the single unrestricted pass.
+fn store_scan_labels(catalog_label_id: Option<u16>) -> Vec<Option<u16>> {
+    match catalog_label_id {
+        Some(catalog) => wire_packings(catalog).into_iter().map(Some).collect(),
+        None => vec![None],
     }
 }
 
@@ -31,6 +36,7 @@ pub(crate) fn wire_label_id_for_local_edge(stored_label_id: u16) -> u16 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LocalEdgePosting {
     pub owner_vertex_id: VertexId,
+    /// LARA wire tag of the stored posting; doubles as the CSR bucket key for handle binding.
     pub label_id: u16,
     pub slot_index: u32,
 }
@@ -39,14 +45,16 @@ pub(crate) async fn lookup_edge_equal_local(
     index: Option<&dyn PropertyIndexLookup>,
     property_id: PropertyId,
     expected: &[u8],
-    label_id: Option<u16>,
+    catalog_label_id: Option<u16>,
 ) -> Result<Vec<LocalEdgePosting>, PlanQueryError> {
     if let Some(ix) = index {
-        let physical_index_ids = match label_id {
-            Some(wire_label_id) => crate::index::catalog_context::active_edge_physical_index_ids(
-                wire_label_id,
-                property_id,
-            ),
+        let physical_index_ids = match catalog_label_id {
+            Some(catalog) => {
+                crate::index::catalog_context::active_edge_physical_index_ids_for_catalog_label(
+                    catalog,
+                    property_id,
+                )
+            }
             None => crate::index::catalog_context::active_edge_physical_index_ids_for_property(
                 property_id,
             ),
@@ -63,7 +71,7 @@ pub(crate) async fn lookup_edge_equal_local(
                     physical_index_id,
                     property_id.raw(),
                     expected.to_vec(),
-                    label_id,
+                    catalog_label_id,
                 )
                 .await?
             {
@@ -78,31 +86,39 @@ pub(crate) async fn lookup_edge_equal_local(
             .filter(|hit| hit.shard_id == shard_id)
             .map(|hit| LocalEdgePosting {
                 owner_vertex_id: VertexId::from(hit.owner_vertex_id),
-                label_id: wire_label_id_for_local_edge(hit.label_id),
+                // Stored postings carry the wire tag; it binds directly to the CSR bucket.
+                label_id: hit.label_id,
                 slot_index: hit.slot_index,
             })
             .collect());
     }
-    Ok(scan_store_edge_equal(property_id, expected, label_id))
+    Ok(scan_store_edge_equal(
+        property_id,
+        expected,
+        catalog_label_id,
+    ))
 }
 
 pub(crate) fn lookup_edge_equal_local_sync(
     index: Option<&dyn PropertyIndexLookup>,
     property_id: PropertyId,
     expected: &[u8],
-    label_id: Option<u16>,
+    catalog_label_id: Option<u16>,
 ) -> Result<Vec<LocalEdgePosting>, PlanQueryError> {
     if let Some(ix) = index {
         return pollster::block_on(lookup_edge_equal_local(
             Some(ix),
             property_id,
             expected,
-            label_id,
+            catalog_label_id,
         ));
     }
-    Ok(scan_store_edge_equal(property_id, expected, label_id))
+    Ok(scan_store_edge_equal(
+        property_id,
+        expected,
+        catalog_label_id,
+    ))
 }
-
 /// Shard-local ordered edge range over the domain-clamped `[low, high)` encoded interval.
 ///
 /// Falls back to a canonical `EDGE_PROPERTIES` filtered scan when no graph-index client is
@@ -113,14 +129,16 @@ pub(crate) async fn lookup_edge_range_local(
     property_id: PropertyId,
     low: &[u8],
     high: &[u8],
-    label_id: Option<u16>,
+    catalog_label_id: Option<u16>,
 ) -> Result<Vec<LocalEdgePosting>, PlanQueryError> {
     if let Some(ix) = index {
-        let physical_index_ids = match label_id {
-            Some(wire_label_id) => crate::index::catalog_context::active_edge_physical_index_ids(
-                wire_label_id,
-                property_id,
-            ),
+        let physical_index_ids = match catalog_label_id {
+            Some(catalog) => {
+                crate::index::catalog_context::active_edge_physical_index_ids_for_catalog_label(
+                    catalog,
+                    property_id,
+                )
+            }
             None => crate::index::catalog_context::active_edge_physical_index_ids_for_property(
                 property_id,
             ),
@@ -137,7 +155,12 @@ pub(crate) async fn lookup_edge_range_local(
         let mut hits: Vec<EdgePostingHit> = Vec::new();
         for physical_index_id in physical_index_ids {
             for hit in ix
-                .lookup_edge_range(physical_index_id, property_id.raw(), &request, label_id)
+                .lookup_edge_range(
+                    physical_index_id,
+                    property_id.raw(),
+                    &request,
+                    catalog_label_id,
+                )
                 .await?
             {
                 if !hits.contains(&hit) {
@@ -151,23 +174,17 @@ pub(crate) async fn lookup_edge_range_local(
             .filter(|hit| hit.shard_id == shard_id)
             .map(|hit| LocalEdgePosting {
                 owner_vertex_id: VertexId::from(hit.owner_vertex_id),
-                label_id: wire_label_id_for_local_edge(hit.label_id),
+                // Stored postings carry the wire tag; it binds directly to the CSR bucket.
+                label_id: hit.label_id,
                 slot_index: hit.slot_index,
             })
             .collect());
     }
-    Ok(
-        GraphStore::collect_edges_matching_indexed_property_where(property_id, label_id, |bytes| {
+    Ok(store_scan_matching_edges(catalog_label_id, |label| {
+        GraphStore::collect_edges_matching_indexed_property_where(property_id, label, |bytes| {
             bytes >= low && bytes < high
         })
-        .into_iter()
-        .map(|(owner_vertex_id, label_id, slot_index)| LocalEdgePosting {
-            owner_vertex_id,
-            label_id,
-            slot_index,
-        })
-        .collect(),
-    )
+    }))
 }
 
 /// Superset candidate scan for literals whose comparison domain cannot form an ordered
@@ -175,48 +192,41 @@ pub(crate) async fn lookup_edge_range_local(
 /// as a residual filter, so this only has to produce a superset of matching edges.
 pub(crate) fn lookup_edge_range_fallback_local(
     property_id: PropertyId,
-    label_id: Option<u16>,
+    catalog_label_id: Option<u16>,
 ) -> Vec<LocalEdgePosting> {
-    GraphStore::collect_edges_matching_indexed_property_where(property_id, label_id, |_| true)
-        .into_iter()
-        .map(|(owner_vertex_id, label_id, slot_index)| LocalEdgePosting {
-            owner_vertex_id,
-            label_id,
-            slot_index,
-        })
-        .collect()
+    store_scan_matching_edges(catalog_label_id, |label| {
+        GraphStore::collect_edges_matching_indexed_property_where(property_id, label, |_| true)
+    })
 }
 
 fn scan_store_edge_equal(
     property_id: PropertyId,
     expected: &[u8],
-    label_id: Option<u16>,
+    catalog_label_id: Option<u16>,
 ) -> Vec<LocalEdgePosting> {
-    GraphStore::collect_edges_matching_indexed_property(property_id, expected, label_id)
-        .into_iter()
-        .map(|(owner_vertex_id, label_id, slot_index)| LocalEdgePosting {
-            owner_vertex_id,
-            label_id,
-            slot_index,
-        })
-        .collect()
+    store_scan_matching_edges(catalog_label_id, |label| {
+        GraphStore::collect_edges_matching_indexed_property(property_id, expected, label)
+    })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
-
-    #[test]
-    fn catalog_label_id_for_index_posting_strips_directed_wire_bit() {
-        let catalog = EdgeLabelId::from_raw(1);
-        let wire = catalog.pack(EdgeDirectedness::Directed).raw();
-        assert_eq!(catalog_label_id_for_index_posting(wire), catalog.raw());
+/// Runs one canonical-store scan per requested label packing and maps the hits to local
+/// postings. Storage keys are wire-tagged, so a catalog label scans both of its packings;
+/// the packings are disjoint, so no deduplication is needed.
+fn store_scan_matching_edges(
+    catalog_label_id: Option<u16>,
+    scan: impl Fn(Option<u16>) -> Vec<(ic_stable_lara::VertexId, u16, u32)>,
+) -> Vec<LocalEdgePosting> {
+    let mut out = Vec::new();
+    for label in store_scan_labels(catalog_label_id) {
+        out.extend(
+            scan(label)
+                .into_iter()
+                .map(|(owner_vertex_id, label_id, slot_index)| LocalEdgePosting {
+                    owner_vertex_id,
+                    label_id,
+                    slot_index,
+                }),
+        );
     }
-
-    #[test]
-    fn wire_label_id_for_local_edge_restores_directed_wire_from_catalog() {
-        assert_eq!(wire_label_id_for_local_edge(1), 0x8001);
-        assert_eq!(wire_label_id_for_local_edge(0x8001), 0x8001);
-    }
+    out
 }

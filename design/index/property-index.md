@@ -58,6 +58,19 @@ predicates are served from ordered edge postings on both execution paths:
 See [implementation-gaps.md](../implementation-gaps.md)
 GAP-2026-07-29-003 for evidence links.
 
+**Edge posting label identity (canonical owner: `gleaph_graph_kernel::entry::label`).**
+Stored edge postings always carry the LARA wire tag — `catalog id | directed MSB` for
+directed buckets, the bare catalog id for undirected buckets — while registrations,
+catalog memberships, and lookup requests speak catalog ids. The two spaces meet only
+through `EdgeLabelId::pack` / `TaggedEdgeLabelId::label_index`: graph-index accepts a
+seed fact or DML build subject when its wire label's catalog index equals the registered
+catalog label and its bucket is covered by the registration direction (storing the posting
+under the wire tag, so read-side `EdgeHandle` binding resolves the CSR bucket directly),
+and labeled lookups fan out over both packings of the requested catalog id. Router
+registration targets, export scopes/walks, and all Graph producers stay in their native
+space; no ad-hoc `0x8000` arithmetic exists outside the kernel owner
+(GAP-2026-08-22-001).
+
 **Comparison-domain bounds (canonical owner: `gleaph_gql::value_index_key`).**
 Every consumer derives `property OP <literal>` scan intervals through one
 helper — `range_bounds(value, op)` for literals and parameters, and

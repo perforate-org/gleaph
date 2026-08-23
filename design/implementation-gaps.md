@@ -49,8 +49,21 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-22-001 — Migration-driven directed edge builds reject at graph-index seeding: wire vs catalog label identity divergence
 
-- **Status:** Open (discovered 2026-08-22 by plan 0281's cross-canister scenarios; no production
-  code changed)
+- **Status:** Closed (2026-08-23; identity rule decided and implemented per the Next decision
+  below — plan 0282). Owning evidence: graph-index unit contract green
+  (`cargo test -p gleaph-graph-index --lib` 153 passed / 0 failed, including
+  `directed_wire_fact_seeds_under_catalog_target_and_catalog_sieve_finds_it`,
+  `any_direction_target_accepts_both_bucket_packings_of_its_catalog_label`,
+  `facts_from_a_different_catalog_label_are_rejected_and_store_nothing`, and
+  `dml_build_subjects_carry_wire_labels_against_catalog_targets`); cross-canister closing proof
+  green (`cargo test -p gleaph-pocket-ic-tests --test adr0059_index_build_lifecycle`
+  **5 passed / 0 failed** with both previously-ignored inline scenarios un-ignored and passing:
+  `edge_inline_create_index_migration_converges_active_with_complete_postings` converges a
+  directed ROAD + undirected LINK migration over pre-existing two-shard inline values with
+  posting-level shard/canonical-owner assertions, and
+  `edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges` preserves watermarks across a
+  same-wasm mid-build upgrade of all five federation canisters); regression guards green
+  (`router_gql_query` 24 passed / 0 failed including every standalone edge lifecycle target).
 - **Severity:** P0 index correctness — blocks the edge half of ADR 0059's lifecycle and therefore
   the GAP-2026-07-29-001 E2E closure
 - **Owner:** The Router→Graph→graph-index edge build identity contract: Router registration
@@ -103,10 +116,25 @@ defect from being rediscovered without its prior reasoning.
   happen to satisfy the numeric identity check but then bind read handles from catalog-id
   postings, so fixing only the register side without owning the identity decision would leave
   read binding broken for one bucket packing.
-- **Next decision:** Choose the single posting-label identity (wire-tagged everywhere — requiring
-  graph-index sieves/handles to normalize via `catalog_edge_label_from_wire`, or catalog ids
-  everywhere — requiring Graph facts and DML dispatch to translate at the boundary), fix the
-  non-conforming sides, then re-run the two ignored scenarios as the closing regression proof.
+- **Next decision:** Decided (2026-08-22, plan 0282 survey): **edge postings are stored and
+  transported in wire-tagged space (`catalog id | directed MSB` directed, bare catalog id
+  undirected); registrations, memberships, and lookup sieves speak catalog ids.** Rationale:
+  every physical producer already emits wire labels (DML dispatch from canonical handles,
+  repair journal, operator backfill export, migration seed facts) and read binding resolves
+  `EdgeHandle`s from posting labels against LARA bucket keys, so wire storage needs zero
+  producer churn and keeps handle binding unambiguous; the catalog-space alternative would
+  force a translation onto every Graph producer and make handle binding direction-ambiguous.
+  The single translation owner is `gleaph_graph_kernel::entry::label` — `EdgeLabelId`
+  (catalog) ↔ `TaggedEdgeLabelId` (wire) via `pack()` / `label_index()`; no ad-hoc `0x8000`
+  arithmetic outside it. Conforming seams: (S1) graph-index `prepare_fact_posting` accepts a
+  fact when its wire label's catalog index equals the registered catalog label and its bucket
+  is covered by the registration direction, storing under the wire tag (`EdgePostingKey`
+  layout and Candid types unchanged); (S2) `ensure_subject_matches_target` applies the same
+  rule to DML build subjects; (S3) graph-index `lookup_edge_{equal,range}_page` treat
+  request labels as catalog ids and scan both packings; (S4) Graph's
+  `lookup_edge_{equal,range}_local` resolve memberships by direct catalog equality instead of
+  feeding a catalog id into the wire-expecting registration matcher. Router registration,
+  export scopes/walks, planner stats, and all Graph producers stay unchanged.
 
 ### GAP-2026-08-21-002 — Graph registration completion held bootstrap intent locks across a deployment's graph bootstraps
 
@@ -650,7 +678,9 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
 
-- **Status:** Planned
+- **Status:** Deferred after bounded research (2026-08-23; ADR not justified). The current
+  tombstone-heavy query is material, but the contract-equivalent fixed-block candidate did not
+  meet the decision threshold; the retained slice does not claim maintenance break-even evidence.
 - **Severity:** P2 traversal performance and stable-layout research gap
 - **Owner:** `ic-stable-lara` traversal and LARA logical-slot metadata
 - **Observed behavior:** `TraversalWindow.offset` can jump directly only for a proven dense bucket.
@@ -663,14 +693,20 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   fail-closed corruption handling.
 - **Evidence:** [ADR 0050](adr/0050-lara-traverse-read-api.md) § “Known gap: tombstone-aware offset
   acceleration”; `TraversalWindow` and the labeled sparse traversal implementation. The current
-  dense fast path is intentionally limited to `live_degree == logical_extent`.
+  dense fast path is intentionally limited to `live_degree == logical_extent`. Plan 0283's fixed
+  survivor canbench matrix measured 872,708 instructions at extent 8,192 / 87.5% tombstones /
+  OFFSET 960 / LIMIT 32, versus 38,125 at the same density and offset 0 (22.89x) and 27,146 for
+  the dense OFFSET control (32.15x). The benchmark-only fixed-block end-to-end probe measured
+  773,240 instructions (0.886x current), not the required <=0.60x; a retained 75% candidate
+  measurement and DeferredLabeledLaraGraph maintenance drain/post-drain comparator are deferred.
 - **Impact:** Large sparse buckets can spend instructions scanning tombstones for OFFSET/LIMIT.
   Introducing durable metadata now would expand the storage format and add mutation,
   compaction/rebuild, reopen, and benchmark obligations before the design is understood.
-- **Next decision:** Conduct a bounded research and benchmark slice comparing fixed-width block
-  live-count summaries, hierarchical summaries, and live-bitvector rank/select. Only after an
-  accepted design establishes consistency and measured benefit should a persistent structure be
-  proposed in a follow-up ADR.
+- **Next decision:** Retain the exact sparse scan and current compaction ownership; do not open an
+  ADR from this slice. Revisit only with a contract-equivalent candidate that clears the <=60%
+  threshold at both 75% and 87.5% tombstones, satisfies metadata/update/rebuild/select gates, and
+  is paired with bounded pre-drain, maintenance-drain, and post-drain evidence yielding a positive
+  finite residual break-even. Any future adoption remains a separate ADR/storage-layout slice.
 
 ### GAP-2026-07-25-001 — Paired canonical edge writes expose recoverable post-write errors
 
@@ -1109,7 +1145,7 @@ duplicate its state machine or ownership rules.
 
 | Priority | Work item                                                                                  | Current status                                                                               |
 | -------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Blocked — vertex/sidecar convergence closed 2026-08-22 via GAP-2026-07-29-006; edge INLINE E2E closure blocked by GAP-2026-08-22-001 (migration-driven directed edge builds reject at seeding) |
+| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Closed — vertex/sidecar closed 2026-08-22 via GAP-2026-07-29-006; edge INLINE closed 2026-08-23 via GAP-2026-08-22-001 + GAP-2026-07-29-001 (identity rule + un-ignored cross-canister scenarios, 5/5) |
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | GAP-2026-07-29-004 open; GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Closed 2026-08-22 — GAP-2026-07-29-003 (see entry)                                           |
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
@@ -1131,7 +1167,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-001 — Existing INLINE values are not included by property-index backfill
 
-- **Status:** Resolved (2026-08-22; the Graph edge-property export now enumerates both canonical
+- **Status:** Closed (2026-08-23). The Graph edge-property export enumerates both canonical
   value domains under one opaque cursor: sidecar `EDGE_PROPERTIES` rows first, then canonical
   edges carrying indexed inline values, decoded through the same `inline_index_values`
   membership resolution mutations use. The cursor carries a domain tag byte
@@ -1141,19 +1177,19 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   mirror double-posting and every later Remove can address what backfill inserted. A vertex
   started within budget is collected fully (resume advances between vertices), so resume never
   skips or replays an identity; `done` is true only after both domains exhaust.
-  ADR 0059's one-opaque-export consequence is now implemented as written. Owning tests:
+  ADR 0059's one-opaque-export consequence is now implemented as written. Owning unit tests:
   `backfill_enumerates_indexed_inline_scalar_values`,
   `backfill_emits_only_the_canonical_undirected_owner`,
   `backfill_resume_walks_both_domains_without_duplicate_identities`,
-  `unversioned_backfill_cursor_is_rejected`. Deferred: focused PocketIC E2E/upgrade validation
-  of the full create-index lifecycle over inline data remains open follow-up, tracked by this
-  entry's Next decision context. Update 2026-08-22 (plan 0281): that E2E slice is now written
-  (`edge_inline_create_index_migration_converges_active_with_complete_postings` and
+  `unversioned_backfill_cursor_is_rejected`. The deferred cross-canister create-index lifecycle
+  proof (plans/0281 scenarios) initially exposed GAP-2026-08-22-001; after that identity fix
+  landed (plan 0282), both un-ignored scenarios pass —
+  `edge_inline_create_index_migration_converges_active_with_complete_postings` and
   `edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges` in
-  `crates/pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, currently `#[ignore]`d) but
-  exposed GAP-2026-08-22-001 — migration-driven DIRECTED edge builds reject at graph-index
-  seeding before any posting converges — so this entry stays open behind that fix; the two
-  scenarios are its closing regression proof.)
+  `crates/pocket-ic-tests/tests/adr0059_index_build_lifecycle.rs`, 5 passed / 0 failed at the
+  closing run — completing this entry's migration-path validation over inline data, including
+  equality/range completeness, per-shard coverage, multiplicity, undirected canonical-owner
+  uniqueness, and same-wasm upgrade reopen.)
 - **Severity:** P0 index correctness
 - **Owner:** Router backfill orchestration and Graph inline-property backfill boundary
 - **Observed behavior:** The edge-property backfill scans canonical `EDGE_PROPERTIES` only. Existing

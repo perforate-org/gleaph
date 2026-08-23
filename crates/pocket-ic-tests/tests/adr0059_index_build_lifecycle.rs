@@ -42,14 +42,13 @@
 //!
 //! # Edge-INLINE scenario-to-symbol map (GAP-2026-07-29-001)
 //!
-//! Verified by direct read at main `306f469c1` (2026-08-23); the inline
+//! Verified by direct read at main `20710174e` (2026-08-23); the inline
 //! scenarios below drive these committed symbols. **Status:** both scenarios
-//! are `#[ignore]`d because they exposed GAP-2026-08-22-001 — the migration
-//! path for DIRECTED edge builds terminates with `Failed(TargetRejected)`
-//! before any posting converges. They run explicitly via
-//! `cargo test ... --test adr0059_index_build_lifecycle -- --ignored` and are
-//! the owning regression proof for closing GAP-2026-07-29-001 once that
-//! identity contract is fixed.
+//! previously exposed GAP-2026-08-22-001 (`Failed(TargetRejected)` on directed
+//! edge builds) and ran `#[ignore]`d; the identity contract fix conformed
+//! graph-index seeding/sieves and the Graph read path, and these two scenarios
+//! are now un-ignored as the owning cross-canister regression proof for
+//! closing GAP-2026-07-29-001.
 //!
 //! - Inline schema registration: typed-graph DDL (`CREATE GRAPH TYPE ... NEXT
 //!   CREATE GRAPH ... TYPED`) commits `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`
@@ -134,15 +133,19 @@ const EDGE_INLINE_UPGRADE_MIGRATION_ID: &str = "000103_adr0059_edge_inline_upgra
 const ROAD_LABEL: &str = "ROAD";
 const LINK_LABEL: &str = "LINK";
 const DISTANCE_PROPERTY: &str = "distance";
+/// The undirected index uses its own property name so the two sub-builds never share one
+/// property scope: label-less seed anchors stay unambiguous and posting probes per namespace
+/// remain exact.
+const LINK_DISTANCE_PROPERTY: &str = "link_distance";
 /// Declares scalar `UINT16 INLINE` slots on a directed and an undirected edge
 /// type and binds them to the default federation graph. The typed binding is
 /// what registers the router inline schema that `resolve_inline_projection`
 /// and atomic-insert validation consume.
-const EDGE_INLINE_TYPE_DDL: &str = "CREATE GRAPH TYPE IF NOT EXISTS adr0059_road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city), UNDIRECTED EDGE Link LABEL LINK { distance UINT16 INLINE } CONNECTING (city ~ city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED adr0059_road_type";
+const EDGE_INLINE_TYPE_DDL: &str = "CREATE GRAPH TYPE IF NOT EXISTS adr0059_road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city), UNDIRECTED EDGE Link LABEL LINK { link_distance UINT16 INLINE } CONNECTING (city ~ city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED adr0059_road_type";
 const ROAD_DISTANCE_DDL: &str =
     "CREATE INDEX adr0059_road_distance FOR ()-[e:ROAD]-() ON (e.distance)";
 const LINK_DISTANCE_DDL: &str =
-    "CREATE INDEX adr0059_link_distance FOR () ~[e:LINK]~ () ON (e.distance)";
+    "CREATE INDEX adr0059_link_distance FOR () ~[e:LINK]~ () ON (e.link_distance)";
 
 fn migration_args(id: &str, statement: &str) -> ApplySchemaMigrationArgs {
     let selector = SchemaMigrationGraphSelector::Default;
@@ -417,13 +420,14 @@ fn projected_edge_physical_index(
 /// `Result<R, String>` envelope `query_as_router` decodes).
 fn edge_lookup_page<R: candid::CandidType + serde::de::DeserializeOwned>(
     env: &FederationEnv,
+    index_canister: candid::Principal,
     method: &str,
     request: impl candid::CandidType,
 ) -> R {
     let bytes = env
         .pic
         .query_call(
-            env.index,
+            index_canister,
             env.router,
             method,
             Encode!(&request).expect("encode edge lookup request"),
@@ -432,9 +436,10 @@ fn edge_lookup_page<R: candid::CandidType + serde::de::DeserializeOwned>(
     Decode!(&bytes, R).unwrap_or_else(|_| panic!("decode {method}"))
 }
 
-/// All equality postings for one `(physical index, property, value)` bucket,
-/// following resume cursors to exhaustion. `label_id` stays `None` so the probe
-/// observes the stored label identities directly instead of assuming them.
+/// All equality postings for one `(physical index, property, value)` bucket across both
+/// federation index canisters (one per shard), following resume cursors to exhaustion.
+/// `label_id` stays `None` so the probe observes the stored label identities directly
+/// instead of assuming them.
 fn edge_equal_postings(
     env: &FederationEnv,
     physical_index_id: PhysicalIndexId,
@@ -442,29 +447,34 @@ fn edge_equal_postings(
     value: u16,
 ) -> Vec<gleaph_graph_kernel::index::EdgePostingHit> {
     let mut hits = Vec::new();
-    let mut after = None;
-    loop {
-        let page: EdgePostingHitPage = edge_lookup_page(
-            env,
-            "lookup_edge_equal_page",
-            LookupEdgeEqualPageRequest {
-                physical_index_id,
-                property_id: property_raw,
-                value: u16_distance_key(value),
-                label_id: None,
-                after,
-                limit: 128,
-            },
-        );
-        hits.extend(page.hits);
-        if page.done {
-            return hits;
+    for index_canister in [env.index, env.index_dest] {
+        let mut after = None;
+        loop {
+            let page: EdgePostingHitPage = edge_lookup_page(
+                env,
+                index_canister,
+                "lookup_edge_equal_page",
+                LookupEdgeEqualPageRequest {
+                    physical_index_id,
+                    property_id: property_raw,
+                    value: u16_distance_key(value),
+                    label_id: None,
+                    after,
+                    limit: 128,
+                },
+            );
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
         }
-        after = page.next;
     }
+    hits
 }
 
-/// All range postings over the half-open encoded interval `[low, high)`.
+/// All range postings over the half-open encoded interval `[low, high)`, unioned across
+/// both federation index canisters.
 fn edge_range_postings(
     env: &FederationEnv,
     physical_index_id: PhysicalIndexId,
@@ -473,29 +483,33 @@ fn edge_range_postings(
     high: u16,
 ) -> Vec<gleaph_graph_kernel::index::EdgePostingHit> {
     let mut hits = Vec::new();
-    let mut after = None;
-    loop {
-        let page: EdgePostingHitPage = edge_lookup_page(
-            env,
-            "lookup_edge_range_page",
-            LookupEdgeRangePageRequest {
-                physical_index_id,
-                property_id: property_raw,
-                range: PostingRangeRequest::Between {
-                    low: u16_distance_key(low),
-                    high: u16_distance_key(high),
+    for index_canister in [env.index, env.index_dest] {
+        let mut after = None;
+        loop {
+            let page: EdgePostingHitPage = edge_lookup_page(
+                env,
+                index_canister,
+                "lookup_edge_range_page",
+                LookupEdgeRangePageRequest {
+                    physical_index_id,
+                    property_id: property_raw,
+                    range: PostingRangeRequest::Between {
+                        low: u16_distance_key(low),
+                        high: u16_distance_key(high),
+                    },
+                    label_id: None,
+                    after,
+                    limit: 128,
                 },
-                label_id: None,
-                after,
-                limit: 128,
-            },
-        );
-        hits.extend(page.hits);
-        if page.done {
-            return hits;
+            );
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
         }
-        after = page.next;
     }
+    hits
 }
 
 /// The combined migration statement: directed ROAD (both direction buckets) and
@@ -868,8 +882,9 @@ fn drive_edge_inline_migration_to_applied(
     env: &FederationEnv,
     args: &ApplySchemaMigrationArgs,
     road: u16,
+    road_property: u32,
     link: u16,
-    distance: u32,
+    link_property: u32,
 ) -> Vec<IndexedEdgeMembership> {
     let mut road_phases: Vec<IndexMaintenancePhase> = Vec::new();
     let mut link_phases: Vec<IndexMaintenancePhase> = Vec::new();
@@ -881,12 +896,12 @@ fn drive_edge_inline_migration_to_applied(
             "edge migration did not converge"
         );
         let result = apply_once(env, args);
-        if let Some(phase) = edge_phase_for(&edge_memberships(env), road, distance)
+        if let Some(phase) = edge_phase_for(&edge_memberships(env), road, road_property)
             && road_phases.last() != Some(&phase)
         {
             road_phases.push(phase);
         }
-        if let Some(phase) = edge_phase_for(&edge_memberships(env), link, distance)
+        if let Some(phase) = edge_phase_for(&edge_memberships(env), link, link_property)
             && link_phases.last() != Some(&phase)
         {
             link_phases.push(phase);
@@ -920,17 +935,13 @@ fn drive_edge_inline_migration_to_applied(
 }
 
 #[test]
-#[ignore = "exposes GAP-2026-08-22-001: the directed ROAD sub-build terminates with \
-            Failed(TargetRejected) because Graph export facts carry storage wire labels \
-            (catalog id | 0x8000) while the Router registers untagged catalog label ids, so \
-            graph-index's exact fact/target identity check rejects every seed page; run with \
-            --ignored until the identity contract is fixed"]
 fn edge_inline_create_index_migration_converges_active_with_complete_postings() {
     let env = install_federation();
     declare_edge_inline_schema(&env);
     let road = ensure_edge_label(&env, ROAD_LABEL).raw();
     let link = ensure_edge_label(&env, LINK_LABEL).raw();
     let distance = ensure_property(&env, DISTANCE_PROPERTY).raw();
+    let link_distance = ensure_property(&env, LINK_DISTANCE_PROPERTY).raw();
 
     // Directed ROAD inline values across both shards; 30 appears twice on the
     // source shard so equality multiplicity is observable.
@@ -947,7 +958,8 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
         seed_undirected_link_edge(&env, env.graph_dest, 28, "adr0059_link_dst");
 
     let args = migration_args(EDGE_INLINE_MIGRATION_ID, &edge_inline_statement());
-    let memberships = drive_edge_inline_migration_to_applied(&env, &args, road, link, distance);
+    let memberships =
+        drive_edge_inline_migration_to_applied(&env, &args, road, distance, link, link_distance);
 
     // Posting truth on the ROAD namespace: every seeded directed inline value
     // converged exactly once per logical edge, per shard, with multiplicity.
@@ -981,12 +993,12 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
     // Undirected LINK postings: exactly one hit per logical pair, owned by the
     // max endpoint — the E2E canonical-owner mirror of
     // backfill_emits_only_the_canonical_undirected_owner.
-    let link_physical = projected_edge_physical_index(&memberships, link, distance);
+    let link_physical = projected_edge_physical_index(&memberships, link, link_distance);
     for (value, expected_shard, low, high) in [
         (12_u16, SOURCE_SHARD, src_low, src_high),
         (28, DEST_SHARD, dst_low, dst_high),
     ] {
-        let hits = edge_equal_postings(&env, link_physical, distance, value);
+        let hits = edge_equal_postings(&env, link_physical, link_distance, value);
         assert_eq!(
             hits.len(),
             1,
@@ -1000,7 +1012,7 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
         );
     }
     assert_eq!(
-        edge_range_postings(&env, link_physical, distance, 0, 1000).len(),
+        edge_range_postings(&env, link_physical, link_distance, 0, 1000).len(),
         2,
         "both undirected pairs converge without duplicate identities"
     );
@@ -1008,7 +1020,7 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
     // Equality completeness through GQL after Active, including multiplicity.
     let mut eq30 = int_column(
         &env,
-        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance = 30 RETURN e.distance AS v",
+        "MATCH ()-[e:ROAD]->() WHERE e.distance = 30 RETURN e.distance AS v",
     );
     eq30.sort();
     assert_eq!(
@@ -1021,7 +1033,7 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
     // the interval, exactly once per logical edge.
     let mut range = int_column(
         &env,
-        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance >= 10 AND e.distance < 40 RETURN e.distance AS v",
+        "MATCH ()-[e:ROAD]->() WHERE e.distance >= 10 AND e.distance < 40 RETURN e.distance AS v",
     );
     range.sort();
     assert_eq!(range, vec![10, 15, 20, 25, 30, 30, 35]);
@@ -1029,7 +1041,7 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
     // Undirected reads observe each pair exactly once post-Active.
     let eq12 = int_column(
         &env,
-        "MATCH (a:City)-[e:LINK]-(b:City) WHERE e.distance = 12 RETURN e.distance AS v",
+        "MATCH ()~[e:LINK]~() WHERE e.link_distance = 12 RETURN e.link_distance AS v",
     );
     assert_eq!(
         eq12,
@@ -1038,22 +1050,20 @@ fn edge_inline_create_index_migration_converges_active_with_complete_postings() 
     );
     let mut undirected_range = int_column(
         &env,
-        "MATCH (a:City)-[e:LINK]-(b:City) WHERE e.distance >= 0 AND e.distance < 1000 RETURN e.distance AS v",
+        "MATCH ()~[e:LINK]~() WHERE e.link_distance >= 0 AND e.link_distance < 1000 RETURN e.link_distance AS v",
     );
     undirected_range.sort();
     assert_eq!(undirected_range, vec![12, 28]);
 }
 
 #[test]
-#[ignore = "same root cause as the convergence scenario (GAP-2026-08-22-001): seeded_items \
-            never advances because every ROAD seed page is rejected by graph-index's exact \
-            fact/target label identity check; run with --ignored once that contract is fixed"]
 fn edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges() {
     let env = install_federation();
     declare_edge_inline_schema(&env);
     let road = ensure_edge_label(&env, ROAD_LABEL).raw();
     let link = ensure_edge_label(&env, LINK_LABEL).raw();
     let distance = ensure_property(&env, DISTANCE_PROPERTY).raw();
+    let link_distance = ensure_property(&env, LINK_DISTANCE_PROPERTY).raw();
 
     // Inline-heavy build: 24 directed ROAD edges per shard plus one undirected
     // LINK pair per shard.
@@ -1132,7 +1142,7 @@ fn edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges() {
     // visible through one full-range query and an equality spot check.
     let mut full = int_column(
         &env,
-        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance >= 0 AND e.distance < 200 RETURN e.distance AS v",
+        "MATCH ()-[e:ROAD]->() WHERE e.distance >= 0 AND e.distance < 200 RETURN e.distance AS v",
     );
     full.sort();
     let expected: Vec<i64> = (0..12).chain(100..112).collect();
@@ -1149,7 +1159,7 @@ fn edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges() {
 
     let mut eq105 = int_column(
         &env,
-        "MATCH (a:City)-[e:ROAD]->(b:City) WHERE e.distance = 105 RETURN e.distance AS v",
+        "MATCH ()-[e:ROAD]->() WHERE e.distance = 105 RETURN e.distance AS v",
     );
     eq105.sort();
     assert_eq!(eq105, vec![105, 105]);
@@ -1157,12 +1167,12 @@ fn edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges() {
     // The undirected pair resumed across the upgrade boundary too.
     let eq200 = int_column(
         &env,
-        "MATCH (a:City)-[e:LINK]-(b:City) WHERE e.distance = 200 RETURN e.distance AS v",
+        "MATCH ()~[e:LINK]~() WHERE e.link_distance = 200 RETURN e.link_distance AS v",
     );
     assert_eq!(eq200, vec![200]);
     let link_memberships = edge_memberships(&env);
-    let link_physical = projected_edge_physical_index(&link_memberships, link, distance);
-    let hits = edge_equal_postings(&env, link_physical, distance, 200);
+    let link_physical = projected_edge_physical_index(&link_memberships, link, link_distance);
+    let hits = edge_equal_postings(&env, link_physical, link_distance, 200);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].shard_id, SOURCE_SHARD);
     assert_eq!(hits[0].owner_vertex_id, src_low.max(src_high));

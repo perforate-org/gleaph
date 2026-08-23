@@ -7,6 +7,7 @@ use gleaph_graph_kernel::canonical_export::{
     CanonicalExportRequest, CanonicalExportTarget, CanonicalIndexableFact,
     MAX_CANONICAL_EXPORT_PAGE_ITEMS,
 };
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use gleaph_graph_kernel::index::{
     IndexBuildControlRequest, IndexBuildDmlRequest, IndexBuildSealRequest, IndexBuildSealStatus,
     IndexBuildSeedDisposition, IndexBuildSeedPageRequest, IndexBuildSeedPageResult,
@@ -32,6 +33,32 @@ use crate::state::IndexError;
 enum PreparedBuildPosting {
     Vertex(PostingKey),
     Edge(EdgePostingKey),
+}
+
+/// The one edge-label identity rule for stored edge postings (GAP-2026-08-22-001).
+///
+/// Postings, seed facts, and DML build subjects carry the LARA wire tag
+/// (`TaggedEdgeLabelId`: catalog id plus the directed MSB); registrations name the catalog
+/// label. A wire label matches its target when its catalog index equals the registered
+/// catalog label and its bucket packing is covered by the registration direction. Translation
+/// goes through `gleaph_graph_kernel::entry` types — no ad-hoc bit arithmetic.
+fn edge_wire_matches_target(target: &IndexBuildTarget, wire: TaggedEdgeLabelId) -> bool {
+    let IndexBuildTarget::Edge {
+        label_id: target_label,
+        direction,
+        ..
+    } = target
+    else {
+        return false;
+    };
+    if wire.label_index() != *target_label {
+        return false;
+    }
+    if wire.is_directed() {
+        direction.includes_directed()
+    } else {
+        direction.includes_undirected()
+    }
 }
 
 /// One immutable Graph call prepared from the durable build state.
@@ -71,13 +98,15 @@ fn ensure_subject_matches_target(
 ) -> Result<(), IndexError> {
     match (target, subject) {
         (IndexBuildTarget::Vertex { .. }, IndexBuildSubject::Vertex { .. }) => Ok(()),
+        // DML subjects arrive in wire space from Graph canonical handles; the target
+        // speaks catalog ids. One identity rule decides the match (GAP-2026-08-22-001).
         (
-            IndexBuildTarget::Edge {
-                label_id: target_label,
+            IndexBuildTarget::Edge { .. },
+            IndexBuildSubject::Edge {
+                label_id: subject_wire,
                 ..
             },
-            IndexBuildSubject::Edge { label_id, .. },
-        ) if target_label == label_id => Ok(()),
+        ) if edge_wire_matches_target(&target, TaggedEdgeLabelId::from_raw(subject_wire)) => Ok(()),
         _ => Err(IndexError::InvalidIndexBuildTarget),
     }
 }
@@ -184,13 +213,9 @@ fn prepare_fact_posting(
             slot_index,
             property_id,
             encoded_value,
-        } if matches!(
-            target,
-            IndexBuildTarget::Edge {
-                label_id: target_label,
-                ..
-            } if target_label == label_id
-        ) && property_id == target.property_id() =>
+        } if matches!(target, IndexBuildTarget::Edge { .. })
+            && edge_wire_matches_target(&target, TaggedEdgeLabelId::from_raw(label_id))
+            && property_id == target.property_id() =>
         {
             let subject = IndexBuildSubject::Edge {
                 shard_id,
@@ -724,7 +749,9 @@ impl IndexStore {
 mod tests {
     use candid::Principal;
     use gleaph_graph_kernel::canonical_export::CanonicalIndexableFact;
-    use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
+    use gleaph_graph_kernel::entry::{
+        EdgeDirectedness, EdgeLabelId, GraphId, IndexNameId, PropertyId,
+    };
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{
         EdgeIndexDirection, IndexBuildCleanupStatus, IndexBuildControlRequest,
@@ -784,6 +811,19 @@ mod tests {
     }
 
     fn edge_registration(physical_index_id: PhysicalIndexId) -> RegisterIndexBuildRequest {
+        edge_registration_with(
+            physical_index_id,
+            EDGE_LABEL_ID,
+            EdgeIndexDirection::Outgoing,
+        )
+    }
+
+    /// `label_id` is the Router-registered catalog label; `direction` the ADR 0012 subset.
+    fn edge_registration_with(
+        physical_index_id: PhysicalIndexId,
+        label_id: u16,
+        direction: EdgeIndexDirection,
+    ) -> RegisterIndexBuildRequest {
         RegisterIndexBuildRequest {
             physical_index_id,
             graph_id: GRAPH_ID,
@@ -791,9 +831,9 @@ mod tests {
             catalog_epoch: 11,
             topology_epoch: 17,
             target: IndexBuildTarget::Edge {
-                label_id: EDGE_LABEL_ID,
+                label_id,
                 property_id: PROPERTY_ID,
-                direction: EdgeIndexDirection::Outgoing,
+                direction,
             },
             target_shard_ids: vec![0],
         }
@@ -811,10 +851,16 @@ mod tests {
         }
     }
 
-    fn edge_fact(owner_vertex_id: u32, slot_index: u32, value: &[u8]) -> CanonicalIndexableFact {
+    /// `label_id` is the exact wire value the Graph export emitted for the fact.
+    fn edge_fact_with_label(
+        owner_vertex_id: u32,
+        slot_index: u32,
+        value: &[u8],
+        label_id: u16,
+    ) -> CanonicalIndexableFact {
         CanonicalIndexableFact::Edge {
             owner_vertex_id,
-            label_id: EDGE_LABEL_ID,
+            label_id,
             slot_index,
             property_id: PROPERTY_ID,
             encoded_value: value.to_vec(),
@@ -902,6 +948,9 @@ mod tests {
     fn seed_first_then_edge_dml_removes_stale_posting_and_inserts_correction() {
         let (store, router, shard, _) = setup();
         let physical_index_id = physical(1_002);
+        let directed_wire = EdgeLabelId::from_raw(EDGE_LABEL_ID)
+            .pack(EdgeDirectedness::Directed)
+            .raw();
         store
             .register_index_build(router, &edge_registration(physical_index_id))
             .expect("register edge build");
@@ -911,7 +960,7 @@ mod tests {
                 0,
                 0,
                 None,
-                vec![edge_fact(6, 3, b"old")],
+                vec![edge_fact_with_label(6, 3, b"old", directed_wire)],
                 None,
                 true,
             ))
@@ -920,7 +969,7 @@ mod tests {
         let subject = IndexBuildSubject::Edge {
             shard_id: 0,
             owner_vertex_id: 6,
-            label_id: EDGE_LABEL_ID,
+            label_id: directed_wire,
             slot_index: 3,
         };
         store
@@ -947,6 +996,244 @@ mod tests {
             store
                 .lookup_edge_equal(physical_index_id, PROPERTY_ID.raw(), b"new", None)
                 .expect("lookup corrected edge")
+                .len(),
+            1
+        );
+    }
+
+    // --- edge posting label identity contract (GAP-2026-08-22-001) ---
+
+    /// Registrations speak catalog ids; Graph facts arrive wire-tagged. The seed
+    /// identity check must compare the fact's catalog index with the registered
+    /// label and store the posting under the fact's wire tag, and the equality
+    /// sieve must find wire-keyed postings from a catalog-id request.
+    #[test]
+    fn directed_wire_fact_seeds_under_catalog_target_and_catalog_sieve_finds_it() {
+        let (store, router, _shard0, _shard1) = setup();
+        let physical_index_id = physical(1_004);
+        let directed_wire = EdgeLabelId::from_raw(EDGE_LABEL_ID)
+            .pack(EdgeDirectedness::Directed)
+            .raw();
+        assert_ne!(
+            directed_wire, EDGE_LABEL_ID,
+            "precondition: the two identity spaces diverge for directed buckets"
+        );
+
+        store
+            .register_index_build(
+                router,
+                &edge_registration_with(
+                    physical_index_id,
+                    EDGE_LABEL_ID,
+                    EdgeIndexDirection::Outgoing,
+                ),
+            )
+            .expect("register directed edge build");
+
+        store
+            .seed_index_build_page(&seed_request(
+                physical_index_id,
+                0,
+                0,
+                None,
+                vec![edge_fact_with_label(6, 3, b"v9", directed_wire)],
+                None,
+                true,
+            ))
+            .expect("a directed wire-tagged fact must seed under its catalog target");
+
+        let hits = store
+            .lookup_edge_equal(
+                physical_index_id,
+                PROPERTY_ID.raw(),
+                b"v9",
+                Some(EDGE_LABEL_ID),
+            )
+            .expect("catalog-label sieve must reach wire-keyed postings");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].label_id, directed_wire,
+            "stored postings keep the wire tag so read binding resolves the LARA bucket"
+        );
+        assert!(
+            store
+                .lookup_edge_equal(physical_index_id, PROPERTY_ID.raw(), b"v9", Some(8))
+                .expect("sieve by a different catalog label")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn any_direction_target_accepts_both_bucket_packings_of_its_catalog_label() {
+        let (store, router, _shard0, _shard1) = setup();
+        let physical_index_id = physical(1_005);
+        let directed_wire = EdgeLabelId::from_raw(EDGE_LABEL_ID)
+            .pack(EdgeDirectedness::Directed)
+            .raw();
+
+        store
+            .register_index_build(
+                router,
+                &edge_registration_with(physical_index_id, EDGE_LABEL_ID, EdgeIndexDirection::Any),
+            )
+            .expect("register any-direction edge build");
+
+        store
+            .seed_index_build_page(&seed_request(
+                physical_index_id,
+                0,
+                0,
+                None,
+                vec![
+                    edge_fact_with_label(5, 0, b"da", directed_wire),
+                    edge_fact_with_label(7, 1, b"ua", EDGE_LABEL_ID),
+                ],
+                None,
+                true,
+            ))
+            .expect("both bucket packings of the registered label seed under an Any target");
+
+        let mut labels: Vec<u16> = store
+            .lookup_edge_equal(
+                physical_index_id,
+                PROPERTY_ID.raw(),
+                b"da",
+                Some(EDGE_LABEL_ID),
+            )
+            .expect("directed packing sieve")
+            .into_iter()
+            .map(|hit| hit.label_id)
+            .collect();
+        labels.extend(
+            store
+                .lookup_edge_equal(
+                    physical_index_id,
+                    PROPERTY_ID.raw(),
+                    b"ua",
+                    Some(EDGE_LABEL_ID),
+                )
+                .expect("undirected packing sieve")
+                .into_iter()
+                .map(|hit| hit.label_id),
+        );
+        assert!(labels.contains(&directed_wire));
+        assert!(labels.contains(&EDGE_LABEL_ID));
+    }
+
+    #[test]
+    fn facts_from_a_different_catalog_label_are_rejected_and_store_nothing() {
+        let (store, router, _shard0, _shard1) = setup();
+        let physical_index_id = physical(1_006);
+        const OTHER_CATALOG: u16 = 10;
+        let other_directed_wire = EdgeLabelId::from_raw(OTHER_CATALOG)
+            .pack(EdgeDirectedness::Directed)
+            .raw();
+
+        store
+            .register_index_build(
+                router,
+                &edge_registration_with(
+                    physical_index_id,
+                    EDGE_LABEL_ID,
+                    EdgeIndexDirection::Outgoing,
+                ),
+            )
+            .expect("register directed edge build");
+
+        for (space, fact) in [
+            ("catalog", edge_fact_with_label(5, 0, b"x", OTHER_CATALOG)),
+            (
+                "wire",
+                edge_fact_with_label(6, 0, b"y", other_directed_wire),
+            ),
+        ] {
+            let err = store
+                .seed_index_build_page(&seed_request(
+                    physical_index_id,
+                    0,
+                    0,
+                    None,
+                    vec![fact],
+                    None,
+                    true,
+                ))
+                .expect_err(&format!("a {space}-foreign label must be rejected"));
+            assert!(
+                matches!(err, IndexError::InvalidIndexBuildTarget),
+                "expected InvalidIndexBuildTarget for the {space}-foreign label, got {err:?}"
+            );
+        }
+        assert!(
+            store
+                .lookup_edge_equal(physical_index_id, PROPERTY_ID.raw(), b"x", None)
+                .expect("lookup after rejections")
+                .is_empty(),
+            "rejected facts must not leave postings behind"
+        );
+    }
+
+    #[test]
+    fn dml_build_subjects_carry_wire_labels_against_catalog_targets() {
+        let (store, router, shard, _shard1) = setup();
+        let physical_index_id = physical(1_007);
+        let directed_wire = EdgeLabelId::from_raw(EDGE_LABEL_ID)
+            .pack(EdgeDirectedness::Directed)
+            .raw();
+
+        store
+            .register_index_build(router, &edge_registration(physical_index_id))
+            .expect("register edge build");
+        store
+            .seed_index_build_page(&seed_request(
+                physical_index_id,
+                0,
+                0,
+                None,
+                vec![edge_fact_with_label(6, 3, b"old", directed_wire)],
+                None,
+                true,
+            ))
+            .expect("seed directed-wire base page");
+
+        store
+            .apply_index_build_dml(
+                shard,
+                &IndexBuildDmlRequest {
+                    physical_index_id,
+                    catalog_epoch: 11,
+                    shard_sequence: 1,
+                    subject: IndexBuildSubject::Edge {
+                        shard_id: 0,
+                        owner_vertex_id: 6,
+                        label_id: directed_wire,
+                        slot_index: 3,
+                    },
+                    removals: vec![b"old".to_vec()],
+                    insertions: vec![b"new".to_vec()],
+                },
+            )
+            .expect("a wire-tagged DML subject must match its catalog target");
+
+        assert!(
+            store
+                .lookup_edge_equal(
+                    physical_index_id,
+                    PROPERTY_ID.raw(),
+                    b"old",
+                    Some(EDGE_LABEL_ID)
+                )
+                .expect("lookup removed value")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .lookup_edge_equal(
+                    physical_index_id,
+                    PROPERTY_ID.raw(),
+                    b"new",
+                    Some(EDGE_LABEL_ID)
+                )
+                .expect("lookup inserted value")
                 .len(),
             1
         );
@@ -1573,6 +1860,9 @@ mod tests {
                 .register_index_build(router, registration)
                 .expect("register build");
         }
+        let directed_wire = EdgeLabelId::from_raw(EDGE_LABEL_ID)
+            .pack(EdgeDirectedness::Directed)
+            .raw();
         for (physical_index_id, value) in
             [(first, b"first".as_slice()), (second, b"second".as_slice())]
         {
@@ -1586,7 +1876,7 @@ mod tests {
                         subject: IndexBuildSubject::Edge {
                             shard_id: 0,
                             owner_vertex_id: 30,
-                            label_id: EDGE_LABEL_ID,
+                            label_id: directed_wire,
                             slot_index: 0,
                         },
                         removals: Vec::new(),

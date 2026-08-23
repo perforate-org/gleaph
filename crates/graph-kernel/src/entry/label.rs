@@ -37,6 +37,17 @@ pub struct VertexLabelId(u16);
 ///
 /// Stable name maps and weight profiles use this type. Storage / LARA bucket keys use
 /// [`TaggedEdgeLabelId`], which adds the directed MSB.
+///
+/// # Edge posting label identity rule
+///
+/// This module is the single owner of the catalog ↔ wire translation for edge index
+/// postings. Every stored edge posting key carries a wire-tagged label ([`TaggedEdgeLabelId`]
+/// space, as produced by [`EdgeLabelId::pack`] and decoded by
+/// [`TaggedEdgeLabelId::label_index`]); every logical registration, catalog membership, and
+/// lookup sieve request names its label in catalog space ([`EdgeLabelId`]). Boundaries where
+/// the two spaces meet (graph-index fact/DML-subject acceptance, graph-index lookup sieves,
+/// Graph read-path membership resolution) must convert through these types — no ad-hoc
+/// `0x8000` arithmetic elsewhere in edge index paths.
 #[repr(transparent)]
 #[derive(
     Clone,
