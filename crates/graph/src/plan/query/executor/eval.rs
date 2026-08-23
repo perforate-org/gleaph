@@ -4163,10 +4163,7 @@ mod tests {
     fn label_rejects_multi_label_vertex() {
         let store = GraphStore::new();
         store
-            .insert_vertex_named(
-                ["Person", "Employee"],
-                [("name", Value::Text("a".into()))],
-            )
+            .insert_vertex_named(["Person", "Employee"], [("name", Value::Text("a".into()))])
             .expect("insert vertex");
         let plan = plan_gql("MATCH (n) WHERE n.name = 'a' RETURN label(n) AS label");
         let err = store

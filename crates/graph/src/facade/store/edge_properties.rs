@@ -125,6 +125,19 @@ impl GraphStore {
         expected: &[u8],
         label_id: Option<u16>,
     ) -> Vec<(ic_stable_lara::VertexId, u16, u32)> {
+        Self::collect_edges_matching_indexed_property_where(property_id, label_id, |bytes| {
+            bytes == expected
+        })
+    }
+
+    /// Scan canonical edge properties keeping encoded values whose sortable key satisfies
+    /// `keep` (no graph-index client). The range scan path uses this for the half-open
+    /// `[low, high)` interval; the residual plan filter enforces exact predicate semantics.
+    pub(crate) fn collect_edges_matching_indexed_property_where(
+        property_id: PropertyId,
+        label_id: Option<u16>,
+        keep: impl Fn(&[u8]) -> bool,
+    ) -> Vec<(ic_stable_lara::VertexId, u16, u32)> {
         use crate::index::catalog_context;
         use crate::property::sortable_index_key;
 
@@ -143,7 +156,7 @@ impl GraphStore {
                 let Some(bytes) = sortable_index_key(value) else {
                     return;
                 };
-                if bytes.as_slice() != expected {
+                if !keep(&bytes) {
                     return;
                 }
                 out.push((key.owner_vertex_id(), key.label_id(), key.slot_index()));
