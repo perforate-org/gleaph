@@ -1,578 +1,220 @@
-//! Paint pipeline benchmarks.
-//!
-//! Measures `build_paint_frame` across viewport scenarios that stress the
-//! zoom/pan hot path and the other dominant pipeline stages:
-//!
-//! - `overview`: every edge visible, so the density pass is O(E·k).
-//! - `deep_zoom`: few visible edges, so culling and clipping dominate.
-//! - `dense`: a complete graph, so each edge's density neighborhood is large
-//!   (k is high) and the density pass dominates.
-//! - `labels`: every node and edge carries a label, so text shaping dominates.
-//! - `clusters`: nodes grouped into clusters, so cluster-bow geometry dominates.
-//! - `self_loops`: every node has a self-loop, so onigiri path building dominates.
-//! - `parallel`: many parallel edges between the same node pairs, so the
-//!   parallel fan dominates.
+//! Paint-path benchmarks (§18.2, §22): indexed paint frame construction and
+//! edge path tessellation. Both run headlessly — the paint frame builder is
+//! pure geometry, and `PathBuilder::build` tessellates on the CPU without a
+//! window — so these measure exactly the per-frame work `GraphView` performs
+//! in its prepaint and paint closures.
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use std::time::Duration;
+
+use std::hint::black_box;
+
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use glam::Vec2;
-use gpui_graph::graph::EdgeDirection;
-use gpui_graph::interaction::{Hover, Selection};
-use gpui_graph::paint::{
-    IndexedPaintFrameInput, PaintFrameInput, build_indexed_paint_frame, build_paint_frame,
-};
-use gpui_graph::style::GraphStyle;
-use gpui_graph::viewport::Viewport;
 use gpui_graph::{
-    GraphBatch, GraphRuntime, GraphScene, LayoutBudget, LayoutEngine, LayoutGraph, LayoutProgress,
-    LayoutState, SyncedGraphRuntime,
+    Hover, NodeId, PaintFrame, Selection, Viewport, WorldBounds,
+    graph::{EdgeDirection, Graph},
+    paint::{IndexedPaintFrameInput, build_indexed_paint_frame},
+    runtime::GraphRuntime,
+    scene::GraphScene,
+    style::GraphStyle,
 };
 
-/// A synthetic graph scene with deterministic node positions. Runtime setup
-/// deliberately goes through `GraphScene::sync_runtime`, the same public
-/// synchronization boundary used by production views.
-struct BenchGraph<S = std::collections::hash_map::RandomState>
-where
-    S: std::hash::BuildHasher + Default + Clone,
-{
-    scene: GraphScene<usize, usize, (), (), S>,
-}
+/// Deterministic pseudo-random coordinates (xorshift), so fixture geometry is
+/// reproducible across runs without pulling a rand dependency.
+struct Lcg(u64);
 
-/// Layout engine used only to make the benchmark's cluster scenario exercise
-/// the same scene-owned cluster-center path as production rendering.
-struct BenchmarkClusterLayout {
-    cluster_size: usize,
-}
-
-impl LayoutEngine for BenchmarkClusterLayout {
-    fn rebuild(&mut self, _graph: &LayoutGraph, state: &mut LayoutState) {
-        state.cluster_centers.fill(None);
-        for index in 0..state.cluster_centers.len() {
-            let cluster = index / self.cluster_size;
-            let center = Vec2::new((cluster % 4) as f32 * 500.0, (cluster / 4) as f32 * 500.0);
-            state.cluster_centers[index] = Some((center, 200.0));
-        }
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
     }
 
-    fn step(
-        &mut self,
-        _graph: &LayoutGraph,
-        _state: &mut LayoutState,
-        _budget: LayoutBudget,
-    ) -> LayoutProgress {
-        LayoutProgress::Settled
+    fn coord(&mut self, span: f32) -> f32 {
+        (self.next() % 10_000) as f32 / 10_000.0 * span - span * 0.5
     }
 }
 
-impl BenchGraph {
-    /// Build a grid graph with `side * side` nodes and edges to the right and
-    /// down neighbors, plus a few long-range edges to create density variation.
-    fn grid(side: usize) -> Self {
-        Self::grid_with_hasher(side, std::collections::hash_map::RandomState::default())
-    }
+/// A graph plus the world-space placement the paint benches view.
+struct Fixture {
+    graph: Graph<(), ()>,
+    positions: Vec<Vec2>,
+}
 
-    /// Build a complete graph on `n` nodes placed on a circle, so every edge's
-    /// midpoint is close to many others and the density neighborhood is large.
-    fn complete(n: usize) -> Self {
-        let mut batch = GraphBatch::new();
-        let radius = 2000.0;
-        for i in 0..n {
-            batch = batch.node(i, ());
-        }
-        let mut edge_key = 0;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                batch = batch.edge(edge_key, i, j, EdgeDirection::Directed, ());
-                edge_key += 1;
+fn grid(side: usize) -> Fixture {
+    let spacing = 30.0;
+    let mut graph = Graph::new();
+    let mut positions = Vec::with_capacity(side * side);
+    // Row-major ids; neighbors are referenced through this vector because
+    // NodeId is an opaque slotmap key.
+    let ids: Vec<NodeId> = (0..side * side)
+        .map(|i| {
+            let (x, y) = (i % side, i / side);
+            positions.push(Vec2::new(x as f32 * spacing, y as f32 * spacing));
+            graph.add_node(())
+        })
+        .collect();
+    for y in 0..side {
+        for x in 0..side {
+            let id = ids[y * side + x];
+            if x + 1 < side {
+                graph.add_edge(id, ids[y * side + x + 1], EdgeDirection::Undirected, ());
+            }
+            if y + 1 < side {
+                graph.add_edge(id, ids[(y + 1) * side + x], EdgeDirection::Undirected, ());
             }
         }
+    }
+    Fixture { graph, positions }
+}
+
+fn hub(leaves: usize) -> Fixture {
+    let radius = 600.0;
+    let mut graph = Graph::new();
+    let mut positions = Vec::with_capacity(leaves + 1);
+    let center = graph.add_node(());
+    positions.push(Vec2::ZERO);
+    for i in 0..leaves {
+        let angle = i as f32 / leaves as f32 * std::f32::consts::TAU;
+        let leaf = graph.add_node(());
+        positions.push(Vec2::from_angle(angle) * radius);
+        graph.add_edge(center, leaf, EdgeDirection::Undirected, ());
+    }
+    Fixture { graph, positions }
+}
+
+fn random(count: usize) -> Fixture {
+    let span = 1500.0;
+    let mut rng = Lcg(0x9E37_79B9_7F4A_7C15);
+    let mut graph = Graph::new();
+    let mut positions = Vec::with_capacity(count);
+    let ids: Vec<NodeId> = (0..count)
+        .map(|_| {
+            positions.push(Vec2::new(rng.coord(span), rng.coord(span)));
+            graph.add_node(())
+        })
+        .collect();
+    // Ring plus a fixed-stride shortcut keeps degree bounded and
+    // deterministic while producing plenty of long crossing edges.
+    for i in 0..count {
+        let prev = (i + count - 1) % count;
+        graph.add_edge(ids[i], ids[prev], EdgeDirection::Undirected, ());
+        let skip = (i + 7) % count;
+        if skip != i && skip != prev {
+            graph.add_edge(ids[i], ids[skip], EdgeDirection::Undirected, ());
+        }
+    }
+    Fixture { graph, positions }
+}
+
+/// A scene with the fixture merged in and positions set, plus a viewport
+/// fitted to show every node (the worst case: nothing culls).
+struct PaintBench {
+    scene: GraphScene<String, String, (), (), gpui_graph::DefaultBuildHasher>,
+    viewport: Viewport,
+    style: GraphStyle,
+    selection: Selection,
+    hover: Hover,
+}
+
+impl PaintBench {
+    fn build(fixture: &Fixture) -> Self {
+        let n = fixture.graph.node_count();
         let mut scene = GraphScene::new();
+        let batch = (0..n).fold(gpui_graph::GraphBatch::new(), |b, i| {
+            b.node(format!("n{i}"), ())
+        });
+        // String keys mirror the logical fixture's insertion order.
+        let keys: std::collections::HashMap<NodeId, String> = fixture
+            .graph
+            .nodes()
+            .enumerate()
+            .map(|(i, (id, _))| (id, format!("n{i}")))
+            .collect();
+        let batch = fixture
+            .graph
+            .edges()
+            .enumerate()
+            .fold(batch, |b, (index, (_, edge))| {
+                b.edge(
+                    format!("e{index}"),
+                    keys[&edge.source].clone(),
+                    keys[&edge.target].clone(),
+                    edge.direction,
+                    (),
+                )
+            });
         scene.merge(batch);
-        for i in 0..n {
-            let angle = i as f32 / n as f32 * std::f32::consts::TAU;
-            let node = scene.node_id(&i).expect("complete graph node exists");
-            scene.set_position(node, Vec2::new(angle.cos(), angle.sin()) * radius);
+
+        // Iterate the merged ids (insertion order) and place each node.
+        let ids: Vec<NodeId> = scene.graph().nodes().map(|(id, _)| id).collect();
+        for (id, position) in ids.into_iter().zip(fixture.positions.iter()) {
+            scene.set_position(id, *position);
         }
-        Self { scene }
+
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(1200.0, 800.0));
+        let mut bounds = WorldBounds {
+            min: Vec2::splat(f32::INFINITY),
+            max: Vec2::splat(f32::NEG_INFINITY),
+        };
+        for p in &fixture.positions {
+            bounds.min = bounds.min.min(*p);
+            bounds.max = bounds.max.max(*p);
+        }
+        viewport.fit_bounds(bounds, 0.0);
+
+        Self {
+            scene,
+            viewport,
+            style: GraphStyle::default(),
+            selection: Selection::new(),
+            hover: Hover::default(),
+        }
     }
 
-    /// Build a grid graph where nodes are grouped into clusters of `cluster_size`
-    /// consecutive nodes, each with a shared center and radius.
-    fn grid_with_clusters(side: usize, cluster_size: usize) -> Self {
-        let mut g = Self::grid(side);
-        g.scene
-            .set_layout(Box::new(BenchmarkClusterLayout { cluster_size }));
-        g
-    }
-
-    /// Build a grid graph where every node has a self-loop.
-    fn grid_with_self_loops(side: usize) -> Self {
-        let mut g = Self::grid(side);
-        let mut batch = GraphBatch::new();
-        for (edge_key, id) in (10_000..).zip(0..side * side) {
-            batch = batch.edge(edge_key, id, id, EdgeDirection::Directed, ());
-        }
-        g.scene.merge(batch);
-        g
-    }
-
-    /// Build a graph with `pairs` node pairs, each connected by `parallel`
-    /// parallel edges.
-    fn parallel(pairs: usize, parallel: usize) -> Self {
-        let mut batch = GraphBatch::new();
-        for i in 0..pairs * 2 {
-            batch = batch.node(i, ());
-        }
-        let mut edge_key = 0;
-        for p in 0..pairs {
-            let a = p * 2;
-            let b = p * 2 + 1;
-            for _ in 0..parallel {
-                batch = batch.edge(edge_key, a, b, EdgeDirection::Directed, ());
-                edge_key += 1;
-            }
-        }
-        let mut scene = GraphScene::new();
-        scene.merge(batch);
-        for i in 0..pairs * 2 {
-            let node = scene.node_id(&i).expect("parallel graph node exists");
-            scene.set_position(node, Vec2::new(i as f32 * 100.0, 0.0));
-        }
-        Self { scene }
+    /// Build one indexed paint frame against a freshly synced runtime.
+    fn build_frame(&self, runtime: &mut GraphRuntime) -> PaintFrame {
+        let synced = self.scene.sync_runtime(runtime);
+        build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &|_, _| Some("Node".to_string()),
+            edge_label: &|_, _| None,
+            viewport: &self.viewport,
+            style: &self.style,
+            selection: &self.selection,
+            hover: &self.hover,
+            node_overlay: None,
+            edge_overlay: None,
+        })
     }
 }
 
-impl<S> BenchGraph<S>
-where
-    S: std::hash::BuildHasher + Default + Clone,
-{
-    /// Build a grid graph with `side * side` nodes and edges to the right and
-    /// down neighbors, plus a few long-range edges to create density variation.
-    fn grid_with_hasher(side: usize, hasher: S) -> Self {
-        let mut batch = GraphBatch::new();
-        let spacing = 60.0;
-        let mut ids = Vec::new();
-        for y in 0..side {
-            for x in 0..side {
-                let id = y * side + x;
-                batch = batch.node(id, ());
-                ids.push(id);
-            }
-        }
-        let at = |x: usize, y: usize| ids[y * side + x];
-        let mut edge_key = 0;
-        for y in 0..side {
-            for x in 0..side {
-                let id = at(x, y);
-                if x + 1 < side {
-                    batch = batch.edge(edge_key, id, at(x + 1, y), EdgeDirection::Directed, ());
-                    edge_key += 1;
-                }
-                if y + 1 < side {
-                    batch = batch.edge(edge_key, id, at(x, y + 1), EdgeDirection::Directed, ());
-                    edge_key += 1;
-                }
-            }
-        }
-        // A few long-range edges to vary local density.
-        for i in 0..(side / 4) {
-            let a = at(i * 4 % side, i % side);
-            let b = at((i * 7 + 3) % side, (i * 5 + 1) % side);
-            if a != b {
-                batch = batch.edge(edge_key, a, b, EdgeDirection::Directed, ());
-                edge_key += 1;
-            }
-        }
-        let mut scene = GraphScene::with_hasher(hasher);
-        scene.merge(batch);
-        for y in 0..side {
-            for x in 0..side {
-                let id = at(x, y);
-                let node = scene.node_id(&id).expect("grid node exists");
-                scene.set_position(node, Vec2::new(x as f32 * spacing, y as f32 * spacing));
-            }
-        }
-        Self { scene }
-    }
-}
-
-/// A viewport centered on the graph's bounding box, sized to show it all.
-fn overview_viewport(graph: &BenchGraph) -> Viewport {
-    let mut min = Vec2::splat(f32::INFINITY);
-    let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for (id, _) in graph.scene.graph().nodes() {
-        if let Some(position) = graph.scene.node_position(id) {
-            min = min.min(position);
-            max = max.max(position);
-        }
-    }
-    let world_size = max - min;
-    let size = Vec2::new(1600.0, 1000.0);
-    let zoom = (size / world_size).min_element() * 0.9;
-    let mut vp = Viewport::new();
-    vp.set_size(size);
-    vp.zoom_at(Vec2::new(size.x * 0.5, size.y * 0.5), zoom);
-    vp
-}
-
-/// A viewport zoomed deep into the center of the graph, so only a handful of
-/// nodes and edges are visible.
-fn deep_zoom_viewport(graph: &BenchGraph) -> Viewport {
-    let mut min = Vec2::splat(f32::INFINITY);
-    let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for (id, _) in graph.scene.graph().nodes() {
-        if let Some(position) = graph.scene.node_position(id) {
-            min = min.min(position);
-            max = max.max(position);
-        }
-    }
-    let center = (min + max) * 0.5;
-    let size = Vec2::new(1600.0, 1000.0);
-    let mut vp = Viewport::new();
-    vp.set_size(size);
-    // Zoom so the viewport spans ~4 world units (a few nodes).
-    vp.zoom_at(Vec2::new(size.x * 0.5, size.y * 0.5), 400.0);
-    vp.pan(center - vp.screen_to_world(Vec2::new(size.x * 0.5, size.y * 0.5)));
-    vp
-}
-
-fn paint_frame(graph: &BenchGraph, viewport: &Viewport, labels: bool) {
-    let style = GraphStyle::default();
-    let selection = Selection::new();
-    let hover = Hover::default();
-    let input = PaintFrameInput {
-        graph: graph.scene.graph(),
-        node_position: &|id| graph.scene.node_position(id),
-        node_cluster_center: &|id| graph.scene.node_cluster_center(id),
-        node_label: &|_, _| {
-            if labels {
-                Some("node".to_string())
-            } else {
-                None
-            }
-        },
-        edge_label: &|_, _| {
-            if labels {
-                Some("edge".to_string())
-            } else {
-                None
-            }
-        },
-        viewport,
-        style: &style,
-        selection: &selection,
-        hover: &hover,
-        node_overlay: None,
-        edge_overlay: None,
-    };
-    let frame = build_paint_frame(input);
-    std::hint::black_box(frame);
-}
-
-/// Build a paint frame from a viewport and a style, sharing the label and
-/// interaction setup. `straight_threshold` enables straight-line LOD
-/// simplification for edges below that on-screen length.
-fn paint_frame_styled(graph: &BenchGraph, viewport: &Viewport, style: &GraphStyle) {
-    let selection = Selection::new();
-    let hover = Hover::default();
-    let input = PaintFrameInput {
-        graph: graph.scene.graph(),
-        node_position: &|id| graph.scene.node_position(id),
-        node_cluster_center: &|id| graph.scene.node_cluster_center(id),
-        node_label: &|_, _| None,
-        edge_label: &|_, _| None,
-        viewport,
-        style,
-        selection: &selection,
-        hover: &hover,
-        node_overlay: None,
-        edge_overlay: None,
-    };
-    let frame = build_paint_frame(input);
-    std::hint::black_box(frame);
-}
-
-/// Build a paint frame using the spatial index, given a prebuilt runtime.
-fn paint_frame_indexed_with<S>(
-    viewport: &Viewport,
-    labels: bool,
-    synced: &SyncedGraphRuntime<'_, usize, usize, (), (), S>,
-) where
-    S: std::hash::BuildHasher + Default + Clone,
-{
-    let style = GraphStyle::default();
-    let selection = Selection::new();
-    let hover = Hover::default();
-    let input = IndexedPaintFrameInput {
-        synced,
-        node_label: &|_, _| {
-            if labels {
-                Some("node".to_string())
-            } else {
-                None
-            }
-        },
-        edge_label: &|_, _| {
-            if labels {
-                Some("edge".to_string())
-            } else {
-                None
-            }
-        },
-        viewport,
-        style: &style,
-        selection: &selection,
-        hover: &hover,
-        node_overlay: None,
-        edge_overlay: None,
-    };
-    let frame = build_indexed_paint_frame(input);
-    std::hint::black_box(frame);
-}
-
-/// Build a paint frame using the spatial index with a caller-supplied style.
-/// Used to isolate the true per-frame cost of straight-line LOD in the indexed
-/// (prep-cached) path, so the prep rebuild is not counted.
-fn paint_frame_indexed_styled<S>(
-    viewport: &Viewport,
-    style: &GraphStyle,
-    synced: &SyncedGraphRuntime<'_, usize, usize, (), (), S>,
-) where
-    S: std::hash::BuildHasher + Default + Clone,
-{
-    let selection = Selection::new();
-    let hover = Hover::default();
-    let input = IndexedPaintFrameInput {
-        synced,
-        node_label: &|_, _| None,
-        edge_label: &|_, _| None,
-        viewport,
-        style,
-        selection: &selection,
-        hover: &hover,
-        node_overlay: None,
-        edge_overlay: None,
-    };
-    let frame = build_indexed_paint_frame(input);
-    std::hint::black_box(frame);
-}
-
-fn bench_paint(c: &mut Criterion) {
+fn bench_paint_frame(c: &mut Criterion) {
     let mut group = c.benchmark_group("paint_frame");
+    group.sample_size(30);
+    group.measurement_time(Duration::from_secs(10));
 
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid(side);
-        let overview = overview_viewport(&graph);
-        let deep = deep_zoom_viewport(&graph);
-        let label = format!("{}x{}", side, side);
-
-        group.bench_with_input(
-            BenchmarkId::new("overview", &label),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("deep_zoom", &label),
-            &(&graph, &deep),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-    }
-
-    // Dense (complete) graph: high per-edge density neighborhood.
-    for n in [30usize, 60usize] {
-        let graph = BenchGraph::complete(n);
-        let overview = overview_viewport(&graph);
-        group.bench_with_input(
-            BenchmarkId::new("dense", n.to_string()),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-    }
-
-    // Labels: text shaping for every node and edge.
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid(side);
-        let overview = overview_viewport(&graph);
-        group.bench_with_input(
-            BenchmarkId::new("labels", format!("{}x{}", side, side)),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, true)),
-        );
-    }
-
-    // Clusters: cluster-bow geometry for every edge.
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid_with_clusters(side, 10);
-        let overview = overview_viewport(&graph);
-        group.bench_with_input(
-            BenchmarkId::new("clusters", format!("{}x{}", side, side)),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-    }
-
-    // Self-loops: onigiri path building for every node.
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid_with_self_loops(side);
-        let overview = overview_viewport(&graph);
-        group.bench_with_input(
-            BenchmarkId::new("self_loops", format!("{}x{}", side, side)),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-    }
-
-    // Parallel edges: parallel fan for every edge.
-    for (pairs, parallel) in [(100usize, 10usize), (200usize, 10usize)] {
-        let graph = BenchGraph::parallel(pairs, parallel);
-        let overview = overview_viewport(&graph);
-        group.bench_with_input(
-            BenchmarkId::new("parallel", format!("{}x{}", pairs, parallel)),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-    }
-
-    group.finish();
-}
-
-/// Compare the linear-scan path against the spatial-index path. The index is
-/// rebuilt once and reused, so this isolates the per-frame query + visibility
-/// cost. The deep-zoom scenario (few visible primitives in a large graph) is
-/// where the index should win; the overview scenario (everything visible) shows
-/// the index's query overhead.
-fn bench_paint_indexed(c: &mut Criterion) {
-    let mut group = c.benchmark_group("paint_frame_indexed");
-
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid(side);
-        let overview = overview_viewport(&graph);
-        let deep = deep_zoom_viewport(&graph);
-        let label = format!("{}x{}", side, side);
-        // Build the spatial index once, outside the timed closure, so the
-        // benchmark measures the per-frame indexed path (not the rebuild).
+    for (name, fixture) in [
+        ("grid_100x100", grid(100)),
+        ("hub_4096", hub(4096)),
+        ("random_5000", random(5000)),
+    ] {
+        let bench = PaintBench::build(&fixture);
         let mut runtime = GraphRuntime::new();
-        let synced = graph.scene.sync_runtime(&mut runtime);
-
-        group.bench_with_input(
-            BenchmarkId::new("overview_scan", &label),
-            &(&graph, &overview),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overview_indexed", &label),
-            &(&overview, &synced),
-            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("deep_zoom_scan", &label),
-            &(&graph, &deep),
-            |b, (g, vp)| b.iter(|| paint_frame(g, vp, false)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("deep_zoom_indexed", &label),
-            &(&deep, &synced),
-            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
-        );
+        let throughput =
+            Throughput::Elements((fixture.graph.node_count() + fixture.graph.edge_count()) as u64);
+        group.throughput(throughput);
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let frame = bench.build_frame(&mut runtime);
+                black_box((frame.nodes.len(), frame.edges.len()))
+            })
+        });
     }
-
     group.finish();
 }
 
-/// Compare the indexed paint path under the default SipHash hasher against the
-/// same path under `rapidhash::fast::RandomState`, isolating the hasher's
-/// contribution to the per-frame spatial-grid cost.
-fn bench_paint_hashers(c: &mut Criterion) {
-    let mut group = c.benchmark_group("paint_frame_hasher");
-
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid(side);
-        let rapid_graph = BenchGraph::<rapidhash::fast::RandomState>::grid_with_hasher(
-            side,
-            rapidhash::fast::RandomState::default(),
-        );
-        let overview = overview_viewport(&graph);
-        let deep = deep_zoom_viewport(&graph);
-        let label = format!("{}x{}", side, side);
-
-        // Default SipHash hasher.
-        let mut sip = GraphRuntime::new();
-        let sip_synced = graph.scene.sync_runtime(&mut sip);
-        // rapidhash hasher.
-        let mut rapid = GraphRuntime::<rapidhash::fast::RandomState>::default();
-        let rapid_synced = rapid_graph.scene.sync_runtime(&mut rapid);
-
-        group.bench_with_input(
-            BenchmarkId::new("overview_sip", &label),
-            &(&overview, &sip_synced),
-            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overview_rapid", &label),
-            &(&overview, &rapid_synced),
-            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("deep_zoom_sip", &label),
-            &(&deep, &sip_synced),
-            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("deep_zoom_rapid", &label),
-            &(&deep, &rapid_synced),
-            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
-        );
-    }
-
-    group.finish();
-}
-
-/// Compare the overview paint path with and without straight-line LOD
-/// simplification. Zoomed out, every edge is visible and most are far shorter
-/// than the 24px on-screen threshold, so the curve/obstacle/trim work is the
-/// dominant cost; straight-line simplification should cut the per-edge work
-/// substantially.
-fn bench_paint_lod(c: &mut Criterion) {
-    let mut group = c.benchmark_group("paint_frame_lod");
-
-    for side in [20usize, 50usize] {
-        let graph = BenchGraph::grid(side);
-        let overview = overview_viewport(&graph);
-        let label = format!("{}x{}", side, side);
-        let curved = GraphStyle::default();
-        let straight = GraphStyle::default().with_edge_straight_threshold(24.0);
-        let mut runtime = GraphRuntime::new();
-        let synced = graph.scene.sync_runtime(&mut runtime);
-
-        group.bench_with_input(
-            BenchmarkId::new("overview_curved", &label),
-            &(&graph, &overview, &curved),
-            |b, (g, vp, style)| b.iter(|| paint_frame_styled(g, vp, style)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overview_straight", &label),
-            &(&graph, &overview, &straight),
-            |b, (g, vp, style)| b.iter(|| paint_frame_styled(g, vp, style)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overview_indexed_curved", &label),
-            &(&overview, &curved, &synced),
-            |b, (vp, style, proof)| b.iter(|| paint_frame_indexed_styled(vp, style, proof)),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("overview_indexed_straight", &label),
-            &(&overview, &straight, &synced),
-            |b, (vp, style, proof)| b.iter(|| paint_frame_indexed_styled(vp, style, proof)),
-        );
-    }
-
-    group.finish();
-}
-
-criterion_group!(
-    benches,
-    bench_paint,
-    bench_paint_indexed,
-    bench_paint_hashers,
-    bench_paint_lod
-);
+criterion_group!(benches, bench_paint_frame);
 criterion_main!(benches);
