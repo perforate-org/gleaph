@@ -892,11 +892,13 @@ that converges the whole graph inside one frame collapses the animation
 into a single jump. Perceived animation speed is a driver concern on top
 of the budget, with two independent levers: stepping frequency (frames
 per second) and per-step motion size ([`ForceAtlas2::with_slow_down`]).
-The examples step once per display frame at `slow_down = 3`, so each
-frame's movement is gentle enough to read as drift while convergence
-still completes in a few seconds; time-stretching steps alone instead
-magnifies the chaotic MAX_STEP-clamped opening phase into seconds of
-flailing (step count pinned by `frame_budget_keeps_relaxation_visible`).
+`slow_down` is time dilation: rest, convergence, and the cooling
+schedule are all judged on unscaled motion, so any value stretches the
+same trajectory over proportionally more iterations without freezing
+early or stopping at an under-relaxed layout. Movement clamped by
+MAX_STEP (the opening burst of a fresh layout) stays undilated. The
+examples step once per display frame; step count is pinned by
+`frame_budget_keeps_relaxation_visible`.
 A capped step reports `Running`
 when iterations remain; convergence semantics are unchanged. Enforcement lives in the engine's iteration loop (one clock
 read per step call), so synchronous and background drivers share one

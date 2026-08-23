@@ -722,8 +722,20 @@ impl ForceAtlas2 {
 
     /// Set the FA2 `slowDown` divisor applied to every node's per-iteration
     /// movement.
+    ///
+    /// `slow_down` dilates time: the same trajectory plays back at 1/n
+    /// motion per iteration, taking roughly n times as many iterations to
+    /// reach the same layout. Rest and convergence are judged on unscaled
+    /// motion, so large values stretch the animation without freezing it or
+    /// stopping early. Movement clamped by [`MAX_STEP`] (the opening burst of
+    /// a fresh layout) is unaffected — slow_down only stretches the sub-cap
+    /// tail where motion is already gentle.
     pub fn with_slow_down(mut self, slow_down: f32) -> Self {
-        self.slow_down = slow_down;
+        debug_assert!(
+            slow_down.is_finite() && slow_down > 0.0,
+            "slow_down must be a finite value greater than zero"
+        );
+        self.slow_down = slow_down.max(f32::MIN_POSITIVE);
         self
     }
 
@@ -924,11 +936,17 @@ impl LayoutEngine for ForceAtlas2 {
         // `iterate` returns the total displacement across all nodes; compare the
         // average per-node displacement so the threshold is independent of graph
         // size. A small graph with a few jittering nodes must still settle.
+        // `slow_down` dilates time — the same trajectory point shows 1/slow_down
+        // the per-iteration motion — so the comparison scales the average back
+        // to unscaled motion. Comparing dilated movement against the absolute
+        // threshold would report Settled almost immediately for large
+        // `slow_down` values and freeze the animation.
         let avg_displacement = last_displacement / n as f32;
-        if avg_displacement < self.settled_threshold {
+        let unscaled_avg = avg_displacement * self.slow_down;
+        if unscaled_avg < self.settled_threshold {
             LayoutProgress::Settled
         } else {
-            let stability = (1.0 - (avg_displacement / 10.0).min(1.0)).max(0.0);
+            let stability = (1.0 - (unscaled_avg / 10.0).min(1.0)).max(0.0);
             LayoutProgress::Running {
                 stability: Some(stability),
             }
@@ -1153,7 +1171,12 @@ impl ForceAtlas2 {
             total
         };
         // Global cooling decays once per iteration, after applying movements.
-        self.cooling = (self.cooling * COOLING_FACTOR).max(0.0);
+        // The schedule follows *unscaled* simulation time: `slow_down`
+        // dilates motion and the decay together, so a dilated run traces the
+        // same trajectory to the same equilibrium instead of freezing
+        // mid-flight when decayed cooling outruns its shrunken steps.
+        let decay = COOLING_FACTOR.powf(1.0 / self.slow_down);
+        self.cooling = (self.cooling * decay).max(0.0);
         total
     }
 }
@@ -1217,11 +1240,13 @@ fn apply_node_motion(
     // Dead-band: below the epsilon the node is effectively at rest. Freeze it
     // so equilibrium noise cannot jitter it forever and the layout can report
     // settled. State above stays fresh, so a real force (drag, topology
-    // change) moves it again immediately.
-    let desired = force
-        .length()
-        .algebraic_mul(nodespeed * cooling / slow_down);
-    if desired < DISPLACEMENT_EPSILON {
+    // change) moves it again immediately. The comparison uses the *unscaled*
+    // motion: `slow_down` dilates time, and comparing the dilated movement
+    // against an absolute floor would freeze large-`slow_down` runs the
+    // moment movements shrink under the threshold.
+    let unscaled = force.length().algebraic_mul(nodespeed * cooling);
+    let desired = unscaled.algebraic_div(slow_down);
+    if unscaled < DISPLACEMENT_EPSILON {
         return 0.0;
     }
     // [`MAX_STEP`] applies only when one iteration would otherwise fling the
@@ -1298,6 +1323,66 @@ mod tests {
         assert!(
             elapsed < core::time::Duration::from_millis(1000),
             "wall-clock cap must bound the step, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn slow_down_stretches_time_without_freezing() {
+        // Regression: the dead-band and settle threshold compared dilated
+        // movement against absolute floors, so a large slow_down reported
+        // Settled on iteration 1 and the animation never started.
+        let build = |slow_down: f32| {
+            let mut g = Graph::new();
+            let a = g.add_node(());
+            let b = g.add_node(());
+            let c = g.add_node(());
+            g.add_edge(a, b, EdgeDirection::Undirected, ());
+            g.add_edge(b, c, EdgeDirection::Undirected, ());
+            let (lg, mut state) = project(&g);
+            state.positions[0] = Vec2::new(-60.0, 0.0);
+            state.positions[1] = Vec2::new(0.0, 0.0);
+            state.positions[2] = Vec2::new(70.0, 0.0);
+            let mut fa = ForceAtlas2::default().with_slow_down(slow_down);
+            fa.rebuild(&lg, &mut state);
+            (lg, state, fa)
+        };
+
+        let (lg, mut state, mut fast) = build(1.0);
+        let mut fast_iters = 0u32;
+        while fast_iters < 2000
+            && fast.step(&lg, &mut state, LayoutBudget::default()) != LayoutProgress::Settled
+        {
+            fast_iters += 1;
+        }
+        assert!(fast_iters < 2000, "baseline must settle");
+        let fast_spread = state.positions[0].distance(state.positions[2]);
+
+        let (lg, mut state, mut slow) = build(300.0);
+        // The bug: Settled reported immediately. Movement must keep flowing.
+        let first = slow.step(&lg, &mut state, LayoutBudget::default());
+        assert!(
+            matches!(first, LayoutProgress::Running { .. }),
+            "slow_down=300 must not report Settled on iteration 1"
+        );
+
+        let mut slow_iters = 0u32;
+        while slow_iters < 100_000
+            && slow.step(&lg, &mut state, LayoutBudget::default()) != LayoutProgress::Settled
+        {
+            slow_iters += 1;
+        }
+        assert!(
+            slow_iters < 100_000,
+            "dilated run must still reach equilibrium"
+        );
+        assert!(
+            slow_iters > fast_iters * 10,
+            "dilation must take visibly longer: {slow_iters} vs {fast_iters}"
+        );
+        let slow_spread = state.positions[0].distance(state.positions[2]);
+        assert!(
+            (slow_spread - fast_spread).abs() < 5.0,
+            "same equilibrium expected: {slow_spread} vs {fast_spread}"
         );
     }
 
