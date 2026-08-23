@@ -1,0 +1,141 @@
+Plan 0283 prototype audit reproduction
+UTC anchor: 2026-08-23 03:25:59 UTC +0000
+Tool: canbench 0.7.0
+Working directory: crates/ic-stable-lara
+
+The candidate, drain, and post-query evidence below was produced from the retained temporary source
+patch in 0283-tombstone-offset-prototype.patch before its final pre-drain-only extension. The final
+patch applies to the same retained benchmark source and adds the fresh pre-drain comparator recorded
+below without changing those earlier measured closures. It adds feature-gated benchmark code only.
+It was removed from compiled source after each capture; no prototype name was persisted to YAML.
+
+Candidate read contract
+-----------------------
+Each measured candidate resolves the vertex and its one label bucket once, creates one slab read
+context, uses the fixed-block or two-level counts only to locate the starting block, then reads and
+decodes canonical stable edge rows. It rejects deleted/tombstoned rows, reconstructs logical slots,
+and performs the same 32-row slot/target checksum as the retained production benchmark. Fixture,
+directory construction, exact all-ordinal/both-order parity, offsets 31/32/33/959/960/991/1023,
+toggle-and-rebuild accounting, and exact window assertions execute before bench_fn.
+
+Fresh Deferred pre-drain query reproduction
+--------------------------------------------
+UTC: 2026-08-23 03:44:51 UTC +0000
+Tool: canbench 0.7.0
+Working directory: crates/ic-stable-lara
+Command: canbench --csv --hide-results offset_live1024_audit_maintenance_pre_query_875
+Exit: 0
+Result: 1 new benchmark; 870,788 instructions; heap increase 0; stable-memory increase 0
+
+Raw CSV
+-------
+status,name,scope_calls,scope_calls delta,scope_calls delta percent,instructions,instructions delta,instructions delta percent,heap_increase,heap_increase delta,heap_increase delta percent,stable_memory_increase,stable_memory_increase delta,stable_memory_increase delta percent
+new,bench_offset_live1024_audit_maintenance_pre_query_875,,,,870788,,,0,,,0,,
+
+Command
+-------
+canbench --csv --hide-results offset_live1024_audit
+
+Successful stdout
+-----------------
+    Finished `release` profile [optimized] target(s) in 0.83s
+---------------------------------------------------
+
+Summary:
+  instructions:
+    status:   New benchmarks added
+    counts:   [total 8 | regressed 0 | improved 0 | new 8 | unchanged 0]
+
+Only significant changes:
+| name | calls | instructions | heap increase | stable-memory increase |
+| --- | ---: | ---: | ---: | ---: |
+| bench_offset_live1024_audit_candidate_fixed_block_75 |  | 35,620 | 0 | 0 |
+| ...fixed_block_75::offset_audit_fixed_block_directory_lookup | 1 | 3,367 | 0 | 0 |
+| bench_offset_live1024_audit_candidate_fixed_block_875 |  | 65,776 | 0 | 0 |
+| ...fixed_block_875::offset_audit_fixed_block_directory_lookup | 1 | 6,367 | 0 | 0 |
+| bench_offset_live1024_audit_candidate_two_level_75 |  | 32,138 | 0 | 0 |
+| bench_offset_live1024_audit_candidate_two_level_875 |  | 59,210 | 0 | 0 |
+| bench_offset_live1024_audit_fixed_block_selector_8192 |  | 7,463 | 0 | 0 |
+| ...selector_8192::offset_audit_fixed_block_directory_lookup | 1 | 6,468 | 0 | 0 |
+| bench_offset_live1024_audit_maintenance_drain_checkpoint1_875 |  | 831,216,051 | 0 | 0 |
+| ...checkpoint1_875::labeled_deferred_maintenance_item | 1,025 | 824,414,511 | 0 | 0 |
+| ...checkpoint1_875::labeled_rewrite_copy_inplace_vec | 1 | 137,513 | 0 | 0 |
+| ...checkpoint1_875::labeled_rewrite_finalize | 1 | 1,444 | 0 | 0 |
+| ...checkpoint1_875::labeled_rewrite_read_and_plan | 1 | 8,177 | 0 | 0 |
+| bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875 |  | 830,986,451 | 0 | 0 |
+| ...checkpoint_max_875::labeled_deferred_maintenance_item | 1,025 | 824,414,511 | 0 | 0 |
+| ...checkpoint_max_875::labeled_rewrite_copy_inplace_vec | 1 | 137,513 | 0 | 0 |
+| ...checkpoint_max_875::labeled_rewrite_finalize | 1 | 1,444 | 0 | 0 |
+| ...checkpoint_max_875::labeled_rewrite_read_and_plan | 1 | 8,177 | 0 | 0 |
+| bench_offset_live1024_audit_maintenance_post_query_875 |  | 27,095 | 0 | 0 |
+
+Raw candidate/maintenance CSV
+-----------------------------
+status,name,scope_calls,scope_calls delta,scope_calls delta percent,instructions,instructions delta,instructions delta percent,heap_increase,heap_increase delta,heap_increase delta percent,stable_memory_increase,stable_memory_increase delta,stable_memory_increase delta percent
+new,bench_offset_live1024_audit_candidate_fixed_block_75,,,,35620,,,0,,,0,,
+new,bench_offset_live1024_audit_candidate_fixed_block_75::offset_audit_fixed_block_directory_lookup,1,,,3367,,,0,,,0,,
+new,bench_offset_live1024_audit_candidate_fixed_block_875,,,,65776,,,0,,,0,,
+new,bench_offset_live1024_audit_candidate_fixed_block_875::offset_audit_fixed_block_directory_lookup,1,,,6367,,,0,,,0,,
+new,bench_offset_live1024_audit_candidate_two_level_75,,,,32138,,,0,,,0,,
+new,bench_offset_live1024_audit_candidate_two_level_875,,,,59210,,,0,,,0,,
+new,bench_offset_live1024_audit_fixed_block_selector_8192,,,,7463,,,0,,,0,,
+new,bench_offset_live1024_audit_fixed_block_selector_8192::offset_audit_fixed_block_directory_lookup,1,,,6468,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint1_875,,,,831216051,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint1_875::labeled_deferred_maintenance_item,1025,,,824414511,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint1_875::labeled_rewrite_copy_inplace_vec,1,,,137513,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint1_875::labeled_rewrite_finalize,1,,,1444,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint1_875::labeled_rewrite_read_and_plan,1,,,8177,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875,,,,830986451,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875::labeled_deferred_maintenance_item,1025,,,824414511,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875::labeled_rewrite_copy_inplace_vec,1,,,137513,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875::labeled_rewrite_finalize,1,,,1444,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875::labeled_rewrite_read_and_plan,1,,,8177,,,0,,,0,,
+new,bench_offset_live1024_audit_maintenance_post_query_875,,,,27095,,,0,,,0,,
+
+Retained canonical command
+--------------------------
+canbench --csv --hide-results offset_live1024
+
+Successful stdout
+-----------------
+Summary:
+  instructions:
+    status:   No significant changes
+    counts:   [total 10 | regressed 0 | improved 0 | new 0 | unchanged 10]
+    change:   [max 0 | p75 -2 | median -8 | p25 -8 | min -8]
+    change percent: [max 0.00% | p75 -0.00% | median -0.00% | p25 -0.02% | min -0.05%]
+
+Raw canonical CSV
+-----------------
+status,name,scope_calls,scope_calls delta,scope_calls delta percent,instructions,instructions delta,instructions delta percent,heap_increase,heap_increase delta,heap_increase delta percent,stable_memory_increase,stable_memory_increase delta,stable_memory_increase delta percent
+,bench_offset_live1024_extent1024_offset0_asc,,,,27146,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent1024_offset0_desc,,,,27067,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent1024_offset960_asc,,,,27146,0,0.00%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent2048_offset0_asc,,,,17339,-8,-0.05%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent2048_offset960_asc,,,,235398,-8,-0.00%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent4096_offset0_asc,,,,24243,-8,-0.03%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent4096_offset960_asc,,,,447810,-8,-0.00%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent8192_offset0_asc,,,,38051,-8,-0.02%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent8192_offset0_desc,,,,37343,-8,-0.02%,0,0,0.00%,0,0,0.00%
+,bench_offset_live1024_extent8192_offset960_asc,,,,872634,-8,-0.00%,0,0,0.00%,0,0,0.00%
+
+Derived primary audit arithmetic
+--------------------------------
+50% OFFSET/control = 235398 / 17339 = 13.5762x
+50% OFFSET/dense-OFFSET = 235398 / 27146 = 8.6716x
+75% OFFSET/control = 447810 / 24243 = 18.4717x
+75% OFFSET/dense-OFFSET = 447810 / 27146 = 16.4964x
+87.5% OFFSET/control = 872634 / 38051 = 22.9333x
+87.5% OFFSET/dense-OFFSET = 872634 / 27146 = 32.1460x
+fixed candidate/current = 35620 / 447810 = 7.9543% at 75%; 65776 / 872634 = 7.5376% at 87.5%
+two-level candidate/current = 32138 / 447810 = 7.1767% at 75%; 59210 / 872634 = 6.7852% at 87.5%
+two-level trigger = 6468 / 7463 = 0.8667
+I_maintenance_total = 831216051
+maintenance-item scope = 824414511
+outer maintenance overhead = 831216051 - 824414511 = 6801540
+checkpoint overhead = 831216051 - 830986451 = 229600
+S_candidate_over_post = I_candidate_e2e - I_post_query = 59210 - 27095 = 32115
+Q_upper = I_maintenance_total / S_candidate_over_post = 831216051 / 32115 = 25882.49 queries
+Q_upper is an optimistic query-only upper bound: candidate build, mutation, update, validation,
+framing, and repair costs are omitted, and compaction retains independent storage obligations.
+A positive upper-bound crossover alone does not establish substitution or workload benefit.

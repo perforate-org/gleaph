@@ -1,0 +1,576 @@
+--- a/crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs
++++ b/crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs
+@@ -7,15 +7,15 @@
+ //! under identical build settings.
+ 
+ use crate::labeled::{
+-    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, LabeledInlinePropertyValueBatchScratch,
+-    LabeledVertex, OutEdgeOrder,
++    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
++    LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
+     graph::LabeledLaraGraph,
+     graph::traverse::{BucketEntryPosition, LabeledTraversalRequest},
+ };
+ use crate::traverse::{Traversal, TraversalWindow};
+ use crate::{
+-    VertexId,
+-    test_support::labeled_lara_memories,
++    MaintenanceBudget, VertexId,
++    test_support::{labeled_lara_memories, vector_memory},
+     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
+ };
+ use canbench_rs::{bench, bench_fn};
+@@ -128,6 +128,8 @@
+ const OFFSET_EDGE_CAPACITY: u64 = 16_384;
+ const OFFSET_TARGET_BASE: u32 = 10_000;
+ const OFFSET_EXTENTS: [u32; 4] = [1_024, 2_048, 4_096, 8_192];
++const OFFSET_BLOCK_SLOTS: u32 = 32;
++const OFFSET_GROUP_BLOCKS: usize = 32;
+ 
+ struct OffsetFixture {
+     graph: LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+@@ -136,6 +138,24 @@
+     truth: Vec<(BucketEntryPosition, u32)>,
+ }
+ 
++struct DeferredOffsetFixture {
++    graph: DeferredLabeledLaraGraph<BenchEdge, crate::VectorMemory>,
++    src: VertexId,
++    label: BucketLabelKey,
++    truth: Vec<(BucketEntryPosition, u32)>,
++}
++
++#[derive(Clone, Copy)]
++enum OffsetCandidate {
++    FixedBlock,
++    TwoLevel,
++}
++
++struct OffsetDirectory {
++    block_counts: Vec<u16>,
++    group_counts: Vec<u16>,
++}
++
+ fn offset_target(slot: u32) -> u32 {
+     OFFSET_TARGET_BASE + slot
+ }
+@@ -336,13 +356,386 @@
+     }
+     let truth = collect_offset_truth(&graph, src, label, extent, stride);
+     OffsetFixture {
++        graph,
++        src,
++        label,
++        truth,
++    }
++}
++
++fn build_deferred_offset_fixture(checkpoint_every: u32) -> DeferredOffsetFixture {
++    let extent = 8_192;
++    let stride = 8;
++    let (inner, src, label) = build_dense_offset_graph(extent);
++    let graph = DeferredLabeledLaraGraph::new(inner, vector_memory()).expect("deferred graph");
++    for slot in 0..extent {
++        if slot % stride != 0 {
++            assert!(
++                graph
++                    .remove_edge_matching(src, label, |edge| edge.0 == offset_target(slot))
++                    .unwrap()
++                    .is_some()
++            );
++        }
++    }
++    assert!(graph.maintenance_queue_len() > 0);
++    let truth = collect_offset_truth(graph.inner(), src, label, extent, stride);
++    assert_eq!(checkpoint_every == 1 || checkpoint_every == u32::MAX, true);
++    DeferredOffsetFixture {
+         graph,
+         src,
+         label,
+         truth,
++    }
++}
++
++fn build_offset_directory(
++    truth: &[(BucketEntryPosition, u32)],
++    extent: u32,
++) -> OffsetDirectory {
++    let block_len = extent.div_ceil(OFFSET_BLOCK_SLOTS) as usize;
++    let mut block_counts = vec![0u16; block_len];
++    for (slot, _) in truth {
++        block_counts[(slot.raw() / OFFSET_BLOCK_SLOTS) as usize] += 1;
++    }
++    let mut group_counts = vec![0u16; block_len.div_ceil(OFFSET_GROUP_BLOCKS)];
++    for (block, count) in block_counts.iter().copied().enumerate() {
++        group_counts[block / OFFSET_GROUP_BLOCKS] += count;
++    }
++    assert_eq!(
++        block_counts.iter().copied().map(u32::from).sum::<u32>(),
++        truth.len() as u32
++    );
++    assert_eq!(
++        group_counts.iter().copied().map(u32::from).sum::<u32>(),
++        truth.len() as u32
++    );
++    OffsetDirectory {
++        block_counts,
++        group_counts,
++    }
++}
++
++fn locate_fixed_block(
++    directory: &OffsetDirectory,
++    order: OutEdgeOrder,
++    mut ordinal: u32,
++) -> (usize, u32) {
++    let _scope = canbench_rs::bench_scope("offset_audit_fixed_block_directory_lookup");
++    match order {
++        OutEdgeOrder::Ascending => {
++            for (block, count) in directory.block_counts.iter().copied().enumerate() {
++                let count = u32::from(count);
++                if ordinal < count {
++                    return (block, ordinal);
++                }
++                ordinal -= count;
++            }
++        }
++        OutEdgeOrder::Descending => {
++            for (block, count) in directory.block_counts.iter().copied().enumerate().rev() {
++                let count = u32::from(count);
++                if ordinal < count {
++                    return (block, ordinal);
++                }
++                ordinal -= count;
++            }
++        }
++    }
++    panic!("live ordinal outside candidate directory")
++}
++
++fn locate_two_level_block(
++    directory: &OffsetDirectory,
++    order: OutEdgeOrder,
++    mut ordinal: u32,
++) -> (usize, u32) {
++    let group = match order {
++        OutEdgeOrder::Ascending => {
++            let mut found = None;
++            for (group, count) in directory.group_counts.iter().copied().enumerate() {
++                let count = u32::from(count);
++                if ordinal < count {
++                    found = Some(group);
++                    break;
++                }
++                ordinal -= count;
++            }
++            found
++        }
++        OutEdgeOrder::Descending => {
++            let mut found = None;
++            for (group, count) in directory.group_counts.iter().copied().enumerate().rev() {
++                let count = u32::from(count);
++                if ordinal < count {
++                    found = Some(group);
++                    break;
++                }
++                ordinal -= count;
++            }
++            found
++        }
+     }
++    .expect("live ordinal outside candidate group directory");
++    let start = group * OFFSET_GROUP_BLOCKS;
++    let end = (start + OFFSET_GROUP_BLOCKS).min(directory.block_counts.len());
++    match order {
++        OutEdgeOrder::Ascending => {
++            for block in start..end {
++                let count = u32::from(directory.block_counts[block]);
++                if ordinal < count {
++                    return (block, ordinal);
++                }
++                ordinal -= count;
++            }
++        }
++        OutEdgeOrder::Descending => {
++            for block in (start..end).rev() {
++                let count = u32::from(directory.block_counts[block]);
++                if ordinal < count {
++                    return (block, ordinal);
++                }
++                ordinal -= count;
++            }
++        }
++    }
++    panic!("live ordinal outside candidate block directory")
+ }
+ 
++fn locate_candidate_block(
++    directory: &OffsetDirectory,
++    candidate: OffsetCandidate,
++    order: OutEdgeOrder,
++    ordinal: u32,
++) -> (usize, u32) {
++    match candidate {
++        OffsetCandidate::FixedBlock => locate_fixed_block(directory, order, ordinal),
++        OffsetCandidate::TwoLevel => locate_two_level_block(directory, order, ordinal),
++    }
++}
++
++fn visit_offset_candidate_window<B>(
++    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
++    request: &LabeledTraversalRequest,
++    window: TraversalWindow,
++    directory: &OffsetDirectory,
++    candidate: OffsetCandidate,
++    mut visit: impl FnMut(BucketEntryPosition, BenchEdge) -> std::ops::ControlFlow<B>,
++) -> std::ops::ControlFlow<B> {
++    let vertex = graph.vertices().get(request.owner);
++    let bucket = graph
++        .buckets()
++        .read_label_bucket_slot(vertex.base_slot_start())
++        .expect("candidate label bucket");
++    assert_eq!(bucket.bucket_label_key(), request.label);
++    let (block, mut skip_in_block) =
++        locate_candidate_block(directory, candidate, request.order, window.offset);
++    let block_start = block as u32 * OFFSET_BLOCK_SLOTS;
++    let block_end = (block_start + OFFSET_BLOCK_SLOTS).min(bucket.stored_slots);
++    let mut remaining = window.limit.unwrap_or(u32::MAX);
++    let mut scan_slot = match request.order {
++        OutEdgeOrder::Ascending => block_start as i64,
++        OutEdgeOrder::Descending => i64::from(block_end) - 1,
++    };
++    while remaining > 0 && (0..i64::from(bucket.stored_slots)).contains(&scan_slot) {
++        let logical_slot = scan_slot as u32;
++        let edge = graph
++            .edges()
++            .read_slot(bucket.edge_start() + u64::from(logical_slot));
++        if !edge.is_tombstone_edge() && !edge.is_deleted_slot() {
++            if skip_in_block > 0 {
++                skip_in_block -= 1;
++            } else {
++                remaining -= 1;
++                if let std::ops::ControlFlow::Break(value) =
++                    visit(BucketEntryPosition::new(logical_slot), edge)
++                {
++                    return std::ops::ControlFlow::Break(value);
++                }
++            }
++        }
++        match request.order {
++            OutEdgeOrder::Ascending => scan_slot += 1,
++            OutEdgeOrder::Descending => scan_slot -= 1,
++        }
++    }
++    assert_eq!(remaining, 0);
++    std::ops::ControlFlow::Continue(())
++}
++
++fn candidate_slot_at_ordinal(
++    fixture: &OffsetFixture,
++    directory: &OffsetDirectory,
++    candidate: OffsetCandidate,
++    order: OutEdgeOrder,
++    ordinal: u32,
++) -> (BucketEntryPosition, u32) {
++    let request = LabeledTraversalRequest {
++        owner: fixture.src,
++        label: fixture.label,
++        order,
++    };
++    let mut row = None;
++    let result = visit_offset_candidate_window(
++        &fixture.graph,
++        &request,
++        TraversalWindow::new(ordinal, Some(1)),
++        directory,
++        candidate,
++        |slot, edge| {
++            row = Some((slot, edge.0));
++            std::ops::ControlFlow::<()>::Continue(())
++        },
++    );
++    assert_eq!(result, std::ops::ControlFlow::Continue(()));
++    row.expect("candidate row")
++}
++
++fn assert_candidate_parity(
++    fixture: &OffsetFixture,
++    directory: &OffsetDirectory,
++    candidate: OffsetCandidate,
++) {
++    for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
++        for ordinal in 0..OFFSET_LIVE_ROWS {
++            let expected = match order {
++                OutEdgeOrder::Ascending => fixture.truth[ordinal as usize],
++                OutEdgeOrder::Descending => {
++                    fixture.truth[OFFSET_LIVE_ROWS as usize - 1 - ordinal as usize]
++                }
++            };
++            assert_eq!(
++                candidate_slot_at_ordinal(fixture, directory, candidate, order, ordinal),
++                expected
++            );
++        }
++        for ordinal in [31, 32, 33, 959, 960, 991, 1_023] {
++            black_box(candidate_slot_at_ordinal(
++                fixture, directory, candidate, order, ordinal,
++            ));
++        }
++    }
++
++    let removed = fixture.truth[OFFSET_WINDOW_OFFSET as usize];
++    let rebuilt_truth: Vec<_> = fixture
++        .truth
++        .iter()
++        .copied()
++        .filter(|row| *row != removed)
++        .collect();
++    let rebuilt = build_offset_directory(
++        &rebuilt_truth,
++        directory.block_counts.len() as u32 * OFFSET_BLOCK_SLOTS,
++    );
++    let removed_block = (removed.0.raw() / OFFSET_BLOCK_SLOTS) as usize;
++    assert_eq!(
++        rebuilt.block_counts[removed_block] + 1,
++        directory.block_counts[removed_block]
++    );
++    assert_eq!(
++        rebuilt.group_counts[removed_block / OFFSET_GROUP_BLOCKS] + 1,
++        directory.group_counts[removed_block / OFFSET_GROUP_BLOCKS]
++    );
++}
++
++fn assert_candidate_window_rows(
++    fixture: &OffsetFixture,
++    directory: &OffsetDirectory,
++    candidate: OffsetCandidate,
++) {
++    let request = LabeledTraversalRequest {
++        owner: fixture.src,
++        label: fixture.label,
++        order: OutEdgeOrder::Ascending,
++    };
++    let window = TraversalWindow::new(OFFSET_WINDOW_OFFSET, Some(OFFSET_WINDOW_LIMIT));
++    let expected = expected_offset_window_rows(&fixture.truth, request.order, window.offset);
++    let mut rows = Vec::new();
++    let result = visit_offset_candidate_window(
++        &fixture.graph,
++        &request,
++        window,
++        directory,
++        candidate,
++        |slot, edge| {
++            rows.push((slot, edge.0));
++            std::ops::ControlFlow::<()>::Continue(())
++        },
++    );
++    assert_eq!(result, std::ops::ControlFlow::Continue(()));
++    assert_eq!(rows, expected);
++}
++
++fn offset_candidate_bench(
++    extent: u32,
++    stride: u32,
++    candidate: OffsetCandidate,
++) -> canbench_rs::BenchResult {
++    let fixture = build_offset_fixture(extent, stride);
++    let directory = build_offset_directory(&fixture.truth, extent);
++    assert_candidate_parity(&fixture, &directory, candidate);
++    assert_candidate_window_rows(&fixture, &directory, candidate);
++    let request = LabeledTraversalRequest {
++        owner: fixture.src,
++        label: fixture.label,
++        order: OutEdgeOrder::Ascending,
++    };
++    let window = TraversalWindow::new(OFFSET_WINDOW_OFFSET, Some(OFFSET_WINDOW_LIMIT));
++    bench_fn(|| {
++        let mut count = 0u32;
++        let mut checksum = 0u64;
++        let control = visit_offset_candidate_window(
++            &fixture.graph,
++            &request,
++            window,
++            &directory,
++            candidate,
++            |slot, edge| {
++                count += 1;
++                checksum = checksum
++                    .wrapping_add(u64::from(slot.raw()).wrapping_mul(31))
++                    .wrapping_add(u64::from(edge.0));
++                black_box((slot.raw(), edge.0));
++                std::ops::ControlFlow::<()>::Continue(())
++            },
++        );
++        black_box((control.is_continue(), count, checksum));
++    })
++}
++
++fn maintenance_budget(checkpoint_every: u32) -> MaintenanceBudget {
++    MaintenanceBudget {
++        max_instructions: 5_000_000,
++        reserve_instructions: 0,
++        checkpoint_every,
++        max_work_items: Some(1),
++        max_segments: Some(1),
++        max_delete_edge_steps: Some(1),
++    }
++}
++
++fn drain_offset_maintenance(
++    fixture: &DeferredOffsetFixture,
++    checkpoint_every: u32,
++) -> (u32, u32) {
++    let mut calls = 0u32;
++    let mut rebalanced = 0u32;
++    while fixture.graph.maintenance_queue_len() > 0 {
++        let before = fixture.graph.maintenance_queue_len();
++        let report = fixture
++            .graph
++            .maintenance(maintenance_budget(checkpoint_every));
++        calls += 1;
++        rebalanced += report.rebalanced_segments;
++        assert_eq!(report.processed_work_items, 1);
++        assert_eq!(report.remaining_queue_len, fixture.graph.maintenance_queue_len());
++        assert!(report.remaining_queue_len < before || report.processed_work_items > 0);
++    }
++    assert_eq!(calls, 1_025);
++    assert_eq!(rebalanced, 1);
++    (calls, rebalanced)
++}
++
+ fn visit_offset_window(
+     graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+     request: &LabeledTraversalRequest,
+@@ -1231,4 +1624,132 @@
+ #[bench(raw)]
+ fn bench_offset_live1024_extent8192_offset0_desc() -> canbench_rs::BenchResult {
+     offset_query_bench(8_192, 8, 0, OutEdgeOrder::Descending)
++}
++
++/// Audit-only fixed-block candidate at 75% tombstones.
++#[bench(raw)]
++fn bench_offset_live1024_audit_candidate_fixed_block_75() -> canbench_rs::BenchResult {
++    offset_candidate_bench(4_096, 4, OffsetCandidate::FixedBlock)
++}
++
++/// Audit-only fixed-block candidate at 87.5% tombstones.
++#[bench(raw)]
++fn bench_offset_live1024_audit_candidate_fixed_block_875() -> canbench_rs::BenchResult {
++    offset_candidate_bench(8_192, 8, OffsetCandidate::FixedBlock)
++}
++
++/// Audit-only two-level candidate at 75% tombstones.
++#[bench(raw)]
++fn bench_offset_live1024_audit_candidate_two_level_75() -> canbench_rs::BenchResult {
++    offset_candidate_bench(4_096, 4, OffsetCandidate::TwoLevel)
++}
++
++/// Audit-only two-level candidate at 87.5% tombstones.
++#[bench(raw)]
++fn bench_offset_live1024_audit_candidate_two_level_875() -> canbench_rs::BenchResult {
++    offset_candidate_bench(8_192, 8, OffsetCandidate::TwoLevel)
++}
++
++/// Audit-only fixed-block selector trigger numerator and denominator.
++#[bench(raw)]
++fn bench_offset_live1024_audit_fixed_block_selector_8192() -> canbench_rs::BenchResult {
++    let fixture = build_offset_fixture(8_192, 8);
++    let directory = build_offset_directory(&fixture.truth, 8_192);
++    assert_candidate_parity(&fixture, &directory, OffsetCandidate::FixedBlock);
++    bench_fn(|| {
++        black_box(locate_fixed_block(
++            &directory,
++            OutEdgeOrder::Ascending,
++            OFFSET_WINDOW_OFFSET,
++        ));
++    })
+ }
++
++/// Audit-only pre-maintenance production query comparator.
++#[bench(raw)]
++fn bench_offset_live1024_audit_maintenance_pre_query_875() -> canbench_rs::BenchResult {
++    let fixture = build_deferred_offset_fixture(1);
++    let request = LabeledTraversalRequest {
++        owner: fixture.src,
++        label: fixture.label,
++        order: OutEdgeOrder::Ascending,
++    };
++    let window = TraversalWindow::new(OFFSET_WINDOW_OFFSET, Some(OFFSET_WINDOW_LIMIT));
++    let expected = expected_offset_window_rows(&fixture.truth, request.order, window.offset);
++    let (rows, control) =
++        collect_offset_window_rows(fixture.graph.inner(), &request, window);
++    assert_eq!(control, std::ops::ControlFlow::Continue(()));
++    assert_eq!(rows, expected);
++    assert_eq!(rows.len(), OFFSET_WINDOW_LIMIT as usize);
++    assert!(
++        rows.iter()
++            .all(|(_, target)| *target != u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
++    );
++    assert!(fixture.graph.maintenance_queue_len() > 0);
++    bench_fn(|| {
++        let (control, count, checksum) =
++            visit_offset_window(fixture.graph.inner(), &request, window);
++        black_box((control.is_continue(), count, checksum));
++    })
++}
++
++/// Audit-only production-owned deferred-maintenance drain with checkpoint 1.
++#[bench(raw)]
++fn bench_offset_live1024_audit_maintenance_drain_checkpoint1_875()
++-> canbench_rs::BenchResult {
++    let fixture = build_deferred_offset_fixture(1);
++    bench_fn(|| {
++        black_box(drain_offset_maintenance(&fixture, 1));
++    })
++}
++
++/// Audit-only matched deferred-maintenance drain with checkpoint max.
++#[bench(raw)]
++fn bench_offset_live1024_audit_maintenance_drain_checkpoint_max_875()
++-> canbench_rs::BenchResult {
++    let fixture = build_deferred_offset_fixture(u32::MAX);
++    bench_fn(|| {
++        black_box(drain_offset_maintenance(&fixture, u32::MAX));
++    })
++}
++
++/// Audit-only post-maintenance production query comparator.
++#[bench(raw)]
++fn bench_offset_live1024_audit_maintenance_post_query_875() -> canbench_rs::BenchResult {
++    let fixture = build_deferred_offset_fixture(1);
++    black_box(drain_offset_maintenance(&fixture, 1));
++    let bucket = offset_bucket(fixture.graph.inner(), fixture.src, fixture.label);
++    assert_eq!(bucket.degree(), OFFSET_LIVE_ROWS);
++    assert_eq!(bucket.stored_slots, OFFSET_LIVE_ROWS);
++    let post_truth = collect_offset_rows(
++        fixture.graph.inner(),
++        fixture.src,
++        fixture.label,
++        OutEdgeOrder::Ascending,
++    );
++    assert_eq!(
++        post_truth.iter().map(|(_, target)| *target).collect::<Vec<_>>(),
++        fixture
++            .truth
++            .iter()
++            .map(|(_, target)| *target)
++            .collect::<Vec<_>>()
++    );
++    let request = LabeledTraversalRequest {
++        owner: fixture.src,
++        label: fixture.label,
++        order: OutEdgeOrder::Ascending,
++    };
++    let window = TraversalWindow::new(OFFSET_WINDOW_OFFSET, Some(OFFSET_WINDOW_LIMIT));
++    let expected = post_truth[OFFSET_WINDOW_OFFSET as usize
++        ..(OFFSET_WINDOW_OFFSET + OFFSET_WINDOW_LIMIT) as usize]
++        .to_vec();
++    let (rows, control) = collect_offset_window_rows(fixture.graph.inner(), &request, window);
++    assert_eq!(control, std::ops::ControlFlow::Continue(()));
++    assert_eq!(rows, expected);
++    bench_fn(|| {
++        let (control, count, checksum) =
++            visit_offset_window(fixture.graph.inner(), &request, window);
++        black_box((control.is_continue(), count, checksum));
++    })
++}

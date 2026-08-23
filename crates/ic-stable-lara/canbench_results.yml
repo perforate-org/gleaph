@@ -3673,6 +3673,76 @@ benches:
         instructions: 759044
         heap_increase: 0
         stable_memory_increase: 0
+  bench_offset_live1024_extent1024_offset0_asc:
+    total:
+      calls: 1
+      instructions: 27146
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent1024_offset0_desc:
+    total:
+      calls: 1
+      instructions: 27067
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent1024_offset960_asc:
+    total:
+      calls: 1
+      instructions: 27146
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent2048_offset0_asc:
+    total:
+      calls: 1
+      instructions: 17347
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent2048_offset960_asc:
+    total:
+      calls: 1
+      instructions: 235406
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent4096_offset0_asc:
+    total:
+      calls: 1
+      instructions: 24251
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent4096_offset960_asc:
+    total:
+      calls: 1
+      instructions: 447818
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent8192_offset0_asc:
+    total:
+      calls: 1
+      instructions: 38059
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent8192_offset0_desc:
+    total:
+      calls: 1
+      instructions: 37351
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_offset_live1024_extent8192_offset960_asc:
+    total:
+      calls: 1
+      instructions: 872642
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
   bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture:
     total:
       calls: 1

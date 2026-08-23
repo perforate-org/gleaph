@@ -1,0 +1,247 @@
+Plan 0283 final validation
+UTC document anchor: 2026-08-23 03:40:43 UTC +0000
+
+This transcript records exact terminal commands, output, exit status, and result for the final
+document, scope-manifest, patch-application, temporary-absence, and plan-structure gates.
+
+1. Temporary benchmark reproduction
+-----------------------------------
+UTC: 2026-08-23 03:44:51 UTC +0000
+Command: (cd crates/ic-stable-lara && canbench --csv --hide-results offset_live1024_audit_maintenance_pre_query_875)
+Exit: 0
+Output (exact raw row):
+new,bench_offset_live1024_audit_maintenance_pre_query_875,,,,870788,,,0,,,0,,
+Result: PASS — 870,788 instructions; heap increase 0; stable-memory increase 0.
+
+2. Untracked artifact whitespace checks
+---------------------------------------
+Command: git diff --no-index --check /dev/null design/investigations/artifacts/0283-tombstone-offset-prototype.patch
+Exit: 3
+Output:
+design/investigations/artifacts/0283-tombstone-offset-prototype.patch:5: trailing whitespace.
+<blank context line with one unified-diff prefix space>
+design/investigations/artifacts/0283-tombstone-offset-prototype.patch:29: trailing whitespace.
+<blank context line with one unified-diff prefix space>
+design/investigations/artifacts/0283-tombstone-offset-prototype.patch:35: trailing whitespace.
+<blank context line with one unified-diff prefix space>
+design/investigations/artifacts/0283-tombstone-offset-prototype.patch:206: trailing whitespace.
+<blank context line with one unified-diff prefix space>
+Result: PASS with the plan-declared unified-diff exception — all four diagnostics are required blank
+context lines carrying the single context prefix; git apply --check below is authoritative.
+
+Command: git diff --no-index --check /dev/null design/investigations/artifacts/0283-tombstone-offset-canbench.txt
+Exit: 1
+Output: <empty>
+Result: PASS — exit 1 means the untracked file differs from /dev/null; there is no whitespace
+diagnostic.
+
+3. Document/date search
+-----------------------
+Command: rg -n "2026-08-23|ADR justified|ADR not justified|offset_live1024|not run|deferred" design/investigations/2026-08-23-tombstone-offset-skip-research.md
+Exit: 0
+Output:
+3:Date: 2026-08-23 02:52:08 UTC +0000
+4:Last audited: 2026-08-23 03:44:51 UTC +0000
+5:Status: bounded evidence complete; **ADR not justified**
+52:Primary audit command: `canbench --csv --hide-results offset_live1024` from
+133:The primary pre-drain comparator was freshly reproduced at `2026-08-23 03:44:51 UTC +0000` with
+134:`canbench --csv --hide-results offset_live1024_audit_maintenance_pre_query_875` from
+177:2026-08-23 research event. The prior stale ledger wording was accidentally committed with unrelated
+193:- `canbench --show-summary offset_live1024`;
+194:- `canbench --show-summary offset_live1024_candidate_fixed_block`;
+195:- `canbench --show-summary offset_live1024_candidate_two_level`;
+196:- `canbench --show-summary offset_live1024_maintenance_pre_query_875`;
+197:- `canbench --show-summary offset_live1024_maintenance_drain_checkpoint1_875`;
+198:- `canbench --show-summary offset_live1024_maintenance_drain_checkpoint_max_875`;
+199:- `canbench --show-summary offset_live1024_maintenance_post_query_875`;
+200:- `canbench --csv --hide-results offset_live1024`;
+204:- `canbench --show-summary offset_live1024` (10 unchanged against the persisted artifact);
+208:  design/investigations/2026-08-23-tombstone-offset-skip-research.md` (exit 1 because the file is
+215:- `canbench --csv --hide-results offset_live1024_audit_maintenance_pre_query_875` (1 temporary
+218:- `canbench --csv --hide-results offset_live1024_audit` (8 temporary audit benchmarks; exact CSV
+220:- `canbench --csv --hide-results offset_live1024` (10 unchanged; no persistence);
+Result: PASS — date/status/benchmark statements are present and UTC-anchored.
+
+4. GAP scoped whitespace and zero-context inspection
+----------------------------------------------------
+Command: git diff --check -- design/implementation-gaps.md
+Exit: 0
+Output: <empty>
+Result: PASS.
+
+Command: git diff --unified=0 -- design/implementation-gaps.md
+Exit: 0
+Output:
+diff --git i/design/implementation-gaps.md w/design/implementation-gaps.md
+index 1b50c5ad4..f8304a9e3 100644
+--- i/design/implementation-gaps.md
++++ w/design/implementation-gaps.md
+@@ -3,2 +3,2 @@
+-Last updated: 2026-08-22
+-Anchor timestamp: 2026-08-22 19:58:00 UTC +0000
++Last updated: 2026-08-23
++Anchor timestamp: 2026-08-23 03:40:43 UTC +0000
+@@ -681,3 +681,3 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
+-- **Status:** Deferred after bounded research (2026-08-23; ADR not justified). The current
+-  tombstone-heavy query is material, but the contract-equivalent fixed-block candidate did not
+-  meet the decision threshold; the retained slice does not claim maintenance break-even evidence.
++- **Status:** Deferred after bounded research (2026-08-23; ADR not justified). Contract-equivalent
++  candidates cleared the query threshold, but the winning query-only candidate remains slower than
++  the existing owner's compacted query and omitted integrated costs prevent a substitution claim.
+@@ -696,6 +696,14 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
+-  dense fast path is intentionally limited to `live_degree == logical_extent`. Plan 0283's fixed
+-  survivor canbench matrix measured 872,708 instructions at extent 8,192 / 87.5% tombstones /
+-  OFFSET 960 / LIMIT 32, versus 38,125 at the same density and offset 0 (22.89x) and 27,146 for
+-  the dense OFFSET control (32.15x). The benchmark-only fixed-block end-to-end probe measured
+-  773,240 instructions (0.886x current), not the required <=0.60x; a retained 75% candidate
+-  measurement and DeferredLabeledLaraGraph maintenance drain/post-drain comparator are deferred.
++  dense fast path is intentionally limited to `live_degree == logical_extent`. Plan 0283 measured
++  872,634 instructions at extent 8,192 / 87.5% tombstones / OFFSET 960 / LIMIT 32, versus 38,051
++  at the same density and offset 0 and 27,146 for the dense OFFSET control. Fair benchmark-only
++  end-to-end probes performed canonical stable-row decoding, liveness checks, slot reconstruction,
++  and identical visitor work: fixed-block counts measured 35,620 / 65,776 instructions at 75% /
++  87.5%, while triggered two-level counts measured 32,138 / 59,210. The exact temporary patch and
++  raw canbench CSV are retained under `design/investigations/artifacts/`. The bounded
++  production-owned maintenance drain took 831,216,051 instructions across 1,025 one-work-item
++  calls, then restored the query to 27,095 instructions. The sign-corrected optimistic query-only
++  crossover is `Q_upper = 831,216,051 / (59,210 - 27,095) = 25,882.49 queries`. This upper bound
++  omits candidate build, mutation, update, validation, framing, and repair costs, while compaction
++  retains independent storage obligations; a positive crossover alone does not establish
++  substitution or workload benefit. The stale predecessor wording was accidentally included in
++  unrelated commit `b787ac389`; this hunk records corrected evidence without rewriting that commit.
+@@ -706,4 +714,3 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
+-  ADR from this slice. Revisit only with a contract-equivalent candidate that clears the <=60%
+-  threshold at both 75% and 87.5% tombstones, satisfies metadata/update/rebuild/select gates, and
+-  is paired with bounded pre-drain, maintenance-drain, and post-drain evidence yielding a positive
+-  finite residual break-even. Any future adoption remains a separate ADR/storage-layout slice.
++  ADR from this slice. Revisit only if integrated candidate build/mutation/update/validation costs
++  and a demonstrated workload establish a substitution benefit beyond compaction's query and
++  storage obligations. Any adoption remains a separate ADR/storage slice.
+Result: PASS — the exact diff contains only the two permitted header fields and the permitted GAP
+Status/Evidence/Next decision hunk; every other ledger hunk is preserved.
+
+5. Exact status-manifest comparison
+-----------------------------------
+Command: git status --short --untracked-files=all, classified against the seven visible Plan 0283
+paths (the ignored plan is checked separately below)
+Exit: 0
+Exact classified manifest (status/path tokens preserved; grouped by classification):
+INTENDED |  M crates/ic-stable-lara/canbench_results.yml
+INTENDED |  M crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs
+INTENDED |  M design/implementation-gaps.md
+INTENDED | ?? design/investigations/2026-08-23-tombstone-offset-skip-research.md
+INTENDED | ?? design/investigations/artifacts/0283-final-validation.txt
+INTENDED | ?? design/investigations/artifacts/0283-tombstone-offset-canbench.txt
+INTENDED | ?? design/investigations/artifacts/0283-tombstone-offset-prototype.patch
+UNRELATED |  M crates/graph-kernel/src/canonical_export.rs
+UNRELATED |  M crates/graph-kernel/src/index.rs
+UNRELATED |  M crates/graph/src/canister/handlers.rs
+UNRELATED |  M crates/graph/src/facade/stable/canonical_export.rs
+UNRELATED |  M crates/graph/src/facade/store/edge_properties.rs
+UNRELATED |  M crates/graph/src/facade/store/labels.rs
+UNRELATED |  M crates/graph/src/facade/store/vertex_delete.rs
+UNRELATED |  M crates/graph/src/index/canonical_export.rs
+UNRELATED |  M crates/graph/src/index/catalog_context.rs
+UNRELATED |  M crates/graph/src/index/vertex_property_backfill.rs
+UNRELATED |  M crates/graph/src/plan/mutation/executor.rs
+UNRELATED |  M crates/graph/src/property.rs
+UNRELATED |  M crates/graph/src/property/index_dispatch.rs
+UNRELATED |  M crates/router/src/facade/stable/indexed_catalog.rs
+UNRELATED |  M crates/router/src/facade/store/schema_migration/driver.rs
+UNRELATED |  M crates/router/src/facade/store/schema_migration/index.rs
+UNRELATED |  M crates/router/src/index_catalog.rs
+UNRELATED |  M crates/router/src/planner_stats.rs
+UNRELATED | ?? crates/graph/src/property/dotted_path.rs
+UNRELATED | ?? demo/knowledge/gleaph.toml
+UNRELATED | ?? demo/knowledge/migrations/000001_knowledge_graph_type/migration.toml
+UNRELATED | ?? demo/knowledge/migrations/000001_knowledge_graph_type/up/00_knowledge_graph_type.gql
+UNRELATED | ?? demo/knowledge/migrations/000001_knowledge_graph_type/up/01_knowledge_graph_type.gql
+UNRELATED | ?? demo/knowledge/migrations/000002_knowledge_indexes/migration.toml
+UNRELATED | ?? demo/knowledge/migrations/000002_knowledge_indexes/up.gql
+UNRELATED | ?? demo/knowledge/migrations/000003_knowledge_vector_index/migration.toml
+UNRELATED | ?? demo/knowledge/migrations/000003_knowledge_vector_index/up.gql
+UNRELATED | ?? demo/knowledge/prepared/citation-reach.gql
+UNRELATED | ?? demo/knowledge/prepared/shortest-path.gql
+UNRELATED | ?? demo/knowledge/prepared/team-readable-documents.gql
+UNRELATED | ?? demo/knowledge/prepared/variable-length-reach.gql
+UNRELATED | ?? demo/knowledge/seeds/edges.jsonl
+UNRELATED | ?? demo/knowledge/seeds/vertices.jsonl
+UNRELATED | ?? design-tokens/gleaph-design-system.backup-20260822.fig
+UNRELATED | ?? design-tokens/scripts/build-component-library.js
+UNRELATED | ?? design-tokens/scripts/verify-built.mjs
+UNRELATED | ?? design/demo/knowledge-graph-demo.md
+UNRELATED | ?? frontend/apps/web-lp/.gitignore
+UNRELATED | ?? frontend/apps/web-lp/astro.config.mjs
+UNRELATED | ?? frontend/apps/web-lp/package.json
+UNRELATED | ?? frontend/apps/web-lp/public/favicon.svg
+UNRELATED | ?? frontend/apps/web-lp/public/gleaph-logo.svg
+UNRELATED | ?? frontend/apps/web-lp/src/layouts/Layout.astro
+UNRELATED | ?? frontend/apps/web-lp/src/pages/index.astro
+UNRELATED | ?? frontend/apps/web-lp/src/styles/global.css
+UNRELATED | ?? frontend/apps/web-lp/tsconfig.json
+UNRELATED | ?? frontend/shared/tokens.css
+Result: PASS — every visible intended and unrelated path is named; no unrelated path was staged,
+formatted, restored, or edited by this signoff task.
+
+Command: git check-ignore -v plans/0283-tombstone-offset-skip-research.md
+Exit: 0
+Output:
+.gitignore:7:plans/ plans/0283-tombstone-offset-skip-research.md
+Result: PASS — the eighth intended path is the ignored plan.
+
+Command: git diff --cached --name-status
+Exit: 0
+Output: <empty>
+Result: PASS — nothing is staged.
+
+6. Temporary cleanup and patch replay
+-------------------------------------
+Command: rg -n "offset_live1024_audit|DeferredOffsetFixture|OffsetDirectory|maintenance_pre_query" crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs crates/ic-stable-lara/canbench_results.yml
+Exit: 1
+Output: <empty>
+Result: PASS — no temporary helper, export, or benchmark name remains in retained source or YAML.
+
+Command: git apply --check design/investigations/artifacts/0283-tombstone-offset-prototype.patch
+Exit: 0
+Output: <empty>
+Result: PASS — the complete retained prototype, including the fresh pre-drain benchmark, applies
+cleanly to retained source.
+
+7. Focused retained-source checks
+---------------------------------
+Command: rustfmt --edition 2024 --check crates/ic-stable-lara/src/labeled/graph/traverse/bench.rs
+Exit: 0
+Output: <empty>
+Result: PASS.
+
+Command: cargo test -p ic-stable-lara --lib visit_edges_window
+Exit: 0
+Output:
+running 2 tests
+test labeled::graph::traverse::tests::visit_edges_window_applies_offset_limit_and_preserves_breaks ... ok
+test labeled::graph::traverse::tests::visit_edges_window_counts_live_rows_when_tombstones_make_bucket_sparse ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out
+Result: PASS.
+
+Command: cargo clippy -p ic-stable-lara --lib --features canbench -- -D warnings
+Exit: 0
+Output:
+Checking ic-stable-lara v0.1.0 (/Users/yota/dev/gleaph/crates/ic-stable-lara)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.82s
+Result: PASS.
+
+Command: (cd crates/ic-stable-lara && canbench --show-summary offset_live1024)
+Exit: 0
+Output (summary):
+status: No significant changes
+counts: [total 10 | regressed 0 | improved 0 | new 0 | unchanged 10]
+Result: PASS — retained canonical source/YAML remain unchanged; no persistence was requested or run.
+
+8. Final plan structure
+-----------------------
+Command: python3 /Users/yota/.agents/skills/plan/scripts/validate_plan.py plans/0283-tombstone-offset-skip-research.md --phase final
+Exit: 0
+Output:
+Plan is structurally valid for phase=final: plans/0283-tombstone-offset-skip-research.md
+Result: PASS — Plan 0283 is Closed only after the evidence-backed TODOs and completion criteria are
+complete.

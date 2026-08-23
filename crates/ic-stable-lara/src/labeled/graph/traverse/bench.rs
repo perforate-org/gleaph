@@ -16,7 +16,7 @@ use crate::traverse::{Traversal, TraversalWindow};
 use crate::{
     VertexId,
     test_support::labeled_lara_memories,
-    traits::{CsrEdge, CsrEdgeTombstone},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use canbench_rs::{bench, bench_fn};
 use std::hint::black_box;
@@ -120,6 +120,306 @@ impl CsrEdgeTombstone for InlinePropertyBenchEdge {
             inline_property: [0u8; 8],
         }
     }
+}
+
+const OFFSET_LIVE_ROWS: u32 = 1_024;
+const OFFSET_WINDOW_OFFSET: u32 = 960;
+const OFFSET_WINDOW_LIMIT: u32 = 32;
+const OFFSET_EDGE_CAPACITY: u64 = 16_384;
+const OFFSET_TARGET_BASE: u32 = 10_000;
+const OFFSET_EXTENTS: [u32; 4] = [1_024, 2_048, 4_096, 8_192];
+
+struct OffsetFixture {
+    graph: LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
+    truth: Vec<(BucketEntryPosition, u32)>,
+}
+
+fn offset_target(slot: u32) -> u32 {
+    OFFSET_TARGET_BASE + slot
+}
+
+fn offset_bucket(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
+) -> crate::labeled::LabelBucket {
+    let vertex = graph.vertices().get(src);
+    assert!(!vertex.is_default_edge_labeled());
+    assert_eq!(vertex.degree(), 1, "fixture must contain one label bucket");
+    let bucket = graph
+        .buckets()
+        .read_label_bucket_slot(vertex.base_slot_start())
+        .expect("fixture label bucket");
+    assert_eq!(bucket.bucket_label_key(), label);
+    bucket
+}
+
+fn collect_offset_rows(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
+    order: OutEdgeOrder,
+) -> Vec<(BucketEntryPosition, u32)> {
+    let request = LabeledTraversalRequest {
+        owner: src,
+        label,
+        order,
+    };
+    let mut rows = Vec::new();
+    let result = Traversal::visit_edges(graph, &request, |slot, edge| {
+        rows.push((slot, edge.0));
+        std::ops::ControlFlow::<()>::Continue(())
+    })
+    .expect("canonical offset traversal");
+    assert!(result.is_continue());
+    rows
+}
+
+fn collect_offset_window_rows(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    request: &LabeledTraversalRequest,
+    window: TraversalWindow,
+) -> (Vec<(BucketEntryPosition, u32)>, std::ops::ControlFlow<()>) {
+    let mut rows = Vec::new();
+    let result = Traversal::visit_edges_window(graph, request, window, |slot, edge| {
+        rows.push((slot, edge.0));
+        std::ops::ControlFlow::<()>::Continue(())
+    })
+    .expect("canonical offset window traversal");
+    (rows, result)
+}
+
+fn assert_offset_window_contract(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
+    truth: &[(BucketEntryPosition, u32)],
+) {
+    for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+        let request = LabeledTraversalRequest {
+            owner: src,
+            label,
+            order,
+        };
+        let expected = if order == OutEdgeOrder::Ascending {
+            truth.to_vec()
+        } else {
+            truth.iter().copied().rev().collect()
+        };
+        let (rows, result) = collect_offset_window_rows(
+            graph,
+            &request,
+            TraversalWindow::new(OFFSET_WINDOW_OFFSET, Some(OFFSET_WINDOW_LIMIT)),
+        );
+        assert_eq!(result, std::ops::ControlFlow::Continue(()));
+        assert_eq!(rows, expected[960..992]);
+        assert!(
+            rows.iter()
+                .all(|(_, target)| *target != u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
+        );
+
+        let mut calls = 0u32;
+        let result = Traversal::visit_edges_window(
+            graph,
+            &request,
+            TraversalWindow::new(0, Some(0)),
+            |_slot, _edge| {
+                calls += 1;
+                std::ops::ControlFlow::<()>::Continue(())
+            },
+        )
+        .expect("zero-limit window");
+        assert_eq!(result, std::ops::ControlFlow::Continue(()));
+        assert_eq!(calls, 0);
+
+        for offset in [31usize, 32, 33] {
+            let (rows, result) = collect_offset_window_rows(
+                graph,
+                &request,
+                TraversalWindow::new(offset as u32, Some(1)),
+            );
+            assert_eq!(result, std::ops::ControlFlow::Continue(()));
+            assert_eq!(rows, expected[offset..offset + 1]);
+        }
+    }
+}
+
+fn build_dense_offset_graph(
+    extent: u32,
+) -> (
+    LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    VertexId,
+    BucketLabelKey,
+) {
+    assert!(OFFSET_EXTENTS.contains(&extent));
+    let graph = bench_graph(OFFSET_EDGE_CAPACITY, BucketLabelKey::from_raw(1));
+    let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    for slot in 0..extent {
+        graph
+            .insert_edge(
+                src,
+                label,
+                BenchEdge(offset_target(slot)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+    }
+    graph.compact_vertex_edge_span(src, 0).unwrap();
+    let bucket = offset_bucket(&graph, src, label);
+    assert_eq!(bucket.degree(), extent);
+    assert_eq!(bucket.stored_slots, extent);
+    assert!(bucket.overflow_log_head() < 0);
+    assert_eq!(graph.vertices().get(src).stored_slots, extent);
+    (graph, src, label)
+}
+
+fn collect_offset_truth(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
+    extent: u32,
+    stride: u32,
+) -> Vec<(BucketEntryPosition, u32)> {
+    let bucket = offset_bucket(graph, src, label);
+    assert_eq!(bucket.degree(), OFFSET_LIVE_ROWS);
+    assert_eq!(bucket.stored_slots, extent);
+    assert!(bucket.overflow_log_head() < 0);
+    let mut tombstones = 0u32;
+    for slot in 0..extent {
+        let edge = graph
+            .edges()
+            .read_slot(bucket.edge_start() + u64::from(slot));
+        if edge.is_tombstone_edge() || edge.is_deleted_slot() {
+            tombstones += 1;
+        } else {
+            assert_eq!(edge.0, offset_target(slot));
+        }
+    }
+    assert_eq!(tombstones, extent - OFFSET_LIVE_ROWS);
+    assert_eq!(graph.vertices().get(src).stored_slots, extent);
+
+    let ascending = collect_offset_rows(graph, src, label, OutEdgeOrder::Ascending);
+    assert_eq!(ascending.len(), OFFSET_LIVE_ROWS as usize);
+    assert!(
+        ascending
+            .iter()
+            .enumerate()
+            .all(|(ordinal, (slot, target))| {
+                slot.raw() % stride == 0
+                    && *target == offset_target(slot.raw())
+                    && *target == offset_target(ordinal as u32 * stride)
+            })
+    );
+    let descending = collect_offset_rows(graph, src, label, OutEdgeOrder::Descending);
+    let expected_descending: Vec<_> = ascending.iter().copied().rev().collect();
+    assert_eq!(descending, expected_descending);
+
+    assert_offset_window_contract(graph, src, label, &ascending);
+    ascending
+}
+
+fn build_offset_fixture(extent: u32, stride: u32) -> OffsetFixture {
+    assert_eq!(extent / stride, OFFSET_LIVE_ROWS);
+    let (graph, src, label) = build_dense_offset_graph(extent);
+    for slot in 0..extent {
+        if slot % stride != 0 {
+            assert!(
+                graph
+                    .remove_edge_at_slot(src, label, slot)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+    let truth = collect_offset_truth(&graph, src, label, extent, stride);
+    OffsetFixture {
+        graph,
+        src,
+        label,
+        truth,
+    }
+}
+
+fn visit_offset_window(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    request: &LabeledTraversalRequest,
+    window: TraversalWindow,
+) -> (std::ops::ControlFlow<()>, u32, u64) {
+    let mut count = 0u32;
+    let mut checksum = 0u64;
+    let result = Traversal::visit_edges_window(graph, request, window, |slot, edge| {
+        count += 1;
+        checksum = checksum
+            .wrapping_add(u64::from(slot.raw()).wrapping_mul(31))
+            .wrapping_add(u64::from(edge.0));
+        black_box((slot.raw(), edge.0));
+        std::ops::ControlFlow::<()>::Continue(())
+    })
+    .expect("measured offset window traversal");
+    (result, count, checksum)
+}
+
+fn expected_offset_window_rows(
+    ascending: &[(BucketEntryPosition, u32)],
+    order: OutEdgeOrder,
+    offset: u32,
+) -> Vec<(BucketEntryPosition, u32)> {
+    let offset = offset as usize;
+    let limit = OFFSET_WINDOW_LIMIT as usize;
+    match order {
+        OutEdgeOrder::Ascending => ascending[offset..offset + limit].to_vec(),
+        OutEdgeOrder::Descending => ascending
+            .iter()
+            .rev()
+            .skip(offset)
+            .take(limit)
+            .copied()
+            .collect(),
+    }
+}
+
+fn assert_production_window_rows(
+    fixture: &OffsetFixture,
+    request: &LabeledTraversalRequest,
+    window: TraversalWindow,
+) {
+    let expected = expected_offset_window_rows(&fixture.truth, request.order, window.offset);
+    let (rows, control) = collect_offset_window_rows(&fixture.graph, request, window);
+    assert_eq!(control, std::ops::ControlFlow::Continue(()));
+    assert_eq!(rows, expected);
+    assert_eq!(rows.len(), OFFSET_WINDOW_LIMIT as usize);
+    assert!(
+        rows.iter()
+            .all(|(_, target)| *target != u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
+    );
+}
+
+fn offset_query_bench(
+    extent: u32,
+    stride: u32,
+    offset: u32,
+    order: OutEdgeOrder,
+) -> canbench_rs::BenchResult {
+    let fixture = build_offset_fixture(extent, stride);
+    let request = LabeledTraversalRequest {
+        owner: fixture.src,
+        label: fixture.label,
+        order,
+    };
+    let window = TraversalWindow::new(offset, Some(OFFSET_WINDOW_LIMIT));
+    assert_production_window_rows(&fixture, &request, window);
+    let result = bench_fn(|| {
+        let (control, count, checksum) = visit_offset_window(&fixture.graph, &request, window);
+        black_box((control.is_continue(), count, checksum));
+    });
+    assert_eq!(
+        fixture.graph.vertices().get(fixture.src).stored_slots,
+        extent
+    );
+    result
 }
 
 fn inline_property_bench_graph(
@@ -871,4 +1171,64 @@ fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResul
             .unwrap();
         black_box((count, selected.len()));
     })
+}
+
+/// Fixed-survivor OFFSET matrix: dense control at the first live ordinal.
+#[bench(raw)]
+fn bench_offset_live1024_extent1024_offset0_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(1_024, 1, 0, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: dense OFFSET query.
+#[bench(raw)]
+fn bench_offset_live1024_extent1024_offset960_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(1_024, 1, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: 50% tombstones at the first live ordinal.
+#[bench(raw)]
+fn bench_offset_live1024_extent2048_offset0_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(2_048, 2, 0, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: 50% tombstones at live ordinal 960.
+#[bench(raw)]
+fn bench_offset_live1024_extent2048_offset960_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(2_048, 2, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: 75% tombstones at the first live ordinal.
+#[bench(raw)]
+fn bench_offset_live1024_extent4096_offset0_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(4_096, 4, 0, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: 75% tombstones at live ordinal 960.
+#[bench(raw)]
+fn bench_offset_live1024_extent4096_offset960_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(4_096, 4, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: 87.5% tombstones at the first live ordinal.
+#[bench(raw)]
+fn bench_offset_live1024_extent8192_offset0_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(8_192, 8, 0, OutEdgeOrder::Ascending)
+}
+
+/// Fixed-survivor OFFSET matrix: 87.5% tombstones at live ordinal 960.
+#[bench(raw)]
+fn bench_offset_live1024_extent8192_offset960_asc() -> canbench_rs::BenchResult {
+    offset_query_bench(8_192, 8, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
+}
+
+/// Descending dense control for the fixed-survivor OFFSET matrix.
+#[bench(raw)]
+fn bench_offset_live1024_extent1024_offset0_desc() -> canbench_rs::BenchResult {
+    offset_query_bench(1_024, 1, 0, OutEdgeOrder::Descending)
+}
+
+/// Descending 87.5% tombstone control for the fixed-survivor OFFSET matrix.
+#[bench(raw)]
+fn bench_offset_live1024_extent8192_offset0_desc() -> canbench_rs::BenchResult {
+    offset_query_bench(8_192, 8, 0, OutEdgeOrder::Descending)
 }

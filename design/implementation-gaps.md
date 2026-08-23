@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 19:58:00 UTC +0000
+Last updated: 2026-08-23
+Anchor timestamp: 2026-08-23 03:40:43 UTC +0000
 
 ## Status
 
@@ -678,9 +678,9 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
 
-- **Status:** Deferred after bounded research (2026-08-23; ADR not justified). The current
-  tombstone-heavy query is material, but the contract-equivalent fixed-block candidate did not
-  meet the decision threshold; the retained slice does not claim maintenance break-even evidence.
+- **Status:** Deferred after bounded research (2026-08-23; ADR not justified). Contract-equivalent
+  candidates cleared the query threshold, but the winning query-only candidate remains slower than
+  the existing owner's compacted query and omitted integrated costs prevent a substitution claim.
 - **Severity:** P2 traversal performance and stable-layout research gap
 - **Owner:** `ic-stable-lara` traversal and LARA logical-slot metadata
 - **Observed behavior:** `TraversalWindow.offset` can jump directly only for a proven dense bucket.
@@ -693,20 +693,27 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   fail-closed corruption handling.
 - **Evidence:** [ADR 0050](adr/0050-lara-traverse-read-api.md) § “Known gap: tombstone-aware offset
   acceleration”; `TraversalWindow` and the labeled sparse traversal implementation. The current
-  dense fast path is intentionally limited to `live_degree == logical_extent`. Plan 0283's fixed
-  survivor canbench matrix measured 872,708 instructions at extent 8,192 / 87.5% tombstones /
-  OFFSET 960 / LIMIT 32, versus 38,125 at the same density and offset 0 (22.89x) and 27,146 for
-  the dense OFFSET control (32.15x). The benchmark-only fixed-block end-to-end probe measured
-  773,240 instructions (0.886x current), not the required <=0.60x; a retained 75% candidate
-  measurement and DeferredLabeledLaraGraph maintenance drain/post-drain comparator are deferred.
+  dense fast path is intentionally limited to `live_degree == logical_extent`. Plan 0283 measured
+  872,634 instructions at extent 8,192 / 87.5% tombstones / OFFSET 960 / LIMIT 32, versus 38,051
+  at the same density and offset 0 and 27,146 for the dense OFFSET control. Fair benchmark-only
+  end-to-end probes performed canonical stable-row decoding, liveness checks, slot reconstruction,
+  and identical visitor work: fixed-block counts measured 35,620 / 65,776 instructions at 75% /
+  87.5%, while triggered two-level counts measured 32,138 / 59,210. The exact temporary patch and
+  raw canbench CSV are retained under `design/investigations/artifacts/`. The bounded
+  production-owned maintenance drain took 831,216,051 instructions across 1,025 one-work-item
+  calls, then restored the query to 27,095 instructions. The sign-corrected optimistic query-only
+  crossover is `Q_upper = 831,216,051 / (59,210 - 27,095) = 25,882.49 queries`. This upper bound
+  omits candidate build, mutation, update, validation, framing, and repair costs, while compaction
+  retains independent storage obligations; a positive crossover alone does not establish
+  substitution or workload benefit. The stale predecessor wording was accidentally included in
+  unrelated commit `b787ac389`; this hunk records corrected evidence without rewriting that commit.
 - **Impact:** Large sparse buckets can spend instructions scanning tombstones for OFFSET/LIMIT.
   Introducing durable metadata now would expand the storage format and add mutation,
   compaction/rebuild, reopen, and benchmark obligations before the design is understood.
 - **Next decision:** Retain the exact sparse scan and current compaction ownership; do not open an
-  ADR from this slice. Revisit only with a contract-equivalent candidate that clears the <=60%
-  threshold at both 75% and 87.5% tombstones, satisfies metadata/update/rebuild/select gates, and
-  is paired with bounded pre-drain, maintenance-drain, and post-drain evidence yielding a positive
-  finite residual break-even. Any future adoption remains a separate ADR/storage-layout slice.
+  ADR from this slice. Revisit only if integrated candidate build/mutation/update/validation costs
+  and a demonstrated workload establish a substitution benefit beyond compaction's query and
+  storage obligations. Any adoption remains a separate ADR/storage slice.
 
 ### GAP-2026-07-25-001 — Paired canonical edge writes expose recoverable post-write errors
 
