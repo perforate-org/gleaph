@@ -23,6 +23,7 @@ pub mod view;
 pub mod viewport;
 
 pub use graph::{EdgeDirection, EdgeId, Graph, GraphDelta, NodeId};
+pub use hash::DefaultBuildHasher;
 pub use hit_test::{HitTestResult, hit_test};
 pub use interaction::{GraphEvent, Hover, MouseButton, Selection};
 pub use keyed_graph::KeyedGraph;

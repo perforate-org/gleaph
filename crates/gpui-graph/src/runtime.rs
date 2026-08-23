@@ -135,7 +135,7 @@ fn cell_of(p: glam::Vec2) -> Cell {
 
 /// A uniform grid over edge midpoints used to count nearby edges in O(E).
 #[derive(Debug, Clone, Default)]
-pub struct DensityGrid<S = std::collections::hash_map::RandomState>
+pub struct DensityGrid<S = crate::hash::DefaultBuildHasher>
 where
     S: BuildHasher + Default + Clone,
 {
@@ -150,7 +150,7 @@ impl DensityGrid {
         Self::new_with_hasher(
             midpoints,
             radius,
-            std::collections::hash_map::RandomState::default(),
+            crate::hash::DefaultBuildHasher::default(),
         )
     }
 }
@@ -205,7 +205,7 @@ where
 /// A source is created only by [`GraphScene::sync_runtime`]. Keeping the scene
 /// itself private here ensures graph data, positions, cluster geometry, and
 /// revision markers all come from one immutable scene snapshot.
-pub(crate) struct RuntimeSource<'a, NK, EK, N, E, S = std::collections::hash_map::RandomState>
+pub(crate) struct RuntimeSource<'a, NK, EK, N, E, S = crate::hash::DefaultBuildHasher>
 where
     S: BuildHasher + Default + Clone,
 {
@@ -221,7 +221,7 @@ where
 /// borrow of the scene prevents topology or geometry mutation for as long as
 /// indexed rendering can use the proof, while the runtime borrow prevents its
 /// derived state from being replaced independently.
-pub struct SyncedGraphRuntime<'a, NK, EK, N, E, S = std::collections::hash_map::RandomState>
+pub struct SyncedGraphRuntime<'a, NK, EK, N, E, S = crate::hash::DefaultBuildHasher>
 where
     S: BuildHasher + Default + Clone,
 {
@@ -277,7 +277,7 @@ where
 /// geometry revisions (not on zoom or the viewport), so the paint layer can
 /// build a frame from just the visible edges each frame.
 #[derive(Debug, Clone, Default)]
-pub struct EdgePrep<S = std::collections::hash_map::RandomState>
+pub struct EdgePrep<S = crate::hash::DefaultBuildHasher>
 where
     S: BuildHasher + Default + Clone,
 {
@@ -399,7 +399,7 @@ where
 /// let _ = runtime.visible_edge_candidates(&bounds, 0.0);
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct GraphRuntime<S = std::collections::hash_map::RandomState>
+pub struct GraphRuntime<S = crate::hash::DefaultBuildHasher>
 where
     S: BuildHasher + Default + Clone,
 {
@@ -513,8 +513,7 @@ where
         // index remains a superset of the final precise curve cull. An
         // oversized box goes to `edge_overflow` rather than enumerating an
         // unbounded number of cells.
-        let empty_obstacle_grid =
-            crate::paint::ObstacleGrid::new_with_hasher(&[], 1.0, S::default());
+        let empty_obstacle_grid = crate::paint::ObstacleGrid::new(&[], 1.0);
         // Unbounded extent: the precise screen-space test must always see
         // these candidates (self-loop geometry is viewport-dependent, so no
         // finite world box can bound it).

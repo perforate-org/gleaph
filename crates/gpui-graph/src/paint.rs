@@ -12,7 +12,6 @@ use std::hash::BuildHasher;
 use glam::Vec2;
 
 use crate::graph::{Edge, EdgeDirection, EdgeId, Graph, NodeId};
-use crate::hash::HashMap;
 use crate::interaction::{Hover, Selection};
 use crate::runtime::{GraphRuntime, SyncedGraphRuntime};
 use crate::style::GraphStyle;
@@ -188,15 +187,8 @@ pub struct PaintFrameInput<'a, N, E> {
 /// Indexed rendering accepts only a scene/runtime synchronization proof. The
 /// graph, positions, and cluster geometry are therefore all resolved from the
 /// same borrowed scene snapshot as the spatial index.
-pub struct IndexedPaintFrameInput<
-    'a,
-    'scene,
-    NK,
-    EK,
-    N,
-    E,
-    S = std::collections::hash_map::RandomState,
-> where
+pub struct IndexedPaintFrameInput<'a, 'scene, NK, EK, N, E, S = crate::hash::DefaultBuildHasher>
+where
     S: BuildHasher + Default + Clone,
 {
     /// Proof returned by [`crate::scene::GraphScene::sync_runtime`].
@@ -230,7 +222,7 @@ pub struct IndexedPaintFrameInput<
 /// resolves an optional label string for an edge; edges without a label produce
 /// no edge-label primitive.
 pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
-    build_paint_frame_with_runtime::<N, E, std::collections::hash_map::RandomState>(input, None)
+    build_paint_frame_with_runtime::<N, E, crate::hash::DefaultBuildHasher>(input, None)
 }
 
 /// Build a paint frame using synchronized scene-owned spatial-index state.
@@ -356,7 +348,7 @@ where
     // a straight-line-LOD edge (which never reads obstacles), so no obstacle
     // grid is built in the common zoomed-out case.
     let obstacle_cell = style.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let empty_obstacle_grid = ObstacleGrid::new_with_hasher(&[], obstacle_cell, S::default());
+    let empty_obstacle_grid = ObstacleGrid::new(&[], obstacle_cell);
 
     // The zoom-invariant per-edge preprocessing comes from the runtime when
     // supplied (borrowed, no copy); otherwise build it here (linear scan). It
@@ -481,7 +473,7 @@ where
     // overview (every edge straight) this avoids building a grid over every
     // visible node's position. When no edge is curved, the shared empty grid is
     // used as the obstacle context.
-    let obstacles_screen_grid: ObstacleGrid<S> = if curved_indices.is_empty() {
+    let obstacles_screen_grid: ObstacleGrid = if curved_indices.is_empty() {
         empty_obstacle_grid
     } else {
         let mut obstacles_screen: Vec<Vec2> = Vec::new();
@@ -498,7 +490,7 @@ where
             }
             obstacles_screen.push(viewport.world_to_screen(world));
         }
-        ObstacleGrid::new_with_hasher(&obstacles_screen, obstacle_cell, S::default())
+        ObstacleGrid::new(&obstacles_screen, obstacle_cell)
     };
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
@@ -677,79 +669,111 @@ const CLUSTER_BASE: f32 = 0.05;
 /// separated as nodes move, with no angle threshold.
 const CLUSTER_NORMAL_OFFSET: f32 = 0.3;
 
-/// A uniform grid over obstacle node positions, so an edge only tests the
-/// nodes near its chord instead of every node in the graph.
+/// A uniform bucket grid over obstacle node positions, so an edge only tests
+/// the nodes near its chord instead of every node in the graph.
+///
+/// Buckets are addressed by direct index over the obstacles' own bounding
+/// extent rather than through a hash map: queries are proportional to the
+/// rectangle they cover, with no hashing and no full-grid fallback, and
+/// iteration order is deterministic row-major. The extent is derived from the
+/// inserted points; when that extent is pathologically sparse relative to the
+/// point count, the grid degrades to a single bucket holding every point so
+/// memory stays bounded while queries remain correct.
 #[doc(hidden)]
-pub struct ObstacleGrid<S = std::collections::hash_map::RandomState>
-where
-    S: BuildHasher + Default + Clone,
-{
+pub struct ObstacleGrid {
     cell_size: f32,
-    cells: HashMap<(i32, i32), Vec<Vec2>, S>,
+    /// Position of cell (0, 0)'s min corner.
+    origin: Vec2,
+    cols: u32,
+    rows: u32,
+    buckets: Vec<Vec<Vec2>>,
 }
+
+/// Above this ratio of buckets to points, sparsity is pathological; collapse
+/// to one bucket. The slack keeps ordinary layouts fully bucketed.
+const OBSTACLE_BUCKET_SPARSENESS_LIMIT: usize = 8;
 
 #[doc(hidden)]
 impl ObstacleGrid {
-    /// Create an empty grid using the default SipHash hasher.
+    /// Bucket `obstacles` into `cell_size`-wide cells spanning their extent.
     #[doc(hidden)]
     pub fn new(obstacles: &[Vec2], cell_size: f32) -> Self {
-        Self::new_with_hasher(
-            obstacles,
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for &o in obstacles {
+            min = min.min(o);
+            max = max.max(o);
+        }
+        if obstacles.is_empty() || !min.is_finite() {
+            return Self {
+                cell_size,
+                origin: Vec2::ZERO,
+                cols: 0,
+                rows: 0,
+                buckets: Vec::new(),
+            };
+        }
+        let cols = ((max.x - min.x) / cell_size).floor() as u32 + 1;
+        let rows = ((max.y - min.y) / cell_size).floor() as u32 + 1;
+        // Degenerate-extent guard: an absurd spread over few points would
+        // allocate a mostly-empty grid. One bucket stays correct — every
+        // query scans it — and bounds memory to the point count.
+        let wanted = (cols as usize).saturating_mul(rows as usize);
+        if wanted > obstacles.len() * OBSTACLE_BUCKET_SPARSENESS_LIMIT {
+            return Self {
+                cell_size,
+                origin: Vec2::ZERO,
+                cols: 1,
+                rows: 1,
+                buckets: vec![obstacles.to_vec()],
+            };
+        }
+        let mut buckets = vec![Vec::new(); wanted];
+        for &o in obstacles {
+            let (col, row) = ObstacleGrid::cell_of(o, min, cell_size);
+            buckets[(row * cols + col) as usize].push(o);
+        }
+        Self {
             cell_size,
-            std::collections::hash_map::RandomState::default(),
+            origin: min,
+            cols,
+            rows,
+            buckets,
+        }
+    }
+
+    fn cell_of(point: Vec2, origin: Vec2, cell_size: f32) -> (u32, u32) {
+        (
+            ((point.x - origin.x) / cell_size).floor() as u32,
+            ((point.y - origin.y) / cell_size).floor() as u32,
         )
     }
-}
 
-impl<S> ObstacleGrid<S>
-where
-    S: BuildHasher + Default + Clone,
-{
-    #[doc(hidden)]
-    pub fn new_with_hasher(obstacles: &[Vec2], cell_size: f32, hasher: S) -> Self {
-        let mut cells: HashMap<(i32, i32), Vec<Vec2>, S> =
-            HashMap::with_capacity_and_hasher(obstacles.len(), hasher);
-        for &o in obstacles {
-            let cell = (
-                (o.x / cell_size).floor() as i32,
-                (o.y / cell_size).floor() as i32,
-            );
-            cells.entry(cell).or_default().push(o);
+    /// Invoke `f` for each obstacle whose cell intersects the rectangle
+    /// `[min, max]`. Callers filter precisely afterwards, so any superset is
+    /// valid. A callback (rather than an iterator) avoids a heap allocation
+    /// and dynamic dispatch per query, which matters because this runs once
+    /// per visible edge.
+    fn for_each_in_rect(&self, min: Vec2, max: Vec2, mut f: impl FnMut(Vec2)) {
+        if self.buckets.is_empty() {
+            return;
         }
-        Self { cell_size, cells }
-    }
-
-    /// Invoke `f` for each obstacle position that may lie within `radius` of
-    /// `point`.
-    ///
-    /// When the query radius is large relative to the grid (e.g. a long edge at
-    /// high zoom), scanning the span of cells is dominated by empty cells, so
-    /// fall back to iterating the occupied cells directly. A callback (rather
-    /// than an iterator) avoids a heap allocation and dynamic dispatch per
-    /// query, which matters because this runs once per visible edge.
-    fn for_each_candidate(&self, point: Vec2, radius: f32, mut f: impl FnMut(Vec2)) {
-        let cell = (
-            (point.x / self.cell_size).floor() as i32,
-            (point.y / self.cell_size).floor() as i32,
-        );
-        let span = (radius / self.cell_size).ceil() as i32;
-        // If the span covers most of the grid, iterating every occupied cell is
-        // cheaper than scanning a huge square of mostly-empty cells.
-        if span > 4 {
-            for o in self.cells.values().flatten() {
-                f(*o);
-            }
-        } else {
-            for dx in -span..=span {
-                for dy in -span..=span {
-                    if let Some(cell) = self.cells.get(&(cell.0 + dx, cell.1 + dy)) {
-                        for o in cell {
-                            f(*o);
-                        }
-                    }
+        let lo = self.cell_index_clamped(min);
+        let hi = self.cell_index_clamped(max);
+        for row in lo.1..=hi.1 {
+            for col in lo.0..=hi.0 {
+                for o in &self.buckets[(row * self.cols + col) as usize] {
+                    f(*o);
                 }
             }
         }
+    }
+
+    /// Cell coordinates clamped into the grid. Points outside the extent land
+    /// on the border cells, which can only add candidates — never skip them.
+    fn cell_index_clamped(&self, point: Vec2) -> (u32, u32) {
+        let (col, row) = ObstacleGrid::cell_of(point, self.origin, self.cell_size);
+        (col.min(self.cols - 1), row.min(self.rows - 1))
     }
 }
 
@@ -766,8 +790,7 @@ where
 /// side).
 #[doc(hidden)]
 pub fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
-    let grid: crate::runtime::DensityGrid<std::collections::hash_map::RandomState> =
-        crate::runtime::DensityGrid::new(midpoints, radius);
+    let grid = crate::runtime::DensityGrid::new(midpoints, radius);
     let all: Vec<usize> = (0..midpoints.len()).collect();
     signed_densities_for(&grid, midpoints, normals, radius, &all)
 }
@@ -832,15 +855,12 @@ where
 /// outward rather than inward. The cluster bow is a fixed fraction of the edge
 /// length, independent of local density.
 #[doc(hidden)]
-pub fn edge_control_point<S>(
+pub fn edge_control_point(
     source: Vec2,
     target: Vec2,
-    ctx: &EdgeCurveContext<'_, S>,
+    ctx: &EdgeCurveContext<'_>,
     cluster: Option<(Vec2, f32)>,
-) -> Vec2
-where
-    S: BuildHasher + Default + Clone,
-{
+) -> Vec2 {
     let dir = target - source;
     let Some(len) = finite_chord_length(source, target) else {
         // No finite non-zero chord can be normalized. Logical self-loops are
@@ -946,17 +966,15 @@ where
 /// by the remaining clearance. This handles obstacles anywhere along the chord,
 /// not just at its midpoint. The edge's own endpoints are skipped.
 #[doc(hidden)]
-pub fn apply_node_avoidance<S>(
+pub fn apply_node_avoidance(
     control: &mut Vec2,
     source: Vec2,
     target: Vec2,
     midpoint: Vec2,
     unit: Vec2,
     normal: Vec2,
-    ctx: &EdgeCurveContext<'_, S>,
-) where
-    S: BuildHasher + Default + Clone,
-{
+    ctx: &EdgeCurveContext<'_>,
+) {
     let half_len = (target - source).length() * 0.5;
     // Cap the total push so a short edge (e.g. at very low zoom, where edges
     // are only a few pixels on screen) does not bow far beyond its own length.
@@ -969,14 +987,17 @@ pub fn apply_node_avoidance<S>(
     // Only test obstacles near the chord. The influence radius is the maximum
     // perpendicular distance at which an obstacle can still push the edge, and
     // an obstacle can sit anywhere along the segment (up to `half_len` from the
-    // midpoint). The farthest relevant obstacle is at the corner of the
-    // `along ∈ [-half_len, half_len]` × `perp ∈ [-influence, influence]` box,
-    // so the grid query radius is the hypotenuse of that box, not the sum of
-    // its sides. Using the hypotenuse scans fewer cells for the same result.
+    // midpoint). The relevant region is the chord's rectangle expanded by one
+    // influence radius; the per-obstacle filters below keep exactly the
+    // obstacles within `influence` perpendicular of and `half_len` along the
+    // chord, so visiting that box is proportional to the chord's footprint —
+    // never the grid's whole extent, whatever the zoom.
     let influence_radius = ctx.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let query_radius = (half_len * half_len + influence_radius * influence_radius).sqrt();
-    ctx.obstacles
-        .for_each_candidate(midpoint, query_radius, |obstacle| {
+    let expand = Vec2::splat(influence_radius);
+    ctx.obstacles.for_each_in_rect(
+        source.min(target) - expand,
+        source.max(target) + expand,
+        |obstacle| {
             // Skip the edge's own endpoints. Use a small tolerance so tiny
             // floating-point differences from the screen transform do not make the
             // edge treat its own endpoints as obstacles.
@@ -1004,7 +1025,8 @@ pub fn apply_node_avoidance<S>(
                 let away = if perp >= 0.0 { -normal } else { normal };
                 push += away * influence * 2.0;
             }
-        });
+        },
+    );
     if push.length() > max_push {
         push = push.normalize() * max_push;
     }
@@ -1014,10 +1036,7 @@ pub fn apply_node_avoidance<S>(
 /// Per-edge geometry context shared by the paint layer and hit testing so the
 /// drawn and selectable curves always match.
 #[doc(hidden)]
-pub struct EdgeCurveContext<'a, S = std::collections::hash_map::RandomState>
-where
-    S: BuildHasher + Default + Clone,
-{
+pub struct EdgeCurveContext<'a> {
     /// This edge's index among all candidate edges.
     pub index: usize,
     /// Signed local edge density (neighbors on the left minus on the right).
@@ -1033,7 +1052,7 @@ where
     pub parallel: &'a [Option<(usize, usize)>],
     /// A grid over obstacle node positions the edge should bow around, in the
     /// same coordinate space as the edge's endpoints.
-    pub obstacles: &'a ObstacleGrid<S>,
+    pub obstacles: &'a ObstacleGrid,
     /// Node radius, used to size the clearance around obstacle nodes.
     pub node_radius: f32,
 }
@@ -1069,18 +1088,15 @@ pub fn shared_cluster_center(
 /// A zero-length chord is returned as a point; graph identity decides whether
 /// the edge is a true self-loop and therefore uses viewport-dependent onigiri
 /// geometry.
-pub fn edge_curve_bbox<S>(
+pub fn edge_curve_bbox(
     source: Vec2,
     target: Vec2,
     index: usize,
     has_reverse: &[bool],
     parallel: &[Option<(usize, usize)>],
     cluster: Option<(Vec2, f32)>,
-    obstacles: &ObstacleGrid<S>,
-) -> (Vec2, Vec2)
-where
-    S: BuildHasher + Default + Clone,
-{
+    obstacles: &ObstacleGrid,
+) -> (Vec2, Vec2) {
     // A zero-length chord is only a degenerate non-loop here: callers use the
     // graph edge identity to route true self-loops through self_loop_path. Do
     // not manufacture a loop-like control point from coincident coordinates,
@@ -1137,18 +1153,15 @@ where
 /// segment trimmed to the node boundaries. Both the paint layer and hit testing
 /// use this so the drawn and selectable geometry always match.
 #[doc(hidden)]
-pub fn edge_path<N, E, S>(
+pub fn edge_path<N, E>(
     edge: &Edge<E>,
-    ctx: &EdgeCurveContext<'_, S>,
+    ctx: &EdgeCurveContext<'_>,
     graph: &Graph<N, E>,
     node_position: &dyn Fn(NodeId) -> Option<Vec2>,
     node_cluster_center: &dyn Fn(NodeId) -> Option<(Vec2, f32)>,
     viewport: &Viewport,
     style: &GraphStyle,
-) -> Vec<Bezier>
-where
-    S: BuildHasher + Default + Clone,
-{
+) -> Vec<Bezier> {
     let source =
         viewport.world_to_screen(node_position(edge.source).expect("edge source has a position"));
     let target =

@@ -24,10 +24,10 @@ use crate::patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
 /// [`Self::apply`] for all mutations so node and edge key maps cannot diverge
 /// from graph topology.
 ///
-/// The hasher `S` backs both external-key maps; it defaults to SipHash
-/// ([`std::collections::hash_map::RandomState`]).
+/// The hasher `S` backs both external-key maps; it defaults to
+/// [`crate::hash::DefaultBuildHasher`].
 #[derive(Debug, Clone)]
-pub struct KeyedGraph<NK, EK, N = (), E = (), S = std::collections::hash_map::RandomState> {
+pub struct KeyedGraph<NK, EK, N = (), E = (), S = crate::hash::DefaultBuildHasher> {
     graph: Graph<N, E>,
     node_keys: HashMap<NK, NodeId, S>,
     edge_keys: HashMap<EK, crate::graph::EdgeId, S>,
@@ -52,7 +52,7 @@ where
 {
     /// Create an empty keyed graph.
     pub fn new() -> Self {
-        Self::with_hasher(std::collections::hash_map::RandomState::default())
+        Self::with_hasher(crate::hash::DefaultBuildHasher::default())
     }
 }
 
@@ -203,8 +203,8 @@ mod tests {
 
     #[test]
     fn with_hasher_builds_key_maps_with_chosen_hasher() {
-        let mut kg: KeyedGraph<&str, &str, (), (), rapidhash::fast::RandomState> =
-            KeyedGraph::with_hasher(rapidhash::fast::RandomState::default());
+        let mut kg: KeyedGraph<&str, &str, (), (), std::collections::hash_map::RandomState> =
+            KeyedGraph::with_hasher(std::collections::hash_map::RandomState::default());
         let delta = kg.merge(GraphBatch::new().node("a", ()).node("b", ()).edge(
             "ab",
             "a",

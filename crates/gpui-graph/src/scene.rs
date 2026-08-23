@@ -46,7 +46,7 @@ impl Default for NodeSceneState {
 pub struct EdgeSceneState {}
 
 /// Shared visualization state for a graph (§9).
-pub struct GraphScene<NK, EK, N = (), E = (), S = std::collections::hash_map::RandomState>
+pub struct GraphScene<NK, EK, N = (), E = (), S = crate::hash::DefaultBuildHasher>
 where
     S: BuildHasher + Default + Clone,
 {
@@ -95,7 +95,7 @@ where
 {
     /// Create an empty scene with a fixed layout.
     pub fn new() -> Self {
-        Self::with_hasher(std::collections::hash_map::RandomState::default())
+        Self::with_hasher(crate::hash::DefaultBuildHasher::default())
     }
 }
 
@@ -926,8 +926,8 @@ mod tests {
 
     #[test]
     fn with_hasher_builds_scene_and_runtime_with_chosen_hasher() {
-        let mut s: GraphScene<&str, &str, &str, &str, rapidhash::fast::RandomState> =
-            GraphScene::with_hasher(rapidhash::fast::RandomState::default());
+        let mut s: GraphScene<&str, &str, &str, &str, std::collections::hash_map::RandomState> =
+            GraphScene::with_hasher(std::collections::hash_map::RandomState::default());
         let delta = s.merge(GraphBatch::new().node("a", "A").node("b", "B").edge(
             "ab",
             "a",
@@ -941,7 +941,7 @@ mod tests {
         assert!(s.edge_id(&"ab").is_some());
 
         // The runtime shares the scene's hasher and builds its index.
-        let mut rt = GraphRuntime::<rapidhash::fast::RandomState>::default();
+        let mut rt = GraphRuntime::<std::collections::hash_map::RandomState>::default();
         let synced = s.sync_runtime(&mut rt);
         assert_eq!(synced.edges().edge_ids.len(), 1);
     }

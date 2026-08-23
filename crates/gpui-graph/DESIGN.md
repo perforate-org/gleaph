@@ -406,15 +406,18 @@ pub struct KeyedGraph<NK, EK, N = (), E = ()> {
 
 The exact container types remain implementation details.
 
-The hash function behind the crate's `HashMap`/`HashSet`s is parameterized by
-a `std::hash::BuildHasher` type parameter `S` (defaulting to SipHash
-`std::collections::hash_map::RandomState`). `KeyedGraph`, `GraphScene`, and
-`GraphRuntime` each carry `S`, so the same hasher backs the external-key maps,
-the node index, and the derived spatial grids consistently across one scene
-and its runtime. `new()` stays SipHash-only (mirroring `std`), while
-`with_hasher(S)` lets callers choose a faster non-cryptographic hasher such as
-`rapidhash::fast::RandomState`. Benchmarking (see `benches/paint_bench.rs`)
-measures the hasher's contribution to the per-frame paint cost.
+The hash function behind the crate's `HashMap`/`HashSet`s defaults to
+`rapidhash::fast::RandomState` (`hash::DefaultBuildHasher`, one definition
+point in `src/hash.rs`). The keys hashed here are internal identities and
+grid cells rather than adversarial input, and `benches/paint_bench.rs`
+measures the hasher's contribution to the per-frame paint cost. `KeyedGraph`,
+`GraphScene`, and `GraphRuntime` each carry an
+`std::hash::BuildHasher` type parameter `S`, so a caller choosing another
+hasher backs the external-key maps, the node index, and the derived spatial
+grids consistently across one scene and its runtime. `new()` uses the
+default only, while `with_hasher(S)` overrides it. The paint layer's
+obstacle grid is outside this parameterization: it is a dense bucket array
+over its points' own extent (no hashing at all; see §18.3).
 
 `KeyedGraph` owns the graph and both external-key maps as one consistency
 boundary. Its graph accessor is read-only; there is intentionally no raw
@@ -1314,6 +1317,16 @@ This conservative test prevents false negatives but may retain a harmless
 offscreen candidate for later clipping. An exactly zero-length edge between
 distinct nodes is not a self-loop; only the graph identity
 `edge.source == edge.target` selects the onigiri path.
+
+Obstacle avoidance queries a dense bucket array rather than a hash-mapped
+grid (`paint::ObstacleGrid`): buckets are addressed by direct index over the
+obstacles' own bounding extent, so a per-edge query costs work proportional
+to its chord's footprint — never a scan of every node, whatever the zoom.
+Queries pass the chord's rectangle expanded by one influence radius; the
+per-obstacle along/perpendicular filters then keep exactly the obstacles that
+can push the curve. A pathologically sparse extent degrades to one bucket
+holding every point, bounding memory while keeping queries correct, and
+bucket iteration is deterministic row-major.
 
 The shared chord guard rejects only an exact zero or non-finite coordinate-space
 length before normalization. It deliberately does not use `f32::EPSILON`: a

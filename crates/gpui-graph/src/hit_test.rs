@@ -118,8 +118,7 @@ where
         .map(|world| viewport.world_to_screen(world))
         .collect();
     let obstacle_cell = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
-    let obstacles_grid: crate::paint::ObstacleGrid<S> =
-        crate::paint::ObstacleGrid::new_with_hasher(&obstacles_screen, obstacle_cell, S::default());
+    let obstacles_grid = crate::paint::ObstacleGrid::new(&obstacles_screen, obstacle_cell);
 
     // Compute signed density only for the candidate edges (the grid is already
     // built over every edge's midpoint by the runtime).

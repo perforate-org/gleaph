@@ -1,18 +1,10 @@
-//! A `rapidhash`-backed example for a large graph.
+//! Rendering a large graph.
 //!
-//! Demonstrates rendering many nodes and edges through the same public API as
-//! the other examples, but with a faster non-cryptographic hasher
-//! ([`rapidhash::fast::RandomState`]) chosen on the scene, runtime, and view.
-//! The hasher sits behind the spatial grids that accelerate per-frame culling
-//! and edge avoidance.
-//!
-//! The graph is a large grid with nodes laid out at uniform spacing and no
-//! labels, matching the `paint_bench` overview scenario. Keeping nodes sparse
-//! and label-free keeps the per-frame paint cost dominated by the grid hasher
-//! rather than by text shaping or dense neighbor sets.
-//!
-//! This example uses `rapidhash` from the crate's dev-dependencies; examples
-//! resolve dev-dependencies, so no extra dependency is required.
+//! Demonstrates many nodes and edges through the same public API as the
+//! other examples. The graph is a large grid with nodes laid out at uniform
+//! spacing and no labels, matching the `paint_bench` overview scenario:
+//! keeping nodes sparse and label-free isolates the per-frame culling,
+//! avoidance, and tessellation costs from text shaping.
 
 use glam::Vec2;
 use gpui::{
@@ -21,13 +13,9 @@ use gpui::{
 };
 use gpui_graph::{EdgeDirection, FixedLayout, GraphBatch, GraphScene, GraphView, GraphViewState};
 
-/// The hasher chosen for this example. `rapidhash::fast::RandomState` is a
-/// fast non-cryptographic hasher; the default SipHash `RandomState` is the
-/// alternative.
-type Hasher = rapidhash::fast::RandomState;
 /// Node identity is a dense `usize` index; edges are keyed by a monotonically
 /// increasing `usize`. Nodes carry no per-node data and edges carry no data.
-type ViewState = GraphViewState<usize, usize, (), (), Hasher>;
+type ViewState = GraphViewState<usize, usize, (), ()>;
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
@@ -50,11 +38,10 @@ struct Example {
 
 impl Example {
     fn new(cx: &mut Context<Self>) -> Self {
-        // 1. Shared scene with the rapidhash hasher and a fixed layout, so
-        //    node positions are set manually below.
+        // 1. Shared scene with a fixed layout, so node positions are set
+        //    manually below.
         let scene = cx.new(|_cx| {
-            GraphScene::<usize, usize, (), (), Hasher>::with_hasher(Hasher::default())
-                .with_layout(Box::new(FixedLayout))
+            GraphScene::<usize, usize, (), ()>::new().with_layout(Box::new(FixedLayout))
         });
 
         // 2. Populate the scene with a large grid graph: `side * side` nodes,
@@ -88,7 +75,7 @@ impl Example {
         }
         scene.update(cx, |scene, cx| {
             scene.merge(batch);
-            // Set uniform positions so the spatial grids stay sparse.
+            // Set uniform spacing so local density stays bounded.
             for y in 0..side {
                 for x in 0..side {
                     let node = scene.node_id(&ids[y * side + x]).expect("grid node exists");
@@ -98,8 +85,8 @@ impl Example {
             cx.notify();
         });
 
-        // 3. A view state over the scene, inheriting the rapidhash hasher from
-        //    the scene argument. No labels, matching the benchmark overview.
+        // 3. A view state over the scene. No labels, matching the benchmark
+        //    overview.
         let view = cx.new(|cx| GraphViewState::new(scene, cx));
 
         // 4. Style the graph for a high-contrast dark theme. Edges shorter than

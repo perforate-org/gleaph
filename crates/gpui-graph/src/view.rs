@@ -39,7 +39,7 @@ type NodeOverlayResolver = Rc<crate::paint::NodeOverlay>;
 type EdgeOverlayResolver = Rc<crate::paint::EdgeOverlay>;
 
 /// The state of a particular view into a graph scene (§16).
-pub struct GraphViewState<NK, EK, N, E, S = std::collections::hash_map::RandomState>
+pub struct GraphViewState<NK, EK, N, E, S = crate::hash::DefaultBuildHasher>
 where
     S: std::hash::BuildHasher + Default + Clone,
 {
@@ -496,7 +496,7 @@ where
 /// `GraphView` is a styled element: it participates in normal GPUI layout and
 /// styling (e.g. `.size_full()`, `.border_1()`) and renders the graph through
 /// GPUI's low-level canvas API.
-pub struct GraphView<NK, EK, N, E, S = std::collections::hash_map::RandomState>
+pub struct GraphView<NK, EK, N, E, S = crate::hash::DefaultBuildHasher>
 where
     S: std::hash::BuildHasher + Default + Clone,
 {
@@ -2045,17 +2045,18 @@ mod tests {
     #[gpui::test]
     fn view_accepts_scene_with_custom_hasher(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            let scene: Entity<GraphScene<&str, &str, (), (), rapidhash::fast::RandomState>> = cx
-                .new(|_| {
-                    let mut scene =
-                        GraphScene::with_hasher(rapidhash::fast::RandomState::default());
-                    scene.merge(GraphBatch::new().node("a", ()).node("b", ()));
-                    let a = scene.node_id(&"a").unwrap();
-                    let b = scene.node_id(&"b").unwrap();
-                    scene.set_position(a, Vec2::new(-10.0, -20.0));
-                    scene.set_position(b, Vec2::new(30.0, 40.0));
-                    scene
-                });
+            let scene: Entity<
+                GraphScene<&str, &str, (), (), std::collections::hash_map::RandomState>,
+            > = cx.new(|_| {
+                let mut scene =
+                    GraphScene::with_hasher(std::collections::hash_map::RandomState::default());
+                scene.merge(GraphBatch::new().node("a", ()).node("b", ()));
+                let a = scene.node_id(&"a").unwrap();
+                let b = scene.node_id(&"b").unwrap();
+                scene.set_position(a, Vec2::new(-10.0, -20.0));
+                scene.set_position(b, Vec2::new(30.0, 40.0));
+                scene
+            });
             let view = cx.new(|cx| GraphViewState::new(scene, cx));
             assert_eq!(view.read(cx).scene().read(cx).graph().node_count(), 2);
         });

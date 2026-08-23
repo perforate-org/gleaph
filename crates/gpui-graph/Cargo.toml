@@ -10,6 +10,7 @@ gpui.workspace = true
 slotmap = "1.1"
 bitvec = "1.1"
 glam = "0.33"
+rapidhash.workspace = true
 web-time.workspace = true
 
 # Rayon drives worker OS threads, which do not exist on the wasm target
@@ -22,7 +23,6 @@ rayon = "1.12"
 criterion = { version = "0.8", features = ["html_reports"] }
 gpui = { workspace = true, features = ["test-support"] }
 gpui-platform.workspace = true
-rapidhash.workspace = true
 
 [[bench]]
 name = "paint_bench"
