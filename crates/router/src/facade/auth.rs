@@ -119,6 +119,15 @@ pub fn remove_grant(subject: GrantSubject, privilege: &Privilege) -> bool {
     ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.revoke(subject, privilege))
 }
 
+/// Cascade-invalidate every graph-scoped grant row targeting `graph_raw`
+/// (ADR 0074 §3 invariant 4). Called by the vocabulary-drop boundary
+/// (`purge_graph_vocabulary_partitions`) after a graph's label/property
+/// partitions leave the catalogs; ids are monotonic, so those rows could never
+/// match again. Returns the number of removed rows.
+pub fn sweep_graph_grants(graph_raw: u32) -> usize {
+    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.revoke_all_for_graph(graph_raw))
+}
+
 /// Read-only existence probe for revoke preflights (expired rows still exist as state).
 pub fn grant_contains(subject: GrantSubject, privilege: &Privilege) -> bool {
     ROUTER_AUTH_GRANTS.with_borrow(|grants| grants.contains(subject, privilege))

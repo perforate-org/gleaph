@@ -473,6 +473,76 @@ fn unregister_graph_cascades_vocabulary_partitions() {
 }
 
 #[test]
+fn unregister_graph_sweeps_grant_rows_of_the_dropped_vocabulary() {
+    use gleaph_auth::{GrantSubject, GraphOperation, GraphPrivilege, GraphResource, Privilege};
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    register_test_graph(&store, admin, "other.graph");
+    let dropped_id = tenant_main_graph_id();
+    let survivor_id = lookup_graph_id("other.graph").expect("other.graph");
+
+    let traverse_on = |graph: u32, label: u32| {
+        Privilege::Graph(GraphPrivilege {
+            graph,
+            operation: GraphOperation::Traverse(Some(gleaph_auth::Direction::Outgoing)),
+            resource: GraphResource::EdgeLabel(label),
+        })
+    };
+    let grantee = Principal::from_slice(&[7; 29]);
+    // Rows on the dropped graph (named subject + PUBLIC) and survivors elsewhere: the
+    // sibling graph reuses the same numeric label id, proving exact-key scoping.
+    crate::facade::auth::add_grant(
+        GrantSubject::Principal(grantee),
+        &traverse_on(dropped_id.raw(), 1),
+        None,
+    )
+    .expect("dropped-graph principal row");
+    crate::facade::auth::add_grant(
+        GrantSubject::Public,
+        &traverse_on(dropped_id.raw(), 1),
+        None,
+    )
+    .expect("dropped-graph PUBLIC row");
+    crate::facade::auth::add_grant(
+        GrantSubject::Principal(grantee),
+        &traverse_on(survivor_id.raw(), 1),
+        None,
+    )
+    .expect("sibling-graph row with identical label id");
+    crate::facade::auth::add_grant(
+        GrantSubject::Principal(grantee),
+        &Privilege::ExecutePreparedQuery { name: "q".into() },
+        None,
+    )
+    .expect("name-keyed execute row");
+    assert_eq!(crate::facade::auth::grant_rows().len(), 4);
+
+    store
+        .admin_unregister_graph(admin, "tenant.main")
+        .expect("unregister graph");
+
+    let remaining = crate::facade::auth::grant_rows();
+    assert_eq!(
+        remaining.len(),
+        2,
+        "exactly the dropped graph's rows must be swept, got {remaining:?}"
+    );
+    assert!(matches!(
+        &remaining[0].privilege,
+        Privilege::ExecutePreparedQuery { .. }
+    ));
+    assert!(
+        remaining
+            .iter()
+            .any(|row| row.privilege == traverse_on(survivor_id.raw(), 1))
+    );
+}
+
+#[test]
 fn registry_invariants_hold_after_graph_and_shard_register() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());

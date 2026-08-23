@@ -546,10 +546,10 @@ fn create_index_migration_converges_active_with_complete_postings() {
         rounds += 1;
         assert!(rounds <= MAX_DRIVE_ROUNDS, "migration did not converge");
         let result = apply_once(&env, &args);
-        if let Some(phase) = vertex_phase(&env) {
-            if phases.last() != Some(&phase) {
-                phases.push(phase);
-            }
+        if let Some(phase) = vertex_phase(&env)
+            && phases.last() != Some(&phase)
+        {
+            phases.push(phase);
         }
         match result.status {
             SchemaMigrationApplyStatus::Progress(_) => {
@@ -660,7 +660,8 @@ fn label_transition_fence_holds_at_e2e_building_and_sealing() {
         e2e_insert_vertex_with_label_and_property(&env, env.graph_source, person, age, value);
     }
     e2e_insert_vertex_with_label_and_property(&env, env.graph_source, other, age, 99);
-    for value in [15_i64] {
+    {
+        let value = 15_i64;
         e2e_insert_vertex_with_label_and_property(&env, env.graph_dest, person, age, value);
     }
 

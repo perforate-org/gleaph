@@ -707,6 +707,35 @@ impl<M: Memory> GrantState<M> {
         })
     }
 
+    /// Remove every stored row whose privilege targets graph `graph`, returning the count.
+    ///
+    /// Deletion is exact-key based on the decoded canonical keys: a row is removed only when
+    /// its privilege is a [`Privilege::Graph`] carrying this exact graph id, so rows of other
+    /// graphs, other subjects' rows elsewhere, and [`Privilege::ExecutePreparedQuery`] rows
+    /// (name-keyed, graph-agnostic) are untouched.
+    ///
+    /// This is the cascade-invalidation primitive of ADR 0074 §3 invariant 4: when the
+    /// embedding system drops a graph's label/property vocabulary, every graph-scoped row
+    /// targeting that vocabulary references ids that are monotonic and never reused, so no
+    /// future grant can ever cover them again; sweeping them here keeps stored state and
+    /// introspection truthful instead of accumulating permanently dead rows.
+    pub fn revoke_all_for_graph(&mut self, graph: u32) -> usize {
+        let dead: Vec<GrantKey> = self
+            .grants
+            .iter()
+            .filter_map(|entry| match entry.key().decode() {
+                (Privilege::Graph(GraphPrivilege { graph: target, .. }), _) if target == graph => {
+                    Some(entry.key().clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for key in &dead {
+            self.grants.remove(key);
+        }
+        dead.len()
+    }
+
     /// All stored rows decoded to their canonical parts, ordered by canonical key.
     ///
     /// Backs owner-facing introspection surfaces. Malformed keys trap (see
@@ -1223,5 +1252,102 @@ mod tests {
         // (holds) — revoke preflight must address stored rows, not effective ones.
         assert!(grants.contains(GrantSubject::Public, &graph_traverse(None, 3)));
         assert!(!grants.holds(GrantSubject::Public, &graph_traverse(None, 3), 101));
+    }
+
+    #[test]
+    fn revoke_all_for_graph_removes_exactly_that_graphs_rows() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(11);
+        let on_graph = |graph: u32, label: u32| {
+            Privilege::Graph(GraphPrivilege {
+                graph,
+                operation: GraphOperation::Traverse(Some(Direction::Outgoing)),
+                resource: GraphResource::EdgeLabel(label),
+            })
+        };
+        let match_on = |graph: u32, label: u32| {
+            Privilege::Graph(GraphPrivilege {
+                graph,
+                operation: GraphOperation::Match,
+                resource: GraphResource::VertexLabel(label),
+            })
+        };
+        // Dropped graph: two subjects (named + PUBLIC), two operations.
+        grants
+            .grant(GrantSubject::Principal(p), &on_graph(7, 3), None)
+            .expect("principal row");
+        grants
+            .grant(GrantSubject::Public, &match_on(7, 9), None)
+            .expect("public row");
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &Privilege::Graph(GraphPrivilege {
+                    graph: 7,
+                    operation: GraphOperation::ReadProperty,
+                    resource: GraphResource::VertexProperty {
+                        label: 9,
+                        property: 30,
+                    },
+                }),
+                None,
+            )
+            .expect("property row");
+        // Survivors: same numeric label ids under a different graph, a prepared-query
+        // EXECUTE row (name-keyed, graph-agnostic), and an expired row of another graph
+        // that still exists as stored state.
+        grants
+            .grant(GrantSubject::Principal(p), &on_graph(8, 3), None)
+            .expect("sibling-graph row with identical label id");
+        grants
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None)
+            .expect("execute row");
+        grants
+            .grant(GrantSubject::Public, &on_graph(8, 3), Some(50))
+            .expect("expired sibling-graph row");
+
+        assert_eq!(
+            grants.revoke_all_for_graph(7),
+            3,
+            "exactly the dropped graph's rows"
+        );
+        assert_eq!(grants.len(), 3, "survivors untouched");
+        assert!(!grants.contains(GrantSubject::Principal(p), &on_graph(7, 3)));
+        assert!(!grants.contains(GrantSubject::Public, &match_on(7, 9)));
+        assert!(!grants.contains(
+            GrantSubject::Principal(p),
+            &Privilege::Graph(GraphPrivilege {
+                graph: 7,
+                operation: GraphOperation::ReadProperty,
+                resource: GraphResource::VertexProperty {
+                    label: 9,
+                    property: 30
+                },
+            })
+        ));
+        assert!(grants.contains(GrantSubject::Principal(p), &on_graph(8, 3)));
+        assert!(grants.contains(GrantSubject::Public, &on_graph(8, 3)));
+        assert!(grants.contains(GrantSubject::Principal(p), &exec_priv("q1")));
+
+        // Idempotent: a second sweep finds nothing and removes nothing.
+        assert_eq!(grants.revoke_all_for_graph(7), 0);
+        assert_eq!(grants.len(), 3);
+    }
+
+    #[test]
+    fn revoke_all_for_graph_on_empty_or_unknown_graph_is_a_noop() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        assert_eq!(grants.revoke_all_for_graph(7), 0);
+        grants
+            .grant(GrantSubject::Public, &graph_traverse(None, 3), None)
+            .expect("grant on graph 7");
+        assert_eq!(
+            grants.revoke_all_for_graph(8),
+            0,
+            "unknown graph removes nothing"
+        );
+        assert_eq!(grants.len(), 1);
     }
 }

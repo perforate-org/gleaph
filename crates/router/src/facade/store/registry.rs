@@ -243,10 +243,18 @@ fn ensure_graph_registration_slot_available(
 }
 
 impl RouterStore {
+    /// Removes every catalog partition and derived row of `graph_id` after the graph leaves
+    /// the registry. Runs in one no-await message segment, so a failure anywhere rolls the
+    /// whole teardown back.
     fn purge_graph_vocabulary_partitions(graph_id: GraphId) -> Result<(), RouterError> {
         ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
+        // ADR 0074 §3 invariant 4: with the label/property partitions gone, every stored
+        // graph-scoped grant row targeting this graph references ids that are monotonic and
+        // never reused — permanently uncoverable dead rows. Sweep them in the same commit
+        // segment so storage and introspection stay truthful.
+        auth::sweep_graph_grants(graph_id.raw());
         ROUTER_INDEX_NAME_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow_mut(|store| store.remove_graph(graph_id));
         super::super::stable::indexed_catalog::purge_graph_indexes(graph_id);

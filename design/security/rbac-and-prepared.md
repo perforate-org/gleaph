@@ -96,6 +96,20 @@ root); a stored demand can never re-bind to different vocabulary because catalog
 monotonic (ADR 0074 invariant 4). Registration proves equivalence: the stored set must equal
 a fresh dynamic walk of the same program (regression-tested).
 
+**Vocabulary drop: grant cascade and fail-closed staleness (2026-08-24).** ADR 0074 §3
+invariant 4 is enforced at the only vocabulary-drop boundary that exists today,
+`purge_graph_vocabulary_partitions` (whole-graph teardown behind `unregister_graph`; there
+is no per-label DROP DDL): once the graph's vertex-label, edge-label, and property
+partitions leave the catalogs, every graph-scoped grant row targeting it references ids
+that can never be reallocated, so the same commit segment sweeps exactly those rows from
+`ROUTER_AUTH_GRANTS` — other graphs' rows (even with identical numeric label ids), other
+subjects' rows elsewhere, and name-keyed `EXECUTE PreparedQuery` rows survive. Stored
+prepared requirement sets referencing the dropped vocabulary are **intentionally not
+recomputed**: dead-id demands can never be covered again (no future grant can match a
+dropped id), so they fail closed uniformly — the query stays denied until its prepared
+query is re-registered against current catalogs. This staleness is a documented property,
+not a gap; re-registration replaces the whole record.
+
 ## Anonymous-principal invariant
 
 **Status: Implemented**

@@ -578,9 +578,10 @@ fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
 /// materialized as a grant row, so introspection surfaces it explicitly instead of
 /// presenting an apparently empty list. Stored rows follow in canonical key order.
 ///
-/// Rows referencing vocabulary that no longer resolves are skipped: ids are never reused
-/// (ADR 0074 invariant 4), but cascade invalidation of dropped labels arrives with a later
-/// slice, so stale rows cannot be named until then.
+/// Rows referencing vocabulary that no longer resolves are skipped rather than misnamed:
+/// since the ADR 0074 §3 invariant-4 cascade landed, dropped-vocabulary rows are swept at
+/// the drop site (`purge_graph_vocabulary_partitions`), so a skipped row here can only be
+/// an unrepresentable or otherwise unresolved leftover, surfaced as absent.
 pub(crate) fn list_graph_grants(
     graph_name: &str,
     caller: Principal,

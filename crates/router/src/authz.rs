@@ -1265,6 +1265,15 @@ pub(crate) fn enforce_data_plane_authorization(
 /// and share one semantics ([`requirements_cover`]); admitting only when either admits is
 /// safe because catalog ids are monotonic (ADR 0074 invariant 4), so a stored demand can
 /// never re-bind to different vocabulary.
+///
+/// **Stored-set staleness is fail-closed by design.** When vocabulary named by a stored
+/// requirement set is dropped (today: whole-graph teardown via
+/// `purge_graph_vocabulary_partitions`, which also sweeps the graph's grant rows), the
+/// dead-id demands can never be covered again — grants resolve through live catalogs whose
+/// ids are monotonic, so no future grant row can match a dropped id. Stored requirement
+/// sets are therefore *not* recomputed or patched in place; queries referencing dropped
+/// vocabulary stay uniformly denied until the prepared query is re-registered against the
+/// current catalogs (re-registration replaces the whole record).
 pub(crate) fn enforce_prepared_data_plane_authorization(
     store: &RouterStore,
     caller: &Principal,
