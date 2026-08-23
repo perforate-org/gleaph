@@ -264,6 +264,10 @@ where
     )
 }
 
+/// One candidate edge with its cheap Phase-A classification: the prep index,
+/// identity, edge, screen endpoints, and whether straight-line LOD applies.
+type Candidate<'a, E> = (usize, EdgeId, &'a Edge<E>, Vec2, Vec2, bool);
+
 fn build_paint_frame_with_runtime<N, E, S>(
     input: PaintFrameInput<'_, N, E>,
     runtime: Option<&GraphRuntime<S>>,
@@ -348,21 +352,13 @@ where
         }
     }
 
-    // An empty field used only for culling: the cull test only needs the
-    // curve's bounding box, and avoidance now happens later in world space.
-    // The same empty field also serves as the obstacle context when every
-    // visible edge is a straight-line-LOD edge (which never reads obstacles),
-    // so no obstacle field is built in the common zoomed-out case.
-    //
     // Nodes are world-sized, so the obstacle clearance is a plain world
-    // length and curve shapes are fully invariant under both panning and
-    // zooming. The field's collection window widens by one clearance radius
-    // beyond the node-cull margin, so a node drifting across the boundary is
-    // already fully present (or fully absent) for every edge that can see it
-    // and shapes do not pop as the view pans.
+    // length and curve shapes depend on nothing but the world layout - and,
+    // past the marker-size cap, the zoom level (see
+    // `GraphStyle::node_screen_radius`). The obstacle field is built after
+    // candidate classification so the zoomed-out overview (every candidate
+    // straight) skips it entirely.
     let obstacle_radius = style.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let field_margin = margin + obstacle_radius;
-    let empty_obstacle_field = ObstacleField::new(&[], obstacle_radius);
 
     // The zoom-invariant per-edge preprocessing comes from the runtime when
     // supplied (borrowed, no copy); otherwise build it here (linear scan). It
@@ -382,7 +378,11 @@ where
     let normals = &prep.normals;
     let density_grid = &prep.density_grid;
 
-    let mut visible_edges: Vec<(usize, EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
+    // Phase A - gather every candidate with cheap per-edge classification.
+    // Straight-line-LOD edges never read the obstacle field, so the
+    // comparatively costly field below is built only when some candidate
+    // actually renders curved; the zoomed-out overview keeps its fast path.
+    //
     // When a spatial index is supplied, iterate only the candidate indices it
     // reports as near the visible region (a superset, so no visible edge is
     // missed). Without an index, every edge is a candidate.
@@ -390,31 +390,81 @@ where
         Some(rt) => rt.visible_edge_candidates(&visible, margin),
         None => (0..prep.edge_ids.len()).collect(),
     };
+    let mut candidates: Vec<Candidate<E>> = Vec::with_capacity(candidate_indices.len());
+    let mut any_curved_candidate = false;
     for &index in &candidate_indices {
         let id = prep.edge_ids[index];
         let edge = graph.edge(id).expect("edge exists");
-        let source_world = prep.source[index];
-        let target_world = prep.target[index];
-        // Cull edges whose curve's bounding box is entirely outside the visible
-        // bounds. A curved edge may pass through the view even when both
-        // endpoints are outside it, so the control point is included in the
-        // bounds test.
-        let source_visible = point_in_bounds(source_world, &visible, margin);
-        let target_visible = point_in_bounds(target_world, &visible, margin);
-        if !source_visible && !target_visible {
-            // Both endpoints are outside; keep the edge only if its curve
-            // (including the control point) still crosses the visible bounds.
-            // Self-loop status is a graph-topology fact, not a consequence of
-            // two distinct nodes currently sharing a position.
-            let is_self_loop = edge.source == edge.target;
-            let curve_visible = if is_self_loop {
-                // A self-loop's onigiri path may extend well beyond the node,
-                // so test the path's bounding box. The path is in screen
-                // coordinates; convert its bounds back before comparing with
-                // the world-space visible bounds.
+        let source_screen = viewport.world_to_screen(prep.source[index]);
+        let target_screen = viewport.world_to_screen(prep.target[index]);
+        let is_straight = edge.source != edge.target
+            && straight_edge_applies(source_screen, target_screen, style);
+        any_curved_candidate |= !is_straight;
+        candidates.push((index, id, edge, source_screen, target_screen, is_straight));
+    }
+
+    // The obstacle field fades in over one kernel radius past the node-cull
+    // margin instead of switching members on and off at that line. Binary
+    // membership meant a node crossing the invisible boundary appeared in (or
+    // vanished from) the field all at once, and every edge whose chord sampled
+    // near it snapped its control point - most visibly while panning or
+    // zooming, where the window sweeps through the world every frame.
+    // Weighting each kernel by a smoothstep of the node's distance outside the
+    // core window makes field values continuous in the camera pose, so
+    // persistently visible edges never jump.
+    //
+    // The collection query widens by the same fade radius, and membership uses
+    // one predicate shared with endpoint cancellation below, so a node is
+    // splatted exactly when it can influence a sample.
+    let obstacles_field: ObstacleField = if any_curved_candidate {
+        let fade = obstacle_radius;
+        let field_ids: Vec<NodeId> = match runtime {
+            Some(rt) => rt.visible_nodes(&visible, margin + fade),
+            None => graph.nodes().map(|(id, _)| id).collect(),
+        };
+        let mut obstacles_world: Vec<(Vec2, f32)> = Vec::new();
+        for id in &field_ids {
+            let Some(world) = node_position(*id) else {
+                continue;
+            };
+            let d = distance_outside_rect(world, &visible, margin);
+            if d >= fade {
+                continue;
+            }
+            let t = d / fade;
+            let w = 1.0 - t * t * (3.0 - 2.0 * t);
+            obstacles_world.push((world, w));
+        }
+        ObstacleField::new_weighted(obstacles_world, obstacle_radius)
+    } else {
+        ObstacleField::new(&[], obstacle_radius)
+    };
+
+    // An endpoint belongs to the field exactly when the collection pass above
+    // included it (same predicate), so its own contribution cancels cleanly.
+    let in_field = |world: Vec2| distance_outside_rect(world, &visible, margin) < obstacle_radius;
+
+    // Phase B - precise cull now that the rendered-shape field exists: the
+    // curve bound below carries the same avoidance displacement as the final
+    // path, so an edge whose bow crosses the view can no longer be culled by
+    // an empty-field estimate and pop in late.
+    candidates.retain(
+        |(index, _id, edge, source_screen, _target_screen, is_straight)| {
+            let source_world = prep.source[*index];
+            let target_world = prep.target[*index];
+            let source_visible = point_in_bounds(source_world, &visible, margin);
+            let target_visible = point_in_bounds(target_world, &visible, margin);
+            if source_visible || target_visible {
+                return true;
+            }
+            // Both endpoints are outside; keep the edge only if what it draws
+            // still crosses the visible bounds. Self-loop status is a
+            // graph-topology fact, not a consequence of two distinct nodes
+            // currently sharing a position.
+            if edge.source == edge.target {
                 let path = self_loop_path(
                     edge.source,
-                    viewport.world_to_screen(source_world),
+                    *source_screen,
                     graph,
                     node_position,
                     viewport,
@@ -426,52 +476,46 @@ where
                     min = min.min(*p0).min(*p1).min(*p2);
                     max = max.max(*p0).max(*p1).max(*p2);
                 }
-                bounds_intersect(
+                return bounds_intersect(
                     &visible,
                     margin,
                     viewport.screen_to_world(min),
                     viewport.screen_to_world(max),
-                )
-            } else {
-                let cluster_center =
-                    shared_cluster_center(edge.source, edge.target, node_cluster_center);
-                let (min, max) = edge_curve_bbox(
-                    source_world,
-                    target_world,
-                    index,
-                    has_reverse,
-                    parallel,
-                    cluster_center,
-                    &empty_obstacle_field,
                 );
-                bounds_intersect(&visible, margin, min, max)
-            };
-            if !curve_visible {
-                continue;
             }
-        }
-        visible_edges.push((
-            index,
-            id,
-            edge,
-            viewport.world_to_screen(source_world),
-            viewport.world_to_screen(target_world),
-        ));
-    }
+            if *is_straight {
+                // A straight-line-LOD edge draws only the trimmed chord, whose
+                // bounding box is the endpoints' box.
+                let (min, max) = (
+                    source_world.min(target_world),
+                    source_world.max(target_world),
+                );
+                return bounds_intersect(&visible, margin, min, max);
+            }
+            let cluster_center =
+                shared_cluster_center(edge.source, edge.target, node_cluster_center);
+            let (min, max) = edge_curve_bbox(
+                source_world,
+                target_world,
+                *index,
+                has_reverse,
+                parallel,
+                cluster_center,
+                &obstacles_field,
+            );
+            bounds_intersect(&visible, margin, min, max)
+        },
+    );
 
-    // Compute the signed density only for the visible edges that will render
-    // curved. Straight-line-LOD edges (below the screen-length threshold) skip
-    // the control-point bow entirely, so they do not need a density value; this
-    // keeps the pairwise density loop proportional to the curved-visible set
-    // instead of every visible edge. The grid is built over every edge's
+    // Compute the signed density only for the surviving edges that will
+    // render curved. Straight-line-LOD edges skip the control-point bow
+    // entirely, so they need no density value; the grid covers every edge's
     // midpoint, so off-screen neighbors still count toward a visible edge's
-    // density, but the pairwise loop runs only for the requested indices.
-    let curved_indices: Vec<usize> = visible_edges
+    // density while the pairwise loop stays proportional to this set.
+    let curved_indices: Vec<usize> = candidates
         .iter()
-        .filter_map(|(index, _, edge, source, target)| {
-            let is_self_loop = edge.source == edge.target;
-            let is_straight = !is_self_loop && straight_edge_applies(*source, *target, style);
-            (!is_straight).then_some(*index)
+        .filter_map(|(index, _, edge, _, _, is_straight)| {
+            (edge.source != edge.target && !is_straight).then_some(*index)
         })
         .collect();
     let signed_densities = signed_densities_for(
@@ -482,36 +526,13 @@ where
         &curved_indices,
     );
 
-    // Build the obstacle field only when at least one visible edge renders
-    // curved, since straight-line-LOD edges never read it. In the zoomed-out
-    // overview (every edge straight) this avoids building a field over every
-    // visible node's position. When no edge is curved, the shared empty field
-    // is used as the obstacle context.
-    let obstacles_field: ObstacleField = if curved_indices.is_empty() {
-        empty_obstacle_field
-    } else {
-        let mut obstacles_world: Vec<Vec2> = Vec::new();
-        for id in &node_ids {
-            let Some(world) = node_position(*id) else {
-                continue;
-            };
-            if !point_in_bounds(world, &visible, field_margin) {
-                continue;
-            }
-            obstacles_world.push(world);
-        }
-        ObstacleField::new(&obstacles_world, obstacle_radius)
-    };
-
-    for (candidate_index, id, edge, source, target) in visible_edges.iter() {
+    for (candidate_index, id, edge, source, target, _) in candidates.iter() {
         let is_self_loop = edge.source == edge.target;
-        // Membership must mirror the field's own collection window above:
-        // an endpoint belongs to the field exactly when it passed the widened
-        // filter. Curve-visible edges with endpoints beyond it read a field
-        // without them.
+        // Membership mirrors the field's own collection predicate above, so
+        // an endpoint's contribution cancels exactly when it was added.
         let endpoints_in_field = (
-            point_in_bounds(prep.source[*candidate_index], &visible, field_margin),
-            point_in_bounds(prep.target[*candidate_index], &visible, field_margin),
+            in_field(prep.source[*candidate_index]),
+            in_field(prep.target[*candidate_index]),
         );
         let path = edge_path(
             edge,
@@ -751,6 +772,19 @@ impl ObstacleField {
     /// Build the field over `obstacles` with the given kernel `radius`.
     #[doc(hidden)]
     pub fn new(obstacles: &[Vec2], radius: f32) -> Self {
+        let weighted: Vec<(Vec2, f32)> = obstacles.iter().map(|o| (*o, 1.0)).collect();
+        Self::new_weighted(weighted, radius)
+    }
+
+    /// Build the field over `obstacles`, each kernel scaled by its weight.
+    ///
+    /// Weights let the paint layer fade obstacle influence continuously as
+    /// the collection window slides across the layout: a weight of zero is
+    /// exactly absent, one fully present, and anything between contributes
+    /// proportionally, so sampled values move smoothly with the camera
+    /// instead of jumping when a node crosses the window boundary.
+    #[doc(hidden)]
+    pub fn new_weighted(obstacles: Vec<(Vec2, f32)>, radius: f32) -> Self {
         let empty = || Self {
             origin: Vec2::ZERO,
             cols: 0,
@@ -763,9 +797,9 @@ impl ObstacleField {
         }
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
-        for &o in obstacles {
-            min = min.min(o);
-            max = max.max(o);
+        for (o, _) in &obstacles {
+            min = min.min(*o);
+            max = max.max(*o);
         }
         if !min.is_finite() {
             return empty();
@@ -802,14 +836,14 @@ impl ObstacleField {
             cell,
             data: vec![0.0; cols as usize * rows as usize],
         };
-        for &o in obstacles {
-            field.splat(o, radius);
+        for (o, w) in &obstacles {
+            field.splat(*o, *w, radius);
         }
         field
     }
 
     /// Accumulate this point's kernel into every cell center within range.
-    fn splat(&mut self, point: Vec2, radius: f32) {
+    fn splat(&mut self, point: Vec2, weight: f32, radius: f32) {
         let lo_x = (((point.x - radius - self.origin.x) / self.cell).floor() as i64)
             .clamp(0, self.cols as i64 - 1);
         let hi_x = (((point.x + radius - self.origin.x) / self.cell).floor() as i64)
@@ -827,7 +861,8 @@ impl ObstacleField {
                 let dist = center.distance(point);
                 let base = 1.0 - dist / radius;
                 if base > 0.0 {
-                    self.data[(row as usize) * self.cols as usize + col as usize] += base * base;
+                    self.data[(row as usize) * self.cols as usize + col as usize] +=
+                        base * base * weight;
                 }
             }
         }
@@ -1688,6 +1723,18 @@ pub(crate) fn self_loop_path<N, E>(
     ]
 }
 
+/// Euclidean distance from `p` to the rectangle `bounds` expanded by `pad`;
+/// zero when `p` is inside. Drives the obstacle-window fade weight.
+fn distance_outside_rect(p: Vec2, bounds: &crate::viewport::WorldBounds, pad: f32) -> f32 {
+    let dx = (bounds.min.x - pad - p.x)
+        .max(p.x - (bounds.max.x + pad))
+        .max(0.0);
+    let dy = (bounds.min.y - pad - p.y)
+        .max(p.y - (bounds.max.y + pad))
+        .max(0.0);
+    (dx * dx + dy * dy).sqrt()
+}
+
 pub(crate) fn point_in_bounds(p: Vec2, bounds: &crate::viewport::WorldBounds, margin: f32) -> bool {
     p.x >= bounds.min.x - margin
         && p.x <= bounds.max.x + margin
@@ -1773,6 +1820,93 @@ mod tests {
             obstacle_radius: 42.0,
             endpoints_in_field,
         }
+    }
+
+    #[test]
+    fn obstacle_weight_scales_the_kernel_continuously() {
+        let full = ObstacleField::new(&[Vec2::ZERO], 30.0);
+        let absent = ObstacleField::new(&[], 30.0);
+        let half = ObstacleField::new_weighted(vec![(Vec2::ZERO, 0.5)], 30.0);
+        let zero = ObstacleField::new_weighted(vec![(Vec2::ZERO, 0.0)], 30.0);
+        let q = Vec2::new(7.0, -4.0);
+        assert_eq!(absent.sample(q), 0.0);
+        assert_eq!(zero.sample(q), 0.0);
+        let f = full.sample(q);
+        let h = half.sample(q);
+        assert!(f > 0.0);
+        assert!(h > 0.0 && h < f);
+    }
+
+    #[test]
+    fn panning_across_the_obstacle_window_keeps_the_control_point_continuous() {
+        // A chord spanning the view with one blocker node below its midpoint:
+        // panning until the blocker fades out of the obstacle window must
+        // slide the avoidance push smoothly. Binary window membership snapped
+        // this control point by well over a hundred pixels in a single frame.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let blocker = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Undirected, ());
+        let positions = move |id: NodeId| {
+            Some(if id == a {
+                Vec2::new(-150.0, 0.0)
+            } else if id == b {
+                Vec2::new(150.0, 0.0)
+            } else if id == blocker {
+                Vec2::new(0.0, -30.0)
+            } else {
+                unreachable!()
+            })
+        };
+
+        let style = GraphStyle::default();
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(1000.0, 700.0));
+        vp.zoom_at(Vec2::new(500.0, 350.0), 2.0);
+        let selection = Selection::default();
+        let hover = Hover::default();
+
+        let mut prev: Option<Vec2> = None;
+        let mut max_step = 0.0f32;
+        let mut crossed_fade_end = false;
+        for step in 0..=210u32 {
+            let cx = step as f32 * 1.5;
+            vp.focus(Vec2::new(cx, 0.0));
+            let frame = build_paint_frame(PaintFrameInput {
+                graph: &g,
+                node_position: &positions,
+                node_cluster_center: &no_clusters(),
+                node_label: &no_labels::<()>(),
+                edge_label: &no_edge_labels::<()>(),
+                viewport: &vp,
+                style: &style,
+                selection: &selection,
+                hover: &hover,
+                node_overlay: None,
+                edge_overlay: None,
+            });
+            assert_eq!(
+                frame.edges.len(),
+                1,
+                "the spanning edge must render at cx={cx}"
+            );
+            // The blocker sits 292 world units from the pan origin before it
+            // fully leaves the fade band; confirm the sweep actually crossed.
+            if cx > 292.0 {
+                crossed_fade_end = true;
+            }
+            let ctrl = frame.edges[0].path[0].1;
+            if let Some(p) = prev {
+                max_step = max_step.max((ctrl - p).length());
+            }
+            prev = Some(ctrl);
+        }
+        assert!(crossed_fade_end, "sweep must cross the fade boundary");
+        assert!(
+            max_step < 12.0,
+            "control point jumped {max_step}px between 1.5-unit pans"
+        );
     }
 
     #[test]

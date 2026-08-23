@@ -1370,12 +1370,24 @@ edge with an off-screen endpoint reads a field built without it, and no phantom
 cancellation occurs. Hit testing mirrors the paint layer's field construction —
 same viewport region, widened collection margin, lattice, and clearance — so
 selectable geometry matches drawn geometry exactly. The collection window is
-widened by one clearance radius beyond the node-cull margin so nodes drifting
-across it are fully present or fully absent for every edge that can see them.
+widened by one kernel radius beyond the node-cull margin, and membership is
+faded, not binary: each collected node's kernel is weighted by a smoothstep of
+its distance outside the node-cull margin, reaching zero at the window edge.
+Field values - and therefore curve shapes - are thus continuous functions of
+the camera pose. This matters because panning and zooming slide the collection
+window through the world on every frame: with binary membership, a node
+crossing that invisible line appeared in or vanished from the field all at
+once, snapping the control point of any edge sampling near it (the
+"curved edges briefly straighten while zooming" artifact). Candidate culling
+for off-screen-spanning edges evaluates `edge_curve_bbox` against this same
+rendered-shape field rather than an empty estimate, so an edge whose avoidance
+bow crosses the view is never culled late.
 A pathologically wide extent grows the cell size instead of the allocation,
 bounding memory while queries stay correct, and out-of-range samples read
-zero. With an empty field the control point passes through untouched (the
-world roundtrip would otherwise inject float noise into deep-zoom screen
+zero. With no curved candidates at all - the zoomed-out overview where every
+edge renders straight-line LOD - the field is not built, preserving the cheap
+overview path. With an empty field the control point passes through untouched
+(the world roundtrip would otherwise inject float noise into deep-zoom screen
 coordinates). Candidate edge queries deduplicate through generation-stamped
 stamps parallel to the edge list (`GraphRuntime::query_dedup`) rather than a hash
 set rebuilt per frame.

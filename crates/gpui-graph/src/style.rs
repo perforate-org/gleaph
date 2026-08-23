@@ -395,23 +395,26 @@ mod tests {
 
     #[test]
     fn screen_radius_clamps_to_floor_and_cap() {
-        let style = GraphStyle::default();
-        // Canonical radius at unit zoom: unclamped.
+        // Pin the clamp math on an explicit style so tuning the canonical
+        // defaults never changes what this test measures.
+        let style = GraphStyle {
+            node_min_screen_radius: 0.0,
+            node_max_screen_radius: 8.0,
+            ..GraphStyle::default()
+        };
         assert_eq!(style.node_screen_radius(1.0), 3.0);
         // Past the ceiling the marker stops growing.
-        assert_eq!(style.node_screen_radius(10.0), style.node_max_screen_radius);
+        assert_eq!(style.node_screen_radius(10.0), 8.0);
         // With the floor disabled, deep zoom-out just follows the world size.
         assert!((style.node_screen_radius(0.1) - 0.3).abs() < 1e-4);
 
         // A configured floor lifts deep-zoom-out markers.
-        let floored = GraphStyle::default().with_node_min_screen_radius(2.0);
+        let floored = style.with_node_min_screen_radius(2.0);
         assert_eq!(floored.node_screen_radius(0.1), 2.0);
 
         // An inverted configuration is degenerate but deterministic: the cap
         // wins, and nothing panics.
-        let inverted = GraphStyle::default()
-            .with_node_min_screen_radius(5.0)
-            .with_node_max_screen_radius(2.0);
+        let inverted = floored.with_node_max_screen_radius(2.0);
         assert_eq!(inverted.node_screen_radius(10.0), 2.0);
     }
 }
