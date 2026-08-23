@@ -1785,7 +1785,15 @@ The runtime should eventually support:
   floor (default `0.0`, disabled) lifts the drawn marker at deep zoom-out so
   nodes stay visible markers and hittable targets; the simplification decision
   still judges the unfloored on-screen diameter, and curve geometry remains in
-  world units regardless of the floor.
+  world units regardless of the floor. The mirror `node_max_screen_radius`
+  cap (default `8.0`) stops world-sized markers from ballooning past their
+  screen-fixed labels when zooming in: above the cap the marker rests at a
+  constant pixel size like a classic screen-space graph UI. Both bounds apply
+  through one shared radius (`GraphStyle::node_screen_radius`) read by
+  drawing, hit testing, label anchors, self-loop geometry, and edge trimming,
+  so nothing can disagree; because edge trimming uses the clamped radius,
+  curve shapes gain a smooth zoom dependence only past the ceiling (panning is
+  exactly invariant, and the clamp is continuous so zooming never pops).
 
 
 

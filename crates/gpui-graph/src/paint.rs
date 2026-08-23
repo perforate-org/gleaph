@@ -331,10 +331,10 @@ where
         frame.nodes.push(PaintNode {
             id: *id,
             position: viewport.world_to_screen(world),
-            // Nodes are world-sized: the on-screen radius scales with zoom,
-            // lifted by the style's minimum screen radius at deep zoom-out so
-            // nodes stay visible markers and hittable targets.
-            radius: (style.node_radius * zoom).max(style.node_min_screen_radius),
+            // One shared clamped screen radius keeps markers visible at deep
+            // zoom-out and label-scaled past the ceiling (see
+            // `GraphStyle::node_screen_radius`).
+            radius: style.node_screen_radius(zoom),
             selected: selection.contains_node(*id),
             hovered: hover.node == Some(*id),
             overlay: node_overlay(*id),
@@ -1367,7 +1367,7 @@ pub fn edge_path<N, E>(
         // boundaries. Self-loops are handled above and never simplified. The
         // degenerate control point keeps the trimmed path a valid quadratic so
         // hit testing and label masking keep working unchanged.
-        let curve = straight_line_trim(source, target, style.node_radius * viewport.zoom());
+        let curve = straight_line_trim(source, target, style.node_screen_radius(viewport.zoom()));
         if finite_chord_length(curve.0, curve.2).is_some() {
             vec![curve]
         } else {
@@ -1407,7 +1407,7 @@ pub fn edge_path<N, E>(
             source,
             control,
             target,
-            style.node_radius * viewport.zoom(),
+            style.node_screen_radius(viewport.zoom()),
         );
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
@@ -1619,7 +1619,7 @@ pub(crate) fn self_loop_path<N, E>(
     // the node. The two sides leave and re-enter the node at two distinct
     // points on the node edge, both pointing toward the node center, so the
     // start and end are visually separate.
-    let r = (style.node_radius * viewport.zoom()).max(style.node_min_screen_radius);
+    let r = style.node_screen_radius(viewport.zoom());
     // Two points just outside the node's circumference, symmetric about the
     // up-axis, angled 30° from the up-axis so they are distinct and point at
     // the center. The small outward offset keeps the loop clear of the node.
@@ -1977,7 +1977,7 @@ mod tests {
         let node_screen = viewport.world_to_screen(positions(node).unwrap());
         // Hug bound: effective (floored) node radius plus the loop's
         // base/clearance paddings.
-        let r_eff = (style.node_radius * viewport.zoom()).max(style.node_min_screen_radius);
+        let r_eff = style.node_screen_radius(viewport.zoom());
         let hug = r_eff + 12.0 * viewport.zoom() + 2.0;
         let hug_bounds = WorldBounds {
             min: node_screen - Vec2::splat(hug),

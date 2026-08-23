@@ -58,10 +58,9 @@ where
     // candidates.
     let world_point = viewport.screen_to_world(screen_point);
     let zoom = viewport.zoom().max(f32::EPSILON);
-    // Nodes are world-sized, so their on-screen hit radius scales with zoom,
-    // lifted by the same minimum screen radius the paint layer draws with —
-    // a floored marker must stay hittable at its drawn size.
-    let node_radius_screen = (style.node_radius * zoom).max(style.node_min_screen_radius);
+    // The same clamped screen radius the paint layer draws with, so a marker
+    // is hittable exactly where it is drawn.
+    let node_radius_screen = style.node_screen_radius(zoom);
     // Candidate margin so an edge whose curve bows near the point is not missed
     // by the coarse grid; the precise test still filters exactly. The edge
     // threshold is a screen length converted into world units for the query,

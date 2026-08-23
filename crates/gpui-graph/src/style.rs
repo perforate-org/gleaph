@@ -39,11 +39,23 @@ pub struct GraphStyle {
     ///
     /// Nodes are world-sized, so at deep zoom-out their on-screen radius
     /// approaches zero and the node vanishes. This floor keeps every node a
-    /// visible marker dot and an hittable target once its world size drops
+    /// visible marker dot and a hittable target once its world size drops
     /// below the floor. It applies to drawing and hit testing only; curve
     /// geometry stays in world units and is unaffected. A value of `0.0` (the
     /// default) disables the floor.
     pub node_min_screen_radius: f32,
+    /// Maximum on-screen radius in pixels above which a node never grows.
+    ///
+    /// The mirror of [`Self::node_min_screen_radius`]: without a ceiling,
+    /// zooming in balloons world-sized markers until they dwarf the
+    /// screen-fixed label text they annotate. Above the cap a marker rests at
+    /// a constant pixel size, matching classic screen-space graph UIs, while
+    /// edge trimming uses the same clamped radius so curves stay attached.
+    /// Curve shapes therefore gain a smooth zoom dependence past the cap
+    /// (panning stays exactly invariant); there is no popping because the
+    /// clamp is continuous. Defaults to `8.0` - about one and a half times
+    /// typical label text height.
+    pub node_max_screen_radius: f32,
     /// Node fill color.
     pub node_fill: Hsla,
     /// Node stroke width in pixels.
@@ -156,6 +168,7 @@ impl Default for GraphStyle {
             node_radius: 3.0,
             node_simplify_threshold: 0.0,
             node_min_screen_radius: 0.0,
+            node_max_screen_radius: 8.0,
             node_fill: hsla(0.6, 0.5, 0.6, 1.0),
             node_stroke_width: 1.0,
             node_stroke_color: hsla(0.0, 0.0, 0.1, 1.0),
@@ -203,6 +216,24 @@ impl GraphStyle {
     pub fn with_node_min_screen_radius(mut self, radius: f32) -> Self {
         self.node_min_screen_radius = radius;
         self
+    }
+
+    /// Set the maximum on-screen node radius. See
+    /// [`Self::node_max_screen_radius`].
+    pub fn with_node_max_screen_radius(mut self, radius: f32) -> Self {
+        self.node_max_screen_radius = radius;
+        self
+    }
+
+    /// The on-screen node radius at `zoom`: the world radius scaled by zoom,
+    /// lifted by [`Self::node_min_screen_radius`] at deep zoom-out and capped
+    /// by [`Self::node_max_screen_radius`] once zooming in would balloon the
+    /// marker past its label. Drawing, hit testing, label anchors, and edge
+    /// trimming all read this one value so they never disagree.
+    pub fn node_screen_radius(&self, zoom: f32) -> f32 {
+        (self.node_radius * zoom)
+            .max(self.node_min_screen_radius)
+            .min(self.node_max_screen_radius)
     }
 
     /// Set the node fill color.
@@ -355,5 +386,32 @@ impl GraphStyle {
     pub fn with_edge_settle_time(mut self, milliseconds: f32) -> Self {
         self.edge_settle_time_ms = milliseconds;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_radius_clamps_to_floor_and_cap() {
+        let style = GraphStyle::default();
+        // Canonical radius at unit zoom: unclamped.
+        assert_eq!(style.node_screen_radius(1.0), 3.0);
+        // Past the ceiling the marker stops growing.
+        assert_eq!(style.node_screen_radius(10.0), style.node_max_screen_radius);
+        // With the floor disabled, deep zoom-out just follows the world size.
+        assert!((style.node_screen_radius(0.1) - 0.3).abs() < 1e-4);
+
+        // A configured floor lifts deep-zoom-out markers.
+        let floored = GraphStyle::default().with_node_min_screen_radius(2.0);
+        assert_eq!(floored.node_screen_radius(0.1), 2.0);
+
+        // An inverted configuration is degenerate but deterministic: the cap
+        // wins, and nothing panics.
+        let inverted = GraphStyle::default()
+            .with_node_min_screen_radius(5.0)
+            .with_node_max_screen_radius(2.0);
+        assert_eq!(inverted.node_screen_radius(10.0), 2.0);
     }
 }
