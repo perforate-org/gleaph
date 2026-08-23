@@ -709,21 +709,22 @@ mod tests {
             s.merge(batch);
         });
 
-        // Mirrors the examples' driver: 4 iterations per animation frame.
+        // Mirrors the examples' driver: one iteration per animation frame.
         let frame_budget = LayoutBudget {
-            max_iterations: 4,
+            max_iterations: 1,
             max_duration: Some(core::time::Duration::from_millis(6)),
         };
         let mut frames = 0u32;
         loop {
             let progress = scene.update(cx, |s, _| s.step_layout(frame_budget));
             frames += 1;
-            if progress == LayoutProgress::Settled || frames > 600 {
+            if progress == LayoutProgress::Settled || frames > 1500 {
                 break;
             }
         }
+        println!("ring relaxation animated over {frames} frames");
         assert!(
-            (8..=600).contains(&frames),
+            (30..=1500).contains(&frames),
             "relaxation must stay visible across frames, took {frames}"
         );
     }

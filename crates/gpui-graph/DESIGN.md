@@ -889,8 +889,9 @@ the cap from its frame budget. The two fields play different roles in
 real-time drivers: `max_iterations` paces the visible relaxation per
 animation frame, while `max_duration` only caps oversized work — a budget
 that converges the whole graph inside one frame collapses the animation
-into a single jump. The interactive and force_atlas2 examples pace 4
-iterations per frame under a ~6 ms ceiling (pinned by
+into a single jump. The interactive and force_atlas2 examples pace one
+iteration per frame under a ~6 ms ceiling — roughly second-scale
+convergence on demo graphs (pinned by
 `frame_budget_keeps_relaxation_visible`). A capped step reports `Running`
 when iterations remain; convergence semantics are unchanged. Enforcement lives in the engine's iteration loop (one clock
 read per step call), so synchronous and background drivers share one
@@ -2495,9 +2496,9 @@ The following should remain intentionally open until implementation and profilin
 - ~~frame-time budgeting~~ (implemented as `LayoutBudget::max_duration`,
   §11.8: engines stop between iterations once the wall-clock cap is hit,
   always after one completed iteration; `None` keeps the deterministic
-  iteration-only contract for tests and benches. Examples drive frames with
-  a ~6 ms ceiling at 4 iterations per frame so relaxation stays visibly
-  animated),
+  iteration-only contract for tests and benches. Examples pace one
+  iteration per frame under a ~6 ms ceiling so relaxation stays visibly
+  animated (~37 frames for the ring probe),
 
 ## Advanced graph presentation
 

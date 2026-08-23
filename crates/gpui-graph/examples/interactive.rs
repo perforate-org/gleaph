@@ -43,12 +43,12 @@ use gpui_graph::{
 };
 
 /// Per-frame layout work. The two fields play different roles: iterations
-/// pace the visible relaxation (4 per frame keeps convergence animated
-/// instead of jumping straight to the final layout), while the wall-clock
-/// cap is the ceiling that keeps oversized single steps from blowing the
+/// pace the visible relaxation (one per frame gives the eye a smooth,
+/// roughly second-scale convergence on demo graphs), while the wall-clock
+/// cap is the ceiling that keeps an oversized iteration from blowing the
 /// frame on large graphs (§11.8).
 const FRAME_LAYOUT_BUDGET: LayoutBudget = LayoutBudget {
-    max_iterations: 4,
+    max_iterations: 1,
     max_duration: Some(core::time::Duration::from_millis(6)),
 };
 
