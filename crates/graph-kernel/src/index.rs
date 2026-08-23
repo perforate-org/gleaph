@@ -294,13 +294,15 @@ impl IndexBuildError {
 }
 
 /// Immutable logical property scope for one physical posting namespace.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum IndexBuildTarget {
+    /// `property_id` is the posting identity: the written property for a flat index, the
+    /// interned dotted leaf for a nested record index. A nested index carries
+    /// `record_source` so canonical export requests echo the registered Graph scope exactly.
     Vertex {
         label_id: u16,
         property_id: crate::entry::PropertyId,
+        record_source: Option<crate::canonical_export::CanonicalRecordSource>,
     },
     Edge {
         label_id: u16,
@@ -311,9 +313,9 @@ pub enum IndexBuildTarget {
 
 impl IndexBuildTarget {
     #[inline]
-    pub const fn property_id(self) -> crate::entry::PropertyId {
+    pub const fn property_id(&self) -> crate::entry::PropertyId {
         match self {
-            Self::Vertex { property_id, .. } | Self::Edge { property_id, .. } => property_id,
+            Self::Vertex { property_id, .. } | Self::Edge { property_id, .. } => *property_id,
         }
     }
 }
@@ -1066,15 +1068,22 @@ impl EdgeIndexDirection {
 ///
 /// The physical namespace is allocated and owned by Router. Graph may cache this projection for
 /// the operation, but it must never derive or substitute a namespace locally.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct IndexedVertexMembership {
     pub physical_index_id: PhysicalIndexId,
     pub catalog_epoch: u64,
     pub phase: IndexMaintenancePhase,
+    /// Posting identity: the written property for a flat membership; the Router-interned
+    /// dotted leaf property (for example `stats.score`) for a nested record index.
     pub property_id: u32,
     pub label_id: u16,
+    /// Empty for a scalar/top-level vertex property; the canonical dotted leaf path
+    /// otherwise. Same convention as [`IndexedEdgeMembership::field_path`].
+    pub field_path: String,
+    /// Zero for flat memberships; the interned top-level property that stores the root
+    /// record for a nested leaf membership. Graph resolves record walks by this id because
+    /// it owns no property-name catalog (ADR 0023).
+    pub ancestor_property_id: u32,
 }
 
 /// Router → graph shard: register one property for index maintenance.

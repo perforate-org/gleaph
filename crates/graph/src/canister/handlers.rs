@@ -2176,6 +2176,70 @@ pub async fn e2e_insert_vertex_with_label_and_property(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_vertex_with_label_and_record(
+    args: super::types::E2eInsertVertexWithLabelAndRecordArgs,
+) -> Result<super::types::E2eInsertVertexResult, String> {
+    use super::types::E2eRecordFieldValue;
+    use crate::index::{label_pending, pending};
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
+
+    fn to_value(field: &E2eRecordFieldValue) -> Value {
+        match field {
+            E2eRecordFieldValue::Int(value) => Value::Int64(*value),
+            E2eRecordFieldValue::IntList(values) => {
+                Value::List(values.iter().map(|value| Value::Int64(*value)).collect())
+            }
+            E2eRecordFieldValue::Record(fields) => Value::Record(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), to_value(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    let store = GraphStore::new();
+    let vertex_id = store
+        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    let vertex = store
+        .vertex(vertex_id)
+        .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
+    let label = VertexLabelId::from_raw(args.label_id);
+    store
+        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .map_err(|e| e.to_string())?;
+    let property_id = PropertyId::from_raw(args.property_id);
+    let record = Value::Record(
+        args.record
+            .iter()
+            .map(|(name, value)| (name.clone(), to_value(value)))
+            .collect(),
+    );
+    let _catalog = e2e_router_catalog_guard(&store).await?;
+    store
+        .set_vertex_property(vertex_id, property_id, record)
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    label_pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let global_vertex_id = store
+        .global_vertex_id(vertex_id)
+        .ok_or_else(|| "global id missing after insert".to_string())?;
+    Ok(super::types::E2eInsertVertexResult {
+        local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
+        global_vertex_id,
+    })
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex_with_label_and_two_properties(
     args: super::types::E2eInsertVertexWithLabelAndTwoPropertiesArgs,
 ) -> Result<super::types::E2eInsertVertexResult, String> {
@@ -2248,6 +2312,54 @@ pub async fn e2e_set_vertex_property(
             PropertyId::from_raw(args.property_id),
             Value::Int64(args.value),
         )
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_set_vertex_record(
+    args: super::types::E2eSetVertexRecordArgs,
+) -> Result<(), String> {
+    use super::types::E2eRecordFieldValue;
+    use crate::index::pending;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::PropertyId;
+    use ic_stable_lara::VertexId;
+
+    fn to_value(field: &E2eRecordFieldValue) -> Value {
+        match field {
+            E2eRecordFieldValue::Int(value) => Value::Int64(*value),
+            E2eRecordFieldValue::IntList(values) => {
+                Value::List(values.iter().map(|value| Value::Int64(*value)).collect())
+            }
+            E2eRecordFieldValue::Record(fields) => Value::Record(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), to_value(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    let store = GraphStore::new();
+    let vertex_id = VertexId::from(args.local_vertex_id);
+    let _vertex = store
+        .vertex(vertex_id)
+        .ok_or_else(|| "vertex must exist".to_string())?;
+    let record = Value::Record(
+        args.record
+            .iter()
+            .map(|(name, value)| (name.clone(), to_value(value)))
+            .collect(),
+    );
+    let _catalog = e2e_router_catalog_guard(&store).await?;
+    store
+        .set_vertex_property(vertex_id, PropertyId::from_raw(args.property_id), record)
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
@@ -3004,6 +3116,8 @@ mod tests {
                         phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
                         property_id: property_id.raw(),
                         label_id: 79,
+                        field_path: String::new(),
+                        ancestor_property_id: 0,
                     },
                     gleaph_graph_kernel::index::IndexedVertexMembership {
                         physical_index_id: decoy_physical_index_id,
@@ -3011,6 +3125,8 @@ mod tests {
                         phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Sealing,
                         property_id: property_id.raw(),
                         label_id: 178,
+                        field_path: String::new(),
+                        ancestor_property_id: 0,
                     },
                 ],
                 edge_indexes: Vec::new(),
@@ -3402,6 +3518,8 @@ mod tests {
                         phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
                         property_id: vertex_property.raw(),
                         label_id: 90,
+                        field_path: String::new(),
+                        ancestor_property_id: 0,
                     },
                     gleaph_graph_kernel::index::IndexedVertexMembership {
                         physical_index_id: decoy_vertex_physical_index_id,
@@ -3409,6 +3527,8 @@ mod tests {
                         phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Sealing,
                         property_id: vertex_property.raw(),
                         label_id: 189,
+                        field_path: String::new(),
+                        ancestor_property_id: 0,
                     },
                 ],
                 edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {

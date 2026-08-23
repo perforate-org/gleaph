@@ -6,9 +6,9 @@ use std::pin::Pin;
 
 use candid::Principal;
 use gleaph_graph_kernel::canonical_export::{
-    CanonicalExportScope, CanonicalExportTarget, CanonicalInlineProjection,
+    CanonicalExportScope, CanonicalExportTarget, CanonicalInlineProjection, CanonicalRecordSource,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, IndexNameId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, IndexNameId, PropertyId};
 use gleaph_graph_kernel::index::{
     IndexBuildStatus, IndexBuildTarget, PhysicalIndexId, RegisterIndexBuildRequest,
 };
@@ -885,10 +885,15 @@ fn step_request(
         }
     };
     let build_target = match index.kind {
-        gleaph_graph_kernel::index::IndexedPropertyKind::Vertex => IndexBuildTarget::Vertex {
-            label_id: index.label_id,
-            property_id: index.property_id,
-        },
+        gleaph_graph_kernel::index::IndexedPropertyKind::Vertex => {
+            let record_source =
+                vertex_record_source(index.resolved_graph.graph_id, index.property_id)?;
+            IndexBuildTarget::Vertex {
+                label_id: index.label_id,
+                property_id: index.property_id,
+                record_source,
+            }
+        }
         gleaph_graph_kernel::index::IndexedPropertyKind::Edge => IndexBuildTarget::Edge {
             label_id: index.label_id,
             property_id: index.property_id,
@@ -897,7 +902,7 @@ fn step_request(
             })?,
         },
     };
-    let export_target = canonical_export_target(build_target);
+    let export_target = canonical_export_target(&build_target)?;
     let inline = resolve_inline_projection(
         index.resolved_graph.graph_id,
         index.kind,
@@ -950,25 +955,53 @@ fn step_request(
     })
 }
 
-fn canonical_export_target(build_target: IndexBuildTarget) -> CanonicalExportTarget {
+fn canonical_export_target(
+    build_target: &IndexBuildTarget,
+) -> Result<CanonicalExportTarget, RouterError> {
     match build_target {
         IndexBuildTarget::Vertex {
             label_id,
             property_id,
-        } => CanonicalExportTarget::Vertex {
-            label_id,
-            property_id,
-        },
+            record_source,
+        } => Ok(CanonicalExportTarget::Vertex {
+            label_id: *label_id,
+            property_id: *property_id,
+            record_source: record_source.clone(),
+        }),
         IndexBuildTarget::Edge {
             label_id,
             property_id,
             direction,
-        } => CanonicalExportTarget::Edge {
-            label_id: EdgeLabelId::from_raw(label_id),
-            property_id,
-            direction,
-        },
+        } => Ok(CanonicalExportTarget::Edge {
+            label_id: EdgeLabelId::from_raw(*label_id),
+            property_id: *property_id,
+            direction: *direction,
+        }),
     }
+}
+
+/// Projects the nested-record walk for one vertex leaf definition, if any. The ancestor id
+/// and tail path derive from the Router's own property-name catalog, mirroring the catalog
+/// membership projection.
+fn vertex_record_source(
+    graph_id: GraphId,
+    leaf_property_id: PropertyId,
+) -> Result<Option<CanonicalRecordSource>, RouterError> {
+    let (field_path, ancestor_property_id) =
+        indexed_catalog::vertex_leaf_projection(graph_id, leaf_property_id);
+    if field_path.is_empty() {
+        return Ok(None);
+    }
+    let Some((_, tail)) = field_path.split_once('.') else {
+        return Err(RouterError::InvalidState(format!(
+            "vertex leaf projection for property {} has no record tail",
+            leaf_property_id.raw()
+        )));
+    };
+    Ok(Some(CanonicalRecordSource {
+        ancestor_property_id: PropertyId::from_raw(ancestor_property_id),
+        field_tail: tail.to_owned(),
+    }))
 }
 
 fn response_matches_request(
@@ -1463,15 +1496,18 @@ mod tests {
     #[test]
     fn vertex_export_target_binds_the_resolved_label_before_effects() {
         let property_id = gleaph_graph_kernel::entry::PropertyId::from_raw(9);
-        let exact = canonical_export_target(IndexBuildTarget::Vertex {
+        let exact = canonical_export_target(&IndexBuildTarget::Vertex {
             label_id: 3,
             property_id,
-        });
+            record_source: None,
+        })
+        .expect("flat vertex target");
         assert_eq!(
             exact,
             CanonicalExportTarget::Vertex {
                 label_id: 3,
                 property_id,
+                record_source: None,
             }
         );
         assert_ne!(
@@ -1479,6 +1515,7 @@ mod tests {
             CanonicalExportTarget::Vertex {
                 label_id: 4,
                 property_id,
+                record_source: None,
             }
         );
     }

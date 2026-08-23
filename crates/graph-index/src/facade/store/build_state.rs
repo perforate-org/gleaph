@@ -71,29 +71,31 @@ pub(crate) struct PreparedIndexBuildPull {
     pub(crate) expected_cursor: Option<Vec<u8>>,
 }
 
-fn canonical_target(target: IndexBuildTarget) -> CanonicalExportTarget {
+fn canonical_target(target: &IndexBuildTarget) -> CanonicalExportTarget {
     match target {
         IndexBuildTarget::Vertex {
             label_id,
             property_id,
+            record_source,
         } => CanonicalExportTarget::Vertex {
-            label_id,
-            property_id,
+            label_id: *label_id,
+            property_id: *property_id,
+            record_source: record_source.clone(),
         },
         IndexBuildTarget::Edge {
             label_id,
             property_id,
             direction,
         } => CanonicalExportTarget::Edge {
-            label_id: gleaph_graph_kernel::entry::EdgeLabelId::from_raw(label_id),
-            property_id,
-            direction,
+            label_id: gleaph_graph_kernel::entry::EdgeLabelId::from_raw(*label_id),
+            property_id: *property_id,
+            direction: *direction,
         },
     }
 }
 
 fn ensure_subject_matches_target(
-    target: IndexBuildTarget,
+    target: &IndexBuildTarget,
     subject: IndexBuildSubject,
 ) -> Result<(), IndexError> {
     match (target, subject) {
@@ -106,7 +108,7 @@ fn ensure_subject_matches_target(
                 label_id: subject_wire,
                 ..
             },
-        ) if edge_wire_matches_target(&target, TaggedEdgeLabelId::from_raw(subject_wire)) => Ok(()),
+        ) if edge_wire_matches_target(target, TaggedEdgeLabelId::from_raw(subject_wire)) => Ok(()),
         _ => Err(IndexError::InvalidIndexBuildTarget),
     }
 }
@@ -143,7 +145,7 @@ fn ensure_cursor(cursor: &Option<Vec<u8>>) -> Result<(), IndexError> {
 
 fn prepare_subject_posting(
     physical_index_id: PhysicalIndexId,
-    target: IndexBuildTarget,
+    target: &IndexBuildTarget,
     subject: IndexBuildSubject,
     value: Vec<u8>,
 ) -> Result<PreparedBuildPosting, IndexError> {
@@ -187,7 +189,7 @@ fn prepare_subject_posting(
 
 fn prepare_fact_posting(
     physical_index_id: PhysicalIndexId,
-    target: IndexBuildTarget,
+    target: &IndexBuildTarget,
     shard_id: u32,
     fact: CanonicalIndexableFact,
 ) -> Result<(IndexBuildSubject, PreparedBuildPosting), IndexError> {
@@ -214,7 +216,7 @@ fn prepare_fact_posting(
             property_id,
             encoded_value,
         } if matches!(target, IndexBuildTarget::Edge { .. })
-            && edge_wire_matches_target(&target, TaggedEdgeLabelId::from_raw(label_id))
+            && edge_wire_matches_target(target, TaggedEdgeLabelId::from_raw(label_id))
             && property_id == target.property_id() =>
         {
             let subject = IndexBuildSubject::Edge {
@@ -269,16 +271,33 @@ impl IndexStore {
     ) -> Result<IndexBuildStatus, IndexError> {
         self.assert_router_caller(caller)?;
         ensure_request_bytes(request)?;
-        let invalid_target = match request.target {
+        let invalid_target = match &request.target {
             IndexBuildTarget::Vertex {
                 label_id,
                 property_id,
+                record_source,
+            } => {
+                // A nested leaf scope must name a well-formed walk rooted at another
+                // property; flat scopes carry no source at all.
+                let invalid_source = match record_source {
+                    None => false,
+                    Some(source) => {
+                        source.ancestor_property_id.raw() == 0
+                            || source.field_tail.is_empty()
+                            || source
+                                .field_tail
+                                .split('.')
+                                .any(|segment| segment.is_empty())
+                            || source.ancestor_property_id == *property_id
+                    }
+                };
+                *label_id == 0 || property_id.raw() == 0 || invalid_source
             }
-            | IndexBuildTarget::Edge {
+            IndexBuildTarget::Edge {
                 label_id,
                 property_id,
                 ..
-            } => label_id == 0 || property_id.raw() == 0,
+            } => *label_id == 0 || property_id.raw() == 0,
         };
         if request.graph_id.is_reserved() || request.index_name_id.is_reserved() || invalid_target {
             return Err(IndexError::InvalidIndexBuildScope);
@@ -372,7 +391,7 @@ impl IndexStore {
                 index_name_id: state.scope.index_name_id,
                 physical_index_id: control.registration.physical_index_id,
                 catalog_epoch: state.scope.catalog_epoch,
-                target: canonical_target(state.scope.target),
+                target: canonical_target(&state.scope.target),
                 cursor: cursor.clone(),
                 limit: MAX_CANONICAL_EXPORT_PAGE_ITEMS,
             },
@@ -410,7 +429,7 @@ impl IndexStore {
             index_name_id: state.scope.index_name_id,
             physical_index_id: control.registration.physical_index_id,
             catalog_epoch: state.scope.catalog_epoch,
-            target: canonical_target(state.scope.target),
+            target: canonical_target(&state.scope.target),
             cursor: prepared.expected_cursor.clone(),
             limit: MAX_CANONICAL_EXPORT_PAGE_ITEMS,
         };
@@ -533,7 +552,7 @@ impl IndexStore {
         if state.scope.catalog_epoch != request.catalog_epoch {
             return Err(IndexError::StaleIndexBuildEpoch);
         }
-        ensure_subject_matches_target(state.scope.target, request.subject)?;
+        ensure_subject_matches_target(&state.scope.target, request.subject)?;
         let shard = state
             .shards
             .iter_mut()
@@ -574,7 +593,7 @@ impl IndexStore {
             .map(|value| {
                 prepare_subject_posting(
                     request.physical_index_id,
-                    state.scope.target,
+                    &state.scope.target,
                     request.subject,
                     value,
                 )
@@ -587,7 +606,7 @@ impl IndexStore {
             .map(|value| {
                 prepare_subject_posting(
                     request.physical_index_id,
-                    state.scope.target,
+                    &state.scope.target,
                     request.subject,
                     value,
                 )
@@ -674,7 +693,7 @@ impl IndexStore {
         for fact in request.facts.iter().cloned() {
             let (subject, posting) = prepare_fact_posting(
                 request.physical_index_id,
-                state.scope.target,
+                &state.scope.target,
                 request.shard_id,
                 fact,
             )?;
@@ -805,6 +824,7 @@ mod tests {
             target: IndexBuildTarget::Vertex {
                 label_id: VERTEX_LABEL_ID,
                 property_id: PROPERTY_ID,
+                record_source: None,
             },
             target_shard_ids,
         }
@@ -1574,6 +1594,7 @@ mod tests {
         vertex.target = IndexBuildTarget::Vertex {
             label_id: 0,
             property_id: PROPERTY_ID,
+            record_source: None,
         };
         assert_eq!(
             store.register_index_build(router, &vertex),

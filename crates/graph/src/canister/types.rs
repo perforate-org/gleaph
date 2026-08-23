@@ -47,12 +47,41 @@ pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
     pub value_b: i64,
 }
 
+/// One field value inside an E2E seed record (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub enum E2eRecordFieldValue {
+    Int(i64),
+    IntList(Vec<i64>),
+    Record(Vec<(String, E2eRecordFieldValue)>),
+}
+
+/// Arguments for [`super::handlers::e2e_insert_vertex_with_label_and_record`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelAndRecordArgs {
+    pub label_id: u16,
+    pub property_id: u32,
+    /// Record fields stored verbatim under `property_id`.
+    pub record: Vec<(String, E2eRecordFieldValue)>,
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct E2eSetVertexPropertyArgs {
     pub local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
     pub property_id: u32,
     pub value: i64,
+}
+
+/// Arguments for [`super::handlers::e2e_set_vertex_record`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eSetVertexRecordArgs {
+    pub local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub property_id: u32,
+    /// Record fields stored verbatim under `property_id`.
+    pub record: Vec<(String, E2eRecordFieldValue)>,
 }
 
 /// Arguments for [`super::handlers::e2e_insert_directed_edge_with_label`] (PocketIC E2E only).

@@ -60,6 +60,7 @@ mod tests {
             target: CanonicalExportTarget::Vertex {
                 label_id: 3,
                 property_id: PropertyId::from_raw(4),
+                record_source: None,
             },
             inline: None,
         };

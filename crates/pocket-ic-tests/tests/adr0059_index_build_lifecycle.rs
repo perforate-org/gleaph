@@ -103,7 +103,8 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_
 use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexBuildStatus, IndexMaintenancePhase, IndexedEdgeMembership,
     IndexedPropertyCatalog, LookupEdgeEqualPageRequest, LookupEdgeRangePageRequest,
-    PhysicalIndexId, PostingRangeRequest,
+    LookupEqualPageRequest, LookupRangePageRequest, PhysicalIndexId, PostingHitPage,
+    PostingRangeRequest,
 };
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, MutationLifecyclePhase};
 use gleaph_migration_api::{
@@ -112,12 +113,14 @@ use gleaph_migration_api::{
     SchemaMigrationRecordState,
 };
 use gleaph_pocket_ic_tests::{
-    DEST_SHARD, FederationEnv, GRAPH_NAME, SOURCE_SHARD, atomic_insert_as_admin,
-    e2e_insert_directed_edge_with_inline_property, e2e_insert_directed_edge_with_property,
-    e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_property, ensure_edge_label,
-    ensure_property, ensure_vertex_label, federation_graph_element_id_encoding_key_bytes,
-    gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_query_as_admin,
-    gql_query_as_admin_expect_err, install_federation, query_as_router, wasm_bytes,
+    DEST_SHARD, E2eRecordFieldValue, FederationEnv, GRAPH_NAME, SOURCE_SHARD,
+    atomic_insert_as_admin, e2e_insert_directed_edge_with_inline_property,
+    e2e_insert_directed_edge_with_property, e2e_insert_vertex_with_label,
+    e2e_insert_vertex_with_label_and_property, e2e_insert_vertex_with_label_and_record,
+    e2e_set_vertex_record, ensure_edge_label, ensure_property, ensure_vertex_label,
+    federation_graph_element_id_encoding_key_bytes, gql_mutate_as_admin,
+    gql_mutate_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
+    install_federation, query_as_router, wasm_bytes,
 };
 use gleaph_router::types::{
     AtomicInsertEdgeV1, AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertRequest,
@@ -1176,4 +1179,292 @@ fn edge_inline_same_wasm_upgrade_mid_build_resumes_and_converges() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].shard_id, SOURCE_SHARD);
     assert_eq!(hits[0].owner_vertex_id, src_low.max(src_high));
+}
+
+// ---------------------------------------------------------------------------
+// Vertex nested-record leaf scenario (ADR 0073 slices 1-3)
+// ---------------------------------------------------------------------------
+
+const NESTED_MIGRATION_ID: &str = "000104_adr0059_vertex_nested";
+const NESTED_DDL: &str =
+    "CREATE INDEX adr0059_person_stats_score FOR (n:Person) ON (n.stats.score)";
+const STATS_SCORE_LEAF: &str = "stats.score";
+
+fn int64_index_key(value: i64) -> Vec<u8> {
+    value_to_index_key_bytes(&Value::Int64(value))
+        .expect("int64 encodes")
+        .expect("non-null key")
+}
+
+/// Every projected vertex membership from the router catalog.
+fn vertex_memberships(
+    env: &FederationEnv,
+) -> Vec<gleaph_graph_kernel::index::IndexedVertexMembership> {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "get_indexed_property_catalog",
+            Encode!(&GRAPH_NAME.to_string()).expect("encode graph name"),
+        )
+        .unwrap_or_else(|e| panic!("get_indexed_property_catalog on router: {e:?}"));
+    let catalog: Result<IndexedPropertyCatalog, RouterError> =
+        Decode!(&bytes, Result<IndexedPropertyCatalog, RouterError>)
+            .expect("decode get_indexed_property_catalog");
+    catalog.expect("catalog query ok").vertex_indexes
+}
+
+fn nested_phase_for(
+    memberships: &[gleaph_graph_kernel::index::IndexedVertexMembership],
+    leaf_raw: u32,
+) -> Option<IndexMaintenancePhase> {
+    memberships
+        .iter()
+        .filter(|m| m.property_id == leaf_raw && m.field_path == STATS_SCORE_LEAF)
+        .map(|m| m.phase)
+        .next()
+}
+
+fn projected_nested_physical_index(
+    memberships: &[gleaph_graph_kernel::index::IndexedVertexMembership],
+    leaf_raw: u32,
+) -> PhysicalIndexId {
+    memberships
+        .iter()
+        .find(|m| m.property_id == leaf_raw && m.field_path == STATS_SCORE_LEAF)
+        .map(|m| m.physical_index_id)
+        .expect("a Building-or-later nested membership must be projected")
+}
+
+/// All vertex equality postings for one `(physical index, leaf property, value)` bucket
+/// across both federation index canisters.
+fn vertex_equal_postings(
+    env: &FederationEnv,
+    physical_index_id: PhysicalIndexId,
+    property_raw: u32,
+    value: i64,
+) -> Vec<gleaph_graph_kernel::index::PostingHit> {
+    let mut hits = Vec::new();
+    for index_canister in [env.index, env.index_dest] {
+        let mut after = None;
+        loop {
+            let page: PostingHitPage = edge_lookup_page(
+                env,
+                index_canister,
+                "lookup_equal_page",
+                LookupEqualPageRequest {
+                    physical_index_id,
+                    property_id: property_raw,
+                    value: int64_index_key(value),
+                    after,
+                    limit: 128,
+                },
+            );
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
+    }
+    hits
+}
+
+/// All vertex range postings over the half-open encoded interval `[low, high)` across both
+/// federation index canisters.
+fn vertex_range_postings(
+    env: &FederationEnv,
+    physical_index_id: PhysicalIndexId,
+    property_raw: u32,
+    low: i64,
+    high: i64,
+) -> Vec<gleaph_graph_kernel::index::PostingHit> {
+    let mut hits = Vec::new();
+    for index_canister in [env.index, env.index_dest] {
+        let mut after = None;
+        loop {
+            let page: PostingHitPage = edge_lookup_page(
+                env,
+                index_canister,
+                "lookup_range_page",
+                LookupRangePageRequest {
+                    physical_index_id,
+                    property_id: property_raw,
+                    range: PostingRangeRequest::Between {
+                        low: int64_index_key(low),
+                        high: int64_index_key(high),
+                    },
+                    after,
+                    limit: 128,
+                },
+            );
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
+    }
+    hits
+}
+
+/// Seeds one Person vertex whose `stats` record is `{ score }` on `shard`, returning the
+/// local vertex id for later rewrites.
+fn seed_person_record(
+    env: &FederationEnv,
+    shard: candid::Principal,
+    stats_raw: u32,
+    score: i64,
+) -> u32 {
+    e2e_insert_vertex_with_label_and_record(
+        env,
+        shard,
+        ensure_vertex_label(env, "Person").raw(),
+        stats_raw,
+        vec![("score".to_owned(), E2eRecordFieldValue::Int(score))],
+    )
+    .local_vertex_id
+}
+
+#[test]
+fn vertex_nested_create_index_migration_converges_active_with_complete_postings() {
+    let env = install_federation();
+    let person = ensure_vertex_label(&env, "Person").raw();
+    let other = ensure_vertex_label(&env, "Other").raw();
+    let stats = ensure_property(&env, "stats").raw();
+    let score_leaf = ensure_property(&env, STATS_SCORE_LEAF).raw();
+
+    // Pre-existing records on BOTH shards; 30 appears twice on the source shard so
+    // equality multiplicity is observable. The score-10 vertex is rewritten post-Active.
+    let mut first_rewrite_id = None;
+    for score in [10_i64, 30, 30] {
+        let local = seed_person_record(&env, env.graph_source, stats, score);
+        if first_rewrite_id.is_none() {
+            first_rewrite_id = Some(local);
+        }
+    }
+    let rewrite_vertex_id = first_rewrite_id.expect("rewrite fixture id");
+    for score in [20_i64, 40] {
+        seed_person_record(&env, env.graph_dest, stats, score);
+    } // The absence shapes plus a non-Person decoy carrying a real leaf value:
+    // none of them may ever produce a posting.
+    // 1. missing root record entirely:
+    e2e_insert_vertex_with_label(&env, env.graph_source, person);
+    // 2. non-record root node:
+    e2e_insert_vertex_with_label_and_property(&env, env.graph_source, person, stats, 5);
+    // 3. container (list) leaf under the declared path:
+    e2e_insert_vertex_with_label_and_record(
+        &env,
+        env.graph_source,
+        person,
+        stats,
+        vec![("score".to_owned(), E2eRecordFieldValue::IntList(vec![1, 2]))],
+    );
+    // Missing leaf inside a present record:
+    e2e_insert_vertex_with_label_and_record(&env, env.graph_dest, person, stats, vec![]);
+    // Non-Person decoy with a real leaf value must stay excluded by label scoping.
+    e2e_insert_vertex_with_label_and_record(
+        &env,
+        env.graph_source,
+        other,
+        stats,
+        vec![("score".to_owned(), E2eRecordFieldValue::Int(77))],
+    );
+
+    let args = migration_args(NESTED_MIGRATION_ID, NESTED_DDL);
+    let mut phases: Vec<IndexMaintenancePhase> = Vec::new();
+    let mut rounds = 0_usize;
+    loop {
+        rounds += 1;
+        assert!(
+            rounds <= MAX_DRIVE_ROUNDS,
+            "nested migration did not converge"
+        );
+        let result = apply_once(&env, &args);
+        if let Some(phase) = nested_phase_for(&vertex_memberships(&env), score_leaf)
+            && phases.last() != Some(&phase)
+        {
+            phases.push(phase);
+        }
+        match result.status {
+            SchemaMigrationApplyStatus::Progress(_) => {}
+            SchemaMigrationApplyStatus::Applied => break,
+            SchemaMigrationApplyStatus::Replay => {
+                panic!("fresh migration cannot replay before reaching Applied")
+            }
+            other => panic!("nested migration terminated early: {other:?}"),
+        }
+    }
+    assert!(
+        phases.contains(&IndexMaintenancePhase::Building),
+        "lifecycle must pass Building, observed {phases:?}"
+    );
+    assert!(
+        phases.contains(&IndexMaintenancePhase::Sealing),
+        "lifecycle must pass Sealing, observed {phases:?}"
+    );
+    assert_eq!(phases.last(), Some(&IndexMaintenancePhase::Active));
+
+    // Posting truth: every seeded scalar leaf converged exactly once on its own shard,
+    // with equality multiplicity preserved and no absence-shape or decoy postings.
+    let physical = projected_nested_physical_index(&vertex_memberships(&env), score_leaf);
+    for (value, expected_shard, expected_count) in [
+        (10_i64, SOURCE_SHARD, 1_usize),
+        (20, DEST_SHARD, 1),
+        (30, SOURCE_SHARD, 2),
+        (40, DEST_SHARD, 1),
+    ] {
+        let hits = vertex_equal_postings(&env, physical, score_leaf, value);
+        assert_eq!(
+            hits.len(),
+            expected_count,
+            "nested equality postings for {value}"
+        );
+        assert!(
+            hits.iter().all(|hit| hit.shard_id == expected_shard),
+            "nested postings for {value} must live on the seeding shard"
+        );
+    }
+    for absent in [5_i64, 77] {
+        assert!(
+            vertex_equal_postings(&env, physical, score_leaf, absent).is_empty(),
+            "absence shape or decoy value {absent} must not post"
+        );
+    }
+    assert_eq!(
+        vertex_range_postings(&env, physical, score_leaf, 0, 1000).len(),
+        5,
+        "the full nested domain converges with no extra or missing postings"
+    );
+
+    // GQL row-level nested reads are ADR 0073 slice 4 (planner anchors), proven in
+    // `router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`:
+    // the Router extracts a dotted-leaf seed probe from the MATCH plan and each shard
+    // revalidates seeded rows through the residual nested predicate. This scenario pins
+    // slices 1-3 at the posting layer below.
+
+    // Post-Active DML: rewriting one record swaps exactly its leaf posting through the
+    // shared dotted-path resolver.
+    e2e_set_vertex_record(
+        &env,
+        env.graph_source,
+        rewrite_vertex_id,
+        stats,
+        vec![("score".to_owned(), E2eRecordFieldValue::Int(11))],
+    );
+    assert!(
+        vertex_equal_postings(&env, physical, score_leaf, 10).is_empty(),
+        "the old leaf posting must be removed"
+    );
+    assert_eq!(
+        vertex_equal_postings(&env, physical, score_leaf, 11).len(),
+        1,
+        "the new leaf posting must be inserted"
+    );
+    assert_eq!(
+        vertex_range_postings(&env, physical, score_leaf, 0, 1000).len(),
+        5,
+        "the rewrite leaves no stale or duplicate postings behind"
+    );
 }

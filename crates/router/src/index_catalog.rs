@@ -1,6 +1,7 @@
 //! Router index catalog mutations and shard fan-out (ADR 0009 §4, ADR 0012).
 
-use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId};
+use gleaph_gql::ast::ValueType;
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId};
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 
 use gleaph_graph_kernel::federation::IndexPurgeKind;
@@ -218,22 +219,36 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ResolvedIndexDefinition {
     pub entry: IndexCatalogEntry,
+    /// Posting identity: the written property for flat indexes, the interned dotted leaf
+    /// for nested vertex indexes.
     pub property_id: gleaph_graph_kernel::entry::PropertyId,
     pub label_id: u16,
     pub edge_direction: Option<gleaph_graph_kernel::index::EdgeIndexDirection>,
 }
 
-/// Resolve one logical CREATE INDEX target without allocating a name, physical namespace, or
-/// catalog row. Immediate DDL and migration preflight share this validation owner.
+/// Bounded declaration depth for nested vertex index paths (ADR 0073 §4).
+pub(crate) const MAX_VERTEX_NESTED_INDEX_SEGMENTS: usize = 8;
+
+/// Resolve one logical CREATE INDEX target without allocating an index name, physical
+/// namespace, or catalog row. Immediate DDL and migration preflight share this validation
+/// owner. A nested vertex target additionally interns its ancestor and dotted-leaf property
+/// names: Graph owns no property-name catalog, so the interned identities are part of the
+/// resolved definition (vocabulary interning is idempotent and never allocates namespaces).
 pub(crate) fn resolve_index_definition(
     graph_id: GraphId,
     target: &IndexTarget,
 ) -> Result<ResolvedIndexDefinition, RouterError> {
     let store = RouterStore::new();
     validate_target_labels(&store, graph_id, target)?;
-    let property_id = store.lookup_property_id(graph_id, &target.property)?;
+    let property_id = match target.kind {
+        IndexedPropertyKind::Vertex if target.property.contains('.') => {
+            resolve_vertex_nested_leaf(graph_id, target)?
+        }
+        _ => store.lookup_property_id(graph_id, &target.property)?,
+    };
     let label_id = match target.kind {
         IndexedPropertyKind::Vertex => store.lookup_vertex_label_id(graph_id, &target.label)?.raw(),
         IndexedPropertyKind::Edge => store.lookup_edge_label_id(graph_id, &target.label)?.raw(),
@@ -299,6 +314,117 @@ pub(crate) fn resolve_index_definition(
         label_id,
         edge_direction,
     })
+}
+
+/// Validates and interns one nested vertex index target (`ON (n.stats.score)`).
+///
+/// Validation is fail-closed on what a declaration can prove statically: bounded depth with
+/// well-formed segments, and — when a typed graph schema constrains the label — that every
+/// intermediate node is a declared record field and the leaf kind is scalar-indexable.
+/// Untyped graphs accept the declaration; record shape drift at mutation time is handled by
+/// the absence rule, not by schema enforcement in Graph.
+fn resolve_vertex_nested_leaf(
+    graph_id: GraphId,
+    target: &IndexTarget,
+) -> Result<PropertyId, RouterError> {
+    let segments: Vec<&str> = target.property.split('.').collect();
+    if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
+        return Err(RouterError::InvalidArgument(format!(
+            "vertex nested index property {} is not a dotted path",
+            target.property
+        )));
+    }
+    if segments.len() > MAX_VERTEX_NESTED_INDEX_SEGMENTS {
+        return Err(RouterError::InvalidArgument(format!(
+            "vertex nested index property {} exceeds the maximum depth of {MAX_VERTEX_NESTED_INDEX_SEGMENTS} segments",
+            target.property
+        )));
+    }
+    validate_vertex_nested_leaf_kind(graph_id, target, &segments)?;
+
+    let (top, _) = target
+        .property
+        .split_once('.')
+        .expect("segments >= 2 implies split_once");
+    // The ancestor stores the root record, so it must be resolvable by id in Graph; the
+    // full dotted path becomes the leaf's posting identity. Catalog projections re-derive
+    // both from the Router's own reverse name lookup (one derivation owner).
+    RouterStore::commit_intern_property_name(graph_id, top)?;
+    RouterStore::commit_intern_property_name(graph_id, &target.property)
+}
+
+/// Walks the typed schema along `segments`, rejecting non-record intermediates and
+/// container leaves. Labels without any typed declaration are accepted (the runtime
+/// absence rule covers shape drift).
+fn validate_vertex_nested_leaf_kind(
+    graph_id: GraphId,
+    target: &IndexTarget,
+    segments: &[&str],
+) -> Result<(), RouterError> {
+    let Some(schema) =
+        crate::facade::stable::graph_type_catalog::try_property_schema_for_graph_id(graph_id)?
+    else {
+        return Ok(());
+    };
+    nested_leaf_kind_error(&schema, &target.label, &target.property, segments)
+        .map_err(RouterError::InvalidArgument)
+}
+
+/// Pure typed-schema walk for one declared nested leaf path.
+fn nested_leaf_kind_error(
+    schema: &dyn gleaph_gql::type_check::PropertySchema,
+    label: &str,
+    property_path: &str,
+    segments: &[&str],
+) -> Result<(), String> {
+    let specs = schema.node_property_types(&[label.to_owned()]);
+    let Some((_, value_type, _)) = specs.iter().find(|(name, _, _)| name == segments[0]) else {
+        return Ok(());
+    };
+    let mut current = strip_not_null(value_type);
+    for segment in &segments[1..] {
+        let ValueType::Record { fields, .. } = current else {
+            return Err(format!(
+                "vertex nested index property {property_path}: `{}` is not a record type on label {label}",
+                segments[0]
+            ));
+        };
+        let Some(field) = fields.iter().find(|field| field.name == *segment) else {
+            return Err(format!(
+                "vertex nested index property {property_path}: record type has no field `{segment}`"
+            ));
+        };
+        current = strip_not_null(&field.value_type);
+    }
+    if value_type_is_container(current) {
+        return Err(format!(
+            "vertex nested index property {property_path}: leaf kind is not scalar-indexable"
+        ));
+    }
+    Ok(())
+}
+
+fn strip_not_null(value_type: &ValueType) -> &ValueType {
+    match value_type {
+        ValueType::NotNull(inner) => inner,
+        other => other,
+    }
+}
+
+/// Container kinds stay unindexable (ADR 0073 §5): their leaves would need a second key domain.
+fn value_type_is_container(value_type: &ValueType) -> bool {
+    match value_type {
+        ValueType::List { .. }
+        | ValueType::Record { .. }
+        | ValueType::Path
+        | ValueType::GraphRef { .. }
+        | ValueType::NodeRef { .. }
+        | ValueType::EdgeRef { .. }
+        | ValueType::BindingTableRef { .. }
+        | ValueType::Nothing => true,
+        ValueType::ClosedDynamicUnion(members) => members.iter().any(value_type_is_container),
+        _ => false,
+    }
 }
 
 fn admin_compat_index_name(kind: IndexedPropertyKind, label: &str, property: &str) -> String {
@@ -863,6 +989,150 @@ mod tests {
             crate::facade::stable::index_name_catalog::lookup_index_name_id(graph_id, &name)
                 .is_some()
         );
+    }
+
+    fn nested_vertex_target(label: &str, property: &str) -> IndexTarget {
+        IndexTarget {
+            kind: IndexedPropertyKind::Vertex,
+            label: label.into(),
+            property: property.into(),
+            edge_direction: None,
+        }
+    }
+
+    #[test]
+    fn nested_vertex_ddl_interns_leaf_and_ancestor_and_projects_the_membership() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.nested_intern");
+        store
+            .admin_intern_vertex_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.nested_intern",
+                "Person",
+            )
+            .expect("intern label");
+        // Neither `stats` nor `stats.score` is pre-interned: the DDL owns the vocabulary.
+        futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            nested_vertex_target("Person", "stats.score"),
+        ))
+        .expect("create nested vertex index");
+
+        let ancestor =
+            RouterStore::commit_intern_property_name(graph_id, "stats").expect("ancestor interned");
+        let leaf = store
+            .lookup_property_id(graph_id, "stats.score")
+            .expect("leaf interned by DDL");
+        assert_ne!(ancestor.raw(), 0);
+        assert_ne!(leaf.raw(), ancestor.raw());
+
+        let catalog = graph_stats_for(graph_id).to_active_indexed_property_catalog();
+        let [membership] = &catalog.vertex_indexes[..] else {
+            panic!("exactly one vertex membership expected");
+        };
+        assert_eq!(membership.property_id, leaf.raw());
+        assert_eq!(membership.field_path, "stats.score");
+        assert_eq!(membership.ancestor_property_id, ancestor.raw());
+        assert_eq!(membership.label_id, 1);
+    }
+
+    #[test]
+    fn nested_vertex_ddl_rejects_depth_overrun_without_partial_state() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.nested_depth");
+        store
+            .admin_intern_vertex_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.nested_depth",
+                "Person",
+            )
+            .expect("intern label");
+        let deep = "a.b.c.d.e.f.g.h.i";
+        let err = futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            nested_vertex_target("Person", deep),
+        ))
+        .expect_err("depth overrun must be rejected at declare time");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err:?}"
+        );
+        assert!(store.lookup_property_id(graph_id, "a").is_err());
+        assert!(
+            crate::facade::stable::index_name_catalog::lookup_index_name_id(
+                graph_id,
+                &admin_compat_index_name(IndexedPropertyKind::Vertex, "Person", deep)
+            )
+            .is_none(),
+            "rejected declaration must not persist an index name"
+        );
+    }
+
+    #[test]
+    fn nested_vertex_ddl_rejects_malformed_dotted_path() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.nested_shape");
+        store
+            .admin_intern_vertex_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.nested_shape",
+                "Person",
+            )
+            .expect("intern label");
+        let err = resolve_index_definition(graph_id, &nested_vertex_target("Person", "stats."))
+            .expect_err("trailing dot is not a dotted path");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn nested_vertex_ddl_rejects_container_leaves_in_typed_schema() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.nested_typed");
+        let ddl = "CREATE GRAPH tenant.nested_typed { NODE Person LABEL Person { age INT64, stats RECORD { score INT64, tags LIST<STRING> } } }";
+        crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(
+            &gleaph_gql::parser::parse(ddl)
+                .expect("parse")
+                .transaction_activity
+                .expect("tx")
+                .body
+                .expect("body"),
+            ddl,
+        )
+        .expect("apply typed graph");
+
+        // The declared record field is accepted and interned.
+        futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            nested_vertex_target("Person", "stats.score"),
+        ))
+        .expect("scalar record leaf is indexable");
+
+        let err = resolve_index_definition(graph_id, &nested_vertex_target("Person", "stats.tags"))
+            .expect_err("list leaves stay unindexable");
+        let RouterError::InvalidArgument(message) = err else {
+            panic!("expected InvalidArgument");
+        };
+        assert!(
+            message.contains("not scalar-indexable"),
+            "unexpected message: {message}"
+        );
+
+        // A typed scalar intermediate is rejected before any interning.
+        let err = resolve_index_definition(graph_id, &nested_vertex_target("Person", "age.x"))
+            .expect_err("scalar intermediate cannot be walked");
+        let RouterError::InvalidArgument(message) = err else {
+            panic!("expected InvalidArgument");
+        };
+        assert!(message.contains("is not a record type"));
+
+        // A typed record without the declared field fails closed.
+        let err =
+            resolve_index_definition(graph_id, &nested_vertex_target("Person", "stats.missing"))
+                .expect_err("typed records reject undeclared fields");
+        let RouterError::InvalidArgument(message) = err else {
+            panic!("expected InvalidArgument");
+        };
+        assert!(message.contains("has no field"));
     }
 
     #[test]

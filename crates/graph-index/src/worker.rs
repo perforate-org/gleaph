@@ -143,6 +143,7 @@ mod tests {
                 target: IndexBuildTarget::Vertex {
                     label_id: 8,
                     property_id: PROPERTY_ID,
+                    record_source: None,
                 },
                 target_shard_ids: vec![0, 1],
             },
@@ -215,7 +216,8 @@ mod tests {
                 request.target,
                 CanonicalExportTarget::Vertex {
                     label_id: 8,
-                    property_id: PROPERTY_ID
+                    property_id: PROPERTY_ID,
+                    record_source: None
                 }
             );
         }

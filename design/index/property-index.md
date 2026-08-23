@@ -389,7 +389,7 @@ This follows the existing derived-state contract: postings may lag canonical ver
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.
 
 **Vertex membership resolution (single owner):** single DML, bulk insert, and backfill all resolve
-their namespaces through `vertex_index_memberships_for_labels`
+their namespaces through `vertex_index_targets_for_labels`
 (`crates/graph/src/index/catalog_context.rs`), so a committed transition maintains exactly the
 namespaces its posting state was built against. A vertex that carries no canonical label maintains
 every namespace indexing the property (legacy-unlabeled contract — it cannot be excluded from any
@@ -398,11 +398,52 @@ without a sieve); labeled vertices maintain wildcard (`label_id == 0`) membershi
 label matches, and label scopes that do not intersect their labels stay excluded even when they
 index the same property. A missing vertex row dispatches nothing.
 
+**Nested record leaf domain (ADR 0073 slices 1–4, implemented):** a declared vertex nested index
+(`ON (n.stats.score)`) shares the edge INLINE dotted-path leaf domain — one interning owner, one
+sortable encoding, one transition contract:
+
+- **Identity.** The Router interns the full dotted path (`stats.score`) as its own `PropertyId`
+  (the posting identity) plus the top-level ancestor (`stats`).
+  `IndexedVertexMembership` carries `field_path` (the canonical dotted path; empty for flat)
+  and `ancestor_property_id` (zero for flat). Graph resolves dispatch by the ancestor id because
+  it owns no property-name catalog ([ADR 0023](../adr/0023-router-owned-index-definitions.md)).
+- **Shared resolver.** Graph walks stored sidecar `Value::Record` values along the declared path
+  through one shared dotted-path resolver (`crates/graph/src/property/dotted_path.rs`, also used
+  by edge inline struct encoding). A missing field or non-record intermediate yields "no value" —
+  never an error. Container leaves (list/record/path/extension) yield no value by the same rule:
+  a declared path whose leaf resolves to a list posts nothing rather than silently introducing a
+  second key domain.
+- **Transitions.** Leaf postings ride `index_ops_for_value_change` unchanged: equal-value rewrites
+  emit nothing; shape drift removes exactly the old key; absence inserts nothing. Single DML,
+  bulk writes, delete planning, the index-build fence, and backfill all expand through
+  `vertex_posting_transitions` (`crates/graph/src/property/index_dispatch.rs`), so Active
+  dispatch, Sealing rejection, Building admission, and removals always agree on the affected set.
+- **Backfill/export.** Migration builds export nested facts through
+  `CanonicalExportTarget::Vertex.record_source`
+  (`ancestor_property_id` + tail path): graph scans the ancestor's sidecar rows, walks each value
+  along the tail, and emits facts keyed by the interned leaf identity. The operator repair API
+  (`backfill_vertex_property_postings`) walks the same paths through the shared expansion.
+- **DDL validation.** Declaring validates bounded depth (`MAX_VERTEX_NESTED_INDEX_SEGMENTS`) and,
+  when a typed schema constrains the label, that every intermediate node is a declared record
+  field and the leaf kind is scalar-indexable; container leaves are rejected at declare time.
+  Untyped graphs accept the declaration — record shape drift at mutation time is handled by the
+  absence rule above, not by schema enforcement in Graph; the Router remains the schema SSOT.
+- **Planner anchors (ADR 0073 slice 4, implemented 2026-08-23).** The planner lowers a nested
+  property chain (`v.stats.score`) to the canonical dotted path, so equality, range, and
+  intersection anchor selection treat an interned leaf like any other indexed vertex property;
+  the Router resolves the dotted name to the leaf identity and Active namespace through the
+  ordinary seed path, and each seeded row is revalidated by the residual nested predicate.
+  Owning proof: `planner_tests.rs::match_nested_leaf_*`,
+  `seed.rs::vertex_{equality,range}_anchor_resolves_nested_leaf_property`, and
+  `router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`.
+  GAP-2026-07-29-005 is closed.
+
 **Backfill:** `backfill_vertex_property_postings` on graph shards replays indexable vertex properties from
 `VERTEX_PROPERTIES` into graph-index via the budget-driven `posting_batch` transport when the concrete
 client supports it, with per-posting fallback for native/legacy clients (router-guarded update, same
 cursor batching model as `backfill_label_postings`). Unindexable values are skipped (see `property_indexability` in
-`crates/graph/src/property/`). Router orchestrates per-shard cursors via
+`crates/graph/src/property/`), and declared nested record leaves are walked through the shared
+dotted-path resolver described above. Router orchestrates per-shard cursors via
 `admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (Admin-only).
 
 These existing operator-driven backfill endpoints are not an activation gate and do not cover the

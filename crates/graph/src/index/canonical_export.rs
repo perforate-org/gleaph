@@ -17,7 +17,7 @@ use gleaph_graph_kernel::{
         CanonicalExportAdmission, CanonicalExportError, CanonicalExportPage, CanonicalExportPhase,
         CanonicalExportRecord, CanonicalExportRequest, CanonicalExportScope, CanonicalExportStatus,
         CanonicalExportTarget, CanonicalIndexableFact, CanonicalInlineProjection,
-        IndexBuildOutboxDrainProgress, IndexBuildOutboxDrainRequest,
+        CanonicalRecordSource, IndexBuildOutboxDrainProgress, IndexBuildOutboxDrainRequest,
         MAX_CANONICAL_EXPORT_PAGE_BYTES, MAX_CANONICAL_EXPORT_PAGE_ITEMS,
     },
     entry::{EdgeDirectedness, EdgeLabelId, GraphId, IndexNameId, PropertyId},
@@ -448,9 +448,10 @@ pub fn export_page(
             CanonicalExportTarget::Vertex {
                 label_id,
                 property_id,
+                record_source,
             },
             None,
-        ) => export_vertex_page(&request, *label_id, *property_id),
+        ) => export_vertex_page(&request, *label_id, *property_id, record_source.as_ref()),
         (CanonicalExportTarget::Edge { .. }, None) => export_edge_sidecar_page(&request),
         (CanonicalExportTarget::Edge { .. }, Some(inline)) => {
             export_edge_inline_page(&request, inline)
@@ -512,13 +513,30 @@ fn validate_scope(scope: &CanonicalExportScope) -> Result<(), CanonicalExportErr
             CanonicalExportTarget::Vertex {
                 label_id,
                 property_id,
+                record_source,
             },
             None,
         ) => {
             if *label_id == 0 {
                 return Err(CanonicalExportError::InvalidScope);
             }
-            ensure_property_id(*property_id)
+            ensure_property_id(*property_id)?;
+            match record_source {
+                None => Ok(()),
+                Some(source) => {
+                    ensure_property_id(source.ancestor_property_id)?;
+                    if source.field_tail.is_empty()
+                        || source
+                            .field_tail
+                            .split('.')
+                            .any(|segment| segment.is_empty())
+                        || source.ancestor_property_id == *property_id
+                    {
+                        return Err(CanonicalExportError::InvalidScope);
+                    }
+                    Ok(())
+                }
+            }
         }
         (CanonicalExportTarget::Vertex { .. }, Some(_)) => Err(CanonicalExportError::InvalidScope),
         (
@@ -592,11 +610,22 @@ fn validate_target(target: &CanonicalExportTarget) -> Result<(), CanonicalExport
         CanonicalExportTarget::Vertex {
             label_id,
             property_id,
+            record_source,
         } => {
             if *label_id == 0 {
                 return Err(CanonicalExportError::InvalidRequest);
             }
-            ensure_property_id(*property_id)
+            ensure_property_id(*property_id)?;
+            match record_source {
+                None => Ok(()),
+                Some(source) => {
+                    ensure_property_id(source.ancestor_property_id)?;
+                    if source.field_tail.is_empty() {
+                        return Err(CanonicalExportError::InvalidRequest);
+                    }
+                    Ok(())
+                }
+            }
         }
         CanonicalExportTarget::Edge {
             label_id,
@@ -631,12 +660,23 @@ fn ensure_request_matches_scope(
     Ok(())
 }
 
+/// Emits one vertex page. A flat target scans the indexed property's own rows; a nested
+/// record target scans the ancestor record rows and walks each value along `record_source`
+/// (ADR 0073 §3), emitting leaf facts keyed by the Router-interned leaf identity.
 fn export_vertex_page(
     request: &CanonicalExportRequest,
     label_id: u16,
     property_id: PropertyId,
+    record_source: Option<&CanonicalRecordSource>,
 ) -> Result<CanonicalExportPage, CanonicalExportError> {
     let after = decode_cursor(request.cursor.as_deref(), request, CursorKind::Vertex)?;
+    let (scan_property_id, field_tail) = match record_source {
+        None => (property_id, None),
+        Some(source) => (
+            source.ancestor_property_id,
+            Some(source.field_tail.as_str()),
+        ),
+    };
     let rows = GraphStore::new()
         .scan_vertex_properties_batch(after.vertex_key_bytes(), request.limit)
         .map_err(|_| CanonicalExportError::Storage)?;
@@ -655,11 +695,18 @@ fn export_vertex_page(
                 )
             })
             .unwrap_or(false);
-        if key.property_id() != property_id || !has_label {
+        if key.property_id() != scan_property_id || !has_label {
             previous = Some(*key);
             continue;
         }
-        if let Some(encoded_value) = sortable_index_key(value) {
+        let leaf_value = match field_tail {
+            None => Some(value),
+            Some(tail) => crate::property::record_value_at_dotted_path(value, tail)
+                .and_then(crate::property::nested_leaf_posting_value),
+        };
+        if let Some(leaf_value) = leaf_value
+            && let Some(encoded_value) = sortable_index_key(leaf_value)
+        {
             if !budget.try_accept(&encoded_value)? {
                 return Ok(CanonicalExportPage {
                     facts,
@@ -1031,10 +1078,21 @@ fn encode_target(out: &mut Vec<u8>, target: &CanonicalExportTarget) {
         CanonicalExportTarget::Vertex {
             label_id,
             property_id,
+            record_source,
         } => {
             out.push(CURSOR_TARGET_VERTEX);
             out.extend_from_slice(&label_id.to_le_bytes());
             out.extend_from_slice(&property_id.raw().to_le_bytes());
+            match record_source {
+                None => out.push(0),
+                Some(source) => {
+                    out.push(1);
+                    out.extend_from_slice(&source.ancestor_property_id.raw().to_le_bytes());
+                    let tail = source.field_tail.as_bytes();
+                    out.extend_from_slice(&(tail.len() as u16).to_le_bytes());
+                    out.extend_from_slice(tail);
+                }
+            }
         }
         CanonicalExportTarget::Edge {
             label_id,
@@ -1121,10 +1179,31 @@ fn decode_target(
     reader: &mut CursorReader<'_>,
 ) -> Result<CanonicalExportTarget, CanonicalExportError> {
     match reader.byte()? {
-        CURSOR_TARGET_VERTEX => Ok(CanonicalExportTarget::Vertex {
-            label_id: reader.u16()?,
-            property_id: PropertyId::from_raw(reader.u32()?),
-        }),
+        CURSOR_TARGET_VERTEX => {
+            let label_id = reader.u16()?;
+            let property_id = PropertyId::from_raw(reader.u32()?);
+            let record_source = match reader.byte()? {
+                0 => None,
+                1 => {
+                    let ancestor_property_id = PropertyId::from_raw(reader.u32()?);
+                    let tail_len = reader.u16()? as usize;
+                    let tail_bytes = reader.bytes(tail_len)?;
+                    let field_tail = std::str::from_utf8(tail_bytes)
+                        .map_err(|_| CanonicalExportError::CursorMalformed)?
+                        .to_owned();
+                    Some(CanonicalRecordSource {
+                        ancestor_property_id,
+                        field_tail,
+                    })
+                }
+                _ => return Err(CanonicalExportError::CursorMalformed),
+            };
+            Ok(CanonicalExportTarget::Vertex {
+                label_id,
+                property_id,
+                record_source,
+            })
+        }
         CURSOR_TARGET_EDGE => Ok(CanonicalExportTarget::Edge {
             label_id: EdgeLabelId::from_raw(reader.u16()?),
             property_id: PropertyId::from_raw(reader.u32()?),
@@ -1186,6 +1265,19 @@ impl<'a> CursorReader<'a> {
 
     fn u64(&mut self) -> Result<u64, CanonicalExportError> {
         Ok(u64::from_le_bytes(self.take::<8>()?))
+    }
+
+    fn bytes(&mut self, len: usize) -> Result<&'a [u8], CanonicalExportError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(CanonicalExportError::CursorMalformed)?;
+        let slice = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(CanonicalExportError::CursorMalformed)?;
+        self.offset = end;
+        Ok(slice)
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], CanonicalExportError> {
@@ -1326,6 +1418,7 @@ mod tests {
         let request = request(CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: PropertyId::from_raw(1),
+            record_source: None,
         });
         let cursor = encode_cursor(
             &request,
@@ -1348,6 +1441,7 @@ mod tests {
         let scope = scope(CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: PropertyId::from_raw(2),
+            record_source: None,
         });
         register_scope(physical, scope.clone()).expect("register");
         register_scope(physical, scope.clone()).expect("exact replay");
@@ -1370,6 +1464,7 @@ mod tests {
         changed_target.target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: PropertyId::from_raw(3),
+            record_source: None,
         };
         assert_eq!(
             seal_scope(physical, changed_target, 2),
@@ -1423,6 +1518,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: label.raw(),
             property_id: property,
+            record_source: None,
         };
         let frozen = scope(target.clone());
         register_scope(physical, frozen).expect("register");
@@ -1455,9 +1551,120 @@ mod tests {
             &scope(CanonicalExportTarget::Vertex {
                 label_id: label.raw(),
                 property_id: property,
+                record_source: None,
             }),
         )
         .expect("cleanup");
+    }
+
+    #[test]
+    fn export_vertex_page_walks_nested_records_into_leaf_facts() {
+        let store = GraphStore::new();
+        let stats = PropertyId::from_raw(8_100_001);
+        let score_leaf = PropertyId::from_raw(8_100_002);
+        let label = crate::test_labels::vertex_label_id_for_name("nested_export_label");
+        let record = |score: i64| {
+            Value::Record(vec![
+                ("score".to_owned(), Value::Int64(score)),
+                (
+                    "meta".to_owned(),
+                    Value::Record(vec![("deep".to_owned(), Value::Int64(score * 2))]),
+                ),
+            ])
+        };
+        let scored = store.insert_vertex().expect("scored vertex");
+        store
+            .add_vertex_label(scored, store.vertex(scored).expect("row"), label)
+            .expect("label");
+        store
+            .set_vertex_property(scored, stats, record(30))
+            .expect("scored record");
+        let untyped = store.insert_vertex().expect("absence vertex");
+        store
+            .add_vertex_label(untyped, store.vertex(untyped).expect("row"), label)
+            .expect("label");
+        // Absence shapes: missing root, non-record node, container leaf.
+        store
+            .set_vertex_property(untyped, PropertyId::from_raw(8_100_003), Value::Int64(1))
+            .expect("unrelated value");
+        store
+            .set_vertex_property(untyped, stats, Value::Int64(5))
+            .expect("non-record root");
+
+        let physical = PhysicalIndexId::new(900_009).unwrap();
+        let target = CanonicalExportTarget::Vertex {
+            label_id: label.raw(),
+            property_id: score_leaf,
+            record_source: Some(CanonicalRecordSource {
+                ancestor_property_id: stats,
+                field_tail: "score".to_owned(),
+            }),
+        };
+        register_scope(physical, scope(target.clone())).expect("register");
+        let mut request = request_with(target, physical);
+        request.limit = 1_000;
+
+        let page = export_page(request.clone()).expect("export page");
+        assert!(page.done, "fixture fits one page");
+        assert_eq!(
+            page.facts,
+            vec![CanonicalIndexableFact::Vertex {
+                vertex_id: u32::from(scored),
+                property_id: score_leaf,
+                encoded_value: sortable_index_key(&Value::Int64(30)).expect("int64 indexable"),
+            }],
+            "only the scalar leaf of the declared path is exported"
+        );
+
+        // The deep tail resolves through nested records under the same ancestor.
+        let target = CanonicalExportTarget::Vertex {
+            label_id: label.raw(),
+            property_id: score_leaf,
+            record_source: Some(CanonicalRecordSource {
+                ancestor_property_id: stats,
+                field_tail: "meta.deep".to_owned(),
+            }),
+        };
+        remove_scope(
+            physical,
+            &scope(CanonicalExportTarget::Vertex {
+                label_id: label.raw(),
+                property_id: score_leaf,
+                record_source: Some(CanonicalRecordSource {
+                    ancestor_property_id: stats,
+                    field_tail: "score".to_owned(),
+                }),
+            }),
+        )
+        .expect("cleanup first scope");
+        let physical = PhysicalIndexId::new(900_010).unwrap();
+        register_scope(physical, scope(target.clone())).expect("register deep scope");
+        let mut request = request_with(target, physical);
+        request.limit = 1_000;
+
+        let page = export_page(request).expect("deep export page");
+        assert!(page.done);
+        assert_eq!(
+            page.facts,
+            vec![CanonicalIndexableFact::Vertex {
+                vertex_id: u32::from(scored),
+                property_id: score_leaf,
+                encoded_value: sortable_index_key(&Value::Int64(60)).expect("int64 indexable"),
+            }],
+            "the deep leaf walks through the intermediate record"
+        );
+        remove_scope(
+            physical,
+            &scope(CanonicalExportTarget::Vertex {
+                label_id: label.raw(),
+                property_id: score_leaf,
+                record_source: Some(CanonicalRecordSource {
+                    ancestor_property_id: stats,
+                    field_tail: "meta.deep".to_owned(),
+                }),
+            }),
+        )
+        .expect("cleanup deep scope");
     }
 
     #[test]
@@ -1484,6 +1691,7 @@ mod tests {
             label_id: crate::test_labels::vertex_label_id_for_name("canonical_export_byte_label")
                 .raw(),
             property_id: property,
+            record_source: None,
         };
         register_scope(physical, scope(target.clone())).expect("register");
         let mut request = request_with(target, physical);
@@ -1519,6 +1727,7 @@ mod tests {
                 )
                 .raw(),
                 property_id: property,
+                record_source: None,
             }),
         )
         .expect("cleanup");
@@ -1555,6 +1764,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: property,
+            record_source: None,
         };
         register_scope(physical, scope(target.clone())).expect("register");
         let mut changed = request_with(target.clone(), physical);
@@ -1579,6 +1789,7 @@ mod tests {
             CanonicalExportTarget::Vertex {
                 label_id: 1,
                 property_id: PropertyId::from_raw(9_000_005),
+                record_source: None,
             },
             physical,
         );
@@ -1816,6 +2027,8 @@ mod tests {
             phase,
             property_id: property.raw(),
             label_id: label.raw(),
+            field_path: String::new(),
+            ancestor_property_id: 0,
         }
     }
 
@@ -1865,6 +2078,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: indexed_label.raw(),
             property_id: property,
+            record_source: None,
         };
         register_scope(physical, scope(target.clone())).expect("register");
         let facts = drain(request_with(target.clone(), physical));
@@ -1904,6 +2118,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: property,
+            record_source: None,
         };
         let frozen = scope(target.clone());
         register_scope(physical, frozen.clone()).expect("register");
@@ -1962,6 +2177,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: indexed,
+            record_source: None,
         };
         let frozen = scope(target.clone());
         register_scope(physical, frozen.clone()).expect("register");
@@ -2006,6 +2222,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: property,
+            record_source: None,
         };
         let frozen = scope(target);
         register_scope(physical, frozen.clone()).expect("register");
@@ -2039,6 +2256,7 @@ mod tests {
         other.target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: PropertyId::from_raw(9_000_016),
+            record_source: None,
         };
         assert_eq!(
             seal_scope(physical, other, 2),
@@ -2074,6 +2292,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: property,
+            record_source: None,
         };
         let frozen = scope(target.clone());
         register_scope(physical, frozen.clone()).expect("register");
@@ -2231,6 +2450,7 @@ mod tests {
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
             property_id: property,
+            record_source: None,
         };
         let frozen = scope(target.clone());
         register_scope(physical, frozen.clone()).expect("register");

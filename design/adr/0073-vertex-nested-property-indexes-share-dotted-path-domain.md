@@ -1,9 +1,17 @@
 # 0073. Vertex nested-record property indexes share the edge dotted-path leaf domain
 
 Date: 2026-08-22
-Status: proposed
-Last revised: 2026-08-22
-Anchor timestamp: 2026-08-22 19:58:00 UTC +0000
+Status: accepted — implemented (slices 1–4 complete, 2026-08-23)
+Last revised: 2026-08-23
+Anchor timestamp: 2026-08-23 05:23:26 UTC +0000
+
+> Implementation progress (2026-08-23): slices 1–4 are implemented and proven.
+> Slices 1–3 (kernel membership fields, DDL interning/validation, shared-resolver mutation
+> dispatch, record-walking backfill/export, lifecycle E2E) landed first; slice 4 (planner
+> anchors) landed with nested-aware `extract_property_access` in the planner, the Router
+> seed probes resolving interned leaf identities, and the cross-shard GQL proof
+> `router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`.
+> GAP-2026-07-29-005 is closed. The runtime contract notes below describe implemented behavior.
 
 ## Context
 

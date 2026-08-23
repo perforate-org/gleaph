@@ -1722,6 +1722,7 @@ mod tests {
                 target: CanonicalExportTarget::Vertex {
                     label_id: 1,
                     property_id: PropertyId::from_raw(2),
+                    record_source: None,
                 },
                 inline: None,
             },
@@ -1747,6 +1748,7 @@ mod tests {
             target: IndexBuildTarget::Vertex {
                 label_id: 1,
                 property_id: PropertyId::from_raw(2),
+                record_source: None,
             },
             target_shard_ids: vec![0, 1],
         };

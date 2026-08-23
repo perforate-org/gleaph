@@ -37,26 +37,33 @@ pub async fn backfill_vertex_property_postings(
         let labels = store.vertex_labels(vertex_id, vertex);
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for (property_id, value) in store.vertex_properties(vertex_id) {
-            let memberships = crate::index::catalog_context::vertex_index_memberships_for_labels(
-                &labels,
-                property_id,
-            );
-            if memberships.is_empty() {
-                continue;
-            }
-            let Some(payload_bytes) = sortable_index_key(&value) else {
-                continue;
-            };
-            for membership in memberships {
-                if !membership.phase.is_active() {
+            // One resolution owner with DML: flat targets post their own property; nested
+            // record targets walk the stored record along the declared leaf path.
+            for target in
+                crate::index::catalog_context::vertex_index_targets_for_labels(&labels, property_id)
+            {
+                if !target.membership.phase.is_active() {
                     continue;
                 }
-                let physical_index_id = membership.physical_index_id;
+                let leaf_value = if target.field_tail.is_empty() {
+                    Some(&value)
+                } else {
+                    crate::property::record_value_at_dotted_path(&value, &target.field_tail)
+                        .and_then(crate::property::nested_leaf_posting_value)
+                };
+                let Some(leaf_value) = leaf_value else {
+                    continue;
+                };
+                let Some(payload_bytes) = sortable_index_key(leaf_value) else {
+                    continue;
+                };
+                let physical_index_id = target.membership.physical_index_id;
+                let posting_property_id = target.posting_property_id.raw();
                 if index.supports_posting_batch() {
                     batch.push(IndexPostingMutation::VertexProperty {
                         physical_index_id,
                         remove: false,
-                        property_id: property_id.raw(),
+                        property_id: posting_property_id,
                         value: payload_bytes.clone(),
                         vertex_id: local_raw,
                     });
@@ -65,7 +72,7 @@ pub async fn backfill_vertex_property_postings(
                         .posting_insert_at(
                             shard_id,
                             physical_index_id,
-                            property_id.raw(),
+                            posting_property_id,
                             payload_bytes.clone(),
                             local_raw,
                         )
@@ -308,6 +315,8 @@ mod tests {
                     phase: IndexMaintenancePhase::Active,
                     property_id: name.raw(),
                     label_id: 1,
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                 },
                 IndexedVertexMembership {
                     physical_index_id: decoy_physical,
@@ -315,6 +324,8 @@ mod tests {
                     phase: IndexMaintenancePhase::Active,
                     property_id: name.raw(),
                     label_id: 2,
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                 },
             ],
             ..Default::default()
@@ -397,6 +408,7 @@ mod tests {
                 target: gleaph_graph_kernel::canonical_export::CanonicalExportTarget::Vertex {
                     label_id: 1,
                     property_id: property,
+                    record_source: None,
                 },
                 inline: None,
             },
@@ -410,6 +422,8 @@ mod tests {
                     phase: IndexMaintenancePhase::Building,
                     property_id: property.raw(),
                     label_id: 1,
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                 },
                 IndexedVertexMembership {
                     physical_index_id: decoy_physical,
@@ -417,6 +431,8 @@ mod tests {
                     phase: IndexMaintenancePhase::Active,
                     property_id: property.raw(),
                     label_id: 2,
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                 },
             ],
             ..Default::default()
@@ -443,6 +459,7 @@ mod tests {
                 target: gleaph_graph_kernel::canonical_export::CanonicalExportTarget::Vertex {
                     label_id: 1,
                     property_id: property,
+                    record_source: None,
                 },
                 inline: None,
             },
@@ -523,6 +540,100 @@ mod tests {
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), 1);
         assert_eq!(batches[1].len(), 1);
+    }
+
+    #[test]
+    fn backfill_enumerates_record_leaves_alongside_flat_values() {
+        let store = federated_store();
+        let index = RecordingIndex::new();
+        // Vertex A: one flat indexed value plus a record carrying two declared leaves.
+        let flat_vertex = store.insert_vertex().expect("vertex");
+        let flat_property = crate::test_labels::property_id_for_name("nested_backfill_flat");
+        let stats = PropertyId::from_raw(70);
+        let score_leaf = PropertyId::from_raw(71);
+        let depth_leaf = PropertyId::from_raw(72);
+        store
+            .set_vertex_property(flat_vertex, flat_property, Value::Int64(5))
+            .expect("flat value");
+        store
+            .set_vertex_property(
+                flat_vertex,
+                stats,
+                Value::Record(vec![
+                    ("score".to_owned(), Value::Int64(9)),
+                    (
+                        "meta".to_owned(),
+                        Value::Record(vec![("depth".to_owned(), Value::Int64(11))]),
+                    ),
+                ]),
+            )
+            .expect("record value");
+        // Vertex B: absence shapes only — missing root, non-record node, container leaf.
+        let absent_vertex = store.insert_vertex().expect("vertex");
+        store
+            .set_vertex_property(absent_vertex, PropertyId::from_raw(73), Value::Int64(1))
+            .expect("unrelated record");
+        store
+            .set_vertex_property(absent_vertex, stats, Value::Int64(2))
+            .expect("non-record root");
+        crate::index::pending::clear_pending();
+
+        let nested = |physical: u64, leaf: PropertyId, field_path: &str| IndexedVertexMembership {
+            physical_index_id: PhysicalIndexId::new(physical).expect("test physical id"),
+            catalog_epoch: 1,
+            phase: IndexMaintenancePhase::Active,
+            property_id: leaf.raw(),
+            label_id: 0,
+            field_path: field_path.to_owned(),
+            ancestor_property_id: stats.raw(),
+        };
+        let flat_membership = IndexedVertexMembership {
+            physical_index_id: PhysicalIndexId::new(900).expect("test physical id"),
+            catalog_epoch: 1,
+            phase: IndexMaintenancePhase::Active,
+            property_id: flat_property.raw(),
+            label_id: 0,
+            field_path: String::new(),
+            ancestor_property_id: 0,
+        };
+        let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                flat_membership,
+                nested(901, score_leaf, "stats.score"),
+                nested(902, depth_leaf, "stats.meta.depth"),
+            ],
+            ..Default::default()
+        });
+
+        let result = pollster::block_on(backfill_vertex_property_postings(
+            &store,
+            &index,
+            PostingBackfillArgs {
+                start_vertex_id: 0,
+                max_vertices: 10,
+            },
+        ))
+        .expect("backfill");
+
+        assert!(result.done);
+        let inserts = index.inserts.lock().unwrap().clone();
+        let key = |v: i64| {
+            crate::property::sortable_index_key(&Value::Int64(v)).expect("int64 indexable")
+        };
+        let mut posted: Vec<(u64, u32, Vec<u8>)> = inserts
+            .into_iter()
+            .map(|(_, physical, property_id, payload, _)| (physical.raw(), property_id, payload))
+            .collect();
+        posted.sort();
+        assert_eq!(
+            posted,
+            vec![
+                (900, flat_property.raw(), key(5)),
+                (901, score_leaf.raw(), key(9)),
+                (902, depth_leaf.raw(), key(11)),
+            ],
+            "backfill must post flat values and every declared record leaf exactly once"
+        );
     }
 
     #[test]

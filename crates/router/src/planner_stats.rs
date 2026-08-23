@@ -39,12 +39,16 @@ pub struct EdgeIndexMembership {
 }
 
 /// One active vertex index namespace projected from the Router-owned catalog.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VertexIndexMembership {
     pub physical_index_id: PhysicalIndexId,
     pub catalog_epoch: u64,
     pub property_id: PropertyId,
     pub label_id: u16,
+    /// Empty for a scalar/top-level property; the canonical dotted leaf path otherwise.
+    pub field_path: String,
+    /// Zero for flat memberships; the interned top-level record property otherwise.
+    pub ancestor_property_id: u32,
 }
 
 /// Planner-only projection. The stable catalog constructs this from `Active` index lifecycle rows;
@@ -124,6 +128,8 @@ impl RouterGraphStats {
                     phase: IndexMaintenancePhase::Active,
                     property_id: m.property_id.raw(),
                     label_id: m.label_id,
+                    field_path: m.field_path.clone(),
+                    ancestor_property_id: m.ancestor_property_id,
                 })
                 .collect(),
             edge_indexes: self
@@ -348,6 +354,42 @@ mod tests {
         );
         assert!(stats.is_vertex_property_range_indexed("age"));
         assert!(!stats.is_vertex_property_range_indexed("missing"));
+    }
+
+    #[test]
+    fn active_catalog_projects_nested_leaf_as_indexed_and_range_indexed() {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        // The real DDL order (ADR 0073): intern the ancestor, then the dotted leaf,
+        // then register the leaf's Active vertex index.
+        crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, TEST_GRAPH, "stats",
+        );
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            TEST_GRAPH,
+            "stats.score",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            graph_id,
+            0,
+            "stats.score",
+        );
+
+        let stats = crate::facade::stable::indexed_catalog::load_graph_stats(graph_id);
+        assert!(
+            stats.is_vertex_property_indexed("stats.score"),
+            "the Active leaf membership must project equality capability"
+        );
+        assert!(
+            stats.is_vertex_property_range_indexed("stats.score"),
+            "every Active vertex membership is range-capable"
+        );
+        assert!(
+            !stats.is_vertex_property_indexed("score"),
+            "the bare leaf segment is not itself an indexed property"
+        );
     }
 
     #[test]

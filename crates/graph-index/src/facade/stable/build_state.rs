@@ -32,7 +32,7 @@ impl From<&RegisterIndexBuildRequest> for IndexBuildScopeRecord {
             index_name_id: request.index_name_id,
             catalog_epoch: request.catalog_epoch,
             topology_epoch: request.topology_epoch,
-            target: request.target,
+            target: request.target.clone(),
         }
     }
 }
@@ -131,7 +131,7 @@ impl IndexBuildState {
             index_name_id: self.scope.index_name_id,
             catalog_epoch: self.scope.catalog_epoch,
             topology_epoch: self.scope.topology_epoch,
-            target: self.scope.target,
+            target: self.scope.target.clone(),
             target_shard_ids: self.shards.iter().map(|shard| shard.shard_id).collect(),
         }
     }

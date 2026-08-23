@@ -1,6 +1,6 @@
 //! Shared helpers for PocketIC federation tests.
 
-use candid::{CandidType, Decode, Encode, Principal};
+use candid::{CandidType, Decode, Deserialize, Encode, Principal};
 
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, RouterError, ShardId};
@@ -191,6 +191,34 @@ pub struct E2eSetVertexPropertyArgs {
     pub local_vertex_id: u32,
     pub property_id: u32,
     pub value: i64,
+}
+
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eSetVertexRecordArgs {
+    pub local_vertex_id: u32,
+    pub property_id: u32,
+    pub record: Vec<(String, E2eRecordFieldValue)>,
+}
+
+/// Rewrites the record stored under `property_id` on an existing vertex, exercising the
+/// production index-maintenance dispatch for nested record leaves.
+pub fn e2e_set_vertex_record(
+    env: &FederationEnv,
+    graph: Principal,
+    local_vertex_id: u32,
+    property_id: u32,
+    record: Vec<(String, E2eRecordFieldValue)>,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_set_vertex_record",
+        E2eSetVertexRecordArgs {
+            local_vertex_id,
+            property_id,
+            record,
+        },
+    );
 }
 
 #[derive(CandidType, Clone, Debug)]
@@ -979,6 +1007,41 @@ pub fn e2e_insert_vertex_with_label_and_property(
             label_id,
             property_id,
             value,
+        },
+    )
+}
+
+/// One field value inside an E2E seed record.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub enum E2eRecordFieldValue {
+    Int(i64),
+    IntList(Vec<i64>),
+    Record(Vec<(String, E2eRecordFieldValue)>),
+}
+
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelAndRecordArgs {
+    pub label_id: u16,
+    pub property_id: u32,
+    pub record: Vec<(String, E2eRecordFieldValue)>,
+}
+
+/// Seeds one labeled vertex whose `property_id` holds a record built from `record`.
+pub fn e2e_insert_vertex_with_label_and_record(
+    env: &FederationEnv,
+    graph: Principal,
+    label_id: u16,
+    property_id: u32,
+    record: Vec<(String, E2eRecordFieldValue)>,
+) -> E2eInsertVertexResult {
+    update_as_router(
+        env,
+        graph,
+        "e2e_insert_vertex_with_label_and_record",
+        E2eInsertVertexWithLabelAndRecordArgs {
+            label_id,
+            property_id,
+            record,
         },
     )
 }

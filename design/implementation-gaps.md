@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-23
-Anchor timestamp: 2026-08-23 03:40:43 UTC +0000
+Anchor timestamp: 2026-08-23 05:23:26 UTC +0000
 
 ## Status
 
@@ -963,6 +963,49 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   measurement (≈1B suffices: decision 37.34M + response at ~7× margin). Option (b) is preferred so
   the Router itself provably never traps at 40B regardless of Graph behavior.
 
+### GAP-2026-08-23-001 — Native `gleaph-router` lib suite has pre-existing ic0-context failures that poison unrelated tests
+
+- **Status:** Open (discovered 2026-08-23 during the ADR 0073 slice-4 slice; reproduced on a
+  clean HEAD checkout)
+- **Severity:** P3 test-harness
+- **Owner:** `gleaph-router` native unit test harness
+- **Observed behavior:** `cargo test -p gleaph-router --lib` on HEAD `463478b44` fails four tests
+  in this macOS host environment: `facade::store::schema_migration::tests::unregistered_create_graph_migration_fails_closed_without_provisioner`,
+  `provisioning::graph::tests::admission_fails_closed_for_unregistered_name_without_provisioner`,
+  and `provisioning::graph::tests::admission_short_circuits_registered_name_without_provisioner`
+  all panic with `canister_self_size should only be called inside canisters` (`ic0` system call
+  reached outside canister execution), both in the full run and in isolation. Those panics poison a
+  shared outbox/registry test lock, cascading into
+  `vector_sync::tests::{frontier_response_loss_retains_exact_marker_snapshot,
+  resolved_rows_transition_to_awaiting_frontier_before_publish}`, which pass when run alone.
+  Separately, on top of the uncommitted ADR 0073 slices-1–3 working tree,
+  `pocket_ic_tests::adr0034_inline_edge_struct_read_access` fails with
+  ``InvalidArgument("validation error: edge `:AFFINITY` cannot connect :ProjectionSource to
+  (unlabeled) (schema constraint violation)")`` during fixture INSERTs; reverting the slice-4
+  planner changes (`anchor.rs`, `filters.rs`) does not change the failure, so the cause sits in
+  the working-tree schema-validation or label-mutation path, not in planner anchor selection.
+  In the same working tree, `cargo test -p gleaph-graph --lib` fails three expand unit tests —
+  `indexed_edge_equality_expand_return_inline_property`, `gql_var_len_where_inline_property_filters_on_last_hop_edge`
+  (`InvalidExpressionValue { expression: "property access on group edge variable 'e.distance'
+  requires element indexing'" }`), and `gql_var_len_return_inline_property_decodes_indexed_last_hop_edge`
+  (`Some(Null)` vs `Some(Uint16(7))`) — again with the slice-4 planner changes reverted, and the
+  other 974 graph lib tests pass. (A clean-HEAD baseline for these observations could not be
+  taken because the working-tree changes are mutually dependent and do not compile when stashed.)
+- **Expected or needed behavior:** the whole-lib suite must be green as a gate: tests needing a
+  canister execution context should either be gated to wasm/canister targets or fail with an
+  explicit precondition marker, and no cross-test lock poisoning may turn one failure into
+  unrelated failures.
+- **Evidence:** baseline reproduction with all working-tree changes stashed at HEAD `463478b44`
+  (2026-08-23); isolated vector_sync runs green; panics originate in
+  `ic0-1.1.0/src/sys.rs:236`.
+- **Impact:** `cargo test -p gleaph-router --lib` cannot serve as a whole-suite pass signal in this
+  environment, and the cascade masks real regressions behind unrelated failures.
+- **Next decision:** decide per failing test whether it requires a wasm/canister target (gate it)
+  or an injectable self-size stub; then remove the shared-lock poisoning so one panic cannot fail
+  sibling tests. Separately, bisect the ADR 0073 working-tree changes for the adr0034 fixture
+  schema-violation regression and the three graph expand inline-property unit failures before
+  those changes land.
+
 ## Resolved gaps
 
 ### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
@@ -1156,7 +1199,7 @@ duplicate its state machine or ownership rules.
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | Closed 2026-08-22 — GAP-2026-07-29-004 resolved by contract-pinning tests (see entry); GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Closed 2026-08-22 — GAP-2026-07-29-003 (see entry)                                           |
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
-| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Planned — GAP-2026-07-29-005                                                                 |
+| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Closed 2026-08-23 — GAP-2026-07-29-005 (ADR 0073 slices 1–4: DDL interning/validation, shared-resolver mutation dispatch, record backfill/export, planner anchors + cross-shard GQL proof) |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
@@ -1318,33 +1361,51 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-005 — Vertex nested-record indexes are not yet symmetrical with edge INLINE fields
 
-- **Status:** In progress (domain decision recorded in
-  [ADR 0073](adr/0073-vertex-nested-property-indexes-share-dotted-path-domain.md), 2026-08-22:
-  vertex nested leaves share the edge dotted-path leaf domain — Router-interned leaf
-  `PropertyId`, membership `field_path`, one sortable key encoding, and the existing
-  old-key/new-key transition contract; list/container leaves stay unindexable. The ADR names
-  four implementation slices: kernel+DDL schema, Graph mutation dispatch, backfill extension,
-  planner anchors.)
+- **Status:** Closed (2026-08-23; ADR 0073 slices 1–4 implemented; domain decision recorded in
+  [ADR 0073](adr/0073-vertex-nested-property-indexes-share-dotted-path-domain.md), 2026-08-22).
+  Slices 1–3 landed: kernel `IndexedVertexMembership` gained `field_path` +
+  `ancestor_property_id` (Router-interned leaf identity plus the ancestor record property Graph
+  dispatches by); Router DDL interns leaf and ancestor identities and validates bounded depth
+  and typed leaf kind (`MAX_VERTEX_NESTED_INDEX_SEGMENTS`, container leaves rejected at declare
+  time); vertex mutation dispatch, delete planning, the index-build fence, bulk writes, and the
+  repair backfill all expand through one owner
+  (`crates/graph/src/property/index_dispatch.rs::vertex_posting_transitions`) over the shared
+  dotted-path resolver (`crates/graph/src/property/dotted_path.rs`), riding the existing
+  old-key/new-key transition contract; migration builds export nested facts through
+  `CanonicalExportTarget::Vertex.record_source`. Owning tests: router DDL interning/validation
+  (`nested_vertex_ddl_*` in `index_catalog.rs`), GAP-004-grade store contracts for the record
+  domain (`nested_record_*` in `catalog_context.rs`), record-walking backfill/export units, and
+  the cross-canister lifecycle scenario
+  `vertex_nested_create_index_migration_converges_active_with_complete_postings`
+  (Building→Sealing→Active over pre-existing records on both shards including the three absence
+  shapes, equality multiplicity, label scoping, and post-Active rewrite swaps).
+  Slice 4 landed (2026-08-23): the planner's property-access extractor lowers a nested chain to
+  the canonical dotted path so equality/range anchors select interned leaf identities
+  (`crates/gql-planner/src/anchor.rs::extract_property_access`, shared by equality/range/
+  intersection anchor selection and inline-WHERE collection), the node-pattern value lookup uses
+  the same extractor (`match_plan/path/filters.rs::find_equality_value_in_where`), Router seed
+  probes resolve dotted names through the ordinary catalog/namespace path, and the Active-catalog
+  projection proves range capability for leaves. Owning tests: planner contracts
+  `planner_tests.rs::match_nested_leaf_*`, router contracts
+  `seed.rs::vertex_{equality,range}_anchor_resolves_nested_leaf_property` and
+  `planner_stats.rs::active_catalog_projects_nested_leaf_as_indexed_and_range_indexed`, and the
+  cross-shard GQL proof
+  `crates/pocket-ic-tests/tests/router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`
+  — success itself is the anchor proof because unseeded leading index scans are rejected on graph
+  shards.
 - **Severity:** P2 query capability
-- **Owner:** Vertex property storage, planner property-path resolution, and property-index
-  backfill; decision owned by ADR 0073
-- **Observed behavior:** Edge INLINE struct leaf paths can be indexed, while the corresponding
-  vertex nested-record field path is not a generally supported indexed property domain.
-  `IndexedVertexMembership` carries no `field_path` and vertex dispatch/backfill resolve flat
-  properties only.
-- **Expected or needed behavior:** A declared vertex index on a bounded nested field must use
-  one canonical dotted path, validate the record shape at DDL time with fail-closed absence
-  semantics at mutation time, and maintain/backfill the leaf posting with the same
-  old-key/new-key semantics as every other domain.
-- **Evidence:** `crates/graph/src/index/catalog_context.rs::vertex_index_memberships_for_labels`
-  resolves `(labels, property_id)` only;
-  `crates/graph-kernel/src/index.rs::IndexedVertexMembership`; flat-only
-  `crates/graph/src/index/vertex_property_backfill.rs`; transition SSOT
-  `crates/graph/src/property/change.rs::index_ops_for_value_change`.
-- **Impact:** `COST BY v.stats.field` and vertex nested-field range/equality planning cannot
-  rely on the same index contract as edge inline fields.
-- **Next decision:** Implement ADR 0073 slice 1 (kernel membership + registration args gain
-  `field_path`; Router DDL interns leaf identities), then slices 2–4 in dependency order.
+- **Owner:** Planner property-path resolution; decision owned by ADR 0073 slice 4
+- **Observed behavior:** Nested leaf postings were maintained and backfilled end-to-end, but the
+  planner did not select a nested index as an anchor (`COST BY v.stats.field` parsed;
+  equality/range planning over `n.stats.score` did not bind to the interned leaf namespace).
+- **Expected or needed behavior:** The planner must seed anchors and range/equality candidates
+  against interned leaf identities under the same contract as every other indexed property.
+- **Evidence:** `crates/router/src/planner_stats.rs` (membership projection carries
+  `field_path`/`ancestor_property_id`), `design/index/property-index.md` "Nested record leaf
+  domain", and the ADR 0073 implementation slices.
+- **Impact:** Vertex nested-field range/equality planning cannot rely on the same index contract
+  as edge inline fields until the anchor lands.
+- **Next decision:** Implement ADR 0073 slice 4 (planner anchors) in a follow-up plan.
 
 ### GAP-2026-07-29-006 — Index activation convergence gate lacks production driver/E2E completion
 

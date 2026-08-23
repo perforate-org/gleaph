@@ -216,13 +216,15 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<Vec<(IndexBuildSubject, Vec<PlannedBuildEnvelope>)>, GraphStoreError> {
-        let vertex = self.vertex(vertex_id).ok_or_else(|| {
-            GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
-                vid: vertex_id,
-                len: self.vertex_count(),
-            })
-        })?;
-        let labels = self.vertex_labels(vertex_id, vertex);
+        // Existence gate first: a missing vertex row owns no posting state.
+        if self.vertex(vertex_id).is_none() {
+            return Err(GraphStoreError::Graph(
+                DeferredBidirectionalLabeledError::VertexOutOfRange {
+                    vid: vertex_id,
+                    len: self.vertex_count(),
+                },
+            ));
+        }
         let props: Vec<PropertyId> = super::super::stable::VERTEX_PROPERTIES.with_borrow(|store| {
             store
                 .properties_for(vertex_id)
@@ -237,17 +239,19 @@ impl GraphStore {
             let Some(value) = value else {
                 continue;
             };
-            let memberships = crate::index::catalog_context::vertex_index_memberships_for_labels(
-                &labels,
+            let change = crate::property::PropertyValueChange::vertex(
+                vertex_id,
                 property_id,
+                Some(&value),
+                None,
             );
-            let transitions = memberships
+            let transitions = crate::property::vertex_posting_transitions(&change)
                 .into_iter()
-                .map(|membership| FencedTransition {
-                    property_id,
-                    prev: Some(&value),
-                    new: None,
-                    membership,
+                .map(|transition| FencedTransition {
+                    property_id: transition.property_id,
+                    prev: transition.prev,
+                    new: transition.new,
+                    membership: transition.membership,
                 })
                 .collect::<Vec<_>>();
             let planned = self.plan_index_build_admission(transitions)?;
@@ -1005,6 +1009,7 @@ mod tests {
             target: CanonicalExportTarget::Vertex {
                 label_id: target_label.raw(),
                 property_id: property,
+                record_source: None,
             },
             inline: None,
         };
@@ -1015,6 +1020,7 @@ mod tests {
             target: CanonicalExportTarget::Vertex {
                 label_id: decoy_label.raw(),
                 property_id: property,
+                record_source: None,
             },
             inline: None,
         };
@@ -1046,6 +1052,8 @@ mod tests {
         let _catalog = catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![
                 IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: target_physical,
                     catalog_epoch: 1,
                     phase: IndexMaintenancePhase::Building,
@@ -1053,6 +1061,8 @@ mod tests {
                     label_id: target_label.raw(),
                 },
                 IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: active_physical,
                     catalog_epoch: 1,
                     phase: IndexMaintenancePhase::Active,
@@ -1060,6 +1070,8 @@ mod tests {
                     label_id: target_label.raw(),
                 },
                 IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: decoy_physical,
                     catalog_epoch: 1,
                     phase: IndexMaintenancePhase::Sealing,

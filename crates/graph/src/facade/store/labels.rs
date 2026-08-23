@@ -233,6 +233,7 @@ mod tests {
             target: CanonicalExportTarget::Vertex {
                 label_id,
                 property_id,
+                record_source: None,
             },
             inline: None,
         };
@@ -304,6 +305,8 @@ mod tests {
             phase,
             property_id: property_id.raw(),
             label_id,
+            field_path: String::new(),
+            ancestor_property_id: 0,
         }
     }
 

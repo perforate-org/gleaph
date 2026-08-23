@@ -1517,17 +1517,6 @@ fn set_inline_record_field(
     }
 }
 
-fn inline_record_value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut current = value;
-    for part in path.split('.') {
-        let Value::Record(fields) = current else {
-            return None;
-        };
-        current = &fields.iter().find(|(name, _)| name == part)?.1;
-    }
-    Some(current)
-}
-
 fn encode_inline_struct_value(
     fields: &[ResolvedInlineStructField],
     value: &Value,
@@ -1536,7 +1525,8 @@ fn encode_inline_struct_value(
 ) -> Result<Vec<u8>, PlanMutationError> {
     let mut bytes = vec![0; usize::from(profile.required_byte_width())];
     for field in fields {
-        let Some(field_value) = inline_record_value_at_path(value, &field.name) else {
+        let Some(field_value) = crate::property::record_value_at_dotted_path(value, &field.name)
+        else {
             return Err(PlanMutationError::InvalidInlinePropertyValue {
                 property: property.to_owned(),
                 reason: format!("missing inline struct field `{}`", field.name),

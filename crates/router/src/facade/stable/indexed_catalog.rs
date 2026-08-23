@@ -297,6 +297,30 @@ fn unique_active_physical_index(
     }
 }
 
+/// Reverse-resolves one vertex index definition's dotted leaf identity.
+///
+/// A flat (top-level) definition projects `(empty, 0)`. A nested definition projects its
+/// canonical dotted leaf path plus the interned top-level property that stores the root
+/// record; Graph consumes the ancestor id because it owns no property-name catalog.
+pub(crate) fn vertex_leaf_projection(
+    graph_id: GraphId,
+    leaf_property_id: PropertyId,
+) -> (String, u32) {
+    let field_path = RouterStore::new()
+        .reverse_property_name(graph_id, leaf_property_id)
+        .ok()
+        .filter(|name| name.contains('.'));
+    let Some(field_path) = field_path else {
+        return (String::new(), 0);
+    };
+    let top = field_path.split('.').next().unwrap_or_default();
+    let ancestor = RouterStore::new()
+        .lookup_property_id(graph_id, top)
+        .map(|id| id.raw())
+        .unwrap_or(0);
+    (field_path, ancestor)
+}
+
 pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
     let mut vertex = std::collections::BTreeSet::new();
     let mut edge = std::collections::BTreeSet::new();
@@ -313,11 +337,15 @@ pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
             match def.kind {
                 IndexedPropertyKind::Vertex => {
                     vertex.insert(def.property_id);
+                    let (field_path, ancestor_property_id) =
+                        vertex_leaf_projection(graph_id, def.property_id);
                     vertex_indexes.insert(VertexIndexMembership {
                         physical_index_id: def.physical_index_id,
                         catalog_epoch,
                         property_id: def.property_id,
                         label_id: def.label_id,
+                        field_path,
+                        ancestor_property_id,
                     });
                 }
                 IndexedPropertyKind::Edge => {
@@ -370,12 +398,16 @@ pub(crate) fn load_indexed_property_catalog(graph_id: GraphId) -> IndexedPropert
             };
             match def.kind {
                 IndexedPropertyKind::Vertex => {
+                    let (field_path, ancestor_property_id) =
+                        vertex_leaf_projection(graph_id, def.property_id);
                     vertex_indexes.push(IndexedVertexMembership {
                         physical_index_id: def.physical_index_id,
                         catalog_epoch,
                         phase,
                         property_id: def.property_id.raw(),
                         label_id: def.label_id,
+                        field_path,
+                        ancestor_property_id,
                     });
                 }
                 IndexedPropertyKind::Edge => {
@@ -406,6 +438,7 @@ pub(crate) fn load_indexed_property_catalog(graph_id: GraphId) -> IndexedPropert
             membership.catalog_epoch,
             membership.property_id,
             membership.label_id,
+            membership.field_path.clone(),
         )
     });
     edge_indexes.sort_by_key(|membership| {

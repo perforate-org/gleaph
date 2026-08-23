@@ -110,9 +110,15 @@ impl std::error::Error for CanonicalExportError {}
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum CanonicalExportTarget {
     /// A vertex property identified by its Router-issued property id.
+    ///
+    /// `property_id` is always the posting identity: the written property for a flat index,
+    /// the interned dotted leaf for a nested record index. A nested index additionally
+    /// carries `record_source`, which locates the leaf inside stored records so the export
+    /// can walk the ancestor's sidecar values.
     Vertex {
         label_id: u16,
         property_id: PropertyId,
+        record_source: Option<CanonicalRecordSource>,
     },
     /// An edge property identified by label, property, and the stable direction used by the
     /// Router/index catalog (see ADR 0012).
@@ -121,6 +127,17 @@ pub enum CanonicalExportTarget {
         property_id: PropertyId,
         direction: EdgeIndexDirection,
     },
+}
+
+/// Locates one nested record leaf inside stored vertex records (ADR 0073 §3).
+///
+/// The ancestor id is the interned top-level property that stores the root record; Graph
+/// resolves walks by id because it owns no property-name catalog.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct CanonicalRecordSource {
+    pub ancestor_property_id: PropertyId,
+    /// Dotted path inside the record, excluding the ancestor head (for example `score`).
+    pub field_tail: String,
 }
 
 /// Minimal Graph-owned projection needed to decode one fixed-width inline property value.

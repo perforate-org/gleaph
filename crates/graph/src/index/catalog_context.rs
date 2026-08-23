@@ -128,38 +128,67 @@ pub(crate) fn vertex_index_memberships(
     )
 }
 
-/// Single membership-resolution owner for vertex property maintenance.
+/// One vertex posting target resolved for a canonical property write.
 ///
-/// Single DML, bulk insert, and backfill all resolve through this helper, so a committed
-/// transition maintains exactly the namespaces its posting state was built against:
+/// Flat memberships post the written property itself. Nested record memberships (ADR 0073)
+/// post their Router-interned leaf identity after walking the stored record along
+/// [`VertexIndexTarget::field_tail`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VertexIndexTarget {
+    pub(crate) membership: IndexMembershipRef,
+    /// Posting key identity: the written property id (flat) or the interned leaf id (nested).
+    pub(crate) posting_property_id: PropertyId,
+    /// Dotted path inside the stored record; empty for flat memberships.
+    pub(crate) field_tail: String,
+}
+
+/// Resolves every vertex posting target applicable to one canonical property write.
 ///
-/// - A vertex that carries no canonical label cannot be excluded from any label scope (the
-///   legacy-unlabeled contract): it maintains EVERY namespace indexing the property. This mirrors
-///   the Router's label-less superset anchor lookups, which serve such postings without a sieve.
-/// - A labeled vertex maintains wildcard (`label_id == 0`) memberships plus exact label matches;
-///   label scopes that do not intersect its labels are excluded even when they index the same
-///   property.
-pub(crate) fn vertex_index_memberships_for_labels(
+/// Flat targets match `property_id` directly; nested targets match on the membership's
+/// Router-owned ancestor id, because Graph owns no property-name catalog (ADR 0023).
+pub(crate) fn vertex_index_targets_for_labels(
     labels: &[VertexLabelId],
     property_id: PropertyId,
-) -> Vec<IndexMembershipRef> {
+) -> Vec<VertexIndexTarget> {
     with_catalog(
         |catalog| {
-            let mut memberships = Vec::new();
+            let mut targets = Vec::new();
             for membership in catalog.vertex_indexes.iter().filter(|membership| {
-                membership.property_id == property_id.raw()
-                    && (labels.is_empty()
-                        || membership.label_id == 0
-                        || labels
-                            .iter()
-                            .any(|label| label.raw() == membership.label_id))
+                labels.is_empty()
+                    || membership.label_id == 0
+                    || labels
+                        .iter()
+                        .any(|label| label.raw() == membership.label_id)
             }) {
                 let projected = project_vertex_membership(membership);
-                if !memberships.contains(&projected) {
-                    memberships.push(projected);
+                if targets
+                    .iter()
+                    .any(|target: &VertexIndexTarget| target.membership == projected)
+                {
+                    continue;
+                }
+                if membership.field_path.is_empty() {
+                    if membership.property_id != property_id.raw() {
+                        continue;
+                    }
+                    targets.push(VertexIndexTarget {
+                        membership: projected,
+                        posting_property_id: PropertyId::from_raw(membership.property_id),
+                        field_tail: String::new(),
+                    });
+                } else if membership.ancestor_property_id == property_id.raw() {
+                    let (_, tail) = membership
+                        .field_path
+                        .split_once('.')
+                        .expect("non-empty nested field path contains a dot");
+                    targets.push(VertexIndexTarget {
+                        membership: projected,
+                        posting_property_id: PropertyId::from_raw(membership.property_id),
+                        field_tail: tail.to_owned(),
+                    });
                 }
             }
-            memberships
+            targets
         },
         Vec::new(),
     )
@@ -471,6 +500,8 @@ pub(crate) fn enter_vertex_indexed(property_ids: &[PropertyId]) -> CatalogGuard 
             .enumerate()
             .map(
                 |(offset, property_id)| gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(101 + offset as u64)
                         .expect("test physical id"),
                     catalog_epoch: 1,
@@ -768,6 +799,8 @@ mod tests {
         let _guard = enter(IndexedPropertyCatalog {
             vertex_indexes: vec![
                 gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(701).expect("test physical id"),
                     catalog_epoch: 8,
                     phase: IndexMaintenancePhase::Building,
@@ -775,6 +808,8 @@ mod tests {
                     label_id: 0,
                 },
                 gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(702).expect("test physical id"),
                     catalog_epoch: 9,
                     phase: IndexMaintenancePhase::Sealing,
@@ -790,6 +825,8 @@ mod tests {
         let _guard = enter(IndexedPropertyCatalog {
             vertex_indexes: vec![
                 gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(703).expect("test physical id"),
                     catalog_epoch: 10,
                     phase: IndexMaintenancePhase::Active,
@@ -797,6 +834,8 @@ mod tests {
                     label_id: 0,
                 },
                 gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(704).expect("test physical id"),
                     catalog_epoch: 10,
                     phase: IndexMaintenancePhase::Active,
@@ -831,6 +870,8 @@ mod tests {
         let _guard = enter(IndexedPropertyCatalog {
             vertex_indexes: vec![
                 gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(711).expect("test physical id"),
                     catalog_epoch: 10,
                     phase: IndexMaintenancePhase::Active,
@@ -838,6 +879,8 @@ mod tests {
                     label_id: 1,
                 },
                 gleaph_graph_kernel::index::IndexedVertexMembership {
+                    field_path: String::new(),
+                    ancestor_property_id: 0,
                     physical_index_id: PhysicalIndexId::new(712).expect("test physical id"),
                     catalog_epoch: 11,
                     phase: IndexMaintenancePhase::Sealing,
@@ -897,6 +940,8 @@ mod tests {
             phase: IndexMaintenancePhase::Active,
             property_id: property_id.raw(),
             label_id,
+            field_path: String::new(),
+            ancestor_property_id: 0,
         }
     }
 
@@ -904,6 +949,234 @@ mod tests {
         gleaph_gql::value_to_index_key_bytes(&Value::Int64(value))
             .unwrap()
             .expect("Int64 index key")
+    }
+
+    /// Builds an Active nested-record leaf membership (ADR 0073): postings go under the
+    /// Router-interned leaf identity while dispatch matches the ancestor record property.
+    #[cfg(test)]
+    fn nested_vertex_membership(
+        physical_index_id: u64,
+        catalog_epoch: u64,
+        leaf_property_id: PropertyId,
+        ancestor_property_id: PropertyId,
+        label_id: u16,
+    ) -> gleaph_graph_kernel::index::IndexedVertexMembership {
+        gleaph_graph_kernel::index::IndexedVertexMembership {
+            physical_index_id: PhysicalIndexId::new(physical_index_id).expect("test physical id"),
+            catalog_epoch,
+            phase: IndexMaintenancePhase::Active,
+            property_id: leaf_property_id.raw(),
+            label_id,
+            field_path: "stats.score".to_owned(),
+            ancestor_property_id: ancestor_property_id.raw(),
+        }
+    }
+
+    fn stats_record(score: Value) -> Value {
+        Value::Record(vec![("score".to_owned(), score)])
+    }
+
+    fn nested_routing_fixture() -> GraphStore {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        store
+    }
+
+    #[test]
+    fn nested_record_set_swaps_leaf_posting_old_for_new() {
+        let store = nested_routing_fixture();
+        let stats = PropertyId::from_raw(90);
+        let leaf = PropertyId::from_raw(91);
+        let decoy = PropertyId::from_raw(92);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                nested_vertex_membership(751, 21, leaf, stats, 1),
+                // A flat membership on the sibling property must never see this change...
+                active_vertex_membership(752, 22, decoy, 1),
+            ],
+            ..Default::default()
+        });
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            Some(&stats_record(Value::Int64(1))),
+            Some(&stats_record(Value::Int64(2))),
+        ));
+
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(
+            pending.len(),
+            2,
+            "record replacement must swap exactly the old and new leaf keys"
+        );
+        assert!(matches!(
+            pending[0],
+            crate::index::pending::PendingPostingOp::Remove {
+                physical_index_id,
+                ref payload_bytes,
+                ..
+            } if physical_index_id == PhysicalIndexId::new(751).unwrap()
+                && payload_bytes == &int_key(1)
+        ));
+        assert!(matches!(
+            pending[1],
+            crate::index::pending::PendingPostingOp::Insert {
+                physical_index_id,
+                ref payload_bytes,
+                ..
+            } if physical_index_id == PhysicalIndexId::new(751).unwrap()
+                && payload_bytes == &int_key(2)
+        ));
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn nested_record_equal_value_update_and_unrelated_writes_emit_no_postings() {
+        let store = nested_routing_fixture();
+        let stats = PropertyId::from_raw(93);
+        let meta = PropertyId::from_raw(94);
+        let leaf = PropertyId::from_raw(95);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![nested_vertex_membership(761, 23, leaf, stats, 0)],
+            ..Default::default()
+        });
+
+        // Equal leaf value: nothing churns.
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            Some(&stats_record(Value::Int64(7))),
+            Some(&stats_record(Value::Int64(7))),
+        ));
+        // A write to an unrelated property does not resolve the nested membership even
+        // though that record would structurally provide the same tail.
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            meta,
+            None,
+            Some(&stats_record(Value::Int64(7))),
+        ));
+
+        assert!(
+            crate::index::pending::take_pending().is_empty(),
+            "equal-value updates and unrelated writes maintain no leaf postings"
+        );
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn nested_record_leaf_maintains_only_its_own_label_scope() {
+        let store = nested_routing_fixture();
+        let stats = PropertyId::from_raw(96);
+        let leaf = PropertyId::from_raw(97);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let vertex = store.vertex(vertex_id).expect("vertex row");
+        store
+            .set_vertex_labels(vertex_id, vertex, [VertexLabelId::from_raw(1)])
+            .expect("target label");
+        crate::index::pending::clear_pending();
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                nested_vertex_membership(771, 24, leaf, stats, 1),
+                nested_vertex_membership(772, 25, leaf, stats, 2),
+            ],
+            ..Default::default()
+        });
+
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            None,
+            Some(&stats_record(Value::Int64(3))),
+        ));
+
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(pending.len(), 1, "label 2's namespace is not maintained");
+        assert!(matches!(
+            pending[0],
+            crate::index::pending::PendingPostingOp::Insert {
+                physical_index_id,
+                ref payload_bytes,
+                ..
+            } if physical_index_id == PhysicalIndexId::new(771).unwrap()
+                && payload_bytes == &int_key(3)
+        ));
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn nested_record_absence_shapes_fail_closed_without_errors() {
+        let store = nested_routing_fixture();
+        let stats = PropertyId::from_raw(98);
+        let other = PropertyId::from_raw(99);
+        let leaf = PropertyId::from_raw(100);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![nested_vertex_membership(781, 26, leaf, stats, 0)],
+            ..Default::default()
+        });
+        let list_leaf = Value::Record(vec![(
+            "score".to_owned(),
+            Value::List(vec![Value::Int64(1), Value::Int64(2)]),
+        )]);
+
+        // Leaf disappears because the new value is not a record: remove exactly the old key.
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            Some(&stats_record(Value::Int64(4))),
+            Some(&Value::Int64(4)),
+        ));
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(pending.len(), 1, "shape drift removes only the old key");
+        assert!(matches!(
+            pending[0],
+            crate::index::pending::PendingPostingOp::Remove { ref payload_bytes, .. }
+                if payload_bytes == &int_key(4)
+        ));
+
+        // Missing intermediate / missing leaf / container leaf: no value, no posting, no error.
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            None,
+            Some(&Value::Int64(4)),
+        ));
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            None,
+            Some(&Value::Record(vec![])),
+        ));
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            stats,
+            None,
+            Some(&list_leaf),
+        ));
+        // A record under another property never satisfies the declared path.
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            vertex_id,
+            other,
+            None,
+            Some(&stats_record(Value::Int64(9))),
+        ));
+        assert!(
+            crate::index::pending::take_pending().is_empty(),
+            "absence shapes yield no value and therefore no postings"
+        );
+        store.set_federation_routing(None).expect("clear routing");
     }
 
     #[test]
