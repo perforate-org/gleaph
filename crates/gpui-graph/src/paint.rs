@@ -297,7 +297,7 @@ fn build_paint_frame_with_runtime<N, E, S>(
     runtime: Option<&GraphRuntime<S>>,
 ) -> PaintFrame
 where
-    S: BuildHasher + Default + Clone,
+    S: BuildHasher + Default + Clone + Sync,
     N: Sync,
     E: Sync,
 {
@@ -400,6 +400,8 @@ where
     };
     let has_reverse = &prep.has_reverse;
     let parallel = &prep.parallel;
+    let prep_source = &prep.source;
+    let prep_target = &prep.target;
     let midpoints = &prep.midpoints;
     let normals = &prep.normals;
     let density_grid = &prep.density_grid;
@@ -427,6 +429,17 @@ where
         candidates.push((index, id, edge, source_screen, target_screen, is_straight));
     }
 
+    // Self-loop label presence is resolved before the cull (indexed by prep
+    // index) so neither the cull nor the edge map captures the non-`Sync`
+    // node label resolver. Only self-loop candidates call the resolver.
+    let mut loop_label_flags = vec![false; prep.edge_ids.len()];
+    for &index in &candidate_indices {
+        let edge = graph.edge(prep.edge_ids[index]).expect("edge exists");
+        if edge.source == edge.target {
+            loop_label_flags[index] = node_has_paint_label(graph, edge.source, node_label);
+        }
+    }
+
     let cull_only_field = ObstacleField::new(&[], obstacle_radius);
 
     // Phase B - precise cull. The curve bound is a deliberate over-estimate:
@@ -440,65 +453,74 @@ where
     // curve bound below carries the same avoidance displacement as the final
     // path, so an edge whose bow crosses the view can no longer be culled by
     // an empty-field estimate and pop in late.
-    candidates.retain(
-        |(index, _id, edge, source_screen, _target_screen, is_straight)| {
-            let source_world = prep.source[*index];
-            let target_world = prep.target[*index];
-            let source_visible = point_in_bounds(source_world, &visible, margin);
-            let target_visible = point_in_bounds(target_world, &visible, margin);
-            if source_visible || target_visible {
-                return true;
-            }
-            // Both endpoints are outside; keep the edge only if what it draws
-            // still crosses the visible bounds. Self-loop status is a
-            // graph-topology fact, not a consequence of two distinct nodes
-            // currently sharing a position.
-            if edge.source == edge.target {
-                let path = self_loop_path(
-                    edge.source,
-                    *source_screen,
-                    graph,
-                    node_position,
-                    viewport,
-                    style,
-                    node_has_paint_label(graph, edge.source, node_label),
-                );
-                let mut min = Vec2::splat(f32::INFINITY);
-                let mut max = Vec2::splat(f32::NEG_INFINITY);
-                for (p0, p1, p2) in &path {
-                    min = min.min(*p0).min(*p1).min(*p2);
-                    max = max.max(*p0).max(*p1).max(*p2);
-                }
-                return bounds_intersect(
-                    &visible,
-                    margin,
-                    viewport.screen_to_world(min),
-                    viewport.screen_to_world(max),
-                );
-            }
-            if *is_straight {
-                // A straight-line-LOD edge draws only the trimmed chord, whose
-                // bounding box is the endpoints' box.
-                let (min, max) = (
-                    source_world.min(target_world),
-                    source_world.max(target_world),
-                );
-                return bounds_intersect(&visible, margin, min, max);
-            }
-            let cluster_center =
-                shared_cluster_center(edge.source, edge.target, node_cluster_center);
-            let (min, max) = edge_curve_bbox(
-                source_world,
-                target_world,
-                *index,
-                has_reverse,
-                parallel,
-                cluster_center,
-                &cull_only_field,
+    let keep = |(index, _id, edge, source_screen, _target_screen, is_straight): &Candidate<E>| {
+        let source_world = prep_source[*index];
+        let target_world = prep_target[*index];
+        let source_visible = point_in_bounds(source_world, &visible, margin);
+        let target_visible = point_in_bounds(target_world, &visible, margin);
+        if source_visible || target_visible {
+            return true;
+        }
+        // Both endpoints are outside; keep the edge only if what it draws
+        // still crosses the visible bounds. Self-loop status is a
+        // graph-topology fact, not a consequence of two distinct nodes
+        // currently sharing a position.
+        if edge.source == edge.target {
+            let path = self_loop_path(
+                edge.source,
+                *source_screen,
+                graph,
+                node_position,
+                viewport,
+                style,
+                loop_label_flags[*index],
             );
-            bounds_intersect(&visible, margin, min, max)
-        },
-    );
+            let mut min = Vec2::splat(f32::INFINITY);
+            let mut max = Vec2::splat(f32::NEG_INFINITY);
+            for (p0, p1, p2) in &path {
+                min = min.min(*p0).min(*p1).min(*p2);
+                max = max.max(*p0).max(*p1).max(*p2);
+            }
+            return bounds_intersect(
+                &visible,
+                margin,
+                viewport.screen_to_world(min),
+                viewport.screen_to_world(max),
+            );
+        }
+        if *is_straight {
+            // A straight-line-LOD edge draws only the trimmed chord, whose
+            // bounding box is the endpoints' box.
+            let (min, max) = (
+                source_world.min(target_world),
+                source_world.max(target_world),
+            );
+            return bounds_intersect(&visible, margin, min, max);
+        }
+        let cluster_center = shared_cluster_center(edge.source, edge.target, node_cluster_center);
+        let (min, max) = edge_curve_bbox(
+            source_world,
+            target_world,
+            *index,
+            has_reverse,
+            parallel,
+            cluster_center,
+            &cull_only_field,
+        );
+        bounds_intersect(&visible, margin, min, max)
+    };
+    candidates = {
+        #[cfg(not(target_family = "wasm"))]
+        if candidates.len() >= PAR_MIN_EDGES {
+            candidates.into_par_iter().filter(&keep).collect()
+        } else {
+            candidates.into_iter().filter(&keep).collect()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            candidates.into_iter().filter(&keep).collect()
+        }
+    };
 
     // Compute the signed density only for the surviving edges that will
     // render curved. Straight-line-LOD edges skip the control-point bow
@@ -576,17 +598,11 @@ where
     let mut overlays: Vec<OverlayCategory> = Vec::with_capacity(candidates.len());
     let mut selected_flags: Vec<bool> = Vec::with_capacity(candidates.len());
     let mut hovered_flags: Vec<bool> = Vec::with_capacity(candidates.len());
-    let mut loop_label_flags: Vec<bool> = Vec::with_capacity(candidates.len());
     for (_, id, edge, _, _, _) in candidates.iter() {
         label_texts.push(edge_label(*id, &edge.data));
         overlays.push(edge_overlay(*id));
         selected_flags.push(selection.contains_edge(*id));
         hovered_flags.push(hover.edge == Some(*id));
-        loop_label_flags.push(if edge.source == edge.target {
-            node_has_paint_label(graph, edge.source, node_label)
-        } else {
-            false
-        });
     }
 
     // Per-candidate geometry is independent given the shared read-only
@@ -595,6 +611,7 @@ where
     // order, which keeps the frame byte-identical across pool sizes.
     // The pre-pass arrays are indexed by position within `candidates`, while
     // `candidate_index` inside the tuple indexes the full prep arrays.
+    let __t6 = std::time::Instant::now();
     let build_edge =
         |(position, (candidate_index, id, edge, source, target, _)): (usize, &Candidate<E>)| {
             let is_self_loop = edge.source == edge.target;
@@ -1133,10 +1150,14 @@ pub fn signed_densities_for<S>(
     indices: &[usize],
 ) -> Vec<f32>
 where
-    S: BuildHasher + Default + Clone,
+    S: BuildHasher + Default + Clone + Sync,
 {
     let mut result = vec![0.0f32; midpoints.len()];
-    for &i in indices {
+    // Each candidate's sum reads only the shared grid and writes a disjoint
+    // result slot, so large candidate sets map across rayon workers on native
+    // targets (same policy as the edge geometry map and the cull). This phase
+    // dominates zoomed-in frames, where most of the candidate set survives.
+    let signed = |&i: &usize| -> (usize, f32) {
         let mut signed = 0.0f32;
         for j in grid.candidates(midpoints[i], radius) {
             if i == j {
@@ -1159,7 +1180,22 @@ where
             let cos_angle = normals[i].dot(delta) / dist;
             signed += cos_angle * proximity;
         }
-        result[i] = signed;
+        (i, signed)
+    };
+    let pairs: Vec<(usize, f32)> = {
+        #[cfg(not(target_family = "wasm"))]
+        if indices.len() >= PAR_MIN_EDGES {
+            indices.par_iter().map(&signed).collect()
+        } else {
+            indices.iter().map(&signed).collect()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            indices.iter().map(&signed).collect()
+        }
+    };
+    for (i, value) in pairs {
+        result[i] = value;
     }
     result
 }

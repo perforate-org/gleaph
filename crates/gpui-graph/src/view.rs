@@ -213,9 +213,9 @@ impl<NK, EK, N, E, S> GraphViewState<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
-    N: 'static,
-    E: 'static,
-    S: std::hash::BuildHasher + Default + Clone + 'static,
+    N: 'static + Sync,
+    E: 'static + Sync,
+    S: std::hash::BuildHasher + Default + Clone + 'static + Sync,
 {
     /// Create a view state over the given scene.
     pub fn new(scene: Entity<GraphScene<NK, EK, N, E, S>>, _cx: &mut Context<Self>) -> Self {
@@ -487,7 +487,7 @@ where
     EK: Eq + std::hash::Hash + 'static,
     N: std::fmt::Display + 'static,
     E: std::fmt::Display + 'static,
-    S: std::hash::BuildHasher + Default + Clone + 'static,
+    S: std::hash::BuildHasher + Default + Clone + 'static + Sync,
 {
     /// Create a view state over the given scene with default node and edge labels.
     ///
@@ -523,9 +523,9 @@ impl<NK, EK, N, E, S> EventEmitter<GraphEvent> for GraphViewState<NK, EK, N, E, 
 where
     NK: 'static,
     EK: 'static,
-    N: 'static,
-    E: 'static,
-    S: std::hash::BuildHasher + Default + Clone + 'static,
+    N: 'static + Sync,
+    E: 'static + Sync,
+    S: std::hash::BuildHasher + Default + Clone + 'static + Sync,
 {
 }
 
@@ -1798,9 +1798,9 @@ impl<NK, EK, N, E, S> GraphViewState<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
-    N: 'static,
-    E: 'static,
-    S: std::hash::BuildHasher + Default + Clone + 'static,
+    N: 'static + Sync,
+    E: 'static + Sync,
+    S: std::hash::BuildHasher + Default + Clone + 'static + Sync,
 {
     fn handle_mouse_move(&mut self, pos: Vec2, cx: &mut Context<Self>) {
         if let Some(node) = self.dragging {

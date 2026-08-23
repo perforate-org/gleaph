@@ -174,6 +174,13 @@ impl PaintBench {
         }
     }
 
+    /// Zoom into the central third of the fitted view: roughly one node in
+    /// nine stays visible and the rest of the candidate set reaches the
+    /// precise cull with both endpoints off-screen.
+    fn zoom_viewport(&mut self) {
+        self.viewport.zoom_at(self.viewport.size() * 0.5, 3.0);
+    }
+
     /// Build one indexed paint frame against a freshly synced runtime.
     fn build_frame(&self, runtime: &mut GraphRuntime) -> PaintFrame {
         let synced = self.scene.sync_runtime(runtime);
@@ -196,12 +203,18 @@ fn bench_paint_frame(c: &mut Criterion) {
     group.sample_size(30);
     group.measurement_time(Duration::from_secs(10));
 
-    for (name, fixture) in [
-        ("grid_100x100", grid(100)),
-        ("hub_4096", hub(4096)),
-        ("random_5000", random(5000)),
+    for (name, fixture, zoomed) in [
+        ("grid_100x100", grid(100), false),
+        ("hub_4096", hub(4096), false),
+        ("random_5000", random(5000), false),
+        // A zoomed-in view: most edges have both endpoints off-screen, so
+        // this case exercises the precise cull that the fitted views skip.
+        ("random_5000_zoomed", random(5000), true),
     ] {
-        let bench = PaintBench::build(&fixture);
+        let mut bench = PaintBench::build(&fixture);
+        if zoomed {
+            bench.zoom_viewport();
+        }
         let mut runtime = GraphRuntime::new();
         let throughput =
             Throughput::Elements((fixture.graph.node_count() + fixture.graph.edge_count()) as u64);

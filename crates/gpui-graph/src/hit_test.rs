@@ -47,7 +47,7 @@ pub fn hit_test<NK, EK, N, E, S>(
 where
     NK: Eq + std::hash::Hash,
     EK: Eq + std::hash::Hash,
-    S: BuildHasher + Default + Clone,
+    S: BuildHasher + Default + Clone + Sync,
 {
     let scene = synced.scene;
     let graph = scene.graph();
