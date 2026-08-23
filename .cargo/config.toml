@@ -12,3 +12,9 @@ rustflags = ["-C", "target-feature=+simd128"]
 # and formulation comparison). Revisit when canbench supports wasm64.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]
+
+[unstable]
+min-publish-age = true
+
+[registry]
+global-min-publish-age = "14 days"
