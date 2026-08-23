@@ -768,6 +768,7 @@ impl IndexStore {
 mod tests {
     use candid::Principal;
     use gleaph_graph_kernel::canonical_export::CanonicalIndexableFact;
+    use gleaph_graph_kernel::canonical_export::CanonicalRecordSource;
     use gleaph_graph_kernel::entry::{
         EdgeDirectedness, EdgeLabelId, GraphId, IndexNameId, PropertyId,
     };
@@ -786,11 +787,33 @@ mod tests {
 
     const GRAPH_ID: GraphId = GraphId::from_raw(1);
     const PROPERTY_ID: PropertyId = PropertyId::from_raw(42);
+    const ANCESTOR_PROPERTY_ID: PropertyId = PropertyId::from_raw(43);
     const VERTEX_LABEL_ID: u16 = 8;
     const EDGE_LABEL_ID: u16 = 9;
 
     fn physical(raw: u64) -> PhysicalIndexId {
         PhysicalIndexId::new(raw).expect("test physical index id is non-zero")
+    }
+
+    /// A well-formed nested vertex target rooted at a different ancestor property.
+    fn nested_record_source() -> Option<CanonicalRecordSource> {
+        Some(CanonicalRecordSource {
+            ancestor_property_id: ANCESTOR_PROPERTY_ID,
+            field_tail: "meta.deep".to_owned(),
+        })
+    }
+
+    fn nested_vertex_registration(
+        physical_index_id: PhysicalIndexId,
+        target_shard_ids: Vec<u32>,
+    ) -> RegisterIndexBuildRequest {
+        let mut registration = vertex_registration(physical_index_id, target_shard_ids);
+        registration.target = IndexBuildTarget::Vertex {
+            label_id: VERTEX_LABEL_ID,
+            property_id: PROPERTY_ID,
+            record_source: nested_record_source(),
+        };
+        registration
     }
 
     fn setup() -> (IndexStore, Principal, Principal, Principal) {
@@ -1697,8 +1720,9 @@ mod tests {
     fn build_state_and_touched_set_reopen_in_separate_stable_regions() {
         let (store, router, shard, _) = setup();
         let physical_index_id = physical(1_008);
+        let registration = nested_vertex_registration(physical_index_id, vec![0]);
         store
-            .register_index_build(router, &vertex_registration(physical_index_id, vec![0]))
+            .register_index_build(router, &registration)
             .expect("register build");
         let subject = IndexBuildSubject::Vertex {
             shard_id: 0,
@@ -1726,12 +1750,112 @@ mod tests {
             .get(&physical_index_id)
             .expect("reopen build state");
         assert_eq!(reopened_state.scope.catalog_epoch, 11);
+        assert_eq!(
+            reopened_state.scope.target,
+            IndexBuildTarget::Vertex {
+                label_id: VERTEX_LABEL_ID,
+                property_id: PROPERTY_ID,
+                record_source: nested_record_source(),
+            },
+            "the exact nested-target Candid state survives a stable reopen"
+        );
         assert!(reopened_touched.contains(&IndexBuildTouchedKey::new(physical_index_id, subject)));
         assert_ne!(
             Storable::into_bytes(reopened_state).len(),
             Storable::into_bytes(IndexBuildTouchedKey::new(physical_index_id, subject)).len(),
             "state and touched records have distinct storage shapes and regions"
         );
+    }
+
+    #[test]
+    fn nested_vertex_record_source_replays_exact_export_and_registration() {
+        let (store, router, shard0, _) = setup();
+        let physical_index_id = physical(1_009);
+        let registration = nested_vertex_registration(physical_index_id, vec![0]);
+        let status = store
+            .register_index_build(router, &registration)
+            .expect("register nested build");
+        assert_eq!(
+            status.registration.target, registration.target,
+            "the durable status echoes the exact nested target"
+        );
+        // Exact replay of the same registration is idempotent; no alternate shape exists.
+        let replayed = store
+            .register_index_build(router, &registration)
+            .expect("exact nested replay");
+        assert_eq!(replayed.registration.target, registration.target);
+
+        let pull = store
+            .prepare_index_build_pull(router, &control(registration.clone()))
+            .expect("prepared export pull")
+            .expect("building scope still has base pages");
+        assert_eq!(pull.graph_canister, shard0);
+        assert_eq!(
+            pull.export.target,
+            CanonicalExportTarget::Vertex {
+                label_id: VERTEX_LABEL_ID,
+                property_id: PROPERTY_ID,
+                record_source: nested_record_source(),
+            },
+            "the prepared Graph pull carries the exact nested record_source"
+        );
+        assert_eq!(pull.export.graph_id, GRAPH_ID);
+        assert_eq!(pull.shard_id, 0);
+
+        // Reopen the stable region and require the exact Candid target again.
+        let reopened = crate::facade::stable::memory::init_index_build_states()
+            .get(&physical_index_id)
+            .expect("reopen nested build state");
+        assert_eq!(reopened.scope.target, registration.target);
+    }
+
+    #[test]
+    fn nested_vertex_record_source_registration_rejects_invalid_sources_without_mutation() {
+        let invalid_sources = [
+            // Zero ancestor identity.
+            Some(CanonicalRecordSource {
+                ancestor_property_id: PropertyId::from_raw(0),
+                field_tail: "score".to_owned(),
+            }),
+            // Empty tail.
+            Some(CanonicalRecordSource {
+                ancestor_property_id: ANCESTOR_PROPERTY_ID,
+                field_tail: String::new(),
+            }),
+            // Empty path segment.
+            Some(CanonicalRecordSource {
+                ancestor_property_id: ANCESTOR_PROPERTY_ID,
+                field_tail: "meta..deep".to_owned(),
+            }),
+            // The walk must be rooted at another property, not the leaf itself.
+            Some(CanonicalRecordSource {
+                ancestor_property_id: PROPERTY_ID,
+                field_tail: "self".to_owned(),
+            }),
+        ];
+        for source in invalid_sources {
+            let (store, router, _, _) = setup();
+            let physical_index_id = physical(1_010);
+            let mut registration = nested_vertex_registration(physical_index_id, vec![0]);
+            registration.target = IndexBuildTarget::Vertex {
+                label_id: VERTEX_LABEL_ID,
+                property_id: PROPERTY_ID,
+                record_source: source,
+            };
+            assert_eq!(
+                store.register_index_build(router, &registration),
+                Err(IndexError::InvalidIndexBuildScope),
+                "an invalid nested record source must reject before any stable mutation"
+            );
+            assert_eq!(
+                store.index_build_status(router, physical_index_id),
+                Err(IndexError::UnknownIndexBuild)
+            );
+            assert!(
+                INDEX_BUILD_STATES.with_borrow(|states| states.get(&physical_index_id).is_none()),
+                "a rejected registration leaves the build map unchanged"
+            );
+        }
     }
 
     #[test]

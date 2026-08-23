@@ -299,26 +299,32 @@ fn unique_active_physical_index(
 
 /// Reverse-resolves one vertex index definition's dotted leaf identity.
 ///
-/// A flat (top-level) definition projects `(empty, 0)`. A nested definition projects its
-/// canonical dotted leaf path plus the interned top-level property that stores the root
-/// record; Graph consumes the ancestor id because it owns no property-name catalog.
+/// The projection is infallible and fail-closed: a valid flat definition projects
+/// `Some(("", 0))`, a valid nested definition projects its canonical dotted leaf path plus the
+/// interned top-level property that stores the root record, and an inconsistent row — missing
+/// reverse name, malformed dotted path, or missing/zero ancestor identity — projects `None` so
+/// callers omit the whole membership instead of flattening it to a flat shape. Graph consumes
+/// the ancestor id because it owns no property-name catalog; omitting an inconsistent row keeps
+/// the canonical scan fallback available.
 pub(crate) fn vertex_leaf_projection(
     graph_id: GraphId,
     leaf_property_id: PropertyId,
-) -> (String, u32) {
+) -> Option<(String, u32)> {
     let field_path = RouterStore::new()
         .reverse_property_name(graph_id, leaf_property_id)
-        .ok()
-        .filter(|name| name.contains('.'));
-    let Some(field_path) = field_path else {
-        return (String::new(), 0);
-    };
+        .ok()?;
+    if !field_path.contains('.') {
+        return Some((String::new(), 0));
+    }
+    if field_path.split('.').any(|component| component.is_empty()) {
+        return None;
+    }
     let top = field_path.split('.').next().unwrap_or_default();
-    let ancestor = RouterStore::new()
+    let ancestor_property_id = RouterStore::new()
         .lookup_property_id(graph_id, top)
         .map(|id| id.raw())
         .unwrap_or(0);
-    (field_path, ancestor)
+    (ancestor_property_id != 0).then_some((field_path, ancestor_property_id))
 }
 
 pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
@@ -337,8 +343,13 @@ pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
             match def.kind {
                 IndexedPropertyKind::Vertex => {
                     vertex.insert(def.property_id);
-                    let (field_path, ancestor_property_id) =
-                        vertex_leaf_projection(graph_id, def.property_id);
+                    let Some((field_path, ancestor_property_id)) =
+                        vertex_leaf_projection(graph_id, def.property_id)
+                    else {
+                        // An inconsistent catalog row is omitted whole, never flattened to a
+                        // flat membership; the canonical scan fallback remains available.
+                        continue;
+                    };
                     vertex_indexes.insert(VertexIndexMembership {
                         physical_index_id: def.physical_index_id,
                         catalog_epoch,
@@ -398,8 +409,13 @@ pub(crate) fn load_indexed_property_catalog(graph_id: GraphId) -> IndexedPropert
             };
             match def.kind {
                 IndexedPropertyKind::Vertex => {
-                    let (field_path, ancestor_property_id) =
-                        vertex_leaf_projection(graph_id, def.property_id);
+                    let Some((field_path, ancestor_property_id)) =
+                        vertex_leaf_projection(graph_id, def.property_id)
+                    else {
+                        // An inconsistent catalog row is omitted whole, never flattened to a
+                        // flat membership; the canonical scan fallback remains available.
+                        continue;
+                    };
                     vertex_indexes.push(IndexedVertexMembership {
                         physical_index_id: def.physical_index_id,
                         catalog_epoch,
@@ -1912,5 +1928,71 @@ mod tests {
             Err(RouterError::InvalidArgument(message)) if message.contains("multiple active")
         ));
         purge_graph_indexes(graph);
+    }
+
+    fn intern_property(graph: GraphId, name: &str) -> PropertyId {
+        RouterStore::commit_intern_property_name(graph, name).expect("intern test property")
+    }
+
+    #[test]
+    fn vertex_leaf_projection_projects_valid_flat_row() {
+        let graph = GraphId::from_raw(700_101);
+        let leaf = intern_property(graph, "age");
+        assert_eq!(
+            vertex_leaf_projection(graph, leaf),
+            Some((String::new(), 0)),
+            "a valid flat row projects the canonical explicit flat identity"
+        );
+    }
+
+    #[test]
+    fn vertex_leaf_projection_projects_valid_nested_row() {
+        let graph = GraphId::from_raw(700_102);
+        let ancestor = intern_property(graph, "stats");
+        let leaf = intern_property(graph, "stats.score.meta");
+        assert_eq!(
+            vertex_leaf_projection(graph, leaf),
+            Some(("stats.score.meta".to_owned(), ancestor.raw())),
+            "a valid nested row projects its dotted path plus the interned ancestor id"
+        );
+    }
+
+    #[test]
+    fn vertex_leaf_projection_omits_missing_reverse_name() {
+        let graph = GraphId::from_raw(700_103);
+        let orphan_id = PropertyId::from_raw(9_999_003);
+        assert_eq!(
+            vertex_leaf_projection(graph, orphan_id),
+            None,
+            "a row whose reverse name is missing is omitted whole, never flattened"
+        );
+    }
+
+    #[test]
+    fn vertex_leaf_projection_omits_malformed_or_missing_path_component() {
+        let graph = GraphId::from_raw(700_104);
+        let trailing_dot = intern_property(graph, "stats.");
+        let empty_component = intern_property(graph, "stats..score");
+        assert_eq!(
+            vertex_leaf_projection(graph, trailing_dot),
+            None,
+            "a dotted name with an empty tail component is omitted whole"
+        );
+        assert_eq!(
+            vertex_leaf_projection(graph, empty_component),
+            None,
+            "a dotted name with an interior empty component is omitted whole"
+        );
+    }
+
+    #[test]
+    fn vertex_leaf_projection_omits_missing_or_zero_ancestor_identity() {
+        let graph = GraphId::from_raw(700_105);
+        let leaf = intern_property(graph, "orphan.score");
+        assert_eq!(
+            vertex_leaf_projection(graph, leaf),
+            None,
+            "a dotted row whose top-level property never resolved is omitted, not given ancestor 0"
+        );
     }
 }

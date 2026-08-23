@@ -1436,6 +1436,59 @@ mod tests {
     }
 
     #[test]
+    fn canonical_export_cursor_round_trips_exact_position() {
+        for record_source in [
+            None,
+            Some(CanonicalRecordSource {
+                ancestor_property_id: PropertyId::from_raw(3),
+                field_tail: "meta.deep".to_owned(),
+            }),
+        ] {
+            let request = request(CanonicalExportTarget::Vertex {
+                label_id: 1,
+                property_id: PropertyId::from_raw(2),
+                record_source: record_source.clone(),
+            });
+            let position = CursorPosition::Vertex {
+                key: VertexPropertyKey::new(VertexId::from(7), PropertyId::from_raw(2)),
+            };
+            let cursor = encode_cursor(&request, position);
+            assert_eq!(
+                cursor[0],
+                gleaph_graph_kernel::canonical_export::CANONICAL_EXPORT_CURSOR_VERSION
+            );
+            assert_eq!(
+                decode_cursor(Some(&cursor), &request, CursorKind::Vertex),
+                Ok(position),
+                "a cursor resumes at its exact vertex position"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_export_cursor_rejects_foreign_versions_as_malformed() {
+        let request = request(CanonicalExportTarget::Edge {
+            label_id: EdgeLabelId::from_raw(1),
+            property_id: PropertyId::from_raw(2),
+            direction: EdgeIndexDirection::Outgoing,
+        });
+        for foreign_version in [0u8, 2, 3, u8::MAX] {
+            let mut cursor = encode_cursor(
+                &request,
+                CursorPosition::EdgeSidecar {
+                    key: EdgePropertyKey::new(VertexId::from(5), 1, 0, PropertyId::from_raw(2)),
+                },
+            );
+            cursor[0] = foreign_version;
+            assert_eq!(
+                decode_cursor(Some(&cursor), &request, CursorKind::EdgeSidecar),
+                Err(CanonicalExportError::CursorMalformed),
+                "version byte {foreign_version} is never reinterpreted as another layout"
+            );
+        }
+    }
+
+    #[test]
     fn exact_scope_registration_is_idempotent_and_conflict_is_rejected() {
         let physical = PhysicalIndexId::new(900_002).unwrap();
         let scope = scope(CanonicalExportTarget::Vertex {

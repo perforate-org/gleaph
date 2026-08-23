@@ -10,6 +10,10 @@ use async_trait::async_trait;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSyncBatchOutcome};
 
 #[async_trait(?Send)]
+// The async_trait desugaring stamps `#[must_use]` on each generated method while every async
+// method here already returns a `#[must_use]` `Result`; the doubled attribute carries no
+// additional contract, so silence exactly that duplication.
+#[allow(clippy::double_must_use)]
 pub trait VectorCanisterLookup {
     async fn vector_sync_batch_outcome(
         &self,

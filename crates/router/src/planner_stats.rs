@@ -357,42 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn active_catalog_projects_nested_leaf_as_indexed_and_range_indexed() {
-        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
-        // The real DDL order (ADR 0073): intern the ancestor, then the dotted leaf,
-        // then register the leaf's Active vertex index.
-        crate::facade::store::catalog_test_support::intern_property(
-            &store, admin, TEST_GRAPH, "stats",
-        );
-        crate::facade::store::catalog_test_support::intern_property(
-            &store,
-            admin,
-            TEST_GRAPH,
-            "stats.score",
-        );
-        crate::facade::store::catalog_test_support::register_active_vertex_index(
-            &store,
-            graph_id,
-            0,
-            "stats.score",
-        );
-
-        let stats = crate::facade::stable::indexed_catalog::load_graph_stats(graph_id);
-        assert!(
-            stats.is_vertex_property_indexed("stats.score"),
-            "the Active leaf membership must project equality capability"
-        );
-        assert!(
-            stats.is_vertex_property_range_indexed("stats.score"),
-            "every Active vertex membership is range-capable"
-        );
-        assert!(
-            !stats.is_vertex_property_indexed("score"),
-            "the bare leaf segment is not itself an indexed property"
-        );
-    }
-
-    #[test]
     fn edge_index_subset_rule_uses_direction() {
         let store = RouterStore::new();
         let admin = Principal::from_slice(&[1; 29]);

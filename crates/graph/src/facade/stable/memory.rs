@@ -527,11 +527,18 @@ pub(crate) fn init_index_pending_floor() -> StableIndexPendingFloor {
 #[cfg(test)]
 mod tests {
     use super::{
-        MEMORY_MANAGER, init_derived_index_outbox, init_index_pending_floor,
-        init_index_repair_journal, init_memory_manager, stable_memory_stats,
+        MEMORY_MANAGER, init_canonical_export_scopes, init_derived_index_outbox,
+        init_index_pending_floor, init_index_repair_journal, init_memory_manager,
+        stable_memory_stats,
     };
     use crate::facade::stable::layout::GRAPH_STABLE_LAYOUT;
     use crate::facade::stable::repair_journal;
+    use gleaph_graph_kernel::canonical_export::{
+        CanonicalExportPhase, CanonicalExportRecord, CanonicalExportScope, CanonicalExportTarget,
+        CanonicalRecordSource,
+    };
+    use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
+    use gleaph_graph_kernel::index::PhysicalIndexId;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn sentinel_op(label_id: u32, vertex_id: u32) -> repair_journal::RepairPostingOp {
@@ -604,6 +611,63 @@ mod tests {
         }));
         MEMORY_MANAGER.with(|manager| manager.replace(previous_manager));
         result.expect("current layout stable regions must remain independent");
+    }
+
+    #[test]
+    fn nested_canonical_export_scope_reopens_on_memory_id_51() {
+        // The region binding itself is part of the contract: the canonical-export scope store
+        // owns exactly MemoryId 51 and no other Graph region may claim it.
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[51].symbol,
+            "CANONICAL_EXPORT_SCOPES"
+        );
+        let previous_manager =
+            MEMORY_MANAGER.with(|manager| manager.replace(init_memory_manager()));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let physical = PhysicalIndexId::new(51_051).expect("non-zero physical id");
+            let record = CanonicalExportRecord {
+                scope: CanonicalExportScope {
+                    graph_id: GraphId::from_raw(3),
+                    index_name_id: IndexNameId::from_raw(5),
+                    catalog_epoch: 11,
+                    target: CanonicalExportTarget::Vertex {
+                        label_id: 7,
+                        property_id: PropertyId::from_raw(9),
+                        record_source: Some(CanonicalRecordSource {
+                            ancestor_property_id: PropertyId::from_raw(8),
+                            field_tail: "meta.deep".to_owned(),
+                        }),
+                    },
+                    inline: None,
+                },
+                phase: CanonicalExportPhase::Building,
+                epoch: 11,
+                admitted_through: 4,
+                drained_through: 2,
+            };
+            init_canonical_export_scopes().insert(physical, record.clone());
+
+            // Reopen the same stable memory through the MemoryId 51 binding and require the
+            // exact nested `record_source` plus lifecycle watermarks — a kernel-only byte
+            // round trip does not satisfy this persistence gate.
+            let reopened = init_canonical_export_scopes()
+                .get(physical)
+                .expect("canonical export record survives reopen on MemoryId 51");
+            assert_eq!(reopened, record);
+            assert_eq!(
+                reopened.scope.target,
+                CanonicalExportTarget::Vertex {
+                    label_id: 7,
+                    property_id: PropertyId::from_raw(9),
+                    record_source: Some(CanonicalRecordSource {
+                        ancestor_property_id: PropertyId::from_raw(8),
+                        field_tail: "meta.deep".to_owned(),
+                    }),
+                }
+            );
+        }));
+        MEMORY_MANAGER.with(|manager| manager.replace(previous_manager));
+        result.expect("nested canonical export scope must reopen on MemoryId 51");
     }
 
     #[test]

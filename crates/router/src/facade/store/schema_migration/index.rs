@@ -980,15 +980,23 @@ fn canonical_export_target(
     }
 }
 
-/// Projects the nested-record walk for one vertex leaf definition, if any. The ancestor id
-/// and tail path derive from the Router's own property-name catalog, mirroring the catalog
-/// membership projection.
+/// Projects the nested-record walk for one vertex leaf definition at the DDL/write admission
+/// boundary. The ancestor id and tail path derive from the Router's own property-name catalog,
+/// mirroring the read-only catalog projection. Unlike that infallible projection, this boundary
+/// must reject an inconsistent row before catalog publication or build registration instead of
+/// omitting it.
 fn vertex_record_source(
     graph_id: GraphId,
     leaf_property_id: PropertyId,
 ) -> Result<Option<CanonicalRecordSource>, RouterError> {
-    let (field_path, ancestor_property_id) =
-        indexed_catalog::vertex_leaf_projection(graph_id, leaf_property_id);
+    let Some((field_path, ancestor_property_id)) =
+        indexed_catalog::vertex_leaf_projection(graph_id, leaf_property_id)
+    else {
+        return Err(RouterError::InvalidState(format!(
+            "vertex leaf projection for property {} is inconsistent; refusing to publish or register it",
+            leaf_property_id.raw()
+        )));
+    };
     if field_path.is_empty() {
         return Ok(None);
     }
@@ -1491,6 +1499,82 @@ mod tests {
             .expect("sidecar projection"),
             None
         );
+    }
+
+    #[test]
+    fn vertex_record_source_projects_exact_nested_walk_and_flat_none() {
+        let (_store, _admin, graph_id) = setup_with_shard(ShardId::new(0));
+        indexed_catalog::purge_graph_indexes(graph_id);
+        let ancestor =
+            RouterStore::commit_intern_property_name(graph_id, "stats").expect("intern ancestor");
+        let leaf = RouterStore::commit_intern_property_name(graph_id, "stats.score")
+            .expect("intern dotted leaf");
+        assert_eq!(
+            vertex_record_source(graph_id, leaf),
+            Ok(Some(CanonicalRecordSource {
+                ancestor_property_id: ancestor,
+                field_tail: "score".to_owned(),
+            })),
+            "a valid nested leaf propagates its exact ancestor id and tail"
+        );
+        let flat =
+            RouterStore::commit_intern_property_name(graph_id, "age").expect("intern flat leaf");
+        assert_eq!(
+            vertex_record_source(graph_id, flat),
+            Ok(None),
+            "a valid flat leaf carries no record source"
+        );
+    }
+
+    #[test]
+    fn vertex_record_source_rejects_inconsistent_rows_without_mutation() {
+        let (store, _admin, graph_id) = setup_with_shard(ShardId::new(0));
+        indexed_catalog::purge_graph_indexes(graph_id);
+        let stats =
+            RouterStore::commit_intern_property_name(graph_id, "stats").expect("intern ancestor");
+        let dotted = RouterStore::commit_intern_property_name(graph_id, "stats.score")
+            .expect("intern dotted leaf");
+
+        let assert_catalog_unchanged = |label: &str| {
+            assert_eq!(store.lookup_property_id(graph_id, "stats"), Ok(stats));
+            assert_eq!(
+                store.lookup_property_id(graph_id, "stats.score"),
+                Ok(dotted)
+            );
+            assert!(
+                store.lookup_property_id(graph_id, "orphan").is_err(),
+                "{label}: no late interning may repair an inconsistent row"
+            );
+            assert!(
+                indexed_catalog::load_indexed_property_catalog(graph_id)
+                    .vertex_indexes
+                    .is_empty(),
+                "{label}: no membership row may be published for inconsistent rows"
+            );
+        };
+        assert_catalog_unchanged("baseline");
+
+        // Missing reverse name.
+        let uninterned = PropertyId::from_raw(9_999_002);
+        assert!(matches!(
+            vertex_record_source(graph_id, uninterned),
+            Err(RouterError::InvalidState(_))
+        ));
+        // Malformed dotted path (empty tail component).
+        let malformed = RouterStore::commit_intern_property_name(graph_id, "stats.")
+            .expect("catalog corruption is expressible");
+        assert!(matches!(
+            vertex_record_source(graph_id, malformed),
+            Err(RouterError::InvalidState(_))
+        ));
+        // Dotted leaf whose top-level property never resolved.
+        let orphan_leaf = RouterStore::commit_intern_property_name(graph_id, "orphan.score")
+            .expect("intern orphan leaf");
+        assert!(matches!(
+            vertex_record_source(graph_id, orphan_leaf),
+            Err(RouterError::InvalidState(_))
+        ));
+        assert_catalog_unchanged("after rejections");
     }
 
     #[test]

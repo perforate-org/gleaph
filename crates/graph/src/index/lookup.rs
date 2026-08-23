@@ -10,6 +10,10 @@ use gleaph_graph_kernel::index::{
 };
 
 #[async_trait(?Send)]
+// The async_trait desugaring stamps `#[must_use]` on each generated method while every async
+// method here already returns a `#[must_use]` `Result`; the doubled attribute carries no
+// additional contract, so silence exactly that duplication.
+#[allow(clippy::double_must_use)]
 pub trait PropertyIndexLookup {
     /// Deliver one exact namespace-scoped Building/Sealing DML envelope.
     ///

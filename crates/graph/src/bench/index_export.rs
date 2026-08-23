@@ -65,6 +65,7 @@ fn bench_graph_index_export_vertex_page_256() -> canbench_rs::BenchResult {
     let target = CanonicalExportTarget::Vertex {
         label_id: label.raw(),
         property_id: property,
+        record_source: None,
     };
     crate::index::canonical_export::register_scope(physical_index_id, export_scope(target.clone()))
         .expect("register vertex scope");

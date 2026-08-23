@@ -1009,13 +1009,9 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
    emits var_len plans whose group-edge-variable property access needs element indexing support.
    Next decision: implement hop-aux element indexing for group edge variables or reject those property
    accesses at plan time with an explicit unsupported error before this slice lands.
-5. **adr0034 fixture contradicts its typed schema (E2E).**
-   `pocket_ic_tests::adr0034_inline_edge_struct_read_access` INSERTs vertices labeled `ProjectionSource`
-   and unlabeled targets over an `AFFINITY` edge declared `CONNECTING (user -> user)`; the typed-schema
-   endpoint check promotes the ImpossiblePattern warning to a validation error, rejecting the MATCH.
-   The validation is correct fail-closed behavior; the fixture predates it. Next decision: align the
-   fixture with the declared graph type (or extend the type's endpoint set) — do not weaken the endpoint
-   check.
+
+The adr0034 fixture item that formerly appeared here as "Remaining open" item 5 now lives in its own
+entry, [GAP-2026-08-23-002](#gap-2026-08-23-002--adr0034-e2e-fixture-predates-typed-schema-endpoint-enforcement).
 
 #### Evidence summary
 
@@ -1024,7 +1020,46 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
   forward; candidate-path disable experiment turned B1 green, confirming the reader as the defect site.
 - ic0 panics reproduce on clean 463478b44; isolated vector_sync runs are green.
 - adr0034 failure persists with the slice-4 planner changes reverted, so planner anchor selection is not
-  involved.
+  involved; see GAP-2026-08-23-002 for its owning entry.
+
+### GAP-2026-08-23-002 — ADR 0034 E2E fixture predates typed-schema endpoint enforcement
+
+- **Status:** Partially resolved 2026-08-23 — `adr0034_inline_edge_struct_read_access` reproduced,
+  fixed, and rerun green; sibling `adr0034_inline_edge_scalar_access` shares the root cause and the
+  same alignment recipe remains pending.
+- **Severity:** P1 E2E correctness-gate blocker (keeps the adr0034 PocketIC target red); not a
+  production storage/query defect.
+- **Owner:** the stale `adr0034` read fixtures, which insert vertices whose labels contradict their
+  declared graph types. The typed-schema endpoint check promoted at Router ingress is correct
+  fail-closed behavior and must not be weakened. Planner anchor code is not involved.
+
+#### Observed behavior
+
+`cargo test -p gleaph-pocket-ic-tests --test adr0034_inline_edge_struct_read_access` failed at HEAD
+`9a4b94892` (and on the clean slices 1–3 baseline `463478b44`) with:
+
+```
+gql_query rejected: InvalidArgument("validation error: edge `:AFFINITY` cannot connect :ProjectionSource to (unlabeled) (schema constraint violation)")
+```
+
+The DDL declares `NODE User AS user ... CONNECTING (user -> user)`, but scenarios inserted sources
+labeled `ProjectionSource`/`FilterSource`/… and unlabeled targets, so every MATCH violated the
+declared endpoint set. `cargo test -p gleaph-pocket-ic-tests --test
+adr0034_inline_edge_scalar_access` fails identically for `:ROAD` over `road_type`.
+
+#### Fix evidence (2026-08-23)
+
+`crates/pocket-ic-tests/tests/adr0034_inline_edge_struct_read_access.rs` was aligned with its
+declared graph type: vertices now carry the declared `User` label, and per-scenario independence
+moved from ad-hoc source labels to unique `updated_at` windows scoped through WHERE clauses. The
+endpoint validator itself is unchanged. Terminal rerun:
+`cargo test -p gleaph-pocket-ic-tests --test adr0034_inline_edge_struct_read_access` → **1 passed /
+0 failed**, one single-shard federation constructor, three canister installs.
+
+#### Next decision
+
+Apply the same declared-label alignment to `adr0034_inline_edge_scalar_access` (use the declared
+`City` label plus value-window scoping), rerun that one-test target green, then close this entry.
 
 ## Resolved gaps
 
@@ -1219,7 +1254,7 @@ duplicate its state machine or ownership rules.
 | P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | Closed 2026-08-22 — GAP-2026-07-29-004 resolved by contract-pinning tests (see entry); GAP-2026-07-29-002 closed 2026-08-21                                |
 | P1       | Add edge range postings, Router seed planning, and execution support                       | Closed 2026-08-22 — GAP-2026-07-29-003 (see entry)                                           |
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
-| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Closed 2026-08-23 — GAP-2026-07-29-005 (ADR 0073 slices 1–4: DDL interning/validation, shared-resolver mutation dispatch, record backfill/export, planner anchors + cross-shard GQL proof) |
+| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Open for slice-4 acceptance — GAP-2026-07-29-005 (ADR 0073 slices 1–3 implemented and validated; slice 4 landed on `39746f7b3`, acceptance pending Plan 0285 validation) |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
@@ -1381,9 +1416,12 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-005 — Vertex nested-record indexes are not yet symmetrical with edge INLINE fields
 
-- **Status:** Closed (2026-08-23; ADR 0073 slices 1–4 implemented; domain decision recorded in
-  [ADR 0073](adr/0073-vertex-nested-property-indexes-share-dotted-path-domain.md), 2026-08-22).
-  Slices 1–3 landed: kernel `IndexedVertexMembership` gained `field_path` +
+- **Status:** Open for slice-4 acceptance (updated 2026-08-23). Slices 1–3 are implemented and
+  terminal-validated (focused unit gates, graph/graph-index all-target check/clippy, focused
+  canbenches, posting-level PocketIC lifecycle, and an independent detached-worktree run at the
+  `aa7fd9124` baseline plus only the remediation patch); domain decision recorded in
+  [ADR 0073](adr/0073-vertex-nested-property-indexes-share-dotted-path-domain.md), 2026-08-22.
+  Slices 1–3 landed: kernel `IndexedVertexMembership` gained required `field_path` +
   `ancestor_property_id` (Router-interned leaf identity plus the ancestor record property Graph
   dispatches by); Router DDL interns leaf and ancestor identities and validates bounded depth
   and typed leaf kind (`MAX_VERTEX_NESTED_INDEX_SEGMENTS`, container leaves rejected at declare
@@ -1399,20 +1437,21 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   `vertex_nested_create_index_migration_converges_active_with_complete_postings`
   (Building→Sealing→Active over pre-existing records on both shards including the three absence
   shapes, equality multiplicity, label scoping, and post-Active rewrite swaps).
-  Slice 4 landed (2026-08-23): the planner's property-access extractor lowers a nested chain to
+  Slice 4 is present on main since `39746f7b3` (2026-08-23) but its acceptance stays pending
+  Plan 0285 validation: the planner's property-access extractor lowers a nested chain to
   the canonical dotted path so equality/range anchors select interned leaf identities
   (`crates/gql-planner/src/anchor.rs::extract_property_access`, shared by equality/range/
   intersection anchor selection and inline-WHERE collection), the node-pattern value lookup uses
-  the same extractor (`match_plan/path/filters.rs::find_equality_value_in_where`), Router seed
-  probes resolve dotted names through the ordinary catalog/namespace path, and the Active-catalog
-  projection proves range capability for leaves. Owning tests: planner contracts
+  the same extractor (`match_plan/path/filters.rs::find_equality_value_in_where`), and Router seed
+  probes resolve dotted names through the ordinary catalog/namespace path. Plan 0284 removed the
+  slice-4 capability test `planner_stats.rs::active_catalog_projects_nested_leaf_as_indexed_and_
+  range_indexed`; Plan 0285 re-adds it and runs its bounded contracts, including planner tests
   `planner_tests.rs::match_nested_leaf_*`, router contracts
-  `seed.rs::vertex_{equality,range}_anchor_resolves_nested_leaf_property` and
-  `planner_stats.rs::active_catalog_projects_nested_leaf_as_indexed_and_range_indexed`, and the
+  `seed.rs::vertex_{equality,range}_anchor_resolves_nested_leaf_property`, and the
   cross-shard GQL proof
   `crates/pocket-ic-tests/tests/router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`
   — success itself is the anchor proof because unseeded leading index scans are rejected on graph
-  shards.
+  shards. Do not cite slice-4 code as terminal until Plan 0285 closes.
 - **Severity:** P2 query capability
 - **Owner:** Planner property-path resolution; decision owned by ADR 0073 slice 4
 - **Observed behavior:** Nested leaf postings were maintained and backfilled end-to-end, but the

@@ -1188,6 +1188,7 @@ fn vertex_build_registration(physical_index_id: PhysicalIndexId) -> RegisterInde
         target: IndexBuildTarget::Vertex {
             label_id: BUILD_VERTEX_LABEL,
             property_id: BUILD_PROPERTY,
+            record_source: None,
         },
         target_shard_ids: vec![0],
     }

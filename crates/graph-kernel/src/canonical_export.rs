@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
-/// Version byte for the Graph-owned cursor encoding.
+/// Version byte for the Graph-owned cursor encoding. It guards against decoding foreign or
+/// corrupt bytes: a reader that sees any other leading byte rejects the cursor outright instead
+/// of guessing a different layout.
 pub const CANONICAL_EXPORT_CURSOR_VERSION: u8 = 1;
 
 /// Maximum number of canonical facts examined or returned by one bounded export step.
@@ -355,6 +357,31 @@ mod tests {
         assert_eq!(
             CanonicalExportScope::from_bytes(Cow::Owned(bytes)),
             original
+        );
+    }
+
+    #[test]
+    fn nested_canonical_export_record_round_trips_through_stable_encoding() {
+        let mut record = CanonicalExportRecord {
+            scope: scope(),
+            phase: CanonicalExportPhase::Sealing,
+            epoch: 12,
+            admitted_through: 9,
+            drained_through: 7,
+        };
+        record.scope.target = CanonicalExportTarget::Vertex {
+            label_id: 4,
+            property_id: PropertyId::from_raw(6),
+            record_source: Some(CanonicalRecordSource {
+                ancestor_property_id: PropertyId::from_raw(5),
+                field_tail: "meta.deep".to_owned(),
+            }),
+        };
+        let bytes = Storable::into_bytes(record.clone());
+        assert_eq!(
+            CanonicalExportRecord::from_bytes(Cow::Owned(bytes)),
+            record,
+            "the exact nested record_source and lifecycle watermarks survive Candid"
         );
     }
 

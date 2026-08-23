@@ -398,7 +398,8 @@ without a sieve); labeled vertices maintain wildcard (`label_id == 0`) membershi
 label matches, and label scopes that do not intersect their labels stay excluded even when they
 index the same property. A missing vertex row dispatches nothing.
 
-**Nested record leaf domain (ADR 0073 slices 1–4, implemented):** a declared vertex nested index
+**Nested record leaf domain (ADR 0073 slices 1–3 implemented and validated; slice 4 landed on
+main, acceptance pending Plan 0285):** a declared vertex nested index
 (`ON (n.stats.score)`) shares the edge INLINE dotted-path leaf domain — one interning owner, one
 sortable encoding, one transition contract:
 
@@ -428,15 +429,17 @@ sortable encoding, one transition contract:
   field and the leaf kind is scalar-indexable; container leaves are rejected at declare time.
   Untyped graphs accept the declaration — record shape drift at mutation time is handled by the
   absence rule above, not by schema enforcement in Graph; the Router remains the schema SSOT.
-- **Planner anchors (ADR 0073 slice 4, implemented 2026-08-23).** The planner lowers a nested
+- **Planner anchors (ADR 0073 slice 4, landed on main `39746f7b3`; acceptance pending Plan
+  0285 validation).** The planner lowers a nested
   property chain (`v.stats.score`) to the canonical dotted path, so equality, range, and
   intersection anchor selection treat an interned leaf like any other indexed vertex property;
   the Router resolves the dotted name to the leaf identity and Active namespace through the
   ordinary seed path, and each seeded row is revalidated by the residual nested predicate.
-  Owning proof: `planner_tests.rs::match_nested_leaf_*`,
+  Code-level proof: `planner_tests.rs::match_nested_leaf_*`,
   `seed.rs::vertex_{equality,range}_anchor_resolves_nested_leaf_property`, and
   `router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`.
-  GAP-2026-07-29-005 is closed.
+  GAP-2026-07-29-005 stays open until Plan 0285's bounded contracts pass; do not cite this
+  slice as terminal.
 
 **Backfill:** `backfill_vertex_property_postings` on graph shards replays indexable vertex properties from
 `VERTEX_PROPERTIES` into graph-index via the budget-driven `posting_batch` transport when the concrete
