@@ -617,7 +617,17 @@ impl BhTree {
 /// ForceAtlas2 layout engine.
 #[derive(Debug, Clone)]
 pub struct ForceAtlas2 {
-    /// Repulsion scaling factor.
+    /// Repulsion scaling factor. Calibrated against world-sized nodes
+    /// (§26.2): linear attraction grows with distance while inverse-square
+    /// repulsion fades, so the raw balance rests an isolated connected pair
+    /// (mass = degree + 1 = 2 on both ends) at
+    /// `d* = (scaling * mass²)^(1/3)`. With the default below, `d*` equals
+    /// the rendered node diameter (`2 * node_radius` = 12 world units at the
+    /// canonical style), keeping typical sparse-graph equilibria outside
+    /// marker overlap instead of collapsing into it. Extremely dense
+    /// topologies exceed feasible packing density regardless of this factor —
+    /// leaves around a massive hub remain partially overlapped by
+    /// construction.
     scaling: f32,
     /// Gravity strength pulling nodes toward the origin.
     gravity: f32,
@@ -681,7 +691,8 @@ pub struct ForceAtlas2 {
 impl Default for ForceAtlas2 {
     fn default() -> Self {
         Self {
-            scaling: 1.0,
+            // d* = (432 * 2²)^(1/3) = 12 world units: one rendered node diameter.
+            scaling: 432.0,
             gravity: 0.1,
             lin_log: false,
             slow_down: 1.0,

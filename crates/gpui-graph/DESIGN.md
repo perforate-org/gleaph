@@ -1058,7 +1058,8 @@ or above `PAR_MIN_NODES` (4096 nodes); the cutoff path picks its driver from
 measured neighborhood work (`AUTO_BH_PARALLEL_FLOOR`: thin neighborhoods take
 the serial pair walk). Below the node threshold everything is serial.
 Wasm-family builds (the demo/social embed: unknown-unknown, WASI, and any
-future wasm64) link no rayon and run the serial drivers at every graph size. Parallel workers never share accumulators — parallel cutoff
+future wasm64) link no rayon and run the serial drivers at every graph size.
+Parallel workers never share accumulators — parallel cutoff
 repulsion scans each node's own 3×3 neighborhood single-sided, Barnes-Hut
 resolves one root descent per node with thread-local stacks, and attraction
 gathers each node's incident pulls through
@@ -1067,13 +1068,21 @@ the projection's own undirected incidence adjacency
 edges pull exactly as before). Because `GraphScene` rebuilds the projection
 wholesale on every topology change, the engine holds no adjacency cache and no
 revision guard. Contract settling counts come from
-`settles_within_iteration_budget` and are stable across recent engine work
-(verified byte-identical at the CSR-integration commit): hub/256 = 24
-iterations on the probe fixture (ring radius 100) and 91 on the wider
-layout_bench fixture (ring radius 300); grid/20x20 = 597 — all far below
+`settles_within_iteration_budget`: hub/256 = 128
+iterations on the probe fixture (ring radius 100) and grid/20x20 = 471 — all far below
 the 1500-iteration budget.
 Measured speedups concentrate on dense large graphs; sparse uniform grids on
 the exact-grid path remain serial-baseline-adjacent at best (§37).
+
+Repulsion scaling is calibrated against world-sized nodes (§26.2): with
+`scaling = 432`, an isolated connected pair rests at exactly one rendered
+node diameter (`d* = (432 · 2²)^(1/3)` = 12 world units), and relaxed
+equilibrium edge lengths land around twice that across the fixture families —
+demo/24 ≈ 36 units, team/12 ≈ 30, hub/256 ≈ 74 (leaves around a massive hub
+remain partially overlapped: their packing density exceeds what any spacing
+floor allows), grid/20x20 ≈ 33 — versus 4–11 units under the pre-world-sizing
+default of 1, which collapsed relaxed layouts into overlapping marker discs
+once nodes stopped rendering at fixed pixel size.
 
 ---
 

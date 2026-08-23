@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-23
-Anchor timestamp: 2026-08-23 10:20:02 UTC +0000
+Anchor timestamp: 2026-08-23 10:46:37 UTC +0000
 
 ## Status
 
@@ -49,8 +49,27 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-23-001 — ForceAtlas2 equilibrium rests below the rendered node diameter once nodes are world-sized
 
-- **Status:** Open (recorded 2026-08-23). Non-blocking for the placement-default slice that
-  surfaced it; needs a layout-design decision before any code fix.
+- **Status:** Closed (2026-08-23). Decision: recalibrate the repulsion-scaling
+  default so the force balance itself rests outside marker overlap
+  (`scaling = 432`, derived from `d* = (S·m²)^{1/3}` with mass 2 pairs equaling
+  the canonical 12-unit node diameter), documented in DESIGN.md §15.1. A hard
+  pairwise separation floor was prototyped first and rejected: dense topologies
+  make it unsatisfiable (hub/256 leaf ring spacing ~1.2 units against a 12-unit
+  floor), so the constraint fights the force law forever and the layout never
+  settles. Residual limitation, accepted as capacity physics rather than a
+  defect: leaves around a massive hub still rest partially overlapped
+  (~9 units apart at hub/256) because their packing density exceeds what any
+  spacing floor allows — matching reference FA2 behavior. If overview-zoom
+  readability of such dense hubs ever matters, revisit render-side marker LOD
+  as a separate slice.
+- **Resolution evidence:** undilated headless probe over the example and
+  tolerance fixtures (24-node demo, 12-node team start, hub/256 ring, grid/20x20@40):
+  average relaxed edge length moved from 4.8 / 3.9 / 10.6 / 9.0 world units
+  (default scaling 1) to 35.8 / 29.7 / 73.8 / 33.3 (scaling 432) — every family
+  at or beyond ~2.5× the rendered diameter except capacity-limited hub leaves;
+  settle iterations stayed far inside the contract budget (156 / 109 / 128 /
+  471 against < 1500); `cargo test -p gpui-graph --lib` 217 passed including
+  `settles_within_iteration_budget` and `slow_down_scales_per_iteration_motion`.
 - **Severity:** P2 visual quality — demo-scale graphs relax into overlapping node blobs over
   tens of seconds; static and freshly-opened views are unaffected.
 - **Owner:** `crates/gpui-graph/src/layout/force_atlas2.rs` force balance, against the
