@@ -174,6 +174,7 @@ fn bench_control_point(c: &mut Criterion) {
             // The bench field spans every grid position, including this
             // edge's own endpoints.
             endpoints_in_field: (true, true),
+            self_loop_has_node_label: false,
         };
         let (s, t) = g.edges[0];
         let source = g.positions[&s];
@@ -193,6 +194,7 @@ fn bench_control_point(c: &mut Criterion) {
             obstacles: &empty_grid,
             obstacle_radius: 0.0,
             endpoints_in_field: (false, false),
+            self_loop_has_node_label: false,
         };
         group.bench_with_input(
             BenchmarkId::new("no_obstacles", format!("{}x{}", side, side)),
@@ -224,6 +226,7 @@ fn bench_node_avoidance(c: &mut Criterion) {
             // The bench field spans every grid position, including this
             // edge's own endpoints.
             endpoints_in_field: (true, true),
+            self_loop_has_node_label: false,
         };
         let (s, t) = g.edges[0];
         let source = g.positions[&s];
@@ -294,6 +297,7 @@ fn bench_edge_path(c: &mut Criterion) {
             // The bench field spans every grid position, including this
             // edge's own endpoints.
             endpoints_in_field: (true, true),
+            self_loop_has_node_label: false,
         };
         group.bench_with_input(
             BenchmarkId::new("grid", format!("{}x{}", side, side)),

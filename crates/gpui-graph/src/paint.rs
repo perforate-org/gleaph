@@ -439,6 +439,7 @@ where
                     node_position,
                     viewport,
                     style,
+                    node_has_paint_label(graph, edge.source, node_label),
                 );
                 let mut min = Vec2::splat(f32::INFINITY);
                 let mut max = Vec2::splat(f32::NEG_INFINITY);
@@ -563,6 +564,7 @@ where
                 obstacles: &obstacles_field,
                 obstacle_radius,
                 endpoints_in_field,
+                self_loop_has_node_label: node_has_paint_label(graph, edge.source, node_label),
             },
             graph,
             node_position,
@@ -1283,6 +1285,10 @@ pub struct EdgeCurveContext<'a> {
     /// edge with an off-screen endpoint reads a field built without it, and
     /// cancelling a phantom contribution would deflect the edge wrongly.
     pub endpoints_in_field: (bool, bool),
+    /// Whether the source node of a self-loop carries a rendered label. The
+    /// loop axis treats that label band as an obstacle; carrying it here keeps
+    /// every curve consumer (paint, cull, hit test) on one identical path.
+    pub self_loop_has_node_label: bool,
 }
 
 /// The cluster center and radius shared by two nodes, if both belong to the
@@ -1351,6 +1357,7 @@ pub fn edge_curve_bbox(
             // membership flags cannot change it; an empty membership is the
             // honest default for this bound-only context.
             endpoints_in_field: (false, false),
+            self_loop_has_node_label: false,
         },
         EdgeCurveContext {
             index,
@@ -1363,6 +1370,7 @@ pub fn edge_curve_bbox(
             // membership flags cannot change it; an empty membership is the
             // honest default for this bound-only context.
             endpoints_in_field: (false, false),
+            self_loop_has_node_label: false,
         },
     ]
     .map(|ctx| edge_control_point(source, target, &ctx, cluster));
@@ -1406,7 +1414,15 @@ pub fn edge_path<N, E>(
         return Vec::new();
     }
     if edge.source == edge.target {
-        self_loop_path(edge.source, source, graph, node_position, viewport, style)
+        self_loop_path(
+            edge.source,
+            source,
+            graph,
+            node_position,
+            viewport,
+            style,
+            ctx.self_loop_has_node_label,
+        )
     } else if finite_chord_length(source, target).is_none() {
         // Distinct nodes may temporarily occupy the same position. They are
         // not a self-loop, and there is no drawable non-loop segment until
@@ -1669,6 +1685,21 @@ fn subdivide(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> (Bezier, Bezier) {
 /// coordinate space as `node_pos` (screen/canvas-local). The loop points away
 /// from the node's other incident edges (defaulting to up when the node has no
 /// other edges or the average direction is zero).
+/// Whether the paint pass renders a label for this node.
+///
+/// Self-loop geometry treats the node's label band as an obstacle, so every
+/// site that shapes or culls a loop must answer this identically or the cull
+/// bounds stop being a superset of what is drawn.
+pub(crate) fn node_has_paint_label<N, E>(
+    graph: &Graph<N, E>,
+    id: NodeId,
+    node_label: &dyn Fn(NodeId, &N) -> Option<String>,
+) -> bool {
+    graph
+        .node(id)
+        .is_some_and(|n| (node_label)(id, &n.data).is_some())
+}
+
 pub(crate) fn self_loop_path<N, E>(
     node: NodeId,
     node_pos: Vec2,
@@ -1676,6 +1707,7 @@ pub(crate) fn self_loop_path<N, E>(
     node_position: &dyn Fn(NodeId) -> Option<Vec2>,
     viewport: &Viewport,
     style: &GraphStyle,
+    has_node_label: bool,
 ) -> Vec<Bezier> {
     // Local frame with up = (0, -1), right = (1, 0), node center at origin.
     // The node is the apex (tip) of the onigiri; the wide base sits away from
@@ -1732,6 +1764,14 @@ pub(crate) fn self_loop_path<N, E>(
             if delta.is_finite() && delta.length_squared() > 1e-6 {
                 angles.push(delta.y.atan2(delta.x));
             }
+        }
+        // A node label renders in a fixed band straight below the marker and
+        // nothing else moves it aside, so its direction acts like one more
+        // incident chord: gap bisection then parks the loop over the label
+        // only when chords pin every gap. Nodes without labels keep a purely
+        // topological axis.
+        if has_node_label {
+            angles.push(core::f32::consts::FRAC_PI_2);
         }
         if !angles.is_empty() {
             angles.sort_by(|a, b| a.total_cmp(b));
@@ -1857,6 +1897,7 @@ mod tests {
             obstacles: grid,
             obstacle_radius: 42.0,
             endpoints_in_field,
+            self_loop_has_node_label: false,
         }
     }
 
@@ -2134,6 +2175,7 @@ mod tests {
             &positions,
             &viewport,
             &style,
+            false,
         );
         // At this zoom the world-sized loop collapses below a pixel, so the
         // path may legitimately be empty (nothing drawable). When points do
@@ -2796,6 +2838,98 @@ mod tests {
         assert!(
             label_dist > max_path_dist,
             "label must sit beyond the loop shape along its axis"
+        );
+    }
+
+    #[test]
+    fn self_loop_dodges_the_node_label_band() {
+        // One chord above the node bisects the free half-plane to "straight
+        // down" - exactly where the node's label renders. With a label
+        // present the label direction joins the angles, and the tie between
+        // the two half-circle gaps resolves to the first (right side), so the
+        // loop leaves the label band.
+        let mut g: Graph<&'static str, ()> = Graph::new();
+        let a = g.add_node("alice");
+        let b = g.add_node("");
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(0.0, -400.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(800.0, 600.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_cluster_center: &no_clusters(),
+            node_label: &|id: NodeId, name: &&'static str| {
+                if id == a {
+                    Some((*name).to_string())
+                } else {
+                    None
+                }
+            },
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+
+        let base = frame.edges[0].path[0].2;
+        assert!(
+            (base.y - frame.edges[0].source.y).abs() < 1e-3 && base.x > frame.edges[0].source.x,
+            "loop should point right, away from the label band; base {base:?}"
+        );
+    }
+
+    #[test]
+    fn self_loop_without_label_keeps_topological_axis() {
+        // Same geometry as `self_loop_dodges_the_node_label_band` but without
+        // a node label: the axis stays purely topological (opposite the only
+        // neighbor, straight down).
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(0.0, -400.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(800.0, 600.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_cluster_center: &no_clusters(),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+
+        let base = frame.edges[0].path[0].2;
+        assert!(
+            (base.x - frame.edges[0].source.x).abs() < 1e-3 && base.y > frame.edges[0].source.y,
+            "label-less loop keeps the chord-opposite axis; base {base:?}"
         );
     }
 
@@ -3638,6 +3772,7 @@ mod tests {
                 obstacles: &empty_obstacles,
                 obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             None,
         );
@@ -3656,6 +3791,7 @@ mod tests {
                 obstacles: &empty_obstacles,
                 obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             None,
         );
@@ -3917,6 +4053,7 @@ mod tests {
                 obstacles: &ObstacleField::new(&[], style.node_radius * 2.0 + OBSTACLE_RADIUS),
                 obstacle_radius: style.node_radius * 2.0 + OBSTACLE_RADIUS,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             None,
         );
@@ -3969,6 +4106,7 @@ mod tests {
                         obstacles: &empty_obstacles,
                         obstacle_radius: style.node_radius * 2.0 + OBSTACLE_RADIUS,
                         endpoints_in_field: (false, false),
+                        self_loop_has_node_label: false,
                     },
                     graph,
                     &positions,
@@ -4081,6 +4219,7 @@ mod tests {
                 obstacles: &empty_obstacles,
                 obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             None,
         );
@@ -4138,6 +4277,7 @@ mod tests {
                 obstacles: &empty_obstacles,
                 obstacle_radius: style.node_radius * 2.0 + OBSTACLE_RADIUS,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             graph,
             &positions,

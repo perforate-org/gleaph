@@ -897,6 +897,7 @@ mod tests {
                 obstacles: &empty_obstacles,
                 obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             None,
         );
@@ -982,6 +983,7 @@ mod tests {
                 obstacles: &empty_obstacles,
                 obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             cluster,
         );
@@ -1125,8 +1127,15 @@ mod tests {
         // coordinates as a self-loop. The old path used the correct screen
         // position, so this onigiri enters the canvas even though the endpoint
         // bbox is far beyond index slack.
-        let old_position_loop =
-            crate::paint::self_loop_path(source, node_screen, graph, &positions, &viewport, &style);
+        let old_position_loop = crate::paint::self_loop_path(
+            source,
+            node_screen,
+            graph,
+            &positions,
+            &viewport,
+            &style,
+            false,
+        );
         // World-sized nodes shrink their onigiri with zoom: the loop must hug
         // the endpoint's screen position instead of painting a fixed-size
         // marker into the view. The loop extends at most ~6.1 loop radii from

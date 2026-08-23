@@ -40,11 +40,18 @@ impl Example {
                     .node("n1", "N1")
                     .node("n2", "N2")
                     .node("n3", "N3")
+                    // The label-dodge scenario: the single neighbor above
+                    // bisects the free half-plane toward the node's own label
+                    // band, so the loop axis must dodge out of it.
+                    .node("top", "TOP")
+                    .node("down", "down")
                     .edge("hh1", "hub", "n1", EdgeDirection::Directed, "e1")
                     .edge("hh2", "hub", "n2", EdgeDirection::Directed, "e2")
                     .edge("hh3", "hub", "n3", EdgeDirection::Directed, "e3")
+                    .edge("td", "down", "top", EdgeDirection::Undirected, "link")
                     .edge("loop_lone", "lone", "lone", EdgeDirection::Directed, "self")
-                    .edge("loop_hub", "hub", "hub", EdgeDirection::Directed, "self"),
+                    .edge("loop_hub", "hub", "hub", EdgeDirection::Directed, "self")
+                    .edge("loop_down", "down", "down", EdgeDirection::Directed, "self"),
             );
 
             // Fixed positions: hub centered with three neighbors around it,
@@ -54,11 +61,15 @@ impl Example {
             let n1 = scene.node_id(&"n1").unwrap();
             let n2 = scene.node_id(&"n2").unwrap();
             let n3 = scene.node_id(&"n3").unwrap();
+            let top = scene.node_id(&"top").unwrap();
+            let down = scene.node_id(&"down").unwrap();
             scene.set_position(a, glam::vec2(260.0, -140.0));
             scene.set_position(h, glam::vec2(-40.0, 0.0));
             scene.set_position(n1, glam::vec2(-190.0, -150.0));
             scene.set_position(n2, glam::vec2(-220.0, 60.0));
             scene.set_position(n3, glam::vec2(60.0, 170.0));
+            scene.set_position(top, glam::vec2(260.0, -20.0));
+            scene.set_position(down, glam::vec2(260.0, 160.0));
             let _ = cx;
             cx.notify();
         });

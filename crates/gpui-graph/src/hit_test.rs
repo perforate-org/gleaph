@@ -42,6 +42,7 @@ pub fn hit_test<NK, EK, N, E, S>(
     viewport: &Viewport,
     style: &GraphStyle,
     screen_point: Vec2,
+    node_label: &dyn Fn(NodeId, &N) -> Option<String>,
 ) -> HitTestResult
 where
     NK: Eq + std::hash::Hash,
@@ -164,6 +165,13 @@ where
                     crate::paint::point_in_bounds(prep.source[index], &view_visible, field_margin),
                     crate::paint::point_in_bounds(prep.target[index], &view_visible, field_margin),
                 ),
+                // The loop axis must match the painted path exactly (label
+                // dodge included), or hover targets drift off the shape.
+                self_loop_has_node_label: crate::paint::node_has_paint_label(
+                    graph,
+                    edge.source,
+                    node_label,
+                ),
             },
             graph,
             node_position,
@@ -262,6 +270,7 @@ mod tests {
             vp,
             &GraphStyle::default(),
             vp.world_to_screen(world),
+            &|_, _: &()| -> Option<String> { None },
         )
     }
 
@@ -364,7 +373,13 @@ mod tests {
         let screen = node_screen + Vec2::new(0.0, -5.5 * loop_r);
         let mut runtime = crate::runtime::GraphRuntime::new();
         let synced = scene.sync_runtime(&mut runtime);
-        let result = hit_test(&synced, &vp, &GraphStyle::default(), screen);
+        let result = hit_test(
+            &synced,
+            &vp,
+            &GraphStyle::default(),
+            screen,
+            &|_, _: &()| -> Option<String> { None },
+        );
         assert!(
             result.edge.is_some(),
             "self-loop onigiri should be hittable at its base"

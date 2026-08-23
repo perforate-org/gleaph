@@ -1823,7 +1823,13 @@ where
         } else {
             let scene = self.scene.read(cx);
             let synced = scene.sync_runtime(&mut self.runtime);
-            let hit = hit_test::hit_test(&synced, &self.viewport, &self.style, pos);
+            let hit = hit_test::hit_test(
+                &synced,
+                &self.viewport,
+                &self.style,
+                pos,
+                self.node_label.as_ref(),
+            );
             self.hover = Hover {
                 node: hit.node,
                 edge: hit.edge,
@@ -1836,7 +1842,13 @@ where
     fn handle_mouse_down(&mut self, pos: Vec2, click_count: usize, cx: &mut Context<Self>) {
         let scene = self.scene.read(cx);
         let synced = scene.sync_runtime(&mut self.runtime);
-        let hit = hit_test::hit_test(&synced, &self.viewport, &self.style, pos);
+        let hit = hit_test::hit_test(
+            &synced,
+            &self.viewport,
+            &self.style,
+            pos,
+            self.node_label.as_ref(),
+        );
 
         if let Some(node) = hit.node {
             if click_count >= 2 {
@@ -3870,6 +3882,161 @@ mod tests {
             assert!(
                 kept > total * 0.9,
                 "label masks cut away too much of the self-loop: {kept:.1} of {total:.1}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn downward_loop_survives_low_zoom_with_node_label(cx: &mut TestAppContext) {
+        // A single neighbor above bisects the loop axis to straight down -
+        // exactly the band where the node label renders. At low zoom the loop
+        // is a few pixels tall while the label box keeps its text size, so an
+        // uncorrected loop is masked away almost entirely. The axis treats
+        // the label direction as an obstacle, and the mirrored render
+        // pipeline (node label rects included, exactly as painting masks)
+        // must then keep most of the ink.
+        use crate::graph::Graph;
+        use crate::paint::{PaintFrameInput, build_paint_frame};
+
+        let mut g: Graph<&'static str, &'static str> = Graph::new();
+        let a = g.add_node("alice");
+        let b = g.add_node("b");
+        g.add_edge(a, b, EdgeDirection::Directed, "ab");
+        g.add_edge(a, a, EdgeDirection::Directed, "aa");
+
+        let positions = move |id: NodeId| match id {
+            id if id == a => Some(Vec2::new(0.0, 0.0)),
+            id if id == b => Some(Vec2::new(0.0, -700.0)),
+            _ => None,
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(800.0, 300.0));
+        vp.fit_bounds(
+            crate::viewport::WorldBounds {
+                min: Vec2::new(-10.0, -710.0),
+                max: Vec2::new(10.0, 10.0),
+            },
+            0.05,
+        );
+        // A realistic label gap; the zero default seats the label box against
+        // the marker rim, where any loop leg grazes the band by construction.
+        let style = GraphStyle {
+            label_offset: 2.0,
+            ..GraphStyle::default()
+        };
+
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_cluster_center: &|_| None,
+            node_label: &|_, name: &&'static str| Some((*name).to_string()),
+            edge_label: &|_, name: &&'static str| Some((*name).to_string()),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+
+        let loop_edge = frame
+            .edges
+            .iter()
+            .find(|e| e.source == e.target)
+            .expect("self-loop present");
+        let loop_path = loop_edge.path.clone();
+        assert!(
+            !loop_path.is_empty(),
+            "the loop must be drawable at this zoom"
+        );
+        // Axis contract: not downward (right side per the tie rule).
+        let base = loop_path[0].2;
+        assert!(
+            (base.y - loop_edge.source.y).abs() < 1e-3 && base.x > loop_edge.source.x,
+            "loop should dodge out of the label band; base {base:?}"
+        );
+
+        let cxw = cx.add_empty_window();
+        cxw.update(|window, _| {
+            // Mirror the render block: measure labels, resolve collisions,
+            // hide near-node labels, then mask strokes behind every rect -
+            // node label rects included, with stroke_masks selecting them.
+            let radius = style.node_screen_radius(vp.zoom());
+            let node_measures: Vec<_> = frame
+                .labels
+                .iter()
+                .map(|l| measure_label(window, &l.text, &style))
+                .collect();
+            let mut edge_measures: Vec<_> = frame
+                .edge_labels
+                .iter()
+                .map(|l| measure_label(window, &l.text, &style))
+                .collect();
+            let node_rects: Vec<Bounds<gpui::Pixels>> = frame
+                .labels
+                .iter()
+                .zip(&node_measures)
+                .filter_map(|(l, m)| {
+                    let m = m.as_ref()?;
+                    Some(label_rect(m, l.position, |anchor, _| {
+                        anchor.y + radius + style.label_offset
+                    }))
+                })
+                .collect();
+            let mut working = frame.clone();
+            resolve_edge_label_collisions(&mut working, &style, &node_rects, &edge_measures);
+            hide_edge_labels_near_nodes(&mut working, &style, &mut edge_measures);
+
+            let edge_rects: Vec<(EdgeId, Bounds<gpui::Pixels>)> = working
+                .edge_labels
+                .iter()
+                .zip(&edge_measures)
+                .filter_map(|(l, m)| {
+                    let m = m.as_ref()?;
+                    let anchor = l.position + l.offset * style.label_offset;
+                    Some((l.edge, label_rect(m, anchor, |a, h| a.y - h * 0.5)))
+                })
+                .collect();
+            let mut rects: Vec<Bounds<gpui::Pixels>> = edge_rects.iter().map(|(_, r)| *r).collect();
+            rects.extend(node_rects);
+
+            let mut own_buf = Vec::new();
+            let masks = stroke_masks(loop_edge, &edge_rects, &rects, &mut own_buf);
+
+            let sample_len = |p0: Vec2, p1: Vec2, p2: Vec2| -> f32 {
+                let mut len = 0.0;
+                let mut prev = p0;
+                for k in 1..=16 {
+                    let t = k as f32 / 16.0;
+                    let inv = 1.0 - t;
+                    let pt = inv * inv * p0 + 2.0 * inv * t * p1 + t * t * p2;
+                    len += (pt - prev).length();
+                    prev = pt;
+                }
+                len
+            };
+            let mut kept = 0.0;
+            let mut total = 0.0;
+            for &(p0, p1, p2) in &loop_path {
+                total += sample_len(p0, p1, p2);
+                for (c0, c1, c2) in visible_edge_curves(p0, p1, p2, masks, style.edge_width, None) {
+                    kept += sample_len(c0, c1, c2);
+                }
+            }
+            for (i, r) in rects.iter().enumerate() {
+                println!(
+                    "rect[{i}] x[{:.1},{:.1}] y[{:.1},{:.1}]",
+                    f32::from(r.origin.x),
+                    f32::from(r.origin.x) + f32::from(r.size.width),
+                    f32::from(r.origin.y),
+                    f32::from(r.origin.y) + f32::from(r.size.height)
+                );
+            }
+            println!("loop source {:?} base {base:?}", loop_edge.source);
+            println!("downward-loop ink kept {kept:.1} / {total:.1}");
+            assert!(
+                kept > total * 0.9,
+                "label masks cut away too much of the dodged self-loop: {kept:.1} of {total:.1}"
             );
         });
     }

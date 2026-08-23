@@ -1679,6 +1679,7 @@ mod tests {
                 obstacles: &no_obstacles,
                 obstacle_radius: 0.0,
                 endpoints_in_field: (false, false),
+                self_loop_has_node_label: false,
             },
             Some(old_cluster),
         );

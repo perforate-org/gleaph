@@ -1325,7 +1325,11 @@ quadratic Bézier control point:
   angular gap between the node's other incident chords, so it dodges each
   neighbor edge directly; averaging incident directions instead could cancel
   for symmetric stars and park the loop on top of an edge. With no other
-  incident edges the loop points up.
+  incident edges the loop points up. When the node carries a label, the
+  label band (a fixed strip straight below the marker) joins the angles as
+  one more obstacle direction, so the loop crosses the band only when chords
+  pin every gap; hit testing and culling answer the same query so their loop
+  paths stay identical to what is drawn.
 - a self-loop's own label anchors beyond the base apex along the loop axis,
   clear of the shape, and a label never masks its own edge's strokes. An
   earlier anchor on the base arc let the label's mask rectangle cut the

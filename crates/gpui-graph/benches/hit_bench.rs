@@ -118,19 +118,19 @@ fn bench_hit_test(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("indexed", format!("node/{size}")), |b| {
             b.iter(|| {
                 let p = std::hint::black_box(on_node_screen);
-                std::hint::black_box(hit_test(&synced, &case.vp, &style, p))
+                std::hint::black_box(hit_test(&synced, &case.vp, &style, p, &|_, _: &()| None))
             })
         });
         group.bench_function(BenchmarkId::new("indexed", format!("edge/{size}")), |b| {
             b.iter(|| {
                 let p = std::hint::black_box(on_edge_screen);
-                std::hint::black_box(hit_test(&synced, &case.vp, &style, p))
+                std::hint::black_box(hit_test(&synced, &case.vp, &style, p, &|_, _: &()| None))
             })
         });
         group.bench_function(BenchmarkId::new("indexed", format!("empty/{size}")), |b| {
             b.iter(|| {
                 let p = std::hint::black_box(empty_screen);
-                std::hint::black_box(hit_test(&synced, &case.vp, &style, p))
+                std::hint::black_box(hit_test(&synced, &case.vp, &style, p, &|_, _: &()| None))
             })
         });
         group.bench_function(BenchmarkId::new("scan", format!("node/{size}")), |b| {
@@ -142,13 +142,14 @@ fn bench_hit_test(c: &mut Criterion) {
 
         // Sanity: every measured point must exercise the path its name
         // claims, and both node paths must agree.
-        let indexed_node = gpui_graph::hit_test(&synced, &case.vp, &style, on_node_screen);
+        let indexed_node =
+            gpui_graph::hit_test(&synced, &case.vp, &style, on_node_screen, &|_, _: &()| None);
         let scanned = scan_nearest_node(&case.scene, on_node_world, style.node_radius);
         assert_eq!(
             indexed_node.node, scanned,
             "paths disagree at {size} on_node"
         );
-        let indexed_edge = hit_test(&synced, &case.vp, &style, on_edge_screen);
+        let indexed_edge = hit_test(&synced, &case.vp, &style, on_edge_screen, &|_, _: &()| None);
         assert!(
             indexed_edge.node.is_none(),
             "edge point hit a node at {size}"
@@ -157,7 +158,7 @@ fn bench_hit_test(c: &mut Criterion) {
             indexed_edge.edge.is_some(),
             "edge point missed the edge at {size}"
         );
-        let indexed_empty = hit_test(&synced, &case.vp, &style, empty_screen);
+        let indexed_empty = hit_test(&synced, &case.vp, &style, empty_screen, &|_, _: &()| None);
         assert!(
             !indexed_empty.is_hit(),
             "empty point unexpectedly hit at {size}"
