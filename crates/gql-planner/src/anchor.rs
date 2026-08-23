@@ -366,17 +366,31 @@ fn extract_range_predicate(expr: &Expr) -> Option<(String, String, ScanValue, Cm
     None
 }
 
-/// Extract (variable_name, property_name) from a PropertyAccess expression.
-fn extract_property_access(expr: &Expr) -> Option<(String, String)> {
-    if let ExprKind::PropertyAccess {
-        expr: inner,
-        property,
-    } = &expr.kind
-        && let ExprKind::Variable(var) = &inner.kind
-    {
-        return Some((var.clone(), property.clone()));
+/// Extract `(variable_name, property_path)` from a PropertyAccess expression.
+///
+/// A nested chain such as `v.stats.score` yields the canonical dotted path
+/// `"stats.score"` so indexed nested leaves share one property-name form with the
+/// Router catalog's interned leaf identities. Only chains rooted at a plain
+/// variable match; any other base expression returns `None`.
+pub(crate) fn extract_property_access(expr: &Expr) -> Option<(String, String)> {
+    let mut segments = Vec::new();
+    let mut current = expr;
+    loop {
+        match &current.kind {
+            ExprKind::PropertyAccess {
+                expr: inner,
+                property,
+            } => {
+                segments.push(property.clone());
+                current = inner;
+            }
+            ExprKind::Variable(var) => {
+                segments.reverse();
+                return Some((var.clone(), segments.join(".")));
+            }
+            _ => return None,
+        }
     }
-    None
 }
 
 /// Check if a value expression is something we can use in an index scan.

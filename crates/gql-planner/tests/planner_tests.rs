@@ -2390,6 +2390,169 @@ fn optional_match_conditional_candidate_uses_range_cmp() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// MATCH vertex nested-leaf anchors (ADR 0073 slice 4)
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// True when `expr` is exactly the property chain rooted at `var` whose dotted path
+/// equals `property` (for example `n.stats.score` names `"stats.score"`).
+fn is_dotted_property_on(expr: &Expr, var: &str, property: &str) -> bool {
+    let mut segments = Vec::new();
+    let mut current = expr;
+    loop {
+        match &current.kind {
+            ExprKind::PropertyAccess {
+                expr: inner,
+                property,
+            } => {
+                segments.push(property.as_str());
+                current = inner;
+            }
+            ExprKind::Variable(v) => {
+                segments.reverse();
+                return v == var && segments.join(".") == property;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// True when a residual PropertyFilter carries `var.<property> <op> <anything>` (either operand order).
+fn has_residual_predicate(ops: &[PlanOp], var: &str, property: &str, op: CmpOp) -> bool {
+    ops.iter().any(|o| match o {
+        PlanOp::PropertyFilter { predicates, .. } => predicates.iter().any(|p| match &p.kind {
+            ExprKind::Compare {
+                left,
+                op: cmp,
+                right,
+                ..
+            } if *cmp == op => {
+                is_dotted_property_on(left, var, property)
+                    || is_dotted_property_on(right, var, property)
+            }
+            _ => false,
+        }),
+        _ => false,
+    })
+}
+
+#[test]
+fn match_nested_leaf_equality_anchor_uses_dotted_property_path() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    stats
+        .indexed_vertex_properties
+        .insert("stats.score".to_string());
+
+    let plan = plan_query_with_stats("MATCH (n:User) WHERE n.stats.score = 3 RETURN n", &stats);
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, value: ScanValue::Literal(Value::Int64(3)), cmp: CmpOp::Eq, .. }
+                if &**property == "stats.score"
+        )),
+        "expected equality IndexScan on the dotted leaf path, got: {:?}",
+        plan.ops
+    );
+    let anchor = plan
+        .annotations
+        .optimizer
+        .anchor
+        .expect("nested equality anchor should be selected");
+    assert!(
+        matches!(
+            anchor.source,
+            AnchorSource::PropertyEquality { ref property } if &**property == "stats.score"
+        ),
+        "unexpected anchor source: {:?}",
+        anchor.source
+    );
+    assert!(
+        has_residual_predicate(&plan.ops, "n", "stats.score", CmpOp::Eq),
+        "original nested predicate must remain as a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn match_nested_leaf_range_anchor_emits_index_scan_and_retains_residual_filter() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    stats
+        .range_indexed_vertex_properties
+        .insert("stats.score".to_string());
+
+    let plan = plan_query_with_stats("MATCH (n:User) WHERE n.stats.score >= 18 RETURN n", &stats);
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, cmp: CmpOp::Ge, value: ScanValue::Literal(_), .. }
+                if &**property == "stats.score"
+        )),
+        "expected range IndexScan on the dotted leaf path, got: {:?}",
+        plan.ops
+    );
+    let anchor = plan
+        .annotations
+        .optimizer
+        .anchor
+        .expect("nested range anchor should be selected");
+    assert!(
+        matches!(
+            anchor.source,
+            AnchorSource::PropertyRange { ref property, cmp: CmpOp::Ge, .. } if &**property == "stats.score"
+        ),
+        "unexpected anchor source: {:?}",
+        anchor.source
+    );
+    assert!(
+        has_residual_predicate(&plan.ops, "n", "stats.score", CmpOp::Ge),
+        "original nested predicate must remain as a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn match_nested_leaf_inline_where_equality_lowers_scan_value() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    stats
+        .indexed_vertex_properties
+        .insert("stats.score".to_string());
+
+    let plan = plan_query_with_stats("MATCH (n:User WHERE n.stats.score = 7) RETURN n", &stats);
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, value: ScanValue::Literal(Value::Int64(7)), cmp: CmpOp::Eq, .. }
+                if &**property == "stats.score"
+        )),
+        "inline WHERE equality must lower to an IndexScan carrying the literal bound, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn match_unindexed_nested_leaf_range_does_not_emit_index_scan() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    // No index covers the nested leaf.
+
+    let plan = plan_query_with_stats("MATCH (n:User) WHERE n.stats.score >= 18 RETURN n", &stats);
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "unindexed nested leaf must not emit IndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // Join ordering
 // ════════════════════════════════════════════════════════════════════════════════
 

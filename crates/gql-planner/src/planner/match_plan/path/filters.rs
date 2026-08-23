@@ -683,21 +683,29 @@ fn expr_to_scan_value(expr: &Expr) -> ScanValue {
     }
 }
 
-/// Find the value for `var.property = <value>` in an inline WHERE clause.
+/// Find the value for `var.<property> = <value>` in an inline WHERE clause.
+///
+/// `property` may be a dotted leaf path (`stats.score`, ADR 0073), so the match goes
+/// through the same nested-aware extractor as anchor selection instead of
+/// pattern-matching a single access segment.
 fn find_equality_value_in_where(var: &str, property: &str, where_expr: &Expr) -> Option<ScanValue> {
     let conjuncts = flatten_conjunction(where_expr);
     for conjunct in &conjuncts {
         if let ExprKind::Compare { left, op, right } = &conjunct.kind
             && *op == CmpOp::Eq
-            && let ExprKind::PropertyAccess {
-                expr: inner,
-                property: prop,
-            } = &left.kind
-            && let ExprKind::Variable(v) = &inner.kind
-            && v == var
-            && prop == property
         {
-            return Some(expr_to_scan_value(right));
+            if let Some((v, prop)) = anchor::extract_property_access(left)
+                && v == var
+                && prop == property
+            {
+                return Some(expr_to_scan_value(right));
+            }
+            if let Some((v, prop)) = anchor::extract_property_access(right)
+                && v == var
+                && prop == property
+            {
+                return Some(expr_to_scan_value(left));
+            }
         }
     }
     None

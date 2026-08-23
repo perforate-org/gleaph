@@ -2133,3 +2133,72 @@ fn federated_edge_index_match_range_with_domain_clamp() {
         "text literal range returns exactly the two text rows (one per shard)"
     );
 }
+
+/// ADR 0073 slice 4 (planner anchors): a nested-record leaf index serves MATCH equality
+/// and range anchors across a multi-shard federation. Success itself proves the anchor
+/// path — the engine rejects unseeded leading index scans on graph shards, so these rows
+/// can only be returned when the Router extracted a dotted-leaf seed probe from the plan,
+/// and each seeded row is revalidated by the residual nested predicate.
+#[test]
+fn federated_vertex_nested_leaf_index_match_equality_and_range() {
+    const NESTED_LEAF: &str = "nested_stats.score";
+    let env = install_federation();
+
+    create_vertex_property_index(
+        &env,
+        "pocket_ic_nested_leaf_score",
+        INDEX_VERTEX_LABEL,
+        NESTED_LEAF,
+        "nested_leaf_create_score",
+    );
+
+    let mut key = 0usize;
+    let mut next_key = || {
+        key += 1;
+        format!("nested_leaf_insert_{key}")
+    };
+    for score in [10_i64, 30, 200] {
+        gql_mutate_as_admin(
+            &env,
+            &format!("INSERT (:{INDEX_VERTEX_LABEL} {{ nested_stats: {{score: {score}}} }})"),
+            &next_key(),
+        );
+    }
+    // Absence shape: a vertex without the root record must never match the leaf.
+    gql_mutate_as_admin(
+        &env,
+        &format!("INSERT (:{INDEX_VERTEX_LABEL})"),
+        &next_key(),
+    );
+
+    let assert_scores = |query: String, expected: &[i64], context: &str| {
+        let result = gql_query_as_admin(&env, &query);
+        let mut got: Vec<i64> = Vec::new();
+        for row in value_rows_from_result(&result) {
+            match row.get("v") {
+                Some(Value::Int64(value)) => got.push(*value),
+                other => panic!("{context}: expected int64 column, got {other:?}"),
+            }
+        }
+        got.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "{context}");
+    };
+
+    assert_scores(
+        format!("MATCH (n) WHERE n.{NESTED_LEAF} = 30 RETURN n.{NESTED_LEAF} AS v"),
+        &[30],
+        "nested equality anchor returns exactly the matching record",
+    );
+    assert_scores(
+        format!("MATCH (n) WHERE n.{NESTED_LEAF} >= 30 RETURN n.{NESTED_LEAF} AS v"),
+        &[30, 200],
+        "nested range anchor covers both shards",
+    );
+    assert_scores(
+        format!("MATCH (n) WHERE n.{NESTED_LEAF} < 30 RETURN n.{NESTED_LEAF} AS v"),
+        &[10],
+        "nested range anchor excludes the absence shape",
+    );
+}

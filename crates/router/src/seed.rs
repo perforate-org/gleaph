@@ -1879,6 +1879,80 @@ mod tests {
         assert_eq!(probe.wire_label_ids, vec![0x8001]);
     }
 
+    /// Interns the nested leaf path plus its top-level ancestor (the real DDL order,
+    /// ADR 0073) and registers an immediate-Active vertex index on the leaf.
+    fn test_store_with_nested_leaf() -> (RouterStore, GraphId) {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "stats",
+        );
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "stats.score",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            graph_id,
+            0,
+            "stats.score",
+        );
+        (store, graph_id)
+    }
+
+    #[test]
+    fn vertex_equality_anchor_resolves_nested_leaf_property() {
+        let (store, graph_id) = test_store_with_nested_leaf();
+        let plan = index_scan_plan("stats.score", Value::Int64(3));
+        let probe = SeedProbe::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("probe")
+        .expect("nested leaf equality probe");
+        assert_eq!(probe.variable, "u");
+        assert_eq!(probe.property, "stats.score");
+        assert!(!probe.payload_bytes.is_empty());
+    }
+
+    #[test]
+    fn vertex_range_anchor_resolves_nested_leaf_property() {
+        let (store, graph_id) = test_store_with_nested_leaf();
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
+            variable: Rc::from("u"),
+            property: Rc::from("stats.score"),
+            value: ScanValue::Literal(Value::Int64(18)),
+            cmp: CmpOp::Ge,
+            property_projection: None,
+        }]);
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("nested leaf range anchor");
+        let IndexAnchor::Range(probe) = anchor else {
+            panic!("expected Range anchor, got {anchor:?}");
+        };
+        assert_eq!(probe.variable, "u");
+        assert_eq!(probe.property, "stats.score");
+        assert_eq!(probe.bound, SeedRangeBound::Ge);
+        assert_eq!(
+            probe.bound_bytes,
+            gleaph_gql::value_to_index_key_bytes(&Value::Int64(18))
+                .unwrap()
+                .unwrap()
+        );
+    }
+
     #[test]
     fn edge_range_scan_anchor_skips_unsupported_comparison_domain() {
         use gleaph_gql::types::EdgeDirection;
