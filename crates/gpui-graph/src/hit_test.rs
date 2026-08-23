@@ -58,12 +58,18 @@ where
     // candidates.
     let world_point = viewport.screen_to_world(screen_point);
     let zoom = viewport.zoom().max(f32::EPSILON);
-    // Nodes are world-sized, so their on-screen hit radius scales with zoom.
-    let node_radius_screen = style.node_radius * zoom;
+    // Nodes are world-sized, so their on-screen hit radius scales with zoom,
+    // lifted by the same minimum screen radius the paint layer draws with —
+    // a floored marker must stay hittable at its drawn size.
+    let node_radius_screen = (style.node_radius * zoom).max(style.node_min_screen_radius);
     // Candidate margin so an edge whose curve bows near the point is not missed
     // by the coarse grid; the precise test still filters exactly. The edge
-    // threshold is a screen length converted into world units for the query.
-    let margin = (style.node_radius * 2.0).max((style.edge_width + 2.0) / zoom);
+    // threshold is a screen length converted into world units for the query,
+    // and the floored node radius widens the pad so floored markers are
+    // reachable by the node query.
+    let margin = (style.node_radius * 2.0)
+        .max((style.edge_width + 2.0) / zoom)
+        .max(style.node_min_screen_radius * 2.0 / zoom);
     let bounds = WorldBounds {
         min: world_point - Vec2::splat(margin),
         max: world_point + Vec2::splat(margin),

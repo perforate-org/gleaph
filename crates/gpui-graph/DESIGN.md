@@ -1765,7 +1765,11 @@ The runtime should eventually support:
   already skips empty paths. Self-loops are never omitted. This is the deepest
   tier of a natural zoom-out cascade: straighten (`edge_straight_threshold`) →
   drop arrows (`edge_arrow_min_length`) → omit the edge (`edge_min_length`) →
-  simplify nodes (`node_simplify_threshold`).
+  simplify nodes (`node_simplify_threshold`). A `node_min_screen_radius`
+  floor (default `0.0`, disabled) lifts the drawn marker at deep zoom-out so
+  nodes stay visible markers and hittable targets; the simplification decision
+  still judges the unfloored on-screen diameter, and curve geometry remains in
+  world units regardless of the floor.
 
 
 

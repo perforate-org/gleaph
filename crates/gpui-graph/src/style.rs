@@ -33,6 +33,15 @@ pub struct GraphStyle {
     /// stroke. The threshold is a diameter, so a node whose visible diameter is
     /// at or below it renders fill-only.
     pub node_simplify_threshold: f32,
+    /// Minimum on-screen radius in pixels below which a node never shrinks.
+    ///
+    /// Nodes are world-sized, so at deep zoom-out their on-screen radius
+    /// approaches zero and the node vanishes. This floor keeps every node a
+    /// visible marker dot and an hittable target once its world size drops
+    /// below the floor. It applies to drawing and hit testing only; curve
+    /// geometry stays in world units and is unaffected. A value of `0.0` (the
+    /// default) disables the floor.
+    pub node_min_screen_radius: f32,
     /// Node fill color.
     pub node_fill: Hsla,
     /// Node stroke width in pixels.
@@ -144,6 +153,7 @@ impl Default for GraphStyle {
         Self {
             node_radius: 6.0,
             node_simplify_threshold: 0.0,
+            node_min_screen_radius: 4.0,
             node_fill: hsla(0.6, 0.5, 0.6, 1.0),
             node_stroke_width: 1.0,
             node_stroke_color: hsla(0.0, 0.0, 0.1, 1.0),
@@ -183,6 +193,13 @@ impl GraphStyle {
     /// only). See [`Self::node_simplify_threshold`].
     pub fn with_node_simplify_threshold(mut self, diameter: f32) -> Self {
         self.node_simplify_threshold = diameter;
+        self
+    }
+
+    /// Set the minimum on-screen node radius. See
+    /// [`Self::node_min_screen_radius`].
+    pub fn with_node_min_screen_radius(mut self, radius: f32) -> Self {
+        self.node_min_screen_radius = radius;
         self
     }
 

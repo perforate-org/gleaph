@@ -1130,7 +1130,8 @@ mod tests {
         // World-sized nodes shrink their onigiri with zoom: the loop must hug
         // the endpoint's screen position instead of painting a fixed-size
         // marker into the view.
-        let hug = style.node_radius * viewport.zoom() + 12.0 * viewport.zoom() + 1.0;
+        let r_eff = (style.node_radius * viewport.zoom()).max(style.node_min_screen_radius);
+        let hug = r_eff + 12.0 * viewport.zoom() + 2.0;
         let hug_bounds = WorldBounds {
             min: node_screen - glam::Vec2::splat(hug),
             max: node_screen + glam::Vec2::splat(hug),

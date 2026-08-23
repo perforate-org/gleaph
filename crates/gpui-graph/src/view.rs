@@ -605,8 +605,9 @@ where
                         // subdivide the curve excessively at deep zoom).
                         let viewport = view_paint.read(cx).viewport();
                         // Nodes are world-sized; label anchors ride their
-                        // on-screen radius.
-                        let node_radius_screen = style.node_radius * viewport.zoom();
+                        // on-screen radius, floored like the painted markers.
+                        let node_radius_screen =
+                            (style.node_radius * viewport.zoom()).max(style.node_min_screen_radius);
                         let viewport_size = viewport.size();
                         let viewport_rect = Bounds {
                             origin: point(px(coordinates.origin.x), px(coordinates.origin.y)),

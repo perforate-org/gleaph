@@ -288,6 +288,7 @@ where
     let edge_overlay = edge_overlay.unwrap_or(&|_| OverlayCategory::None);
     let visible = viewport.visible_world_bounds();
     let margin = style.node_radius * 2.0;
+    let zoom = viewport.zoom().max(f32::EPSILON);
 
     let mut frame = PaintFrame::new();
 
@@ -322,13 +323,18 @@ where
         // Node LOD: a node whose on-screen diameter is at or below
         // `node_simplify_threshold` renders fill-only (no stroke). The diameter
         // is `2 * node_radius` in screen pixels.
+        // The simplification LOD judges the true on-screen diameter: the
+        // style's minimum screen radius only lifts the drawn marker, it must
+        // not keep a shrunken node from dropping its sub-pixel stroke.
         let simplified = style.node_simplify_threshold > 0.0
-            && style.node_radius * 2.0 * viewport.zoom() <= style.node_simplify_threshold;
+            && style.node_radius * 2.0 * zoom <= style.node_simplify_threshold;
         frame.nodes.push(PaintNode {
             id: *id,
             position: viewport.world_to_screen(world),
-            // Nodes are world-sized: their on-screen radius scales with zoom.
-            radius: style.node_radius * viewport.zoom(),
+            // Nodes are world-sized: the on-screen radius scales with zoom,
+            // lifted by the style's minimum screen radius at deep zoom-out so
+            // nodes stay visible markers and hittable targets.
+            radius: (style.node_radius * zoom).max(style.node_min_screen_radius),
             selected: selection.contains_node(*id),
             hovered: hover.node == Some(*id),
             overlay: node_overlay(*id),
@@ -1613,7 +1619,7 @@ pub(crate) fn self_loop_path<N, E>(
     // the node. The two sides leave and re-enter the node at two distinct
     // points on the node edge, both pointing toward the node center, so the
     // start and end are visually separate.
-    let r = style.node_radius * viewport.zoom();
+    let r = (style.node_radius * viewport.zoom()).max(style.node_min_screen_radius);
     // Two points just outside the node's circumference, symmetric about the
     // up-axis, angled 30° from the up-axis so they are distinct and point at
     // the center. The small outward offset keeps the loop clear of the node.
@@ -1969,9 +1975,10 @@ mod tests {
         // path may legitimately be empty (nothing drawable). When points do
         // exist they must hug the node's screen position.
         let node_screen = viewport.world_to_screen(positions(node).unwrap());
-        // Hug bound: node radius plus the loop's base/clearance paddings,
-        // all scaled by zoom like every other world length.
-        let hug = style.node_radius * viewport.zoom() + 12.0 * viewport.zoom() + 1.0;
+        // Hug bound: effective (floored) node radius plus the loop's
+        // base/clearance paddings.
+        let r_eff = (style.node_radius * viewport.zoom()).max(style.node_min_screen_radius);
+        let hug = r_eff + 12.0 * viewport.zoom() + 2.0;
         let hug_bounds = WorldBounds {
             min: node_screen - Vec2::splat(hug),
             max: node_screen + Vec2::splat(hug),
