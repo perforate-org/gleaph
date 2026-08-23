@@ -391,7 +391,6 @@ where
         None => (0..prep.edge_ids.len()).collect(),
     };
     let mut candidates: Vec<Candidate<E>> = Vec::with_capacity(candidate_indices.len());
-    let mut any_curved_candidate = false;
     for &index in &candidate_indices {
         let id = prep.edge_ids[index];
         let edge = graph.edge(id).expect("edge exists");
@@ -399,50 +398,17 @@ where
         let target_screen = viewport.world_to_screen(prep.target[index]);
         let is_straight = edge.source != edge.target
             && straight_edge_applies(source_screen, target_screen, style);
-        any_curved_candidate |= !is_straight;
         candidates.push((index, id, edge, source_screen, target_screen, is_straight));
     }
 
-    // The obstacle field fades in over one kernel radius past the node-cull
-    // margin instead of switching members on and off at that line. Binary
-    // membership meant a node crossing the invisible boundary appeared in (or
-    // vanished from) the field all at once, and every edge whose chord sampled
-    // near it snapped its control point - most visibly while panning or
-    // zooming, where the window sweeps through the world every frame.
-    // Weighting each kernel by a smoothstep of the node's distance outside the
-    // core window makes field values continuous in the camera pose, so
-    // persistently visible edges never jump.
-    //
-    // The collection query widens by the same fade radius, and membership uses
-    // one predicate shared with endpoint cancellation below, so a node is
-    // splatted exactly when it can influence a sample.
-    let obstacles_field: ObstacleField = if any_curved_candidate {
-        let fade = obstacle_radius;
-        let field_ids: Vec<NodeId> = match runtime {
-            Some(rt) => rt.visible_nodes(&visible, margin + fade),
-            None => graph.nodes().map(|(id, _)| id).collect(),
-        };
-        let mut obstacles_world: Vec<(Vec2, f32)> = Vec::new();
-        for id in &field_ids {
-            let Some(world) = node_position(*id) else {
-                continue;
-            };
-            let d = distance_outside_rect(world, &visible, margin);
-            if d >= fade {
-                continue;
-            }
-            let t = d / fade;
-            let w = 1.0 - t * t * (3.0 - 2.0 * t);
-            obstacles_world.push((world, w));
-        }
-        ObstacleField::new_weighted(obstacles_world, obstacle_radius)
-    } else {
-        ObstacleField::new(&[], obstacle_radius)
-    };
+    let cull_only_field = ObstacleField::new(&[], obstacle_radius);
 
-    // An endpoint belongs to the field exactly when the collection pass above
-    // included it (same predicate), so its own contribution cancels cleanly.
-    let in_field = |world: Vec2| distance_outside_rect(world, &visible, margin) < obstacle_radius;
+    // Phase B - precise cull. The curve bound is a deliberate over-estimate:
+    // it already accounts for the bounded obstacle displacement any rendered
+    // path could carry, so evaluating it against an EMPTY field stays a safe
+    // superset of what the real field will draw. That lets culling run before
+    // the field exists; the field itself is built below from the survivors'
+    // own neighborhoods.
 
     // Phase B - precise cull now that the rendered-shape field exists: the
     // curve bound below carries the same avoidance displacement as the final
@@ -501,7 +467,7 @@ where
                 has_reverse,
                 parallel,
                 cluster_center,
-                &obstacles_field,
+                &cull_only_field,
             );
             bounds_intersect(&visible, margin, min, max)
         },
@@ -526,14 +492,63 @@ where
         &curved_indices,
     );
 
+    // Collect obstacles by chord neighborhood instead of by camera window.
+    //
+    // Kernels are strictly local: an obstacle contributes only within one
+    // kernel radius (+ probe offset) of a chord sample point. Collecting
+    // exactly that neighborhood for every surviving curved edge therefore
+    // makes each sample's value depend on nothing but the world layout -
+    // panning or zooming changes which edges are selected, but any edge that
+    // stays selected keeps the same collected set and draws the identical
+    // curve. The earlier camera-window collection instead faded nodes as the
+    // window slid past them, morphing curves near its boundary on every
+    // frame. Adding extra nodes far along a spanning chord costs splat work
+    // but cannot perturb samples near the view: their kernels read zero
+    // there, so the field stays exact wherever it is actually sampled.
+    let mut obstacle_world: Vec<Vec2> = Vec::new();
+    if !curved_indices.is_empty() {
+        // One query over the union of the surviving chords' neighborhoods
+        // collects every node any sample can read: the union box contains
+        // each chord's own box, so a node influencing a surviving edge is
+        // never missed, and adding nodes elsewhere cannot perturb samples
+        // near other chords because kernels read zero past their radius.
+        let reach = obstacle_radius * (1.0 + OBSTACLE_SIDE_PROBE);
+        let pad = Vec2::splat(reach);
+        let mut u_min = Vec2::splat(f32::INFINITY);
+        let mut u_max = Vec2::splat(f32::NEG_INFINITY);
+        for (index, _, edge, _, _, is_straight) in candidates.iter() {
+            if *is_straight || edge.source == edge.target {
+                continue;
+            }
+            let s = prep.source[*index];
+            let t = prep.target[*index];
+            u_min = u_min.min(s.min(t)).min(t);
+            u_max = u_max.max(s.max(t)).max(s);
+        }
+        let bounds = crate::viewport::WorldBounds {
+            min: u_min - pad,
+            max: u_max + pad,
+        };
+        let field_ids: Vec<NodeId> = match runtime {
+            Some(rt) => rt.visible_nodes(&bounds, 0.0),
+            None => graph.nodes().map(|(id, _)| id).collect(),
+        };
+        for id in &field_ids {
+            if let Some(pos) = node_position(*id) {
+                obstacle_world.push(pos);
+            }
+        }
+    }
+    let obstacles_field = ObstacleField::new(&obstacle_world, obstacle_radius);
+
     for (candidate_index, id, edge, source, target, _) in candidates.iter() {
         let is_self_loop = edge.source == edge.target;
-        // Membership mirrors the field's own collection predicate above, so
-        // an endpoint's contribution cancels exactly when it was added.
-        let endpoints_in_field = (
-            in_field(prep.source[*candidate_index]),
-            in_field(prep.target[*candidate_index]),
-        );
+        // Chord-neighborhood collection always includes both endpoints of a
+        // curved edge (they lie on the chord itself), so their
+        // self-contribution is present in the raster and cancelled below.
+        // Beyond the raster extent single-node sampling reads zero, which
+        // makes the cancellation harmless either way.
+        let endpoints_in_field = (true, true);
         let path = edge_path(
             edge,
             &EdgeCurveContext {
@@ -772,19 +787,6 @@ impl ObstacleField {
     /// Build the field over `obstacles` with the given kernel `radius`.
     #[doc(hidden)]
     pub fn new(obstacles: &[Vec2], radius: f32) -> Self {
-        let weighted: Vec<(Vec2, f32)> = obstacles.iter().map(|o| (*o, 1.0)).collect();
-        Self::new_weighted(weighted, radius)
-    }
-
-    /// Build the field over `obstacles`, each kernel scaled by its weight.
-    ///
-    /// Weights let the paint layer fade obstacle influence continuously as
-    /// the collection window slides across the layout: a weight of zero is
-    /// exactly absent, one fully present, and anything between contributes
-    /// proportionally, so sampled values move smoothly with the camera
-    /// instead of jumping when a node crosses the window boundary.
-    #[doc(hidden)]
-    pub fn new_weighted(obstacles: Vec<(Vec2, f32)>, radius: f32) -> Self {
         let empty = || Self {
             origin: Vec2::ZERO,
             cols: 0,
@@ -797,9 +799,9 @@ impl ObstacleField {
         }
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
-        for (o, _) in &obstacles {
-            min = min.min(*o);
-            max = max.max(*o);
+        for &o in obstacles {
+            min = min.min(o);
+            max = max.max(o);
         }
         if !min.is_finite() {
             return empty();
@@ -836,14 +838,14 @@ impl ObstacleField {
             cell,
             data: vec![0.0; cols as usize * rows as usize],
         };
-        for (o, w) in &obstacles {
-            field.splat(*o, *w, radius);
+        for &o in obstacles {
+            field.splat(o, radius);
         }
         field
     }
 
     /// Accumulate this point's kernel into every cell center within range.
-    fn splat(&mut self, point: Vec2, weight: f32, radius: f32) {
+    fn splat(&mut self, point: Vec2, radius: f32) {
         let lo_x = (((point.x - radius - self.origin.x) / self.cell).floor() as i64)
             .clamp(0, self.cols as i64 - 1);
         let hi_x = (((point.x + radius - self.origin.x) / self.cell).floor() as i64)
@@ -861,8 +863,7 @@ impl ObstacleField {
                 let dist = center.distance(point);
                 let base = 1.0 - dist / radius;
                 if base > 0.0 {
-                    self.data[(row as usize) * self.cols as usize + col as usize] +=
-                        base * base * weight;
+                    self.data[(row as usize) * self.cols as usize + col as usize] += base * base;
                 }
             }
         }
@@ -1723,18 +1724,6 @@ pub(crate) fn self_loop_path<N, E>(
     ]
 }
 
-/// Euclidean distance from `p` to the rectangle `bounds` expanded by `pad`;
-/// zero when `p` is inside. Drives the obstacle-window fade weight.
-fn distance_outside_rect(p: Vec2, bounds: &crate::viewport::WorldBounds, pad: f32) -> f32 {
-    let dx = (bounds.min.x - pad - p.x)
-        .max(p.x - (bounds.max.x + pad))
-        .max(0.0);
-    let dy = (bounds.min.y - pad - p.y)
-        .max(p.y - (bounds.max.y + pad))
-        .max(0.0);
-    (dx * dx + dy * dy).sqrt()
-}
-
 pub(crate) fn point_in_bounds(p: Vec2, bounds: &crate::viewport::WorldBounds, margin: f32) -> bool {
     p.x >= bounds.min.x - margin
         && p.x <= bounds.max.x + margin
@@ -1823,22 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn obstacle_weight_scales_the_kernel_continuously() {
-        let full = ObstacleField::new(&[Vec2::ZERO], 30.0);
-        let absent = ObstacleField::new(&[], 30.0);
-        let half = ObstacleField::new_weighted(vec![(Vec2::ZERO, 0.5)], 30.0);
-        let zero = ObstacleField::new_weighted(vec![(Vec2::ZERO, 0.0)], 30.0);
-        let q = Vec2::new(7.0, -4.0);
-        assert_eq!(absent.sample(q), 0.0);
-        assert_eq!(zero.sample(q), 0.0);
-        let f = full.sample(q);
-        let h = half.sample(q);
-        assert!(f > 0.0);
-        assert!(h > 0.0 && h < f);
-    }
-
-    #[test]
-    fn panning_across_the_obstacle_window_keeps_the_control_point_continuous() {
+    fn panning_leaves_chord_collected_control_points_camera_stable() {
         // A chord spanning the view with one blocker node below its midpoint:
         // panning until the blocker fades out of the obstacle window must
         // slide the avoidance push smoothly. Binary window membership snapped
@@ -1897,15 +1871,22 @@ mod tests {
                 crossed_fade_end = true;
             }
             let ctrl = frame.edges[0].path[0].1;
+            // Compare in world space: panning legitimately translates
+            // everything on screen, so camera-relative stability is the
+            // invariant that matters.
+            let ctrl_world = vp.screen_to_world(ctrl);
             if let Some(p) = prev {
-                max_step = max_step.max((ctrl - p).length());
+                max_step = max_step.max((ctrl_world - p).length());
             }
-            prev = Some(ctrl);
+            prev = Some(ctrl_world);
         }
         assert!(crossed_fade_end, "sweep must cross the fade boundary");
+        // Chord-neighborhood collection is camera-independent: for an edge
+        // that stays selected, the collected set - and so the drawn curve -
+        // must be bit-stable across the whole pan.
         assert!(
-            max_step < 12.0,
-            "control point jumped {max_step}px between 1.5-unit pans"
+            max_step < 0.05,
+            "control point drifted {max_step} world units between pans"
         );
     }
 

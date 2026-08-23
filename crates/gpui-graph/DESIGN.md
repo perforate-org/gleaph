@@ -1367,21 +1367,25 @@ edge's own endpoints never deflect it: when they are part of the field
 (`EdgeCurveContext::endpoints_in_field`) their contribution is cancelled through
 single-node sampling that matches the raster's discretization; a curve-visible
 edge with an off-screen endpoint reads a field built without it, and no phantom
-cancellation occurs. Hit testing mirrors the paint layer's field construction —
-same viewport region, widened collection margin, lattice, and clearance — so
-selectable geometry matches drawn geometry exactly. The collection window is
-widened by one kernel radius beyond the node-cull margin, and membership is
-faded, not binary: each collected node's kernel is weighted by a smoothstep of
-its distance outside the node-cull margin, reaching zero at the window edge.
-Field values - and therefore curve shapes - are thus continuous functions of
-the camera pose. This matters because panning and zooming slide the collection
-window through the world on every frame: with binary membership, a node
-crossing that invisible line appeared in or vanished from the field all at
-once, snapping the control point of any edge sampling near it (the
-"curved edges briefly straighten while zooming" artifact). Candidate culling
-for off-screen-spanning edges evaluates `edge_curve_bbox` against this same
-rendered-shape field rather than an empty estimate, so an edge whose avoidance
-bow crosses the view is never culled late.
+cancellation occurs. Obstacles are collected by chord neighborhood, not by camera window:
+after culling, one query gathers nodes over the union of every surviving
+curved edge's chord bounding box expanded by one kernel radius plus probe
+offset, and the raster is built over that set. Kernels are strictly local, so
+each sample point reads exactly the world layout around it — panning and
+zooming change which edges are selected but cannot alter a selected edge's
+drawn shape, which makes curve geometry camera-invariant again even though
+the marker-size cap introduced a smooth zoom term. Earlier collections drove
+influence membership from the sliding window itself (binary, then
+fade-weighted); both made curves morph near the invisible boundary while the
+user panned or zoomed — the "edges briefly straighten while zooming"
+artifact. The union query costs the same single index walk as a window
+collection: it may gather extra nodes far along spanning chords, but their
+kernels read zero near the view, so they cost only splat work. Culling
+evaluates `edge_curve_bbox` against an empty field: the bound already
+includes the bounded obstacle displacement any path can carry, so it remains
+a safe superset without building the field first. With no curved candidates
+at all (zoomed-out overview), neither collection nor raster happens,
+preserving the cheap overview path.
 A pathologically wide extent grows the cell size instead of the allocation,
 bounding memory while queries stay correct, and out-of-range samples read
 zero. With no curved candidates at all - the zoomed-out overview where every
