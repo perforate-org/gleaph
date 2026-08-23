@@ -9,3 +9,4 @@ description = "Role-based access control for Gleaph graph canisters"
 bitflags.workspace = true
 candid.workspace = true
 ic-stable-structures.workspace = true
+serde.workspace = true

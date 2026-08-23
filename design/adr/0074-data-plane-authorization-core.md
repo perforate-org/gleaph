@@ -2,7 +2,7 @@
 
 Date: 2026-08-23
 Status: accepted
-Last revised: 2026-08-23
+Last revised: 2026-08-24
 
 ## Context
 
@@ -164,9 +164,17 @@ Privilege {
    added later, is a time-boxed explicit binding with mandatory audit events.
 2. **Anonymous can never hold a stored privileged row** (existing `crates/auth` invariant);
    `PUBLIC` is a virtual subject resolved at evaluation time, never a persisted principal.
-3. **Ownership SSOT**: `GraphRegistryEntry.owner` remains the identity anchor. Graph creation
-   seeds `{issuer → full data-plane grants}` atomically in the same transaction that writes
-   the registry entry. The two records have no independent mutation paths.
+3. **Ownership is the implicit root of data-plane authority** (amended 2026-08-24):
+   `GraphRegistryEntry.owner` remains the identity anchor, but ownership is **never
+   materialized as grant rows**. The owner's full authority over their graph is evaluated at
+   enforcement time directly from the registry (the ownership coverage arm of privilege
+   evaluation). Literal seeding of `{issuer → full data-plane grants}` at graph creation —
+   the original wording of this invariant — is rejected: label/property vocabularies are
+   dynamic, so seeded rows would force wildcard rows (ungrantable in Phase 1) or write
+   amplification on every catalog change, and would duplicate ownership knowledge into a
+   second independently mutable record (SSOT violation). Because no row expresses it,
+   introspection must surface this implicit authority explicitly: grant listings synthesize
+   an implicit-root entry for the owner instead of presenting an apparently empty list.
 4. **Catalog monotonicity**: vertex-label, edge-label, and property IDs are never reused
    after DROP. Dropping a label/property cascades invalidation of grants referencing it.
    Grants reference IDs, resolved at grant validation time.
@@ -188,8 +196,8 @@ Privilege {
   caller's effective privileges (grants ∪ PUBLIC ∪ ownership-derived). The classification
   pipeline still runs first to map program shape onto required operations.
 - Prepared queries statically extract their required privilege set into the prepared record
-  (next record version) and execute **SECURITY INVOKER**: caller grants merged with PUBLIC
-  grants at invocation. `SECURITY DEFINER` is rejected for now.
+  (destructively redefined V1; fresh state required) and execute **SECURITY INVOKER**: caller
+  grants merged with PUBLIC grants at invocation. `SECURITY DEFINER` is rejected for now.
 - Failure returns a uniform generic authorization error that does **not** name the missing
   privilege or resource (existence non-disclosure aligned with [ADR 0028]); diagnosis is a
   job for a future privileged-only `EXPLAIN AUTHORIZATION`.

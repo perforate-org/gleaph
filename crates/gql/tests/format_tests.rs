@@ -224,6 +224,33 @@ fn formats_grant_and_revoke_round_trip_with_canonical_nodes_keyword() {
     );
 }
 
+#[cfg(feature = "gleaph")]
+#[test]
+fn formats_prepared_query_publication_round_trip() {
+    let options = FormatOptions::default();
+    let grant = format_query(
+        "GRANT EXECUTE ON PREPARED QUERY find-users TO PUBLIC",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        grant,
+        "GRANT EXECUTE ON PREPARED QUERY find-users TO PUBLIC"
+    );
+    assert_eq!(format_query(&grant, &options).unwrap(), grant);
+
+    let revoke = format_query(
+        "REVOKE   EXECUTE   ON   PREPARED QUERY  find-users  FROM PUBLIC",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        revoke,
+        "REVOKE EXECUTE ON PREPARED QUERY find-users FROM PUBLIC"
+    );
+    assert_eq!(format_query(&revoke, &options).unwrap(), revoke);
+}
+
 #[cfg(not(feature = "gleaph"))]
 #[test]
 fn standard_feature_does_not_enable_gleaph_grant() {

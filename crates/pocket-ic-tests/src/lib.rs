@@ -1769,6 +1769,70 @@ pub fn prepare_batch_as_admin(
     }
 }
 
+/// Shared publish-after-register helper (ADR 0074 slice 3): issues
+/// `GRANT EXECUTE ON PREPARED QUERY <name> TO <subject>` on the Router control path as
+/// `caller`. `subject` is `PUBLIC` or a `PRINCIPAL '<text>'` clause. Registration no longer
+/// auto-seeds anonymous execution; every fixture that executes anonymously flows through
+/// this helper. Returns the Router verdict so tests can assert invariant-7 rejections.
+///
+/// `mutation_key` must be unique per logical invocation within one environment (ADR 0029
+/// idempotency): reuse would replay the earlier verdict instead of executing.
+pub fn publish_prepared_query_as(
+    env: &FederationEnv,
+    caller: Principal,
+    name: &str,
+    subject: &str,
+    mutation_key: &str,
+) -> Result<(), RouterError> {
+    authorization_statement(
+        env,
+        caller,
+        format!("GRANT EXECUTE ON PREPARED QUERY {name} TO {subject}"),
+        mutation_key,
+    )
+}
+
+/// Inverse of [`publish_prepared_query_as`]: issues
+/// `REVOKE EXECUTE ON PREPARED QUERY <name> FROM <subject>` and returns the verdict, so
+/// tests can assert exact-key misses (`NotFound`) as well as success.
+pub fn revoke_prepared_publication_as(
+    env: &FederationEnv,
+    caller: Principal,
+    name: &str,
+    subject: &str,
+    mutation_key: &str,
+) -> Result<(), RouterError> {
+    authorization_statement(
+        env,
+        caller,
+        format!("REVOKE EXECUTE ON PREPARED QUERY {name} FROM {subject}"),
+        mutation_key,
+    )
+}
+
+fn authorization_statement(
+    env: &FederationEnv,
+    caller: Principal,
+    statement: String,
+    mutation_key: &str,
+) -> Result<(), RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            caller,
+            "gql_mutate",
+            Encode!(&statement, &Vec::<u8>::new(), &mutation_key.to_string())
+                .expect("encode gql_mutate"),
+        )
+        .unwrap_or_else(|e| panic!("gql_mutate on router ({statement}): {e:?}"));
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(err),
+        Err(err) => panic!("decode gql_mutate ({statement}): {err}"),
+    }
+}
+
 /// Read the stored source and metadata of one prepared operation as the bootstrap admin principal.
 pub fn get_prepared_as_admin(
     env: &FederationEnv,

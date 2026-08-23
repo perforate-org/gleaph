@@ -14,8 +14,8 @@ use crate::ast::{
 #[cfg(feature = "gleaph")]
 use crate::ast::{
     GrantDirection, GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral,
-    RevokeStatement, SearchOutputBinding, SearchOutputKind, SearchProvider, SearchStatement,
-    VectorSearchSpec,
+    GrantTarget, RevokeStatement, SearchOutputBinding, SearchOutputKind, SearchProvider,
+    SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -966,6 +966,7 @@ impl Parser<'_> {
     /// Grammar:
     /// ```text
     /// GRANT privilege ON GRAPH objectName resourceSelector TO subject
+    /// GRANT EXECUTE ON PREPARED QUERY ident TO subject
     /// privilege      := MATCH | TRAVERSE [OUTGOING | INCOMING] | READ | CREATE | UPDATE | DELETE
     /// resourceSelector := (NODES | VERTICES) ident [ "{" ident ("," ident)* "}" ]
     ///                   | EDGES ident
@@ -974,11 +975,26 @@ impl Parser<'_> {
     ///
     /// The property list is only valid together with the `READ` privilege and only on
     /// a vertex selector; it lowers to per-property `READ_PROPERTY` rows. Both `NODES`
-    /// and `VERTICES` are accepted; the canonical form is vertex.
+    /// and `VERTICES` are accepted; the canonical form is vertex. The two targets are one
+    /// discriminated union ([`GrantTarget`]), so a graph privilege can never pair with a
+    /// prepared-query resource or vice versa.
     #[cfg(feature = "gleaph")]
     pub fn parse_grant_statement(&mut self) -> Result<GrantStatement, GqlError> {
         let start = self.save();
         self.expect_keyword("GRANT")?;
+        if self.eat_keyword("EXECUTE") {
+            self.expect_keyword("ON")?;
+            self.expect_keyword("PREPARED")?;
+            self.expect_keyword("QUERY")?;
+            let name = self.expect_ident()?.to_owned();
+            self.expect_keyword("TO")?;
+            let subject = self.parse_grant_subject_literal()?;
+            return Ok(GrantStatement {
+                span: self.span_since(start),
+                target: GrantTarget::PreparedQuery { name },
+                subject,
+            });
+        }
         let mut privilege = self.parse_grant_privilege()?;
         self.expect_keyword("ON")?;
         self.expect_keyword("GRAPH")?;
@@ -988,9 +1004,11 @@ impl Parser<'_> {
         let subject = self.parse_grant_subject_literal()?;
         Ok(GrantStatement {
             span: self.span_since(start),
-            privilege,
-            graph,
-            resource,
+            target: GrantTarget::Graph {
+                privilege,
+                graph,
+                resource,
+            },
             subject,
         })
     }
@@ -1000,6 +1018,19 @@ impl Parser<'_> {
     pub fn parse_revoke_statement(&mut self) -> Result<RevokeStatement, GqlError> {
         let start = self.save();
         self.expect_keyword("REVOKE")?;
+        if self.eat_keyword("EXECUTE") {
+            self.expect_keyword("ON")?;
+            self.expect_keyword("PREPARED")?;
+            self.expect_keyword("QUERY")?;
+            let name = self.expect_ident()?.to_owned();
+            self.expect_keyword("FROM")?;
+            let subject = self.parse_grant_subject_literal()?;
+            return Ok(RevokeStatement {
+                span: self.span_since(start),
+                target: GrantTarget::PreparedQuery { name },
+                subject,
+            });
+        }
         let mut privilege = self.parse_grant_privilege()?;
         self.expect_keyword("ON")?;
         self.expect_keyword("GRAPH")?;
@@ -1009,9 +1040,11 @@ impl Parser<'_> {
         let subject = self.parse_grant_subject_literal()?;
         Ok(RevokeStatement {
             span: self.span_since(start),
-            privilege,
-            graph,
-            resource,
+            target: GrantTarget::Graph {
+                privilege,
+                graph,
+                resource,
+            },
             subject,
         })
     }
@@ -1735,7 +1768,9 @@ mod search_parser_tests {
 #[cfg(all(test, feature = "gleaph"))]
 mod grant_parser_tests {
     use super::*;
-    use crate::ast::{GrantDirection, GrantPrivilege, GrantResourceSelector, GrantSubjectLiteral};
+    use crate::ast::{
+        GrantDirection, GrantPrivilege, GrantResourceSelector, GrantSubjectLiteral, GrantTarget,
+    };
     use crate::parser;
     use crate::token::Span;
 
@@ -1767,12 +1802,14 @@ mod grant_parser_tests {
         else {
             panic!("expected Grant");
         };
-        assert_eq!(stmt.privilege, GrantPrivilege::Match);
-        assert_eq!(stmt.graph.parts, vec!["social".to_string()]);
         assert_eq!(
-            stmt.resource,
-            GrantResourceSelector::Vertex {
-                label: "Person".to_string()
+            stmt.target,
+            GrantTarget::Graph {
+                privilege: GrantPrivilege::Match,
+                graph: crate::ast::ObjectName::simple("social"),
+                resource: GrantResourceSelector::Vertex {
+                    label: "Person".to_string()
+                },
             }
         );
         assert_eq!(
@@ -1799,14 +1836,22 @@ mod grant_parser_tests {
             let SimpleQueryStatement::Grant(stmt) = parse_valid(&input) else {
                 panic!("expected Grant for {input}");
             };
+            let GrantTarget::Graph {
+                privilege,
+                resource,
+                ..
+            } = &stmt.target
+            else {
+                panic!("expected graph target for {input}");
+            };
             assert_eq!(
-                stmt.privilege,
-                GrantPrivilege::Traverse { direction },
+                privilege,
+                &GrantPrivilege::Traverse { direction },
                 "input: {input}"
             );
             assert_eq!(
-                stmt.resource,
-                GrantResourceSelector::Edge {
+                resource,
+                &GrantResourceSelector::Edge {
                     label: "KNOWS".to_string()
                 }
             );
@@ -1821,8 +1866,11 @@ mod grant_parser_tests {
         else {
             panic!("expected Grant");
         };
+        let GrantTarget::Graph { privilege, .. } = stmt.target else {
+            panic!("expected graph target");
+        };
         assert_eq!(
-            stmt.privilege,
+            privilege,
             GrantPrivilege::Read {
                 properties: vec!["name".to_string(), "age".to_string()]
             }
@@ -1836,13 +1884,89 @@ mod grant_parser_tests {
         else {
             panic!("expected Grant");
         };
-        assert_eq!(stmt.privilege, GrantPrivilege::Update);
+        let GrantTarget::Graph {
+            privilege,
+            resource,
+            ..
+        } = stmt.target
+        else {
+            panic!("expected graph target");
+        };
+        assert_eq!(privilege, GrantPrivilege::Update);
         assert_eq!(
-            stmt.resource,
+            resource,
             GrantResourceSelector::Vertex {
                 label: "Person".to_string()
             }
         );
+    }
+
+    #[test]
+    fn parse_grant_execute_on_prepared_query_to_public_and_principal() {
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT EXECUTE ON PREPARED QUERY find-users TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::PreparedQuery {
+                name: "find-users".to_string()
+            }
+        );
+        assert_eq!(stmt.subject, GrantSubjectLiteral::Public);
+
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT EXECUTE ON PREPARED QUERY find-users TO PRINCIPAL 'w7x7r-cok77-xa'")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::PreparedQuery {
+                name: "find-users".to_string()
+            }
+        );
+        assert_eq!(
+            stmt.subject,
+            GrantSubjectLiteral::Principal("w7x7r-cok77-xa".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_revoke_execute_on_prepared_query_mirrors_grant() {
+        let SimpleQueryStatement::Revoke(stmt) =
+            parse_valid("REVOKE EXECUTE ON PREPARED QUERY find-users FROM PUBLIC")
+        else {
+            panic!("expected Revoke");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::PreparedQuery {
+                name: "find-users".to_string()
+            }
+        );
+        assert_eq!(stmt.subject, GrantSubjectLiteral::Public);
+    }
+
+    #[test]
+    fn parse_graph_privilege_with_prepared_query_resource_fails() {
+        // The discriminated union makes mixed forms a parse error, not a lowering case.
+        assert!(
+            parser::parse("GRANT MATCH ON PREPARED QUERY find-users TO PUBLIC").is_err(),
+            "graph privileges require the ON GRAPH form"
+        );
+        assert!(
+            parser::parse("REVOKE DELETE ON PREPARED QUERY find-users FROM PUBLIC").is_err(),
+            "graph privileges require the ON GRAPH form"
+        );
+    }
+
+    #[test]
+    fn parse_execute_requires_prepared_query_keyword_sequence() {
+        assert!(parser::parse("GRANT EXECUTE ON GRAPH g TO PUBLIC").is_err());
+        assert!(parser::parse("GRANT EXECUTE TO PUBLIC").is_err());
+        assert!(parser::parse("GRANT EXECUTE ON PREPARED QUERY TO PUBLIC").is_err());
     }
 
     #[test]
@@ -1852,9 +1976,17 @@ mod grant_parser_tests {
         else {
             panic!("expected Revoke");
         };
-        assert_eq!(stmt.privilege, GrantPrivilege::Delete);
+        let GrantTarget::Graph {
+            privilege,
+            resource,
+            ..
+        } = stmt.target
+        else {
+            panic!("expected graph target");
+        };
+        assert_eq!(privilege, GrantPrivilege::Delete);
         assert_eq!(
-            stmt.resource,
+            resource,
             GrantResourceSelector::Edge {
                 label: "KNOWS".to_string()
             }
@@ -1905,6 +2037,13 @@ mod grant_parser_tests {
         let program =
             parser::parse("GRANT MATCH ON GRAPH g NODES Person TO PUBLIC").expect("parse");
         crate::validate::validate(&program).expect("generic validation must accept GRANT");
+    }
+
+    #[test]
+    fn validate_accepts_prepared_query_publication_program() {
+        let program = parser::parse("GRANT EXECUTE ON PREPARED QUERY q TO PUBLIC").expect("parse");
+        crate::validate::validate(&program)
+            .expect("generic validation must accept EXECUTE publication");
     }
 }
 

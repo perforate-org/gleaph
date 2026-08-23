@@ -2,30 +2,37 @@
 //!
 //! The statements parse generically in `gleaph-gql` behind its `gleaph` feature; this
 //! module is the integration layer that binds them to Router reality (ADR 0034):
-//! registry ownership is the only grant authority, `PRINCIPAL` literals bind to IC
-//! principals, and label/property names resolve through the target graph's catalogs.
-//! Every statement in a block is validated and lowered **before** the first stable
-//! write, so no validation failure can leave a partially applied block.
+//! registry ownership is the only grant authority for graph-scoped rows, `PRINCIPAL`
+//! literals bind to IC principals, and label/property names resolve through the target
+//! graph's catalogs. Every statement in a block is validated and lowered **before** the
+//! first stable write, so no validation failure can leave a partially applied block.
+//!
+//! Slice 3 adds the prepared-query publication form (`EXECUTE ON PREPARED QUERY`,
+//! ADR 0074 §1b): authority is the resolved graph's registry owner (implicit root,
+//! invariant 3) or a `PREPARE_REGISTER` caps holder, and a GRANT additionally requires
+//! the granter's effective privileges to cover every row of the record's statically
+//! extracted requirement set (invariant 7: PUBLIC never exceeds its publisher).
 //!
 //! Grant rows are canonical `(subject × privilege)` facts owned by [`crate::facade::auth`]'s
-//! grant state. Plan-time enforcement against these rows is slice 2b — this slice only
-//! makes rows creatable, listable, and revocable without changing query outcomes.
+//! grant state. Plan-time enforcement against these rows lives in [`crate::authz`].
 //!
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
 use candid::Principal;
 use gleaph_auth::{
-    Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource, Privilege,
+    AdminCaps, Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource, Privilege,
 };
 use gleaph_gql::ast::{
     CompositeQueryExpr, GrantDirection, GrantPrivilege, GrantResourceSelector, GrantStatement,
-    GrantSubjectLiteral, LinearQueryStatement, ProcedureBindingInitializer, RevokeStatement,
-    SimpleQueryStatement, Statement, StatementBlock,
+    GrantSubjectLiteral, GrantTarget, LinearQueryStatement, ProcedureBindingInitializer,
+    RevokeStatement, SimpleQueryStatement, Statement, StatementBlock,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 
 use crate::facade::auth;
+use crate::facade::stable::graph_catalog;
 use crate::facade::stable::graph_type_catalog::try_property_schema_for_graph_id;
+use crate::facade::stable::prepared_catalog::{PreparedPlanKey, get_prepared_plan};
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 use crate::types::{
@@ -182,16 +189,17 @@ fn plan_part(
 
 /// Resolve the graph and enforce the Phase-1 authority rule: registry owner only
 /// (ADR 0074 §5). Non-tenants receive the ADR 0028 indistinguishable `NotFound`.
+/// Returns `(graph_id, owner)` so introspection can synthesize the owner marker.
 fn authorize_graph_owner(
     store: &RouterStore,
     graph_name: &str,
     caller: Principal,
-) -> Result<GraphId, RouterError> {
+) -> Result<(GraphId, Principal), RouterError> {
     let entry = store.get_graph_operator(graph_name, caller)?;
     if entry.owner != caller {
         return Err(RouterError::Forbidden);
     }
-    Ok(entry.graph_id)
+    Ok((entry.graph_id, entry.owner))
 }
 
 fn bind_subject(literal: &GrantSubjectLiteral) -> Result<GrantSubject, RouterError> {
@@ -251,16 +259,32 @@ fn plan_grant(
     caller: Principal,
     stmt: &GrantStatement,
 ) -> Result<PlannedAuthorization, RouterError> {
-    let graph_name = gleaph_graph_catalog::object_name_key(&stmt.graph);
-    let graph_id = authorize_graph_owner(store, &graph_name, caller)?;
-    let subject = bind_subject(&stmt.subject)?;
-    let resource = resolve_resource(store, graph_id, &stmt.resource)?;
-    let property_ids = resolve_property_ids(store, graph_id, &stmt.privilege)?;
-    let privileges = lower_privileges(graph_id.raw(), &stmt.privilege, &resource, &property_ids)?;
-    Ok(PlannedAuthorization::Grant {
-        subject,
-        privileges,
-    })
+    match &stmt.target {
+        GrantTarget::Graph {
+            privilege,
+            graph,
+            resource,
+        } => {
+            let graph_name = gleaph_graph_catalog::object_name_key(graph);
+            let (graph_id, _) = authorize_graph_owner(store, &graph_name, caller)?;
+            let subject = bind_subject(&stmt.subject)?;
+            let resource = resolve_resource(store, graph_id, resource)?;
+            let property_ids = resolve_property_ids(store, graph_id, privilege)?;
+            let privileges = lower_privileges(graph_id.raw(), privilege, &resource, &property_ids)?;
+            Ok(PlannedAuthorization::Grant {
+                subject,
+                privileges,
+            })
+        }
+        GrantTarget::PreparedQuery { name } => {
+            let (subject, privilege) =
+                plan_prepared_publication(store, caller, name, &stmt.subject, true)?;
+            Ok(PlannedAuthorization::Grant {
+                subject,
+                privileges: vec![privilege],
+            })
+        }
+    }
 }
 
 fn plan_revoke(
@@ -268,27 +292,98 @@ fn plan_revoke(
     caller: Principal,
     stmt: &RevokeStatement,
 ) -> Result<PlannedAuthorization, RouterError> {
-    let graph_name = gleaph_graph_catalog::object_name_key(&stmt.graph);
-    let graph_id = authorize_graph_owner(store, &graph_name, caller)?;
-    let subject = bind_subject(&stmt.subject)?;
-    let resource = resolve_resource(store, graph_id, &stmt.resource)?;
-    let property_ids = resolve_property_ids(store, graph_id, &stmt.privilege)?;
-    let privileges = lower_privileges(graph_id.raw(), &stmt.privilege, &resource, &property_ids)?;
-    // Revoke preflight (read-only): every lowered row must exist, else nothing is removed
-    // and the exact missing key is reported. Expired-but-stored rows still count as
-    // present (`contains`, not `holds`) because revoke addresses stored state.
-    for privilege in &privileges {
-        if !auth::grant_contains(subject, privilege) {
-            return Err(RouterError::NotFound(format!(
-                "no stored grant row for {}",
-                privilege_key_description(subject, privilege)
-            )));
+    match &stmt.target {
+        GrantTarget::Graph {
+            privilege,
+            graph,
+            resource,
+        } => {
+            let graph_name = gleaph_graph_catalog::object_name_key(graph);
+            let (graph_id, _) = authorize_graph_owner(store, &graph_name, caller)?;
+            let subject = bind_subject(&stmt.subject)?;
+            let resource = resolve_resource(store, graph_id, resource)?;
+            let property_ids = resolve_property_ids(store, graph_id, privilege)?;
+            let privileges = lower_privileges(graph_id.raw(), privilege, &resource, &property_ids)?;
+            // Revoke preflight (read-only): every lowered row must exist, else nothing is removed
+            // and the exact missing key is reported. Expired-but-stored rows still count as
+            // present (`contains`, not `holds`) because revoke addresses stored state.
+            for privilege in &privileges {
+                if !auth::grant_contains(subject, privilege) {
+                    return Err(RouterError::NotFound(format!(
+                        "no stored grant row for {}",
+                        privilege_key_description(subject, privilege)
+                    )));
+                }
+            }
+            Ok(PlannedAuthorization::Revoke {
+                subject,
+                privileges,
+            })
+        }
+        GrantTarget::PreparedQuery { name } => {
+            // Revocation is symmetric with publication authority but never gated by
+            // invariant 7: removing a row cannot widen any subject's privileges.
+            let (subject, privilege) =
+                plan_prepared_publication(store, caller, name, &stmt.subject, false)?;
+            if !auth::grant_contains(subject, &privilege) {
+                return Err(RouterError::NotFound(format!(
+                    "no stored grant row for {}",
+                    privilege_key_description(subject, &privilege)
+                )));
+            }
+            Ok(PlannedAuthorization::Revoke {
+                subject,
+                privileges: vec![privilege],
+            })
         }
     }
-    Ok(PlannedAuthorization::Revoke {
+}
+
+/// Plan one `EXECUTE ON PREPARED QUERY` grant/revoke (ADR 0074 §1b).
+///
+/// Gates, all evaluated before the single row write:
+///
+/// 1. The prepared record must exist under its Router-global canonical name.
+/// 2. Authority: the caller owns the query's resolved bound graph — ownership is the
+///    implicit root of data-plane authority (ADR 0074 §3 invariant 3) — or holds
+///    `PREPARE_REGISTER` (the registration capability). Graph admins are not publishers.
+/// 3. When `invariant_7_gate` is set (GRANT only): the granter's effective privileges
+///    (`caller ∪ PUBLIC ∪ ownership`) must cover every row of the record's stored static
+///    requirement set — PUBLIC never exceeds its publisher. The check reuses the same
+///    evaluation as plan-time enforcement; a granter missing even one requirement is
+///    denied with the uniform non-disclosing [`RouterError::Forbidden`].
+fn plan_prepared_publication(
+    store: &RouterStore,
+    caller: Principal,
+    name: &str,
+    subject_literal: &GrantSubjectLiteral,
+    invariant_7_gate: bool,
+) -> Result<(GrantSubject, Privilege), RouterError> {
+    let record = get_prepared_plan(&PreparedPlanKey::new(name))
+        .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
+    let v1 = record.as_v1();
+    let entry = graph_catalog::graph_entry(v1.graph_id)
+        .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
+    if entry.owner != caller && !auth::has_cap(&caller, AdminCaps::PREPARE_REGISTER) {
+        return Err(RouterError::Forbidden);
+    }
+    if invariant_7_gate
+        && !crate::authz::requirements_cover(
+            &v1.required_privileges,
+            v1.graph_id.raw(),
+            &caller,
+            store,
+        )
+    {
+        return Err(RouterError::Forbidden);
+    }
+    let subject = bind_subject(subject_literal)?;
+    Ok((
         subject,
-        privileges,
-    })
+        Privilege::ExecutePreparedQuery {
+            name: name.to_owned(),
+        },
+    ))
 }
 
 fn resolve_property_ids(
@@ -478,16 +573,31 @@ fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
 
 /// Owner-only listing of one graph's stored grant rows (ADR 0074 §5 observability).
 ///
+/// The first entry is always the synthesized implicit-root marker of the registry owner
+/// (ADR 0074 §3 invariant 3): ownership is the root of data-plane authority but is never
+/// materialized as a grant row, so introspection surfaces it explicitly instead of
+/// presenting an apparently empty list. Stored rows follow in canonical key order.
+///
 /// Rows referencing vocabulary that no longer resolves are skipped: ids are never reused
-/// (ADR 0074 invariant 4), but cascade invalidation of dropped labels arrives with slice
-/// 2b, so stale rows cannot be named until then.
+/// (ADR 0074 invariant 4), but cascade invalidation of dropped labels arrives with a later
+/// slice, so stale rows cannot be named until then.
 pub(crate) fn list_graph_grants(
     graph_name: &str,
     caller: Principal,
 ) -> Result<Vec<GraphGrantSummary>, RouterError> {
     let store = RouterStore::new();
-    let graph_id = authorize_graph_owner(&store, graph_name, caller)?;
-    let mut summaries = Vec::new();
+    let (graph_id, owner) = authorize_graph_owner(&store, graph_name, caller)?;
+    let mut summaries = vec![GraphGrantSummary {
+        subject: GrantSubjectView::Principal(owner.to_text()),
+        operation: GrantOperationView::ImplicitRoot,
+        direction: None,
+        resource: GrantResourceView {
+            kind: GrantResourceKindView::Graph,
+            label: graph_name.to_owned(),
+            property: None,
+        },
+        expires_at_ns: None,
+    }];
     for row in auth::grant_rows() {
         let Privilege::Graph(gp) = row.privilege else {
             continue;
@@ -614,6 +724,286 @@ fn privilege_key_description(subject: GrantSubject, privilege: &Privilege) -> St
                 gp.graph
             )
         }
+    }
+}
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::facade::store::RouterStore;
+    use candid::Principal;
+    use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+
+    fn principal(byte: u8) -> Principal {
+        Principal::from_slice(&[byte; 29])
+    }
+
+    /// Registers `graph_name` as the calling owner's HOME graph (a caps-less tenant
+    /// principal) so prepared registration resolves graph context; the registrar holds
+    /// the topology/catalog capabilities, mirroring provisioned flows.
+    fn owned_graph(owner: Principal, graph_name: &str) -> GraphId {
+        let store = RouterStore::new();
+        let registrar = principal(u8::MAX);
+        crate::facade::auth::grant_admins(&[registrar]);
+        store
+            .admin_register_graph(
+                registrar,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+                graph_name,
+            )
+            .expect("register fixture graph");
+        graph_catalog::lookup_graph_id(graph_name).expect("interned graph id")
+    }
+
+    /// Interns the vocabulary the publication fixtures demand (MANAGE_CATALOG surface).
+    fn intern_vocabulary(graph_name: &str) {
+        let admin = principal(u8::MAX);
+        let store = RouterStore::new();
+        store
+            .admin_intern_vertex_label(admin, graph_name, "Pub")
+            .expect("intern Pub");
+        store
+            .admin_intern_edge_label(admin, graph_name, "KNOWS")
+            .expect("intern KNOWS");
+    }
+
+    /// Grants exactly one capability bit to a fixture principal.
+    fn upsert_caps(p: Principal, caps: gleaph_auth::AdminCaps) {
+        crate::facade::stable::ROUTER_AUTH_STATE.with_borrow_mut(|state| {
+            state.upsert_caps(p, caps).expect("non-anonymous principal");
+        });
+    }
+
+    /// Executes one authorization statement through the production control path.
+    fn execute_as(caller: Principal, text: &str) -> Result<(), RouterError> {
+        let program = gleaph_gql::parser::parse(text).expect("parse authorization statement");
+        let tx = program.transaction_activity.expect("transaction");
+        execute_authorization_block(tx.body.as_ref().expect("block"), caller)
+    }
+
+    fn stored(subject: GrantSubject, name: &str) -> bool {
+        auth::grant_contains(
+            subject,
+            &Privilege::ExecutePreparedQuery {
+                name: name.to_owned(),
+            },
+        )
+    }
+
+    /// Registers one prepared record through the production batch core. Registration
+    /// plans under `owner`'s graph context (the owner is the fixture's home-graph
+    /// tenant); only the ingress `PREPARE_REGISTER` gate is bypassed.
+    fn prepare_fixture(owner: Principal, name: &str, query: &str) {
+        crate::prepared::prepare_batch_core(
+            &[gleaph_prepared_api::PreparedRegistration {
+                name: name.to_owned(),
+                query: query.to_owned(),
+                metadata: None,
+            }],
+            owner,
+        )
+        .expect("fixture registration");
+    }
+
+    #[test]
+    fn owner_publishes_public_row_and_revoke_removes_exactly_it() {
+        let owner = principal(1);
+        owned_graph(owner, "publication_basic");
+        prepare_fixture(owner, "pub_q", "RETURN 'x' AS tag");
+
+        // Owner authority + trivially-covered requirement set (no data access).
+        execute_as(owner, "GRANT EXECUTE ON PREPARED QUERY pub_q TO PUBLIC")
+            .expect("owner publishes");
+        assert!(stored(GrantSubject::Public, "pub_q"));
+
+        // Exact-key revoke: removes exactly the targeted row.
+        execute_as(owner, "REVOKE EXECUTE ON PREPARED QUERY pub_q FROM PUBLIC")
+            .expect("owner revokes");
+        assert!(!stored(GrantSubject::Public, "pub_q"));
+        // Revoking a missing row is an exact-key miss and removes nothing else.
+        let err = execute_as(owner, "REVOKE EXECUTE ON PREPARED QUERY pub_q FROM PUBLIC")
+            .expect_err("second revoke must miss");
+        assert!(matches!(err, RouterError::NotFound(_)));
+    }
+
+    #[test]
+    fn non_owner_without_requirements_cannot_publish_but_constant_only_is_trivially_bounded() {
+        let owner = principal(2);
+        owned_graph(owner, "publication_gates");
+        let publisher = principal(3); // PREPARE_REGISTER only: no tenancy, no grant rows
+        upsert_caps(publisher, gleaph_auth::AdminCaps::PREPARE_REGISTER);
+
+        prepare_fixture(owner, "scan_q", "MATCH (n) RETURN n");
+        // Invariant 7 negative: the unlabeled scan demands tenancy-only coverage the
+        // non-owner granter cannot present. Authority alone does not publish.
+        let err = execute_as(
+            publisher,
+            "GRANT EXECUTE ON PREPARED QUERY scan_q TO PUBLIC",
+        )
+        .expect_err("uncovered requirements must deny publication");
+        assert!(matches!(err, RouterError::Forbidden));
+        assert!(!stored(GrantSubject::Public, "scan_q"));
+
+        // A constant-only query demands nothing, so the bounded set is trivially covered:
+        // the same PREPARE_REGISTER-only publisher may publish it.
+        prepare_fixture(owner, "const_q", "RETURN 'x' AS tag");
+        execute_as(
+            publisher,
+            "GRANT EXECUTE ON PREPARED QUERY const_q TO PUBLIC",
+        )
+        .expect("empty requirement set is publishable");
+        assert!(stored(GrantSubject::Public, "const_q"));
+    }
+
+    #[test]
+    fn owner_implicit_root_passes_invariant_7_without_stored_rows() {
+        let owner = principal(4);
+        owned_graph(owner, "publication_root");
+        prepare_fixture(owner, "root_q", "MATCH (n) RETURN n");
+        // The registry owner holds no caps and no grant rows at all — ownership IS the
+        // implicit root of data-plane authority (ADR 0074 §3 invariant 3), evaluated at
+        // publication time through the same coverage evaluation enforcement uses.
+        assert_eq!(auth::caps_of(&owner), gleaph_auth::AdminCaps::empty());
+        execute_as(owner, "GRANT EXECUTE ON PREPARED QUERY root_q TO PUBLIC")
+            .expect("implicit ownership root admits publication");
+        assert!(stored(GrantSubject::Public, "root_q"));
+    }
+
+    #[test]
+    fn publication_converges_only_once_the_requirement_set_is_fully_covered() {
+        let owner = principal(5);
+        owned_graph(owner, "publication_coverage");
+        intern_vocabulary("publication_coverage");
+        let publisher = principal(6);
+        upsert_caps(publisher, gleaph_auth::AdminCaps::PREPARE_REGISTER);
+        prepare_fixture(owner, "pattern_q", "MATCH (:Pub)-[:KNOWS]->(:Pub)");
+
+        // The publisher's rows arrive through the ordinary GRANT grammar (the owner
+        // grants them) so coverage evaluation sees exactly what enforcement sees.
+        let grant_publisher = |statement: String| {
+            execute_as(owner, &statement)
+                .unwrap_or_else(|e| panic!("grant failed for {statement}: {e:?}"));
+        };
+        let self_ref = format!("PRINCIPAL '{}'", publisher.to_text());
+
+        // Nothing covered: denied.
+        let err = execute_as(
+            publisher,
+            "GRANT EXECUTE ON PREPARED QUERY pattern_q TO PUBLIC",
+        )
+        .expect_err("empty coverage must deny");
+        assert!(matches!(err, RouterError::Forbidden));
+
+        // Partial coverage (no traversal rows yet): still denied — invariant 7 checks
+        // every row of the static set, not merely that the granter holds some privilege.
+        grant_publisher(format!(
+            "GRANT MATCH ON GRAPH publication_coverage NODES Pub TO {self_ref}"
+        ));
+        grant_publisher(format!(
+            "GRANT READ ON GRAPH publication_coverage NODES Pub TO {self_ref}"
+        ));
+        let err = execute_as(
+            publisher,
+            "GRANT EXECUTE ON PREPARED QUERY pattern_q TO PUBLIC",
+        )
+        .expect_err("partial coverage must deny");
+        assert!(matches!(err, RouterError::Forbidden));
+
+        // Complete coverage: publication succeeds.
+        grant_publisher(format!(
+            "GRANT TRAVERSE ON GRAPH publication_coverage EDGES KNOWS TO {self_ref}"
+        ));
+        execute_as(
+            publisher,
+            "GRANT EXECUTE ON PREPARED QUERY pattern_q TO PUBLIC",
+        )
+        .expect("full coverage admits publication");
+        assert!(stored(GrantSubject::Public, "pattern_q"));
+    }
+
+    #[test]
+    fn covered_requirements_never_substitute_for_publication_authority() {
+        let owner = principal(7);
+        owned_graph(owner, "publication_authority");
+        prepare_fixture(owner, "auth_q", "RETURN 'x' AS tag");
+        // An unrelated capability is not publication authority: no ownership, no
+        // PREPARE_REGISTER — even though a constant-only set is trivially coverable.
+        let stranger = principal(8);
+        upsert_caps(stranger, gleaph_auth::AdminCaps::CALL_PROCEDURE);
+        let err = execute_as(stranger, "GRANT EXECUTE ON PREPARED QUERY auth_q TO PUBLIC")
+            .expect_err("requirement coverage never substitutes for authority");
+        assert!(matches!(err, RouterError::Forbidden));
+        assert!(!stored(GrantSubject::Public, "auth_q"));
+    }
+
+    #[test]
+    fn anonymous_subject_literal_is_rejected_before_any_write() {
+        let owner = principal(11);
+        owned_graph(owner, "publication_anon");
+        prepare_fixture(owner, "anon_q", "RETURN 'x' AS tag");
+        let statement = format!(
+            "GRANT EXECUTE ON PREPARED QUERY anon_q TO PRINCIPAL '{}'",
+            Principal::anonymous().to_text()
+        );
+        let err = execute_as(owner, &statement)
+            .expect_err("the anonymous principal cannot hold a stored grant");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "got {err:?}"
+        );
+        assert!(!stored(GrantSubject::Public, "anon_q"));
+    }
+
+    #[test]
+    fn listing_synthesizes_the_owner_implicit_root_marker_first() {
+        let owner = principal(12);
+        owned_graph(owner, "publication_introspection");
+        intern_vocabulary("publication_introspection");
+        prepare_fixture(owner, "intro_q", "RETURN 'x' AS tag");
+        execute_as(owner, "GRANT EXECUTE ON PREPARED QUERY intro_q TO PUBLIC").expect("publish");
+        // One stored graph row for contrast.
+        execute_as(
+            owner,
+            "GRANT MATCH ON GRAPH publication_introspection NODES Pub TO PUBLIC",
+        )
+        .expect("grant graph row");
+
+        let summaries = list_graph_grants("publication_introspection", owner).expect("list");
+        assert_eq!(
+            summaries[0],
+            GraphGrantSummary {
+                subject: GrantSubjectView::Principal(owner.to_text()),
+                operation: GrantOperationView::ImplicitRoot,
+                direction: None,
+                resource: GrantResourceView {
+                    kind: GrantResourceKindView::Graph,
+                    label: "publication_introspection".to_owned(),
+                    property: None,
+                },
+                expires_at_ns: None,
+            },
+            "the implicit-root marker leads the listing"
+        );
+        // Stored graph-scoped rows follow; EXECUTE publication rows are not
+        // graph-scoped and are therefore not part of this graph listing.
+        assert_eq!(summaries.len(), 2, "marker plus one stored graph row");
+
+        // A stranger holding no row gets NotFound (ADR 0028); here PUBLIC graph rows make
+        // the graph visible, so a visible non-owner gets the ordinary Forbidden instead.
+        let stranger = principal(13);
+        assert!(matches!(
+            list_graph_grants("publication_introspection", stranger),
+            Err(RouterError::Forbidden)
+        ));
     }
 }
 

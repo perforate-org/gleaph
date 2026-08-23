@@ -3,7 +3,7 @@
 //! Walks the built [`PhysicalPlan`] of one resolved graph on the Router and extracts the
 //! exact data-plane privilege rows the plan demands ([`RequirementSet`]), then evaluates
 //! those rows against the caller's effective privileges (`caller ∪ PUBLIC`, expiry-aware;
-//! ownership expressed through the registry-tenant coverage arm, ADR 0074 §4). Any
+//! ownership through the implicit-root coverage arm, ADR 0074 §3 invariant 3). Any
 //! uncovered demand fails the whole query with the uniform non-disclosing
 //! [`RouterError::Forbidden`] that never names the missing privilege or resource.
 //!
@@ -15,6 +15,11 @@
 //!   planner variant fails compilation here instead of silently bypassing enforcement.
 //! - Administrative capabilities are not an input to evaluation anywhere in this module
 //!   (ADR 0074 invariant 1: authority never implies data access).
+//! - The extracted [`RequirementSet`] is also the durable artifact of ADR 0074 slice 3: it
+//!   is embedded in the prepared-query record at registration, gates invariant-7-bounded
+//!   publication, and is the primary checked set at prepared execution (the live walk
+//!   remains the fallback). It is therefore `pub` and serializable while this module stays
+//!   its single owner.
 //!
 //! Phase-1 attribution contract (fail closed where the plan cannot name a resource):
 //! - Labeled scans demand `MATCH` on the vertex label; a retained full property map
@@ -35,7 +40,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use candid::Principal;
+use candid::{CandidType, Principal};
 use gleaph_auth::{
     Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource, Privilege,
 };
@@ -108,23 +113,31 @@ impl PlanCatalogView for RouterCatalogView<'_> {
 type RowGroup = Vec<Privilege>;
 
 /// One graph's extracted data-plane demands.
-#[derive(Default)]
+#[derive(
+    Default, Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize,
+)]
 struct GraphDemands {
     /// Rows that must ALL be covered.
     conjunctive: Vec<Privilege>,
     /// Alternation groups: at least one fully covered group admits the demand.
     alternatives: Vec<RowGroup>,
     /// Set when some read could not be attributed to exactly one grantable resource; only
-    /// registry-tenant coverage admits such a plan (Phase 1 grants enumerate labels).
+    /// implicit-root (registry) coverage admits such a plan (Phase 1 grants enumerate labels).
     unattributed: bool,
 }
 
 /// Every data-plane demand of one plan, grouped by target graph.
-#[derive(Default)]
-pub(crate) struct RequirementSet {
+///
+/// Single representation of a plan's static authorization requirements (ADR 0074 §4):
+/// produced by [`extract`], embedded in the prepared-query record at registration
+/// (slice 3), evaluated by [`authorize_requirements`] at enforcement and publication time.
+#[derive(
+    Default, Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize,
+)]
+pub struct RequirementSet {
     graphs: BTreeMap<u32, GraphDemands>,
     /// Set when a demand cannot even be pinned to a graph (unresolvable `USE GRAPH`
-    /// target); admitted only through tenancy on the executing root graph.
+    /// target); admitted only through ownership on the executing root graph.
     root_unattributed: bool,
 }
 
@@ -1122,7 +1135,9 @@ pub(crate) trait EffectiveGrants {
     fn covers(&self, caller: &Principal, privilege: &Privilege) -> bool;
 }
 
-/// Registry-tenant coverage (ownership-derived arm, ADR 0074 §4).
+/// Implicit-root coverage (ADR 0074 §3 invariant 3): the registry owner's (and admins')
+/// authority over a graph is evaluated at enforcement time from the registry and is never
+/// materialized as grant rows.
 pub(crate) trait GraphTenancy {
     fn is_tenant(&self, graph_raw: u32, caller: &Principal) -> bool;
 }
@@ -1181,7 +1196,7 @@ impl EffectiveGrants for StoredGrants {
     }
 }
 
-/// Registry-backed tenancy probe.
+/// Registry-backed ownership probe.
 struct StoreTenancy<'a> {
     store: &'a RouterStore,
 }
@@ -1191,6 +1206,36 @@ impl GraphTenancy for StoreTenancy<'_> {
         self.store
             .is_graph_tenant(GraphId::from_raw(graph_raw), *caller)
     }
+}
+
+/// Whether `reqs` is covered for `caller` against live Router state (`caller ∪ PUBLIC`
+/// grant rows plus implicit ownership root). The single seam every enforcement surface
+/// uses, so evaluation semantics cannot drift between call sites.
+pub(crate) fn requirements_cover(
+    reqs: &RequirementSet,
+    root_graph_raw: u32,
+    caller: &Principal,
+    store: &RouterStore,
+) -> bool {
+    authorize_requirements(
+        reqs,
+        root_graph_raw,
+        caller,
+        &StoredGrants,
+        &StoreTenancy { store },
+    )
+}
+
+/// Extract the requirement set of `plan` against live Router catalogs.
+///
+/// Used by ad-hoc enforcement and by prepared registration, where the extracted set is
+/// stored on the record (ADR 0074 slice 3).
+pub(crate) fn extract_live(
+    store: &RouterStore,
+    plan: &PhysicalPlan,
+    root_graph: GraphId,
+) -> RequirementSet {
+    extract(plan, root_graph, &RouterCatalogView { store })
 }
 
 /// Enforce plan-time data-plane authorization for `plan` executing on `root_graph`.
@@ -1203,19 +1248,34 @@ pub(crate) fn enforce_data_plane_authorization(
     root_graph: GraphId,
     plan: &PhysicalPlan,
 ) -> Result<(), RouterError> {
-    let reqs = extract(plan, root_graph, &RouterCatalogView { store });
-    let allowed = authorize_requirements(
-        &reqs,
-        root_graph.raw(),
-        caller,
-        &StoredGrants,
-        &StoreTenancy { store },
-    );
-    if allowed {
+    let reqs = extract_live(store, plan, root_graph);
+    if requirements_cover(&reqs, root_graph.raw(), caller, store) {
         Ok(())
     } else {
         Err(RouterError::Forbidden)
     }
+}
+
+/// Enforce prepared-query data-plane authorization (ADR 0074 slice 3).
+///
+/// The registration-time [`RequirementSet`] stored on the record is the primary checked
+/// artifact. When it denies, the live walk of the actually-dispatched `plan` decides as
+/// the fallback: catalogs may have drifted since registration, and derived sorted plans
+/// carry demands the stored base-plan set does not describe. Both evaluations fail closed
+/// and share one semantics ([`requirements_cover`]); admitting only when either admits is
+/// safe because catalog ids are monotonic (ADR 0074 invariant 4), so a stored demand can
+/// never re-bind to different vocabulary.
+pub(crate) fn enforce_prepared_data_plane_authorization(
+    store: &RouterStore,
+    caller: &Principal,
+    root_graph: GraphId,
+    stored: &RequirementSet,
+    plan: &PhysicalPlan,
+) -> Result<(), RouterError> {
+    if requirements_cover(stored, root_graph.raw(), caller, store) {
+        return Ok(());
+    }
+    enforce_data_plane_authorization(store, caller, root_graph, plan)
 }
 
 #[cfg(test)]

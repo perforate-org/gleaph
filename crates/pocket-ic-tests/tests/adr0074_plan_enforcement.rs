@@ -11,8 +11,9 @@
 //!    caps never imply data access (ADR 0028 indistinguishable NotFound at the
 //!    visibility gate, uniform Forbidden at plan time for visible-but-uncovered).
 //! 4. PUBLIC data-plane rows enable anonymous ad-hoc reads.
-//! 5. Prepared execution inherits the dynamic plan-time check (negative proven before
-//!    the PUBLIC data rows exist, positive after).
+//! 5. Prepared execution: registration publishes nothing (slice 3); a bounded PUBLIC
+//!    EXECUTE row admits the invocation but never carries scan privileges — the static
+//!    requirement set still demands the PUBLIC data-plane rows.
 //! 6. Enforcement state and outcomes survive a canister upgrade.
 //!
 //! Expected counts stated before running (per plan contract):
@@ -21,8 +22,8 @@
 //!   3 canisters: Router, Index, Graph shard (`install_single_shard_federation`);
 //!   canister *creation* calls are 3 funded `create_canister` per environment.
 //! - Update/query call budget per environment: 1 schema-bind mutate, 3 seed mutates with
-//!   3 maintenance drains, 4–8 GRANT mutates, ≤1 `admin_grant_caps`, ≤1 `prepare`,
-//!   ≤1 upgrade triple, and ≤12 probe query/update calls.
+//!   3 maintenance drains, 4–8 GRANT mutates plus ≤1 bounded EXECUTE publication,
+//!   ≤1 `admin_grant_caps`, ≤1 `prepare`, ≤1 upgrade triple, and ≤12 probe calls.
 //! - Regression reruns required alongside: `adr0074_grant_grammar`,
 //!   `adr0074_auth_ingress_walk`, `smoke`.
 
@@ -32,7 +33,7 @@ use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, drain_maintenance_via_timer, gql_mutate_as_admin, gql_query_as,
     gql_query_as_admin, install_single_shard_federation, prepare_batch_as_admin,
-    prepared_query_with_params_as, wasm_bytes,
+    prepared_query_with_params_as, publish_prepared_query_as, wasm_bytes,
 };
 use gleaph_router::types::GrantCapsArgs;
 
@@ -220,8 +221,8 @@ fn prepared_execution_inherits_plan_time_enforcement() {
     bind_typed_schema(&env);
     seed_two_persons_and_one_edge(&env);
 
-    // Registration co-writes the PUBLIC EXECUTE seed, so anonymous callers may execute
-    // the operation — but plan-time enforcement still applies to its requirements.
+    // Registration stores static requirements and publishes nothing (slice 3): an
+    // anonymous caller is default-denied at the EXECUTE gate.
     prepare_batch_as_admin(
         &env,
         &[gleaph_prepared_api::PreparedRegistration {
@@ -231,16 +232,29 @@ fn prepared_execution_inherits_plan_time_enforcement() {
         }],
     )
     .expect("register prepared query");
+    let err = prepared_query_err(&env, Principal::anonymous(), "peoples");
+    assert!(matches!(err, RouterError::Forbidden), "got {err:?}");
 
-    // Negative: EXECUTE alone does not carry data-plane privileges.
+    // Bounded publication admits EXECUTE only; the data-plane requirement set still
+    // denies the invocation (EXECUTE alone never carries scan privileges).
+    publish_prepared_query_as(
+        &env,
+        env.admin,
+        "peoples",
+        "PUBLIC",
+        "plan-enforcement-publish-peoples",
+    )
+    .expect("owner publishes to PUBLIC");
+    let err = prepared_query_err(&env, Principal::anonymous(), "peoples");
+    assert!(matches!(err, RouterError::Forbidden), "got {err:?}");
+
+    // Negative on the ad-hoc side too: none of this makes the graph itself visible.
     assert!(matches!(
         query_err(&env, Principal::anonymous(), FORWARD_QUERY),
         RouterError::NotFound(_)
     ));
-    let err = prepared_query_err(&env, Principal::anonymous(), "peoples");
-    assert!(matches!(err, RouterError::Forbidden), "got {err:?}");
 
-    // Positive: once PUBLIC holds the data-plane rows, the same invocation succeeds.
+    // Positive: once PUBLIC also holds the data-plane rows, the same invocation succeeds.
     grant_to(&env, "PUBLIC");
     let result = prepared_query_with_params_as(&env, Principal::anonymous(), "peoples", Vec::new());
     assert_eq!(result.row_count, 2);

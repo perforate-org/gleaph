@@ -120,15 +120,16 @@ type RouterInitArgs = record {
 | `reverse_vertex_label_name` | `logical_graph_name : text`, `label_id : VertexLabelId` | `Result<text, RouterError>`               | public     | Optional; planner/debug        |
 | `reverse_edge_label_name`   | `logical_graph_name : text`, `label_id : EdgeLabelId`   | `Result<text, RouterError>`               | public     | Optional; planner/debug        |
 | `reverse_property_name`     | `logical_graph_name : text`, `property_id : PropertyId` | `Result<text, RouterError>`               | public     | Optional; planner/debug        |
-| `list_graph_grants`         | `graph_name : text`                                     | `Result<Vec<GraphGrantSummary>, RouterError>` | **owner only** | ADR 0074 §5 grant introspection; non-tenants get `NotFound` (ADR 0028), tenants that are not the owner get `Forbidden` |
+| `list_graph_grants`         | `graph_name : text`                                     | `Result<Vec<GraphGrantSummary>, RouterError>` | **owner only** | ADR 0074 §5 grant introspection; the listing leads with the synthesized implicit-root marker of the registry owner (ADR 0074 §3 invariant 3, slice 3); non-tenants get `NotFound` (ADR 0028), visible tenants that are not the owner get `Forbidden` |
 
 ```candid
 type GrantSubjectView = variant { Principal : text; Public };
 type GrantDirectionView = variant { Outgoing; Incoming };
 type GrantOperationView = variant {
   Match; Traverse; Read; ReadProperty; Create; Update; Delete;
+  ImplicitRoot;
 };
-type GrantResourceKindView = variant { Vertex; Edge };
+type GrantResourceKindView = variant { Vertex; Edge; Graph };
 type GrantResourceView = record {
   kind : GrantResourceKindView;
   label : text;
@@ -142,6 +143,9 @@ type GraphGrantSummary = record {
   expires_at_ns : opt nat64;
 };
 ```
+
+`ImplicitRoot` / `Graph` mark the synthesized owner-authority entry (never a stored row);
+for that entry `label` carries the graph name and `property` is null.
 
 **Public read APIs:** `resolve_shard` and metadata lookups expose registry directory to any caller that
 can reach the canister (same policy as `gleaph-graph-index` lookups today). Gate at a higher layer if

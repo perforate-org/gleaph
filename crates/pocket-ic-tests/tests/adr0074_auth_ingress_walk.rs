@@ -1,16 +1,16 @@
-//! PocketIC: ADR 0074 slice-1 adversarial ingress walk over the Router authorization surface.
+//! PocketIC: ADR 0074 slice-3 adversarial ingress walk over the Router authorization surface.
 //!
 //! One bounded environment walks every authorization-sensitive handler family and asserts
 //! **default deny** for an adversarial caller plus **one success path**, per ADR 0074
 //! Migration ("adversarial tests must walk the ingress surface asserting deny-by-default
-//! plus one success path per handler family"). The anonymous public-prepared-execution flow
-//! is proven end-to-end through the registration-time PUBLIC EXECUTE auto-seed.
+//! plus one success path per handler family"). Anonymous prepared execution is admitted
+//! only through explicit bounded publication (slice 3): registration itself grants nothing.
 //!
 //! Handler families covered:
 //! 1. Ad-hoc GQL (`gql_query`) — anonymous denied, bootstrap admin succeeds.
-//! 2. Prepared registration (`prepare`) — anonymous denied, admin succeeds.
-//! 3. Prepared execution (`prepared_query`) — anonymous executes ONLY via the PUBLIC seed;
-//!    an unknown query name stays denied (the seed, not a residual default, admits it).
+//! 2. Prepared registration (`prepare`) — anonymous denied, admin succeeds (no auto-seed).
+//! 3. Prepared execution (`prepared_query`) — anonymous denied without publication;
+//!    a bounded PUBLIC row admits it; an unknown query name stays NotFound.
 //! 4. Caps administration (`admin_grant_caps`, `my_caps`) — a caller without
 //!    `MANAGE_AUTHORIZATION` is denied; admin grants a narrow cap that then takes effect.
 //! 5. Graph topology (`register_graph`) — anonymous denied; the fixture's successful
@@ -23,6 +23,7 @@ use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_pocket_ic_tests::{
     FederationEnv, ensure_property, ensure_vertex_label, gql_mutate_result_as_admin, gql_query_as,
     install_single_shard_federation, prepare_batch_as_admin, prepared_query_with_params_as,
+    publish_prepared_query_as,
 };
 use gleaph_prepared_api::PreparedRegistration;
 use gleaph_router::types::{GrantCapsArgs, RegisterGraphArgs, RegisterGraphShard};
@@ -180,26 +181,37 @@ fn ingress_walk_default_deny_plus_one_success_per_handler_family() {
 
     // --- 2. Prepared registration ---
     let reg = PreparedRegistration {
-        // Constant-only body: under slice-2b plan-time enforcement an anonymous caller
-        // holds no data-plane rows, so the published operation deliberately reads no
-        // graph elements; the family tests EXECUTE-publication, not scan semantics.
-        name: "walk-q".into(),
+        // Constant-only body: the operation reads no graph elements, so its statically
+        // extracted requirement set is empty and a bounded publication is trivially
+        // covered (ADR 0074 invariant 7).
+        name: "walk_q".into(),
         query: "RETURN 'walk' AS tag".into(),
         metadata: None,
     };
     let prep_err = prepare_err(&env, anon, vec![reg.clone()]);
     assert!(matches!(prep_err, RouterError::Forbidden));
-    // Success path: admin registers; this co-writes the PUBLIC EXECUTE seed (family 3).
+    // Success path: admin registers; registration publishes nothing (slice 3).
     prepare_batch_as_admin(&env, &[reg]).expect("admin registers prepared query");
 
     // --- 3. Prepared execution ---
-    // Unknown names stay default-deny even for anonymous callers: proves the PUBLIC seed —
-    // not any residual Executor-style default — is what admits execution.
+    // Unknown names stay default-deny even for anonymous callers.
     let missing = prepared_query_err(&env, anon, "never-registered-walk-q");
     assert!(matches!(missing, RouterError::NotFound(_)));
-    // Success path: the registered query executes anonymously through the PUBLIC seed.
+    // Default deny without publication: registration grants no EXECUTE row.
+    let unpublished = prepared_query_err(&env, anon, "walk_q");
+    assert!(matches!(unpublished, RouterError::Forbidden));
+    // Success path: the owner publishes to PUBLIC through the bounded GRANT grammar;
+    // that explicit row — not any residual Executor-style default — is what admits it.
+    publish_prepared_query_as(
+        &env,
+        env.admin,
+        "walk_q",
+        "PUBLIC",
+        "ingress-walk-publish-walk-q",
+    )
+    .expect("bounded PUBLIC publication");
     // A constant-only RETURN yields exactly its single literal row.
-    let result = prepared_query_with_params_as(&env, anon, "walk-q", Vec::new());
+    let result = prepared_query_with_params_as(&env, anon, "walk_q", Vec::new());
     assert_eq!(result.row_count, 1);
 
     // --- 4. Caps administration ---

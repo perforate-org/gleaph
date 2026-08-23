@@ -17,7 +17,7 @@
 //!
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
-use candid::Principal;
+use candid::{CandidType, Principal};
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::fmt;
@@ -238,7 +238,7 @@ impl<M: Memory> AuthState<M> {
 /// (e.g. a direction modifier on a prepared query) cannot be constructed.
 ///
 /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
 pub enum Privilege {
     /// `EXECUTE ON PREPARED QUERY <name>`; the name is the Router-global prepared
     /// operation name (ADR 0063).
@@ -254,7 +254,11 @@ pub enum Privilege {
 /// Router's logical `GraphId`). It is part of the canonical key so that two graphs which
 /// independently allocated the same numeric label/property ids never collide into one
 /// grant row.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serialization derives let plan-time requirement sets ([ADR 0074] §4) embed these rows
+/// in durable records (e.g. the Router prepared-query record) without a mirrored shape:
+/// this type stays the single representation of one grantable row.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
 pub struct GraphPrivilege {
     pub graph: u32,
     pub operation: GraphOperation,
@@ -267,7 +271,7 @@ pub struct GraphPrivilege {
 /// means traversal without an orientation requirement (undirected edge labels, vertex
 /// selectors); directed-edge grants normalize an omitted modifier into both directional
 /// rows before storage, so `None` never stands for BOTH on a directed label.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
 pub enum GraphOperation {
     Match,
     Traverse(Option<Direction>),
@@ -280,7 +284,7 @@ pub enum GraphOperation {
 
 /// Logical traversal direction of a directed-edge privilege (`OUTGOING = source → target`,
 /// [ADR 0074] §2). Graph semantics, independent of physical storage orientation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Outgoing,
     Incoming,
@@ -307,7 +311,7 @@ impl Direction {
 ///
 /// Ids are opaque graph-scoped catalog ids assigned by the embedding system. Phase 1 has
 /// no edge-property resource; property-level reads attach to vertex labels only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
 pub enum GraphResource {
     VertexLabel(u32),
     EdgeLabel(u32),

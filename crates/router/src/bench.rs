@@ -275,10 +275,13 @@ fn bench_router_prepared_plan_growth_32x256k() -> canbench_rs::BenchResult {
         for i in 0..32u32 {
             insert_prepared_plan(
                 PreparedPlanKey::new(format!("capacity-plan-{i:02}")),
-                PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                PreparedPlanRecord::V1(PreparedPlanRecordV1 {
                     graph_id,
                     query: black_box("MATCH (n) RETURN n".to_string()),
                     metadata: None,
+                    // Benches never execute these records; an empty demand set is a
+                    // valid inert payload for storage-growth measurement.
+                    required_privileges: crate::authz::RequirementSet::default(),
                 }),
             );
         }

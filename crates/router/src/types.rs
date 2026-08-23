@@ -1403,6 +1403,10 @@ pub enum GrantOperationView {
     Create,
     Update,
     Delete,
+    /// Marker of the registry owner's implicit root authority over the whole graph
+    /// (ADR 0074 §3 invariant 3). Synthesized by introspection only — ownership is
+    /// never materialized as a stored grant row.
+    ImplicitRoot,
 }
 
 /// Kind of the granted resource selector.
@@ -1410,12 +1414,16 @@ pub enum GrantOperationView {
 pub enum GrantResourceKindView {
     Vertex,
     Edge,
+    /// Whole-graph coverage marker; used only by the synthesized
+    /// [`GrantOperationView::ImplicitRoot`] entry.
+    Graph,
 }
 
 /// Resource of a listed grant row: selector kind plus reverse-resolved names.
 ///
 /// `property` is set only for `READ_PROPERTY` rows and names one property of the
-/// vertex label.
+/// vertex label. For `Graph`-kind entries (the implicit-root marker) `label` carries
+/// the graph name and `property` is `None`.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GrantResourceView {
     pub kind: GrantResourceKindView,

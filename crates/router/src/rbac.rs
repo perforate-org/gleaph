@@ -2,10 +2,11 @@
 //!
 //! [ADR 0074] replaces the former role ladder: every gate names the narrowest governing
 //! capability, default is deny, and data-plane access flows through grants (`caller ∪
-//! PUBLIC`), never through administrative capabilities. Data-plane admission itself is
-//! **plan-time** ([`crate::authz`], slice 2b): the pre-plan gate below only enforces the
-//! caps-governed `CALL` surface and ADR 0028 graph visibility (tenancy ∪ grant-derived),
-//! with non-disclosing `NotFound` for invisible graphs.
+//! PUBLIC`) plus the implicit ownership root (§3 invariant 3), never through
+//! administrative capabilities. Data-plane admission itself is **plan-time**
+//! ([`crate::authz`]): the pre-plan gate below only enforces the caps-governed `CALL`
+//! surface and ADR 0028 graph visibility (tenancy ∪ grant-derived), with non-disclosing
+//! `NotFound` for invisible graphs.
 //!
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
@@ -107,13 +108,14 @@ pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), Route
 }
 
 /// Prepared execution (ADR 0074 §1b/§4): the former Executor default is removed. Effective
-/// privilege is `caller-grants ∪ PUBLIC-grants ∪ ownership-derived`, evaluated under SECURITY
+/// privilege is `caller-grants ∪ PUBLIC-grants ∪ ownership-root`, evaluated under SECURITY
 /// INVOKER semantics.
 ///
 /// - The caller must hold an explicit `EXECUTE PreparedQuery` grant, or
-/// - the query's `PUBLIC` grant row exists (the registration-time bridge), or
-/// - the caller is owner/admin of the query's bound graph (`registry.owner` is the SSOT; issuer
-///   authority is derived at evaluation time and never duplicated into rows).
+/// - a bounded PUBLIC row for this query must exist (invariant-7-gated publication), or
+/// - the caller is owner/admin of the query's bound graph — ownership is the implicit root
+///   of data-plane authority, evaluated here from the registry SSOT and never duplicated
+///   into rows (ADR 0074 §3 invariant 3).
 ///
 /// The anonymous principal evaluates as the `PUBLIC` subject only — it can never hold a stored
 /// row and is never a graph tenant.
@@ -133,7 +135,7 @@ pub fn authorize_prepared_execute(
     if granted {
         return Ok(());
     }
-    // Ownership-derived arm: no admin-caps bypass on the data plane (ADR 0074 invariant 1).
+    // Ownership-root arm: no admin-caps bypass on the data plane (ADR 0074 invariant 1).
     if crate::facade::store::RouterStore::new().is_graph_tenant(graph_id, *caller) {
         return Ok(());
     }

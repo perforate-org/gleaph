@@ -20,7 +20,6 @@ use gleaph_prepared_api::{
 use gleaph_prepared_runtime::parse_prepared_source;
 
 use crate::execution_path::check_prepared_execution_path;
-use crate::facade::stable::ROUTER_AUTH_GRANTS;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
 use crate::facade::stable::graph_catalog;
 use crate::facade::stable::prepared_catalog::{
@@ -34,6 +33,7 @@ use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
 use crate::vector_sync;
+use gleaph_auth::Privilege;
 
 const POST_UPGRADE_PREPARED_CACHE_LIMIT: usize = 32;
 
@@ -210,10 +210,14 @@ pub(crate) fn prepare_batch_core(
     }
     // Phase 1: plan and complete metadata for every operation without writing. The first
     // failure in batch order aborts the whole batch before any catalog mutation.
+    let store = RouterStore::new();
     let mut committed = Vec::with_capacity(operations.len());
     for operation in operations {
         let (cache, graph_id) = build_prepared_cache(&operation.query, caller, None)
             .map_err(|error| batch_op_error(&operation.name, error))?;
+        // ADR 0074 slice 3: extract the static requirement set from the exact plan that
+        // was just built, through the same walker enforcement uses at execution time.
+        let required_privileges = crate::authz::extract_live(&store, &cache.plan, graph_id);
         let mut metadata = operation.metadata.clone();
         if let Some(metadata) = &mut metadata {
             let open = NoSchema;
@@ -247,23 +251,23 @@ pub(crate) fn prepare_batch_core(
             .map_err(|error| batch_op_error(&operation.name, error))?;
         committed.push((
             PreparedPlanKey::new(&operation.name),
-            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
                 graph_id,
                 query: operation.query.clone(),
                 metadata,
+                required_privileges,
             }),
             cache,
         ));
     }
     // Phase 2: commit every stable record and heap-cache entry only after all operations
-    // planned. Each registration co-writes its PUBLIC EXECUTE grant row (ADR 0074): the
-    // explicit behavior-preserving bridge that lets every caller — including anonymous — keep
-    // executing registered queries under default-deny until slice 3 replaces it with
-    // caller-bounded publication.
+    // planned. Each commit first cascade-revokes stale `EXECUTE PreparedQuery` rows for the
+    // name (ADR 0074 invariant 7): an EXECUTE row is valid only against the requirement set
+    // it was published for, so replacing a record forces explicit re-publication.
     for (key, record, cache) in committed {
+        revoke_stale_publication_rows(&key.name);
         insert_prepared_plan(key.clone(), record);
         insert_prepared_cache(key.clone(), PreparedCacheEntry::Ready(Box::new(cache)));
-        seed_public_execute_grant(&key.name);
         // The source and metadata were just replaced: derived sorted plans of
         // the previous generation must not survive.
         invalidate_prepared_sorted_variants(&key);
@@ -271,27 +275,26 @@ pub(crate) fn prepare_batch_core(
     Ok(())
 }
 
-/// Co-write of the PUBLIC `EXECUTE PreparedQuery` row with a prepared-record commit.
-fn seed_public_execute_grant(name: &str) {
-    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
-        grants
-            .grant(
-                gleaph_auth::GrantSubject::Public,
-                &gleaph_auth::Privilege::ExecutePreparedQuery { name: name.into() },
-                None,
-            )
-            .expect("PUBLIC is a virtual subject and never rejected");
-    });
-}
-
-/// Inverse co-write of [`seed_public_execute_grant`] when the prepared record is removed.
-fn revoke_public_execute_grant(name: &str) {
-    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
-        grants.revoke(
-            gleaph_auth::GrantSubject::Public,
-            &gleaph_auth::Privilege::ExecutePreparedQuery { name: name.into() },
+/// Cascade-revoke every stored `EXECUTE PreparedQuery` row for `name`, all subjects.
+///
+/// ADR 0074 invariant 7 keeps publication bounded by its publisher's privileges **for the
+/// requirement set published against**. There is no registration-time auto-seed (deleted in
+/// slice 3); rows exist only through gated `GRANT EXECUTE ON PREPARED QUERY` statements, so
+/// any upsert that replaces the requirement set — or any drop that removes the record — must
+/// invalidate them. Infallible by construction: exact-key removals over a snapshot.
+fn revoke_stale_publication_rows(name: &str) {
+    let targets: Vec<_> = crate::facade::auth::grant_rows()
+        .into_iter()
+        .filter(|row| matches!(&row.privilege, Privilege::ExecutePreparedQuery { name: row_name } if row_name == name))
+        .map(|row| (row.subject, row.privilege))
+        .collect();
+    for (subject, privilege) in targets {
+        let removed = crate::facade::auth::remove_grant(subject, &privilege);
+        debug_assert!(
+            removed,
+            "revocation snapshot came from the same stable map within one message"
         );
-    });
+    }
 }
 
 fn batch_op_error(name: &str, error: RouterError) -> RouterError {
@@ -405,7 +408,7 @@ pub(crate) fn rebuild_prepared_caches_after_upgrade() {
         plans
             .iter()
             .take(POST_UPGRADE_PREPARED_CACHE_LIMIT)
-            .filter_map(|entry| Some((entry.key().clone(), entry.value().as_v1().ok()?.clone())))
+            .map(|entry| (entry.key().clone(), entry.value().as_v1().clone()))
             .collect::<Vec<_>>()
     });
 
@@ -442,8 +445,8 @@ pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, Rou
     let mut operations = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
         plans
             .iter()
-            .filter(|entry| entry.value().as_v1().is_ok_and(|v| v.graph_id == graph_id))
-            .filter_map(|entry| entry.value().as_v1().ok()?.metadata.clone())
+            .filter(|entry| entry.value().as_v1().graph_id == graph_id)
+            .filter_map(|entry| entry.value().as_v1().metadata.clone())
             .collect::<Vec<_>>()
     });
     operations.sort_by(|left, right| left.name.cmp(&right.name));
@@ -475,9 +478,10 @@ fn drop_prepared_core(name: &str) -> Result<(), RouterError> {
         return Err(RouterError::NotFound(format!("prepared query {name:?}")));
     }
     remove_prepared_plan(&key);
-    // The registration-time PUBLIC EXECUTE bridge dies with the record; re-registering the
-    // name re-seeds it (ADR 0074).
-    revoke_public_execute_grant(name);
+    // Stored EXECUTE rows for this name die with the record (ADR 0074 invariant 7):
+    // re-registering the name must not inherit publications issued against a
+    // superseded requirement set.
+    revoke_stale_publication_rows(name);
     invalidate_prepared_sorted_variants(&key);
     Ok(())
 }
@@ -494,7 +498,7 @@ pub fn get_prepared(name: &str) -> Result<PreparedOperationRecord, RouterError> 
 pub(crate) fn get_prepared_core(name: &str) -> Result<PreparedOperationRecord, RouterError> {
     let record = get_prepared_plan(&PreparedPlanKey::new(name))
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
-    let v1 = record.as_v1()?;
+    let v1 = record.as_v1();
     Ok(PreparedOperationRecord {
         query: v1.query.clone(),
         metadata: v1.metadata.clone(),
@@ -587,10 +591,10 @@ async fn prepared_run_unchecked(
     let key = PreparedPlanKey::new(&name);
     let record = get_prepared_plan(&key)
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
-    let v1 = record.as_v1()?;
+    let v1 = record.as_v1();
     // ADR 0074: prepared execution is default-deny; the caller needs an explicit
-    // `EXECUTE PreparedQuery` grant, the registration-time PUBLIC row, or ownership of the
-    // query's bound graph.
+    // `EXECUTE PreparedQuery` grant (own or a bounded PUBLIC publication), or implicit-root
+    // ownership of the query's bound graph.
     authorize_prepared_execute(&caller, &name, v1.graph_id)?;
     let graph_id = v1.graph_id;
     let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
@@ -605,9 +609,17 @@ async fn prepared_run_unchecked(
         )?,
         _ => cache,
     };
-    // ADR 0074 slice 2b: prepared execution inherits the same dynamic plan-time
-    // enforcement (SECURITY INVOKER); record-level static extraction remains slice 3.
-    crate::authz::enforce_data_plane_authorization(&store, &caller, graph_id, &cache.plan)?;
+    // ADR 0074 slice 3: the registration-time static requirement set stored on the record
+    // is the primary checked artifact; the live walk of the dispatched plan stays as the
+    // fail-closed fallback (catalog drift since registration; derived sorted plans whose
+    // shape the stored set does not describe).
+    crate::authz::enforce_prepared_data_plane_authorization(
+        &store,
+        &caller,
+        graph_id,
+        &v1.required_privileges,
+        &cache.plan,
+    )?;
     check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
@@ -875,6 +887,7 @@ mod tests {
         drop_prepared_core, get_prepared_core, get_prepared_plan, insert_prepared_plan,
         prepare_batch_core, rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
     };
+    use crate::authz::RequirementSet;
     use crate::facade::stable::prepared_catalog::PreparedPlanKey;
     use crate::state::RouterError;
     use gleaph_graph_kernel::entry::GraphId;
@@ -959,10 +972,11 @@ mod tests {
         let key = PreparedPlanKey::new("doc-query");
         insert_prepared_plan(
             key.clone(),
-            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
                 graph_id,
                 query: "/// generated docs\nMATCH (n:PreparedRuntimeCache) RETURN n".into(),
                 metadata: None,
+                required_privileges: RequirementSet::default(),
             }),
         );
 
@@ -1002,18 +1016,20 @@ mod tests {
         let invalid_key = PreparedPlanKey::new("invalid-query");
         insert_prepared_plan(
             valid_key.clone(),
-            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
                 graph_id,
                 query: "MATCH (n:PreparedRuntimeValid) RETURN n".into(),
                 metadata: None,
+                required_privileges: RequirementSet::default(),
             }),
         );
         insert_prepared_plan(
             invalid_key.clone(),
-            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
                 graph_id,
                 query: "this is not a prepared query".into(),
                 metadata: None,
+                required_privileges: RequirementSet::default(),
             }),
         );
 
@@ -1082,7 +1098,7 @@ mod tests {
         ];
         prepare_batch_core(&operations, owner).expect("batch registers");
         let alpha = get_prepared_plan(&PreparedPlanKey::new("alpha")).expect("alpha stored");
-        let alpha = alpha.as_v1().expect("v1");
+        let alpha = alpha.as_v1();
         assert_eq!(alpha.query, "MATCH (n) RETURN 'a' AS tag");
         assert!(alpha.metadata.is_none());
         assert!(
@@ -1090,14 +1106,14 @@ mod tests {
             "alpha heap cache must be inserted"
         );
         let beta = get_prepared_plan(&PreparedPlanKey::new("beta")).expect("beta stored");
-        let beta = beta.as_v1().expect("v1");
+        let beta = beta.as_v1();
         assert_eq!(beta.query, "MATCH (n) RETURN n");
         remove_prepared_plan(&PreparedPlanKey::new("alpha"));
         remove_prepared_plan(&PreparedPlanKey::new("beta"));
     }
 
     #[test]
-    fn registration_seeds_public_execute_and_drop_revokes_it() {
+    fn registration_stores_requirements_and_no_auto_seed() {
         use crate::rbac::authorize_prepared_execute;
 
         let owner = Principal::from_slice(&[21; 29]);
@@ -1108,12 +1124,8 @@ mod tests {
         )
         .expect("batch registers");
 
-        // The registration co-wrote the PUBLIC EXECUTE row: an anonymous caller — which can
-        // hold no stored row and is not a tenant — executes through it.
-        authorize_prepared_execute(&Principal::anonymous(), "seeded-q", GraphId::from_raw(0))
-            .expect("PUBLIC bridge admits anonymous execution");
-
-        drop_prepared_core("seeded-q").expect("drop");
+        // Slice 3: registration no longer co-writes any EXECUTE row. An anonymous caller —
+        // which can hold no stored row and is a tenant of no graph — is default-denied.
         assert!(
             matches!(
                 authorize_prepared_execute(
@@ -1123,8 +1135,25 @@ mod tests {
                 ),
                 Err(RouterError::Forbidden)
             ),
-            "the PUBLIC bridge must die with the prepared record"
+            "registration must not seed anonymous execution"
         );
+        // Equivalence evidence (ADR 0074 slice 3): the stored static requirement set must
+        // equal a fresh dynamic walk of the same program against the same catalogs.
+        let record = get_prepared_plan(&PreparedPlanKey::new("seeded-q")).expect("stored");
+        let v1 = record.as_v1();
+        let store = crate::facade::store::RouterStore::new();
+        let (rebuilt, planned_graph) =
+            super::build_prepared_cache(&v1.query, owner, Some(v1.graph_id))
+                .expect("re-plan stored source");
+        assert_eq!(planned_graph, v1.graph_id);
+        let fresh = crate::authz::extract_live(&store, &rebuilt.plan, v1.graph_id);
+        assert_eq!(
+            v1.required_privileges, fresh,
+            "stored static set must equal a fresh dynamic walk"
+        );
+
+        drop_prepared_core("seeded-q").expect("drop");
+        assert!(get_prepared_plan(&PreparedPlanKey::new("seeded-q")).is_none());
     }
 
     #[test]
@@ -1241,7 +1270,7 @@ mod tests {
         op.metadata = Some(operation("scalar-op"));
         prepare_batch_core(&[op], owner).expect("batch registers");
         let stored = get_prepared_plan(&PreparedPlanKey::new("scalar-op")).expect("stored");
-        let record = stored.as_v1().expect("v1");
+        let record = stored.as_v1();
         let columns = record
             .metadata
             .as_ref()
@@ -1282,6 +1311,7 @@ mod tests {
 #[cfg(test)]
 mod sorted_variant_cache_tests {
     use super::*;
+    use crate::authz::RequirementSet;
     use candid::Principal;
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
     use gleaph_prepared_api::{Column, ResultSchema, SemanticType, SortKey};
@@ -1348,10 +1378,11 @@ mod sorted_variant_cache_tests {
         let key = PreparedPlanKey::new(unique);
         insert_prepared_plan(
             key.clone(),
-            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
                 graph_id,
                 query: query.to_string(),
                 metadata: Some(metadata.clone()),
+                required_privileges: RequirementSet::default(),
             }),
         );
         let (base, planned) =

@@ -32,7 +32,7 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GraphShardKey, Shard
 
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
 
-/// Registry-entry tenant check shared by the metadata ACL and the ownership-derived arm of
+/// Registry-entry tenant check shared by the metadata ACL and the ownership-root arm of
 /// data-plane evaluation (ADR 0074 §3 invariant 3: `registry.owner` is the identity anchor).
 fn entry_names_tenant(entry: &GraphRegistryEntry, caller: Principal) -> bool {
     caller == entry.owner || entry.admins.contains(&caller)
@@ -1078,9 +1078,10 @@ impl RouterStore {
 
     /// Whether `caller` is a tenant of `graph_id` per the registry entry (`owner`/`admins`).
     ///
-    /// The ownership-derived arm of data-plane privilege evaluation (ADR 0074 §4): the graph
-    /// issuer executes without stored grant rows because ownership itself is the single source
-    /// of truth — issuer authority is never duplicated into independent rows.
+    /// The ownership-root arm of data-plane privilege evaluation (ADR 0074 §3 invariant 3):
+    /// the graph owner executes without stored grant rows because ownership itself is the
+    /// implicit root of data-plane authority — it is evaluated at enforcement time from the
+    /// registry and never materialized as rows.
     pub fn is_graph_tenant(&self, graph_id: GraphId, caller: Principal) -> bool {
         ROUTER_GRAPHS
             .with_borrow(|graphs| graphs.get(&graph_id))

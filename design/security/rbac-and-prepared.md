@@ -1,11 +1,14 @@
 # RBAC and prepared queries
 
 > **Status (2026-08-24):** [ADR 0074](../adr/0074-data-plane-authorization-core.md) Phase 1
-> slices 1–2 are **implemented**: administrative capabilities plus per-graph data-plane
-> grants with a virtual `PUBLIC` subject and default deny, and **plan-time enforcement**
+> slices 1–3 are **implemented**: administrative capabilities plus per-graph data-plane
+> grants with a virtual `PUBLIC` subject and default deny; **plan-time enforcement**
 > (slice 2b): every vertex label, edge label × direction, projected property, and mutation
-> in a built plan must be covered by the caller's effective privileges. Caller-bounded
-> prepared publication and record-level static extraction land in slice 3.
+> in a built plan must be covered by the caller's effective privileges; and **caller-bounded
+> prepared publication with record-level static extraction** (slice 3): registered queries
+> store their statically extracted requirement set, publication is an explicit invariant-7-
+> gated `GRANT EXECUTE ON PREPARED QUERY` statement, and ownership is the documented
+> implicit root of data-plane authority (amended §3 invariant 3).
 
 ## Purpose
 
@@ -54,11 +57,12 @@ full set" (`is_admin`) for the ADR 0028 metadata bypass arm below.
 dormant `expires_at` field (expired rows read as absent). `PUBLIC` is a virtual pseudo-subject
 resolved at evaluation time — it is never persisted as a principal, and the anonymous
 principal can never hold a stored row. Effective data-plane privilege is
-`caller-grants ∪ PUBLIC-grants ∪ ownership-derived`, where ownership derives from
-`GraphRegistryEntry.owner`/`admins` at evaluation time (ADR 0074 invariant 3: issuer
-authority is never duplicated into independent rows). Slice 2b evaluates the full plan-time
-requirement set against these rows (`EXECUTE PreparedQuery`, `MATCH`, `TRAVERSE`
-(± direction), `READ`, `READ_PROPERTY`, `CREATE`, `UPDATE`, `DELETE`).
+`caller-grants ∪ PUBLIC-grants ∪ ownership-root`, where ownership derives from
+`GraphRegistryEntry.owner`/`admins` at evaluation time (ADR 0074 §3 invariant 3, amended:
+ownership is the implicit root of data-plane authority and is **never materialized as grant
+rows**). Plan-time evaluation checks the full requirement set against these rows
+(`EXECUTE PreparedQuery`, `MATCH`, `TRAVERSE` (± direction), `READ`, `READ_PROPERTY`,
+`CREATE`, `UPDATE`, `DELETE`).
 
 ### Plan-time data-plane enforcement (slice 2b)
 
@@ -84,9 +88,13 @@ Attribution contract (fail closed where the plan cannot name a resource):
 | Vector `SEARCH` | filter expressions attribute like other reads; the vector-index lookup itself stays ungated until authorization-aware vector search (Phase 2) |
 | `USE GRAPH` segments | each child segment resolves names against its target graph's catalogs |
 
-Prepared execution inherits the same dynamic check under SECURITY INVOKER (negative case:
-`EXECUTE PreparedQuery` alone carries no data-plane privileges). Record-level static
-extraction into prepared records remains slice 3.
+Prepared execution evaluates the **static requirement set stored on the record** (slice 3)
+as the primary checked artifact, with the live plan walk retained as the fail-closed
+fallback for catalog drift and for derived sorted plans whose shape the stored set does not
+describe. Both evaluations run under SECURITY INVOKER (`caller ∪ PUBLIC` plus ownership
+root); a stored demand can never re-bind to different vocabulary because catalog ids are
+monotonic (ADR 0074 invariant 4). Registration proves equivalence: the stored set must equal
+a fresh dynamic walk of the same program (regression-tested).
 
 ## Anonymous-principal invariant
 
@@ -103,15 +111,18 @@ invariant-owning write/configuration boundaries (not only at Candid entrypoints)
 | `crates/auth`        | `AuthState::upsert_caps`, `AuthState::bootstrap_principals`, `GrantState::grant` | Reject anonymous before any mutation; bootstrap is **all-or-nothing** (anonymous issuer or any anonymous initial admin inserts no rows). Returns `AuthWriteError::AnonymousPrincipal`. Grant keys reject anonymous subjects; publication to unauthenticated callers uses the `PUBLIC` subject. |
 | `crates/auth` (read) | `AuthState::caps_of`                                              | Defense in depth: anonymous always resolves to the empty set even if a corrupt anonymous row exists, so effective authorization is never elevated.                                                                                                                                                                                  |
 | Router               | `canister::init` (traps), `admin_grant_caps` → `admin_upsert_caps` | Route bootstrap/grant through the checked auth API; an anonymous target surfaces `RouterError::InvalidArgument`.                                                                                                                                                                                                                     |
-| Router (grants)      | `rbac::authorize_prepared_execute`, `authz::enforce_data_plane_authorization` | Anonymous evaluation resolves to the `PUBLIC` subject only, in both the EXECUTE gate and plan-time requirement coverage; explicit caller grants are unreachable.                                                                                                                                                                  |
+| Router (grants)      | `rbac::authorize_prepared_execute`, `authz::enforce_prepared_data_plane_authorization` | Anonymous evaluation resolves to the `PUBLIC` subject only, in both the EXECUTE gate and static/live requirement coverage; explicit caller grants are unreachable.                                                                                                                                                                 |
 | Graph metadata       | `GraphMetadata::validate_for_store`                               | Reject `FederationRouting` whose `router_canister` or `index_canister` is anonymous (`GraphMetadataError::AnonymousFederationPrincipal`). Shared by install-time `GraphInitArgs` and `set_federation_routing`; there is no post-install graph wiring endpoint (PocketIC fixtures wire routing through install-time `GraphInitArgs`). |
 | Graph router guard   | `guard_router_canister` (graph)                                   | Defense in depth: reject anonymous caller.                                                                                                                                                                                                                                                                                           |
 | Graph Index          | `IndexStore::init_from_args`                                      | Reject anonymous `router_canister` **before** clearing/writing any stable state (`IndexError::AnonymousRouter`); a failed init leaves catalog/postings/router untouched.                                                                                                                                                             |
 | Graph Index guards   | `guard_router_canister` (index), `assert_router_caller`           | Defense in depth: reject anonymous caller even if the configured router record named it.                                                                                                                                                                                                                                             |
 
-Prepared-query execution for anonymous callers keeps working through the registration-time
-`PUBLIC EXECUTE PreparedQuery` auto-seed (`prepare` co-writes it; `drop_prepared` revokes it)
-until slice 3 replaces the bridge with caller-bounded publication (ADR 0074 invariant 7).
+Prepared-query execution for anonymous callers exists **only** through an explicit bounded
+publication: `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC`, issued by a granter whose
+effective privileges cover the record's stored requirement set (ADR 0074 invariant 7). There
+is no registration-time auto-seed; replacing or dropping a record cascades its stale
+publication rows so a re-registered name never inherits grants issued against superseded
+requirements.
 
 ## Classification pipeline
 
@@ -204,14 +215,21 @@ Benefits:
 - Combined with `IC.MSG_CALLER()` for row-level patterns
 
 **Registration:** a principal holding `PREPARE_REGISTER` (the bootstrap full-set holders
-included). Registration co-writes the `PUBLIC EXECUTE PreparedQuery` grant row for the new
-name — the behavior-preserving publication bridge that slice 3 replaces with caller-bounded
-publication ([ADR 0074](../adr/0074-data-plane-authorization-core.md) invariant 7).
+included). Registration extracts the query's **static requirement set** through the same
+plan-time walker enforcement uses and stores it on the record; it publishes nothing.
+
+**Publication (slice 3):** `GRANT EXECUTE ON PREPARED QUERY <name> TO <subject>` is the only
+way an EXECUTE row comes into existence. Two gates, both evaluated before any write:
+(a) authority — the resolved graph's registry owner (implicit root) or a
+`PREPARE_REGISTER` caps holder — and (b) invariant 7: the granter's effective privileges
+must cover every row of the stored requirement set. Revocation is symmetric and removes
+exactly the targeted row. Replacing or dropping a record cascades its stale EXECUTE rows.
 
 **Execution:** default deny. A caller executes when it holds an explicit
-`EXECUTE PreparedQuery` grant, the query's `PUBLIC` grant row exists, or the caller is
+`EXECUTE PreparedQuery` grant, a bounded PUBLIC row exists for that name, or the caller is
 owner/admin of the query's bound graph (`rbac::authorize_prepared_execute`; SECURITY INVOKER,
-caller ∪ PUBLIC ∪ ownership-derived).
+caller ∪ PUBLIC ∪ ownership-root). The stored static set then governs data-plane coverage
+with the live walk as fallback (see *Plan-time data-plane enforcement* above).
 
 **Operator workflow:** [ADR 0061](../adr/0061-prepared-cli-registration-and-batch-catalog-api.md)
 defines the file-based `gleaph prepared` workflow: `prepared/<name>.gql` sources (optional
@@ -225,7 +243,9 @@ completes parameter and result metadata (ADR 0053/0061).
 - `crates/prepared-runtime`: heap-only prepared-source parsing, comment
   retention, and runtime records; it does not own prepared-query persistence
   or persist an AST
-- Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records are versioned (`PreparedPlanRecord::V1`)
+- Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records
+  are versioned (`PreparedPlanRecord::V1`, destructively redefined in slice 3 to carry
+  `required_privileges` — fresh state required, no decode fallback)
 - Data-plane grant rows on router stable memory (`ROUTER_AUTH_GRANTS`, MemoryId 55; ADR 0074)
 
 ## IC caller identity

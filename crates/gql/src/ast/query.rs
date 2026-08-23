@@ -592,13 +592,49 @@ pub enum SearchOutputKind {
 pub struct GrantStatement {
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
-    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
-    pub privilege: GrantPrivilege,
-    pub graph: ObjectName,
-    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
-    pub resource: GrantResourceSelector,
+    pub target: GrantTarget,
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub subject: GrantSubjectLiteral,
+}
+
+/// Target of a `GRANT`/`REVOKE` statement (ADR 0074 §5).
+///
+/// One discriminated union so the two statement forms cannot be mixed at the type
+/// level: a graph-scoped privilege is always bound to `(graph, resource-selector)`, and
+/// the `EXECUTE` publication form is always bound to exactly one prepared query name.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum GrantTarget {
+    /// `<privilege> ON GRAPH <graph> <resource-selector>` (ADR 0074 §2/§5).
+    Graph {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+        privilege: GrantPrivilege,
+        graph: ObjectName,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+        resource: GrantResourceSelector,
+    },
+    /// `EXECUTE ON PREPARED QUERY <query-name>` — the caller-bounded publication
+    /// form (ADR 0074 §1b). The bound graph resolves from the stored record on the
+    /// Router; it is not part of the statement.
+    PreparedQuery { name: String },
 }
 
 /// `REVOKE <privilege> ON GRAPH <graph> <selector> FROM <subject>` — the exact-key
@@ -626,11 +662,7 @@ pub struct GrantStatement {
 pub struct RevokeStatement {
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
-    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
-    pub privilege: GrantPrivilege,
-    pub graph: ObjectName,
-    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
-    pub resource: GrantResourceSelector,
+    pub target: GrantTarget,
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub subject: GrantSubjectLiteral,
 }

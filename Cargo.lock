@@ -3557,6 +3557,7 @@ dependencies = [
  "bitflags 2.13.1",
  "candid",
  "ic-stable-structures",
+ "serde",
 ]
 
 [[package]]

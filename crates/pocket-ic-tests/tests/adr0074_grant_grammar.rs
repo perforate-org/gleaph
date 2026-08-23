@@ -8,7 +8,9 @@
 //! closed with its distinct error before any stable write; stored rows survive a canister
 //! upgrade together with the principal-record collection (MemoryId 0 vs MemoryId 55 stay
 //! independently readable across a reopen); and open-schema graphs accept only the
-//! unoriented traversal form.
+//! unoriented traversal form. Every listing leads with the synthesized implicit-root
+//! marker of the registry owner (ADR 0074 §3 invariant 3, slice 3), so stored-row counts
+//! are one higher than the stored rows themselves.
 
 use std::collections::BTreeSet;
 
@@ -105,6 +107,21 @@ fn expect_grant_summary(row: &GraphGrantSummary, subject: GrantSubjectView) {
     assert_eq!(row.expires_at_ns, None);
 }
 
+/// The synthesized implicit-root marker (ADR 0074 §3 invariant 3) must lead every
+/// listing of this fixture's owner.
+fn expect_implicit_root_marker(row: &GraphGrantSummary, env: &FederationEnv) {
+    assert_eq!(
+        row.subject,
+        GrantSubjectView::Principal(owner(env).to_text())
+    );
+    assert_eq!(row.operation, GrantOperationView::ImplicitRoot);
+    assert_eq!(row.direction, None);
+    assert_eq!(row.resource.kind, GrantResourceKindView::Graph);
+    assert_eq!(row.resource.label, GRAPH_NAME);
+    assert_eq!(row.resource.property, None);
+    assert_eq!(row.expires_at_ns, None);
+}
+
 #[test]
 fn owner_grants_lists_and_revokes_traverse_outgoing() {
     let env = install_single_shard_federation();
@@ -119,15 +136,17 @@ fn owner_grants_lists_and_revokes_traverse_outgoing() {
         grantee.to_text()
     );
 
-    // Grant: zero-row acknowledgment, then the row is listed back exactly.
+    // Grant: zero-row acknowledgment, then the row is listed back exactly — behind the
+    // synthesized implicit-root marker.
     gql_mutate_as_admin(&env, &grant, "adr0074_grant_traverse_outgoing");
     let listed = list_grants(&env, owner(&env)).expect("owner lists grants");
-    assert_eq!(listed.len(), 1, "exactly one grant row expected");
+    assert_eq!(listed.len(), 2, "marker plus one grant row expected");
+    expect_implicit_root_marker(&listed[0], &env);
     assert_eq!(
-        listed[0].subject,
+        listed[1].subject,
         GrantSubjectView::Principal(grantee.to_text())
     );
-    expect_grant_summary(&listed[0], GrantSubjectView::Principal(grantee.to_text()));
+    expect_grant_summary(&listed[1], GrantSubjectView::Principal(grantee.to_text()));
 
     // A grantee is now grant-visible (slice 2b), so the owner-only introspection surface
     // answers the authority violation with Forbidden; a truly invisible stranger keeps
@@ -141,10 +160,12 @@ fn owner_grants_lists_and_revokes_traverse_outgoing() {
     // Revoke removes exactly that row...
     gql_mutate_as_admin(&env, &revoke, "adr0074_revoke_traverse_outgoing");
     let listed = list_grants(&env, owner(&env)).expect("owner lists grants after revoke");
-    assert!(
-        listed.is_empty(),
-        "revoke must remove the row, got {listed:?}"
+    assert_eq!(
+        listed.len(),
+        1,
+        "only the implicit-root marker must remain, got {listed:?}"
     );
+    expect_implicit_root_marker(&listed[0], &env);
 
     // ...and revoking again addresses the now-absent exact key.
     let err = mutate_err(&env, owner(&env), &revoke);
@@ -169,7 +190,8 @@ fn invalid_variants_fail_closed_before_mutation() {
     gql_mutate_as_admin(&env, &survivor, "adr0074_survivor_grant");
     assert_eq!(
         list_grants(&env, owner(&env)).expect("baseline list").len(),
-        1
+        2,
+        "implicit-root marker plus the survivor row"
     );
 
     let variants: [(Principal, String, &str, ExpectedErr); 6] = [
@@ -246,7 +268,7 @@ fn invalid_variants_fail_closed_before_mutation() {
         let listed = list_grants(&env, owner(&env)).expect("post-failure list");
         assert_eq!(
             listed.len(),
-            1,
+            2,
             "variant {idx} must not mutate stored grants, got {listed:?}"
         );
     }
@@ -268,7 +290,7 @@ fn invalid_variants_fail_closed_before_mutation() {
         list_grants(&env, owner(&env))
             .expect("post-stranger list")
             .len(),
-        1,
+        2,
         "the rejected stranger attempt must not mutate stored grants"
     );
 }
@@ -288,8 +310,9 @@ fn grant_and_caps_rows_survive_canister_upgrade() {
         "adr0074_pre_upgrade_grant",
     );
     let before = list_grants(&env, owner(&env)).expect("pre-upgrade list");
-    assert_eq!(before.len(), 1);
-    expect_grant_summary(&before[0], GrantSubjectView::Principal(grantee.to_text()));
+    assert_eq!(before.len(), 2);
+    expect_implicit_root_marker(&before[0], &env);
+    expect_grant_summary(&before[1], GrantSubjectView::Principal(grantee.to_text()));
 
     // Upgrade router, index, and graph shard in place (same wasm).
     let empty = Encode!(&()).expect("encode empty upgrade arg");
@@ -340,9 +363,10 @@ fn open_schema_graph_accepts_only_unoriented_traversal() {
         "adr0074_open_schema_unoriented",
     );
     let listed = list_grants(&env, owner(&env)).expect("open-schema list");
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].operation, GrantOperationView::Traverse);
-    assert_eq!(listed[0].direction, None);
+    assert_eq!(listed.len(), 2);
+    expect_implicit_root_marker(&listed[0], &env);
+    assert_eq!(listed[1].operation, GrantOperationView::Traverse);
+    assert_eq!(listed[1].direction, None);
 
     // ...while directional modifiers fail closed: nothing declares KNOWS directed.
     let err = mutate_err(
@@ -362,6 +386,6 @@ fn open_schema_graph_accepts_only_unoriented_traversal() {
         list_grants(&env, owner(&env))
             .expect("post-failure list")
             .len(),
-        1
+        2
     );
 }

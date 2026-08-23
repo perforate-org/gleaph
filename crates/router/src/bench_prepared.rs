@@ -79,10 +79,13 @@ fn sorted_variant_fixture() -> SortedVariantFixture {
     let key = PreparedPlanKey::new("bench-sorted");
     insert_prepared_plan(
         key.clone(),
-        PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+        PreparedPlanRecord::V1(PreparedPlanRecordV1 {
             graph_id,
             query: query.to_string(),
             metadata: Some(metadata.clone()),
+            // The sorted-variant bench rebuilds plans only; it never evaluates
+            // requirements, so an empty demand set is a valid inert payload.
+            required_privileges: crate::authz::RequirementSet::default(),
         }),
     );
     let (base, planned) = build_prepared_cache(query, owner, Some(graph_id)).expect("base plan");
