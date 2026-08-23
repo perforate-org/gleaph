@@ -267,6 +267,33 @@ pub(crate) fn active_edge_physical_index_ids(
         .collect()
 }
 
+/// Return every Active namespace whose membership names this CATALOG edge label directly.
+///
+/// Read-path resolution seam of the posting label identity rule (GAP-2026-08-22-001):
+/// lookups speak catalog ids while stored postings are wire-tagged, so this must not go
+/// through [`edge_posting_matches_registration`], which expects a wire label. Maintenance
+/// paths that hold a wire label keep using [`active_edge_physical_index_ids`].
+pub(crate) fn active_edge_physical_index_ids_for_catalog_label(
+    catalog_label_raw: u16,
+    property_id: PropertyId,
+) -> Vec<PhysicalIndexId> {
+    with_catalog(
+        |catalog| {
+            catalog
+                .edge_indexes
+                .iter()
+                .filter(|membership| {
+                    membership.property_id == property_id.raw()
+                        && membership.label_id == catalog_label_raw
+                        && membership.phase.is_active()
+                })
+                .map(|membership| membership.physical_index_id)
+                .collect()
+        },
+        Vec::new(),
+    )
+}
+
 pub(crate) fn edge_index_memberships(
     wire_label_id: u16,
     property_id: PropertyId,
