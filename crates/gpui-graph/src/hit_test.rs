@@ -57,9 +57,13 @@ where
     // the precise geometry test is run in screen space against the transformed
     // candidates.
     let world_point = viewport.screen_to_world(screen_point);
+    let zoom = viewport.zoom().max(f32::EPSILON);
+    // Nodes are world-sized, so their on-screen hit radius scales with zoom.
+    let node_radius_screen = style.node_radius * zoom;
     // Candidate margin so an edge whose curve bows near the point is not missed
-    // by the coarse grid; the precise test still filters exactly.
-    let margin = (style.node_radius * 2.0).max(style.edge_width + 2.0);
+    // by the coarse grid; the precise test still filters exactly. The edge
+    // threshold is a screen length converted into world units for the query.
+    let margin = (style.node_radius * 2.0).max((style.edge_width + 2.0) / zoom);
     let bounds = WorldBounds {
         min: world_point - Vec2::splat(margin),
         max: world_point + Vec2::splat(margin),
@@ -73,7 +77,7 @@ where
         };
         let screen = viewport.world_to_screen(world);
         let dist = (screen - screen_point).length();
-        if dist <= style.node_radius && best_node.is_none_or(|(_, d)| dist < d) {
+        if dist <= node_radius_screen && best_node.is_none_or(|(_, d)| dist < d) {
             best_node = Some((id, dist));
         }
     }
@@ -118,9 +122,7 @@ where
     // falling back to every node on degenerate queries — the field must
     // contain exactly what `endpoints_in_field` claims below.
     let view_visible = viewport.visible_world_bounds();
-    let zoom = viewport.zoom().max(f32::EPSILON);
-    let screen_clearance = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
-    let obstacle_radius = screen_clearance / zoom;
+    let obstacle_radius = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
     let field_margin = style.node_radius * 2.0 + obstacle_radius;
     let obstacles_world: Vec<Vec2> = synced
         .visible_nodes(&view_visible, field_margin)

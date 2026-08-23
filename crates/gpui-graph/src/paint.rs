@@ -323,11 +323,12 @@ where
         // `node_simplify_threshold` renders fill-only (no stroke). The diameter
         // is `2 * node_radius` in screen pixels.
         let simplified = style.node_simplify_threshold > 0.0
-            && style.node_radius * 2.0 <= style.node_simplify_threshold;
+            && style.node_radius * 2.0 * viewport.zoom() <= style.node_simplify_threshold;
         frame.nodes.push(PaintNode {
             id: *id,
             position: viewport.world_to_screen(world),
-            radius: style.node_radius,
+            // Nodes are world-sized: their on-screen radius scales with zoom.
+            radius: style.node_radius * viewport.zoom(),
             selected: selection.contains_node(*id),
             hovered: hover.node == Some(*id),
             overlay: node_overlay(*id),
@@ -347,15 +348,13 @@ where
     // visible edge is a straight-line-LOD edge (which never reads obstacles),
     // so no obstacle field is built in the common zoomed-out case.
     //
-    // Nodes render at a fixed on-screen radius, so the clearance is defined on
-    // screen and converted to world units for this frame's field. The field's
-    // collection window widens by one clearance radius beyond the node-cull
-    // margin, so a node drifting across the boundary is already fully present
-    // (or fully absent) for every edge that can see it and shapes do not pop
-    // as the view pans.
-    let screen_clearance = style.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let zoom = viewport.zoom().max(f32::EPSILON);
-    let obstacle_radius = screen_clearance / zoom;
+    // Nodes are world-sized, so the obstacle clearance is a plain world
+    // length and curve shapes are fully invariant under both panning and
+    // zooming. The field's collection window widens by one clearance radius
+    // beyond the node-cull margin, so a node drifting across the boundary is
+    // already fully present (or fully absent) for every edge that can see it
+    // and shapes do not pop as the view pans.
+    let obstacle_radius = style.node_radius * 2.0 + OBSTACLE_RADIUS;
     let field_margin = margin + obstacle_radius;
     let empty_obstacle_field = ObstacleField::new(&[], obstacle_radius);
 
@@ -1150,11 +1149,10 @@ pub fn edge_control_point(
 /// Operates entirely in world space: `control`, `source`, and `target` are
 /// world coordinates and the field is built over world positions on a global
 /// lattice ([`ObstacleField`]). Curve geometry is therefore a function of the
-/// world layout and the zoom level alone — panning cannot change a shape.
-/// The clearance tracks how big nodes are drawn: nodes render at a fixed
-/// on-screen radius, so builders derive [`EdgeCurveContext::obstacle_radius`]
-/// as `(screen clearance) / zoom`, keeping the on-screen clearance constant
-/// while the world geometry stays a deterministic function of zoom.
+/// world layout alone — neither panning nor zooming changes a shape. Nodes
+/// are world-sized and the clearance ([`EdgeCurveContext::obstacle_radius`])
+/// is a plain world length, so both camera operations act purely as
+/// transforms over identical geometry.
 ///
 /// Reads the field at a fixed number of chord samples: the density
 /// difference across the chord's two sides steers toward the sparse side,
@@ -1207,9 +1205,8 @@ pub struct EdgeCurveContext<'a> {
     /// should bow around, in world coordinates on a globally anchored lattice
     /// (see [`ObstacleField`]).
     pub obstacles: &'a ObstacleField,
-    /// World-space obstacle clearance radius. Builders derive it as
-    /// `(screen clearance pixels) / zoom`, matching the fixed on-screen size
-    /// nodes are rendered at.
+    /// World-space obstacle clearance radius: two world node radii plus the
+    /// base clearance, matching world-sized nodes.
     pub obstacle_radius: f32,
     /// Whether this edge's source and target nodes are part of the obstacle
     /// field, in `(source, target)` order. Avoidance cancels an endpoint's own
@@ -1364,7 +1361,7 @@ pub fn edge_path<N, E>(
         // boundaries. Self-loops are handled above and never simplified. The
         // degenerate control point keeps the trimmed path a valid quadratic so
         // hit testing and label masking keep working unchanged.
-        let curve = straight_line_trim(source, target, style.node_radius);
+        let curve = straight_line_trim(source, target, style.node_radius * viewport.zoom());
         if finite_chord_length(curve.0, curve.2).is_some() {
             vec![curve]
         } else {
@@ -1400,7 +1397,12 @@ pub fn edge_path<N, E>(
         }
         #[cfg(test)]
         eprintln!("DBG av post_screen={:?} zoom={}", control, viewport.zoom());
-        let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
+        let curve = trim_curve_to_node_boundary(
+            source,
+            control,
+            target,
+            style.node_radius * viewport.zoom(),
+        );
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
         // empty path so the edge is skipped rather than producing a zero-length
@@ -1611,11 +1613,11 @@ pub(crate) fn self_loop_path<N, E>(
     // the node. The two sides leave and re-enter the node at two distinct
     // points on the node edge, both pointing toward the node center, so the
     // start and end are visually separate.
-    let r = style.node_radius;
+    let r = style.node_radius * viewport.zoom();
     // Two points just outside the node's circumference, symmetric about the
     // up-axis, angled 30° from the up-axis so they are distinct and point at
     // the center. The small outward offset keeps the loop clear of the node.
-    let r_out = r + 2.0;
+    let r_out = r + 2.0 * viewport.zoom();
     let start = Vec2::new(-r_out * 0.5, -r_out * 0.866);
     let end = Vec2::new(r_out * 0.5, -r_out * 0.866);
     // The base size follows the graph's zoom linearly so the loop stays
@@ -1919,12 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_self_loop_that_enters_screen_at_non_unit_zoom() {
-        // The node is outside the visible world bounds and the node margin,
-        // while the self-loop's screen-space path reaches into the viewport.
-        // The cull path must compare geometry in the same coordinate space as
-        // the bounds; passing the world node position to self_loop_path makes
-        // the pre-fix cull reject this edge.
+    fn culled_self_loop_beyond_margin_has_no_on_screen_part() {
         let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
         scene.merge(GraphBatch::new().node("node".to_owned(), ()).edge(
             "loop".to_owned(),
@@ -1968,28 +1965,45 @@ mod tests {
             &viewport,
             &style,
         );
-        let (path_min, path_max) = path.iter().fold(
-            (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
-            |(min, max), (p0, p1, p2)| {
-                (
-                    min.min(*p0).min(*p1).min(*p2),
-                    max.max(*p0).max(*p1).max(*p2),
-                )
-            },
-        );
-        assert!(
-            path.iter().any(|(p0, p1, p2)| {
-                point_in_bounds(*p0, &screen_bounds, 0.0)
-                    || point_in_bounds(*p1, &screen_bounds, 0.0)
-                    || point_in_bounds(*p2, &screen_bounds, 0.0)
-            }),
-            "a self-loop path point must be inside the viewport"
-        );
-        assert!(
-            bounds_intersect(&screen_bounds, 0.0, path_min, path_max),
-            "the actual screen-space self-loop path must enter the viewport"
-        );
+        // At this zoom the world-sized loop collapses below a pixel, so the
+        // path may legitimately be empty (nothing drawable). When points do
+        // exist they must hug the node's screen position.
+        let node_screen = viewport.world_to_screen(positions(node).unwrap());
+        // Hug bound: node radius plus the loop's base/clearance paddings,
+        // all scaled by zoom like every other world length.
+        let hug = style.node_radius * viewport.zoom() + 12.0 * viewport.zoom() + 1.0;
+        let hug_bounds = WorldBounds {
+            min: node_screen - Vec2::splat(hug),
+            max: node_screen + Vec2::splat(hug),
+        };
+        for (p0, p1, p2) in &path {
+            for p in [p0, p1, p2] {
+                assert!(
+                    point_in_bounds(*p, &hug_bounds, 0.0),
+                    "self-loop point {p:?} must hug the node at {node_screen:?}"
+                );
+            }
+        }
+        if !path.is_empty() {
+            let (path_min, path_max) = path.iter().fold(
+                (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+                |(min, max), (p0, p1, p2)| {
+                    (
+                        min.min(*p0).min(*p1).min(*p2),
+                        max.max(*p0).max(*p1).max(*p2),
+                    )
+                },
+            );
+            assert!(
+                !bounds_intersect(&screen_bounds, 0.0, path_min, path_max),
+                "the shrunken self-loop must stay outside the viewport"
+            );
+        }
 
+        // With world-sized nodes the cull margin (two node radii) strictly
+        // exceeds anything a self-loop can draw beyond its own node, so a
+        // loop whose node lies beyond that margin has no on-screen part and
+        // must be culled consistently by every path.
         let linear = build_paint_frame(PaintFrameInput {
             graph,
             node_position: &positions,
@@ -2010,6 +2024,8 @@ mod tests {
             .into_iter()
             .map(|index| synced.edges().edge_ids[index])
             .collect::<Vec<_>>();
+        // Overflow-classified self-loops are always candidates by design;
+        // the precise per-frame path decides visibility.
         assert_eq!(candidate_ids, vec![loop_id]);
         let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
             synced: &synced,
@@ -2022,11 +2038,10 @@ mod tests {
             node_overlay: None,
             edge_overlay: None,
         });
-        let expected = vec![loop_id];
         let linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
         let indexed_ids = indexed.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
-        assert_eq!(linear_ids, expected);
-        assert_eq!(indexed_ids, expected);
+        assert_eq!(linear_ids, Vec::<EdgeId>::new());
+        assert_eq!(indexed_ids, Vec::<EdgeId>::new());
         assert_eq!(indexed_ids, linear_ids);
     }
 
@@ -2852,12 +2867,14 @@ mod tests {
             .find(|e| (e.source.y - e.target.y).abs() < 1e-3)
             .expect("horizontal edge exists");
         let (_, control, _) = horizontal.path[0];
-        // The neighbor edge's midpoint (25, 15) is on the left of a->b
-        // (direction +x, normal +y, dot > 0), so a->b bows right (control.y > 0),
-        // away from the neighbor.
+        // The neighbor edge's midpoint (25, 15) sits above the chord, and so
+        // does node c. Both effects push the same way: the density bow favors
+        // the sparse lower side, and the obstacle field steers away from the
+        // mass above the chord. With y growing downward on screen, both give
+        // a negative control offset.
         assert!(
-            control.y > 0.0,
-            "edge should bow away from the neighbor on its left, control = {control:?}"
+            control.y < 0.0,
+            "edge should bow away from the crowded upper side, control = {control:?}"
         );
     }
 

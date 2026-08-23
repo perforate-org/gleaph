@@ -604,6 +604,9 @@ where
                         // coordinates of off-screen nodes (which would make it
                         // subdivide the curve excessively at deep zoom).
                         let viewport = view_paint.read(cx).viewport();
+                        // Nodes are world-sized; label anchors ride their
+                        // on-screen radius.
+                        let node_radius_screen = style.node_radius * viewport.zoom();
                         let viewport_size = viewport.size();
                         let viewport_rect = Bounds {
                             origin: point(px(coordinates.origin.x), px(coordinates.origin.y)),
@@ -636,7 +639,7 @@ where
                             .filter_map(|(label, measured)| {
                                 let measured = measured.as_ref()?;
                                 Some(label_rect(measured, label.position, |anchor, _height| {
-                                    anchor.y + style.node_radius + style.label_offset
+                                    anchor.y + node_radius_screen + style.label_offset
                                 }))
                             })
                             .collect();
@@ -666,7 +669,7 @@ where
                                 let measured = measured.as_ref()?;
                                 let anchor = coordinates.canvas_to_window(label.position);
                                 Some(label_rect(measured, anchor, |anchor, _height| {
-                                    anchor.y + style.node_radius + style.label_offset
+                                    anchor.y + node_radius_screen + style.label_offset
                                 }))
                             },
                         ));
@@ -888,6 +891,7 @@ where
                                 measured.as_ref(),
                                 &style,
                                 &viewport_rect,
+                                node_radius_screen,
                             );
                         }
                         for (label, measured) in frame.edge_labels.iter().zip(&edge_measures) {
@@ -1793,6 +1797,7 @@ where
 }
 
 /// Paint a node label centered below the node.
+#[allow(clippy::too_many_arguments)]
 fn paint_label(
     window: &mut Window,
     cx: &mut gpui::App,
@@ -1801,6 +1806,7 @@ fn paint_label(
     measured: Option<&MeasuredLabel>,
     style: &GraphStyle,
     viewport_rect: &Bounds<gpui::Pixels>,
+    node_radius_screen: f32,
 ) {
     let anchor = coordinates.canvas_to_window(label.position);
     // Skip labels whose anchor is far outside the viewport. The label is small
@@ -1815,7 +1821,7 @@ fn paint_label(
     };
     let mut origin = point(
         px(anchor.x),
-        px(anchor.y + style.node_radius + style.label_offset),
+        px(anchor.y + node_radius_screen + style.label_offset),
     );
     for line in &measured.lines {
         // Center the label horizontally on the node by shifting the origin by

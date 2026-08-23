@@ -1338,14 +1338,13 @@ A per-edge query samples this field at a fixed number of chord points and
 derives one perpendicular push from the density difference across the chord's
 two sides plus a fixed-side kick for mass that straddles the chord — so the
 cost per edge is proportional to the sample count only, never to the number of
-nearby nodes, whatever the graph density. Avoidance runs in world space: the
-raster's origin snaps onto a global lattice of cell multiples, so panning only
-slides the visible window along that lattice and cannot change any curve's
-shape; shapes are a function of the world layout and the zoom level alone.
-Because nodes render at a fixed on-screen radius, builders derive the
-clearance as `(screen clearance) / zoom`, keeping the on-screen clearance
-constant while zoom remains the sole (and smooth) determinant of how much
-curves bow. Where the previous per-obstacle model flipped push sides
+nearby nodes, whatever the graph density. Avoidance runs in world space: the raster's origin snaps onto a global lattice
+of cell multiples, so panning only slides the visible window along that lattice
+and cannot change any curve's shape. Nodes are world-sized (their on-screen
+radius scales with zoom) and the clearance is a plain world length — two node
+radii plus the base clearance — so zooming also acts purely as a camera
+transform: curve shapes depend on nothing but the world layout. Where the
+previous per-obstacle model flipped push sides
 discontinuously at zero perpendicular distance (defaulting to `-normal`), the
 field response is continuous through that case with the same default side. An
 edge's own endpoints never deflect it: when they are part of the field
@@ -1412,7 +1411,8 @@ and edge label, then splits each edge's Bézier path exactly at the t values
 where it crosses a label rectangle (`visible_bezier_curves`). The masked region
 matches the label precisely and is independent of zoom or pan. Node labels use
 the same rectangle-mask technique as edge labels: a node label's bounds sit
-below the node (radius + offset) and cut any edge that passes behind them.
+below the node (on-screen radius + offset, scaling with zoom for world-sized
+nodes) and cut any edge that passes behind them.
 
 The mask is a rounded rectangle (`RoundedRect`) whose corner radius matches the
 label background padding (4px). The curve is split at the rectangle's edge

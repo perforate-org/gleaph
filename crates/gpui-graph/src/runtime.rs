@@ -1127,22 +1127,26 @@ mod tests {
         // bbox is far beyond index slack.
         let old_position_loop =
             crate::paint::self_loop_path(source, node_screen, graph, &positions, &viewport, &style);
-        let screen_bounds = WorldBounds {
-            min: glam::Vec2::ZERO,
-            max: viewport.size(),
-        };
-        let screen_box_intersects = |min: glam::Vec2, max: glam::Vec2| {
-            min.x <= screen_bounds.max.x
-                && max.x >= screen_bounds.min.x
-                && min.y <= screen_bounds.max.y
-                && max.y >= screen_bounds.min.y
+        // World-sized nodes shrink their onigiri with zoom: the loop must hug
+        // the endpoint's screen position instead of painting a fixed-size
+        // marker into the view.
+        let hug = style.node_radius * viewport.zoom() + 12.0 * viewport.zoom() + 1.0;
+        let hug_bounds = WorldBounds {
+            min: node_screen - glam::Vec2::splat(hug),
+            max: node_screen + glam::Vec2::splat(hug),
         };
         assert!(
-            old_position_loop.iter().any(|(p0, p1, p2)| {
-                screen_box_intersects(p0.min(*p1).min(*p2), p0.max(*p1).max(*p2))
-            }),
-            "the old position-based onigiri would enter this non-unit-zoom view"
+            !old_position_loop.is_empty(),
+            "the sub-pixel onigiri must still produce drawable geometry"
         );
+        for (p0, p1, p2) in &old_position_loop {
+            for p in [p0, p1, p2] {
+                assert!(
+                    crate::paint::point_in_bounds(*p, &hug_bounds, 0.0),
+                    "onigiri point {p:?} must hug the node at {node_screen:?}"
+                );
+            }
+        }
         let selection = crate::interaction::Selection::new();
         let hover = crate::interaction::Hover::default();
         let linear = crate::paint::build_paint_frame(crate::paint::PaintFrameInput {
