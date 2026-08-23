@@ -32,6 +32,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
@@ -49,8 +50,15 @@ use gpui_graph::{
 /// frame on large graphs (§11.8).
 const FRAME_LAYOUT_BUDGET: LayoutBudget = LayoutBudget {
     max_iterations: 1,
-    max_duration: Some(core::time::Duration::from_millis(6)),
+    max_duration: Some(Duration::from_millis(6)),
 };
+
+/// Animation pacing: step the simulation at ~30 steps per second instead of
+/// once per display frame. ProMotion displays refresh at 120 Hz, so stepping
+/// every frame would converge demo graphs in a fraction of a second — too
+/// fast to read as motion. A fixed interval keeps the visible convergence
+/// around a second regardless of refresh rate.
+const STEP_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Application data for a node (§6.3). The external key is stored with the
 /// payload so the example can expand a clicked `NodeId` back into the catalog:
@@ -131,6 +139,7 @@ struct Example {
     view: Entity<View>,
     scene: Entity<Scene>,
     settled: bool,
+    last_layout_step: Instant,
     /// The name currently selected, shown in the overlay panel.
     selected: Option<(&'static str, &'static str)>,
     /// Keys of nodes that have been collapsed, so clicking them re-expands.
@@ -208,6 +217,7 @@ impl Example {
             view,
             scene,
             settled: false,
+            last_layout_step: Instant::now(),
             selected: None,
             collapsed: HashMap::new(),
             overlay,
@@ -343,15 +353,22 @@ impl Render for Example {
         // cap (§11.8) bounds each frame's layout work: small graphs converge
         // in fewer animation frames, large graphs never blow the frame.
         if !self.settled {
-            let progress = self.scene.update(cx, |scene, cx| {
-                let p = scene.step_layout_async(FRAME_LAYOUT_BUDGET, cx);
-                cx.notify();
-                p
-            });
-            if progress == LayoutProgress::Settled {
-                self.settled = true;
-            } else {
+            let now = Instant::now();
+            if now.duration_since(self.last_layout_step) < STEP_INTERVAL {
+                // Between steps: keep ticking, repaint at the next interval.
                 window.request_animation_frame();
+            } else {
+                self.last_layout_step = now;
+                let progress = self.scene.update(cx, |scene, cx| {
+                    let p = scene.step_layout_async(FRAME_LAYOUT_BUDGET, cx);
+                    cx.notify();
+                    p
+                });
+                if progress == LayoutProgress::Settled {
+                    self.settled = true;
+                } else {
+                    window.request_animation_frame();
+                }
             }
         }
 

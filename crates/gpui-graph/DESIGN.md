@@ -889,9 +889,11 @@ the cap from its frame budget. The two fields play different roles in
 real-time drivers: `max_iterations` paces the visible relaxation per
 animation frame, while `max_duration` only caps oversized work — a budget
 that converges the whole graph inside one frame collapses the animation
-into a single jump. The interactive and force_atlas2 examples pace one
-iteration per frame under a ~6 ms ceiling — roughly second-scale
-convergence on demo graphs (pinned by
+into a single jump. Perceived animation speed is a driver concern on top
+of the budget: the interactive and force_atlas2 examples step at a fixed
+~30 steps/second interval instead of once per display frame, so the
+visible convergence takes around a second on demo graphs regardless of
+60 vs 120 Hz refresh (step count pinned by
 `frame_budget_keeps_relaxation_visible`). A capped step reports `Running`
 when iterations remain; convergence semantics are unchanged. Enforcement lives in the engine's iteration loop (one clock
 read per step call), so synchronous and background drivers share one

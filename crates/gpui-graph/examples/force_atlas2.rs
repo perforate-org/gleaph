@@ -30,6 +30,11 @@ const FRAME_LAYOUT_BUDGET: LayoutBudget = LayoutBudget {
     max_duration: Some(core::time::Duration::from_millis(6)),
 };
 
+/// Animation pacing: step the simulation at ~30 steps per second instead of
+/// once per display frame, so the visible convergence takes around a second
+/// regardless of whether the display refreshes at 60 or 120 Hz.
+const STEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(800.), px(600.)), cx);
@@ -49,6 +54,7 @@ struct Example {
     view: Entity<GraphViewState<&'static str, &'static str, &'static str, &'static str>>,
     scene: Entity<GraphScene<&'static str, &'static str, &'static str, &'static str>>,
     settled: bool,
+    last_layout_step: std::time::Instant,
 }
 
 impl Example {
@@ -107,6 +113,7 @@ impl Example {
             view,
             scene,
             settled: false,
+            last_layout_step: std::time::Instant::now(),
         }
     }
 }
@@ -116,15 +123,22 @@ impl Render for Example {
         // Advance the force model by one frame. Once the layout settles, stop
         // requesting animation frames so the window is not redrawn forever.
         if !self.settled {
-            let progress = self.scene.update(cx, |scene, cx| {
-                let p = scene.step_layout_async(FRAME_LAYOUT_BUDGET, cx);
-                cx.notify();
-                p
-            });
-            if progress == LayoutProgress::Settled {
-                self.settled = true;
-            } else {
+            let now = std::time::Instant::now();
+            if now.duration_since(self.last_layout_step) < STEP_INTERVAL {
+                // Between steps: keep ticking, repaint at the next interval.
                 window.request_animation_frame();
+            } else {
+                self.last_layout_step = now;
+                let progress = self.scene.update(cx, |scene, cx| {
+                    let p = scene.step_layout_async(FRAME_LAYOUT_BUDGET, cx);
+                    cx.notify();
+                    p
+                });
+                if progress == LayoutProgress::Settled {
+                    self.settled = true;
+                } else {
+                    window.request_animation_frame();
+                }
             }
         }
 
