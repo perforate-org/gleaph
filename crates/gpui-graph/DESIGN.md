@@ -890,11 +890,13 @@ real-time drivers: `max_iterations` paces the visible relaxation per
 animation frame, while `max_duration` only caps oversized work — a budget
 that converges the whole graph inside one frame collapses the animation
 into a single jump. Perceived animation speed is a driver concern on top
-of the budget: the interactive and force_atlas2 examples step at a fixed
-~30 steps/second interval instead of once per display frame, so the
-visible convergence takes around a second on demo graphs regardless of
-60 vs 120 Hz refresh (step count pinned by
-`frame_budget_keeps_relaxation_visible`). A capped step reports `Running`
+of the budget: the interactive and force_atlas2 examples step once per
+display frame, so convergence reads as the classic force-layout burst —
+a brief energetic scatter, then graceful settling — with total duration
+scaling inversely with refresh rate (step count pinned by
+`frame_budget_keeps_relaxation_visible`; deliberately stretching steps
+over wall-clock time instead magnifies the chaotic opening phase into
+seconds of flailing). A capped step reports `Running`
 when iterations remain; convergence semantics are unchanged. Enforcement lives in the engine's iteration loop (one clock
 read per step call), so synchronous and background drivers share one
 mechanism.
@@ -2498,9 +2500,9 @@ The following should remain intentionally open until implementation and profilin
 - ~~frame-time budgeting~~ (implemented as `LayoutBudget::max_duration`,
   §11.8: engines stop between iterations once the wall-clock cap is hit,
   always after one completed iteration; `None` keeps the deterministic
-  iteration-only contract for tests and benches. Examples pace one
-  iteration per frame under a ~6 ms ceiling so relaxation stays visibly
-  animated (~37 frames for the ring probe),
+  iteration-only contract for tests and benches. Examples step once per
+  display frame at 1 iteration under a ~6 ms ceiling so relaxation stays
+  visibly animated (~37 frames for the ring probe),
 
 ## Advanced graph presentation
 
