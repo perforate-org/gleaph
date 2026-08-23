@@ -1302,6 +1302,40 @@ mod tests {
     }
 
     #[test]
+    fn slow_down_scales_per_iteration_motion() {
+        let build = || {
+            let mut g = Graph::new();
+            let a = g.add_node(());
+            let b = g.add_node(());
+            g.add_edge(a, b, EdgeDirection::Undirected, ());
+            let (lg, mut state) = project(&g);
+            // Close placement keeps speeds below the MAX_STEP clamp, where
+            // slow_down actually scales the movement.
+            state.positions[0] = Vec2::new(-5.0, 0.0);
+            state.positions[1] = Vec2::new(5.0, 0.0);
+            let mut fa = ForceAtlas2::default();
+            fa.rebuild(&lg, &mut state);
+            (lg, state, fa)
+        };
+
+        let (lg, mut state, mut fast) = build();
+        let before = state.positions[0];
+        fast.step(&lg, &mut state, LayoutBudget::default());
+        let fast_travel = (state.positions[0] - before).length();
+
+        let (lg, mut state, mut slow) = build();
+        slow.slow_down = 3.0;
+        let before = state.positions[0];
+        slow.step(&lg, &mut state, LayoutBudget::default());
+        let slow_travel = (state.positions[0] - before).length();
+
+        assert!(
+            slow_travel < fast_travel / 2.0,
+            "slow_down=3 must move far less per iteration: {slow_travel} vs {fast_travel}"
+        );
+    }
+
+    #[test]
     fn apply_delta_cold_start_matches_rebuild() {
         let mut g = Graph::new();
         let a = g.add_node(());

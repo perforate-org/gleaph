@@ -54,7 +54,11 @@ struct Example {
 impl Example {
     fn new(cx: &mut Context<Self>) -> Self {
         // 1. Shared scene with a ForceAtlas2 layout.
-        let scene = cx.new(|_cx| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        // slowDown scales each iteration's movement down, so the relaxation
+        // reads as a gentle drift over several seconds instead of a burst.
+        let scene = cx.new(|_cx| {
+            GraphScene::new().with_layout(Box::new(ForceAtlas2::default().with_slow_down(3.0)))
+        });
 
         // 2. Populate the scene with a small random graph: a few hubs, each
         //    with a handful of neighbors, plus a couple of cross links.
