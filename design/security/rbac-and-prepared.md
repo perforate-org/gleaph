@@ -1,5 +1,12 @@
 # RBAC and prepared queries
 
+> **Status (2026-08-23):** [ADR 0074](../adr/0074-data-plane-authorization-core.md) Phase 1
+> is **implemented**: the five-role ladder is replaced by administrative capabilities plus
+> per-graph data-plane grants with a virtual `PUBLIC` subject and default deny. This document
+> describes the implemented model; plan-time label/direction/property privilege checking, the
+> GRANT/REVOKE grammar subset, and caller-bounded prepared publication land in slices 2–3 of
+> the ADR 0074 implementation plan.
+
 ## Purpose
 
 Document Gleaph’s **in-canister access model** and how Prepared Queries fit the threat model.
@@ -9,79 +16,113 @@ Document Gleaph’s **in-canister access model** and how Prepared Queries fit th
 - IC canister controller privileges (platform-level; separate from RBAC).
 - Frontend auth UX.
 
-## Role hierarchy
+## Authorization model
 
-**Source:** root `README.md`, `crates/auth`, `crates/router/src/rbac.rs`
+**Source:** `crates/auth`, `crates/router/src/rbac.rs`, `crates/router/src/facade/auth.rs`,
+[ADR 0074](../adr/0074-data-plane-authorization-core.md)
 
-Five levels (each includes lower):
+Two orthogonal dimensions replace the former five-role ladder:
 
-| Role         | Ad-hoc GQL                                                                                      | Prepared | Catalog / admin                           |
-| ------------ | ----------------------------------------------------------------------------------------------- | -------- | ----------------------------------------- |
-| **Executor** | Prepared only                                                                                   | Yes      | No                                        |
-| **Read**     | Read-only programs                                                                              | Yes      | No                                        |
-| **Write**    | + data modification, GQL catalog DDL (`CREATE`/`DROP` graph type, graph), `CALL` (conservative) | Yes      | No                                        |
-| **Manager**  | Same as Write                                                                                   | Yes      | Capability bits (e.g. `PREPARE_REGISTER`) |
-| **Admin**    | Full                                                                                            | Yes      | Grant roles                               |
+### Administrative capabilities (`AdminCaps`)
 
-Default: unknown principals are **Executor** until `grant_role`.
+A global bitset stored per principal (`crates/auth::AuthState`, MemoryId 0). Principals with
+**no stored row hold an empty set** (**default deny**). Bootstrap init seeds
+`issuing_principal` and every `initial_admins` entry with the **full set**; grant
+administration writes rows under `MANAGE_AUTHORIZATION` (`admin_grant_caps`, replacing the
+former `grant_role`; `my_caps` reports the caller's set).
+
+| Capability             | Governs                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------------- |
+| `PREPARE_REGISTER`     | Prepared-query registration / drop (`prepare`, `drop_prepared`)                                 |
+| `INDEX_CREATE`         | `CREATE INDEX`, vector-index DDL creation                                                       |
+| `INDEX_DROP`           | `DROP INDEX`, vector-index DDL drops                                                            |
+| `MANAGE_CATALOG`       | Graph-type catalog DDL, schema migrations, catalog interning                                    |
+| `CALL_PROCEDURE`       | Named `CALL` procedures (until procedures become catalog objects)                               |
+| `MANAGE_FEDERATION`    | Graph/shard topology, backfill, maintenance sweeps, diagnostics, vector activation/maintenance  |
+| `MANAGE_AUTHORIZATION` | Writing other principals' capability rows                                                       |
+
+Router gates name the narrowest governing capability (`facade::auth::require_cap`, store-level
+surfaces surface `NotAuthorized`; the GQL-path gates in `rbac.rs` surface `Forbidden`). There
+is no implicit elevation between capabilities, and administrative authority never implies
+data-plane access (ADR 0074 invariant 1). The former global Admin survives only as "holds the
+full set" (`is_admin`) for the ADR 0028 metadata bypass arm below.
+
+### Data-plane grants
+
+`(principal | PUBLIC) × privilege` rows (`crates/auth::GrantState`, MemoryId 55) with a
+dormant `expires_at` field (expired rows read as absent). `PUBLIC` is a virtual pseudo-subject
+resolved at evaluation time — it is never persisted as a principal, and the anonymous
+principal can never hold a stored row. Effective data-plane privilege is
+`caller-grants ∪ PUBLIC-grants ∪ ownership-derived`, where ownership derives from
+`GraphRegistryEntry.owner`/`admins` at evaluation time (ADR 0074 invariant 3: issuer
+authority is never duplicated into independent rows). Slice 1 evaluates
+`EXECUTE PreparedQuery` only; label/direction/property privileges arrive with slice 2's
+plan-time checking.
 
 ## Anonymous-principal invariant
 
 **Status: Implemented**
 
-`Principal::anonymous()` remains the **default Executor** so intentionally public prepared-query execution keeps working for unauthenticated callers (`authorize_prepared_execute`). The security invariant is that anonymous can **never** be persisted or made effective as an elevated RBAC role, and can **never** be configured as a trusted Router or Index canister identity. Enforcement lives at the invariant-owning write/configuration boundaries (not only at Candid entrypoints):
+`Principal::anonymous()` holds **no capabilities** and can **never hold a stored privileged
+row** — its only reachable authorization path is the `PUBLIC` grant baseline. It can also
+never be configured as a trusted Router or Index canister identity, nor as graph
+`owner`/`admins` (`validate_registration_principals`). Enforcement lives at the
+invariant-owning write/configuration boundaries (not only at Candid entrypoints):
 
 | Owner                | Boundary (source of truth)                                        | Behavior                                                                                                                                                                                                                                                                                                                             |
 | -------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `crates/auth`        | `AuthState::upsert_record`, `AuthState::bootstrap_admins`         | Reject anonymous before any mutation; bootstrap is **all-or-nothing** (anonymous issuer or any anonymous initial admin inserts no rows). Returns `AuthWriteError::AnonymousPrincipal`.                                                                                                                                               |
-| `crates/auth` (read) | `AuthState::role_of`                                              | Defense in depth: anonymous always resolves to `Executor` even if a legacy/corrupt anonymous row exists, so effective authorization is never elevated.                                                                                                                                                                               |
-| Router               | `canister::init` (traps), `grant_role` → `admin_upsert_principal` | Route bootstrap/grant through the checked auth API; anonymous target surfaces `RouterError::InvalidArgument`.                                                                                                                                                                                                                        |
+| `crates/auth`        | `AuthState::upsert_caps`, `AuthState::bootstrap_principals`, `GrantState::grant` | Reject anonymous before any mutation; bootstrap is **all-or-nothing** (anonymous issuer or any anonymous initial admin inserts no rows). Returns `AuthWriteError::AnonymousPrincipal`. Grant keys reject anonymous subjects; publication to unauthenticated callers uses the `PUBLIC` subject. |
+| `crates/auth` (read) | `AuthState::caps_of`                                              | Defense in depth: anonymous always resolves to the empty set even if a corrupt anonymous row exists, so effective authorization is never elevated.                                                                                                                                                                                  |
+| Router               | `canister::init` (traps), `admin_grant_caps` → `admin_upsert_caps` | Route bootstrap/grant through the checked auth API; an anonymous target surfaces `RouterError::InvalidArgument`.                                                                                                                                                                                                                     |
+| Router (grants)      | `rbac::authorize_prepared_execute`                                 | Anonymous evaluation resolves to the `PUBLIC` subject only; explicit caller grants are unreachable.                                                                                                                                                                                                                                  |
 | Graph metadata       | `GraphMetadata::validate_for_store`                               | Reject `FederationRouting` whose `router_canister` or `index_canister` is anonymous (`GraphMetadataError::AnonymousFederationPrincipal`). Shared by install-time `GraphInitArgs` and `set_federation_routing`; there is no post-install graph wiring endpoint (PocketIC fixtures wire routing through install-time `GraphInitArgs`). |
 | Graph router guard   | `guard_router_canister` (graph)                                   | Defense in depth: reject anonymous caller.                                                                                                                                                                                                                                                                                           |
 | Graph Index          | `IndexStore::init_from_args`                                      | Reject anonymous `router_canister` **before** clearing/writing any stable state (`IndexError::AnonymousRouter`); a failed init leaves catalog/postings/router untouched.                                                                                                                                                             |
 | Graph Index guards   | `guard_router_canister` (index), `assert_router_caller`           | Defense in depth: reject anonymous caller even if the configured router record named it.                                                                                                                                                                                                                                             |
 
-Prepared-query execution for default Executor callers (including anonymous) is unchanged.
+Prepared-query execution for anonymous callers keeps working through the registration-time
+`PUBLIC EXECUTE PreparedQuery` auto-seed (`prepare` co-writes it; `drop_prepared` revokes it)
+until slice 3 replaces the bridge with caller-bounded publication (ADR 0074 invariant 7).
 
 ## Classification pipeline
 
 ```mermaid
 flowchart LR
     A[parse] --> B["classify_program<br/>gleaph-gql"]
-    B --> C["authorize_adhoc_gql<br/>router"]
+    B --> C["authorize_adhoc_gql<br/>tenancy OR caps; CALL_PROCEDURE"]
     C --> D[build_plan]
     D --> E["verify has_dml()"]
     E --> F[dispatch]
 ```
 
-Write detection must agree between static classification and planner DML detection (`router/src/gql.rs`).
+Write detection must agree between static classification and planner DML detection (`router/src/gql.rs`). Slice 2 replaces the interim ad-hoc gate with plan-time privilege checking.
 
 ## Catalog DDL authorization
 
 GQL catalog statements set `has_catalog_modification` in [`ProgramModificationFlags`](../../crates/gql/src/program_modification.rs) (`CREATE`/`DROP` graph, graph type, schema). Router enforcement:
 
-| DDL surface                                                                                  | Entry                                              | Minimum role / gate                              |
+| DDL surface                                                                                  | Entry                                              | Gate                                              |
 | -------------------------------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------ |
-| **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program`     | **Write** (includes `has_catalog_modification`)  |
-| **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path)                          | `authorize_index_ddl`                              | **Admin** or Manager with **`PREPARE_REGISTER`** |
-| **Prepared plan registry**                                                                   | `authorize_prepared_catalog_change`                | Admin or Manager with **`PREPARE_REGISTER`**     |
-| **Federation graph registration**                                                            | `register_graph`                                   | **Admin** (`Role::Admin` in auth store)          |
-| **Shard registry / catalog intern / backfill**                                               | `register_shard` / `ensure_*` / `advance_backfill` | **Admin**                                        |
+| **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program`     | Tenancy predicate or any caps; catalog DDL is additionally governed by `MANAGE_CATALOG` on its dedicated store surfaces |
+| **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path)                          | `authorize_index_ddl`                              | `INDEX_CREATE` or `INDEX_DROP`                    |
+| **Prepared plan registry**                                                                   | `authorize_prepared_catalog_change`                | `PREPARE_REGISTER`                                 |
+| **Federation graph registration**                                                            | `register_graph`                                   | `MANAGE_FEDERATION`                                |
+| **Shard registry / backfill / maintenance sweeps**                                           | `register_shard` / `advance_backfill` / sweeps     | `MANAGE_FEDERATION`                                |
 
 Graph type catalog DDL runs on the main GQL path **before** ingress dispatch when the transaction block contains catalog statements ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)). Catalog-only blocks return zero rows without dispatching DML/query ops.
 
-**Note:** Index DDL is **stricter** than graph type catalog DDL — Write alone is insufficient for index create/drop.
+**Note:** Index DDL requires an index-specific capability — unrelated capabilities (e.g. `PREPARE_REGISTER`) do not admit it.
 
 ## Per-graph tenancy (graph-scoped read authorization)
 
 **Status: Implemented** ([ADR 0028](../adr/0028-per-graph-tenancy-metadata-reads.md))
 
-RBAC roles above are **canister-global**. Graph-scoped _visibility_ is a separate, orthogonal ACL carried on `GraphRegistryEntry.{owner, admins}`. A caller may resolve/read a graph's metadata and routing data when `caller_may_access_graph` holds (`crates/router/src/facade/store/registry.rs`):
+RBAC capabilities above are **canister-global**. Graph-scoped _visibility_ is a separate, orthogonal ACL carried on `GraphRegistryEntry.{owner, admins}`. A caller may resolve/read a graph's metadata and routing data when `caller_may_access_graph` holds (`crates/router/src/facade/store/registry.rs`):
 
 | Allow path       | Who                                                                                         | Why                                                                                                                                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tenant           | `caller == owner` or `caller ∈ admins`                                                      | The graph's tenant(s).                                                                                                                                                                                            |
-| Superuser bypass | global `Role::Admin`                                                                        | Operations/migration/tooling (DB-superuser analogue).                                                                                                                                                             |
+| Superuser bypass | principal holding the **full capability set** (bootstrap analogue of the former global Admin) | Operations/migration/tooling (DB-superuser analogue). Phase 1 keeps this arm scoped to control/metadata reads only — never the data plane; Phase 2 replaces it with time-boxed grants (ADR 0074 §1b). |
 | Own shard        | the graph's registered `graph_canister` (keyed in `ROUTER_SHARD_BY_GRAPH`, same `graph_id`) | Keeps federation/index-routing inter-canister calls working (`verify_shard_attachment`, `list_shards_for_graph`, `indexed_property_catalog`), which reach the router with the shard's `graph_canister` principal. |
 
 Enforcement:
@@ -111,7 +152,15 @@ Benefits:
 - Stable plans for auditing and caching
 - Combined with `IC.MSG_CALLER()` for row-level patterns
 
-**Registration:** Manager with `PREPARE_REGISTER` or Admin (`README`).
+**Registration:** a principal holding `PREPARE_REGISTER` (the bootstrap full-set holders
+included). Registration co-writes the `PUBLIC EXECUTE PreparedQuery` grant row for the new
+name — the behavior-preserving publication bridge that slice 3 replaces with caller-bounded
+publication ([ADR 0074](../adr/0074-data-plane-authorization-core.md) invariant 7).
+
+**Execution:** default deny. A caller executes when it holds an explicit
+`EXECUTE PreparedQuery` grant, the query's `PUBLIC` grant row exists, or the caller is
+owner/admin of the query's bound graph (`rbac::authorize_prepared_execute`; SECURITY INVOKER,
+caller ∪ PUBLIC ∪ ownership-derived).
 
 **Operator workflow:** [ADR 0061](../adr/0061-prepared-cli-registration-and-batch-catalog-api.md)
 defines the file-based `gleaph prepared` workflow: `prepared/<name>.gql` sources (optional
@@ -126,6 +175,7 @@ completes parameter and result metadata (ADR 0053/0061).
   retention, and runtime records; it does not own prepared-query persistence
   or persist an AST
 - Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records are versioned (`PreparedPlanRecord::V1`)
+- Data-plane grant rows on router stable memory (`ROUTER_AUTH_GRANTS`, MemoryId 55; ADR 0074)
 
 ## IC caller identity
 

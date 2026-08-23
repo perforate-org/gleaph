@@ -9,8 +9,8 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
 use gleaph_pocket_ic_tests::{install_account_canister, install_provision_canister, new_pocket_ic};
 use gleaph_provision::types::{
-    sha256, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
+    ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
+    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;

@@ -22,8 +22,12 @@ fn whoami() -> Principal {
 }
 
 #[query]
-fn my_role() -> Result<String, RouterError> {
-    Ok(auth::caller_role(&msg_caller()).to_string())
+fn my_caps() -> Result<Vec<String>, RouterError> {
+    Ok(auth::caps_of(&msg_caller())
+        .names()
+        .into_iter()
+        .map(String::from)
+        .collect())
 }
 
 /// Apply one versioned, additive schema migration. Authorization, checksum verification, AST
@@ -50,16 +54,11 @@ fn list_schema_migrations(
     RouterStore::new().list_schema_migrations(args)
 }
 
+/// Caps administration (ADR 0074 §1b): replace the target's full capability row. Requires
+/// `MANAGE_AUTHORIZATION` on the caller; anonymous targets are rejected before any mutation.
 #[update]
-fn grant_role(args: types::GrantRoleArgs) -> Result<(), RouterError> {
-    let role = auth::parse_role(&args.role).map_err(RouterError::InvalidArgument)?;
-    auth::admin_upsert_principal(&msg_caller(), args.target, role, args.manager_caps).map_err(|e| {
-        if e.contains("required") {
-            RouterError::Forbidden
-        } else {
-            RouterError::InvalidArgument(e)
-        }
-    })
+fn admin_grant_caps(args: types::GrantCapsArgs) -> Result<(), RouterError> {
+    auth::admin_upsert_caps(&msg_caller(), args.target, args.caps)
 }
 
 #[query]
@@ -103,7 +102,7 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
     use gleaph_gql_ic::graph_registry::{GraphStatus, ProvisioningState};
 
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
 
     if crate::provisioning::config::get().is_some() {
         return register_provisioned_graph(caller, args).await;
@@ -644,7 +643,7 @@ async fn ingest_vertex_embeddings(
 }
 
 /// Advance one bounded unit of graph-index repair work of the given kind across every shard
-/// (`Role::Admin`; call in a loop until `all_done`). The Router iterates shards internally.
+/// (`MANAGE_FEDERATION`; call in a loop until `all_done`). The Router iterates shards internally.
 #[update]
 async fn advance_backfill(
     graph_name: String,
@@ -750,7 +749,7 @@ async fn advance_backfill(
     })
 }
 
-/// Kind-keyed backfill status for every shard of a logical graph (`Role::Admin`).
+/// Kind-keyed backfill status for every shard of a logical graph (`MANAGE_FEDERATION`).
 #[query]
 fn list_backfill_status(
     logical_graph_name: String,
@@ -790,7 +789,7 @@ fn list_backfill_status(
     Ok(out)
 }
 
-/// Graph-index convergence snapshot for one graph shard (`Role::Admin`). Poll
+/// Graph-index convergence snapshot for one graph shard (`MANAGE_FEDERATION`). Poll
 /// `converged` before dispatching index-dependent waves; the backfill steps repair
 /// convergence when it stalls.
 #[update]
@@ -898,7 +897,7 @@ fn test_declare_unique_constraint(
     property: String,
 ) -> Result<(), RouterError> {
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     store.create_unique_constraint(graph_id, &constraint_name, false, &label, &property)
@@ -910,7 +909,7 @@ fn test_declare_unique_constraint(
 #[cfg(feature = "pocket-ic-e2e")]
 #[update]
 fn test_arm_fault(code: u8) -> Result<(), RouterError> {
-    auth::require_admin(&msg_caller())?;
+    auth::require_cap(&msg_caller(), gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let fault = crate::test_fault::fault_from_code(code)
         .ok_or_else(|| RouterError::InvalidArgument(format!("unknown fault code {code}")))?;
     crate::test_fault::arm(fault);
@@ -928,7 +927,7 @@ fn test_vector_ingest_probe() -> Result<
     ),
     RouterError,
 > {
-    auth::require_admin(&msg_caller())?;
+    auth::require_cap(&msg_caller(), gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     Ok(crate::facade::stable::vector_ingest_outbox::test_outbox_probe())
 }
 
@@ -942,7 +941,7 @@ fn test_bulk_load_start_probe(
     client_bulk_key: String,
 ) -> Result<(u64, Option<u64>, bool), RouterError> {
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     let counter = crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|value| *value.get());
@@ -968,7 +967,7 @@ fn test_seed_bulk_load_gc_fixture(
     client_bulk_key: String,
 ) -> Result<(), RouterError> {
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     store.test_expand_completed_bulk_load_receipts(caller, graph_id, &client_bulk_key)?;
@@ -984,7 +983,7 @@ fn test_bulk_load_gc_step(
     client_bulk_key: String,
 ) -> Result<(u32, u32, bool), RouterError> {
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     crate::recovery::test_pause_for_exact_bulk_gc();
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
@@ -1002,7 +1001,7 @@ fn test_bulk_load_gc_probe(
     client_bulk_key: String,
 ) -> Result<(bool, Option<u32>, u32, Option<String>), RouterError> {
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     store.test_bulk_load_gc_probe(caller, graph_id, &client_bulk_key)
@@ -1019,7 +1018,7 @@ fn test_force_reclaiming(
     value: String,
 ) -> Result<bool, RouterError> {
     let caller = msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     store.test_force_reclaiming_text(graph_id, &label, &property, &value)

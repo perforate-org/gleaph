@@ -64,7 +64,7 @@ impl RouterStore {
         F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<PostingBackfillResult, String>>,
     {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if args.max_vertices == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_vertices must be greater than zero".into(),
@@ -128,7 +128,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<Vec<LabelBackfillShardStatus>, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let shards = self.list_live_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<LabelBackfillShardStatus> = shards
             .into_iter()
@@ -166,7 +166,7 @@ impl RouterStore {
         F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<PostingBackfillResult, String>>,
     {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if args.max_vertices == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_vertices must be greater than zero".into(),
@@ -226,7 +226,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<Vec<VertexPropertyBackfillShardStatus>, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let shards = self.list_live_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<VertexPropertyBackfillShardStatus> = shards
             .into_iter()
@@ -265,7 +265,7 @@ impl RouterStore {
         F: FnOnce(Principal, EdgePostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<EdgePostingBackfillResult, String>>,
     {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if args.max_entries == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_entries must be greater than zero".into(),
@@ -325,7 +325,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<Vec<EdgeBackfillShardStatus>, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let shards = self.list_live_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<EdgeBackfillShardStatus> = shards
             .into_iter()
@@ -363,7 +363,7 @@ impl RouterStore {
         caller: Principal,
         args: &AdminResetBackfillClaimArgs,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
         let cursor_key = GraphShardKey::new(shard.graph_id, args.shard_id);
         release_inflight_backfill(args.kind, cursor_key);
@@ -385,7 +385,7 @@ impl RouterStore {
         F: FnOnce(Principal) -> Fut,
         Fut: Future<Output = Result<IndexSyncStatus, String>>,
     {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
         call_status(shard.graph_canister)
             .await
@@ -409,7 +409,7 @@ impl RouterStore {
         use crate::facade::stable::{embedding_name_catalog, graph_catalog, vector_index_catalog};
         use crate::types::{GraphHealthView, GraphSummary};
 
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let graph_id = self.resolve_graph_id(graph_name)?;
         let entry = graph_catalog::graph_entry(graph_id)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;

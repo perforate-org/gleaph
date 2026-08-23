@@ -1,8 +1,15 @@
-//! Stable RBAC for router user-facing GQL, prepared-query, and admin APIs.
+//! Administrative-capability facade for router user-facing GQL, prepared-query, and admin
+//! APIs (ADR 0074).
+//!
+//! The former role ladder is replaced by [`AdminCaps`]: principals with no stored row hold an
+//! empty set (default deny), bootstrap principals hold the full set, and grant administration
+//! writes capability rows under `MANAGE_AUTHORIZATION`. Data-plane grants live in
+//! `ROUTER_AUTH_GRANTS` and are evaluated by `crate::rbac`.
+//!
+//! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
 use candid::Principal;
-use gleaph_auth::{AuthRecord, AuthWriteError, Role};
-use std::str::FromStr;
+use gleaph_auth::{AdminCaps, AuthWriteError};
 
 use crate::state::RouterError;
 
@@ -17,27 +24,21 @@ pub fn validate_bootstrap_principals(
     gleaph_auth::validate_bootstrap_principals(issuing_principal, initial_admins)
 }
 
-/// Bootstrap installer/initial admins. Rejects the anonymous principal all-or-nothing
-/// (see [`gleaph_auth::AuthState::bootstrap_admins`]).
+/// Bootstrap installer/initial admins. Seeds the full capability set and rejects the
+/// anonymous principal all-or-nothing (see [`gleaph_auth::AuthState::bootstrap_principals`]).
 pub fn bootstrap_canister_auth(
     issuing_principal: Principal,
     initial_admins: &[Principal],
 ) -> Result<(), AuthWriteError> {
     ROUTER_AUTH_STATE
-        .with_borrow_mut(|auth| auth.bootstrap_admins(issuing_principal, initial_admins))
+        .with_borrow_mut(|auth| auth.bootstrap_principals(issuing_principal, initial_admins))
 }
 
-/// Grant [`Role::Admin`] to `principal` (tests and local bootstrap).
+/// Grant the full capability set to `principal` (tests and local bootstrap).
 pub fn grant_admin(principal: Principal) {
     ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
-        auth.upsert_record(
-            principal,
-            AuthRecord {
-                role: Role::Admin as u8,
-                manager_caps: 0,
-            },
-        )
-        .expect("grant_admin requires a non-anonymous principal");
+        auth.upsert_caps(principal, AdminCaps::all())
+            .expect("grant_admin requires a non-anonymous principal");
     });
 }
 
@@ -47,69 +48,112 @@ pub fn grant_admins(principals: &[Principal]) {
     }
 }
 
-pub fn is_admin(principal: &Principal) -> bool {
-    caller_role(principal).satisfies_at_least(Role::Admin)
+/// Effective capabilities of `principal`; empty for unknown or anonymous callers.
+pub fn caps_of(principal: &Principal) -> AdminCaps {
+    ROUTER_AUTH_STATE.with_borrow(|auth| auth.caps_of(principal))
 }
 
-pub fn require_admin(principal: &Principal) -> Result<(), RouterError> {
-    if is_admin(principal) {
+/// Whether `principal` holds `cap` (or a superset).
+pub fn has_cap(principal: &Principal, cap: AdminCaps) -> bool {
+    ROUTER_AUTH_STATE.with_borrow(|auth| auth.has_cap(principal, cap))
+}
+
+/// Whether `principal` holds at least one administrative capability. Anonymous always
+/// resolves to the empty set.
+pub fn has_any_cap(principal: &Principal) -> bool {
+    !caps_of(principal).is_empty()
+}
+
+/// Whether `principal` holds the full capability set — the bootstrap-superuser analogue of
+/// the former global Admin role.
+pub fn is_admin(principal: &Principal) -> bool {
+    caps_of(principal) == AdminCaps::all()
+}
+
+/// Require that `principal` holds `cap`, else [`RouterError::NotAuthorized`].
+///
+/// Preserves the error contract of the former `require_admin` at every migrated store-level
+/// surface. Every privileged surface names its narrowest governing capability here; there is
+/// no implicit elevation from other capabilities or from data-plane grants (ADR 0074
+/// invariant 1).
+pub fn require_cap(principal: &Principal, cap: AdminCaps) -> Result<(), RouterError> {
+    if has_cap(principal, cap) {
         Ok(())
     } else {
         Err(RouterError::NotAuthorized)
     }
 }
 
-pub fn caller_role(principal: &Principal) -> Role {
-    ROUTER_AUTH_STATE.with_borrow(|auth| auth.effective_role(principal))
-}
-
-pub fn require_at_least(principal: &Principal, min: Role) -> Result<(), String> {
-    ROUTER_AUTH_STATE.with_borrow(|auth| auth.require_at_least(principal, min))
-}
-
-pub fn can_prepare_register(principal: &Principal) -> bool {
-    ROUTER_AUTH_STATE.with_borrow(|auth| auth.can_prepare_register(principal))
-}
-
-pub fn admin_upsert_principal(
+/// Grant administration write path (`MANAGE_AUTHORIZATION`): replace the target's full
+/// capability row. Rejects anonymous targets before any mutation.
+pub fn admin_upsert_caps(
     caller: &Principal,
     target: Principal,
-    role: Role,
-    manager_caps: u64,
-) -> Result<(), String> {
-    require_at_least(caller, Role::Admin)?;
-    ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
-        auth.upsert_record(
-            target,
-            AuthRecord {
-                role: role as u8,
-                manager_caps,
-            },
-        )
-        .map_err(|e| e.to_string())
-    })
-}
-
-pub fn parse_role(s: &str) -> Result<Role, String> {
-    Role::from_str(s)
+    caps: u64,
+) -> Result<(), RouterError> {
+    require_cap(caller, AdminCaps::MANAGE_AUTHORIZATION)?;
+    let caps = AdminCaps::from_bits_truncate(caps);
+    ROUTER_AUTH_STATE
+        .with_borrow_mut(|auth| auth.upsert_caps(target, caps))
+        .map_err(|_| {
+            RouterError::InvalidArgument(
+                "the anonymous principal cannot hold an authorization row".into(),
+            )
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn principal(byte: u8) -> Principal {
+        Principal::from_slice(&[byte; 29])
+    }
+
     #[test]
-    fn admin_upsert_principal_rejects_anonymous_target() {
-        let admin = Principal::from_slice(&[1; 29]);
+    fn admin_upsert_caps_requires_manage_authorization() {
+        let caller = principal(1);
+        // A caller with unrelated caps but not MANAGE_AUTHORIZATION is denied and the target
+        // receives no row.
+        ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
+            auth.upsert_caps(caller, AdminCaps::PREPARE_REGISTER)
+                .expect("non-anonymous");
+        });
+        let err = admin_upsert_caps(&caller, principal(2), AdminCaps::all().bits())
+            .expect_err("missing MANAGE_AUTHORIZATION must be rejected");
+        assert!(matches!(err, RouterError::NotAuthorized));
+        assert_eq!(caps_of(&principal(2)), AdminCaps::empty());
+    }
+
+    #[test]
+    fn admin_upsert_caps_rejects_anonymous_target() {
+        let admin = principal(3);
         grant_admin(admin);
-        let err = admin_upsert_principal(&admin, Principal::anonymous(), Role::Admin, 0)
+        let err = admin_upsert_caps(&admin, Principal::anonymous(), AdminCaps::all().bits())
             .expect_err("anonymous target must be rejected");
         assert!(
-            err.contains("anonymous"),
-            "error should name the anonymous principal, got: {err}"
+            matches!(err, RouterError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err:?}"
         );
-        // The anonymous principal must remain the default Executor (no persisted elevation).
-        assert_eq!(caller_role(&Principal::anonymous()), Role::Executor);
+        // The anonymous principal must remain default-deny (no persisted elevation).
+        assert_eq!(caps_of(&Principal::anonymous()), AdminCaps::empty());
+    }
+
+    #[test]
+    fn is_admin_means_full_caps_only() {
+        let partial = principal(4);
+        ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
+            auth.upsert_caps(partial, AdminCaps::all() ^ AdminCaps::MANAGE_FEDERATION)
+                .expect("non-anonymous");
+        });
+        assert!(!is_admin(&partial));
+        assert!(has_any_cap(&partial));
+
+        let full = principal(5);
+        grant_admin(full);
+        assert!(is_admin(&full));
+        assert!(!is_admin(&Principal::anonymous()));
+        assert!(!has_any_cap(&Principal::anonymous()));
     }
 
     #[test]
@@ -119,9 +163,9 @@ mod tests {
         let err = bootstrap_canister_auth(Principal::anonymous(), &[valid])
             .expect_err("anonymous issuer must be rejected");
         assert_eq!(err, AuthWriteError::AnonymousPrincipal);
-        assert_eq!(caller_role(&Principal::anonymous()), Role::Executor);
+        assert_eq!(caps_of(&Principal::anonymous()), AdminCaps::empty());
         // The valid initial admin from the rejected request was not partially inserted/elevated.
-        assert_eq!(caller_role(&valid), Role::Executor);
+        assert_eq!(caps_of(&valid), AdminCaps::empty());
     }
 
     #[test]
@@ -132,8 +176,8 @@ mod tests {
             .expect_err("anonymous initial admin must be rejected");
         assert_eq!(err, AuthWriteError::AnonymousPrincipal);
         // Neither the issuer nor the valid initial admin from the same request was elevated.
-        assert_eq!(caller_role(&issuer), Role::Executor);
-        assert_eq!(caller_role(&valid), Role::Executor);
+        assert_eq!(caps_of(&issuer), AdminCaps::empty());
+        assert_eq!(caps_of(&valid), AdminCaps::empty());
     }
 
     #[test]
@@ -145,6 +189,6 @@ mod tests {
         let err = validate_bootstrap_principals(Principal::anonymous(), &[valid])
             .expect_err("preflight must reject anonymous issuer");
         assert_eq!(err, AuthWriteError::AnonymousPrincipal);
-        assert_eq!(caller_role(&valid), Role::Executor);
+        assert_eq!(caps_of(&valid), AdminCaps::empty());
     }
 }

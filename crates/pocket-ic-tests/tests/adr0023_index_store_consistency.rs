@@ -290,7 +290,11 @@ fn dropping_one_of_two_indexes_on_shared_property_does_not_leak_its_namespace() 
         "shared_create_employee_age",
     );
     let _ = gql_mutate_as_admin(&env, "INSERT (:Person {age: 5})", "shared_insert_person");
-    let _ = gql_mutate_as_admin(&env, "INSERT (:Employee {age: 5})", "shared_insert_employee");
+    let _ = gql_mutate_as_admin(
+        &env,
+        "INSERT (:Employee {age: 5})",
+        "shared_insert_employee",
+    );
 
     let age_value = value_to_index_key_bytes(&Value::Int64(5))
         .expect("encode age value")
@@ -316,7 +320,11 @@ fn dropping_one_of_two_indexes_on_shared_property_does_not_leak_its_namespace() 
     );
 
     let survivor = active_vertex_namespaces(&env, age.raw());
-    assert_eq!(survivor.len(), 1, "the sibling index must remain registered");
+    assert_eq!(
+        survivor.len(),
+        1,
+        "the sibling index must remain registered"
+    );
     let retired_namespace = both
         .iter()
         .find(|ns| survivor.first() != Some(ns))

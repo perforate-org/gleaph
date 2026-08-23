@@ -1369,10 +1369,10 @@ impl MutationStatus {
 }
 
 #[derive(CandidType, Deserialize)]
-pub struct GrantRoleArgs {
+pub struct GrantCapsArgs {
     pub target: Principal,
-    pub role: String,
-    pub manager_caps: u64,
+    /// Full replacement capability bitmask (`gleaph_auth::AdminCaps` bits).
+    pub caps: u64,
 }
 
 /// Arguments for one expired client-mutation-key sweep step. The sweep is

@@ -3047,7 +3047,7 @@ async fn run_gql_unchecked(
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let flags = classify_program(&program);
     let caller = msg_caller();
-    authorize_adhoc_gql(&caller, flags)?;
+    authorize_adhoc_gql(&caller, flags, &program)?;
     check_adhoc_execution_path(entrypoint, mode, flags, force)?;
 
     let tx = program
@@ -5825,7 +5825,7 @@ mod tests {
 
     #[test]
     fn vector_ddl_ingress_enforces_rbac_before_catalog_side_effects() {
-        use gleaph_auth::{AuthRecord, ManagerCapability, Role};
+        use gleaph_auth::AdminCaps;
 
         let store = store_with_one_shard();
         let graph_id = tenant_main_graph_id();
@@ -5852,28 +5852,22 @@ mod tests {
         .expect_err("anonymous caller must be rejected");
         assert!(matches!(anonymous_err, RouterError::Forbidden));
 
-        let read = Principal::self_authenticating([31; 32]);
+        let capless = Principal::self_authenticating([31; 32]);
         crate::facade::stable::ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
-            auth.upsert_record(
-                read,
-                AuthRecord {
-                    role: Role::Read as u8,
-                    manager_caps: 0,
-                },
-            )
-            .expect("read auth record");
+            auth.upsert_caps(capless, AdminCaps::MANAGE_CATALOG)
+                .expect("capless auth record");
         });
-        let read_err = futures::executor::block_on(super::try_execute_vector_index_ddl(
+        let capless_err = futures::executor::block_on(super::try_execute_vector_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
             false,
-            || read,
+            || capless,
             |_| Ok(graph_id),
         ))
         .expect("vector DDL detected")
-        .expect_err("read caller must be rejected");
-        assert!(matches!(read_err, RouterError::Forbidden));
+        .expect_err("caller without an index cap must be rejected");
+        assert!(matches!(capless_err, RouterError::Forbidden));
         assert_eq!(
             crate::facade::stable::index_name_catalog::lookup_index_name_id(
                 graph_id,
@@ -5896,27 +5890,21 @@ mod tests {
             next_before
         );
 
-        let manager = Principal::self_authenticating([32; 32]);
+        let index_admin = Principal::self_authenticating([32; 32]);
         crate::facade::stable::ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
-            auth.upsert_record(
-                manager,
-                AuthRecord {
-                    role: Role::Manager as u8,
-                    manager_caps: ManagerCapability::PREPARE_REGISTER.bits(),
-                },
-            )
-            .expect("manager auth record");
+            auth.upsert_caps(index_admin, AdminCaps::INDEX_CREATE)
+                .expect("index-create auth record");
         });
         let result = futures::executor::block_on(super::try_execute_vector_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
             false,
-            || manager,
+            || index_admin,
             |_| Ok(graph_id),
         ))
         .expect("vector DDL detected")
-        .expect("manager with PREPARE_REGISTER may create");
+        .expect("caller with INDEX_CREATE may create");
         assert_eq!(result.row_count, 0);
         let index_name_id = crate::facade::stable::index_name_catalog::lookup_index_name_id(
             graph_id,

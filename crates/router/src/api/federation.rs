@@ -32,7 +32,7 @@ fn get_graph_id(graph_name: String) -> Result<gleaph_graph_kernel::entry::GraphI
 
 #[query]
 fn get_id_encoding_key(logical_graph_name: String) -> Result<[u8; 16], RouterError> {
-    auth::require_admin(&msg_caller())?;
+    auth::require_cap(&msg_caller(), gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
     Ok(RouterStore::new()
         .graph_element_id_encoding_key(graph_id)?
@@ -150,7 +150,7 @@ async fn unregister_shard(
 /// oracle so registry consistency can be checked on demand, including across upgrades.
 #[query]
 fn check_registry_invariants() -> Result<(), RouterError> {
-    auth::require_admin(&msg_caller())?;
+    auth::require_cap(&msg_caller(), gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     RouterStore::new()
         .check_registry_invariants()
         .map_err(RouterError::Internal)
@@ -170,7 +170,7 @@ fn sweep_expired_mutation_keys(
 }
 
 /// Operator recovery: clear a stuck `in_progress` claim on a shard's backfill
-/// cursor (`Role::Admin`). Use only when no step is in flight for the shard.
+/// cursor (`MANAGE_FEDERATION`). Use only when no step is in flight for the shard.
 #[update]
 fn reset_backfill_claim(args: types::AdminResetBackfillClaimArgs) -> Result<(), RouterError> {
     RouterStore::new().admin_reset_backfill_claim(msg_caller(), &args)
@@ -690,6 +690,6 @@ async fn provision_graph(
     args: types::ProvisionGraphArgs,
 ) -> Result<types::ProvisionGraphResponse, RouterError> {
     let caller = ic_cdk::api::msg_caller();
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
     crate::provisioning::graph::provision_graph_flow(caller, args).await
 }

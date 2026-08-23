@@ -20,6 +20,7 @@ use gleaph_prepared_api::{
 use gleaph_prepared_runtime::parse_prepared_source;
 
 use crate::execution_path::check_prepared_execution_path;
+use crate::facade::stable::ROUTER_AUTH_GRANTS;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
 use crate::facade::stable::graph_catalog;
 use crate::facade::stable::prepared_catalog::{
@@ -30,7 +31,7 @@ use crate::facade::store::RouterStore;
 use crate::gql::dispatch_plan_blob;
 use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
-use crate::rbac::authorize_prepared_catalog_change;
+use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
 use crate::vector_sync;
 
@@ -254,15 +255,43 @@ pub(crate) fn prepare_batch_core(
             cache,
         ));
     }
-    // Phase 2: commit every stable record and heap-cache entry only after all operations planned.
+    // Phase 2: commit every stable record and heap-cache entry only after all operations
+    // planned. Each registration co-writes its PUBLIC EXECUTE grant row (ADR 0074): the
+    // explicit behavior-preserving bridge that lets every caller — including anonymous — keep
+    // executing registered queries under default-deny until slice 3 replaces it with
+    // caller-bounded publication.
     for (key, record, cache) in committed {
         insert_prepared_plan(key.clone(), record);
         insert_prepared_cache(key.clone(), PreparedCacheEntry::Ready(Box::new(cache)));
+        seed_public_execute_grant(&key.name);
         // The source and metadata were just replaced: derived sorted plans of
         // the previous generation must not survive.
         invalidate_prepared_sorted_variants(&key);
     }
     Ok(())
+}
+
+/// Co-write of the PUBLIC `EXECUTE PreparedQuery` row with a prepared-record commit.
+fn seed_public_execute_grant(name: &str) {
+    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
+        grants
+            .grant(
+                gleaph_auth::GrantSubject::Public,
+                &gleaph_auth::Privilege::ExecutePreparedQuery { name: name.into() },
+                None,
+            )
+            .expect("PUBLIC is a virtual subject and never rejected");
+    });
+}
+
+/// Inverse co-write of [`seed_public_execute_grant`] when the prepared record is removed.
+fn revoke_public_execute_grant(name: &str) {
+    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
+        grants.revoke(
+            gleaph_auth::GrantSubject::Public,
+            &gleaph_auth::Privilege::ExecutePreparedQuery { name: name.into() },
+        );
+    });
 }
 
 fn batch_op_error(name: &str, error: RouterError) -> RouterError {
@@ -446,6 +475,9 @@ fn drop_prepared_core(name: &str) -> Result<(), RouterError> {
         return Err(RouterError::NotFound(format!("prepared query {name:?}")));
     }
     remove_prepared_plan(&key);
+    // The registration-time PUBLIC EXECUTE bridge dies with the record; re-registering the
+    // name re-seeds it (ADR 0074).
+    revoke_public_execute_grant(name);
     invalidate_prepared_sorted_variants(&key);
     Ok(())
 }
@@ -556,6 +588,10 @@ async fn prepared_run_unchecked(
     let record = get_prepared_plan(&key)
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1()?;
+    // ADR 0074: prepared execution is default-deny; the caller needs an explicit
+    // `EXECUTE PreparedQuery` grant, the registration-time PUBLIC row, or ownership of the
+    // query's bound graph.
+    authorize_prepared_execute(&caller, &name, v1.graph_id)?;
     let graph_id = v1.graph_id;
     let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
     let cache = match sort {
@@ -833,15 +869,14 @@ pub(crate) fn prepare_sorted_cache(
 mod tests {
     use super::{
         MAX_PREPARED_BATCH, PreparedPlanRecord, PreparedPlanRecordV1, cached_prepared_cache,
-        get_prepared_core, get_prepared_plan, insert_prepared_plan, prepare_batch_core,
-        rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
+        drop_prepared_core, get_prepared_core, get_prepared_plan, insert_prepared_plan,
+        prepare_batch_core, rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
     };
     use crate::facade::stable::prepared_catalog::PreparedPlanKey;
     use crate::state::RouterError;
     use gleaph_graph_kernel::entry::GraphId;
     use gleaph_prepared_api::{
-        Column, OperationKind, PreparedOperation, PreparedRegistration, PreparedSortSpec,
-        ResultSchema, SemanticType, SortKey,
+        OperationKind, PreparedOperation, PreparedRegistration, ResultSchema, SemanticType,
     };
 
     #[test]
@@ -1056,6 +1091,37 @@ mod tests {
         assert_eq!(beta.query, "MATCH (n) RETURN n");
         remove_prepared_plan(&PreparedPlanKey::new("alpha"));
         remove_prepared_plan(&PreparedPlanKey::new("beta"));
+    }
+
+    #[test]
+    fn registration_seeds_public_execute_and_drop_revokes_it() {
+        use crate::rbac::authorize_prepared_execute;
+
+        let owner = Principal::from_slice(&[21; 29]);
+        home_graph(owner, "public-seed");
+        prepare_batch_core(
+            &[registration("seeded-q", "MATCH (n) RETURN 'a' AS tag")],
+            owner,
+        )
+        .expect("batch registers");
+
+        // The registration co-wrote the PUBLIC EXECUTE row: an anonymous caller — which can
+        // hold no stored row and is not a tenant — executes through it.
+        authorize_prepared_execute(&Principal::anonymous(), "seeded-q", GraphId::from_raw(0))
+            .expect("PUBLIC bridge admits anonymous execution");
+
+        drop_prepared_core("seeded-q").expect("drop");
+        assert!(
+            matches!(
+                authorize_prepared_execute(
+                    &Principal::anonymous(),
+                    "seeded-q",
+                    GraphId::from_raw(0)
+                ),
+                Err(RouterError::Forbidden)
+            ),
+            "the PUBLIC bridge must die with the prepared record"
+        );
     }
 
     #[test]
@@ -1286,7 +1352,7 @@ mod sorted_variant_cache_tests {
             }),
         );
         let (base, planned) =
-            build_prepared_cache(&query, owner, Some(graph_id)).expect("fixture base plan");
+            build_prepared_cache(query, owner, Some(graph_id)).expect("fixture base plan");
         assert_eq!(planned, graph_id);
         (owner, graph_id, key, metadata, base)
     }

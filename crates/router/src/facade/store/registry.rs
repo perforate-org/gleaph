@@ -32,6 +32,12 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GraphShardKey, Shard
 
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
 
+/// Registry-entry tenant check shared by the metadata ACL and the ownership-derived arm of
+/// data-plane evaluation (ADR 0074 §3 invariant 3: `registry.owner` is the identity anchor).
+fn entry_names_tenant(entry: &GraphRegistryEntry, caller: Principal) -> bool {
+    caller == entry.owner || entry.admins.contains(&caller)
+}
+
 /// Per-graph tenancy predicate shared by name resolution and [`RouterStore::resolve_graph`].
 ///
 /// A caller may access a graph's metadata/routing data when it is the graph `owner`, listed in
@@ -44,7 +50,7 @@ fn caller_may_access_graph(
     graph_id: GraphId,
     caller: Principal,
 ) -> bool {
-    if auth::is_admin(&caller) || caller == entry.owner || entry.admins.contains(&caller) {
+    if auth::is_admin(&caller) || entry_names_tenant(entry, caller) {
         return true;
     }
     ROUTER_SHARD_BY_GRAPH
@@ -841,7 +847,7 @@ impl RouterStore {
         caller: Principal,
         args: AdminAttachVectorIndexShardArgs,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if args.vector_canister == Principal::anonymous() {
             return Err(RouterError::InvalidArgument(
                 "vector_canister must not be the anonymous principal".into(),
@@ -999,7 +1005,7 @@ impl RouterStore {
         graph_name: &str,
         state: ProvisioningState,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let graph_id = resolve_registered_graph_id(graph_name)?;
         let mut entry = ROUTER_GRAPHS
             .with_borrow(|graphs| graphs.get(&graph_id))
@@ -1060,6 +1066,17 @@ impl RouterStore {
         } else {
             Err(RouterError::NotFound(graph_name.to_owned()))
         }
+    }
+
+    /// Whether `caller` is a tenant of `graph_id` per the registry entry (`owner`/`admins`).
+    ///
+    /// The ownership-derived arm of data-plane privilege evaluation (ADR 0074 §4): the graph
+    /// issuer executes without stored grant rows because ownership itself is the single source
+    /// of truth — issuer authority is never duplicated into independent rows.
+    pub fn is_graph_tenant(&self, graph_id: GraphId, caller: Principal) -> bool {
+        ROUTER_GRAPHS
+            .with_borrow(|graphs| graphs.get(&graph_id))
+            .is_some_and(|entry| entry_names_tenant(&entry, caller))
     }
 
     pub fn list_visible_graph_ids(&self, caller: Principal) -> Result<Vec<GraphId>, RouterError> {
@@ -1198,7 +1215,7 @@ impl RouterStore {
         entry: GraphRegistryEntry,
         graph_name: &str,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         validate_registration_principals(&entry)?;
         ensure_graph_registration_slot_available(graph_name, entry.is_home)?;
         let graph_id = intern_graph_name(graph_name)?;
@@ -1217,7 +1234,7 @@ impl RouterStore {
         entry: GraphRegistryEntry,
         graph_name: &str,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         validate_registration_principals(&entry)?;
         ensure_graph_registration_slot_available(graph_name, entry.is_home)?;
 
@@ -1370,7 +1387,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         validate_metadata_name(logical_graph_name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
         if !list_shards_for_graph_id(graph_id)?.is_empty() {
@@ -1404,7 +1421,7 @@ impl RouterStore {
         status: GraphStatus,
         version: u64,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         let graph_id = lookup_graph_id(graph_name)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         let mut entry = ROUTER_GRAPHS
@@ -1430,7 +1447,7 @@ impl RouterStore {
         caller: Principal,
         args: AdminRegisterShardArgs,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if args.graph_canister == Principal::anonymous() {
             return Err(RouterError::InvalidArgument(
                 "graph principal must be non-anonymous".into(),
@@ -1561,7 +1578,7 @@ impl RouterStore {
         logical_graph_name: &str,
         shard_id: ShardId,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         validate_metadata_name(logical_graph_name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
         let entry =

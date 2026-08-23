@@ -21,7 +21,7 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::scoped_name_catalog::GraphScopedNameCatalog;
 
-use gleaph_auth::AuthState;
+use gleaph_auth::{AuthState, GrantState};
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use gleaph_graph_catalog::GraphCatalog;
 
@@ -49,6 +49,8 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 // --- auth (canonical) ---
 const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(0);
+// --- auth: data-plane grant rows (ADR 0074 §6) ---
+const ROUTER_AUTH_GRANT_ROWS: MemoryId = MemoryId::new(55);
 
 // --- registry (canonical) ---
 const ROUTER_GRAPHS: MemoryId = MemoryId::new(1);
@@ -184,6 +186,7 @@ impl ic_stable_structures::Storable for GraphShardList {
 
 // --- auth ---
 pub(crate) type StableAuthState = AuthState<Memory>;
+pub(crate) type StableGrantState = GrantState<Memory>;
 
 // --- registry ---
 pub(crate) type StableGraphRegistry = BTreeMap<GraphId, GraphRegistryEntry, Memory>;
@@ -387,6 +390,7 @@ pub(crate) type StableEdgeBackfillStateMap =
 const ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 2;
 const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_AUTH_PRINCIPAL_RECORDS, 2),
+    (ROUTER_AUTH_GRANT_ROWS, 4),
     (ROUTER_GRAPHS, 4),
     (ROUTER_SHARDS, 4),
     (ROUTER_SHARD_BY_GRAPH, 2),
@@ -455,6 +459,10 @@ thread_local! {
 // --- auth ---
 pub(crate) fn init_auth_state() -> StableAuthState {
     AuthState::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_AUTH_PRINCIPAL_RECORDS)))
+}
+
+pub(crate) fn init_grant_state() -> StableGrantState {
+    GrantState::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_AUTH_GRANT_ROWS)))
 }
 
 // --- registry ---
@@ -713,17 +721,17 @@ mod tests {
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 55);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 56);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=54)
+                (0..=55)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 55);
-        for id in 0..=54 {
+        assert_eq!(ids.len(), 56);
+        for id in 0..=55 {
             assert!(ids.contains(&id));
         }
     }

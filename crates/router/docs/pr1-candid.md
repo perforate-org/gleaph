@@ -133,8 +133,10 @@ this).
 
 ## Update — router admin
 
-Caller must have **`Role::Admin`** in stable auth (`ROUTER_AUTH_PRINCIPAL_RECORDS`). Init seeds
-`issuing_principal` and `initial_admins` as Admin. Grant or revoke via `admin_grant_role`.
+Caller must hold the **full administrative capability set** in stable auth
+(`ROUTER_AUTH_PRINCIPAL_RECORDS`, ADR 0074). Init seeds `issuing_principal` and
+`initial_admins` with the full set. Grant caps via the L2 `admin_grant_caps` surface
+(`MANAGE_AUTHORIZATION`).
 
 | Method                      | Args                                                           | Returns                              | Notes                               |
 | --------------------------- | -------------------------------------------------------------- | ------------------------------------ | ----------------------------------- |

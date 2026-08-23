@@ -93,12 +93,14 @@ fn gleaph_deploy_registers_account_and_hands_over_bootstrap() {
                 deployment_id: user_principal().to_text(),
                 request_id: gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
                     "g2",
-                    &[gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
-                        logical_resource:
-                            gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
-                                gleaph_graph_kernel::federation::ShardId::new(2),
-                            ),
-                    }],
+                    &[
+                        gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
+                            logical_resource:
+                                gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
+                                    gleaph_graph_kernel::federation::ShardId::new(2),
+                                ),
+                        }
+                    ],
                 ),
                 intent_key: gleaph_graph_kernel::provisioning::ProvisioningIntentKey::new(
                     &user_principal().to_text(),

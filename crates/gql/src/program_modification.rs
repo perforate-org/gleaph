@@ -1,6 +1,6 @@
 //! Classify a parsed GQL program for data-modifying and catalog-modifying content.
 //!
-//! Used by host authorization policies: [`Role::Read`] rejects programs where
+//! Used by host authorization policies: a host may reject programs where
 //! [`ProgramModificationFlags::requires_write_path`] is true.
 
 use crate::ast::{
@@ -20,7 +20,8 @@ pub struct ProgramModificationFlags {
 }
 
 impl ProgramModificationFlags {
-    /// [`Role::Read`] may execute only when this is false.
+    /// [`requires_write_path`] programs may execute only under the host policy's write-capable
+    /// admission.
     pub fn requires_write_path(self) -> bool {
         self.has_data_modification || self.has_catalog_modification || self.has_call_procedure
     }

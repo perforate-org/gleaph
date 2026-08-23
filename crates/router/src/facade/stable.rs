@@ -31,6 +31,10 @@ thread_local! {
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());
 
+    /// Data-plane grant rows `(principal | PUBLIC) × privilege` (ADR 0074).
+    pub(crate) static ROUTER_AUTH_GRANTS: RefCell<memory::StableGrantState> =
+        RefCell::new(memory::init_grant_state());
+
     // --- registry ---
     pub(crate) static ROUTER_GRAPHS: RefCell<memory::StableGraphRegistry> =
         RefCell::new(memory::init_graphs());
