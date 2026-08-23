@@ -42,11 +42,13 @@ use gpui_graph::{
     GraphViewState, LayoutBudget, LayoutProgress, NodeId, NodePatch, OverlayCategory,
 };
 
-/// Per-frame layout work: up to 256 iterations but never more than ~6 ms,
-/// leaving headroom under a 120 Hz frame while small graphs converge in
-/// fewer animation frames (§11.8 wall-clock cap).
+/// Per-frame layout work. The two fields play different roles: iterations
+/// pace the visible relaxation (4 per frame keeps convergence animated
+/// instead of jumping straight to the final layout), while the wall-clock
+/// cap is the ceiling that keeps oversized single steps from blowing the
+/// frame on large graphs (§11.8).
 const FRAME_LAYOUT_BUDGET: LayoutBudget = LayoutBudget {
-    max_iterations: 256,
+    max_iterations: 4,
     max_duration: Some(core::time::Duration::from_millis(6)),
 };
 

@@ -679,6 +679,56 @@ mod tests {
     /// §11.6: removing a node from a running layout compacts dense indices;
     /// the engine must keep stepping and settle with finite positions.
     #[gpui::test]
+    /// The demo drivers pace relaxation with a small per-frame iteration
+    /// count plus a wall-clock ceiling (see FRAME_LAYOUT_BUDGET in the
+    /// examples). The pacing contract: convergence must take visibly many
+    /// frames — a budget that converges inside the first frame collapses the
+    /// animation into a single jump.
+    #[gpui::test]
+    fn frame_budget_keeps_relaxation_visible(cx: &mut TestAppContext) {
+        let scene: Entity<Scene> =
+            cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
+        scene.update(cx, |s, _| {
+            const RING: [&str; 12] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
+            let mut batch = GraphBatch::new();
+            for key in RING {
+                batch = batch.node(key, key);
+            }
+            const RING_EDGES: [&str; 12] = [
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11",
+            ];
+            for i in 0..12 {
+                batch = batch.edge(
+                    RING_EDGES[i],
+                    RING[i],
+                    RING[(i + 1) % 12],
+                    EdgeDirection::Undirected,
+                    "x",
+                );
+            }
+            s.merge(batch);
+        });
+
+        // Mirrors the examples' driver: 4 iterations per animation frame.
+        let frame_budget = LayoutBudget {
+            max_iterations: 4,
+            max_duration: Some(core::time::Duration::from_millis(6)),
+        };
+        let mut frames = 0u32;
+        loop {
+            let progress = scene.update(cx, |s, _| s.step_layout(frame_budget));
+            frames += 1;
+            if progress == LayoutProgress::Settled || frames > 600 {
+                break;
+            }
+        }
+        assert!(
+            (8..=600).contains(&frames),
+            "relaxation must stay visible across frames, took {frames}"
+        );
+    }
+
+    #[gpui::test]
     fn removal_mid_run_resettles_with_compacted_indices(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let scene: Entity<Scene> =
