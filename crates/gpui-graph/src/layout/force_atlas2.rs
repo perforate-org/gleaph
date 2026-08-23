@@ -623,8 +623,9 @@ pub struct ForceAtlas2 {
     gravity: f32,
     /// Use `log(1 + dist)` attraction instead of linear attraction.
     lin_log: bool,
-    /// Divisor applied to every node's per-iteration movement (FA2
-    /// `slowDown`). Values above 1 slow global progress; below 1 risk jitter.
+    /// Uniform playback scale over the undilated FA2 trajectory (exposed as
+    /// `with_time_scale`). Above 1 plays proportionally slower, below 1
+    /// faster; rest detection and cooling dilate with it (§11.8).
     slow_down: f32,
     /// Distance beyond which two nodes no longer repel each other. Repulsion
     /// falls off as `1/dist^2`, so beyond this radius it is negligible; the
@@ -800,7 +801,7 @@ impl LayoutEngine for ForceAtlas2 {
     fn rebuild(&mut self, graph: &LayoutGraph, state: &mut LayoutState) {
         // Rebuild algorithm-specific state. Positions are owned by the scene
         // and preserved across rebuilds (§11.6). Tunable parameters (scaling,
-        // gravity, slowDown, ...) are preserved across rebuilds.
+        // gravity, time_scale, ...) are preserved across rebuilds.
         let n = graph.node_count();
         self.forces.resize(n, Vec2::ZERO);
         self.prev_forces.resize(n, Vec2::ZERO);

@@ -146,8 +146,8 @@ struct Example {
 
 impl Example {
     fn new(cx: &mut Context<Self>) -> Self {
-        // slowDown scales each iteration's movement down, so the relaxation
-        // reads as a gentle drift over several seconds instead of a burst.
+        // time_scale 100 stretches the relaxation into a gentle multi-second
+        // drift; 1.0 would be the undilated physics pace (§11.8).
         let scene: Entity<Scene> = cx.new(|_cx| {
             GraphScene::new().with_layout(Box::new(ForceAtlas2::default().with_time_scale(100.0)))
         });
