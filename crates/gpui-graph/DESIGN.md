@@ -1240,9 +1240,12 @@ than one path per edge, so a large graph submits a handful of primitives
 instead of one per visible edge. Groups stack bottom-to-top — dimmed query
 context, base, emphasized/accent overlay, selected, hovered — so interaction
 colors stay legible above ordinary edges regardless of graph iteration order.
-Line-arrowheads join their edge's stroke batch (same width and color); triangle
-and circle arrowheads paint after the stroke groups because their evenodd label
-punch is defined per path and would XOR same-color overlaps if merged.
+Line-arrowheads join their edge's stroke batch (same width and color).
+Triangle arrowheads merge into one nonzero-winding fill per color, emitted
+after the stroke groups; each label punch is a hole contour wound opposite
+its own triangle, so overlapping same-color heads keep filling — an
+evenodd merge would XOR them into holes. Circle arrowheads are quads,
+which GPUI batches natively.
 
 ---
 

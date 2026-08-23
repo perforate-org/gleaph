@@ -10,8 +10,9 @@
 
 use glam::Vec2;
 use gpui::{
-    Bounds, Context, Div, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement,
-    PathBuilder, ScrollDelta, StyleRefinement, Styled, Window, canvas, div, point, px, quad, size,
+    Bounds, Context, Div, Entity, EventEmitter, FillOptions, FillRule, InteractiveElement,
+    IntoElement, ParentElement, PathBuilder, PathStyle, ScrollDelta, StyleRefinement, Styled,
+    Window, canvas, div, point, px, quad, size,
 };
 use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
@@ -677,11 +678,11 @@ where
                         // and hover stay legible over ordinary edges regardless
                         // of graph iteration order.
                         let mut strokes: Vec<EdgeStrokeBatch> = Vec::new();
-                        // Triangle and circle arrowheads cannot join the stroke
-                        // batch: their evenodd label punch is defined per path,
-                        // so merging same-color heads would XOR overlaps into
-                        // holes. They collect here and paint after the stroke
-                        // groups.
+                        // Triangle and circle arrowheads collect here and
+                        // paint after the stroke groups. Triangles merge into
+                        // one nonzero-winding fill per color (see
+                        // append_triangle_arrow); circles are quads, which
+                        // GPUI batches natively.
                         let mut solid_arrows: Vec<(gpui::Hsla, Vec2, Vec2)> = Vec::new();
                         for edge in &frame.edges {
                             // A selected/hovered edge keeps its interaction
@@ -746,16 +747,86 @@ where
                                 window.paint_path(path, batch.color);
                             }
                         }
-                        for (color, source, target) in &solid_arrows {
-                            paint_edge_arrow(
-                                window,
-                                *source,
-                                *target,
-                                &style,
-                                *color,
-                                &label_rects,
-                                &viewport_rect,
+                        // Skip arrows entirely outside the viewport: each is a
+                        // few pixels, so the bounding-box reject avoids handing
+                        // the tessellator huge off-screen coordinates.
+                        if style.edge_arrow_shape == ArrowShape::Triangle {
+                            let mut fills: Vec<(gpui::Hsla, PathBuilder)> = Vec::new();
+                            for (color, source, target) in &solid_arrows {
+                                let Some(arrow) = TriangleArrow::new(*source, *target, &style)
+                                else {
+                                    continue;
+                                };
+                                if arrow_outside_viewport(
+                                    arrow.tip,
+                                    arrow.base,
+                                    arrow.normal,
+                                    arrow.half,
+                                    &viewport_rect,
+                                ) {
+                                    continue;
+                                }
+                                match fills.iter_mut().find(|(c, _)| c == color) {
+                                    Some((_, builder)) => {
+                                        append_triangle_arrow(
+                                            builder,
+                                            &arrow,
+                                            &style,
+                                            &label_rects,
+                                        );
+                                    }
+                                    None => {
+                                        let mut builder = triangle_fill_builder();
+                                        append_triangle_arrow(
+                                            &mut builder,
+                                            &arrow,
+                                            &style,
+                                            &label_rects,
+                                        );
+                                        fills.push((*color, builder));
+                                    }
+                                }
+                            }
+                            for (color, builder) in fills {
+                                if let Ok(path) = builder.build() {
+                                    window.paint_path(path, color);
+                                }
+                            }
+                        } else {
+                            debug_assert_eq!(
+                                style.edge_arrow_shape,
+                                ArrowShape::Circle,
+                                "line arrowheads join the stroke batches"
                             );
+                            for (color, source, target) in &solid_arrows {
+                                let Some(arrow) = TriangleArrow::new(*source, *target, &style)
+                                else {
+                                    continue;
+                                };
+                                if arrow_outside_viewport(
+                                    arrow.tip,
+                                    arrow.base,
+                                    arrow.normal,
+                                    arrow.half,
+                                    &viewport_rect,
+                                ) {
+                                    continue;
+                                }
+                                // The circle's center sits halfway from tip to base.
+                                let radius = arrow.half;
+                                let center = arrow.tip + (arrow.base - arrow.tip) * 0.5;
+                                window.paint_quad(quad(
+                                    Bounds {
+                                        origin: point(px(center.x - radius), px(center.y - radius)),
+                                        size: size(px(radius * 2.0), px(radius * 2.0)),
+                                    },
+                                    px(radius),
+                                    *color,
+                                    px(0.0),
+                                    gpui::transparent_black(),
+                                    Default::default(),
+                                ));
+                            }
                         }
                         for node in &frame.nodes {
                             let bounds = coordinates.node_bounds(node);
@@ -1351,16 +1422,125 @@ fn subdivide(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> (Bezier, Bezier) {
     ((p0, ab, abc), (abc, bc, p2))
 }
 
-/// Paint an arrowhead at the target end of a directed edge.
+/// A triangle arrowhead's geometry in window space.
 ///
-/// `source` and `target` are window-space endpoints. The arrowhead is drawn
-/// with the edge's resolved color and the shape/size from `style`. The arrow is
-/// masked against the label rectangles (`label_rects`) in the same way as the
-/// edge line: any part of the arrow that would pass behind a label is punched
-/// out so the label stays readable over the arrowhead.
+/// One owner for the shape shared by every draw path.
+#[derive(Debug, Clone, Copy)]
+struct TriangleArrow {
+    tip: Vec2,
+    base: Vec2,
+    normal: Vec2,
+    half: f32,
+}
+
+impl TriangleArrow {
+    /// The arrowhead pointing at `target` along `source -> target`, sized by
+    /// `style`. `None` when the extent is degenerate.
+    fn new(source: Vec2, target: Vec2, style: &GraphStyle) -> Option<Self> {
+        let dir = target - source;
+        let len = dir.length();
+        if len < f32::EPSILON {
+            return None;
+        }
+        let unit = dir / len;
+        let tip = target;
+        let base = tip - unit * style.edge_arrow_size;
+        let normal = Vec2::new(-unit.y, unit.x);
+        Some(Self {
+            tip,
+            base,
+            normal,
+            half: style.edge_arrow_size * 0.5,
+        })
+    }
+}
+
+/// Twice the signed area of a closed polygon (the shoelace sum); the sign is
+/// the polygon's winding.
+fn signed_area_times_two(points: &[Vec2]) -> f32 {
+    let mut sum = 0.0;
+    let n = points.len();
+    for i in 0..n {
+        let a = points[i];
+        let b = points[(i + 1) % n];
+        sum += a.x * b.y - b.x * a.y;
+    }
+    sum
+}
+
+/// Reverse `hole` in place when it winds the same way as the triangle of
+/// signed area `triangle_area`, so under the nonzero fill rule its winding
+/// cancels the triangle inside the hole instead of adding to it.
+fn orient_hole_against(mut hole: Vec<Vec2>, triangle_area: f32) -> Vec<Vec2> {
+    if signed_area_times_two(&hole) * triangle_area > 0.0 {
+        hole.reverse();
+    }
+    hole
+}
+
+/// Append one triangle arrowhead — and the reversed clipped-label contours
+/// that punch out any part hidden behind a label — to a nonzero-winding fill
+/// builder shared with same-color arrowheads.
+///
+/// Nonzero (not evenodd) matters when batching: overlapping same-color
+/// arrowheads both wind positive and stay filled, where an evenodd merge
+/// would XOR them into holes. A label hole cancels only against its own
+/// triangle because it winds opposite; where a hole region is covered by
+/// another arrowhead, that arrowhead's winding still fills it, exactly as if
+/// the later head had painted over it.
+fn append_triangle_arrow(
+    builder: &mut PathBuilder,
+    arrow: &TriangleArrow,
+    style: &GraphStyle,
+    label_rects: &[Bounds<gpui::Pixels>],
+) {
+    let triangle = [
+        arrow.tip,
+        arrow.base + arrow.normal * arrow.half,
+        arrow.base - arrow.normal * arrow.half,
+    ];
+    builder.move_to(point(px(triangle[0].x), px(triangle[0].y)));
+    for p in &triangle[1..] {
+        builder.line_to(point(px(p.x), px(p.y)));
+    }
+    builder.close();
+
+    // Punch out the part of the arrow that lies behind a label. The hole is
+    // the arrow triangle clipped to the label rect — not the whole rect — so
+    // a rect that merely overlaps the arrow's edge does not leave a gray
+    // strip beyond the arrow.
+    let triangle_area = signed_area_times_two(&triangle);
+    let overlapping = label_rects
+        .iter()
+        .filter(|r| arrow_overlaps_rect(arrow.tip, arrow.base, arrow.half, arrow.normal, r));
+    for rect in overlapping {
+        let hole = rect_intersection(
+            arrow.tip,
+            arrow.base,
+            arrow.half,
+            arrow.normal,
+            rect,
+            style.edge_width,
+        );
+        if hole.len() >= 3 {
+            add_polygon_subpath(builder, &orient_hole_against(hole, triangle_area));
+        }
+    }
+}
+
+/// Build the nonzero-winding fill builder shared by same-color triangle
+/// arrowheads.
+fn triangle_fill_builder() -> PathBuilder {
+    // FillOptions is #[non_exhaustive], so mutate the default instead of
+    // constructing a literal.
+    let mut options = FillOptions::default();
+    options.fill_rule = FillRule::NonZero;
+    PathBuilder::fill().with_style(PathStyle::Fill(options))
+}
+
 /// The three points of a line-arrowhead polyline (base-left, tip, base-right),
-/// or `None` when the arrow's extent is degenerate. Shared by the immediate
-/// and batched line-arrow paths so the drawn geometry has one owner.
+/// or `None` when the extent is degenerate. Shared by the immediate and
+/// batched line-arrow paths so the drawn geometry has one owner.
 fn line_arrow_points(source: Vec2, target: Vec2, style: &GraphStyle) -> Option<[Vec2; 3]> {
     let dir = target - source;
     let len = dir.length();
@@ -1373,98 +1553,6 @@ fn line_arrow_points(source: Vec2, target: Vec2, style: &GraphStyle) -> Option<[
     let normal = Vec2::new(-unit.y, unit.x);
     let half = style.edge_arrow_size * 0.5;
     Some([base + normal * half, tip, base - normal * half])
-}
-
-fn paint_edge_arrow(
-    window: &mut Window,
-    source: Vec2,
-    target: Vec2,
-    style: &GraphStyle,
-    color: gpui::Hsla,
-    label_rects: &[Bounds<gpui::Pixels>],
-    viewport_rect: &Bounds<gpui::Pixels>,
-) {
-    let dir = target - source;
-    let len = dir.length();
-    if len < f32::EPSILON {
-        return;
-    }
-    let unit = dir / len;
-    let arrow_size = style.edge_arrow_size;
-    let tip = target;
-    let base = tip - unit * arrow_size;
-    let normal = Vec2::new(-unit.y, unit.x);
-    let half = arrow_size * 0.5;
-
-    // Skip arrows entirely outside the viewport. The arrow is small (a few
-    // pixels), so its bounding box is a cheap reject test that avoids handing
-    // the tessellator the huge coordinates of an off-screen edge endpoint.
-    if arrow_outside_viewport(tip, base, normal, half, viewport_rect) {
-        return;
-    }
-
-    // The arrow is drawn as a single fill path (Triangle) or stroke path
-    // (Line). Any overlapping label rect is added as an extra sub-contour; the
-    // evenodd fill rule punches it out, so the label stays readable over the
-    // arrowhead. Distant rects never overlap the arrow and are skipped.
-    match style.edge_arrow_shape {
-        ArrowShape::Triangle => {
-            let mut builder = PathBuilder::fill();
-            builder.move_to(point(px(tip.x), px(tip.y)));
-            builder.line_to(point(
-                px(base.x + normal.x * half),
-                px(base.y + normal.y * half),
-            ));
-            builder.line_to(point(
-                px(base.x - normal.x * half),
-                px(base.y - normal.y * half),
-            ));
-            builder.close();
-            // Punch out the part of the arrow that lies behind a label. The
-            // hole is the arrow triangle clipped to the label rect — not the
-            // whole rect — so a rect that merely overlaps the arrow's edge does
-            // not leave a gray strip beyond the arrow. The evenodd fill rule
-            // carves the clipped region out of the arrow.
-            for rect in label_rects
-                .iter()
-                .filter(|r| arrow_overlaps_rect(tip, base, half, normal, r))
-            {
-                let hole = rect_intersection(tip, base, half, normal, rect, style.edge_width);
-                if hole.len() >= 3 {
-                    add_polygon_subpath(&mut builder, &hole);
-                }
-            }
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, color);
-            }
-        }
-        ArrowShape::Line => {
-            if let Some([left, tip, right]) = line_arrow_points(source, target, style) {
-                let mut builder = PathBuilder::stroke(px(style.edge_width));
-                builder.move_to(point(px(left.x), px(left.y)));
-                builder.line_to(point(px(tip.x), px(tip.y)));
-                builder.line_to(point(px(right.x), px(right.y)));
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, color);
-                }
-            }
-        }
-        ArrowShape::Circle => {
-            let radius = arrow_size * 0.5;
-            let center = tip - unit * radius;
-            window.paint_quad(quad(
-                Bounds {
-                    origin: point(px(center.x - radius), px(center.y - radius)),
-                    size: size(px(radius * 2.0), px(radius * 2.0)),
-                },
-                px(radius),
-                color,
-                px(0.0),
-                gpui::transparent_black(),
-                Default::default(),
-            ));
-        }
-    }
 }
 
 /// Whether the arrowhead's bounding box lies entirely outside the viewport.
@@ -3041,6 +3129,80 @@ mod tests {
         );
     }
 
+    #[test]
+    fn label_hole_winds_opposite_its_triangle() {
+        // A triangle arrowhead pointing right at (100, 50). A label rect
+        // covering the tip clips the hole; under the nonzero fill rule the
+        // hole must wind opposite its triangle, or the punch fails and the
+        // label is covered.
+        let style = GraphStyle::default();
+        let source = Vec2::new(80.0, 50.0);
+        let target = Vec2::new(100.0, 50.0);
+        let arrow = TriangleArrow::new(source, target, &style).expect("non-degenerate");
+        let triangle = [
+            arrow.tip,
+            arrow.base + arrow.normal * arrow.half,
+            arrow.base - arrow.normal * arrow.half,
+        ];
+        let triangle_area = signed_area_times_two(&triangle);
+        assert!(triangle_area != 0.0);
+
+        let rect = Bounds {
+            origin: point(px(95.0), px(40.0)),
+            size: size(px(10.0), px(20.0)),
+        };
+        let hole = rect_intersection(arrow.tip, arrow.base, arrow.half, arrow.normal, &rect, 0.0);
+        assert!(hole.len() >= 3, "the clipped hole must be a polygon");
+
+        // The raw clipped polygon may wind either way depending on geometry;
+        // after orientation it always opposes the triangle.
+        let oriented = orient_hole_against(hole.clone(), triangle_area);
+        assert!(
+            signed_area_times_two(&oriented) * triangle_area < 0.0,
+            "hole must wind opposite its triangle"
+        );
+        // Orientation only reverses order — same vertices.
+        let mut sorted_hole = hole.clone();
+        sorted_hole.sort_by(|a, b| (a.x, a.y).partial_cmp(&(b.x, b.y)).unwrap());
+        let mut sorted_oriented = oriented.clone();
+        sorted_oriented.sort_by(|a, b| (a.x, a.y).partial_cmp(&(b.x, b.y)).unwrap());
+        for (a, b) in sorted_hole.iter().zip(sorted_oriented.iter()) {
+            assert_eq!(a, b);
+        }
+        // Idempotent: re-orienting an already-opposed hole keeps it opposed.
+        let again = orient_hole_against(oriented.clone(), triangle_area);
+        assert!(
+            signed_area_times_two(&again) * triangle_area < 0.0,
+            "orientation must be stable"
+        );
+    }
+
+    #[test]
+    fn overlapping_same_color_triangles_fill_under_nonzero() {
+        // Two triangles sharing a region: under the nonzero rule the shared
+        // area's winding is +2, so a merged batch fills it instead of XOR-ing
+        // a hole. This pins down why the fill builder must use NonZero.
+        let style = GraphStyle::default();
+        let a = TriangleArrow::new(Vec2::new(80.0, 50.0), Vec2::new(100.0, 50.0), &style)
+            .expect("non-degenerate");
+        let b = TriangleArrow::new(Vec2::new(85.0, 55.0), Vec2::new(105.0, 55.0), &style)
+            .expect("non-degenerate");
+        let tri_of = |arrow: &TriangleArrow| {
+            vec![
+                arrow.tip,
+                arrow.base + arrow.normal * arrow.half,
+                arrow.base - arrow.normal * arrow.half,
+            ]
+        };
+        // Both wind the same way regardless of direction of travel here;
+        // that is exactly what makes nonzero merge them into one filled
+        // union.
+        assert!(
+            signed_area_times_two(&tri_of(&a)) * signed_area_times_two(&tri_of(&b)) > 0.0,
+            "same-shape arrows must wind alike so nonzero unions them"
+        );
+    }
+
     #[gpui::test]
     fn batched_edge_strokes_render_every_visible_edge(cx: &mut TestAppContext) {
         // Three undirected chain edges with the middle one selected, so base
@@ -3093,6 +3255,50 @@ mod tests {
                 .iter()
                 .any(|p| matches!(p, TestPaintPrimitive::Arrow { .. })),
             "undirected edges paint no arrowheads"
+        );
+    }
+
+    #[gpui::test]
+    fn batched_triangle_arrows_render_directed_edges(cx: &mut TestAppContext) {
+        // Directed chain edges with the default triangle shape exercise the
+        // nonzero-winding batched fill end to end: every edge paints once and
+        // every directed edge emits exactly one arrowhead.
+        let scene: Entity<GraphScene<&'static str, &'static str, (), ()>> = cx.new(|_| {
+            let mut scene = GraphScene::new();
+            scene.merge(
+                GraphBatch::new()
+                    .node("a", ())
+                    .node("b", ())
+                    .node("c", ())
+                    .edge("ab", "a", "b", EdgeDirection::Directed, ())
+                    .edge("bc", "b", "c", EdgeDirection::Directed, ()),
+            );
+            for (key, x) in [("a", 0.0), ("b", 40.0), ("c", 80.0)] {
+                let id = scene.node_id(&key).expect("chain node exists");
+                scene.set_position(id, Vec2::new(x, 5.0));
+            }
+            scene
+        });
+        let view: Entity<GraphViewState<&'static str, &'static str, (), ()>> =
+            cx.new(|cx| GraphViewState::new(scene, cx));
+
+        let visual = draw_and_fit_view(cx, &view, Vec2::new(200.0, 100.0));
+        clear_test_paint_trace();
+        draw_graph_view(visual, &view, Vec2::ZERO, Vec2::new(200.0, 100.0));
+        let trace = take_test_paint_trace();
+
+        let edges = trace
+            .iter()
+            .filter(|p| matches!(p, TestPaintPrimitive::Edge { .. }))
+            .count();
+        assert_eq!(edges, 2, "every visible edge must be painted once");
+        let arrows = trace
+            .iter()
+            .filter(|p| matches!(p, TestPaintPrimitive::Arrow { .. }))
+            .count();
+        assert_eq!(
+            arrows, 2,
+            "each directed edge paints one triangle arrowhead"
         );
     }
 
