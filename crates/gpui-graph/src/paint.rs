@@ -110,6 +110,10 @@ pub struct PaintLabel {
 /// An edge label record ready for painting.
 #[derive(Debug, Clone)]
 pub struct PaintEdgeLabel {
+    /// The edge this label belongs to. A label never masks its own edge's
+    /// strokes: self-loops anchor their label beside the shape, and a mask
+    /// rect covering the anchor would otherwise eat the loop's own ink.
+    pub edge: EdgeId,
     /// Canvas-local pixel anchor position (the edge midpoint).
     pub position: Vec2,
     /// Unit offset direction to shift the label off the edge line.
@@ -604,11 +608,18 @@ where
         // Compute the label position before moving `path` into the edge.
         let label = edge_label(*id, &edge.data).map(|text| {
             if is_self_loop {
-                // A self-loop's label sits at the onigiri's base center (away
-                // from the node) so it is clear of the node. It carries the
-                // loop's path so it can slide along it to avoid collisions.
+                // The self-loop's own label parks well beyond the onigiri's
+                // base, away from the node. Anchoring it ON the base arc made
+                // its mask rectangle cut the loop's own strokes - the shape
+                // rendered as detached fragments and read as far smaller than
+                // it was. The clearance exceeds half a label box's height so
+                // the mask cannot reach back over the base arc. The label
+                // still carries the loop's path so it can slide along it to
+                // avoid collisions with other labels.
+                let apex = apex.expect("self-loop has a base");
+                let away = (apex - *source).normalize_or_zero();
                 (
-                    apex.expect("self-loop has a base"),
+                    apex + away * (style.edge_width * 0.5 + 14.0),
                     Vec2::new(0.0, -1.0),
                     text,
                     path.clone(),
@@ -646,6 +657,7 @@ where
         });
         if let Some((position, offset, text, path, t)) = label {
             frame.edge_labels.push(PaintEdgeLabel {
+                edge: *id,
                 position,
                 offset,
                 text,
@@ -783,19 +795,19 @@ const OBSTACLE_KICK_SYMMETRY_POWER: i32 = 6;
 const OBSTACLE_FIELD_SCALE: f32 = 4.0;
 
 /// Half-angle between the onigiri's up-axis and each of its two attach legs.
-/// Wider than the visual minimum so the two legs stay distinct at small
-/// screen radii.
-const SELF_LOOP_ATTACH_HALF_ANGLE: f32 = 0.6109; // 35 degrees
+/// Wide enough that the two legs read as distinct connection points and land
+/// deep inside the chosen free wedge, away from edges converging on the node
+/// ring.
+const SELF_LOOP_ATTACH_HALF_ANGLE: f32 = 0.6981; // 40 degrees
 /// Outward offset of the attach ring beyond the node's screen radius, in
 /// radii, keeping the loop clear of the node marker without detaching it.
-const SELF_LOOP_ATTACH_OFFSET_R: f32 = 0.35;
+const SELF_LOOP_ATTACH_OFFSET_R: f32 = 0.45;
 /// Distance from the node center to the onigiri base, in node screen radii.
-/// Sized so the loop reads as its own shape rather than a cap hugging the
-/// marker (the previous zoom-proportional size made the whole loop barely
-/// larger than the node itself).
-const SELF_LOOP_BASE_DIST_R: f32 = 4.0;
+/// Sized so the loop clearly dominates its host marker instead of reading as
+/// a cap on it.
+const SELF_LOOP_BASE_DIST_R: f32 = 5.5;
 /// Onigiri base half width, in node screen radii.
-const SELF_LOOP_BASE_HALF_WIDTH_R: f32 = 1.9;
+const SELF_LOOP_BASE_HALF_WIDTH_R: f32 = 2.4;
 
 #[doc(hidden)]
 impl ObstacleField {
@@ -2127,11 +2139,12 @@ mod tests {
         // path may legitimately be empty (nothing drawable). When points do
         // exist they must hug the node's screen position.
         let node_screen = viewport.world_to_screen(positions(node).unwrap());
-        // Hug bound: the loop extends at most ~4.5 loop radii from the center
-        // (base distance 4r plus curve bulge), where the loop radius follows
-        // the node's projected size without its screen floor.
+        // Hug bound: the loop extends at most ~6.1 loop radii from the center
+        // (base-corner distance sqrt(5.5^2 + 2.4^2) r plus curve bulge), where
+        // the loop radius follows the node's projected size without its
+        // screen floor.
         let r_eff = (style.node_radius * viewport.zoom()).min(style.node_max_screen_radius);
-        let hug = r_eff * 4.6 + 2.0;
+        let hug = r_eff * 6.2 + 2.0;
         let hug_bounds = WorldBounds {
             min: node_screen - Vec2::splat(hug),
             max: node_screen + Vec2::splat(hug),
@@ -2768,7 +2781,22 @@ mod tests {
             !label.path.is_empty(),
             "self-loop label must carry its path for collision avoidance"
         );
-        assert_eq!(label.t, 0.5, "self-loop label starts at the base center");
+        assert_eq!(label.t, 0.5);
+        // The label parks beyond the loop's entire extent so its mask
+        // rectangle can never cut the loop's own strokes.
+        let edge = &frame.edges[0];
+        let axis = (label.position - edge.source).normalize_or_zero();
+        let label_dist = (label.position - edge.source).dot(axis);
+        let max_path_dist = edge
+            .path
+            .iter()
+            .flat_map(|(p0, p1, p2)| [p0, p1, p2])
+            .map(|p| (*p - edge.source).dot(axis))
+            .fold(f32::MIN, f32::max);
+        assert!(
+            label_dist > max_path_dist,
+            "label must sit beyond the loop shape along its axis"
+        );
     }
 
     #[test]
@@ -2959,7 +2987,8 @@ mod tests {
         );
         // Both lie just outside the node circumference, on the attach ring.
         let style = GraphStyle::default();
-        let expected = style.node_screen_radius(vp.zoom()) * (1.0 + SELF_LOOP_ATTACH_OFFSET_R);
+        let loop_r = (style.node_radius * vp.zoom()).min(style.node_max_screen_radius);
+        let expected = loop_r * (1.0 + SELF_LOOP_ATTACH_OFFSET_R);
         for p in [start, end] {
             let d = (p - center).length();
             assert!(

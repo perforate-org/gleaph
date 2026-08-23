@@ -1319,13 +1319,17 @@ quadratic Bézier control point:
   are multiples of the node's projected screen radius (capped at the node's
   max screen radius, with no min-radius floor so the loop vanishes with the
   graph at low zoom and never escapes world-space cull margins): the base
-  sits four radii from the node center, the base half width is 1.9 radii,
+  sits 5.5 radii from the node center, the base half width is 2.4 radii,
   and the two attach legs leave the marker just outside its circumference at
-  +/-35 degrees around the loop axis. The loop axis points into the largest
+  +/-40 degrees around the loop axis. The loop axis points into the largest
   angular gap between the node's other incident chords, so it dodges each
   neighbor edge directly; averaging incident directions instead could cancel
   for symmetric stars and park the loop on top of an edge. With no other
   incident edges the loop points up.
+- a self-loop's own label anchors beyond the base apex along the loop axis,
+  clear of the shape, and a label never masks its own edge's strokes. An
+  earlier anchor on the base arc let the label's mask rectangle cut the
+  loop's strokes into detached fragments that read as far smaller than drawn.
 
 Self-loops count toward the local density of nearby edges (their midpoint is the
 node center), so they push neighboring edges' bows away, but a self-loop's own
@@ -2112,6 +2116,13 @@ view.update(cx, |view, cx| {
 These operations are explicit framing choices and take precedence over the
 private one-time default initial fit. The mutable viewport accessor has the
 same precedence when callers configure pan or zoom directly.
+
+Pointer and scroll input cancel the pending fit only after some laid-out
+frame has sized the canvas. Earlier events cannot express camera intent —
+the viewport has no pixel size yet, so world/screen math is degenerate — and
+consuming the fit on them left the graph unfitted permanently; they are
+ignored as override signals and the next laid-out frame still fits exactly
+once.
 
 ---
 

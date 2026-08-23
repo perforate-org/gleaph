@@ -1129,10 +1129,10 @@ mod tests {
             crate::paint::self_loop_path(source, node_screen, graph, &positions, &viewport, &style);
         // World-sized nodes shrink their onigiri with zoom: the loop must hug
         // the endpoint's screen position instead of painting a fixed-size
-        // marker into the view. The loop extends at most ~4.5 loop radii from
+        // marker into the view. The loop extends at most ~6.1 loop radii from
         // the center, where the loop radius has no screen floor.
         let r_eff = (style.node_radius * viewport.zoom()).min(style.node_max_screen_radius);
-        let hug = r_eff * 4.6 + 2.0;
+        let hug = r_eff * 6.2 + 2.0;
         let hug_bounds = WorldBounds {
             min: node_screen - glam::Vec2::splat(hug),
             max: node_screen + glam::Vec2::splat(hug),

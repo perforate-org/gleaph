@@ -355,13 +355,13 @@ mod tests {
             },
             0.0,
         );
-        // The onigiri base sits 4 loop radii above the node center. Hit at
+        // The onigiri base sits 5.5 loop radii above the node center. Hit at
         // the base center.
         let style = GraphStyle::default();
         let scale = vp.zoom();
         let loop_r = (style.node_radius * scale).min(style.node_max_screen_radius);
         let node_screen = vp.world_to_screen(Vec2::new(0.0, 0.0));
-        let screen = node_screen + Vec2::new(0.0, -4.0 * loop_r);
+        let screen = node_screen + Vec2::new(0.0, -5.5 * loop_r);
         let mut runtime = crate::runtime::GraphRuntime::new();
         let synced = scene.sync_runtime(&mut runtime);
         let result = hit_test(&synced, &vp, &GraphStyle::default(), screen);

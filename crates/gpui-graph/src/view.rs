@@ -71,13 +71,36 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One-time default initial fit, armed when the view is created.
+///
+/// Two facts gate the fit:
+///
+/// - The canvas must have reported a non-empty size (`note_canvas_size`),
+///   because fitting against a zero-sized viewport collapses the graph.
+/// - Input-driven cancellation (`cancel_on_input`) is honored only after such
+///   a frame existed. Earlier events cannot express camera intent — the
+///   viewport has no pixel size, so world/screen math is degenerate — and
+///   must not consume the fit, or the graph stays unfitted permanently.
 struct InitialAutoFitState {
     pending: bool,
+    canvas_sized: bool,
 }
 
 impl InitialAutoFitState {
     fn cancel(&mut self) {
         self.pending = false;
+    }
+
+    fn cancel_on_input(&mut self) {
+        if self.canvas_sized {
+            self.pending = false;
+        }
+    }
+
+    fn note_canvas_size(&mut self, size: Vec2) {
+        if size.x > 0.0 && size.y > 0.0 {
+            self.canvas_sized = true;
+        }
     }
 
     fn consume_if_canvas_ready(&mut self, size: Vec2) -> bool {
@@ -92,7 +115,10 @@ impl InitialAutoFitState {
 
 impl Default for InitialAutoFitState {
     fn default() -> Self {
-        Self { pending: true }
+        Self {
+            pending: true,
+            canvas_sized: false,
+        }
     }
 }
 
@@ -358,6 +384,7 @@ where
     }
 
     fn prepare_canvas(&mut self, size: Vec2, cx: &mut Context<Self>) {
+        self.initial_auto_fit.note_canvas_size(size);
         self.viewport.set_size(size);
         if self.initial_auto_fit.consume_if_canvas_ready(size) {
             self.fit_all_impl(cx);
@@ -376,6 +403,16 @@ where
 
     fn cancel_initial_auto_fit(&mut self) {
         self.initial_auto_fit.cancel();
+    }
+
+    /// Cancel the pending initial fit because user input asked for the camera.
+    ///
+    /// Input that arrives before any laid-out frame has sized the canvas is
+    /// ignored as an override signal: with no pixel size yet, the event cannot
+    /// express a meaningful camera operation, so consuming the one-time fit
+    /// would leave the graph unfitted forever instead of honoring intent.
+    fn cancel_initial_auto_fit_on_input(&mut self) {
+        self.initial_auto_fit.cancel_on_input();
     }
 
     /// Record the start of a pan or zoom interaction and schedule the settle.
@@ -419,7 +456,7 @@ where
     }
 
     fn handle_zoom(&mut self, pos: Vec2, factor: f32, cx: &mut Context<Self>) {
-        self.cancel_initial_auto_fit();
+        self.cancel_initial_auto_fit_on_input();
         self.begin_interaction(cx);
         self.viewport.zoom_at(pos, factor);
         cx.emit(GraphEvent::ViewportChanged);
@@ -650,20 +687,30 @@ where
                             &edge_measures,
                         );
                         hide_edge_labels_near_nodes(&mut frame, &style, &mut edge_measures);
-                        let mut label_rects: Vec<Bounds<gpui::Pixels>> = frame
-                            .edge_labels
-                            .iter()
-                            .zip(&edge_measures)
-                            .filter_map(|(label, measured)| {
-                                let measured = measured.as_ref()?;
-                                let anchor = coordinates.canvas_to_window(
-                                    label.position + label.offset * style.label_offset,
-                                );
-                                Some(label_rect(measured, anchor, |anchor, height| {
-                                    anchor.y - height * 0.5
-                                }))
-                            })
-                            .collect();
+                        // Edge-label rects carry their owner edge so the
+                        // stroke pass can drop a SELF-LOOP's own rect: the
+                        // loop's label is parked beside the shape, and its
+                        // mask reaching back over the loop would erase the
+                        // loop's ink. Normal edges keep their own rect —
+                        // that mask is what cuts a readable gap in the line
+                        // under the label text. Owners ride beside the rects
+                        // (not index alignment) so the mapping stays exact
+                        // even when a label fails to measure and is skipped.
+                        let mut edge_label_rects: Vec<(EdgeId, Bounds<gpui::Pixels>)> = Vec::new();
+                        for (label, measured) in frame.edge_labels.iter().zip(&edge_measures) {
+                            let Some(measured) = measured.as_ref() else {
+                                continue;
+                            };
+                            let anchor = coordinates.canvas_to_window(
+                                label.position + label.offset * style.label_offset,
+                            );
+                            let rect = label_rect(measured, anchor, |anchor, height| {
+                                anchor.y - height * 0.5
+                            });
+                            edge_label_rects.push((label.edge, rect));
+                        }
+                        let mut label_rects: Vec<Bounds<gpui::Pixels>> =
+                            edge_label_rects.iter().map(|(_, rect)| *rect).collect();
                         label_rects.extend(frame.labels.iter().zip(&node_measures).filter_map(
                             |(label, measured)| {
                                 let measured = measured.as_ref()?;
@@ -695,13 +742,16 @@ where
                             let (color, layer) =
                                 edge_color_layer(&style, edge.selected, edge.hovered, edge.overlay);
                             let path = coordinates.edge_path_window(edge);
+                            let mut own_masks = Vec::new();
+                            let masks =
+                                stroke_masks(edge, &edge_label_rects, &label_rects, &mut own_masks);
                             append_edge_stroke(
                                 &mut strokes,
                                 color,
                                 layer,
                                 &path,
                                 &style,
-                                &label_rects,
+                                masks,
                                 &viewport_rect,
                             );
                             if edge.direction == EdgeDirection::Directed
@@ -1013,6 +1063,38 @@ fn stroke_batch<'a>(
 }
 
 /// Append one edge's visible curve segments to its color's stroke batch.
+/// Select the mask rects for one edge's stroke pass.
+///
+/// A self-loop's own label rect is dropped: the loop's label parks beside
+/// the shape, and its mask reaching back over the loop would erase the
+/// loop's ink. Every other edge keeps all rects including its own — that
+/// own mask is what cuts a readable gap in the line under the label text.
+fn stroke_masks<'a>(
+    edge: &crate::paint::PaintEdge,
+    edge_label_rects: &[(EdgeId, Bounds<gpui::Pixels>)],
+    label_rects: &'a [Bounds<gpui::Pixels>],
+    own_buf: &'a mut Vec<Bounds<gpui::Pixels>>,
+) -> &'a [Bounds<gpui::Pixels>] {
+    if edge.source == edge.target {
+        match edge_label_rects.iter().position(|(id, _)| *id == edge.id) {
+            Some(idx) => {
+                own_buf.clear();
+                own_buf.extend(
+                    label_rects
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != idx)
+                        .map(|(_, r)| *r),
+                );
+                own_buf
+            }
+            None => label_rects,
+        }
+    } else {
+        label_rects
+    }
+}
+
 fn append_edge_stroke(
     batches: &mut Vec<EdgeStrokeBatch>,
     color: gpui::Hsla,
@@ -1733,7 +1815,7 @@ where
                 position: world,
             });
         } else if self.panning {
-            self.cancel_initial_auto_fit();
+            self.cancel_initial_auto_fit_on_input();
             self.begin_interaction(cx);
             let delta = pos - self.last_mouse;
             self.viewport.pan(delta);
@@ -1782,7 +1864,7 @@ where
                 selection: self.selection.clone(),
             });
         } else {
-            self.cancel_initial_auto_fit();
+            self.cancel_initial_auto_fit_on_input();
             // Pan starts here: elevate the interaction LOD immediately so the
             // very first frame after mouse_down (before any mouse_move) already
             // renders the graph at the low-detail threshold. Without this the
@@ -2423,6 +2505,32 @@ mod tests {
 
             state.prepare_canvas(Vec2::new(320.0, 240.0), cx);
             assert!(!state.initial_auto_fit.pending);
+        });
+    }
+
+    #[gpui::test]
+    fn input_before_any_sized_canvas_keeps_initial_auto_fit(cx: &mut TestAppContext) {
+        let view = test_view(cx);
+        // A zoom event lands before any laid-out frame sized the canvas. The
+        // viewport has no pixel size yet, so the event cannot express camera
+        // intent and must not consume the one-time fit.
+        cx.update_entity(&view, |state, cx| {
+            state.handle_zoom(Vec2::new(100.0, 60.0), 1.1, cx);
+            assert!(
+                state.initial_auto_fit.pending,
+                "pre-layout input must not cancel the pending initial fit"
+            );
+        });
+        // The next laid-out frame still fits the graph exactly once.
+        let cx = cx.add_empty_window();
+        draw_graph_view(cx, &view, Vec2::new(80.0, 40.0), Vec2::new(320.0, 240.0));
+        cx.update_entity(&view, |state, _| {
+            assert!(!state.initial_auto_fit.pending);
+            assert!(
+                state.viewport.zoom() > 1.0,
+                "the deferred initial fit still ran, got zoom {}",
+                state.viewport.zoom()
+            );
         });
     }
 
@@ -3336,6 +3444,7 @@ mod tests {
         )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
             text: "alpha".to_string(),
@@ -3343,6 +3452,7 @@ mod tests {
             t: 0.5,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
             text: "beta".to_string(),
@@ -3385,6 +3495,7 @@ mod tests {
         )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
             text: "edge".to_string(),
@@ -3443,6 +3554,7 @@ mod tests {
         )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(0.0, -40.0),
             offset: Vec2::new(0.0, -1.0),
             text: "loop".to_string(),
@@ -3450,6 +3562,7 @@ mod tests {
             t: 0.5,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
             text: "long".to_string(),
@@ -3493,6 +3606,7 @@ mod tests {
             simplified: false,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(10.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
             text: "edge".to_string(),
@@ -3516,6 +3630,7 @@ mod tests {
 
         // A far label is kept.
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 50.0),
             offset: Vec2::new(0.0, -1.0),
             text: "far".to_string(),
@@ -3537,6 +3652,226 @@ mod tests {
         );
         assert_eq!(measures.len(), 1, "measurements stay aligned with labels");
         assert_eq!(frame.edge_labels[0].text, "far");
+    }
+
+    #[test]
+    fn normal_edge_keeps_its_own_label_mask() {
+        // The mask under an edge's own label is what cuts a readable gap in
+        // the line beneath the text, so a normal edge must keep every rect.
+        let edge = test_paint_edge(EdgeId::default(), false);
+        let rects = vec![
+            Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(10.0), px(10.0)),
+            },
+            Bounds {
+                origin: point(px(20.0), px(20.0)),
+                size: size(px(10.0), px(10.0)),
+            },
+        ];
+        let owned = [(EdgeId::default(), rects[0])];
+        let mut buf = Vec::new();
+        let masks = stroke_masks(&edge, &owned, &rects, &mut buf);
+        assert_eq!(masks.len(), 2, "normal edge keeps all mask rects");
+    }
+
+    #[test]
+    fn self_loop_drops_only_its_own_label_mask() {
+        // A self-loop's label parks beside the shape; its own rect must be
+        // excluded while every other rect (other labels, node labels) stays.
+        let loop_edge = test_paint_edge(EdgeId::default(), true);
+        let own = (
+            loop_edge.id,
+            Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(10.0), px(10.0)),
+            },
+        );
+        let other = (
+            EdgeId::default(),
+            Bounds {
+                origin: point(px(50.0), px(50.0)),
+                size: size(px(10.0), px(10.0)),
+            },
+        );
+        let node = Bounds {
+            origin: point(px(100.0), px(100.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let mut rects = vec![own.1, other.1, node];
+        let owned = vec![own, other];
+        let mut buf = Vec::new();
+        let masks = stroke_masks(&loop_edge, &owned, &rects, &mut buf);
+        assert_eq!(masks.len(), 2, "own rect dropped, the rest stay");
+        assert!(
+            !masks.contains(&own.1),
+            "the self-loop's own rect must not mask its strokes"
+        );
+        rects.clear(); // keep `rects` alive for the borrow above
+    }
+
+    #[test]
+    fn unlabeled_self_loop_keeps_all_masks() {
+        // No own rect exists; nothing to drop.
+        let loop_edge = test_paint_edge(EdgeId::default(), true);
+        let rects = vec![Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(10.0), px(10.0)),
+        }];
+        let mut buf = Vec::new();
+        let masks = stroke_masks(&loop_edge, &[], &rects, &mut buf);
+        assert_eq!(masks.len(), 1);
+    }
+
+    /// A minimal [`crate::paint::PaintEdge`] for mask-selection tests.
+    /// `loop_edge` puts source and target at the same point, which is how the
+    /// render loop classifies self-loops.
+    fn test_paint_edge(id: EdgeId, loop_edge: bool) -> crate::paint::PaintEdge {
+        crate::paint::PaintEdge {
+            id,
+            source: Vec2::new(10.0, 10.0),
+            target: Vec2::new(if loop_edge { 10.0 } else { 90.0 }, 10.0),
+            path: Vec::new(),
+            direction: EdgeDirection::Directed,
+            selected: false,
+            hovered: false,
+            overlay: crate::paint::OverlayCategory::None,
+            omit_arrow: false,
+        }
+    }
+
+    #[gpui::test]
+    fn self_loop_ink_survives_a_crowded_label_field(cx: &mut TestAppContext) {
+        // Reproduces the basic-example neighborhood: a labelled self-loop
+        // node with two labelled edges and an edge label per edge. After the
+        // render pipeline masks strokes behind every label rectangle, most of
+        // the onigiri's ink must survive - a loop reduced to fragments reads
+        // as broken and tiny regardless of its geometric size.
+        use crate::graph::Graph;
+        use crate::paint::{PaintFrameInput, build_paint_frame};
+
+        let mut g: Graph<&'static str, &'static str> = Graph::new();
+        let a = g.add_node("alice");
+        let b = g.add_node("bob");
+        let c = g.add_node("carol");
+        g.add_edge(a, b, EdgeDirection::Directed, "ab");
+        g.add_edge(a, c, EdgeDirection::Directed, "ac");
+        g.add_edge(a, a, EdgeDirection::Directed, "aa");
+
+        let positions = move |id: NodeId| match id {
+            id if id == a => Some(Vec2::new(400.0, 300.0)),
+            id if id == b => Some(Vec2::new(560.0, 210.0)),
+            id if id == c => Some(Vec2::new(470.0, 430.0)),
+            _ => None,
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(800.0, 600.0));
+        vp.focus(Vec2::new(470.0, 315.0));
+        vp.zoom_at(vp.size() * 0.5, 2.0);
+        let style = GraphStyle::default();
+
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_cluster_center: &|_| None,
+            node_label: &|_, name: &&'static str| Some((*name).to_string()),
+            edge_label: &|_, name: &&'static str| Some((*name).to_string()),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+
+        let loop_edge = frame
+            .edges
+            .iter()
+            .find(|e| e.source == e.target && e.path.len() > 1)
+            .expect("self-loop present");
+        let loop_path = loop_edge.path.clone();
+
+        let cxw = cx.add_empty_window();
+        cxw.update(|window, _| {
+            // Mirror the render block: measure every label, resolve edge
+            // label collisions against node labels, hide labels near nodes,
+            // then build the mask rects exactly as painting does.
+            let radius = style.node_screen_radius(vp.zoom());
+            let node_measures: Vec<_> = frame
+                .labels
+                .iter()
+                .map(|l| measure_label(window, &l.text, &style))
+                .collect();
+            let mut edge_measures: Vec<_> = frame
+                .edge_labels
+                .iter()
+                .map(|l| measure_label(window, &l.text, &style))
+                .collect();
+            let node_rects: Vec<Bounds<gpui::Pixels>> = frame
+                .labels
+                .iter()
+                .zip(&node_measures)
+                .filter_map(|(l, m)| {
+                    let m = m.as_ref()?;
+                    Some(label_rect(m, l.position, |anchor, _| {
+                        anchor.y + radius + style.label_offset
+                    }))
+                })
+                .collect();
+            let mut working = frame.clone();
+            resolve_edge_label_collisions(&mut working, &style, &node_rects, &edge_measures);
+            hide_edge_labels_near_nodes(&mut working, &style, &mut edge_measures);
+
+            // The loop's own label rect never masks its own strokes.
+            let own_idx = working
+                .edge_labels
+                .iter()
+                .position(|l| l.edge == loop_edge.id)
+                .expect("self-loop label present");
+            let all_rects: Vec<Bounds<gpui::Pixels>> = working
+                .edge_labels
+                .iter()
+                .zip(&edge_measures)
+                .filter_map(|(l, m)| {
+                    let m = m.as_ref()?;
+                    let anchor = l.position + l.offset * style.label_offset;
+                    Some(label_rect(m, anchor, |anchor, h| anchor.y - h * 0.5))
+                })
+                .collect();
+            let rects: Vec<Bounds<gpui::Pixels>> = all_rects
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != own_idx)
+                .map(|(_, r)| *r)
+                .collect();
+
+            let sample_len = |p0: Vec2, p1: Vec2, p2: Vec2| -> f32 {
+                let mut len = 0.0;
+                let mut prev = p0;
+                for k in 1..=16 {
+                    let t = k as f32 / 16.0;
+                    let inv = 1.0 - t;
+                    let pt = inv * inv * p0 + 2.0 * inv * t * p1 + t * t * p2;
+                    len += (pt - prev).length();
+                    prev = pt;
+                }
+                len
+            };
+            let mut kept = 0.0;
+            let mut total = 0.0;
+            for &(p0, p1, p2) in &loop_path {
+                total += sample_len(p0, p1, p2);
+                for (c0, c1, c2) in visible_edge_curves(p0, p1, p2, &rects, style.edge_width, None)
+                {
+                    kept += sample_len(c0, c1, c2);
+                }
+            }
+            println!("loop ink kept {kept:.1} / {total:.1}");
+            assert!(
+                kept > total * 0.9,
+                "label masks cut away too much of the self-loop: {kept:.1} of {total:.1}"
+            );
+        });
     }
 
     #[test]
