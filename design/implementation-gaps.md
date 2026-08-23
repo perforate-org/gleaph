@@ -965,46 +965,66 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-08-23-001 — Native `gleaph-router` lib suite has pre-existing ic0-context failures that poison unrelated tests
 
-- **Status:** Open (discovered 2026-08-23 during the ADR 0073 slice-4 slice; reproduced on a
-  clean HEAD checkout)
-- **Severity:** P3 test-harness
-- **Owner:** `gleaph-router` native unit test harness
-- **Observed behavior:** `cargo test -p gleaph-router --lib` on HEAD `463478b44` fails four tests
-  in this macOS host environment: `facade::store::schema_migration::tests::unregistered_create_graph_migration_fails_closed_without_provisioner`,
-  `provisioning::graph::tests::admission_fails_closed_for_unregistered_name_without_provisioner`,
-  and `provisioning::graph::tests::admission_short_circuits_registered_name_without_provisioner`
-  all panic with `canister_self_size should only be called inside canisters` (`ic0` system call
-  reached outside canister execution), both in the full run and in isolation. Those panics poison a
-  shared outbox/registry test lock, cascading into
-  `vector_sync::tests::{frontier_response_loss_retains_exact_marker_snapshot,
-  resolved_rows_transition_to_awaiting_frontier_before_publish}`, which pass when run alone.
-  Separately, on top of the uncommitted ADR 0073 slices-1–3 working tree,
-  `pocket_ic_tests::adr0034_inline_edge_struct_read_access` fails with
-  ``InvalidArgument("validation error: edge `:AFFINITY` cannot connect :ProjectionSource to
-  (unlabeled) (schema constraint violation)")`` during fixture INSERTs; reverting the slice-4
-  planner changes (`anchor.rs`, `filters.rs`) does not change the failure, so the cause sits in
-  the working-tree schema-validation or label-mutation path, not in planner anchor selection.
-  In the same working tree, `cargo test -p gleaph-graph --lib` fails three expand unit tests —
-  `indexed_edge_equality_expand_return_inline_property`, `gql_var_len_where_inline_property_filters_on_last_hop_edge`
-  (`InvalidExpressionValue { expression: "property access on group edge variable 'e.distance'
-  requires element indexing'" }`), and `gql_var_len_return_inline_property_decodes_indexed_last_hop_edge`
-  (`Some(Null)` vs `Some(Uint16(7))`) — again with the slice-4 planner changes reverted, and the
-  other 974 graph lib tests pass. (A clean-HEAD baseline for these observations could not be
-  taken because the working-tree changes are mutually dependent and do not compile when stashed.)
-- **Expected or needed behavior:** the whole-lib suite must be green as a gate: tests needing a
-  canister execution context should either be gated to wasm/canister targets or fail with an
-  explicit precondition marker, and no cross-test lock poisoning may turn one failure into
-  unrelated failures.
-- **Evidence:** baseline reproduction with all working-tree changes stashed at HEAD `463478b44`
-  (2026-08-23); isolated vector_sync runs green; panics originate in
-  `ic0-1.1.0/src/sys.rs:236`.
-- **Impact:** `cargo test -p gleaph-router --lib` cannot serve as a whole-suite pass signal in this
-  environment, and the cascade masks real regressions behind unrelated failures.
-- **Next decision:** decide per failing test whether it requires a wasm/canister target (gate it)
-  or an injectable self-size stub; then remove the shared-lock poisoning so one panic cannot fail
-  sibling tests. Separately, bisect the ADR 0073 working-tree changes for the adr0034 fixture
-  schema-violation regression and the three graph expand inline-property unit failures before
-  those changes land.
+- **Status:** Partially resolved 2026-08-23; remaining entries Open
+- **Severity:** P3 test-harness (the ic0/build items below were P1 while present)
+- **Owner:** `gleaph-router` native unit test harness; `gleaph-graph` expand executor and adr0034 fixture own their respective items
+
+#### Resolved 2026-08-23
+
+1. **Workspace build breakage (8e392c127 → ac380c4bb).** `8e392c127 feat(index): wire edge range pushdown end to end`
+   added `collect_edges_matching_indexed_property_where` call sites in
+   `crates/graph/src/index/edge_lookup.rs` but omitted the collector's definition in
+   `crates/graph/src/facade/store/edge_properties.rs`, leaving every commit from 8e392c127 through
+   463478b44 unable to build `gleaph-graph`. Fixed by `ac380c4bb fix(graph): add the predicate-scanned
+   edge property collector`.
+2. **Directed equality-index candidates lose inline bytes (`b787ac389` → 317517074).**
+   `b787ac389 fix(index): own edge posting label identity in wire space` let directed postings reach
+   the equality-index candidate path for the first time, but that path read slots through
+   `read_out_edge_slots_for_label`, which restores topology only — scanned edges carried empty inline
+   property bytes, failing projected inline reads. The LARA slot-targeted reader is topology-only by
+   design (`read_edge_state_at_slot` restores no payload); byte restoration lives in the batch walk.
+   Fixed by `317517074 fix(graph): restore inline bytes in equality-index candidates`: the PointingRight
+   arm now walks the labeled adjacency once with batch-restored bytes and keeps the posted slots,
+   mirroring the PointingLeft arm. Owning test: `indexed_edge_equality_expand_return_inline_property`.
+
+#### Remaining open
+
+3. **ic0-context panics poison the router lib suite (this host).**
+   `cargo test -p gleaph-router --lib` fails three tests in this macOS host environment:
+   `facade::store::schema_migration::tests::unregistered_create_graph_migration_fails_closed_without_provisioner`,
+   `provisioning::graph::tests::admission_fails_closed_for_unregistered_name_without_provisioner`,
+   and `provisioning::graph::tests::admission_short_circuits_registered_name_without_provisioner`,
+   all panicking with `canister_self_size should only be called inside canisters` (`ic0` system call
+   reached outside canister execution), in full runs and in isolation. Those panics poison a shared
+   outbox/registry test lock, cascading into
+   `vector_sync::tests::{frontier_response_loss_retains_exact_marker_snapshot,
+   resolved_rows_transition_to_awaiting_frontier_before_publish}`, which pass when run alone.
+   Next decision: gate wasm-only tests to a canister target or inject a self-size stub, and stop one
+   panic from poisoning sibling tests.
+4. **var_len group-variable inline reads fail under default-enabled cypher (`b13d427ca`).**
+   `gql_var_len_where_inline_property_filters_on_last_hop_edge` ("property access on group edge variable
+   'e.distance' requires element indexing") and `gql_var_len_return_inline_property_decodes_indexed_last_hop_edge`
+   (decodes to Null) fail once the cypher dialect is enabled by default — bisect shows both green at
+   da665a70b and red at b13d427ca, i.e. newly *exposed*, not regressed, by the dialect gate. The planner
+   emits var_len plans whose group-edge-variable property access needs element indexing support.
+   Next decision: implement hop-aux element indexing for group edge variables or reject those property
+   accesses at plan time with an explicit unsupported error before this slice lands.
+5. **adr0034 fixture contradicts its typed schema (E2E).**
+   `pocket_ic_tests::adr0034_inline_edge_struct_read_access` INSERTs vertices labeled `ProjectionSource`
+   and unlabeled targets over an `AFFINITY` edge declared `CONNECTING (user -> user)`; the typed-schema
+   endpoint check promotes the ImpossiblePattern warning to a validation error, rejecting the MATCH.
+   The validation is correct fail-closed behavior; the fixture predates it. Next decision: align the
+   fixture with the declared graph type (or extend the type's endpoint set) — do not weaken the endpoint
+   check.
+
+#### Evidence summary
+
+- Build breakage and B1: baseline reproduction with working-tree changes stashed at HEAD 463478b44;
+  worktree bisect across 8e392c127 / cb156b0b7 / b787ac389 / b6fe10612 with the missing collector copied
+  forward; candidate-path disable experiment turned B1 green, confirming the reader as the defect site.
+- ic0 panics reproduce on clean 463478b44; isolated vector_sync runs are green.
+- adr0034 failure persists with the slice-4 planner changes reverted, so planner anchor selection is not
+  involved.
 
 ## Resolved gaps
 
