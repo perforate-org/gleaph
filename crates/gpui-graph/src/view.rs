@@ -545,11 +545,11 @@ where
 
 impl<NK, EK, N, E, S> GraphView<NK, EK, N, E, S>
 where
-    NK: Eq + std::hash::Hash + 'static,
-    EK: Eq + std::hash::Hash + 'static,
-    N: 'static,
-    E: 'static,
-    S: std::hash::BuildHasher + Default + Clone + 'static,
+    NK: Eq + std::hash::Hash + 'static + Sync,
+    EK: Eq + std::hash::Hash + 'static + Sync,
+    N: 'static + Sync,
+    E: 'static + Sync,
+    S: std::hash::BuildHasher + Default + Clone + 'static + Sync,
 {
     /// Create a graph view over the given view state.
     pub fn new(view: Entity<GraphViewState<NK, EK, N, E, S>>) -> Self {
@@ -2383,7 +2383,7 @@ mod tests {
         cx.new(|cx| GraphViewState::new(scene, cx))
     }
 
-    fn draw_graph_view<N: 'static, E: 'static>(
+    fn draw_graph_view<N: 'static + Sync, E: 'static + Sync>(
         cx: &mut VisualTestContext,
         view: &Entity<GraphViewState<&'static str, &'static str, N, E>>,
         origin: Vec2,
@@ -2406,7 +2406,7 @@ mod tests {
     /// empty path and disappears). The real view relies on the one-time initial
     /// auto-fit that runs during prepaint with a nonzero canvas size; this helper
     /// reproduces that ordering for tests that need an explicit fit.
-    fn draw_and_fit_view<'a, N: 'static, E: 'static>(
+    fn draw_and_fit_view<'a, N: 'static + Sync, E: 'static + Sync>(
         cx: &'a mut TestAppContext,
         view: &Entity<GraphViewState<&'static str, &'static str, N, E>>,
         canvas_size: Vec2,

@@ -1297,6 +1297,17 @@ geometry from that same borrowed scene snapshot before using the runtime's
 queries. `GraphViewState` uses the indexed builder, while tests and other
 callers can use the linear builder without constructing runtime state.
 
+The per-edge geometry phase (curve shaping, trimming, visibility, label
+geometry) maps candidates across rayon workers on native targets at or above
+`PAR_MIN_EDGES`; wasm-family builds link no rayon and always take the serial
+driver, matching the ForceAtlas2 execution policy. Outputs merge in candidate
+order, so a frame is identical regardless of worker pool size. The label,
+overlay, selection, and hover resolvers are consulted in a serial pre-pass —
+they carry no `Sync` requirement — while the position lookups captured by the
+parallel map (`PaintFrameInput::node_position`, `node_cluster_center`) must be
+`Sync`, and the builders require `N: Sync, E: Sync` because the map reads the
+graph structure and edge endpoints from worker threads.
+
 ## 18.3 Edge curves
 
 Edges render as quadratic Bézier curves that bow toward the side with lower

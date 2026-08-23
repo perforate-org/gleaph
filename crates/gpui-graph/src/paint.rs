@@ -161,11 +161,16 @@ pub struct PaintFrameInput<'a, N, E> {
     /// The logical graph.
     pub graph: &'a Graph<N, E>,
     /// Resolves a node's world-space position.
-    pub node_position: &'a dyn Fn(NodeId) -> Option<Vec2>,
+    ///
+    /// Must be `Sync`: the per-edge geometry map runs on rayon workers on
+    /// native targets and captures this lookup.
+    pub node_position: &'a (dyn Fn(NodeId) -> Option<Vec2> + Sync),
     /// Resolves a node's cluster center and radius, if the layout grouped it
     /// into a cluster. Used to bow edges within a cluster outward from its
     /// center.
-    pub node_cluster_center: &'a dyn Fn(NodeId) -> Option<(Vec2, f32)>,
+    ///
+    /// Must be `Sync`, for the same reason as [`Self::node_position`].
+    pub node_cluster_center: &'a (dyn Fn(NodeId) -> Option<(Vec2, f32)> + Sync),
     /// Resolves an optional node label string.
     pub node_label: &'a dyn Fn(NodeId, &N) -> Option<String>,
     /// Resolves an optional edge label string.
@@ -225,7 +230,11 @@ where
 /// a node; nodes without a label produce no label primitive. `edge_label`
 /// resolves an optional label string for an edge; edges without a label produce
 /// no edge-label primitive.
-pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
+pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame
+where
+    N: Sync,
+    E: Sync,
+{
     build_paint_frame_with_runtime::<N, E, crate::hash::DefaultBuildHasher>(input, None)
 }
 
@@ -234,9 +243,11 @@ pub fn build_indexed_paint_frame<NK, EK, N, E, S>(
     input: IndexedPaintFrameInput<'_, '_, NK, EK, N, E, S>,
 ) -> PaintFrame
 where
-    NK: Eq + std::hash::Hash,
-    EK: Eq + std::hash::Hash,
-    S: BuildHasher + Default + Clone,
+    NK: Eq + std::hash::Hash + Sync,
+    EK: Eq + std::hash::Hash + Sync,
+    S: BuildHasher + Default + Clone + Sync,
+    N: Sync,
+    E: Sync,
 {
     let IndexedPaintFrameInput {
         synced,
@@ -272,12 +283,23 @@ where
 /// identity, edge, screen endpoints, and whether straight-line LOD applies.
 type Candidate<'a, E> = (usize, EdgeId, &'a Edge<E>, Vec2, Vec2, bool);
 
+#[cfg(not(target_family = "wasm"))]
+use rayon::prelude::*;
+
+/// Candidate count at or above which the per-edge geometry map runs on rayon
+/// workers instead of the serial driver. Wasm-family builds link no rayon and
+/// always take the serial driver (same policy as the ForceAtlas2 phases).
+#[cfg(not(target_family = "wasm"))]
+const PAR_MIN_EDGES: usize = 1024;
+
 fn build_paint_frame_with_runtime<N, E, S>(
     input: PaintFrameInput<'_, N, E>,
     runtime: Option<&GraphRuntime<S>>,
 ) -> PaintFrame
 where
     S: BuildHasher + Default + Clone,
+    N: Sync,
+    E: Sync,
 {
     let PaintFrameInput {
         graph,
@@ -546,119 +568,145 @@ where
     }
     let obstacles_field = ObstacleField::new(&obstacle_world, obstacle_radius);
 
-    for (candidate_index, id, edge, source, target, _) in candidates.iter() {
-        let is_self_loop = edge.source == edge.target;
-        // Chord-neighborhood collection always includes both endpoints of a
-        // curved edge (they lie on the chord itself), so their
-        // self-contribution is present in the raster and cancelled below.
-        // Beyond the raster extent single-node sampling reads zero, which
-        // makes the cancellation harmless either way.
-        let endpoints_in_field = (true, true);
-        let path = edge_path(
-            edge,
-            &EdgeCurveContext {
-                index: *candidate_index,
-                signed_density: signed_densities[*candidate_index],
-                has_reverse,
-                parallel,
-                obstacles: &obstacles_field,
-                obstacle_radius,
-                endpoints_in_field,
-                self_loop_has_node_label: node_has_paint_label(graph, edge.source, node_label),
-            },
-            graph,
-            node_position,
-            node_cluster_center,
-            viewport,
-            style,
-        );
-        // Skip degenerate edges (e.g. overlapping nodes) whose trimmed path is
-        // empty, so no non-finite geometry reaches the paint layer.
-        if path.is_empty() {
-            continue;
-        }
-        // The candidate/index cull is intentionally conservative because the
-        // exact density and obstacle context is known only now. For edges with
-        // both endpoints outside the viewport, apply the actual rendered path
-        // as the post-candidate predicate so a conservative max-bow bbox cannot
-        // turn an off-screen edge into a painted primitive.
-        let screen_bounds = crate::viewport::WorldBounds {
-            min: Vec2::ZERO,
-            max: viewport.size(),
-        };
-        let screen_margin = margin * viewport.zoom();
-        let source_visible = point_in_bounds(*source, &screen_bounds, screen_margin);
-        let target_visible = point_in_bounds(*target, &screen_bounds, screen_margin);
-        if !source_visible && !target_visible {
-            let path_visible = path.iter().any(|(p0, p1, p2)| {
-                bounds_intersect(
-                    &screen_bounds,
-                    screen_margin,
-                    p0.min(*p1).min(*p2),
-                    p0.max(*p1).max(*p2),
-                )
-            });
-            if !path_visible {
-                continue;
-            }
-        }
-        let apex = if is_self_loop {
-            path.first().map(|(_, _, p2)| *p2)
+    // Resolver-dependent per-edge facts are gathered serially: the label and
+    // overlay resolvers carry no Sync requirement, so they must not be
+    // captured by the parallel map below. Each is one cheap call per
+    // candidate; the expensive geometry is what parallelizes.
+    let mut label_texts: Vec<Option<String>> = Vec::with_capacity(candidates.len());
+    let mut overlays: Vec<OverlayCategory> = Vec::with_capacity(candidates.len());
+    let mut selected_flags: Vec<bool> = Vec::with_capacity(candidates.len());
+    let mut hovered_flags: Vec<bool> = Vec::with_capacity(candidates.len());
+    let mut loop_label_flags: Vec<bool> = Vec::with_capacity(candidates.len());
+    for (_, id, edge, _, _, _) in candidates.iter() {
+        label_texts.push(edge_label(*id, &edge.data));
+        overlays.push(edge_overlay(*id));
+        selected_flags.push(selection.contains_edge(*id));
+        hovered_flags.push(hover.edge == Some(*id));
+        loop_label_flags.push(if edge.source == edge.target {
+            node_has_paint_label(graph, edge.source, node_label)
         } else {
-            None
-        };
-        // Compute the label position before moving `path` into the edge.
-        let label = edge_label(*id, &edge.data).map(|text| {
-            if is_self_loop {
-                // The self-loop's own label parks well beyond the onigiri's
-                // base, away from the node. Anchoring it ON the base arc made
-                // its mask rectangle cut the loop's own strokes - the shape
-                // rendered as detached fragments and read as far smaller than
-                // it was. The clearance exceeds half a label box's height so
-                // the mask cannot reach back over the base arc. The label
-                // still carries the loop's path so it can slide along it to
-                // avoid collisions with other labels.
-                let apex = apex.expect("self-loop has a base");
-                let away = (apex - *source).normalize_or_zero();
-                (
-                    apex + away * (style.edge_width * 0.5 + 14.0),
-                    Vec2::new(0.0, -1.0),
-                    text,
-                    path.clone(),
-                    0.5,
-                )
-            } else {
-                // The label sits at the midpoint of the trimmed curve, so
-                // parallel edges (which bow to different control points) get
-                // distinct label positions instead of overlapping.
-                let (p0, p1, p2) = path[0];
-                let position = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
-                let tangent = *target - *source;
-                // Normalize the normal so its y component is always upward.
-                // This keeps labels on the same side of the edge regardless of
-                // whether the edge points left or right.
-                let normal = if let Some(len) = finite_chord_length(*source, *target) {
-                    let n = Vec2::new(-tangent.y, tangent.x) / len;
-                    if n.y < 0.0 { -n } else { n }
-                } else {
-                    Vec2::new(0.0, -1.0)
-                };
-                (position, normal, text, path.clone(), 0.5)
+            false
+        });
+    }
+
+    // Per-candidate geometry is independent given the shared read-only
+    // context (positions, density, obstacle field), so large candidate sets
+    // map across rayon workers on native targets. Outputs merge in candidate
+    // order, which keeps the frame byte-identical across pool sizes.
+    // The pre-pass arrays are indexed by position within `candidates`, while
+    // `candidate_index` inside the tuple indexes the full prep arrays.
+    let build_edge =
+        |(position, (candidate_index, id, edge, source, target, _)): (usize, &Candidate<E>)| {
+            let is_self_loop = edge.source == edge.target;
+            // Chord-neighborhood collection always includes both endpoints of a
+            // curved edge (they lie on the chord itself), so their
+            // self-contribution is present in the raster and cancelled below.
+            // Beyond the raster extent single-node sampling reads zero, which
+            // makes the cancellation harmless either way.
+            let path = edge_path(
+                edge,
+                &EdgeCurveContext {
+                    index: *candidate_index,
+                    signed_density: signed_densities[*candidate_index],
+                    has_reverse,
+                    parallel,
+                    obstacles: &obstacles_field,
+                    obstacle_radius,
+                    endpoints_in_field: (true, true),
+                    self_loop_has_node_label: loop_label_flags[position],
+                },
+                graph,
+                node_position,
+                node_cluster_center,
+                viewport,
+                style,
+            );
+            // Skip degenerate edges (e.g. overlapping nodes) whose trimmed path is
+            // empty, so no non-finite geometry reaches the paint layer.
+            if path.is_empty() {
+                return None;
             }
-        });
-        frame.edges.push(PaintEdge {
-            id: *id,
-            source: *source,
-            target: *target,
-            path,
-            direction: edge.direction,
-            selected: selection.contains_edge(*id),
-            hovered: hover.edge == Some(*id),
-            overlay: edge_overlay(*id),
-            omit_arrow: edge_arrow_omitted(*source, *target, edge.source == edge.target, style),
-        });
-        if let Some((position, offset, text, path, t)) = label {
-            frame.edge_labels.push(PaintEdgeLabel {
+            // The candidate/index cull is intentionally conservative because the
+            // exact density and obstacle context is known only now. For edges with
+            // both endpoints outside the viewport, apply the actual rendered path
+            // as the post-candidate predicate so a conservative max-bow bbox cannot
+            // turn an off-screen edge into a painted primitive.
+            let screen_bounds = crate::viewport::WorldBounds {
+                min: Vec2::ZERO,
+                max: viewport.size(),
+            };
+            let screen_margin = margin * viewport.zoom();
+            let source_visible = point_in_bounds(*source, &screen_bounds, screen_margin);
+            let target_visible = point_in_bounds(*target, &screen_bounds, screen_margin);
+            if !source_visible && !target_visible {
+                let path_visible = path.iter().any(|(p0, p1, p2)| {
+                    bounds_intersect(
+                        &screen_bounds,
+                        screen_margin,
+                        p0.min(*p1).min(*p2),
+                        p0.max(*p1).max(*p2),
+                    )
+                });
+                if !path_visible {
+                    return None;
+                }
+            }
+            let apex = if is_self_loop {
+                path.first().map(|(_, _, p2)| *p2)
+            } else {
+                None
+            };
+            // Compute the label position before moving `path` into the edge.
+            let label = label_texts[position].clone().map(|text| {
+                if is_self_loop {
+                    // The self-loop's own label parks well beyond the onigiri's
+                    // base, away from the node. Anchoring it ON the base arc made
+                    // its mask rectangle cut the loop's own strokes - the shape
+                    // rendered as detached fragments and read as far smaller than
+                    // it was. The clearance exceeds half a label box's height so
+                    // the mask cannot reach back over the base arc. The label
+                    // still carries the loop's path so it can slide along it to
+                    // avoid collisions with other labels.
+                    let apex = apex.expect("self-loop has a base");
+                    let away = (apex - *source).normalize_or_zero();
+                    (
+                        apex + away * (style.edge_width * 0.5 + 14.0),
+                        Vec2::new(0.0, -1.0),
+                        text,
+                        path.clone(),
+                        0.5,
+                    )
+                } else {
+                    // The label sits at the midpoint of the trimmed curve, so
+                    // parallel edges (which bow to different control points) get
+                    // distinct label positions instead of overlapping.
+                    let (p0, p1, p2) = path[0];
+                    let position = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
+                    let tangent = *target - *source;
+                    // Normalize the normal so its y component is always upward.
+                    // This keeps labels on the same side of the edge regardless of
+                    // whether the edge points left or right.
+                    let normal = if let Some(len) = finite_chord_length(*source, *target) {
+                        let n = Vec2::new(-tangent.y, tangent.x) / len;
+                        if n.y < 0.0 { -n } else { n }
+                    } else {
+                        Vec2::new(0.0, -1.0)
+                    };
+                    (position, normal, text, path.clone(), 0.5)
+                }
+            });
+            let paint_edge = PaintEdge {
+                id: *id,
+                source: *source,
+                target: *target,
+                path,
+                direction: edge.direction,
+                selected: selected_flags[position],
+                hovered: hovered_flags[position],
+                overlay: overlays[position],
+                omit_arrow: edge_arrow_omitted(*source, *target, is_self_loop, style),
+            };
+            let label = label.map(|(position, offset, text, path, t)| PaintEdgeLabel {
                 edge: *id,
                 position,
                 offset,
@@ -666,6 +714,24 @@ where
                 path,
                 t,
             });
+            Some((paint_edge, label))
+        };
+    let outputs: Vec<Option<(PaintEdge, Option<PaintEdgeLabel>)>> = {
+        #[cfg(not(target_family = "wasm"))]
+        if candidates.len() >= PAR_MIN_EDGES {
+            candidates.par_iter().enumerate().map(&build_edge).collect()
+        } else {
+            candidates.iter().enumerate().map(&build_edge).collect()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            candidates.iter().enumerate().map(&build_edge).collect()
+        }
+    };
+    for (paint_edge, label) in outputs.into_iter().flatten() {
+        frame.edges.push(paint_edge);
+        if let Some(label) = label {
+            frame.edge_labels.push(label);
         }
     }
 

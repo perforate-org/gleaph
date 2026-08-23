@@ -93,7 +93,7 @@ impl Default for LayoutBudget {
 /// exists so the scheduling layer *may* move an engine onto GPUI's background
 /// executor between calls (§30 native strategy). Every engine stays fully
 /// usable from the UI thread.
-pub trait LayoutEngine: Send {
+pub trait LayoutEngine: Send + Sync {
     /// Rebuild the engine's internal algorithm state for the given graph.
     ///
     /// A rebuild must not imply discarding existing positions: old nodes keep
