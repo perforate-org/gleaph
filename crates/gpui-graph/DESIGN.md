@@ -991,6 +991,12 @@ Fixed(position)
 
 The public abstraction should remain small in v0.1.
 
+The canonical default is `Random` (a ±200 world-unit bounded region). Nodes are
+world-sized and the view's initial auto-fit derives its zoom from the content
+bounds, so a near-origin default would fit a fresh scene at an enormous zoom
+and render every node as a huge circle; a spread extent keeps the fitted zoom
+near unity.
+
 Applications may provide an origin hint when merging graph data produced by an expansion operation.
 
 ---

@@ -802,7 +802,9 @@ mod tests {
             cx.new(|_| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
         scene.update(cx, |s, _| {
             // A connected triangle: attraction binds the nodes, so the
-            // relaxation genuinely moves them before settling.
+            // relaxation genuinely moves them before settling. The initial
+            // geometry is pinned explicitly so the 40-step settle budget does
+            // not depend on the default placement policy's spread.
             s.merge(
                 GraphBatch::new()
                     .node("a", "A")
@@ -811,6 +813,14 @@ mod tests {
                     .edge("ab", "a", "b", EdgeDirection::Undirected, "x")
                     .edge("bc", "b", "c", EdgeDirection::Undirected, "y"),
             );
+            let (a, b, c) = (
+                s.node_id(&"a").unwrap(),
+                s.node_id(&"b").unwrap(),
+                s.node_id(&"c").unwrap(),
+            );
+            s.set_position(a, Vec2::new(-30.0, 0.0));
+            s.set_position(b, Vec2::new(30.0, 6.0));
+            s.set_position(c, Vec2::new(10.0, -24.0));
         });
         let initial = scene.update(cx, |s, _| {
             s.node_position(s.node_id(&"a").unwrap()).unwrap()
@@ -1630,6 +1640,18 @@ mod tests {
 
         let mut s = GraphScene::new().with_layout(Box::new(SccLayoutEngine));
         s.merge(batch);
+        // Pin the canonical node geometry deterministically. The SCC engine
+        // derives its cluster circles from topology alone, but the scene's
+        // canonical positions come from the initial placement policy, and the
+        // stale-curve premise below (an old bowed control point far outside
+        // every post-switch straight chord) must not depend on that policy.
+        for (i, key) in NODE_KEYS.iter().enumerate() {
+            let angle = (i as f32 / NODE_KEYS.len() as f32) * std::f32::consts::TAU;
+            s.set_position(
+                s.node_id(key).unwrap(),
+                Vec2::new(angle.cos(), angle.sin()) * 20.0,
+            );
+        }
         let source_id = s.node_id(&NODE_KEYS[0]).unwrap();
         let target_id = s.node_id(&NODE_KEYS[1]).unwrap();
         let edge_id = s.edge_id(&EDGE_KEYS[0]).unwrap();

@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-23
-Anchor timestamp: 2026-08-23 05:23:26 UTC +0000
+Anchor timestamp: 2026-08-23 10:20:02 UTC +0000
 
 ## Status
 
@@ -46,6 +46,40 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-23-001 — ForceAtlas2 equilibrium rests below the rendered node diameter once nodes are world-sized
+
+- **Status:** Open (recorded 2026-08-23). Non-blocking for the placement-default slice that
+  surfaced it; needs a layout-design decision before any code fix.
+- **Severity:** P2 visual quality — demo-scale graphs relax into overlapping node blobs over
+  tens of seconds; static and freshly-opened views are unaffected.
+- **Owner:** `crates/gpui-graph/src/layout/force_atlas2.rs` force balance, against the
+  world-sized node contract (`3a52ee395`, DESIGN.md §26.2) and the default placement contract
+  (DESIGN.md §13).
+- **Observed behavior:** Headless probe mirroring the `force_atlas2` / `interactive` examples
+  (24-node random hub graph, 12-node start graph, FA2 defaults, one iteration per frame): from
+  the ±200-unit spread start, the average edge length falls from ~205–233 world units at frame
+  0 to **4.7–6.5 by settle** (frame ~1400 undilated pace) — i.e. below half the rendered node
+  diameter (`2 * node_radius` = 12 world units), with a minimum pairwise node distance of
+  ~2.3 units. Before world-sized nodes this contraction was invisible (nodes drew at a fixed
+  6 px); now the settled state renders as heavily overlapping discs.
+- **Mechanism:** linear attraction grows with distance while repulsion falls off as
+  `1/d²`, so the pairwise equilibrium sits near `scaling^(1/3)` times small mass factors —
+  well inside one node diameter at the default `scaling = 1`. A universal hard separation
+  floor was prototyped and rejected: dense topologies make the floor unsatisfiable (hub/256
+  leaves around their center equilibrate at ring spacing ~1.2 units; enforcing ≥12 units per
+  pair puts the constraint in permanent conflict with the force law, so the layout never
+  settles — `layout::force_atlas2::tests::settles_within_iteration_budget` fails at budget),
+  and raising attraction-side softening or `scaling` alone either misses the floor or breaks
+  convergence contracts elsewhere.
+- **Impact:** relaxed layouts eventually render overlapping markers in every app using FA2
+  defaults with the canonical style; hit-testing ambiguity follows visually.
+- **Next decision:** pick one contract before coding: (a) a size-aware FA2 parameter with a
+  capacity-aware relaxation that tolerates density where the floor cannot hold (Gephi-style
+  no-overlap is approximate for exactly this reason); (b) render-side marker LOD that shrinks
+  or fades markers when local density exceeds what world-sized discs allow; or (c) document
+  per-app tuning of `with_scaling`/`node_radius` pairs and accept blobbing for dense hubs.
+  Record the decision in DESIGN.md §11/§26.2 and close this entry in the fixing commit.
 
 ### GAP-2026-08-22-001 — Migration-driven directed edge builds reject at graph-index seeding: wire vs catalog label identity divergence
 

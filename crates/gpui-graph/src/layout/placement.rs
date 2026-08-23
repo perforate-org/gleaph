@@ -1,18 +1,29 @@
 //! Initial placement policies (§13).
 //!
 //! Initial placement is distinct from layout. When graph exploration
-//! introduces new nodes, randomly redistributing the entire graph creates poor
-//! interaction stability. New nodes should initially appear near their
+//! introduces new nodes into an established layout, randomly redistributing
+//! the entire graph creates poor interaction stability, so [`Placement::Around`]
+//! and [`Placement::Barycenter`] let an application place new nodes near their
 //! expansion origin.
+//!
+//! The default is [`Placement::Random`]: nodes are world-sized, and a view's
+//! initial auto-fit selects its zoom from the content bounds, so a fresh scene
+//! whose nodes all start inside a tiny box would be fitted at a huge zoom and
+//! render every node as an enormous circle. Spreading the initial extent keeps
+//! the fitted zoom near unity for typical windows.
 
 use glam::Vec2;
 
 use super::graph::LayoutState;
 
 /// A policy for assigning an initial position to a newly introduced node (§13).
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// The default is [`Placement::Random`] so fresh scenes start from a spread
+/// extent; see the module docs for why that matters.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub enum Placement {
     /// A random position in a bounded region.
+    #[default]
     Random,
     /// A position near the given origin.
     Around(Vec2),
@@ -20,12 +31,6 @@ pub enum Placement {
     Barycenter,
     /// A fixed position.
     Fixed(Vec2),
-}
-
-impl Default for Placement {
-    fn default() -> Self {
-        Self::Around(Vec2::ZERO)
-    }
 }
 
 impl Placement {
@@ -96,6 +101,31 @@ impl Default for Rng {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_is_spread_random() {
+        // World-sized nodes plus the view's initial auto-fit mean a tiny
+        // default extent would be fitted at a huge zoom; the canonical default
+        // must be the spread policy, not a near-origin cluster.
+        assert_eq!(Placement::default(), Placement::Random);
+    }
+
+    #[test]
+    fn random_placement_spreads_within_bounds() {
+        let state = LayoutState::new();
+        let mut rng = Rng::new(42);
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for _ in 0..64 {
+            let p = Placement::Random.initial_position(&state, &mut rng);
+            assert!(p.x.abs() <= 200.0 && p.y.abs() <= 200.0);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        // The samples genuinely spread, rather than clustering in a corner.
+        assert!((max.x - min.x) > 100.0);
+        assert!((max.y - min.y) > 100.0);
+    }
 
     #[test]
     fn fixed_placement_ignores_rng() {
