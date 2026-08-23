@@ -1334,11 +1334,16 @@ Obstacle avoidance queries a dense bucket array rather than a hash-mapped
 grid (`paint::ObstacleGrid`): buckets are addressed by direct index over the
 obstacles' own bounding extent, so a per-edge query costs work proportional
 to its chord's footprint — never a scan of every node, whatever the zoom.
-Queries pass the chord's rectangle expanded by one influence radius; the
-per-obstacle along/perpendicular filters then keep exactly the obstacles that
-can push the curve. A pathologically sparse extent degrades to one bucket
-holding every point, bounding memory while keeping queries correct, and
-bucket iteration is deterministic row-major.
+The query walks the chord's major axis one column of cells at a time and
+derives each column's perpendicular extent from the segment's position
+inside it, so even a long diagonal chord visits a thin strip instead of its
+bounding square; the per-obstacle along/perpendicular filters then keep
+exactly the obstacles that can push the curve. A pathologically sparse
+extent degrades to one bucket holding every point, bounding memory while
+keeping queries correct, and bucket iteration is deterministic row-major.
+Candidate edge queries deduplicate through generation-stamped stamps
+parallel to the edge list (`GraphRuntime::query_dedup`) rather than a hash
+set rebuilt per frame.
 
 The shared chord guard rejects only an exact zero or non-finite coordinate-space
 length before normalization. It deliberately does not use `f32::EPSILON`: a

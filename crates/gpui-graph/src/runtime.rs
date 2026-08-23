@@ -17,7 +17,7 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use crate::graph::{EdgeId, Graph, NodeId};
-use crate::hash::{HashMap, HashSet};
+use crate::hash::HashMap;
 use crate::paint::{edge_curve_bbox, finite_chord_length, shared_cluster_center};
 use crate::scene::GraphScene;
 use crate::viewport::WorldBounds;
@@ -398,6 +398,14 @@ where
 /// let bounds = WorldBounds { min: Vec2::ZERO, max: Vec2::ONE };
 /// let _ = runtime.visible_edge_candidates(&bounds, 0.0);
 /// ```
+/// Generation-stamped deduplication for candidate queries (see
+/// `GraphRuntime::query_dedup`).
+#[derive(Debug, Clone, Default)]
+struct DedupState {
+    stamps: Vec<u32>,
+    generation: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GraphRuntime<S = crate::hash::DefaultBuildHasher>
 where
@@ -410,6 +418,12 @@ where
     topology_revision: u64,
     /// The geometry revision represented by this runtime.
     geometry_revision: u64,
+    /// Epoch stamps for candidate-query deduplication, parallel to the edge
+    /// list. A query marks each reported edge index with the current
+    /// generation, so revisiting an edge through several cells costs two
+    /// array accesses instead of a hash insert. Single-threaded paint path,
+    /// hence the cell.
+    query_dedup: std::cell::RefCell<DedupState>,
     /// Node ids bucketed by the grid cell of their position.
     node_cells: HashMap<Cell, Vec<NodeId>, S>,
     /// Edge candidate indices bucketed by every grid cell their curve bounding
@@ -600,7 +614,25 @@ where
     /// [`Self::edges`].
     pub(crate) fn visible_edge_candidates(&self, bounds: &WorldBounds, margin: f32) -> Vec<usize> {
         let mut result = Vec::new();
-        let mut seen: HashSet<usize, S> = HashSet::with_hasher(S::default());
+        let mut dedup = self.query_dedup.borrow_mut();
+        // Re-size with the edge list and advance the epoch. A stamp equal to
+        // the current generation means "already reported this query"; every
+        // other value (including stamps left by earlier queries) reports.
+        if dedup.stamps.len() != self.edges.edge_ids.len() {
+            dedup.stamps.clear();
+            dedup.stamps.resize(self.edges.edge_ids.len(), 0);
+            dedup.generation = 0;
+        }
+        dedup.generation = match dedup.generation.checked_add(1) {
+            Some(generation) => generation,
+            None => {
+                // The counter wrapped: stale stamps could alias the new
+                // generation, so zero them and start over.
+                dedup.stamps.fill(0);
+                1
+            }
+        };
+        let generation = dedup.generation;
         let slack = margin + EDGE_INDEX_SLACK;
         let Some(rect) = CellRect::from_query(bounds, slack) else {
             return (0..self.edges.edge_ids.len()).collect();
@@ -611,7 +643,8 @@ where
         for cell in rect.cells() {
             if let Some(ids) = self.edge_cells.get(&cell) {
                 for &id in ids {
-                    if seen.insert(id) {
+                    if dedup.stamps[id] != generation {
+                        dedup.stamps[id] = generation;
                         result.push(id);
                     }
                 }
@@ -621,7 +654,8 @@ where
         // are a deliberate candidate superset; the precise curve test filters
         // them without requiring unbounded bucket population.
         for &id in &self.edge_overflow {
-            if seen.insert(id) {
+            if dedup.stamps[id] != generation {
+                dedup.stamps[id] = generation;
                 result.push(id);
             }
         }

@@ -749,31 +749,98 @@ impl ObstacleGrid {
         )
     }
 
-    /// Invoke `f` for each obstacle whose cell intersects the rectangle
-    /// `[min, max]`. Callers filter precisely afterwards, so any superset is
-    /// valid. A callback (rather than an iterator) avoids a heap allocation
-    /// and dynamic dispatch per query, which matters because this runs once
-    /// per visible edge.
-    fn for_each_in_rect(&self, min: Vec2, max: Vec2, mut f: impl FnMut(Vec2)) {
+    /// Invoke `f` for each obstacle whose cell intersects the segment
+    /// `a -> b` expanded by `pad`. Callers filter precisely afterwards, so any
+    /// superset is valid.
+    ///
+    /// The walk follows the segment's major axis one column (or row) of cells
+    /// at a time and derives the perpendicular extent from the segment's
+    /// position inside each column, so a long diagonal chord visits a thin
+    /// strip of ~3 cells per column instead of the chord's whole bounding
+    /// square. Each cell is visited at most once, in deterministic
+    /// column-major order. A callback (rather than an iterator) avoids a heap
+    /// allocation and dynamic dispatch per query, which matters because this
+    /// runs once per visible edge.
+    fn for_each_near_segment(&self, a: Vec2, b: Vec2, pad: f32, mut f: impl FnMut(Vec2)) {
         if self.buckets.is_empty() {
             return;
         }
-        let lo = self.cell_index_clamped(min);
-        let hi = self.cell_index_clamped(max);
-        for row in lo.1..=hi.1 {
-            for col in lo.0..=hi.0 {
-                for o in &self.buckets[(row * self.cols + col) as usize] {
+        let cs = self.cell_size;
+        let cols = self.cols as i64;
+        let rows = self.rows as i64;
+        // Grid-relative coordinates so flooring stays consistent across the
+        // grid's own extent.
+        let ax = a.x - self.origin.x;
+        let ay = a.y - self.origin.y;
+        let bx = b.x - self.origin.x;
+        let by = b.y - self.origin.y;
+        let dx = bx - ax;
+        let dy = by - ay;
+
+        fn visit_bucket(grid: &ObstacleGrid, f: &mut impl FnMut(Vec2), col: i64, row: i64) {
+            let cols = grid.cols as i64;
+            let rows = grid.rows as i64;
+            if (0..cols).contains(&col) && (0..rows).contains(&row) {
+                for o in &grid.buckets[(row * cols + col) as usize] {
                     f(*o);
                 }
             }
         }
-    }
 
-    /// Cell coordinates clamped into the grid. Points outside the extent land
-    /// on the border cells, which can only add candidates — never skip them.
-    fn cell_index_clamped(&self, point: Vec2) -> (u32, u32) {
-        let (col, row) = ObstacleGrid::cell_of(point, self.origin, self.cell_size);
-        (col.min(self.cols - 1), row.min(self.rows - 1))
+        if dx != 0.0 || dy != 0.0 {
+            if dx.abs() >= dy.abs() {
+                // Walk columns; the perpendicular extent is a y-range.
+                let c_start = (((ax.min(bx) - pad) / cs).floor() as i64).max(0);
+                let c_end = (((ax.max(bx) + pad) / cs).floor() as i64).min(cols - 1);
+                for c in c_start..=c_end {
+                    // Parametric window of the segment inside this column's
+                    // x-band, clamped so columns past either end collapse onto
+                    // that endpoint (the pad then reaches the cap).
+                    let cx0 = c as f32 * cs;
+                    let (mut t0, mut t1) = ((cx0 - ax) / dx, (cx0 + cs - ax) / dx);
+                    if t0 > t1 {
+                        std::mem::swap(&mut t0, &mut t1);
+                    }
+                    let y0 = ay + t0.clamp(0.0, 1.0) * dy;
+                    let y1 = ay + t1.clamp(0.0, 1.0) * dy;
+                    let r_lo = (((y0.min(y1) - pad) / cs).floor() as i64).max(0);
+                    let r_hi = (((y0.max(y1) + pad) / cs).floor() as i64).min(rows - 1);
+                    for r in r_lo..=r_hi {
+                        visit_bucket(self, &mut f, c, r);
+                    }
+                }
+            } else {
+                // Walk rows; symmetric with x and y exchanged.
+                let r_start = (((ay.min(by) - pad) / cs).floor() as i64).max(0);
+                let r_end = (((ay.max(by) + pad) / cs).floor() as i64).min(rows - 1);
+                for r in r_start..=r_end {
+                    let ry0 = r as f32 * cs;
+                    let (mut t0, mut t1) = ((ry0 - ay) / dy, (ry0 + cs - ay) / dy);
+                    if t0 > t1 {
+                        std::mem::swap(&mut t0, &mut t1);
+                    }
+                    let x0 = ax + t0.clamp(0.0, 1.0) * dx;
+                    let x1 = ax + t1.clamp(0.0, 1.0) * dx;
+                    let c_lo = (((x0.min(x1) - pad) / cs).floor() as i64).max(0);
+                    let c_hi = (((x0.max(x1) + pad) / cs).floor() as i64).min(cols - 1);
+                    for c in c_lo..=c_hi {
+                        visit_bucket(self, &mut f, c, r);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Degenerate: both endpoints coincide. A square of cells around the
+        // point, sized by the pad.
+        let ca = ((ax / cs).floor() as i64).clamp(0, cols.max(1) - 1);
+        let ra = ((ay / cs).floor() as i64).clamp(0, rows.max(1) - 1);
+        let span = (pad / cs).ceil() as i64;
+        for c in (ca - span).max(0)..=(ca + span).min(cols - 1) {
+            for r in (ra - span).max(0)..=(ra + span).min(rows - 1) {
+                visit_bucket(self, &mut f, c, r);
+            }
+        }
     }
 }
 
@@ -993,11 +1060,8 @@ pub fn apply_node_avoidance(
     // chord, so visiting that box is proportional to the chord's footprint —
     // never the grid's whole extent, whatever the zoom.
     let influence_radius = ctx.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let expand = Vec2::splat(influence_radius);
-    ctx.obstacles.for_each_in_rect(
-        source.min(target) - expand,
-        source.max(target) + expand,
-        |obstacle| {
+    ctx.obstacles
+        .for_each_near_segment(source, target, influence_radius, |obstacle| {
             // Skip the edge's own endpoints. Use a small tolerance so tiny
             // floating-point differences from the screen transform do not make the
             // edge treat its own endpoints as obstacles.
@@ -1025,8 +1089,7 @@ pub fn apply_node_avoidance(
                 let away = if perp >= 0.0 { -normal } else { normal };
                 push += away * influence * 2.0;
             }
-        },
-    );
+        });
     if push.length() > max_push {
         push = push.normalize() * max_push;
     }

@@ -14,6 +14,3 @@ pub type DefaultBuildHasher = rapidhash::fast::RandomState;
 
 /// `std::collections::HashMap` with a defaulted build-hasher type parameter.
 pub(crate) type HashMap<K, V, S = DefaultBuildHasher> = std::collections::HashMap<K, V, S>;
-
-/// `std::collections::HashSet` with a defaulted build-hasher type parameter.
-pub(crate) type HashSet<K, S = DefaultBuildHasher> = std::collections::HashSet<K, S>;
