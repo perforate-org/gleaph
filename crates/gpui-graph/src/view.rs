@@ -613,28 +613,62 @@ where
                         // compute the window-space bounds of every node and edge
                         // label so edges can be cut where they pass behind a
                         // label.
+                        // Shape every label once per frame. Collision
+                        // resolution slides labels along their paths but never
+                        // changes their sizes, so these measurements serve the
+                        // collision rects, the edge cut-outs, and painting
+                        // alike instead of re-shaping per call.
+                        let node_measures: Vec<Option<MeasuredLabel>> = frame
+                            .labels
+                            .iter()
+                            .map(|label| measure_label(window, &label.text, &style))
+                            .collect();
+                        let mut edge_measures: Vec<Option<MeasuredLabel>> = frame
+                            .edge_labels
+                            .iter()
+                            .map(|label| measure_label(window, &label.text, &style))
+                            .collect();
                         let node_label_rects: Vec<Bounds<gpui::Pixels>> = frame
                             .labels
                             .iter()
-                            .filter_map(|label| node_label_bounds_local(window, label, &style))
+                            .zip(&node_measures)
+                            .filter_map(|(label, measured)| {
+                                let measured = measured.as_ref()?;
+                                Some(label_rect(measured, label.position, |anchor, _height| {
+                                    anchor.y + style.node_radius + style.label_offset
+                                }))
+                            })
                             .collect();
                         resolve_edge_label_collisions(
-                            window,
                             &mut frame,
                             &style,
                             &node_label_rects,
+                            &edge_measures,
                         );
-                        hide_edge_labels_near_nodes(&mut frame, &style);
+                        hide_edge_labels_near_nodes(&mut frame, &style, &mut edge_measures);
                         let mut label_rects: Vec<Bounds<gpui::Pixels>> = frame
                             .edge_labels
                             .iter()
-                            .filter_map(|label| {
-                                edge_label_bounds(window, &coordinates, label, &style)
+                            .zip(&edge_measures)
+                            .filter_map(|(label, measured)| {
+                                let measured = measured.as_ref()?;
+                                let anchor = coordinates.canvas_to_window(
+                                    label.position + label.offset * style.label_offset,
+                                );
+                                Some(label_rect(measured, anchor, |anchor, height| {
+                                    anchor.y - height * 0.5
+                                }))
                             })
                             .collect();
-                        label_rects.extend(frame.labels.iter().filter_map(|label| {
-                            node_label_bounds(window, &coordinates, label, &style)
-                        }));
+                        label_rects.extend(frame.labels.iter().zip(&node_measures).filter_map(
+                            |(label, measured)| {
+                                let measured = measured.as_ref()?;
+                                let anchor = coordinates.canvas_to_window(label.position);
+                                Some(label_rect(measured, anchor, |anchor, _height| {
+                                    anchor.y + style.node_radius + style.label_offset
+                                }))
+                            },
+                        ));
                         // Edges first, then nodes (§18.1). Edge strokes
                         // accumulate into one path per resolved color so a
                         // large graph emits a handful of primitives instead of
@@ -774,15 +808,24 @@ where
                                 });
                             });
                         }
-                        for label in &frame.labels {
-                            paint_label(window, cx, &coordinates, label, &style, &viewport_rect);
+                        for (label, measured) in frame.labels.iter().zip(&node_measures) {
+                            paint_label(
+                                window,
+                                cx,
+                                &coordinates,
+                                label,
+                                measured.as_ref(),
+                                &style,
+                                &viewport_rect,
+                            );
                         }
-                        for label in &frame.edge_labels {
+                        for (label, measured) in frame.edge_labels.iter().zip(&edge_measures) {
                             paint_edge_label(
                                 window,
                                 cx,
                                 &coordinates,
                                 label,
+                                measured.as_ref(),
                                 &style,
                                 &viewport_rect,
                             );
@@ -1667,43 +1710,34 @@ fn paint_label(
     cx: &mut gpui::App,
     coordinates: &CanvasCoordinates,
     label: &crate::paint::PaintLabel,
+    measured: Option<&MeasuredLabel>,
     style: &GraphStyle,
     viewport_rect: &Bounds<gpui::Pixels>,
 ) {
     let anchor = coordinates.canvas_to_window(label.position);
-    // Skip labels whose anchor is far outside the viewport, so we do not shape
-    // text that will not be seen. The label is small (a few dozen pixels), so a
-    // generous margin keeps labels near the edge visible while rejecting those
-    // well off-screen.
+    // Skip labels whose anchor is far outside the viewport. The label is small
+    // (a few dozen pixels), so a generous margin keeps labels near the edge
+    // visible while rejecting those well off-screen. The text was already
+    // shaped once for this frame; this guard only skips the drawing.
     if !point_near_viewport(anchor, viewport_rect, 200.0) {
         return;
     }
-    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
-    let line_height = style
-        .label_style
-        .line_height
-        .to_pixels(font_size.into(), window.rem_size());
-    let run = style.label_style.to_run(label.text.len());
-    let Ok(lines) =
-        window
-            .text_system()
-            .shape_text(label.text.clone().into(), font_size, &[run], None, None)
-    else {
+    let Some(measured) = measured else {
         return;
     };
     let mut origin = point(
         px(anchor.x),
         px(anchor.y + style.node_radius + style.label_offset),
     );
-    for line in &lines {
+    for line in &measured.lines {
         // Center the label horizontally on the node by shifting the origin by
         // half the line width. `WrappedLine::paint` only honors `TextAlign`
         // when a bounds width is provided, so we center manually.
-        let line_size = line.size(line_height);
+        let line_size = line.size(measured.line_height);
         let centered = point(px(anchor.x - f32::from(line_size.width) * 0.5), origin.y);
         let _ = line.paint(
             centered,
-            line_height,
+            measured.line_height,
             gpui::TextAlign::Center,
             None,
             window,
@@ -1719,42 +1753,69 @@ fn paint_label(
     });
 }
 
-/// Compute the window-space bounds of an edge label, or `None` if the text
-/// cannot be shaped. The bounds are used to cut edges that pass behind the
-/// label so the label stays readable over any background.
-fn edge_label_bounds(
-    window: &mut Window,
-    coordinates: &CanvasCoordinates,
-    label: &crate::paint::PaintEdgeLabel,
-    style: &GraphStyle,
-) -> Option<Bounds<gpui::Pixels>> {
-    let anchor = coordinates.canvas_to_window(label.position + label.offset * style.label_offset);
-    // Center the label vertically on the anchor by shifting the origin up by
-    // half the total text height.
-    label_bounds(
-        window,
-        &label.text,
-        anchor,
-        |anchor, height| anchor.y - height * 0.5,
-        style,
-    )
+/// A label's shaped text and total size, measured once per frame.
+///
+/// Collision resolution slides labels along their paths but never changes a
+/// label's size, so one measurement serves the collision rects, the edge
+/// cut-outs, and painting — previously each of those re-shaped the same text
+/// per call (up to sixteen passes in the collision loop).
+struct MeasuredLabel {
+    lines: Vec<gpui::WrappedLine>,
+    line_height: gpui::Pixels,
+    /// Widest shaped line.
+    width: f32,
+    /// Sum of line heights.
+    height: f32,
 }
 
-/// The canvas-local bounds of an edge label, used for collision detection. The
-/// anchor is the label's position plus its offset off the edge line.
-fn edge_label_bounds_local(
-    window: &mut Window,
-    label: &crate::paint::PaintEdgeLabel,
-    style: &GraphStyle,
-) -> Option<Bounds<gpui::Pixels>> {
-    let anchor = label.position + label.offset * style.label_offset;
-    label_bounds(
-        window,
-        &label.text,
-        anchor,
-        |anchor, height| anchor.y - height * 0.5,
-        style,
-    )
+/// Shape `text` and compute its total laid-out size under `style`'s label
+/// typography. Returns `None` when the text cannot be shaped.
+fn measure_label(window: &Window, text: &str, style: &GraphStyle) -> Option<MeasuredLabel> {
+    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
+    let line_height = style
+        .label_style
+        .line_height
+        .to_pixels(font_size.into(), window.rem_size());
+    let run = style.label_style.to_run(text.len());
+    let lines: Vec<gpui::WrappedLine> = window
+        .text_system()
+        .shape_text(text.to_owned().into(), font_size, &[run], None, None)
+        .ok()?
+        .into_iter()
+        .collect();
+    let mut width = 0.0f32;
+    let mut height = 0.0f32;
+    for line in &lines {
+        let line_size = line.size(line_height);
+        width = width.max(f32::from(line_size.width));
+        height += f32::from(line_size.height);
+    }
+    Some(MeasuredLabel {
+        lines,
+        line_height,
+        width,
+        height,
+    })
+}
+
+/// The bounds of a measured label centered horizontally on `anchor`, with a
+/// horizontal margin so edges are cut slightly beyond the text, keeping the
+/// label clear of the line. `top_y` maps the anchor and total height to the
+/// rect's top edge (node labels hang below the node; edge labels center on
+/// their anchor).
+fn label_rect(
+    measured: &MeasuredLabel,
+    anchor: Vec2,
+    top_y: impl Fn(Vec2, f32) -> f32,
+) -> Bounds<gpui::Pixels> {
+    let margin = 4.0f32;
+    Bounds {
+        origin: point(
+            px(anchor.x - measured.width * 0.5 - margin),
+            px(top_y(anchor, measured.height)),
+        ),
+        size: size(px(measured.width + margin * 2.0), px(measured.height)),
+    }
 }
 
 /// Slide edge labels along their edges so overlapping labels move apart
@@ -1764,11 +1825,20 @@ fn edge_label_bounds_local(
 /// farther they slide, and the motion eases as they separate. Node labels are
 /// fixed obstacles: edge labels slide to avoid them, but node labels never move.
 fn resolve_edge_label_collisions(
-    window: &mut Window,
     frame: &mut crate::paint::PaintFrame,
     style: &GraphStyle,
     node_label_rects: &[Bounds<gpui::Pixels>],
+    measures: &[Option<MeasuredLabel>],
 ) {
+    // A label's rect is its (constant) measured size placed at its current
+    // anchor, so sliding a label only moves the rect — no re-shaping.
+    let label_rect_at = |label: &crate::paint::PaintEdgeLabel, measured: Option<&MeasuredLabel>| {
+        let measured = measured?;
+        let anchor = label.position + label.offset * style.label_offset;
+        Some(label_rect(measured, anchor, |anchor, height| {
+            anchor.y - height * 0.5
+        }))
+    };
     // Every edge label carries its edge's path (self-loops included), so all
     // of them can slide along it to avoid collisions.
     let movable: Vec<usize> = frame
@@ -1791,7 +1861,10 @@ fn resolve_edge_label_collisions(
         let mut moved = false;
         // Edge labels avoid the fixed node labels.
         for &i in &movable {
-            let ra = match edge_label_bounds_local(window, &frame.edge_labels[i], style) {
+            let ra = match label_rect_at(
+                &frame.edge_labels[i],
+                measures.get(i).and_then(|m| m.as_ref()),
+            ) {
                 Some(ra) => ra,
                 None => continue,
             };
@@ -1831,10 +1904,14 @@ fn resolve_edge_label_collisions(
             for b in (a + 1)..movable.len() {
                 let ia = movable[a];
                 let ib = movable[b];
-                let (ra, rb) = match (
-                    edge_label_bounds_local(window, &frame.edge_labels[ia], style),
-                    edge_label_bounds_local(window, &frame.edge_labels[ib], style),
-                ) {
+                let measure_at = |i: usize| {
+                    measures.get(i).and_then(|m| m.as_ref()).map(|m| {
+                        let anchor = frame.edge_labels[i].position
+                            + frame.edge_labels[i].offset * style.label_offset;
+                        label_rect(m, anchor, |anchor, height| anchor.y - height * 0.5)
+                    })
+                };
+                let (ra, rb) = match (measure_at(ia), measure_at(ib)) {
                     (Some(ra), Some(rb)) => (ra, rb),
                     _ => continue,
                 };
@@ -1924,14 +2001,30 @@ fn position_of(movable: &[usize], i: usize) -> usize {
 /// label would sit over the node and look broken, so it is hidden instead.
 /// Distance is measured from the label's position to the nearest node center in
 /// canvas-local pixels (the same space as the label's `position`).
-fn hide_edge_labels_near_nodes(frame: &mut crate::paint::PaintFrame, style: &GraphStyle) {
+fn hide_edge_labels_near_nodes(
+    frame: &mut crate::paint::PaintFrame,
+    style: &GraphStyle,
+    measures: &mut Vec<Option<MeasuredLabel>>,
+) {
     let hide = style.edge_label_hide_distance;
-    frame.edge_labels.retain(|label| {
-        frame
+    // Prune labels and their parallel measurements together so indices stay
+    // aligned for painting after the hide pass.
+    let labels = std::mem::take(&mut frame.edge_labels);
+    let dropped_measures = std::mem::take(measures);
+    let mut kept_labels = Vec::with_capacity(labels.len());
+    let mut kept_measures = Vec::with_capacity(dropped_measures.len());
+    for (label, measured) in labels.into_iter().zip(dropped_measures) {
+        if frame
             .nodes
             .iter()
             .all(|node| (label.position - node.position).length() >= hide)
-    });
+        {
+            kept_labels.push(label);
+            kept_measures.push(measured);
+        }
+    }
+    frame.edge_labels = kept_labels;
+    *measures = kept_measures;
 }
 
 /// The overlapping region of two axis-aligned bounds as `(x, y, width, height)`
@@ -1993,127 +2086,36 @@ fn path_point(path: &[crate::paint::Bezier], t: f32) -> Vec2 {
     bezier_point(p0, p1, p2, local)
 }
 
-/// Compute the window-space bounds of a node label, or `None` if the text
-/// cannot be shaped. The bounds are used to cut edges that pass behind the
-/// label so the label stays readable over any background.
-fn node_label_bounds(
-    window: &mut Window,
-    coordinates: &CanvasCoordinates,
-    label: &crate::paint::PaintLabel,
-    style: &GraphStyle,
-) -> Option<Bounds<gpui::Pixels>> {
-    let anchor = coordinates.canvas_to_window(label.position);
-    // The label is centered horizontally on the node and starts below the node
-    // (radius + offset).
-    label_bounds(
-        window,
-        &label.text,
-        anchor,
-        |anchor, _height| anchor.y + style.node_radius + style.label_offset,
-        style,
-    )
-}
-
-/// The canvas-local bounds of a node label, used as a fixed obstacle for edge
-/// label collision avoidance.
-fn node_label_bounds_local(
-    window: &mut Window,
-    label: &crate::paint::PaintLabel,
-    style: &GraphStyle,
-) -> Option<Bounds<gpui::Pixels>> {
-    let anchor = label.position;
-    label_bounds(
-        window,
-        &label.text,
-        anchor,
-        |anchor, _height| anchor.y + style.node_radius + style.label_offset,
-        style,
-    )
-}
-
-/// Compute the window-space bounds of a label anchored at `anchor`, or `None`
-/// if the text cannot be shaped. `top_y` maps the anchor and the total text
-/// height to the label's top edge. The label is centered horizontally on the
-/// anchor with a horizontal margin so edges are cut slightly beyond the text,
-/// keeping the label clear of the line.
-fn label_bounds(
-    window: &mut Window,
-    text: &str,
-    anchor: Vec2,
-    top_y: impl Fn(Vec2, f32) -> f32,
-    style: &GraphStyle,
-) -> Option<Bounds<gpui::Pixels>> {
-    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
-    let line_height = style
-        .label_style
-        .line_height
-        .to_pixels(font_size.into(), window.rem_size());
-    let run = style.label_style.to_run(text.len());
-    let lines = window
-        .text_system()
-        .shape_text(text.to_owned().into(), font_size, &[run], None, None)
-        .ok()?;
-    let mut width = 0.0f32;
-    let mut height = 0.0f32;
-    for line in &lines {
-        let line_size = line.size(line_height);
-        width = width.max(f32::from(line_size.width));
-        height += f32::from(line_size.height);
-    }
-    let margin = 4.0f32;
-    let origin = point(
-        px(anchor.x - width * 0.5 - margin),
-        px(top_y(anchor, height)),
-    );
-    Some(Bounds {
-        origin,
-        size: size(px(width + margin * 2.0), px(height)),
-    })
-}
-
 /// Paint an edge label centered at the edge midpoint, offset off the edge line.
 fn paint_edge_label(
     window: &mut Window,
     cx: &mut gpui::App,
     coordinates: &CanvasCoordinates,
     label: &crate::paint::PaintEdgeLabel,
+    measured: Option<&MeasuredLabel>,
     style: &GraphStyle,
     viewport_rect: &Bounds<gpui::Pixels>,
 ) {
     // label.position is already in canvas-local pixels.
     // Apply the user-defined label_offset along the label's fixed offset direction.
     let anchor = coordinates.canvas_to_window(label.position + label.offset * style.label_offset);
-    // Skip labels whose anchor is far outside the viewport, so we do not shape
-    // text that will not be seen.
+    // Skip labels whose anchor is far outside the viewport; this guard only
+    // skips the drawing — the text was shaped once for this frame already.
     if !point_near_viewport(anchor, viewport_rect, 200.0) {
         return;
     }
-    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
-    let line_height = style
-        .label_style
-        .line_height
-        .to_pixels(font_size.into(), window.rem_size());
-    let run = style.label_style.to_run(label.text.len());
-    let Ok(lines) =
-        window
-            .text_system()
-            .shape_text(label.text.clone().into(), font_size, &[run], None, None)
-    else {
+    let Some(measured) = measured else {
         return;
     };
     // Center the label vertically on the anchor by shifting the origin up by
     // half the total text height.
-    let total_height: f32 = lines
-        .iter()
-        .map(|l| f32::from(l.size(line_height).height))
-        .sum();
-    let mut origin = point(px(anchor.x), px(anchor.y - total_height * 0.5));
-    for line in &lines {
-        let line_size = line.size(line_height);
+    let mut origin = point(px(anchor.x), px(anchor.y - measured.height * 0.5));
+    for line in &measured.lines {
+        let line_size = line.size(measured.line_height);
         let centered = point(px(anchor.x - f32::from(line_size.width) * 0.5), origin.y);
         let _ = line.paint(
             centered,
-            line_height,
+            measured.line_height,
             gpui::TextAlign::Center,
             None,
             window,
@@ -3139,7 +3141,12 @@ mod tests {
         let cx = cx.add_empty_window();
         let style = GraphStyle::default();
         cx.update(|window, _| {
-            resolve_edge_label_collisions(window, &mut frame, &style, &[]);
+            let measures: Vec<Option<MeasuredLabel>> = frame
+                .edge_labels
+                .iter()
+                .map(|label| measure_label(window, &label.text, &style))
+                .collect();
+            resolve_edge_label_collisions(&mut frame, &style, &[], &measures);
         });
 
         // The two labels must have moved to distinct positions along the path.
@@ -3181,7 +3188,12 @@ mod tests {
         let cx = cx.add_empty_window();
         let style = GraphStyle::default();
         cx.update(|window, _| {
-            resolve_edge_label_collisions(window, &mut frame, &style, &[node_rect]);
+            let measures: Vec<Option<MeasuredLabel>> = frame
+                .edge_labels
+                .iter()
+                .map(|label| measure_label(window, &label.text, &style))
+                .collect();
+            resolve_edge_label_collisions(&mut frame, &style, &[node_rect], &measures);
         });
 
         // The edge label must have moved off the node label's rect.
@@ -3236,7 +3248,12 @@ mod tests {
         let cx = cx.add_empty_window();
         let style = GraphStyle::default();
         cx.update(|window, _| {
-            resolve_edge_label_collisions(window, &mut frame, &style, &[]);
+            let measures: Vec<Option<MeasuredLabel>> = frame
+                .edge_labels
+                .iter()
+                .map(|label| measure_label(window, &label.text, &style))
+                .collect();
+            resolve_edge_label_collisions(&mut frame, &style, &[], &measures);
         });
 
         // The self-loop label stays at its base center.
@@ -3276,7 +3293,10 @@ mod tests {
         });
 
         let default_style = GraphStyle::default();
-        hide_edge_labels_near_nodes(&mut frame, &default_style);
+        let mut measures: Vec<Option<MeasuredLabel>> =
+            (0..frame.edge_labels.len()).map(|_| None).collect();
+        hide_edge_labels_near_nodes(&mut frame, &default_style, &mut measures);
+        assert_eq!(measures.len(), frame.edge_labels.len());
         assert!(
             frame.edge_labels.is_empty(),
             "a label 10px from a node center must be hidden at the default threshold"
@@ -3295,12 +3315,15 @@ mod tests {
             t: 0.5,
         });
         let wide_style = GraphStyle::default().with_edge_label_hide_distance(5.0);
-        hide_edge_labels_near_nodes(&mut frame, &wide_style);
+        let mut measures: Vec<Option<MeasuredLabel>> =
+            (0..frame.edge_labels.len()).map(|_| None).collect();
+        hide_edge_labels_near_nodes(&mut frame, &wide_style, &mut measures);
         assert_eq!(
             frame.edge_labels.len(),
             1,
             "a label 50px away must survive a 5px hide distance"
         );
+        assert_eq!(measures.len(), 1, "measurements stay aligned with labels");
         assert_eq!(frame.edge_labels[0].text, "far");
     }
 
