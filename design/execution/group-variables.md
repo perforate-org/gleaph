@@ -59,7 +59,7 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | `e.distance` on a var-length group | Returns a `List` of per-hop values at execution; `GLEAPH.WEIGHT(e)` has been removed (ADR 0051 Phase B). |
 | `LET x = SUM(e.distance)` | Not yet supported for group edge property access; use element indexing (`e[-1].distance`) or aggregate after unnesting. |
 | `RETURN SUM(e.distance)` (implicit `PlanOp::Aggregate`) | Not yet supported for group edge property access. |
-| `WHERE e.distance = …` on var_len | Evaluated as an ordinary group-level predicate; the legacy `GLEAPH.WEIGHT` fusion path has been removed. |
+| `WHERE e.distance = …` on var_len | Quantifies over the hops: **every** group element must satisfy the predicate. Without schema the planner keeps it as a residual filter evaluated per hop (`QueryExprEvaluator`); with schema it fuses into `edge_inline_property_predicate`, so fused and residual plans return equivalent rows. The legacy `GLEAPH.WEIGHT` fusion path has been removed. |
 
 `SHORTEST … COST BY e.distance` uses singleton `e` inside the cost expression during path search; unrelated to post-match group bindings.
 

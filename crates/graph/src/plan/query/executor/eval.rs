@@ -401,6 +401,16 @@ impl QueryExprEvaluator<'_> {
                 eval_xor_expr(left, right).map_err(PlanQueryError::from)
             }
             ExprKind::Compare { left, op, right } => {
+                // A comparison over a direct group-edge property access (`e.distance = 5` on a
+                // quantified path) quantifies over the hops: every element must satisfy the
+                // predicate. This mirrors the schema-fused `edge_inline_property_predicate`
+                // contract, which prunes each hop during var_len expansion, so residual filters
+                // stay equivalent when the planner cannot fuse (no schema at plan time).
+                if let Some(matched) =
+                    self.eval_group_edge_property_compare(row, left, *op, right)?
+                {
+                    return Ok(Value::Bool(matched));
+                }
                 let left = self.eval_expr(row, left)?;
                 let right = self.eval_expr(row, right)?;
                 eval_compare_expr(left, *op, right).map_err(PlanQueryError::from)
@@ -833,25 +843,7 @@ impl QueryExprEvaluator<'_> {
                     .resolved_property_id(property)
                     .and_then(|property_id| self.store.vertex_property(*vertex_id, property_id))
                     .map_or(Ok(Value::Null), Ok),
-                Some(PlanBinding::Edge(edge)) => {
-                    let property_id = self.resolved_property_id(property);
-                    if let Some(property_id) = property_id
-                        && let Some(value) =
-                            try_read_inline_edge_property(edge, property_id, self.resolved_labels)?
-                    {
-                        return Ok(value);
-                    }
-                    match property_id {
-                        None => Ok(Value::Null),
-                        Some(property_id) => Ok(self
-                            .store
-                            .edge_property_at_canonical_handle(
-                                edge.resolved_canonical_handle(self.store)?,
-                                property_id,
-                            )
-                            .unwrap_or(Value::Null)),
-                    }
-                }
+                Some(PlanBinding::Edge(edge)) => self.read_edge_binding_property(edge, property),
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
                         "property access on group edge variable '{name}.{property}' requires element indexing"
@@ -879,8 +871,92 @@ impl QueryExprEvaluator<'_> {
             };
         }
 
+        // Indexed access into an edge group (`e[-1].distance`) resolves the element binding and
+        // reads its property exactly like a single-edge binding — inline decode first, then the
+        // canonical sidecar — rather than through the technical whole-edge record produced for
+        // `RETURN e` projection.
+        #[cfg(feature = "cypher")]
+        if let ExprKind::ListIndex { list, index } = &expr.kind
+            && let ExprKind::Variable(name) = &list.kind
+            && let Some(PlanBinding::EdgeGroup(edges)) = row.get(name)
+        {
+            let index_value = self.eval_expr(row, index)?;
+            let index = list_index_to_i64(&index_value)?;
+            return match edge_group_element_at_index(edges, index) {
+                Some(edge) => self.read_edge_binding_property(edge, property),
+                None => Ok(Value::Null),
+            };
+        }
+
         let value = self.eval_expr(row, expr)?;
         Ok(record_property(&value, property))
+    }
+
+    /// Reads one property of a single edge binding: inline decode first (fail-closed on
+    /// malformed inline payloads), then the canonical sidecar store. Shared by direct edge
+    /// bindings and indexed group elements so both paths decode identically.
+    fn read_edge_binding_property(
+        &self,
+        edge: &EdgeBinding,
+        property: &str,
+    ) -> Result<Value, PlanQueryError> {
+        let property_id = self.resolved_property_id(property);
+        if let Some(property_id) = property_id
+            && let Some(value) =
+                try_read_inline_edge_property(edge, property_id, self.resolved_labels)?
+        {
+            return Ok(value);
+        }
+        match property_id {
+            None => Ok(Value::Null),
+            Some(property_id) => Ok(self
+                .store
+                .edge_property_at_canonical_handle(
+                    edge.resolved_canonical_handle(self.store)?,
+                    property_id,
+                )
+                .unwrap_or(Value::Null)),
+        }
+    }
+
+    /// Evaluates `Compare` when one operand is a direct property access on an edge-group
+    /// binding (`e.prop`, quantified-path variable): every hop must satisfy the predicate.
+    /// Returns `Ok(None)` when neither operand has that shape or the variable is not bound to
+    /// an edge group, deferring to generic evaluation. Quantified paths bind at least one hop,
+    /// so groups are non-empty in practice; an empty group is vacuously true.
+    fn eval_group_edge_property_compare(
+        &self,
+        row: &PlanRow,
+        left: &Expr,
+        op: CmpOp,
+        right: &Expr,
+    ) -> Result<Option<bool>, PlanQueryError> {
+        let (edges, property, other, flipped) =
+            match (group_property_operand(left), group_property_operand(right)) {
+                (Some((name, property)), None) => match row.get(name) {
+                    Some(PlanBinding::EdgeGroup(edges)) => (edges, property, right, false),
+                    _ => return Ok(None),
+                },
+                (None, Some((name, property))) => match row.get(name) {
+                    Some(PlanBinding::EdgeGroup(edges)) => (edges, property, left, true),
+                    _ => return Ok(None),
+                },
+                _ => return Ok(None),
+            };
+        let other_value = self.eval_expr(row, other)?;
+        let cmp_op = if flipped { mirror_cmp_op(op) } else { op };
+        for edge in edges.iter() {
+            let hop_value = self.read_edge_binding_property(edge, property)?;
+            let holds = matches!(
+                eval_compare_expr(hop_value, cmp_op, other_value.clone())
+                    .map_err(PlanQueryError::from)?,
+                Value::Bool(true)
+            );
+            if !holds {
+                return Ok(Some(false));
+            }
+        }
+        Ok(Some(true))
     }
 
     fn eval_element_id(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
@@ -1316,6 +1392,32 @@ fn edge_to_value(
             )
         }),
     ]))
+}
+
+/// Matches `PropertyAccess(Variable(name), property)` — the only group-property shape the
+/// executor defines for filter comparisons; deeper expressions stay fail-closed.
+fn group_property_operand(expr: &Expr) -> Option<(&str, &str)> {
+    match &expr.kind {
+        ExprKind::PropertyAccess {
+            expr: inner,
+            property,
+        } => match &inner.kind {
+            ExprKind::Variable(name) => Some((name.as_str(), property.as_str())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Reverses a comparison so the group-property operand can always sit on the left.
+fn mirror_cmp_op(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Eq | CmpOp::Ne => op,
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::Le => CmpOp::Ge,
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::Ge => CmpOp::Le,
+    }
 }
 
 fn record_property(value: &Value, property: &str) -> Value {

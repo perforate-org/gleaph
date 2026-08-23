@@ -1086,7 +1086,8 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-08-23-001 — Native `gleaph-router` lib suite has pre-existing ic0-context failures that poison unrelated tests
 
-- **Status:** Partially resolved 2026-08-23; remaining entries Open
+- **Status:** Partially resolved (2026-08-23 build breakage, B1, and adr0034 split-out; 2026-08-24
+  var_len group-variable access); only the ic0-context item remains Open
 - **Severity:** P3 test-harness (the ic0/build items below were P1 while present)
 - **Owner:** `gleaph-router` native unit test harness; `gleaph-graph` expand executor and adr0034 fixture own their respective items
 
@@ -1108,9 +1109,25 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
    arm now walks the labeled adjacency once with batch-restored bytes and keeps the posted slots,
    mirroring the PointingLeft arm. Owning test: `indexed_edge_equality_expand_return_inline_property`.
 
+3. **var_len group-variable property access under default-enabled cypher (`b13d427ca`) — resolved 2026-08-24.**
+   `gql_var_len_where_inline_property_filters_on_last_hop_edge` ("property access on group edge variable
+   'e.distance' requires element indexing") and `gql_var_len_return_inline_property_decodes_indexed_last_hop_edge`
+   (decodes to Null) were newly *exposed*, not regressed, by the cypher dialect gate (green at
+   da665a70b only because the tests did not compile in). Two executor gaps: `e[-1].prop` resolved the
+   indexed element through the technical whole-edge record (`edge_to_value`), which carries no decoded
+   inline properties, and `Compare` over a direct group-property access had no defined quantifier.
+   Fixed by defining both semantics in `QueryExprEvaluator`: indexed elements read their property
+   exactly like a single-edge binding (inline decode → sidecar fallback), and a residual group-property
+   comparison quantifies over **every** hop — mirroring the schema-fused `edge_inline_property_predicate`
+   contract so fused and residual plans stay result-equivalent. Owning tests:
+   `gql_var_len_return_inline_property_decodes_indexed_last_hop_edge`,
+   `gql_var_len_where_inline_property_filters_on_last_hop_edge`, and the all-hop discriminating
+   `gql_var_len_where_group_property_requires_every_hop_to_match`. Contract recorded in
+   [group-variables.md](../design/execution/group-variables.md).
+
 #### Remaining open
 
-3. **ic0-context panics poison the router lib suite (this host).**
+4. **ic0-context panics poison the router lib suite (this host).**
    `cargo test -p gleaph-router --lib` fails three tests in this macOS host environment:
    `facade::store::schema_migration::tests::unregistered_create_graph_migration_fails_closed_without_provisioner`,
    `provisioning::graph::tests::admission_fails_closed_for_unregistered_name_without_provisioner`,
@@ -1122,14 +1139,6 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
    resolved_rows_transition_to_awaiting_frontier_before_publish}`, which pass when run alone.
    Next decision: gate wasm-only tests to a canister target or inject a self-size stub, and stop one
    panic from poisoning sibling tests.
-4. **var_len group-variable inline reads fail under default-enabled cypher (`b13d427ca`).**
-   `gql_var_len_where_inline_property_filters_on_last_hop_edge` ("property access on group edge variable
-   'e.distance' requires element indexing") and `gql_var_len_return_inline_property_decodes_indexed_last_hop_edge`
-   (decodes to Null) fail once the cypher dialect is enabled by default — bisect shows both green at
-   da665a70b and red at b13d427ca, i.e. newly *exposed*, not regressed, by the dialect gate. The planner
-   emits var_len plans whose group-edge-variable property access needs element indexing support.
-   Next decision: implement hop-aux element indexing for group edge variables or reject those property
-   accesses at plan time with an explicit unsupported error before this slice lands.
 
 The adr0034 fixture item that formerly appeared here as "Remaining open" item 5 now lives in its own
 entry, [GAP-2026-08-23-002](#gap-2026-08-23-002--adr0034-e2e-fixture-predates-typed-schema-endpoint-enforcement).

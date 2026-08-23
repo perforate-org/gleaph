@@ -1975,6 +1975,56 @@ fn gql_var_len_where_inline_property_filters_on_last_hop_edge() {
     assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(5)));
 }
 
+/// Pins the residual group-property filter to **all-hop** quantification: the path `[9, 5]`
+/// must be rejected even though its last hop matches, while `[5]` survives. An any-hop or
+/// last-hop-only misimplementation would return two rows here. This is the residual twin of
+/// `edge_inline_property_predicate` fusion (`var_len_edge_inline_property_predicate_fuses_at_
+/// each_hop`), keeping schema-fused and residual plans result-equivalent.
+#[cfg(feature = "cypher")]
+#[test]
+fn gql_var_len_where_group_property_requires_every_hop_to_match() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+    let a = store
+        .insert_vertex_named(["VarLenAllHopA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenAllHopMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenAllHopC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("VarLenAllHopRoad");
+    crate::test_labels::install_test_edge_inline_property_profile(
+        label_id,
+        EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
+        },
+    );
+    store
+        .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &9u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_inline_property_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_inline_property_bytes(a, c, Some(label_id), &5u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:VarLenAllHopA)-[e:VarLenAllHopRoad]->{1,2}(c:VarLenAllHopC) \
+         WHERE e.distance = 5 RETURN e[-1].distance AS w",
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("var_len all-hop where");
+
+    assert_eq!(result.rows.len(), 1, "[9, 5] must fail, [5] must survive");
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(5)));
+}
+
 #[test]
 fn var_len_edge_inline_property_predicate_fuses_at_each_hop() {
     let store = GraphStore::new();
