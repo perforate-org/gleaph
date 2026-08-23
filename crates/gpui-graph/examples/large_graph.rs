@@ -114,6 +114,7 @@ impl Example {
             style.node_simplify_threshold = style.node_radius * 2.0;
             // Only trim truly sub-pixel edges; the overview's ~16px edges stay.
             style.edge_min_length = 2.0;
+            style.node_min_screen_radius = 4.0;
             cx.notify();
         });
 

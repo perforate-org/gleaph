@@ -167,7 +167,7 @@ impl Default for GraphStyle {
         Self {
             node_radius: 3.0,
             node_simplify_threshold: 0.0,
-            node_min_screen_radius: 0.0,
+            node_min_screen_radius: 1.5,
             node_max_screen_radius: 8.0,
             node_fill: hsla(0.6, 0.5, 0.6, 1.0),
             node_stroke_width: 1.0,

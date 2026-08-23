@@ -57,7 +57,7 @@ impl Example {
         // time_scale 100 stretches the relaxation into a gentle multi-second
         // drift; 1.0 would be the undilated physics pace (§11.8).
         let scene = cx.new(|_cx| {
-            GraphScene::new().with_layout(Box::new(ForceAtlas2::default().with_time_scale(100.0)))
+            GraphScene::new().with_layout(Box::new(ForceAtlas2::default().with_time_scale(50.0)))
         });
 
         // 2. Populate the scene with a small random graph: a few hubs, each
