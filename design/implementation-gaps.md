@@ -1145,9 +1145,9 @@ entry, [GAP-2026-08-23-002](#gap-2026-08-23-002--adr0034-e2e-fixture-predates-ty
 
 ### GAP-2026-08-23-002 — ADR 0034 E2E fixture predates typed-schema endpoint enforcement
 
-- **Status:** Partially resolved 2026-08-23 — `adr0034_inline_edge_struct_read_access` reproduced,
-  fixed, and rerun green; sibling `adr0034_inline_edge_scalar_access` shares the root cause and the
-  same alignment recipe remains pending.
+- **Status:** Resolved (2026-08-23) — both `adr0034` read fixtures were reproduced against the
+  typed-schema endpoint gate, aligned with their declared graph types without weakening validation,
+  and rerun green (struct in `8f3f5c1da`; scalar in the closing commit).
 - **Severity:** P1 E2E correctness-gate blocker (keeps the adr0034 PocketIC target red); not a
   production storage/query defect.
 - **Owner:** the stale `adr0034` read fixtures, which insert vertices whose labels contradict their
@@ -1177,10 +1177,20 @@ endpoint validator itself is unchanged. Terminal rerun:
 `cargo test -p gleaph-pocket-ic-tests --test adr0034_inline_edge_struct_read_access` → **1 passed /
 0 failed**, one single-shard federation constructor, three canister installs.
 
+The sibling scalar fixture received the same alignment in the closing commit: vertices carry the
+declared `City` label, per-scenario independence moved from ad-hoc source labels to disjoint
+`distance` bands (7 / 17·19 / 27·29 / 37) scoped through WHERE equality and band-range predicates,
+and every row-count/order assertion keeps its original intent. The scalar expectations were also
+corrected from the never-exercised `Uint64` decode to the declared-type `Uint16` wire value,
+mirroring the struct fixture's `Float64` → `Float32` correction in `8f3f5c1da`. Terminal rerun:
+`cargo test -p gleaph-pocket-ic-tests --test adr0034_inline_edge_scalar_access` → green after a
+fresh re-run immediately before judgment (shared-target contention with parallel agents produced
+one transient unrelated build failure).
+
 #### Next decision
 
-Apply the same declared-label alignment to `adr0034_inline_edge_scalar_access` (use the declared
-`City` label plus value-window scoping), rerun that one-test target green, then close this entry.
+None — closed. Both adr0034 read fixtures now conform to their declared graph types, and the
+typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
 
