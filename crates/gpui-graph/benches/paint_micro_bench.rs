@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use glam::Vec2;
+use gpui::{PathBuilder, point, px};
 use gpui_graph::graph::{EdgeDirection, Graph, NodeId};
 use gpui_graph::paint::{
     DENSITY_RADIUS, EdgeCurveContext, ObstacleGrid, apply_node_avoidance, edge_control_point,
@@ -328,12 +329,75 @@ fn bench_trim(c: &mut Criterion) {
     group.finish();
 }
 
+/// Stroke-build amortization: the paint layer accumulates every visible
+/// edge's curves into one `PathBuilder` per color instead of building one path
+/// per edge. This measures the tessellation side of that win headlessly (the
+/// per-primitive draw-call saving is on top of it, but needs a window).
+fn bench_stroke_build(c: &mut Criterion) {
+    let mut group = c.benchmark_group("edge_stroke_build");
+    let edge_width = 1.0;
+
+    // Straight-LOD-style chords across a 1200x800 canvas, matching an
+    // overview of a mid-size graph.
+    for edge_count in [500usize, 2000] {
+        let curves: Vec<(Vec2, Vec2, Vec2)> = (0..edge_count)
+            .map(|i| {
+                let f = i as f32 / edge_count as f32;
+                let y = 40.0 + f * 720.0;
+                (
+                    Vec2::new(10.0, y),
+                    Vec2::new(600.0 + (f * 100.0 - 50.0), y + 5.0),
+                    Vec2::new(1190.0, y),
+                )
+            })
+            .collect();
+
+        group.bench_with_input(
+            BenchmarkId::new("per_edge", edge_count),
+            &curves,
+            |b, curves| {
+                b.iter(|| {
+                    let count = curves.len();
+                    let mut total = 0usize;
+                    for (p0, p1, p2) in curves {
+                        let mut builder = PathBuilder::stroke(px(edge_width));
+                        builder.move_to(point(px(p0.x), px(p0.y)));
+                        builder.curve_to(point(px(p2.x), px(p2.y)), point(px(p1.x), px(p1.y)));
+                        if builder.build().is_ok() {
+                            total += 1;
+                        }
+                    }
+                    std::hint::black_box((total, count))
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("batched", edge_count),
+            &curves,
+            |b, curves| {
+                b.iter(|| {
+                    let mut builder = PathBuilder::stroke(px(edge_width));
+                    for (p0, p1, p2) in curves {
+                        builder.move_to(point(px(p0.x), px(p0.y)));
+                        builder.curve_to(point(px(p2.x), px(p2.y)), point(px(p1.x), px(p1.y)));
+                    }
+                    builder.build().map(|p| p.vertices.len()).ok()
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_density,
     bench_control_point,
     bench_node_avoidance,
     bench_edge_path,
-    bench_trim
+    bench_trim,
+    bench_stroke_build
 );
 criterion_main!(benches);

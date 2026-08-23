@@ -635,28 +635,37 @@ where
                         label_rects.extend(frame.labels.iter().filter_map(|label| {
                             node_label_bounds(window, &coordinates, label, &style)
                         }));
-                        // Edges first, then nodes (§18.1).
+                        // Edges first, then nodes (§18.1). Edge strokes
+                        // accumulate into one path per resolved color so a
+                        // large graph emits a handful of primitives instead of
+                        // one per edge. Groups emit bottom-to-top (dimmed,
+                        // base, query overlay, selected, hovered) so selection
+                        // and hover stay legible over ordinary edges regardless
+                        // of graph iteration order.
+                        let mut strokes: Vec<EdgeStrokeBatch> = Vec::new();
+                        // Triangle and circle arrowheads cannot join the stroke
+                        // batch: their evenodd label punch is defined per path,
+                        // so merging same-color heads would XOR overlaps into
+                        // holes. They collect here and paint after the stroke
+                        // groups.
+                        let mut solid_arrows: Vec<(gpui::Hsla, Vec2, Vec2)> = Vec::new();
                         for edge in &frame.edges {
                             // A selected/hovered edge keeps its interaction
                             // color on top of any query overlay so selection
                             // and hover stay legible; otherwise the overlay
                             // category selects the color.
-                            let color = if edge.selected {
-                                style.edge_color_selected
-                            } else if edge.hovered {
-                                style.edge_color_hovered
-                            } else {
-                                match edge.overlay {
-                                    crate::paint::OverlayCategory::None => style.edge_color,
-                                    crate::paint::OverlayCategory::Dimmed => style.edge_color_muted,
-                                    crate::paint::OverlayCategory::Emphasized
-                                    | crate::paint::OverlayCategory::Accent => {
-                                        style.edge_color_overlay
-                                    }
-                                }
-                            };
+                            let (color, layer) =
+                                edge_color_layer(&style, edge.selected, edge.hovered, edge.overlay);
                             let path = coordinates.edge_path_window(edge);
-                            paint_edge(window, &path, &style, color, &label_rects, &viewport_rect);
+                            append_edge_stroke(
+                                &mut strokes,
+                                color,
+                                layer,
+                                &path,
+                                &style,
+                                &label_rects,
+                                &viewport_rect,
+                            );
                             if edge.direction == EdgeDirection::Directed
                                 && style.edge_arrow_enabled
                                 && !edge.omit_arrow
@@ -670,15 +679,14 @@ where
                                 let dir = (*p2 - *p1).normalize();
                                 let arrow_source = *p2 - dir * style.edge_arrow_size;
                                 let arrow_target = *p2;
-                                paint_edge_arrow(
-                                    window,
-                                    arrow_source,
-                                    arrow_target,
-                                    &style,
-                                    color,
-                                    &label_rects,
-                                    &viewport_rect,
-                                );
+                                if style.edge_arrow_shape == ArrowShape::Line {
+                                    // A line arrowhead is a stroke at the edge's
+                                    // own width and color: it joins the batch.
+                                    let builder = stroke_batch(&mut strokes, color, layer, &style);
+                                    append_line_arrow(builder, arrow_source, arrow_target, &style);
+                                } else {
+                                    solid_arrows.push((color, arrow_source, arrow_target));
+                                }
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
                                     trace.borrow_mut().push(TestPaintPrimitive::Arrow {
@@ -697,6 +705,23 @@ where
                                         .push(TestPaintPrimitive::Edge { source, target });
                                 }
                             });
+                        }
+                        strokes.sort_by_key(|batch| batch.layer);
+                        for batch in strokes {
+                            if let Ok(path) = batch.builder.build() {
+                                window.paint_path(path, batch.color);
+                            }
+                        }
+                        for (color, source, target) in &solid_arrows {
+                            paint_edge_arrow(
+                                window,
+                                *source,
+                                *target,
+                                &style,
+                                *color,
+                                &label_rects,
+                                &viewport_rect,
+                            );
                         }
                         for node in &frame.nodes {
                             let bounds = coordinates.node_bounds(node);
@@ -803,15 +828,83 @@ where
 /// off-screen nodes (which would make it subdivide the curve excessively at
 /// deep zoom). Each drawn piece remains a true quadratic Bézier, so the curve
 /// keeps its shape at any zoom level.
-fn paint_edge(
-    window: &mut Window,
-    path: &[crate::paint::Bezier],
+/// Paint stacking rank of an edge's resolved color, bottom-to-top. Mirrors
+/// the resolution precedence in [`edge_color_layer`] so interaction colors
+/// paint above ordinary edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EdgeLayer {
+    Dimmed,
+    Base,
+    Overlay,
+    Selected,
+    Hovered,
+}
+
+/// Resolve an edge's paint color and stacking layer. A selected/hovered edge
+/// keeps its interaction color on top of any query overlay so selection and
+/// hover stay legible; otherwise the overlay category selects the color.
+fn edge_color_layer(
     style: &GraphStyle,
+    selected: bool,
+    hovered: bool,
+    overlay: crate::paint::OverlayCategory,
+) -> (gpui::Hsla, EdgeLayer) {
+    if selected {
+        (style.edge_color_selected, EdgeLayer::Selected)
+    } else if hovered {
+        (style.edge_color_hovered, EdgeLayer::Hovered)
+    } else {
+        match overlay {
+            crate::paint::OverlayCategory::None => (style.edge_color, EdgeLayer::Base),
+            crate::paint::OverlayCategory::Dimmed => (style.edge_color_muted, EdgeLayer::Dimmed),
+            crate::paint::OverlayCategory::Emphasized | crate::paint::OverlayCategory::Accent => {
+                (style.edge_color_overlay, EdgeLayer::Overlay)
+            }
+        }
+    }
+}
+
+/// One accumulated stroke path per resolved edge color.
+struct EdgeStrokeBatch {
     color: gpui::Hsla,
+    layer: EdgeLayer,
+    builder: PathBuilder,
+}
+
+/// Find or start the stroke batch for `(color, layer)`. Distinct colors are
+/// few (base, muted, overlay, selected, hovered), so a linear scan is cheaper
+/// than a map.
+fn stroke_batch<'a>(
+    batches: &'a mut Vec<EdgeStrokeBatch>,
+    color: gpui::Hsla,
+    layer: EdgeLayer,
+    style: &GraphStyle,
+) -> &'a mut PathBuilder {
+    if let Some(existing) = batches
+        .iter_mut()
+        .find(|b| b.color == color && b.layer == layer)
+    {
+        return &mut existing.builder;
+    }
+    batches.push(EdgeStrokeBatch {
+        color,
+        layer,
+        builder: PathBuilder::stroke(px(style.edge_width)),
+    });
+    &mut batches.last_mut().expect("just pushed").builder
+}
+
+/// Append one edge's visible curve segments to its color's stroke batch.
+fn append_edge_stroke(
+    batches: &mut Vec<EdgeStrokeBatch>,
+    color: gpui::Hsla,
+    layer: EdgeLayer,
+    path: &[Bezier],
+    style: &GraphStyle,
     label_rects: &[Bounds<gpui::Pixels>],
     viewport_rect: &Bounds<gpui::Pixels>,
 ) {
-    let mut builder = PathBuilder::stroke(px(style.edge_width));
+    let builder = stroke_batch(batches, color, layer, style);
     for (p0, p1, p2) in path {
         for curve in visible_edge_curves(
             *p0,
@@ -828,8 +921,14 @@ fn paint_edge(
             );
         }
     }
-    if let Ok(path) = builder.build() {
-        window.paint_path(path, color);
+}
+
+/// Append a line-arrowhead polyline to an edge's stroke batch.
+fn append_line_arrow(builder: &mut PathBuilder, source: Vec2, target: Vec2, style: &GraphStyle) {
+    if let Some([left, tip, right]) = line_arrow_points(source, target, style) {
+        builder.move_to(point(px(left.x), px(left.y)));
+        builder.line_to(point(px(tip.x), px(tip.y)));
+        builder.line_to(point(px(right.x), px(right.y)));
     }
 }
 
@@ -1216,6 +1315,23 @@ fn subdivide(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> (Bezier, Bezier) {
 /// masked against the label rectangles (`label_rects`) in the same way as the
 /// edge line: any part of the arrow that would pass behind a label is punched
 /// out so the label stays readable over the arrowhead.
+/// The three points of a line-arrowhead polyline (base-left, tip, base-right),
+/// or `None` when the arrow's extent is degenerate. Shared by the immediate
+/// and batched line-arrow paths so the drawn geometry has one owner.
+fn line_arrow_points(source: Vec2, target: Vec2, style: &GraphStyle) -> Option<[Vec2; 3]> {
+    let dir = target - source;
+    let len = dir.length();
+    if len < f32::EPSILON {
+        return None;
+    }
+    let unit = dir / len;
+    let tip = target;
+    let base = tip - unit * style.edge_arrow_size;
+    let normal = Vec2::new(-unit.y, unit.x);
+    let half = style.edge_arrow_size * 0.5;
+    Some([base + normal * half, tip, base - normal * half])
+}
+
 fn paint_edge_arrow(
     window: &mut Window,
     source: Vec2,
@@ -1280,18 +1396,14 @@ fn paint_edge_arrow(
             }
         }
         ArrowShape::Line => {
-            let mut builder = PathBuilder::stroke(px(style.edge_width));
-            builder.move_to(point(
-                px(base.x + normal.x * half),
-                px(base.y + normal.y * half),
-            ));
-            builder.line_to(point(px(tip.x), px(tip.y)));
-            builder.line_to(point(
-                px(base.x - normal.x * half),
-                px(base.y - normal.y * half),
-            ));
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, color);
+            if let Some([left, tip, right]) = line_arrow_points(source, target, style) {
+                let mut builder = PathBuilder::stroke(px(style.edge_width));
+                builder.move_to(point(px(left.x), px(left.y)));
+                builder.line_to(point(px(tip.x), px(tip.y)));
+                builder.line_to(point(px(right.x), px(right.y)));
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color);
+                }
             }
         }
         ArrowShape::Circle => {
@@ -2924,6 +3036,61 @@ mod tests {
             edge_labels.len(),
             1,
             "default edge labels should render for Display edges"
+        );
+    }
+
+    #[gpui::test]
+    fn batched_edge_strokes_render_every_visible_edge(cx: &mut TestAppContext) {
+        // Three undirected chain edges with the middle one selected, so base
+        // and selected stroke groups both accumulate. The per-color batching
+        // must still paint every visible edge exactly once.
+        let scene: Entity<GraphScene<&'static str, &'static str, (), ()>> = cx.new(|_| {
+            let mut scene = GraphScene::new();
+            scene.merge(
+                GraphBatch::new()
+                    .node("a", ())
+                    .node("b", ())
+                    .node("c", ())
+                    .node("d", ())
+                    .edge("ab", "a", "b", EdgeDirection::Undirected, ())
+                    .edge("bc", "b", "c", EdgeDirection::Undirected, ())
+                    .edge("cd", "c", "d", EdgeDirection::Undirected, ()),
+            );
+            for (key, x) in [("a", 0.0), ("b", 30.0), ("c", 60.0), ("d", 90.0)] {
+                let id = scene.node_id(&key).expect("chain node exists");
+                scene.set_position(id, Vec2::new(x, 5.0));
+            }
+            scene
+        });
+        let view: Entity<GraphViewState<&'static str, &'static str, (), ()>> =
+            cx.new(|cx| GraphViewState::new(scene, cx));
+        cx.update_entity(&view, |state, cx| {
+            if let Some(edge) = state.scene.read(cx).edge_id(&"bc") {
+                state.selection_mut().edges.push(edge);
+            }
+        });
+
+        let visual = draw_and_fit_view(cx, &view, Vec2::new(200.0, 100.0));
+        clear_test_paint_trace();
+        draw_graph_view(visual, &view, Vec2::ZERO, Vec2::new(200.0, 100.0));
+        let trace = take_test_paint_trace();
+
+        let edges: Vec<_> = trace
+            .iter()
+            .filter(|p| matches!(p, TestPaintPrimitive::Edge { .. }))
+            .collect();
+        assert_eq!(edges.len(), 3, "every visible edge must be painted once");
+        assert!(
+            trace
+                .iter()
+                .any(|p| matches!(p, TestPaintPrimitive::Node { .. })),
+            "nodes still paint after the edge batches"
+        );
+        assert!(
+            !trace
+                .iter()
+                .any(|p| matches!(p, TestPaintPrimitive::Arrow { .. })),
+            "undirected edges paint no arrowheads"
         );
     }
 

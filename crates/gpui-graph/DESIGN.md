@@ -1235,6 +1235,15 @@ selection / hover highlights
 
 The exact order may be configurable later.
 
+Edge strokes are emitted as one tessellated path per resolved color rather
+than one path per edge, so a large graph submits a handful of primitives
+instead of one per visible edge. Groups stack bottom-to-top — dimmed query
+context, base, emphasized/accent overlay, selected, hovered — so interaction
+colors stay legible above ordinary edges regardless of graph iteration order.
+Line-arrowheads join their edge's stroke batch (same width and color); triangle
+and circle arrowheads paint after the stroke groups because their evenodd label
+punch is defined per path and would XOR same-color overlaps if merged.
+
 ---
 
 ## 18.2 PaintFrame
