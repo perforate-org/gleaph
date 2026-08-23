@@ -891,8 +891,9 @@ animation frame, while `max_duration` only caps oversized work — a budget
 that converges the whole graph inside one frame collapses the animation
 into a single jump. Perceived animation speed is a driver concern on top
 of the budget, with two independent levers: stepping frequency (frames
-per second) and per-step motion size ([`ForceAtlas2::with_slow_down`]).
-`slow_down` is uniform time dilation: per-iteration movement (including
+per second) and per-step motion size ([`ForceAtlas2::with_time_scale`],
+default 1.0 = the undilated physics trajectory; the demos ship 100.0).
+`time_scale` is uniform time dilation: per-iteration movement (including
 the MAX_STEP-clamped opening burst), rest detection, and the cooling
 schedule all scale with 1/n, so any value plays the same trajectory to
 the same equilibrium at 1/n speed — no fast burst followed by a crawl.

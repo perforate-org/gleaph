@@ -720,21 +720,23 @@ impl ForceAtlas2 {
         self
     }
 
-    /// Set the FA2 `slowDown` divisor applied to every node's per-iteration
-    /// movement.
+    /// Scale the simulation's playback speed relative to the neutral
+    /// physics default.
     ///
-    /// `slow_down` dilates time uniformly: per-iteration movement, the
+    /// `time_scale` is uniform time dilation: `1.0` is the undilated FA2
+    /// trajectory (the default, and what tests and benchmarks measure),
+    /// values greater than `1.0` play it slower over proportionally more
+    /// iterations, values below `1.0` faster. Per-iteration movement, the
     /// [`MAX_STEP`] clamp, rest detection, and the cooling schedule all
-    /// scale with 1/n, so the whole trajectory — including the fresh-layout
-    /// opening burst — plays back at 1/n speed over roughly n times as many
-    /// iterations, reaching the same equilibrium. Large values stretch the
-    /// animation without freezing it or stopping early.
-    pub fn with_slow_down(mut self, slow_down: f32) -> Self {
+    /// scale together, so every value traces the same trajectory to the
+    /// same equilibrium — large scales stretch the animation without
+    /// freezing it or stopping early.
+    pub fn with_time_scale(mut self, time_scale: f32) -> Self {
         debug_assert!(
-            slow_down.is_finite() && slow_down > 0.0,
-            "slow_down must be a finite value greater than zero"
+            time_scale.is_finite() && time_scale > 0.0,
+            "time_scale must be a finite value greater than zero"
         );
-        self.slow_down = slow_down.max(f32::MIN_POSITIVE);
+        self.slow_down = time_scale.max(f32::MIN_POSITIVE);
         self
     }
 
@@ -1345,7 +1347,7 @@ mod tests {
             state.positions[0] = Vec2::new(-60.0, 0.0);
             state.positions[1] = Vec2::new(0.0, 0.0);
             state.positions[2] = Vec2::new(70.0, 0.0);
-            let mut fa = ForceAtlas2::default().with_slow_down(slow_down);
+            let mut fa = ForceAtlas2::default().with_time_scale(slow_down);
             fa.rebuild(&lg, &mut state);
             (lg, state, fa)
         };
