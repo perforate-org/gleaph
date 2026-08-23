@@ -252,22 +252,23 @@ pub(crate) async fn create_graph_admission(
         caller,
         graph_name,
         args,
-        ic_cdk::api::canister_self(),
+        ic_cdk::api::canister_self,
         send_accept_envelope,
         send_registration_ack,
     )
     .await
 }
 
-/// The ordered CREATE GRAPH admission path. The runtime Router principal and two cross-canister
-/// sends are injectable; pending lookup, catalog short-circuiting, shape validation,
-/// reconciliation, and completion are the production owners used by both the public wrapper and
-/// owner-layer tests.
+/// The ordered CREATE GRAPH admission path. The Router self-principal is injected as a lazily
+/// evaluated `FnOnce`, so the ic0-backed read happens only when the flow actually provisions, and
+/// the two cross-canister sends are injectable; pending lookup, catalog short-circuiting, shape
+/// validation, reconciliation, and completion are the production owners used by both the public
+/// wrapper and owner-layer tests.
 async fn create_graph_admission_with<Accept, AcceptFuture, Ack, AckFuture>(
     caller: Principal,
     graph_name: &str,
     args: types::ProvisionGraphArgs,
-    router_principal: Principal,
+    router_principal: impl FnOnce() -> Principal,
     send_accept: Accept,
     send_ack: Ack,
 ) -> Result<(), RouterError>
@@ -301,6 +302,9 @@ where
             "CREATE GRAPH for an unregistered graph requires a configured provision canister; register shards via register_graph in dev mode".to_owned(),
         ));
     }
+    // The self-principal read reaches ic0; evaluate it only after every fail-closed rejection
+    // above has returned, and exactly once, so native tests can drive this path off-canister.
+    let router_principal = router_principal();
     match provision_graph_flow_with(caller, args, router_principal, send_accept, send_ack).await? {
         types::ProvisionGraphResponse::Accepted { .. }
         | types::ProvisionGraphResponse::Replay { .. }
@@ -761,7 +765,7 @@ mod tests {
                     caller,
                     &graph_name,
                     args,
-                    caller,
+                    || caller,
                     move |_, _| {
                         send_count_for_call.set(send_count_for_call.get() + 1);
                         async { unreachable!("invalid shape must not dispatch") }
@@ -1140,7 +1144,7 @@ mod tests {
                 caller,
                 &args.graph_name,
                 args.clone(),
-                caller,
+                || caller,
                 move |target, bytes| {
                     assert_eq!(target, provision_target);
                     assert!(first_bytes.borrow().is_none());
@@ -1222,7 +1226,7 @@ mod tests {
                 caller,
                 &args.graph_name,
                 args.clone(),
-                caller,
+                || caller,
                 move |target, bytes| {
                     assert_eq!(target, provision_target);
                     assert_eq!(bytes, replay_bytes);
@@ -1632,7 +1636,7 @@ mod tests {
                 caller,
                 &args.graph_name,
                 args.clone(),
-                caller,
+                || caller,
                 move |target, bytes| {
                     assert_eq!(target, provision_target);
                     assert_eq!(bytes, expected_bytes);

@@ -1086,8 +1086,8 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-08-23-001 — Native `gleaph-router` lib suite has pre-existing ic0-context failures that poison unrelated tests
 
-- **Status:** Partially resolved (2026-08-23 build breakage, B1, and adr0034 split-out; 2026-08-24
-  var_len group-variable access); only the ic0-context item remains Open
+- **Status:** Fully resolved (2026-08-23 build breakage, B1, adr0034 split-out, and ic0-context
+  admission deferral; 2026-08-24 var_len group-variable access)
 - **Severity:** P3 test-harness (the ic0/build items below were P1 while present)
 - **Owner:** `gleaph-router` native unit test harness; `gleaph-graph` expand executor and adr0034 fixture own their respective items
 
@@ -1125,20 +1125,26 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
    `gql_var_len_where_group_property_requires_every_hop_to_match`. Contract recorded in
    [group-variables.md](../design/execution/group-variables.md).
 
-#### Remaining open
+#### Resolved 2026-08-23 (ic0 admission deferral)
 
-4. **ic0-context panics poison the router lib suite (this host).**
-   `cargo test -p gleaph-router --lib` fails three tests in this macOS host environment:
+4. **ic0-context panics poisoned the router lib suite (this host) — resolved 2026-08-23 late UTC by
+   deferring the self-principal read.** `cargo test -p gleaph-router --lib` failed three dev-mode
+   fail-closed tests in this macOS host environment:
    `facade::store::schema_migration::tests::unregistered_create_graph_migration_fails_closed_without_provisioner`,
    `provisioning::graph::tests::admission_fails_closed_for_unregistered_name_without_provisioner`,
    and `provisioning::graph::tests::admission_short_circuits_registered_name_without_provisioner`,
    all panicking with `canister_self_size should only be called inside canisters` (`ic0` system call
-   reached outside canister execution), in full runs and in isolation. Those panics poison a shared
-   outbox/registry test lock, cascading into
+   reached outside canister execution), in full runs and in isolation. Root cause: the
+   `create_graph_admission` wrapper evaluated `ic_cdk::api::canister_self()` eagerly as an argument
+   to `create_graph_admission_with`, so the ic0 read fired before the provisioner-absent rejection;
+   each panic also poisoned the shared outbox/registry test lock, cascading into
    `vector_sync::tests::{frontier_response_loss_retains_exact_marker_snapshot,
    resolved_rows_transition_to_awaiting_frontier_before_publish}`, which pass when run alone.
-   Next decision: gate wasm-only tests to a canister target or inject a self-size stub, and stop one
-   panic from poisoning sibling tests.
+   Fixed in this entry's closing commit: `create_graph_admission_with` now takes the Router
+   self-principal as an `impl FnOnce() -> Principal` and evaluates it exactly once, only after every
+   fail-closed rejection has returned; the wrapper passes the `ic_cdk::api::canister_self` function
+   path itself. No endpoint check was relaxed and no ic0 stub abstraction was introduced. Owning
+   tests: the three admission/migration tests above plus the de-poisoned vector_sync pair.
 
 The adr0034 fixture item that formerly appeared here as "Remaining open" item 5 now lives in its own
 entry, [GAP-2026-08-23-002](#gap-2026-08-23-002--adr0034-e2e-fixture-predates-typed-schema-endpoint-enforcement).
