@@ -12,7 +12,7 @@ use glam::Vec2;
 use gpui::{PathBuilder, point, px};
 use gpui_graph::graph::{EdgeDirection, Graph, NodeId};
 use gpui_graph::paint::{
-    DENSITY_RADIUS, EdgeCurveContext, ObstacleGrid, apply_node_avoidance, edge_control_point,
+    DENSITY_RADIUS, EdgeCurveContext, ObstacleField, apply_node_avoidance, edge_control_point,
     edge_path, signed_densities, signed_densities_for, trim_curve_to_node_boundary,
 };
 use gpui_graph::runtime::DensityGrid;
@@ -159,9 +159,9 @@ fn bench_control_point(c: &mut Criterion) {
         let has_reverse = vec![false; midpoints.len()];
         let parallel = vec![None; midpoints.len()];
         let obstacles: Vec<Vec2> = g.positions.values().copied().collect();
-        let obstacle_cell = 6.0 * 2.0 + 30.0;
-        let obstacle_grid = ObstacleGrid::new(&obstacles, obstacle_cell);
-        let empty_grid = ObstacleGrid::new(&[], obstacle_cell);
+        let obstacle_radius = 6.0 * 2.0 + 30.0;
+        let obstacle_grid = ObstacleField::new(&obstacles, obstacle_radius);
+        let empty_grid = ObstacleField::new(&[], obstacle_radius);
 
         // With obstacles (the overview case: every node is an obstacle).
         let ctx = EdgeCurveContext {
@@ -171,6 +171,9 @@ fn bench_control_point(c: &mut Criterion) {
             parallel: &parallel,
             obstacles: &obstacle_grid,
             node_radius: 6.0,
+            // The bench field spans every grid position, including this
+            // edge's own endpoints.
+            endpoints_in_field: (true, true),
         };
         let (s, t) = g.edges[0];
         let source = g.positions[&s];
@@ -189,6 +192,7 @@ fn bench_control_point(c: &mut Criterion) {
             parallel: &parallel,
             obstacles: &empty_grid,
             node_radius: 6.0,
+            endpoints_in_field: (false, false),
         };
         group.bench_with_input(
             BenchmarkId::new("no_obstacles", format!("{}x{}", side, side)),
@@ -206,8 +210,8 @@ fn bench_node_avoidance(c: &mut Criterion) {
     for side in [20usize, 50usize] {
         let g = GridGraph::new(side);
         let obstacles: Vec<Vec2> = g.positions.values().copied().collect();
-        let obstacle_cell = 6.0 * 2.0 + 30.0;
-        let obstacle_grid = ObstacleGrid::new(&obstacles, obstacle_cell);
+        let obstacle_radius = 6.0 * 2.0 + 30.0;
+        let obstacle_grid = ObstacleField::new(&obstacles, obstacle_radius);
         let has_reverse = vec![false; g.edges.len()];
         let parallel = vec![None; g.edges.len()];
         let ctx = EdgeCurveContext {
@@ -217,21 +221,23 @@ fn bench_node_avoidance(c: &mut Criterion) {
             parallel: &parallel,
             obstacles: &obstacle_grid,
             node_radius: 6.0,
+            // The bench field spans every grid position, including this
+            // edge's own endpoints.
+            endpoints_in_field: (true, true),
         };
         let (s, t) = g.edges[0];
         let source = g.positions[&s];
         let target = g.positions[&t];
-        let midpoint = (source + target) * 0.5;
         let dir = target - source;
-        let unit = dir / dir.length();
-        let normal = Vec2::new(-unit.y, unit.x);
+        let normal = Vec2::new(-dir.y, dir.x) / dir.length();
         group.bench_with_input(
             BenchmarkId::new("grid", format!("{}x{}", side, side)),
-            &(source, target, midpoint, unit, normal, &ctx),
-            |b, (s, t, m, u, n, ctx)| {
+            &(source, target, normal, &ctx),
+            |b, (s, t, n, ctx)| {
                 b.iter(|| {
-                    let mut control = *m;
-                    apply_node_avoidance(&mut control, *s, *t, *m, *u, *n, ctx);
+                    // Start from the chord midpoint, as the paint path does.
+                    let mut control = (*s + *t) * 0.5;
+                    apply_node_avoidance(&mut control, *s, *t, *n, ctx);
                     control
                 })
             },
@@ -251,8 +257,8 @@ fn bench_edge_path(c: &mut Criterion) {
         let has_reverse = vec![false; midpoints.len()];
         let parallel = vec![None; midpoints.len()];
         let obstacles: Vec<Vec2> = g.positions.values().copied().collect();
-        let obstacle_cell = 6.0 * 2.0 + 30.0;
-        let obstacle_grid = ObstacleGrid::new(&obstacles, obstacle_cell);
+        let obstacle_radius = 6.0 * 2.0 + 30.0;
+        let obstacle_grid = ObstacleField::new(&obstacles, obstacle_radius);
         let style = GraphStyle::default();
         let mut vp = Viewport::new();
         vp.set_size(Vec2::new(1600.0, 1000.0));
@@ -287,6 +293,9 @@ fn bench_edge_path(c: &mut Criterion) {
             parallel: &parallel,
             obstacles: &obstacle_grid,
             node_radius: 6.0,
+            // The bench field spans every grid position, including this
+            // edge's own endpoints.
+            endpoints_in_field: (true, true),
         };
         group.bench_with_input(
             BenchmarkId::new("grid", format!("{}x{}", side, side)),

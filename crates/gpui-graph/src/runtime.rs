@@ -527,7 +527,7 @@ where
         // index remains a superset of the final precise curve cull. An
         // oversized box goes to `edge_overflow` rather than enumerating an
         // unbounded number of cells.
-        let empty_obstacle_grid = crate::paint::ObstacleGrid::new(&[], 1.0);
+        let empty_obstacle_grid = crate::paint::ObstacleField::new(&[], 1.0);
         // Unbounded extent: the precise screen-space test must always see
         // these candidates (self-loop geometry is viewport-dependent, so no
         // finite world box can bound it).
@@ -885,7 +885,7 @@ mod tests {
             .iter()
             .position(|id| *id == outer_edge)
             .expect("outer edge is preprocessed");
-        let empty_obstacles = crate::paint::ObstacleGrid::new(&[], 1.0);
+        let empty_obstacles = crate::paint::ObstacleField::new(&[], 1.0);
         let control = crate::paint::edge_control_point(
             rt.edges().source[outer_index],
             rt.edges().target[outer_index],
@@ -896,6 +896,7 @@ mod tests {
                 parallel: &rt.edges().parallel,
                 obstacles: &empty_obstacles,
                 node_radius: 0.0,
+                endpoints_in_field: (false, false),
             },
             None,
         );
@@ -969,7 +970,7 @@ mod tests {
             cluster.is_some(),
             "fixture must produce shared SCC geometry"
         );
-        let empty_obstacles = crate::paint::ObstacleGrid::new(&[], 1.0);
+        let empty_obstacles = crate::paint::ObstacleField::new(&[], 1.0);
         let control = crate::paint::edge_control_point(
             rt.edges().source[expected_index],
             rt.edges().target[expected_index],
@@ -980,6 +981,7 @@ mod tests {
                 parallel: &rt.edges().parallel,
                 obstacles: &empty_obstacles,
                 node_radius: 0.0,
+                endpoints_in_field: (false, false),
             },
             cluster,
         );

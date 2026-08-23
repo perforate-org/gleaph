@@ -1643,7 +1643,7 @@ mod tests {
         // Locate a point on the old SCC-bowed curve far enough outside the
         // straight source-target box that the runtime candidate query can
         // distinguish stale cluster geometry from an unclustered edge.
-        let no_obstacles = crate::paint::ObstacleGrid::new(&[], 1.0);
+        let no_obstacles = crate::paint::ObstacleField::new(&[], 1.0);
         let no_reverse = [false];
         let no_parallel = [None];
         let old_control = crate::paint::edge_control_point(
@@ -1656,6 +1656,7 @@ mod tests {
                 parallel: &no_parallel,
                 obstacles: &no_obstacles,
                 node_radius: 0.0,
+                endpoints_in_field: (false, false),
             },
             Some(old_cluster),
         );

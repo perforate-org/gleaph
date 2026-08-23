@@ -1330,19 +1330,26 @@ offscreen candidate for later clipping. An exactly zero-length edge between
 distinct nodes is not a self-loop; only the graph identity
 `edge.source == edge.target` selects the onigiri path.
 
-Obstacle avoidance queries a dense bucket array rather than a hash-mapped
-grid (`paint::ObstacleGrid`): buckets are addressed by direct index over the
-obstacles' own bounding extent, so a per-edge query costs work proportional
-to its chord's footprint — never a scan of every node, whatever the zoom.
-The query walks the chord's major axis one column of cells at a time and
-derives each column's perpendicular extent from the segment's position
-inside it, so even a long diagonal chord visits a thin strip instead of its
-bounding square; the per-obstacle along/perpendicular filters then keep
-exactly the obstacles that can push the curve. A pathologically sparse
-extent degrades to one bucket holding every point, bounding memory while
-keeping queries correct, and bucket iteration is deterministic row-major.
-Candidate edge queries deduplicate through generation-stamped stamps
-parallel to the edge list (`GraphRuntime::query_dedup`) rather than a hash
+Obstacle avoidance reads a rasterized repulsion field rather than scanning
+nodes near the chord (`paint::ObstacleField`): the field stores the sum of
+compact quadratic kernels over every obstacle, splatted in input order into a
+dense raster spanning the obstacles' own extent expanded by one kernel radius.
+A per-edge query samples this field at a fixed number of chord points and
+derives one perpendicular push from the density difference across the chord's
+two sides plus a fixed-side kick for mass that straddles the chord — so the
+cost per edge is proportional to the sample count only, never to the number of
+nearby nodes, whatever the graph density. Where the previous per-obstacle model
+flipped push sides discontinuously at zero perpendicular distance (defaulting
+to `-normal`), the field response is continuous through that case with the same
+default side. An edge's own endpoints never deflect it: when they are part of
+the field (`EdgeCurveContext::endpoints_in_field`, truthfully reported by both
+the paint path and hit testing) their contribution is cancelled through
+single-node sampling that matches the raster's discretization; a curve-visible
+edge with an off-screen endpoint reads a field built without it, and no phantom
+cancellation occurs. A pathologically wide extent grows the cell size instead
+of the allocation, bounding memory while queries stay correct, and out-of-range
+samples read zero. Candidate edge queries deduplicate through generation-stamped
+stamps parallel to the edge list (`GraphRuntime::query_dedup`) rather than a hash
 set rebuilt per frame.
 
 The shared chord guard rejects only an exact zero or non-finite coordinate-space
