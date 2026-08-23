@@ -723,13 +723,12 @@ impl ForceAtlas2 {
     /// Set the FA2 `slowDown` divisor applied to every node's per-iteration
     /// movement.
     ///
-    /// `slow_down` dilates time: the same trajectory plays back at 1/n
-    /// motion per iteration, taking roughly n times as many iterations to
-    /// reach the same layout. Rest and convergence are judged on unscaled
-    /// motion, so large values stretch the animation without freezing it or
-    /// stopping early. Movement clamped by [`MAX_STEP`] (the opening burst of
-    /// a fresh layout) is unaffected — slow_down only stretches the sub-cap
-    /// tail where motion is already gentle.
+    /// `slow_down` dilates time uniformly: per-iteration movement, the
+    /// [`MAX_STEP`] clamp, rest detection, and the cooling schedule all
+    /// scale with 1/n, so the whole trajectory — including the fresh-layout
+    /// opening burst — plays back at 1/n speed over roughly n times as many
+    /// iterations, reaching the same equilibrium. Large values stretch the
+    /// animation without freezing it or stopping early.
     pub fn with_slow_down(mut self, slow_down: f32) -> Self {
         debug_assert!(
             slow_down.is_finite() && slow_down > 0.0,
@@ -1250,8 +1249,12 @@ fn apply_node_motion(
         return 0.0;
     }
     // [`MAX_STEP`] applies only when one iteration would otherwise fling the
-    // node across the graph.
-    let shrink = (MAX_STEP / desired).min(1.0);
+    // node across the graph. The cap itself divides by `slow_down`, so the
+    // clamped opening regime dilates by the same factor as the free tail —
+    // without this, fresh layouts burst at full speed and then crawl, two
+    // visibly different phases from one parameter.
+    let max_step = MAX_STEP.algebraic_div(slow_down);
+    let shrink = (max_step / desired).min(1.0);
     *position = algebraic_add(
         *position,
         algebraic_mul_scalar(force, nodespeed * shrink * cooling / slow_down),
@@ -1363,6 +1366,13 @@ mod tests {
         assert!(
             matches!(first, LayoutProgress::Running { .. }),
             "slow_down=300 must not report Settled on iteration 1"
+        );
+        // The opening phase is MAX_STEP-clamped; the clamp itself must dilate
+        // so the burst does not play at full speed before the tail crawls.
+        let after_burst = state.positions[0].distance(Vec2::new(-60.0, 0.0));
+        assert!(
+            after_burst < 1.0,
+            "clamped opening must move at 1/slow_down speed, moved {after_burst}"
         );
 
         let mut slow_iters = 0u32;
