@@ -120,6 +120,28 @@ type RouterInitArgs = record {
 | `reverse_vertex_label_name` | `logical_graph_name : text`, `label_id : VertexLabelId` | `Result<text, RouterError>`               | public     | Optional; planner/debug        |
 | `reverse_edge_label_name`   | `logical_graph_name : text`, `label_id : EdgeLabelId`   | `Result<text, RouterError>`               | public     | Optional; planner/debug        |
 | `reverse_property_name`     | `logical_graph_name : text`, `property_id : PropertyId` | `Result<text, RouterError>`               | public     | Optional; planner/debug        |
+| `list_graph_grants`         | `graph_name : text`                                     | `Result<Vec<GraphGrantSummary>, RouterError>` | **owner only** | ADR 0074 §5 grant introspection; non-tenants get `NotFound` (ADR 0028), tenants that are not the owner get `Forbidden` |
+
+```candid
+type GrantSubjectView = variant { Principal : text; Public };
+type GrantDirectionView = variant { Outgoing; Incoming };
+type GrantOperationView = variant {
+  Match; Traverse; Read; ReadProperty; Create; Update; Delete;
+};
+type GrantResourceKindView = variant { Vertex; Edge };
+type GrantResourceView = record {
+  kind : GrantResourceKindView;
+  label : text;
+  property : opt text;
+};
+type GraphGrantSummary = record {
+  subject : GrantSubjectView;
+  operation : GrantOperationView;
+  direction : opt GrantDirectionView;
+  resource : GrantResourceView;
+  expires_at_ns : opt nat64;
+};
+```
 
 **Public read APIs:** `resolve_shard` and metadata lookups expose registry directory to any caller that
 can reach the canister (same policy as `gleaph-graph-index` lookups today). Gate at a higher layer if

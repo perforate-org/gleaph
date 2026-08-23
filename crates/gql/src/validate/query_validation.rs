@@ -95,6 +95,10 @@ fn validate_linear_query(
                 }
                 scope.insert(s.output.alias.clone());
             }
+            // GRANT/REVOKE introduce no bindings; their semantic validation is host-side
+            // (ADR 0074 §5).
+            #[cfg(feature = "gleaph")]
+            SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {}
             SimpleQueryStatement::CallProcedure(cp) => {
                 validate_call_procedure(cp)?;
                 for arg in &cp.args {
@@ -718,6 +722,8 @@ fn collect_linear_query_scopes(
                     }
                 }
             }
+            #[cfg(feature = "gleaph")]
+            SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {}
             SimpleQueryStatement::Filter(_)
             | SimpleQueryStatement::OrderBy(_)
             | SimpleQueryStatement::Limit(_)
@@ -845,6 +851,8 @@ fn collect_linear_query_scopes_with_order(
                     }
                 }
             }
+            #[cfg(feature = "gleaph")]
+            SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {}
             SimpleQueryStatement::Filter(_)
             | SimpleQueryStatement::OrderBy(_)
             | SimpleQueryStatement::Limit(_)

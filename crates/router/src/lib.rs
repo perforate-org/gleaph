@@ -26,6 +26,7 @@ mod execution_path;
 pub mod facade;
 mod federation;
 mod gql;
+mod gql_grants;
 mod gql_search;
 mod graph_client;
 mod graph_context;

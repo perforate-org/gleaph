@@ -17,13 +17,20 @@ pub struct ProgramModificationFlags {
     pub has_catalog_modification: bool,
     /// Named `CALL` procedure (semantics unknown — treated as requiring a write-capable caller).
     pub has_call_procedure: bool,
+    /// Authorization modification: `GRANT`/`REVOKE` data-plane statements ([ADR 0074] §5).
+    ///
+    /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
+    pub has_authorization_modification: bool,
 }
 
 impl ProgramModificationFlags {
     /// [`requires_write_path`] programs may execute only under the host policy's write-capable
     /// admission.
     pub fn requires_write_path(self) -> bool {
-        self.has_data_modification || self.has_catalog_modification || self.has_call_procedure
+        self.has_data_modification
+            || self.has_catalog_modification
+            || self.has_call_procedure
+            || self.has_authorization_modification
     }
 }
 
@@ -135,6 +142,10 @@ fn walk_simple_part(part: &SimpleQueryStatement, flags: &mut ProgramModification
         | SimpleQueryStatement::Offset(_) => {}
         #[cfg(feature = "gleaph")]
         SimpleQueryStatement::Search(_) => {}
+        #[cfg(feature = "gleaph")]
+        SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {
+            flags.has_authorization_modification = true;
+        }
     }
 }
 
@@ -176,6 +187,30 @@ mod tests {
         let p = parser::parse("CREATE GRAPH g").expect("parse");
         let f = classify_program(&p);
         assert!(f.has_catalog_modification);
+        assert!(f.requires_write_path());
+    }
+
+    #[cfg(feature = "gleaph")]
+    #[test]
+    fn grant_is_authorization_modification_requiring_write_path() {
+        let p =
+            parser::parse("GRANT MATCH ON GRAPH g NODES Person TO PRINCIPAL 'a'").expect("parse");
+        let f = classify_program(&p);
+        assert!(f.has_authorization_modification);
+        assert!(!f.has_data_modification);
+        assert!(!f.has_catalog_modification);
+        assert!(f.requires_write_path());
+    }
+
+    #[cfg(feature = "gleaph")]
+    #[test]
+    fn revoke_inside_focused_body_is_authorization_modification() {
+        // Focused form is `USE <graph>` (GQL §14); the statement names its own target
+        // graph, so classification must see through the wrapper.
+        let p =
+            parser::parse("USE g REVOKE READ ON GRAPH g NODES Person FROM PUBLIC").expect("parse");
+        let f = classify_program(&p);
+        assert!(f.has_authorization_modification);
         assert!(f.requires_write_path());
     }
 

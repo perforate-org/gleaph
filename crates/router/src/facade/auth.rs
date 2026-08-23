@@ -9,11 +9,11 @@
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
 use candid::Principal;
-use gleaph_auth::{AdminCaps, AuthWriteError};
+use gleaph_auth::{AdminCaps, AuthWriteError, GrantRowEntry, GrantSubject, Privilege};
 
 use crate::state::RouterError;
 
-use super::stable::ROUTER_AUTH_STATE;
+use super::stable::{ROUTER_AUTH_GRANTS, ROUTER_AUTH_STATE};
 
 /// Pre-mutation preflight for canister init: validates bootstrap principals via the
 /// auth-owned authoritative path before any stable state is cleared or written.
@@ -100,6 +100,33 @@ pub fn admin_upsert_caps(
                 "the anonymous principal cannot hold an authorization row".into(),
             )
         })
+}
+
+// ──── Data-plane grant rows (ADR 0074 §6) ────
+
+/// Insert or replace one grant row (`GRANT`, ADR 0074 §5). The anonymous-subject guard is
+/// defense in depth: the statement executor rejects anonymous subjects before any write.
+pub fn add_grant(
+    subject: GrantSubject,
+    privilege: &Privilege,
+    expires_at_ns: Option<u64>,
+) -> Result<(), AuthWriteError> {
+    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.grant(subject, privilege, expires_at_ns))
+}
+
+/// Remove the exact grant row; `true` when it existed (REVOKE).
+pub fn remove_grant(subject: GrantSubject, privilege: &Privilege) -> bool {
+    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.revoke(subject, privilege))
+}
+
+/// Read-only existence probe for revoke preflights (expired rows still exist as state).
+pub fn grant_contains(subject: GrantSubject, privilege: &Privilege) -> bool {
+    ROUTER_AUTH_GRANTS.with_borrow(|grants| grants.contains(subject, privilege))
+}
+
+/// All stored grant rows decoded in canonical key order (introspection surfaces).
+pub fn grant_rows() -> Vec<GrantRowEntry> {
+    ROUTER_AUTH_GRANTS.with_borrow(|grants| grants.rows())
 }
 
 #[cfg(test)]

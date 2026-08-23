@@ -232,10 +232,10 @@ impl<M: Memory> AuthState<M> {
 
 /// Operation of a data-plane grant ([ADR 0074] §2).
 ///
-/// Slice 1 (ADR 0074 migration) evaluates `EXECUTE PreparedQuery` only; the GRANT/REVOKE
-/// grammar and label/property privilege checking extend this enum in the next slice. Each
-/// variant carries its own resource payload so impossible combinations (e.g. a direction
-/// modifier on a prepared query) cannot be constructed.
+/// Slice 2a adds the GRANT/REVOKE grammar surface: [`Privilege::Graph`] rows are created
+/// through owner-only `GRANT` statements and consumed by later plan-time enforcement
+/// slices. Each variant carries its own resource payload so impossible combinations
+/// (e.g. a direction modifier on a prepared query) cannot be constructed.
 ///
 /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,6 +243,121 @@ pub enum Privilege {
     /// `EXECUTE ON PREPARED QUERY <name>`; the name is the Router-global prepared
     /// operation name (ADR 0063).
     ExecutePreparedQuery { name: String },
+    /// Data-plane graph privilege ([ADR 0074] §2): one `(operation, resource)` pair over
+    /// one graph, e.g. `TRAVERSE OUTGOING ON EDGES KNOWS`.
+    Graph(GraphPrivilege),
+}
+
+/// One data-plane `(operation, resource)` authorization pair over one graph.
+///
+/// The `graph` discriminator is an opaque identifier owned by the embedding system (the
+/// Router's logical `GraphId`). It is part of the canonical key so that two graphs which
+/// independently allocated the same numeric label/property ids never collide into one
+/// grant row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphPrivilege {
+    pub graph: u32,
+    pub operation: GraphOperation,
+    pub resource: GraphResource,
+}
+
+/// Operation half of a [`GraphPrivilege`] ([ADR 0074] §2).
+///
+/// `Traverse` optionally carries a directional modifier (`OUTGOING`/`INCOMING`). `None`
+/// means traversal without an orientation requirement (undirected edge labels, vertex
+/// selectors); directed-edge grants normalize an omitted modifier into both directional
+/// rows before storage, so `None` never stands for BOTH on a directed label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphOperation {
+    Match,
+    Traverse(Option<Direction>),
+    Read,
+    ReadProperty,
+    Create,
+    Update,
+    Delete,
+}
+
+/// Logical traversal direction of a directed-edge privilege (`OUTGOING = source → target`,
+/// [ADR 0074] §2). Graph semantics, independent of physical storage orientation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Outgoing,
+    Incoming,
+}
+
+impl Direction {
+    fn discriminant(self) -> u8 {
+        match self {
+            Direction::Outgoing => 1,
+            Direction::Incoming => 2,
+        }
+    }
+
+    fn from_discriminant(byte: u8) -> Self {
+        match byte {
+            1 => Direction::Outgoing,
+            2 => Direction::Incoming,
+            other => panic!("corrupt grant key: unknown direction byte {other}"),
+        }
+    }
+}
+
+/// Resource half of a [`GraphPrivilege`] ([ADR 0074] §2).
+///
+/// Ids are opaque graph-scoped catalog ids assigned by the embedding system. Phase 1 has
+/// no edge-property resource; property-level reads attach to vertex labels only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphResource {
+    VertexLabel(u32),
+    EdgeLabel(u32),
+    VertexProperty { label: u32, property: u32 },
+}
+
+impl GraphResource {
+    fn kind(&self) -> u8 {
+        match self {
+            GraphResource::VertexLabel(_) => 0,
+            GraphResource::EdgeLabel(_) => 1,
+            GraphResource::VertexProperty { .. } => 2,
+        }
+    }
+
+    fn payload_bytes(&self) -> Vec<u8> {
+        match self {
+            GraphResource::VertexLabel(label) | GraphResource::EdgeLabel(label) => {
+                label.to_le_bytes().to_vec()
+            }
+            GraphResource::VertexProperty { label, property } => {
+                let mut v = Vec::with_capacity(8);
+                v.extend_from_slice(&label.to_le_bytes());
+                v.extend_from_slice(&property.to_le_bytes());
+                v
+            }
+        }
+    }
+
+    fn decode(kind: u8, payload: &[u8]) -> Self {
+        let read_u32 = |off: usize| -> u32 {
+            u32::from_le_bytes(
+                payload[off..off + 4]
+                    .try_into()
+                    .expect("corrupt grant key: truncated resource id"),
+            )
+        };
+        match (kind, payload.len()) {
+            (0, 4) => GraphResource::VertexLabel(read_u32(0)),
+            (1, 4) => GraphResource::EdgeLabel(read_u32(0)),
+            (2, 8) => GraphResource::VertexProperty {
+                label: read_u32(0),
+                property: read_u32(4),
+            },
+            (kind @ 0..=2, n) => {
+                panic!("corrupt grant key: resource kind {kind} with {n} payload bytes")
+            }
+            (kind, _) => panic!("corrupt grant key: unknown resource kind {kind}"),
+        }
+    }
 }
 
 impl Privilege {
@@ -250,6 +365,7 @@ impl Privilege {
     fn discriminant(&self) -> u8 {
         match self {
             Privilege::ExecutePreparedQuery { .. } => 1,
+            Privilege::Graph(_) => 2,
         }
     }
 
@@ -257,6 +373,74 @@ impl Privilege {
     fn resource_bytes(&self) -> Vec<u8> {
         match self {
             Privilege::ExecutePreparedQuery { name } => name.as_bytes().to_vec(),
+            Privilege::Graph(graph_privilege) => {
+                let mut v = Vec::with_capacity(16);
+                v.extend_from_slice(&graph_privilege.graph.to_le_bytes());
+                let operation = &graph_privilege.operation;
+                v.push(match operation {
+                    GraphOperation::Match => 0,
+                    GraphOperation::Traverse(_) => 1,
+                    GraphOperation::Read => 2,
+                    GraphOperation::ReadProperty => 3,
+                    GraphOperation::Create => 4,
+                    GraphOperation::Update => 5,
+                    GraphOperation::Delete => 6,
+                });
+                if let GraphOperation::Traverse(direction) = operation {
+                    v.push(direction.map(Direction::discriminant).unwrap_or(0));
+                }
+                v.push(graph_privilege.resource.kind());
+                v.extend_from_slice(&graph_privilege.resource.payload_bytes());
+                v
+            }
+        }
+    }
+
+    /// Decode the privilege encoded in a canonical grant-key resource payload.
+    ///
+    /// Total for payloads produced by [`Self::resource_bytes`]; malformed encodings trap
+    /// (corrupt stable state is not recoverable input).
+    fn decode(discriminant: u8, resource: &[u8]) -> Self {
+        match discriminant {
+            1 => Privilege::ExecutePreparedQuery {
+                name: String::from_utf8(resource.to_vec())
+                    .expect("corrupt grant key: non-utf8 prepared query name"),
+            },
+            2 => {
+                assert!(
+                    resource.len() >= 6,
+                    "corrupt grant key: truncated graph privilege"
+                );
+                let graph = u32::from_le_bytes(resource[0..4].try_into().unwrap());
+                let operation_byte = resource[4];
+                let mut at = 5usize;
+                let operation = match operation_byte {
+                    0 => GraphOperation::Match,
+                    1 => {
+                        let direction = match resource[at] {
+                            0 => None,
+                            d => Some(Direction::from_discriminant(d)),
+                        };
+                        at += 1;
+                        GraphOperation::Traverse(direction)
+                    }
+                    2 => GraphOperation::Read,
+                    3 => GraphOperation::ReadProperty,
+                    4 => GraphOperation::Create,
+                    5 => GraphOperation::Update,
+                    6 => GraphOperation::Delete,
+                    other => panic!("corrupt grant key: unknown graph operation {other}"),
+                };
+                let resource_kind = resource[at];
+                at += 1;
+                let resource = GraphResource::decode(resource_kind, &resource[at..]);
+                Privilege::Graph(GraphPrivilege {
+                    graph,
+                    operation,
+                    resource,
+                })
+            }
+            other => panic!("corrupt grant key: unknown privilege discriminant {other}"),
         }
     }
 }
@@ -330,6 +514,45 @@ impl GrantKey {
         let resource = String::from_utf8(b[3..3 + resource_len].to_vec()).expect("utf8 resource");
         let subject_kind = b[3 + resource_len];
         (op, resource, subject_kind)
+    }
+
+    /// Decode the privilege and subject this canonical key addresses.
+    ///
+    /// Total for keys produced by [`Self::new`]; malformed encodings trap (corrupt stable
+    /// state is not recoverable input).
+    pub fn decode(&self) -> (Privilege, GrantSubject) {
+        let b = &self.0;
+        assert!(
+            b.len() >= 4,
+            "corrupt grant key: shorter than the fixed header"
+        );
+        let discriminant = b[0];
+        let resource_len =
+            u16::from_le_bytes(b[1..3].try_into().expect("corrupt grant key")) as usize;
+        let subject_kind_at = 3 + resource_len;
+        assert!(
+            b.len() >= subject_kind_at + 3,
+            "corrupt grant key: truncated subject"
+        );
+        let privilege = Privilege::decode(discriminant, &b[3..subject_kind_at]);
+        let principal_len = u16::from_le_bytes(
+            b[subject_kind_at + 1..subject_kind_at + 3]
+                .try_into()
+                .expect("corrupt grant key"),
+        ) as usize;
+        let principal_at = subject_kind_at + 3;
+        assert!(
+            b.len() == principal_at + principal_len,
+            "corrupt grant key: trailing bytes after subject"
+        );
+        let subject = match b[subject_kind_at] {
+            0 => GrantSubject::Public,
+            1 => GrantSubject::Principal(Principal::from_slice(
+                &b[principal_at..principal_at + principal_len],
+            )),
+            kind => panic!("corrupt grant key: unknown subject kind {kind}"),
+        };
+        (privilege, subject)
     }
 }
 
@@ -449,6 +672,33 @@ impl<M: Memory> GrantState<M> {
         }
     }
 
+    /// Whether the exact grant row for `(privilege, subject)` exists, regardless of expiry.
+    ///
+    /// Read-only preflight for revoke paths that must reject absent rows before any
+    /// mutation; unlike [`Self::holds`] an expired row still exists as stored state.
+    pub fn contains(&self, subject: GrantSubject, privilege: &Privilege) -> bool {
+        self.grants
+            .contains_key(&GrantKey::new(privilege, &subject))
+    }
+
+    /// All stored rows decoded to their canonical parts, ordered by canonical key.
+    ///
+    /// Backs owner-facing introspection surfaces. Malformed keys trap (see
+    /// [`GrantKey::decode`]).
+    pub fn rows(&self) -> Vec<GrantRowEntry> {
+        self.grants
+            .iter()
+            .map(|entry| {
+                let (privilege, subject) = entry.key().decode();
+                GrantRowEntry {
+                    subject,
+                    privilege,
+                    expires_at_ns: entry.value().expires_at_ns,
+                }
+            })
+            .collect()
+    }
+
     pub fn len(&self) -> u64 {
         self.grants.len()
     }
@@ -456,6 +706,14 @@ impl<M: Memory> GrantState<M> {
     pub fn is_empty(&self) -> bool {
         self.grants.is_empty()
     }
+}
+
+/// One decoded grant row, in canonical key order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantRowEntry {
+    pub subject: GrantSubject,
+    pub privilege: Privilege,
+    pub expires_at_ns: Option<u64>,
 }
 
 #[cfg(test)]
@@ -761,5 +1019,135 @@ mod tests {
         ] {
             assert_eq!(GrantRow::from_bytes(row.to_bytes()), row);
         }
+    }
+
+    // --- Data-plane graph privileges (ADR 0074 §2, slice 2a grammar surface) ---
+
+    fn graph_traverse(direction: Option<Direction>, label: u32) -> Privilege {
+        Privilege::Graph(GraphPrivilege {
+            graph: 7,
+            operation: GraphOperation::Traverse(direction),
+            resource: GraphResource::EdgeLabel(label),
+        })
+    }
+
+    #[test]
+    fn graph_privilege_key_round_trip() {
+        let privileges = [
+            graph_traverse(None, 3),
+            graph_traverse(Some(Direction::Outgoing), 3),
+            graph_traverse(Some(Direction::Incoming), 3),
+            Privilege::Graph(GraphPrivilege {
+                graph: 7,
+                operation: GraphOperation::Match,
+                resource: GraphResource::VertexLabel(9),
+            }),
+            Privilege::Graph(GraphPrivilege {
+                graph: 7,
+                operation: GraphOperation::ReadProperty,
+                resource: GraphResource::VertexProperty {
+                    label: 9,
+                    property: 12,
+                },
+            }),
+        ];
+        for privilege in privileges {
+            for subject in [GrantSubject::Public, GrantSubject::Principal(principal(8))] {
+                let key = GrantKey::new(&privilege, &subject);
+                assert_eq!(key.decode(), (privilege.clone(), subject));
+            }
+        }
+    }
+
+    #[test]
+    fn graph_grants_hold_only_the_exact_operation_resource_and_graph() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(9);
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(Some(Direction::Outgoing), 3),
+                None,
+            )
+            .expect("grant");
+        // Exact key holds...
+        assert!(grants.contains(
+            GrantSubject::Principal(p),
+            &graph_traverse(Some(Direction::Outgoing), 3)
+        ));
+        // ...but the other direction, the unoriented form, another label, another graph,
+        // and the vertex analogue all stay denied (exact canonical key drives lookup).
+        assert!(!grants.contains(
+            GrantSubject::Principal(p),
+            &graph_traverse(Some(Direction::Incoming), 3)
+        ));
+        assert!(!grants.contains(GrantSubject::Principal(p), &graph_traverse(None, 3)));
+        assert!(!grants.contains(
+            GrantSubject::Principal(p),
+            &graph_traverse(Some(Direction::Outgoing), 4)
+        ));
+        assert!(!grants.contains(
+            GrantSubject::Principal(p),
+            &Privilege::Graph(GraphPrivilege {
+                graph: 8,
+                operation: GraphOperation::Traverse(Some(Direction::Outgoing)),
+                resource: GraphResource::EdgeLabel(3),
+            })
+        ));
+        assert!(!grants.contains(
+            GrantSubject::Principal(p),
+            &Privilege::Graph(GraphPrivilege {
+                graph: 7,
+                operation: GraphOperation::Traverse(Some(Direction::Outgoing)),
+                resource: GraphResource::VertexLabel(3),
+            })
+        ));
+    }
+
+    #[test]
+    fn grant_rows_lists_decoded_entries_in_canonical_order() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(10);
+        grants
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), Some(500))
+            .expect("prepared grant");
+        grants
+            .grant(GrantSubject::Public, &graph_traverse(None, 3), None)
+            .expect("public traverse grant");
+        let rows = grants.rows();
+        assert_eq!(rows.len(), 2);
+        // Canonical key order: prepared-query rows (discriminant 1) sort before graph
+        // privileges (discriminant 2).
+        assert_eq!(
+            rows[0],
+            GrantRowEntry {
+                subject: GrantSubject::Principal(p),
+                privilege: exec_priv("q1"),
+                expires_at_ns: Some(500),
+            }
+        );
+        assert_eq!(
+            rows[1],
+            GrantRowEntry {
+                subject: GrantSubject::Public,
+                privilege: graph_traverse(None, 3),
+                expires_at_ns: None,
+            }
+        );
+    }
+
+    #[test]
+    fn contains_sees_expired_rows_while_holds_does_not() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        grants
+            .grant(GrantSubject::Public, &graph_traverse(None, 3), Some(100))
+            .expect("expiring grant");
+        // Stored state survives expiry (contains), while evaluation treats it as absent
+        // (holds) — revoke preflight must address stored rows, not effective ones.
+        assert!(grants.contains(GrantSubject::Public, &graph_traverse(None, 3)));
+        assert!(!grants.holds(GrantSubject::Public, &graph_traverse(None, 3), 101));
     }
 }

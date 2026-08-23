@@ -520,6 +520,10 @@ fn check_simple_query(env: &mut TypeEnv<'_>, sq: &SimpleQueryStatement) {
                 }),
             );
         }
+        // GRANT/REVOKE bind no variables and contain no expressions to type-check;
+        // their semantic validation is host-side (ADR 0074 §5).
+        #[cfg(feature = "gleaph")]
+        SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {}
         SimpleQueryStatement::CallProcedure(cp) => {
             check_call_procedure(env, cp);
         }

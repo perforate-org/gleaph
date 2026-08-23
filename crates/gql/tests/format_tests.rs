@@ -196,3 +196,41 @@ fn standard_feature_does_not_enable_gleaph_search() {
     .unwrap_err();
     assert!(matches!(error, FormatError::Parse(_)));
 }
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn formats_grant_and_revoke_round_trip_with_canonical_nodes_keyword() {
+    let options = FormatOptions::default();
+    // VERTICES canonicalizes to NODES; the formatted form is stable under reformatting.
+    let grant = format_query(
+        "GRANT TRAVERSE OUTGOING ON GRAPH social VERTICES Person TO PRINCIPAL 'w7x7r-cok77-xa'",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        grant,
+        "GRANT TRAVERSE OUTGOING ON GRAPH social NODES Person TO PRINCIPAL 'w7x7r-cok77-xa'"
+    );
+    assert_eq!(format_query(&grant, &options).unwrap(), grant);
+
+    let revoke = format_query(
+        "REVOKE READ ON GRAPH social EDGES KNOWS FROM PUBLIC",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        revoke,
+        "REVOKE READ ON GRAPH social EDGES KNOWS FROM PUBLIC"
+    );
+}
+
+#[cfg(not(feature = "gleaph"))]
+#[test]
+fn standard_feature_does_not_enable_gleaph_grant() {
+    let error = format_query(
+        "GRANT MATCH ON GRAPH g NODES Person TO PUBLIC",
+        &FormatOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, FormatError::Parse(_)));
+}

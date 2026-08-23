@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
+Last updated: 2026-08-23
+Anchor timestamp: 2026-08-23 12:26:48 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred; the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar (generic parsing behind the `gleaph` feature, Router owner-only execution with schema validation, grant introspection) is implemented while plan-time privilege enforcement remains deferred to ADR 0074 slice 2b.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -48,6 +48,7 @@ semantics.
 | Vector index DDL             | `CREATE VECTOR INDEX name FOR (v:Label) ON v.embedding OPTIONS { ... }`    | **Partially Implemented:** vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; focused PocketIC ingress E2E passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred                 | Router vendor DDL + vector-index catalog                                                     |
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
+| Data-plane authorization      | `GRANT <privilege> ON GRAPH <graph> <selector> TO <subject>`; `REVOKE ... FROM <subject>` (ADR 0074 §5) | **Implemented (ADR 0074 slice 2a):** parsing, owner-only Router execution with catalog/schema validation, grant introspection, and revoke are implemented; plan-time enforcement of granted privileges against queries is slice 2b and not yet active | Router control path (`gql_grants`) + `gleaph-auth` grant storage                                     |
 
 ## Namespace policy
 
@@ -774,6 +775,63 @@ closed with an explicit error.
 This is an internal execution detail. Public GQL should not expose `CALL GLEAPH.VECTOR_SEARCH(...)` as
 the primary syntax.
 
+## Data-plane authorization statements (`GRANT` / `REVOKE`)
+
+Status: **Implemented** for grammar, storage, and introspection (ADR 0074 slice 2a).
+Plan-time enforcement of these privileges against query execution is **slice 2b** and not
+yet active: issuing grants does not change any query outcome today.
+
+### Target syntax
+
+```gql
+GRANT <privilege> ON GRAPH <graph-name> <resource-selector> TO <subject>;
+REVOKE <privilege> ON GRAPH <graph-name> <resource-selector> FROM <subject>;
+
+<privilege>         ::= MATCH
+                      | TRAVERSE [ OUTGOING | INCOMING ]
+                      | READ [ '{' property (',' property)* '}' ]
+                      | CREATE | UPDATE | DELETE
+<resource-selector> ::= ( NODES | VERTICES ) label | EDGES label
+<subject>           ::= PRINCIPAL '<principal-text>' | PUBLIC
+```
+
+- Both `NODES <label>` and `VERTICES <label>` are accepted; the canonical form is
+  **`NODES`** (the codebase vocabulary is vertex). The formatter always emits `NODES`,
+  regardless of which keyword was parsed.
+- Property lists are only valid with the `READ` privilege on a vertex selector; each listed
+  property lowers to its own stored `READ_PROPERTY` row for that `(graph, label, property)`.
+- An omitted direction on a declared `DIRECTED` edge label grants BOTH directions, stored as
+  two directional rows (`OUTGOING`, `INCOMING`) so evaluation can probe one direction at a
+  time. Directional modifiers are rejected at grant time for labels declared `UNDIRECTED`
+  and for labels whose directedness the graph schema does not declare.
+- `PRINCIPAL '<text>'` is parsed generically in `gleaph-gql`; binding the literal to an IC
+  principal is an integration-layer concern (ADR 0034), owned by the Router. The anonymous
+  principal can never hold a stored grant (ADR 0074 invariant 2); `PUBLIC` is the virtual
+  subject for unauthenticated callers.
+
+### Fail-closed bounds
+
+- Only the graph's **registry owner** may grant, revoke, or list grants (Phase 1 authority,
+  ADR 0074 §5). Non-tenants receive the ADR 0028 indistinguishable `NotFound`; tenants that
+  are not the owner receive `Forbidden`.
+- Referenced edge/vertex labels and properties must exist in the target graph's catalogs;
+  resolution happens fully before the first stable write, so a rejected statement leaves no
+  row behind.
+- `GRANT`/`REVOKE` must be issued as standalone statements; mixing them with other GQL
+  statements is rejected before dispatch, and they never reach the planner.
+- Revocation addresses exact canonical keys. A revoke whose lowered rows do not all exist
+  removes nothing and reports the missing key.
+- Grant administration of prepared-query `EXECUTE` privileges and caller-bounded publication
+  are ADR 0074 slice 3 scope and intentionally absent from this surface.
+
+### Storage and observability
+
+Grant rows live in the Router's stable grant collection (`ROUTER_AUTH_GRANT_ROWS`,
+MemoryId 55) beside the principal-capability rows (`ROUTER_AUTH_PRINCIPAL_RECORDS`,
+MemoryId 0); the two collections are independently readable across upgrades. The owner-only
+Candid query `list_graph_grants(graph_name)` lists one graph's rows as
+`(subject, operation, direction, resource {kind, label, property}, expires_at)`.
+
 ## Full-text, property, and hybrid search
 
 `SEARCH` is a general search shape, but only vector search is in scope for the first implementation.
@@ -869,6 +927,7 @@ This expresses the intended flow:
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
 | 7     | Add scalar `INLINE` edge-property schema syntax inside `CREATE GRAPH TYPE` edge definitions, ordinary read access (`e.inline_field`), ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics), and bounded ordinary `COST BY e.inline_field` shortest-path cost into the inline property bytes; add fixed-size struct inline schema registration, nested fixed-size record paths, struct mutation, field-level `COST BY`, and leaf-field indexes | Implemented: scalar/struct schema registration, nested fixed-size record read reconstruction, full and field-level struct mutation, bounded `COST BY e.stats.field`, and nested struct leaf-property indexes are complete |
 | 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
+| 9     | Add the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar: feature-gated parsing, owner-only Router execution with catalog/schema validation, grant introspection, and revoke; plan-time enforcement stays deferred to slice 2b | Implemented                                                                                                          |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 

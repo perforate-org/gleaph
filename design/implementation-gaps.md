@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-23
-Anchor timestamp: 2026-08-23 10:46:37 UTC +0000
+Anchor timestamp: 2026-08-23 13:11:17 UTC +0000
 
 ## Status
 
@@ -46,6 +46,45 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-23-002 — Router canister wasm exceeds the IC code-section limit once the ADR 0074 slice 2a grant grammar is linked
+
+- **Status:** Open (2026-08-23). Disposition: **prerequisite slice.** The slice 2a
+  deliverables (grammar, execution, introspection) are implemented and unit-validated, but
+  the PocketIC lifecycle suite cannot execute because the freshly built Router canister is
+  rejected at `install_canister`. Resolving the size collision requires cross-cutting
+  canister-slimming decisions (feature-gating debug/diagnostic surfaces, splitting the
+  canister, or trimming legacy paths) that span the concurrently active router store and
+  schema-migration workstreams, so it cannot be repaired inside slice 2a without obscuring it.
+- **Observed behavior:** `cargo test -p gleaph-pocket-ic-tests` fails every suite with
+  `Wasm module code section size of 12615453 exceeds the maximum allowed size of 12582912`
+  during Router install (PocketIC enforces the mainnet limit). Measured code sections of
+  `gleaph_router.wasm` (wasm64, release, E2E features): HEAD + concurrent-session overlay
+  without slice 2a = **11,942,769**; with slice 2a = **12,123,923** (+181,154); six-package
+  feature-unified E2E build = **12,615,455** (+32,543 over the limit).
+- **Attribution evidence:** name-section diff of the two single-package binaries shows the
+  largest genuinely new linkage is `data_encoding` decode machinery (**+61,772 bytes**, 19 → 49
+  functions), introduced by the first production use of `candid::Principal::from_text` in
+  `crates/router/src/gql_grants.rs::bind_subject` (all pre-existing `from_text` call sites are
+  test-only; `to_text` was already linked via provisioning `deployment_id`). An isolated
+  experiment replacing `from_text` with `from_slice` shrinks the binary by 76,068 bytes,
+  confirming the attribution; the remaining ~105KB of delta is inlining-budget churn spread
+  across unrelated shared symbols (growth and shrinkage nearly cancel: +1.87 MB / −1.87 MB).
+- **Needed behavior:** ADR 0074 §5 requires the integration layer to bind `PRINCIPAL <literal>`
+  subjects to identities, which requires principal-text decoding in the Router; the IC
+  install-time code-section ceiling is hard on both mainnet and PocketIC.
+- **Owner:** Router canister build composition (`crates/router`, workspace release/wasm64
+  profile, `crates/pocket-ic-tests/build.rs`). The principal-text contract itself stays owned
+  by `candid`; a hand-rolled base32/CRC decoder in the Router was considered and rejected as a
+  duplication of candid's identity-validation logic.
+- **Impact:** all PocketIC E2E suites are blocked until the Router drops ≥33 KB below the
+  current footprint (or the fixture build stops unifying features); plan
+  `0287` todo `pocketic-lifecycle-tests` remains intentionally `pending` and the plan
+  validator's `--phase final` gate therefore fails honestly.
+- **Next decision:** choose a slimming strategy for the Router canister (candidate: gate
+  diagnostic-only surfaces behind non-default features; candidate: move rarely-used admin
+  endpoints into a companion canister) before rerunning
+  `cargo test -p gleaph-pocket-ic-tests --test adr0074_grant_grammar`.
 
 ### GAP-2026-08-23-001 — ForceAtlas2 equilibrium rests below the rendered node diameter once nodes are world-sized
 

@@ -342,6 +342,10 @@ pub enum SimpleQueryStatement {
     For(ForStatement),
     #[cfg(feature = "gleaph")]
     Search(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] SearchStatement),
+    #[cfg(feature = "gleaph")]
+    Grant(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] GrantStatement),
+    #[cfg(feature = "gleaph")]
+    Revoke(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] RevokeStatement),
     OrderBy(OrderByClause),
     Limit(LimitClause),
     Offset(OffsetClause),
@@ -554,6 +558,206 @@ pub struct SearchOutputBinding {
 pub enum SearchOutputKind {
     Score,
     Distance,
+}
+
+// ──── GRANT / REVOKE (Gleaph extension, ADR 0074 §5) ────
+
+/// `GRANT <privilege> ON GRAPH <graph> <selector> TO <subject>` (ADR 0074 §5).
+///
+/// Gleaph-specific data-plane authorization statement. Parsed generically behind the
+/// `gleaph` feature; binding of the `PRINCIPAL` literal to an identity is an
+/// integration-layer concern (ADR 0034 dialect contract). Execution and schema
+/// validation happen on the host's control path — the planner never sees these
+/// statements.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct GrantStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub privilege: GrantPrivilege,
+    pub graph: ObjectName,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub resource: GrantResourceSelector,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub subject: GrantSubjectLiteral,
+}
+
+/// `REVOKE <privilege> ON GRAPH <graph> <selector> FROM <subject>` — the exact-key
+/// inverse of [`GrantStatement`] (ADR 0074 §5).
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct RevokeStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub privilege: GrantPrivilege,
+    pub graph: ObjectName,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub resource: GrantResourceSelector,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub subject: GrantSubjectLiteral,
+}
+
+/// The privilege operation of a `GRANT`/`REVOKE` statement ([ADR 0074] §2).
+///
+/// Property lists are part of the `Read` variant: a list lowers to per-property
+/// `READ_PROPERTY` rows, so the AST cannot represent a property list attached to a
+/// non-READ operation. Directional modifiers are part of the `Traverse` variant.
+///
+/// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum GrantPrivilege {
+    Match,
+    Traverse {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+        direction: Option<GrantDirection>,
+    },
+    /// `READ`, optionally with a vertex property list lowering to `READ_PROPERTY`.
+    Read {
+        properties: Vec<String>,
+    },
+    Create,
+    Update,
+    Delete,
+}
+/// Directional modifier accessor.
+#[cfg(feature = "gleaph")]
+impl GrantPrivilege {
+    /// Directional modifier of a `TRAVERSE` privilege, if any.
+    pub fn direction(&self) -> Option<GrantDirection> {
+        match self {
+            GrantPrivilege::Traverse { direction } => *direction,
+            _ => None,
+        }
+    }
+}
+
+/// Logical traversal direction (`OUTGOING = source → target`) of a `TRAVERSE`
+/// privilege modifier ([ADR 0074] §2). Graph semantics, independent of physical
+/// storage orientation.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum GrantDirection {
+    Outgoing,
+    Incoming,
+}
+
+/// Resource selector of a `GRANT`/`REVOKE` statement.
+///
+/// Both `NODES <label>` and `VERTICES <label>` parse into [`GrantResourceSelector::Vertex`]
+/// (the canonical codebase term is vertex); the source keyword is not preserved.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum GrantResourceSelector {
+    Vertex { label: String },
+    Edge { label: String },
+}
+
+/// Subject literal of a `GRANT ... TO` / `REVOKE ... FROM` clause ([ADR 0074] §5).
+///
+/// `Principal` carries the raw literal text; resolving it to an identity (and rejecting
+/// the anonymous principal) is the integration layer's responsibility (ADR 0034).
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum GrantSubjectLiteral {
+    Principal(String),
+    Public,
 }
 
 // ──── FILTER (§14.2) ────

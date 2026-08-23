@@ -788,6 +788,68 @@ mod tests {
         assert_eq!(reopened.get(&key), Some(expected));
     }
 
+    /// Plan 0287 regression guard (closes the Plan 0286 P2 finding): the auth principal
+    /// records (MemoryId 0) and the data-plane grant rows (MemoryId 55) must be wired to
+    /// **distinct** memories. If both maps ever share one MemoryId, the second map's
+    /// metadata overwrites the first's in place and this reopen test fails loudly instead
+    /// of silently corrupting one of the collections.
+    #[test]
+    fn principal_records_and_grant_rows_are_independent_memories() {
+        use gleaph_auth::{
+            AdminCaps, Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource,
+            Privilege,
+        };
+
+        assert_ne!(
+            ROUTER_AUTH_PRINCIPAL_RECORDS, ROUTER_AUTH_GRANT_ROWS,
+            "auth collections must not share a MemoryId"
+        );
+        let memory = VectorMemory::default();
+        let manager = ic_stable_structures::memory_manager::MemoryManager::init(memory.clone());
+        let mut auth_state = AuthState::init(manager.get(ROUTER_AUTH_PRINCIPAL_RECORDS));
+        let mut grants = GrantState::init(manager.get(ROUTER_AUTH_GRANT_ROWS));
+
+        let principal = Principal::from_slice(&[0xC1; 29]);
+        auth_state
+            .upsert_caps(principal, AdminCaps::INDEX_CREATE)
+            .expect("non-anonymous caps row");
+        let privilege = Privilege::Graph(GraphPrivilege {
+            graph: 7,
+            operation: GraphOperation::Traverse(Some(Direction::Outgoing)),
+            resource: GraphResource::EdgeLabel(3),
+        });
+        grants
+            .grant(GrantSubject::Public, &privilege, None)
+            .expect("public grant row");
+        assert_eq!(auth_state.len(), 1);
+        assert_eq!(grants.len(), 1);
+        drop(grants);
+        drop(auth_state);
+        drop(manager);
+
+        // Reopen through the production init helpers' memory ids and require each
+        // collection to see exactly its own rows.
+        let reopened_manager = ic_stable_structures::memory_manager::MemoryManager::init(memory);
+        let reopened_auth = AuthState::init(reopened_manager.get(ROUTER_AUTH_PRINCIPAL_RECORDS));
+        let reopened_grants = GrantState::init(reopened_manager.get(ROUTER_AUTH_GRANT_ROWS));
+        assert_eq!(
+            reopened_auth.caps_of(&principal),
+            AdminCaps::INDEX_CREATE,
+            "principal records must survive a reopen"
+        );
+        assert!(reopened_grants.contains(GrantSubject::Public, &privilege));
+        assert_eq!(
+            reopened_grants.len(),
+            1,
+            "the grants map must contain only grant rows"
+        );
+        assert_eq!(
+            reopened_auth.len(),
+            1,
+            "the caps map must contain only principal rows"
+        );
+    }
+
     #[test]
     fn production_vector_regions_reopen_through_production_helpers() {
         let _guard = super::super::vector_ingest_outbox::test_lock();

@@ -61,6 +61,14 @@ fn admin_grant_caps(args: types::GrantCapsArgs) -> Result<(), RouterError> {
     auth::admin_upsert_caps(&msg_caller(), args.target, args.caps)
 }
 
+/// Owner-only listing of one graph's stored data-plane grant rows (ADR 0074 §5): subject,
+/// operation, resource, direction, and expiry. Non-tenants receive `NotFound` (ADR 0028
+/// non-disclosure); tenants that are not the registry owner receive `Forbidden`.
+#[query]
+fn list_graph_grants(graph_name: String) -> Result<Vec<types::GraphGrantSummary>, RouterError> {
+    crate::gql_grants::list_graph_grants(&graph_name, msg_caller())
+}
+
 #[query]
 fn get_graph(
     graph_name: String,

@@ -3077,6 +3077,23 @@ async fn run_gql_unchecked(
         return Ok(GqlQueryResult::row_count_only(0));
     }
 
+    // GRANT/REVOKE (ADR 0074 §5): host control-path statements. They never dispatch to
+    // shards and must not mix with other executable content; the executor validates every
+    // statement before the first stable write.
+    if crate::gql_grants::block_contains_authorization_modification(block) {
+        if !crate::gql_grants::block_is_authorization_only(block) {
+            return Err(RouterError::InvalidArgument(
+                "GRANT/REVOKE statements must be issued standalone and cannot be combined with \
+                 other GQL statements"
+                    .into(),
+            ));
+        }
+        gleaph_gql::validate::validate(&program)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        crate::gql_grants::execute_authorization_block(block, caller)?;
+        return Ok(GqlQueryResult::row_count_only(0));
+    }
+
     let store = RouterStore::new();
     let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
     let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);

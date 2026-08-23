@@ -40,6 +40,13 @@ pub fn authorize_adhoc_gql(
     if flags.has_call_procedure && !caps.contains(AdminCaps::CALL_PROCEDURE) {
         return Err(RouterError::Forbidden);
     }
+    if flags.has_authorization_modification {
+        // GRANT/REVOKE authority is enforced per statement by the executor (ADR 0074 §5:
+        // registry-owner-only), so the interim caps/tenancy gate must not pre-empt it. A
+        // caps-less registry owner (e.g. via the CREATE GRAPH provisioning path) would
+        // otherwise be denied against their own graph.
+        return Ok(());
+    }
     if !caps.is_empty() {
         return Ok(());
     }

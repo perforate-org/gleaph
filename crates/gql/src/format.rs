@@ -318,6 +318,24 @@ impl<'a> Formatter<'a> {
             )),
             #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Search(x) => self.search(x),
+            #[cfg(feature = "gleaph")]
+            SimpleQueryStatement::Grant(x) => self.authorization_change(
+                "GRANT",
+                &x.privilege,
+                &x.graph,
+                &x.resource,
+                &x.subject,
+                "TO",
+            ),
+            #[cfg(feature = "gleaph")]
+            SimpleQueryStatement::Revoke(x) => self.authorization_change(
+                "REVOKE",
+                &x.privilege,
+                &x.graph,
+                &x.resource,
+                &x.subject,
+                "FROM",
+            ),
             _ => self.unsupported("simple query statement"),
         }
     }
@@ -930,6 +948,71 @@ impl<'a> Formatter<'a> {
         ));
         s.push_str(&format!(" {}", alias));
         Ok(s)
+    }
+
+    /// Formats a `GRANT`/`REVOKE` statement in canonical form (ADR 0074 §5): the vertex
+    /// selector always renders as `NODES` regardless of the parsed keyword.
+    #[cfg(feature = "gleaph")]
+    fn authorization_change(
+        &mut self,
+        verb_kw: &str,
+        privilege: &GrantPrivilege,
+        graph: &ObjectName,
+        resource: &GrantResourceSelector,
+        subject: &GrantSubjectLiteral,
+        subject_preposition_kw: &str,
+    ) -> Result<String, FormatError> {
+        let privilege_text = match privilege {
+            GrantPrivilege::Match => self.kw("MATCH"),
+            GrantPrivilege::Traverse { direction } => match direction {
+                Some(GrantDirection::Outgoing) => {
+                    format!("{} {}", self.kw("TRAVERSE"), self.kw("OUTGOING"))
+                }
+                Some(GrantDirection::Incoming) => {
+                    format!("{} {}", self.kw("TRAVERSE"), self.kw("INCOMING"))
+                }
+                None => self.kw("TRAVERSE"),
+            },
+            GrantPrivilege::Read { properties } => {
+                if properties.is_empty() {
+                    self.kw("READ")
+                } else {
+                    let list = properties
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{} {{{}}}", self.kw("READ"), list)
+                }
+            }
+            GrantPrivilege::Create => self.kw("CREATE"),
+            GrantPrivilege::Update => self.kw("UPDATE"),
+            GrantPrivilege::Delete => self.kw("DELETE"),
+        };
+        let resource_text = match resource {
+            GrantResourceSelector::Vertex { label } => {
+                format!("{} {}", self.kw("NODES"), label)
+            }
+            GrantResourceSelector::Edge { label } => {
+                format!("{} {}", self.kw("EDGES"), label)
+            }
+        };
+        let subject_text = match subject {
+            GrantSubjectLiteral::Principal(text) => {
+                format!("{} '{}'", self.kw("PRINCIPAL"), text)
+            }
+            GrantSubjectLiteral::Public => self.kw("PUBLIC"),
+        };
+        Ok(format!(
+            "{} {} {} {} {} {} {}",
+            self.kw(verb_kw),
+            privilege_text,
+            self.kw("ON GRAPH"),
+            self.name(graph),
+            resource_text,
+            self.kw(subject_preposition_kw),
+            subject_text
+        ))
     }
 }
 

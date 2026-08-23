@@ -1375,6 +1375,65 @@ pub struct GrantCapsArgs {
     pub caps: u64,
 }
 
+// ──── Data-plane grant introspection (ADR 0074 §5, slice 2a) ────
+
+/// Subject of a listed grant row: a concrete principal (text form) or the virtual
+/// `PUBLIC` pseudo-subject.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GrantSubjectView {
+    Principal(String),
+    Public,
+}
+
+/// Logical traversal direction of a directional `TRAVERSE` grant
+/// (`OUTGOING = source → target`). Absent on non-directional rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GrantDirectionView {
+    Outgoing,
+    Incoming,
+}
+
+/// Privilege operation of a listed grant row ([ADR 0074] §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GrantOperationView {
+    Match,
+    Traverse,
+    Read,
+    ReadProperty,
+    Create,
+    Update,
+    Delete,
+}
+
+/// Kind of the granted resource selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GrantResourceKindView {
+    Vertex,
+    Edge,
+}
+
+/// Resource of a listed grant row: selector kind plus reverse-resolved names.
+///
+/// `property` is set only for `READ_PROPERTY` rows and names one property of the
+/// vertex label.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GrantResourceView {
+    pub kind: GrantResourceKindView,
+    pub label: String,
+    pub property: Option<String>,
+}
+
+/// One stored grant row of one graph, as listed by the owner-only introspection query.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphGrantSummary {
+    pub subject: GrantSubjectView,
+    pub operation: GrantOperationView,
+    pub direction: Option<GrantDirectionView>,
+    pub resource: GrantResourceView,
+    /// Dormant expiry semantics ([ADR 0074] §1b): reads treat expired rows as absent.
+    pub expires_at_ns: Option<u64>,
+}
+
 /// Arguments for one expired client-mutation-key sweep step. The sweep is
 /// operator-driven (like backfill / label-stats projection): call repeatedly,
 /// feeding `next_cursor` back as `start_after`, until `done` is true.

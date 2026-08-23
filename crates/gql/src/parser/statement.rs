@@ -13,7 +13,9 @@ use crate::ast::{
 };
 #[cfg(feature = "gleaph")]
 use crate::ast::{
-    SearchOutputBinding, SearchOutputKind, SearchProvider, SearchStatement, VectorSearchSpec,
+    GrantDirection, GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral,
+    RevokeStatement, SearchOutputBinding, SearchOutputKind, SearchProvider, SearchStatement,
+    VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -812,6 +814,20 @@ impl Parser<'_> {
             )));
         }
 
+        // GRANT / REVOKE (Gleaph extension, ADR 0074 §5).
+        #[cfg(feature = "gleaph")]
+        if self.at_keyword("GRANT") {
+            return Ok(Some(SimpleQueryStatement::Grant(
+                self.parse_grant_statement()?,
+            )));
+        }
+        #[cfg(feature = "gleaph")]
+        if self.at_keyword("REVOKE") {
+            return Ok(Some(SimpleQueryStatement::Revoke(
+                self.parse_revoke_statement()?,
+            )));
+        }
+
         // Inline data modification inside a linear query.
         if self.at_keyword("INSERT") {
             return Ok(Some(SimpleQueryStatement::Insert(
@@ -939,6 +955,148 @@ impl Parser<'_> {
         self.expect_keyword("AS")?;
         let alias = self.expect_ident()?.to_owned();
         Ok(SearchOutputBinding { kind, alias })
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // GRANT / REVOKE statements (Gleaph extension, ADR 0074 §5)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Parses a `GRANT` statement.
+    ///
+    /// Grammar:
+    /// ```text
+    /// GRANT privilege ON GRAPH objectName resourceSelector TO subject
+    /// privilege      := MATCH | TRAVERSE [OUTGOING | INCOMING] | READ | CREATE | UPDATE | DELETE
+    /// resourceSelector := (NODES | VERTICES) ident [ "{" ident ("," ident)* "}" ]
+    ///                   | EDGES ident
+    /// subject        := PRINCIPAL stringLiteral | PUBLIC
+    /// ```
+    ///
+    /// The property list is only valid together with the `READ` privilege and only on
+    /// a vertex selector; it lowers to per-property `READ_PROPERTY` rows. Both `NODES`
+    /// and `VERTICES` are accepted; the canonical form is vertex.
+    #[cfg(feature = "gleaph")]
+    pub fn parse_grant_statement(&mut self) -> Result<GrantStatement, GqlError> {
+        let start = self.save();
+        self.expect_keyword("GRANT")?;
+        let mut privilege = self.parse_grant_privilege()?;
+        self.expect_keyword("ON")?;
+        self.expect_keyword("GRAPH")?;
+        let graph = self.parse_object_name()?;
+        let resource = self.parse_grant_resource_selector(&mut privilege)?;
+        self.expect_keyword("TO")?;
+        let subject = self.parse_grant_subject_literal()?;
+        Ok(GrantStatement {
+            span: self.span_since(start),
+            privilege,
+            graph,
+            resource,
+            subject,
+        })
+    }
+
+    /// Parses a `REVOKE` statement — the exact-key inverse of [`Self::parse_grant_statement`].
+    #[cfg(feature = "gleaph")]
+    pub fn parse_revoke_statement(&mut self) -> Result<RevokeStatement, GqlError> {
+        let start = self.save();
+        self.expect_keyword("REVOKE")?;
+        let mut privilege = self.parse_grant_privilege()?;
+        self.expect_keyword("ON")?;
+        self.expect_keyword("GRAPH")?;
+        let graph = self.parse_object_name()?;
+        let resource = self.parse_grant_resource_selector(&mut privilege)?;
+        self.expect_keyword("FROM")?;
+        let subject = self.parse_grant_subject_literal()?;
+        Ok(RevokeStatement {
+            span: self.span_since(start),
+            privilege,
+            graph,
+            resource,
+            subject,
+        })
+    }
+
+    #[cfg(feature = "gleaph")]
+    fn parse_grant_privilege(&mut self) -> Result<GrantPrivilege, GqlError> {
+        if self.eat_keyword("MATCH") {
+            return Ok(GrantPrivilege::Match);
+        }
+        if self.eat_keyword("TRAVERSE") {
+            let direction = if self.eat_keyword("OUTGOING") {
+                Some(GrantDirection::Outgoing)
+            } else if self.eat_keyword("INCOMING") {
+                Some(GrantDirection::Incoming)
+            } else {
+                None
+            };
+            return Ok(GrantPrivilege::Traverse { direction });
+        }
+        if self.eat_keyword("READ") {
+            return Ok(GrantPrivilege::Read {
+                properties: Vec::new(),
+            });
+        }
+        if self.eat_keyword("CREATE") {
+            return Ok(GrantPrivilege::Create);
+        }
+        if self.eat_keyword("UPDATE") {
+            return Ok(GrantPrivilege::Update);
+        }
+        if self.eat_keyword("DELETE") {
+            return Ok(GrantPrivilege::Delete);
+        }
+        Err(self.expected("MATCH, TRAVERSE, READ, CREATE, UPDATE, or DELETE"))
+    }
+
+    #[cfg(feature = "gleaph")]
+    fn parse_grant_resource_selector(
+        &mut self,
+        privilege: &mut GrantPrivilege,
+    ) -> Result<GrantResourceSelector, GqlError> {
+        if self.eat_keyword("EDGES") {
+            return Ok(GrantResourceSelector::Edge {
+                label: self.expect_ident()?.to_owned(),
+            });
+        }
+        if !self.at_keyword("NODES") && !self.at_keyword("VERTICES") {
+            return Err(self.expected("NODES, VERTICES, or EDGES"));
+        }
+        self.advance();
+        let label = self.expect_ident()?.to_owned();
+        if matches!(self.peek(), Some(Token::LBrace)) {
+            if !matches!(privilege, GrantPrivilege::Read { .. }) {
+                return Err(self.expected("`{...}` property lists require the READ privilege"));
+            }
+            self.advance();
+            let mut properties = Vec::new();
+            loop {
+                properties.push(self.expect_ident()?.to_owned());
+                if !self.eat_token(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect_token(&Token::RBrace)?;
+            if let GrantPrivilege::Read { properties: slot } = privilege {
+                *slot = properties;
+            }
+        }
+        Ok(GrantResourceSelector::Vertex { label })
+    }
+
+    #[cfg(feature = "gleaph")]
+    fn parse_grant_subject_literal(&mut self) -> Result<GrantSubjectLiteral, GqlError> {
+        if self.eat_keyword("PUBLIC") {
+            return Ok(GrantSubjectLiteral::Public);
+        }
+        self.expect_keyword("PRINCIPAL")?;
+        match self.peek() {
+            Some(Token::StringLit(text)) => {
+                let text = text.clone();
+                self.advance();
+                Ok(GrantSubjectLiteral::Principal(text))
+            }
+            _ => Err(self.expected("a principal string literal")),
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1571,5 +1729,201 @@ mod search_parser_tests {
             panic!("expected Search");
         };
         assert_ne!(stmt.span, Span::DUMMY);
+    }
+}
+
+#[cfg(all(test, feature = "gleaph"))]
+mod grant_parser_tests {
+    use super::*;
+    use crate::ast::{GrantDirection, GrantPrivilege, GrantResourceSelector, GrantSubjectLiteral};
+    use crate::parser;
+    use crate::token::Span;
+
+    /// First simple query part of the single-statement program `input`.
+    fn first_part(input: &str) -> SimpleQueryStatement {
+        let program = parser::parse(input).unwrap_or_else(|e| panic!("parse error: {e}"));
+        let tx = program.transaction_activity.expect("expected tx");
+        let block = tx.body.expect("expected body");
+        let cq = match block.first {
+            Statement::Query(cq) => cq,
+            other => panic!("expected query, got {other:?}"),
+        };
+        cq.left.parts.into_iter().next().expect("expected a part")
+    }
+
+    fn parse_valid(input: &str) -> SimpleQueryStatement {
+        let part = first_part(input);
+        assert!(
+            crate::parser::parse(input).is_ok(),
+            "round-trip source must stay valid"
+        );
+        part
+    }
+
+    #[test]
+    fn parse_grant_match_nodes_principal_subject() {
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT MATCH ON GRAPH social NODES Person TO PRINCIPAL 'w7x7r-cok77-xa'")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(stmt.privilege, GrantPrivilege::Match);
+        assert_eq!(stmt.graph.parts, vec!["social".to_string()]);
+        assert_eq!(
+            stmt.resource,
+            GrantResourceSelector::Vertex {
+                label: "Person".to_string()
+            }
+        );
+        assert_eq!(
+            stmt.subject,
+            GrantSubjectLiteral::Principal("w7x7r-cok77-xa".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_grant_traverse_directional_modifiers() {
+        for (text, direction) in [
+            ("OUTGOING", Some(GrantDirection::Outgoing)),
+            ("INCOMING", Some(GrantDirection::Incoming)),
+            ("", None),
+        ] {
+            let input = format!(
+                "GRANT TRAVERSE {direction_text}ON GRAPH g EDGES KNOWS TO PUBLIC",
+                direction_text = if text.is_empty() {
+                    String::new()
+                } else {
+                    format!("{text} ")
+                }
+            );
+            let SimpleQueryStatement::Grant(stmt) = parse_valid(&input) else {
+                panic!("expected Grant for {input}");
+            };
+            assert_eq!(
+                stmt.privilege,
+                GrantPrivilege::Traverse { direction },
+                "input: {input}"
+            );
+            assert_eq!(
+                stmt.resource,
+                GrantResourceSelector::Edge {
+                    label: "KNOWS".to_string()
+                }
+            );
+            assert_eq!(stmt.subject, GrantSubjectLiteral::Public);
+        }
+    }
+
+    #[test]
+    fn parse_grant_read_property_list_lowers_into_privilege() {
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT READ ON GRAPH g NODES Person { name, age } TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.privilege,
+            GrantPrivilege::Read {
+                properties: vec!["name".to_string(), "age".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_grant_vertices_keyword_canonicalizes_to_vertex_selector() {
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT UPDATE ON GRAPH g VERTICES Person TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(stmt.privilege, GrantPrivilege::Update);
+        assert_eq!(
+            stmt.resource,
+            GrantResourceSelector::Vertex {
+                label: "Person".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_revoke_mirrors_grant_shape_with_from_preposition() {
+        let SimpleQueryStatement::Revoke(stmt) =
+            parse_valid("REVOKE DELETE ON GRAPH g EDGES KNOWS FROM PRINCIPAL 'a'")
+        else {
+            panic!("expected Revoke");
+        };
+        assert_eq!(stmt.privilege, GrantPrivilege::Delete);
+        assert_eq!(
+            stmt.resource,
+            GrantResourceSelector::Edge {
+                label: "KNOWS".to_string()
+            }
+        );
+        assert_eq!(
+            stmt.subject,
+            GrantSubjectLiteral::Principal("a".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_grant_missing_graph_name_fails() {
+        assert!(parser::parse("GRANT MATCH ON NODES Person TO PUBLIC").is_err());
+    }
+
+    #[test]
+    fn parse_grant_missing_subject_fails() {
+        assert!(parser::parse("GRANT MATCH ON GRAPH g NODES Person").is_err());
+    }
+
+    #[test]
+    fn parse_grant_property_list_requires_read_privilege() {
+        let err = parser::parse("GRANT MATCH ON GRAPH g NODES Person { name } TO PUBLIC")
+            .expect_err("property lists are READ-only syntax");
+        assert!(
+            err.to_string().contains("READ"),
+            "expected the precise READ-only message, got {err}"
+        );
+    }
+
+    #[test]
+    fn parse_grant_unknown_privilege_fails() {
+        assert!(parser::parse("GRANT OWN ON GRAPH g NODES Person TO PUBLIC").is_err());
+    }
+
+    #[test]
+    fn parse_grant_preserves_span() {
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT MATCH ON GRAPH g NODES Person TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_ne!(stmt.span, Span::DUMMY);
+    }
+
+    #[test]
+    fn validate_accepts_grant_program() {
+        let program =
+            parser::parse("GRANT MATCH ON GRAPH g NODES Person TO PUBLIC").expect("parse");
+        crate::validate::validate(&program).expect("generic validation must accept GRANT");
+    }
+}
+
+#[cfg(all(test, not(feature = "gleaph")))]
+mod grant_feature_boundary_tests {
+    use crate::parser;
+
+    #[test]
+    fn grant_rejected_without_gleaph_feature() {
+        assert!(parser::parse("GRANT MATCH ON GRAPH g NODES Person TO PUBLIC").is_err());
+    }
+
+    #[test]
+    fn revoke_rejected_without_gleaph_feature() {
+        assert!(parser::parse("REVOKE MATCH ON GRAPH g NODES Person FROM PUBLIC").is_err());
+    }
+
+    #[test]
+    fn standard_gql_still_parses_without_gleaph_feature() {
+        parser::parse("MATCH (n:Person) RETURN n").expect("standard GQL parses");
     }
 }

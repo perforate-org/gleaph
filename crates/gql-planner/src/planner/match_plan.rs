@@ -622,6 +622,15 @@ pub(super) fn plan_simple_statement(
             super::dml::plan_delete(delete_stmt, binding_kinds, ops, annotations);
             Ok(())
         }
+        // GRANT/REVOKE are host control-path statements (ADR 0074 §5): the router executes
+        // them before dispatch, so reaching the planner is a routing bug. Fail loudly rather
+        // than silently producing an empty plan.
+        SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => Err(
+            PlannerError::UnsupportedPattern(
+                "GRANT/REVOKE statements are executed by the router control path and cannot be planned"
+                    .to_string(),
+            ),
+        ),
         SimpleQueryStatement::CallProcedure(call) => {
             let yield_columns = call.yield_items.as_ref().map(|items| {
                 items

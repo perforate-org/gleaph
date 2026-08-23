@@ -127,6 +127,9 @@ fn simple_statement_vars(stmt: &SimpleQueryStatement, out: &mut BTreeSet<String>
                 add_expr_vars(e, out);
             }
         }
+        // GRANT/REVOKE reference no query variables; they never reach planning
+        // (the host executes them on its control path, ADR 0074 §5).
+        SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {}
     }
 }
 
