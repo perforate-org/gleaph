@@ -1015,38 +1015,43 @@ fn expand_candidates_via_equality_index(
         ));
     }
 
-    let order: OutEdgeOrder = sequence_order.into();
     let mut error = None;
     match direction {
         EdgeDirection::PointingRight => {
-            let wire_filter =
-                edge_label_id.map(|label_id| label_id.pack(EdgeDirectedness::Directed).raw());
-            let mut slots_by_label: BTreeMap<u16, Vec<BucketEntryPosition>> = BTreeMap::new();
-            for (label_id, slot_index) in &out_slots {
-                if wire_filter.is_some_and(|wire| wire != *label_id) {
-                    continue;
-                }
-                slots_by_label
-                    .entry(*label_id)
-                    .or_default()
-                    .push(*slot_index);
-            }
-            for (label_id, slots) in slots_by_label {
-                let storage_label = LaraLabelId::from_raw(label_id);
-                store
-                    .read_out_edge_slots_for_label(src_id, storage_label, &slots, order, |edge| {
-                        if error.is_some() {
-                            return;
-                        }
-                        if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
-                            && let Err(err) =
-                                push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
-                        {
-                            error = Some(err);
-                        }
-                    })
-                    .map_err(GraphStoreError::from)?;
-            }
+            // The equality-index postings name forward-owner slots, but the slot-targeted
+            // reader restores topology only — inline property bytes come from the batch
+            // adjacency walk. Scan this vertex's labeled adjacency once and keep the posted
+            // slots so projected inline reads see their bytes (mirrors PointingLeft).
+            let posted: BTreeSet<(u16, u32)> = out_slots
+                .iter()
+                .filter(|(label_id, _)| {
+                    edge_label_id
+                        .map(|label| label.pack(EdgeDirectedness::Directed).raw() == *label_id)
+                        .unwrap_or(true)
+                })
+                .map(|(label_id, position)| (*label_id, position.raw()))
+                .collect();
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if !posted.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
         }
         // Postings record forward-owner slots; reverse/undirected expand still needs a full
         // adjacency scan plus canonical handle matching to locate incoming edges at `src_id`.
