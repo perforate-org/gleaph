@@ -95,8 +95,8 @@ fn list_grants(
     Decode!(&bytes, Result<Vec<GraphGrantSummary>, RouterError>).expect("decode list_graph_grants")
 }
 
-fn expect_grant_summary(row: &GraphGrantSummary) {
-    assert_eq!(row.subject, GrantSubjectView::Public);
+fn expect_grant_summary(row: &GraphGrantSummary, subject: GrantSubjectView) {
+    assert_eq!(row.subject, subject);
     assert_eq!(row.operation, GrantOperationView::Traverse);
     assert_eq!(row.direction, Some(GrantDirectionView::Outgoing));
     assert_eq!(row.resource.kind, GrantResourceKindView::Edge);
@@ -127,7 +127,7 @@ fn owner_grants_lists_and_revokes_traverse_outgoing() {
         listed[0].subject,
         GrantSubjectView::Principal(grantee.to_text())
     );
-    expect_grant_summary(&listed[0]);
+    expect_grant_summary(&listed[0], GrantSubjectView::Principal(grantee.to_text()));
 
     // A non-tenant cannot observe grant state (ADR 0028 non-disclosure shape).
     let err = list_grants(&env, grantee).expect_err("stranger must not list grants");
@@ -274,7 +274,7 @@ fn grant_and_caps_rows_survive_canister_upgrade() {
     );
     let before = list_grants(&env, owner(&env)).expect("pre-upgrade list");
     assert_eq!(before.len(), 1);
-    expect_grant_summary(&before[0]);
+    expect_grant_summary(&before[0], GrantSubjectView::Principal(grantee.to_text()));
 
     // Upgrade router, index, and graph shard in place (same wasm).
     let empty = Encode!(&()).expect("encode empty upgrade arg");

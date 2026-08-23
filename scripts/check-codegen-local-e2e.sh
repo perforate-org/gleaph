@@ -104,6 +104,11 @@ main() {
   for wasm in "$router_wasm" "$index_wasm" "$graph_wasm"; do
     [[ -f "$wasm" ]] || { echo "missing wasm artifact: $wasm" >&2; exit 1; }
   done
+  # Post-process the installed artifacts exactly like every other canister
+  # build path (metadata insertion, candid extraction, ic-wasm shrink with
+  # the name section kept) instead of installing raw cargo output.
+  "$ROOT/scripts/postprocess-canister-wasm.sh" \
+    "$router_wasm" "$index_wasm" "$graph_wasm"
 
   local router index graph
   router="$(create_canister "$admin")"

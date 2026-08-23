@@ -89,7 +89,6 @@ icp_debug_filter() {
 
 build_instrumented_router_wasm() {
   local wasm="${GLEAPH_DEMO_ROUTER_WASM:-$ROOT/.icp/cache/artifacts/gleaph-router-batch-instr.wasm}"
-  local did="${wasm%.wasm}.did"
   log "Building Router with batch-instr-log explicitly (icp recipe feature forwarding is not relied upon)"
   env \
     HOME="$ICP_CLI_HOME" \
@@ -104,8 +103,10 @@ build_instrumented_router_wasm() {
     log "ERROR: Router release was built without batch-instr-log"
     exit 1
   fi
-  candid-extractor "$raw_wasm" > "$did"
-  ic-wasm "$raw_wasm" -o "$wasm" metadata candid:service -f "$did" -v public
+  cp "$raw_wasm" "$wasm"
+  # Same post-processing as every other canister artifact (metadata insertion,
+  # candid extraction, ic-wasm shrink with the name section kept).
+  "$ROOT/scripts/postprocess-canister-wasm.sh" "$wasm" >&2
   log "Instrumented Router artifact ready: $wasm"
   printf '%s\n' "$wasm"
 }

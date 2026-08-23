@@ -262,6 +262,12 @@ fn build_wasm(manifest_dir: &Path) {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../provision/src").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../../scripts/postprocess-canister-wasm.sh")
+            .display()
+    );
     let status = Command::new("cargo")
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", &target_dir)
@@ -271,6 +277,30 @@ fn build_wasm(manifest_dir: &Path) {
     assert!(status.success(), "wasm build for pocket-ic tests failed");
 
     let wasm_dir = target_dir.join(wasm_target).join("release");
+    let artifacts = [
+        "gleaph_router.wasm",
+        "gleaph_graph_index.wasm",
+        "gleaph_graph.wasm",
+        "gleaph_vector_canister.wasm",
+        "gleaph_provision.wasm",
+        "gleaph_account.wasm",
+    ];
+    // Every canister artifact goes through the same post-processing as the
+    // deployed builds (metadata insertion, candid extraction, ic-wasm shrink
+    // with the name section kept), so the E2E suite exercises the artifact
+    // composition that production installs, not raw cargo output.
+    let postprocess = root.join("scripts").join("postprocess-canister-wasm.sh");
+    let status = Command::new("bash")
+        .arg(&postprocess)
+        .args(artifacts.iter().map(|a| wasm_dir.join(a)))
+        .status()
+        .unwrap_or_else(|e| panic!("run {}: {e}", postprocess));
+    assert!(
+        status.success(),
+        "canister wasm post-processing failed: {}",
+        postprocess
+    );
+
     set_wasm_env(
         "ROUTER_WASM",
         wasm_dir.join("gleaph_router.wasm").into_std_path_buf(),

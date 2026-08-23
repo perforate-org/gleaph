@@ -49,13 +49,15 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-23-002 — Router canister wasm exceeds the IC code-section limit once the ADR 0074 slice 2a grant grammar is linked
 
-- **Status:** Open (2026-08-23). Disposition: **prerequisite slice.** The slice 2a
-  deliverables (grammar, execution, introspection) are implemented and unit-validated, but
-  the PocketIC lifecycle suite cannot execute because the freshly built Router canister is
-  rejected at `install_canister`. Resolving the size collision requires cross-cutting
-  canister-slimming decisions (feature-gating debug/diagnostic surfaces, splitting the
-  canister, or trimming legacy paths) that span the concurrently active router store and
-  schema-migration workstreams, so it cannot be repaired inside slice 2a without obscuring it.
+- **Status:** Closed (2026-08-23) via prerequisite plan `0288` (router wasm budget recovery).
+  Decision: build-path unification plus release-profile levers instead of source-level
+  slimming. Every Gleaph canister build path (root `icp.yaml` script adapters,
+  `scripts/deploy-demo-local.sh`'s instrumented router, the PocketIC fixture build,
+  `scripts/check-codegen-local-e2e.sh`) now runs one shared post-processing entry point,
+  `scripts/postprocess-canister-wasm.sh` (`ic-wasm` metadata insertion → candid extraction →
+  `ic-wasm shrink --keep-name-section`; the name section stays kept deliberately — it is a
+  custom section and does not count against the code-section limit), and `[profile.release]`
+  gained `lto = "fat"` + `codegen-units = 1`. Binaryen `wasm-opt` was not needed.
 - **Observed behavior:** `cargo test -p gleaph-pocket-ic-tests` fails every suite with
   `Wasm module code section size of 12615453 exceeds the maximum allowed size of 12582912`
   during Router install (PocketIC enforces the mainnet limit). Measured code sections of
@@ -76,15 +78,36 @@ defect from being rediscovered without its prior reasoning.
 - **Owner:** Router canister build composition (`crates/router`, workspace release/wasm64
   profile, `crates/pocket-ic-tests/build.rs`). The principal-text contract itself stays owned
   by `candid`; a hand-rolled base32/CRC decoder in the Router was considered and rejected as a
-  duplication of candid's identity-validation logic.
-- **Impact:** all PocketIC E2E suites are blocked until the Router drops ≥33 KB below the
-  current footprint (or the fixture build stops unifying features); plan
-  `0287` todo `pocketic-lifecycle-tests` remains intentionally `pending` and the plan
-  validator's `--phase final` gate therefore fails honestly.
-- **Next decision:** choose a slimming strategy for the Router canister (candidate: gate
-  diagnostic-only surfaces behind non-default features; candidate: move rarely-used admin
-  endpoints into a companion canister) before rerunning
-  `cargo test -p gleaph-pocket-ic-tests --test adr0074_grant_grammar`.
+  duplication of candid's identity-validation logic. Resolution adds
+  `scripts/postprocess-canister-wasm.sh` and the workspace `[profile.release]` as the owning
+  size-budget surfaces.
+- **Impact:** ~~all PocketIC E2E suites are blocked until the Router drops ≥33 KB below the
+  current footprint~~ resolved: see resolution evidence below; plan `0287` todo
+  `pocketic-lifecycle-tests` is unblocked.
+- **Resolution evidence (2026-08-23, plan `0288`; limit 12,582,912 code-section bytes,
+  measured with `scripts/wasm-code-section-size.py`):**
+  - PocketIC fixture path (six-package feature-unified wasm64+SIMD release), isolated levers:
+    raw cargo output **12,123,923** → + `[profile.release] lto="fat", codegen-units=1`
+    **10,689,428** (−1,434,495) → + shared post-processing **9,634,923** (−1,054,505).
+    Headroom vs the limit: **2,947,989 bytes (~2.81 MiB)**, ~11× the required 256 KiB.
+    Today's pre-change reproduction measures lower than the recorded failing build
+    (nightly `c656540d6 2026-08-21` and/or concurrent-session overlay churn; not bisected —
+    applying the same measured deltas to the recorded 12,615,455 footprint estimates ≈10.13 MB,
+    still ≥2.4 MiB under).
+  - Per-path router code sections after both levers: deploy (`icp build gleaph-router`)
+    **9,597,708**; demo instrumented (`batch-instr-log`, feature-guard grep verified)
+    **9,614,992**; PocketIC fixture **9,634,923** — all paths installable with ≥2.8 MiB margin.
+  - Other canisters strictly smaller than before on every path (PocketIC fixture code
+    sections, before → after): graph 7,405,381→6,094,339; graph-index 2,098,383→1,744,550;
+    vector 1,890,704→1,512,047; account 973,145→805,582; provision 1,677,761→1,382,074.
+  - Blocked validations rerun green: `smoke` 1/1, `adr0074_auth_ingress_walk` 1/1,
+    `adr0074_grant_grammar` 4/4 (first-ever execution exposed a self-contradictory hardcoded
+    subject expectation in the suite's own `expect_grant_summary` helper — it asserted `Public`
+    while its callers grant to `PRINCIPAL` and assert the principal subject; the helper now
+    takes the expected subject, no canister-side change was needed, stored rows were correct).
+- **Next decision:** none (closed). Standing watch: cross-nightly rebuild drift is real
+  (~±500 KB observed); keep the ≥256 KiB headroom check per canister when touching canister
+  features or toolchain versions, measured with `scripts/wasm-code-section-size.py`.
 
 ### GAP-2026-08-23-001 — ForceAtlas2 equilibrium rests below the rendered node diameter once nodes are world-sized
 

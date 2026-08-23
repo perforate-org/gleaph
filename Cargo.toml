@@ -141,10 +141,21 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 web-time = "1.1"
 
 # Dev/test compile-time tuning: keep line-level backtraces while reducing
-# debug-info object size and linker work. Release/bench/canister profiles are
-# intentionally unchanged.
+# debug-info object size and linker work.
 [profile.dev]
 debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# Canister wasm budget levers. Every Gleaph canister must stay under the IC's
+# 12 MiB install-time code-section limit with real margin on every build path;
+# fat LTO (which spans the `-Z build-std` std sources) plus a single codegen
+# unit removes cross-crate inlining bloat that default thin-LTO release builds
+# carry. No profile-level strip: release emits no debuginfo, and the wasm name
+# section is kept deliberately by scripts/postprocess-canister-wasm.sh
+# (--keep-name-section). Measurements: design/implementation-gaps.md
+# GAP-2026-08-23-002.
+[profile.release]
+lto = "fat"
+codegen-units = 1
