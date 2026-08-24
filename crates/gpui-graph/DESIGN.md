@@ -1491,6 +1491,12 @@ bootstrap, the backend configuration (layout, label resolvers), the payload
 codec, and where delivered frames go. The web example consumes exactly this;
 its per-host glue collapsed from ~150 lines to a handful of calls.
 
+Startup ordering note (observed in the browser run): the view can post its
+first snapshot before the canvas has a settled size, so the worker may answer
+with one empty frame before a later snapshot carries the real viewport.
+Delivery self-heals on the next cycle; accepted as within the same one-round-
+trip staleness budget the interaction transform already tolerates.
+
 ## 18.3 Edge curves
 
 Edges render as quadratic Bézier curves that bow toward the side with lower
