@@ -14,9 +14,9 @@ use crate::ast::{
 #[cfg(feature = "gleaph")]
 use crate::ast::{
     Expr, ExprKind, GrantComparison, GrantCondition, GrantConditionSelector, GrantDirection,
-    GrantPredicate, GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral,
-    GrantTarget, GrantValueExpr, RevokeStatement, SearchOutputBinding, SearchOutputKind,
-    SearchProvider, SearchStatement, VectorSearchSpec,
+    GrantMetadataScope, GrantPredicate, GrantPrivilege, GrantResourceSelector, GrantStatement,
+    GrantSubjectLiteral, GrantTarget, GrantValueExpr, RevokeStatement, SearchOutputBinding,
+    SearchOutputKind, SearchProvider, SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -968,6 +968,7 @@ impl Parser<'_> {
     /// ```text
     /// GRANT privilege ON GRAPH objectName resourceSelector [condition] TO subject
     /// GRANT EXECUTE ON PREPARED QUERY ident TO subject
+    /// GRANT READ_METADATA ON (GRAPH objectName | CONTROL PLANE) TO subject   (ADR 0080 §5)
     /// privilege      := MATCH | TRAVERSE [OUTGOING | INCOMING] | READ | CREATE | UPDATE | DELETE
     /// resourceSelector := (NODES | VERTICES) ident [ "{" ident ("," ident)* "}" ]
     ///                   | EDGES ident
@@ -977,9 +978,9 @@ impl Parser<'_> {
     ///
     /// The property list is only valid together with the `READ` privilege and only on
     /// a vertex selector; it lowers to per-property `READ_PROPERTY` rows. Both `NODES`
-    /// and `VERTICES` are accepted; the canonical form is vertex. The two targets are one
+    /// and `VERTICES` are accepted; the canonical form is vertex. The three targets are one
     /// discriminated union ([`GrantTarget`]), so a graph privilege can never pair with a
-    /// prepared-query resource or vice versa.
+    /// prepared-query resource or a metadata scope, and vice versa.
     #[cfg(feature = "gleaph")]
     pub fn parse_grant_statement(&mut self) -> Result<GrantStatement, GqlError> {
         let start = self.save();
@@ -994,6 +995,17 @@ impl Parser<'_> {
             return Ok(GrantStatement {
                 span: self.span_since(start),
                 target: GrantTarget::PreparedQuery { name },
+                subject,
+            });
+        }
+        if self.eat_keyword("READ_METADATA") {
+            self.expect_keyword("ON")?;
+            let scope = self.parse_metadata_scope()?;
+            self.expect_keyword("TO")?;
+            let subject = self.parse_grant_subject_literal()?;
+            return Ok(GrantStatement {
+                span: self.span_since(start),
+                target: GrantTarget::Metadata { scope },
                 subject,
             });
         }
@@ -1032,6 +1044,17 @@ impl Parser<'_> {
             return Ok(RevokeStatement {
                 span: self.span_since(start),
                 target: GrantTarget::PreparedQuery { name },
+                subject,
+            });
+        }
+        if self.eat_keyword("READ_METADATA") {
+            self.expect_keyword("ON")?;
+            let scope = self.parse_metadata_scope()?;
+            self.expect_keyword("FROM")?;
+            let subject = self.parse_grant_subject_literal()?;
+            return Ok(RevokeStatement {
+                span: self.span_since(start),
+                target: GrantTarget::Metadata { scope },
                 subject,
             });
         }
@@ -1128,6 +1151,18 @@ impl Parser<'_> {
         let label = self.expect_ident()?.to_owned();
         Ok((variable, label))
     }
+    /// Parses the metadata elevation scope after `READ_METADATA ON`: either
+    /// `GRAPH <objectName>` or `CONTROL PLANE` ([ADR 0080] §5).
+    #[cfg(feature = "gleaph")]
+    fn parse_metadata_scope(&mut self) -> Result<GrantMetadataScope, GqlError> {
+        if self.eat_keyword("GRAPH") {
+            return Ok(GrantMetadataScope::Graph(self.parse_object_name()?));
+        }
+        self.expect_keyword("CONTROL")?;
+        self.expect_keyword("PLANE")?;
+        Ok(GrantMetadataScope::ControlPlane)
+    }
+
     #[cfg(feature = "gleaph")]
     fn parse_grant_privilege(&mut self) -> Result<GrantPrivilege, GqlError> {
         if self.eat_keyword("MATCH") {
@@ -2010,7 +2045,8 @@ mod search_parser_tests {
 mod grant_parser_tests {
     use super::*;
     use crate::ast::{
-        GrantDirection, GrantPrivilege, GrantResourceSelector, GrantSubjectLiteral, GrantTarget,
+        GrantDirection, GrantMetadataScope, GrantPrivilege, GrantResourceSelector,
+        GrantSubjectLiteral, GrantTarget,
     };
     use crate::parser;
     use crate::token::Span;
@@ -2483,6 +2519,56 @@ mod grant_parser_tests {
         let program = parser::parse("GRANT EXECUTE ON PREPARED QUERY q TO PUBLIC").expect("parse");
         crate::validate::validate(&program)
             .expect("generic validation must accept EXECUTE publication");
+    }
+
+    // --- Metadata elevation forms ([ADR 0080] §5) ---
+
+    #[test]
+    fn parse_grant_read_metadata_on_graph_and_control_plane() {
+        let SimpleQueryStatement::Grant(graph_stmt) =
+            parse_valid("GRANT READ_METADATA ON GRAPH social TO PRINCIPAL 'w7x7r-cok77-xa'")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            graph_stmt.target,
+            GrantTarget::Metadata {
+                scope: GrantMetadataScope::Graph(crate::ast::ObjectName::simple("social")),
+            }
+        );
+        assert_eq!(
+            graph_stmt.subject,
+            GrantSubjectLiteral::Principal("w7x7r-cok77-xa".to_string())
+        );
+
+        let SimpleQueryStatement::Grant(cp_stmt) =
+            parse_valid("GRANT READ_METADATA ON CONTROL PLANE TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            cp_stmt.target,
+            GrantTarget::Metadata {
+                scope: GrantMetadataScope::ControlPlane,
+            }
+        );
+        assert_eq!(cp_stmt.subject, GrantSubjectLiteral::Public);
+    }
+
+    #[test]
+    fn parse_revoke_read_metadata_symmetric_with_grant() {
+        let SimpleQueryStatement::Revoke(stmt) =
+            parse_valid("REVOKE READ_METADATA ON GRAPH g FROM PUBLIC")
+        else {
+            panic!("expected Revoke");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::Metadata {
+                scope: GrantMetadataScope::Graph(crate::ast::ObjectName::simple("g")),
+            }
+        );
+        assert_eq!(stmt.subject, GrantSubjectLiteral::Public);
     }
 }
 

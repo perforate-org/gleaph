@@ -21,14 +21,14 @@
 use candid::Principal;
 use gleaph_auth::{
     AdminCaps, CompiledPredicate, Direction, GrantSubject, GraphOperation, GraphPrivilege,
-    GraphResource, MAX_PREDICATE_CONJUNCTS, PredicateComparison, PredicateLiteral, PredicateOp,
-    PredicateValue, Privilege,
+    GraphResource, MAX_PREDICATE_CONJUNCTS, MetadataScope, PredicateComparison, PredicateLiteral,
+    PredicateOp, PredicateValue, Privilege,
 };
 use gleaph_gql::ast::{
-    CompositeQueryExpr, GrantCondition, GrantConditionSelector, GrantDirection, GrantPrivilege,
-    GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget, GrantValueExpr,
-    LinearQueryStatement, ProcedureBindingInitializer, RevokeStatement, SimpleQueryStatement,
-    Statement, StatementBlock, ValueType,
+    CompositeQueryExpr, GrantCondition, GrantConditionSelector, GrantDirection, GrantMetadataScope,
+    GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget,
+    GrantValueExpr, LinearQueryStatement, ProcedureBindingInitializer, RevokeStatement,
+    SimpleQueryStatement, Statement, StatementBlock, ValueType,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 use std::rc::Rc;
@@ -301,6 +301,22 @@ fn plan_grant(
                 predicate: None,
             })
         }
+        GrantTarget::Metadata { scope } => {
+            // Grammar-written metadata rows ([ADR 0080] §5) are standing grants: the
+            // windowed, evidence-complete form flows exclusively through
+            // `elevate_request`/`elevate_approve`. Authority mirrors the publication
+            // family — the named graph's registry owner (implicit root over their own
+            // graph's plane) or `MANAGE_AUTHORIZATION`; cross-graph `CONTROL PLANE`
+            // rows have no owner and are cap-gated.
+            let subject = bind_subject(&stmt.subject)?;
+            let resolved = resolve_metadata_scope(store, scope)?;
+            authorize_metadata_grant_authority(&caller, &resolved)?;
+            Ok(PlannedAuthorization::Grant {
+                subject,
+                privileges: vec![Privilege::Metadata(resolved)],
+                predicate: None,
+            })
+        }
     }
 }
 
@@ -360,6 +376,62 @@ fn plan_revoke(
                 privileges: vec![privilege],
             })
         }
+        GrantTarget::Metadata { scope } => {
+            let subject = bind_subject(&stmt.subject)?;
+            let resolved = resolve_metadata_scope(store, scope)?;
+            authorize_metadata_grant_authority(&caller, &resolved)?;
+            let privilege = Privilege::Metadata(resolved);
+            if !auth::grant_contains(subject, &privilege) {
+                return Err(RouterError::NotFound(format!(
+                    "no stored grant row for {}",
+                    privilege_key_description(subject, &privilege)
+                )));
+            }
+            Ok(PlannedAuthorization::Revoke {
+                subject,
+                privileges: vec![privilege],
+            })
+        }
+    }
+}
+
+/// Resolve a parsed metadata scope against Router reality ([ADR 0080] §1): the graph
+/// name must exist (ADR 0028 non-disclosure applies), `CONTROL PLANE` is name-free.
+fn resolve_metadata_scope(
+    store: &RouterStore,
+    scope: &GrantMetadataScope,
+) -> Result<MetadataScope, RouterError> {
+    match scope {
+        GrantMetadataScope::Graph(name) => {
+            let graph_name = gleaph_graph_catalog::object_name_key(name);
+            let graph_id = store.resolve_graph_id(&graph_name)?;
+            Ok(MetadataScope::Graph(graph_id.raw()))
+        }
+        GrantMetadataScope::ControlPlane => Ok(MetadataScope::ControlPlane),
+    }
+}
+
+/// Authority over grammar-written metadata rows ([ADR 0080] §5): the named graph's
+/// registry owner or a `MANAGE_AUTHORIZATION` holder for graph scopes;
+/// `MANAGE_AUTHORIZATION` only for the owner-less cross-graph scope. Evaluated before
+/// any write like every other authorization gate.
+fn authorize_metadata_grant_authority(
+    caller: &Principal,
+    resolved: &MetadataScope,
+) -> Result<(), RouterError> {
+    match resolved {
+        MetadataScope::Graph(graph_raw) => {
+            if auth::has_cap(caller, AdminCaps::MANAGE_AUTHORIZATION) {
+                return Ok(());
+            }
+            match graph_catalog::graph_entry(GraphId::from_raw(*graph_raw)) {
+                Some(entry) if entry.owner == *caller => Ok(()),
+                // A visible non-owner learns only the uniform denial; an invisible
+                // caller never reached the name resolution above.
+                _ => Err(RouterError::Forbidden),
+            }
+        }
+        MetadataScope::ControlPlane => auth::require_cap(caller, AdminCaps::MANAGE_AUTHORIZATION),
     }
 }
 
@@ -963,6 +1035,12 @@ fn privilege_key_description(subject: GrantSubject, privilege: &Privilege) -> St
     match privilege {
         Privilege::ExecutePreparedQuery { name } => {
             format!("EXECUTE ON PREPARED QUERY {name} for subject {subject_text}")
+        }
+        Privilege::Metadata(MetadataScope::Graph(graph)) => {
+            format!("READ_METADATA ON GRAPH <{graph}> for subject {subject_text}")
+        }
+        Privilege::Metadata(MetadataScope::ControlPlane) => {
+            format!("READ_METADATA ON CONTROL PLANE for subject {subject_text}")
         }
         Privilege::Graph(gp) => {
             let operation = match gp.operation {

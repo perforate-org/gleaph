@@ -50,12 +50,15 @@ bitflags::bitflags!(
         const MANAGE_FEDERATION = 1 << 5;
         /// Grant administration: writing other principals' capability rows.
         const MANAGE_AUTHORIZATION = 1 << 6;
+        /// Emergency self-elevation ([ADR 0080] §3): writes flagged, approval-free
+        /// metadata elevation rows with approver = requester.
+        const EMERGENCY_ELEVATE = 1 << 7;
     }
 );
 
 impl AdminCaps {
     /// Stable bit names, in bit order. Used by introspection surfaces.
-    pub const NAMES: [&'static str; 7] = [
+    pub const NAMES: [&'static str; 8] = [
         "PREPARE_REGISTER",
         "INDEX_CREATE",
         "INDEX_DROP",
@@ -63,6 +66,7 @@ impl AdminCaps {
         "CALL_PROCEDURE",
         "MANAGE_FEDERATION",
         "MANAGE_AUTHORIZATION",
+        "EMERGENCY_ELEVATE",
     ];
 
     /// Names of the set bits, in bit order.
@@ -84,12 +88,17 @@ impl fmt::Display for AdminCaps {
 
 /// Failure modes for privileged authorization writes.
 ///
-/// The anonymous principal must never receive a persisted privileged row, so write and
-/// bootstrap APIs reject it before mutating stable storage.
+/// The anonymous principal must never receive a persisted privileged row, and an
+/// elevation row is only complete with a real justification, so write APIs reject both
+/// before mutating stable storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthWriteError {
     /// A privileged write or bootstrap targeted [`Principal::anonymous`].
     AnonymousPrincipal,
+    /// An elevation row was written with an empty justification ([ADR 0080] §3).
+    EmptyJustification,
+    /// An elevation justification exceeded [`MAX_ELEVATION_JUSTIFICATION_BYTES`].
+    JustificationTooLong(usize),
 }
 
 impl fmt::Display for AuthWriteError {
@@ -97,6 +106,12 @@ impl fmt::Display for AuthWriteError {
         match self {
             AuthWriteError::AnonymousPrincipal => {
                 f.write_str("anonymous principal cannot hold a stored authorization row")
+            }
+            AuthWriteError::EmptyJustification => {
+                f.write_str("elevation justification must not be empty")
+            }
+            AuthWriteError::JustificationTooLong(max) => {
+                write!(f, "elevation justification exceeds {max} bytes")
             }
         }
     }
@@ -249,6 +264,11 @@ pub enum Privilege {
     /// Data-plane graph privilege ([ADR 0074] §2): one `(operation, resource)` pair over
     /// one graph, e.g. `TRAVERSE OUTGOING ON EDGES KNOWS`.
     Graph(GraphPrivilege),
+    /// Metadata-plane elevation ([ADR 0080] §1): `ReadMetadata` over the scope. Shares
+    /// storage and grammar with data-plane rows but never coverage semantics — the
+    /// leading discriminant makes metadata and data-plane canonical keys disjoint, so an
+    /// exact-key lookup for one plane can never be satisfied by a row of the other.
+    Metadata(MetadataScope),
 }
 
 /// One data-plane `(operation, resource)` authorization pair over one graph.
@@ -321,6 +341,49 @@ pub enum GraphResource {
     VertexProperty { label: u32, property: u32 },
 }
 
+/// Resource scope of a metadata-plane elevation ([ADR 0080] §1).
+///
+/// `Graph` scopes one elevation to a single graph's metadata plane (topology, schema
+/// dictionary, shard registry); `ControlPlane` is cross-graph operational scope. The only
+/// metadata operation in this phase is `ReadMetadata`, so the operation is not part of
+/// the encoding — a second metadata operation would be a fresh-state format change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub enum MetadataScope {
+    /// One graph's metadata plane, keyed by the Router's logical `GraphId`.
+    Graph(u32),
+    /// Cross-graph operational scope (sweeps, fleet tooling).
+    ControlPlane,
+}
+
+impl MetadataScope {
+    fn kind(&self) -> u8 {
+        match self {
+            MetadataScope::Graph(_) => 0,
+            MetadataScope::ControlPlane => 1,
+        }
+    }
+
+    fn payload_bytes(&self) -> Vec<u8> {
+        match self {
+            MetadataScope::Graph(graph) => graph.to_le_bytes().to_vec(),
+            MetadataScope::ControlPlane => Vec::new(),
+        }
+    }
+
+    fn decode(kind: u8, payload: &[u8]) -> Self {
+        match (kind, payload.len()) {
+            (0, 4) => MetadataScope::Graph(u32::from_le_bytes(
+                payload.try_into().expect("scope graph payload"),
+            )),
+            (1, 0) => MetadataScope::ControlPlane,
+            (kind @ (0 | 1), n) => {
+                panic!("corrupt grant key: metadata scope kind {kind} with {n} payload bytes")
+            }
+            (kind, _) => panic!("corrupt grant key: unknown metadata scope kind {kind}"),
+        }
+    }
+}
+
 impl GraphResource {
     fn kind(&self) -> u8 {
         match self {
@@ -373,6 +436,7 @@ impl Privilege {
         match self {
             Privilege::ExecutePreparedQuery { .. } => 1,
             Privilege::Graph(_) => 2,
+            Privilege::Metadata(_) => 3,
         }
     }
 
@@ -400,6 +464,12 @@ impl Privilege {
                 v.extend_from_slice(&graph_privilege.resource.payload_bytes());
                 v
             }
+            Privilege::Metadata(scope) => {
+                let mut v = Vec::with_capacity(5);
+                v.push(scope.kind());
+                v.extend_from_slice(&scope.payload_bytes());
+                v
+            }
         }
     }
 
@@ -413,6 +483,13 @@ impl Privilege {
                 name: String::from_utf8(resource.to_vec())
                     .expect("corrupt grant key: non-utf8 prepared query name"),
             },
+            3 => {
+                assert!(
+                    !resource.is_empty(),
+                    "corrupt grant key: truncated metadata scope"
+                );
+                Privilege::Metadata(MetadataScope::decode(resource[0], &resource[1..]))
+            }
             2 => {
                 assert!(
                     resource.len() >= 6,
@@ -858,16 +935,101 @@ fn display_value(value: &PredicateValue) -> String {
     }
 }
 
-/// Stored grant row value. `expires_at_ns` is dormant in this slice ([ADR 0074] §1b): reads
-/// treat a row with `expires_at_ns < now` as absent, so later time-boxing is not a destructive
-/// schema change.
+/// Maximum encoded justification bytes of an elevation row ([ADR 0080] §3). Bounded so
+/// one row stays small and the friction of writing a real incident reference is real.
+pub const MAX_ELEVATION_JUSTIFICATION_BYTES: usize = 512;
+
+/// Approval evidence carried by a loop-issued elevation row ([ADR 0080] §3–§4): the row
+/// IS the record — no separate audit store exists in this slice. `approver` equals the
+/// requester exactly on emergency rows (`emergency = true`), which are the only
+/// approval-free form.
+///
+/// Grammar-written metadata rows (`GRANT READ_METADATA …`) carry no evidence payload;
+/// their authority and subject are visible through introspection like any other grant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ElevationEvidence {
+    pub approver: Principal,
+    pub justification: String,
+    pub emergency: bool,
+}
+
+impl ElevationEvidence {
+    /// Validate at the module that owns the row shape: non-empty justification within
+    /// the encoding bound. Enforced before any canonical mutation by every writer.
+    pub fn validate(&self) -> Result<(), AuthWriteError> {
+        if self.justification.is_empty() {
+            return Err(AuthWriteError::EmptyJustification);
+        }
+        if self.justification.len() > MAX_ELEVATION_JUSTIFICATION_BYTES {
+            return Err(AuthWriteError::JustificationTooLong(
+                MAX_ELEVATION_JUSTIFICATION_BYTES,
+            ));
+        }
+        Ok(())
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        assert!(
+            self.justification.len() <= MAX_ELEVATION_JUSTIFICATION_BYTES,
+            "elevation justification exceeds the encoding bound"
+        );
+        let approver = self.approver.as_slice();
+        let mut v = Vec::with_capacity(4 + self.justification.len() + approver.len());
+        v.push(u8::from(self.emergency));
+        v.extend_from_slice(&(self.justification.len() as u16).to_le_bytes());
+        v.extend_from_slice(self.justification.as_bytes());
+        v.extend_from_slice(&(approver.len() as u16).to_le_bytes());
+        v.extend_from_slice(approver);
+        v
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= 5, "corrupt grant row: truncated evidence");
+        assert!(
+            bytes[0] & !1 == 0,
+            "corrupt grant row: unknown emergency byte"
+        );
+        let emergency = bytes[0] == 1;
+        let just_len =
+            u16::from_le_bytes(bytes[1..3].try_into().expect("justification length")) as usize;
+        let approver_len_at = 3 + just_len;
+        assert!(
+            bytes.len() >= approver_len_at + 2,
+            "corrupt grant row: truncated evidence strings"
+        );
+        let justification = String::from_utf8(bytes[3..approver_len_at].to_vec())
+            .expect("corrupt grant row: non-utf8 justification");
+        let approver_len = u16::from_le_bytes(
+            bytes[approver_len_at..approver_len_at + 2]
+                .try_into()
+                .expect("approver length"),
+        ) as usize;
+        let end = approver_len_at + 2 + approver_len;
+        assert!(
+            bytes.len() == end,
+            "corrupt grant row: trailing evidence bytes"
+        );
+        Self {
+            approver: Principal::from_slice(&bytes[approver_len_at + 2..end]),
+            justification,
+            emergency,
+        }
+    }
+}
+
+/// Stored grant row value. `expires_at_ns` is dormant for standing data-plane grants
+/// ([ADR 0074] §1b): reads treat a row with `expires_at_ns < now` as absent, so
+/// time-boxing is not a destructive schema change. Loop-issued elevation rows
+/// ([ADR 0080] §3) always set it to the approved window's end.
 ///
 /// `predicate` carries the optional compiled conditional-policy predicate ([ADR 0075]
 /// §1): `Some` exactly when the GRANT carried a `FOR (v:Label) WHERE …` selector.
+/// `evidence` carries the elevation approval record; `Some` only on metadata rows
+/// written by the elevation loop (a predicate can never coexist with evidence).
 ///
-/// Fresh-state encoding ([ADR 0075] migration): tag `2`/`3` rows carry the predicate
-/// field; superseded predicate-free tags `0`/`1` are rejected by the decoder rather than
-/// interpreted.
+/// Fresh-state encodings: tag `2`/`3` rows are predicate-shaped data-plane rows, tag `4`
+/// rows carry elevation evidence; superseded tags `0`/`1` are rejected by the decoder
+/// rather than interpreted.
 ///
 /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 /// [ADR 0075]: https://github.com/gleaph/gleaph/blob/main/design/adr/0075-conditional-policies-constant-pushdown.md
@@ -875,6 +1037,7 @@ fn display_value(value: &PredicateValue) -> String {
 pub struct GrantRow {
     pub expires_at_ns: Option<u64>,
     pub predicate: Option<Rc<CompiledPredicate>>,
+    pub evidence: Option<ElevationEvidence>,
 }
 
 impl Storable for GrantRow {
@@ -882,9 +1045,21 @@ impl Storable for GrantRow {
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         let mut v = Vec::new();
-        match self.predicate.as_ref() {
+        match (&self.evidence, &self.predicate) {
+            // Tag 4: elevation-evidence row ([ADR 0080] §3); predicates cannot attach.
+            (Some(evidence), None) => {
+                v.push(4);
+                match self.expires_at_ns {
+                    None => v.push(0),
+                    Some(ts) => {
+                        v.push(1);
+                        v.extend_from_slice(&ts.to_le_bytes());
+                    }
+                }
+                v.extend_from_slice(&evidence.to_bytes());
+            }
             // Tag 2: predicate-free row (supersedes the rejected tag 0).
-            None => {
+            (None, None) => {
                 v.push(2);
                 match self.expires_at_ns {
                     None => {}
@@ -895,7 +1070,7 @@ impl Storable for GrantRow {
                 }
             }
             // Tag 3: conditional-policy row ([ADR 0075] §1), expiry then predicate bytes.
-            Some(predicate) => {
+            (None, Some(predicate)) => {
                 v.push(3);
                 match self.expires_at_ns {
                     None => v.push(0),
@@ -905,6 +1080,9 @@ impl Storable for GrantRow {
                     }
                 }
                 v.extend_from_slice(&predicate.encode());
+            }
+            (Some(_), Some(_)) => {
+                panic!("elevation rows never carry conditional-policy predicates")
             }
         }
         Cow::Owned(v)
@@ -921,6 +1099,7 @@ impl Storable for GrantRow {
             2 => Self {
                 expires_at_ns: decode_expiry_tail(&b[1..]),
                 predicate: None,
+                evidence: None,
             },
             3 => {
                 assert!(b.len() >= 2, "GrantRow conditional row needs a payload");
@@ -928,6 +1107,15 @@ impl Storable for GrantRow {
                 Self {
                     expires_at_ns,
                     predicate: Some(Rc::new(CompiledPredicate::decode(&b[1 + consumed..]))),
+                    evidence: None,
+                }
+            }
+            4 => {
+                let (expires_at_ns, consumed) = decode_expiry(&b[1..]);
+                Self {
+                    expires_at_ns,
+                    predicate: None,
+                    evidence: Some(ElevationEvidence::decode(&b[1 + consumed..])),
                 }
             }
             other => panic!("unknown GrantRow tag {other}"),
@@ -975,7 +1163,26 @@ impl<M: Memory> GrantState<M> {
         }
     }
 
-    /// Insert or replace the grant row for `(privilege, subject)`.
+    /// Canonical write path for every grant row: the anonymous-subject guard lives here
+    /// exactly once, so [`Self::grant`] and [`Self::grant_elevation`] cannot drift.
+    fn put(
+        &mut self,
+        subject: GrantSubject,
+        privilege: &Privilege,
+        row: GrantRow,
+    ) -> Result<(), AuthWriteError> {
+        if let GrantSubject::Principal(p) = &subject
+            && *p == Principal::anonymous()
+        {
+            return Err(AuthWriteError::AnonymousPrincipal);
+        }
+        let key = GrantKey::new(privilege, &subject);
+        self.grants.insert(key, row);
+        Ok(())
+    }
+
+    /// Insert or replace a predicate-shaped grant row (data-plane `GRANT` or prepared
+    /// publication; also the evidence-free form of grammar-written metadata rows).
     ///
     /// Rejects [`Principal::anonymous`] subjects before any mutation; the virtual
     /// [`GrantSubject::Public`] subject is the only way to publish to unauthenticated callers.
@@ -986,20 +1193,43 @@ impl<M: Memory> GrantState<M> {
         expires_at_ns: Option<u64>,
         predicate: Option<Rc<CompiledPredicate>>,
     ) -> Result<(), AuthWriteError> {
-        if let GrantSubject::Principal(p) = &subject
-            && *p == Principal::anonymous()
-        {
-            return Err(AuthWriteError::AnonymousPrincipal);
-        }
-        let key = GrantKey::new(privilege, &subject);
-        self.grants.insert(
-            key,
+        self.put(
+            subject,
+            privilege,
             GrantRow {
                 expires_at_ns,
                 predicate,
+                evidence: None,
             },
+        )
+    }
+
+    /// Insert or replace one loop-issued elevation row ([ADR 0080] §3): metadata-scope
+    /// privilege, window end at `expires_at_ns`, full approval evidence. Rejects
+    /// anonymous subjects, empty or over-bound justifications, and non-metadata
+    /// privileges before any mutation — elevation rows are evidence-complete by
+    /// construction, never by caller discipline.
+    pub fn grant_elevation(
+        &mut self,
+        subject: GrantSubject,
+        privilege: &Privilege,
+        expires_at_ns: u64,
+        evidence: ElevationEvidence,
+    ) -> Result<(), AuthWriteError> {
+        assert!(
+            matches!(privilege, Privilege::Metadata(_)),
+            "elevation rows are written only for metadata-scope privileges"
         );
-        Ok(())
+        evidence.validate()?;
+        self.put(
+            subject,
+            privilege,
+            GrantRow {
+                expires_at_ns: Some(expires_at_ns),
+                predicate: None,
+                evidence: Some(evidence),
+            },
+        )
     }
 
     /// Remove the exact grant row for `(privilege, subject)`. Returns whether a row existed.
@@ -1053,10 +1283,13 @@ impl<M: Memory> GrantState<M> {
 
     /// Remove every stored row whose privilege targets graph `graph`, returning the count.
     ///
-    /// Deletion is exact-key based on the decoded canonical keys: a row is removed only when
-    /// its privilege is a [`Privilege::Graph`] carrying this exact graph id, so rows of other
-    /// graphs, other subjects' rows elsewhere, and [`Privilege::ExecutePreparedQuery`] rows
-    /// (name-keyed, graph-agnostic) are untouched.
+    /// Deletion is exact-key based on the decoded canonical keys: a row is removed only
+    /// when its privilege targets this exact graph id — a data-plane [`Privilege::Graph`]
+    /// or a graph-scoped metadata elevation ([`Privilege::Metadata`] over
+    /// [`MetadataScope::Graph`]) — so rows of other graphs, other subjects' rows
+    /// elsewhere, cross-graph [`MetadataScope::ControlPlane`] elevations, and
+    /// [`Privilege::ExecutePreparedQuery`] rows (name-keyed, graph-agnostic) are
+    /// untouched.
     ///
     /// This is the cascade-invalidation primitive of ADR 0074 §3 invariant 4: when the
     /// embedding system drops a graph's label/property vocabulary, every graph-scoped row
@@ -1069,6 +1302,9 @@ impl<M: Memory> GrantState<M> {
             .iter()
             .filter_map(|entry| match entry.key().decode() {
                 (Privilege::Graph(GraphPrivilege { graph: target, .. }), _) if target == graph => {
+                    Some(entry.key().clone())
+                }
+                (Privilege::Metadata(MetadataScope::Graph(target)), _) if target == graph => {
                     Some(entry.key().clone())
                 }
                 _ => None,
@@ -1094,6 +1330,7 @@ impl<M: Memory> GrantState<M> {
                     privilege,
                     expires_at_ns: entry.value().expires_at_ns,
                     predicate: entry.value().predicate.clone(),
+                    evidence: entry.value().evidence.clone(),
                 }
             })
             .collect()
@@ -1117,6 +1354,8 @@ pub struct GrantRowEntry {
     /// Compiled conditional-policy predicate; `Some` exactly on conditional grants
     /// ([ADR 0075] §1).
     pub predicate: Option<Rc<CompiledPredicate>>,
+    /// Approval evidence; `Some` exactly on loop-issued elevation rows ([ADR 0080] §4).
+    pub evidence: Option<ElevationEvidence>,
 }
 
 #[cfg(test)]
@@ -1504,18 +1743,22 @@ mod tests {
             GrantRow {
                 expires_at_ns: None,
                 predicate: None,
+                evidence: None,
             },
             GrantRow {
                 expires_at_ns: Some(u64::MAX),
                 predicate: None,
+                evidence: None,
             },
             GrantRow {
                 expires_at_ns: None,
                 predicate: Some(predicate()),
+                evidence: None,
             },
             GrantRow {
                 expires_at_ns: Some(12345),
                 predicate: Some(predicate()),
+                evidence: None,
             },
         ];
         for row in rows {
@@ -1712,6 +1955,7 @@ mod tests {
                 privilege: exec_priv("q1"),
                 expires_at_ns: Some(500),
                 predicate: None,
+                evidence: None,
             }
         );
         assert_eq!(
@@ -1721,6 +1965,7 @@ mod tests {
                 privilege: graph_traverse(None, 3),
                 expires_at_ns: None,
                 predicate: None,
+                evidence: None,
             }
         );
     }
@@ -1839,5 +2084,336 @@ mod tests {
             "unknown graph removes nothing"
         );
         assert_eq!(grants.len(), 1);
+    }
+
+    // --- Metadata-plane elevation (ADR 0080 §1–§4) ---
+
+    fn metadata_scope(graph: u32) -> Privilege {
+        Privilege::Metadata(MetadataScope::Graph(graph))
+    }
+
+    /// THE plane-disjointness probe ([ADR 0080] §1): metadata-plane grants never satisfy
+    /// data-plane demands and data-plane grants never satisfy metadata demands. Coverage
+    /// is exact canonical-key lookup, and the leading discriminant byte separates the
+    /// planes — a wrong implementation that treated metadata coverage as data coverage
+    /// (or ignored expiry) fails here first, before any caller leans on the semantics.
+    #[test]
+    fn metadata_and_data_plane_coverage_are_provably_disjoint() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(20);
+
+        // Metadata grant on graph 9.
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(9),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(21),
+                    justification: "incident-1".into(),
+                    emergency: false,
+                },
+            )
+            .expect("metadata elevation");
+
+        // Data-plane demands of the same numeric graph stay unsatisfied — every probed
+        // operation/resource form, for the exact same subject inside the window.
+        let data_demands = [
+            Privilege::Graph(GraphPrivilege {
+                graph: 9,
+                operation: GraphOperation::Match,
+                resource: GraphResource::VertexLabel(1),
+            }),
+            Privilege::Graph(GraphPrivilege {
+                graph: 9,
+                operation: GraphOperation::Read,
+                resource: GraphResource::VertexLabel(1),
+            }),
+            Privilege::Graph(GraphPrivilege {
+                graph: 9,
+                operation: GraphOperation::Traverse(Some(Direction::Outgoing)),
+                resource: GraphResource::EdgeLabel(2),
+            }),
+        ];
+        for demand in &data_demands {
+            assert!(
+                !grants.holds(GrantSubject::Principal(p), demand, 500),
+                "metadata grant must never satisfy data-plane demand {demand:?}"
+            );
+        }
+        // Positive control so the probes above cannot pass vacuously: the same subject
+        // inside the window DOES hold the metadata demand.
+        assert!(grants.holds(GrantSubject::Principal(p), &metadata_scope(9), 500));
+    }
+
+    #[test]
+    fn data_plane_grants_never_satisfy_metadata_demands() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(22);
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &Privilege::Graph(GraphPrivilege {
+                    graph: 5,
+                    operation: GraphOperation::Match,
+                    resource: GraphResource::VertexLabel(1),
+                }),
+                None,
+                None,
+            )
+            .expect("data-plane grant");
+        assert!(
+            !grants.holds(GrantSubject::Principal(p), &metadata_scope(5), 100),
+            "data-plane coverage must never satisfy the metadata demand"
+        );
+        // The scopes are distinct rows even at identical numeric ids: a ControlPlane
+        // elevation covers every graph, but no graph-scoped form does.
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(principal(23)),
+                &Privilege::Metadata(MetadataScope::ControlPlane),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(24),
+                    justification: "fleet sweep".into(),
+                    emergency: false,
+                },
+            )
+            .expect("control-plane elevation");
+        // Storage stays exact-key: the ControlPlane row addresses its own canonical key,
+        // not every graph-scoped one — cross-graph coverage is evaluation policy
+        // (probed at the facade layer).
+        assert!(grants.holds(
+            GrantSubject::Principal(principal(23)),
+            &Privilege::Metadata(MetadataScope::ControlPlane),
+            500
+        ));
+        assert!(!grants.holds(
+            GrantSubject::Principal(principal(23)),
+            &metadata_scope(777),
+            500
+        ));
+        assert!(!grants.holds(GrantSubject::Principal(p), &metadata_scope(5), 500));
+    }
+
+    #[test]
+    fn holds_any_graph_grant_ignores_metadata_rows() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(25);
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(9),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(26),
+                    justification: "ops".into(),
+                    emergency: false,
+                },
+            )
+            .expect("graph metadata elevation");
+        // Scan-derived data-plane visibility must not treat metadata rows as graph data
+        // grants; ControlPlane rows target no single graph either.
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 500));
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &Privilege::Metadata(MetadataScope::ControlPlane),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(26),
+                    justification: "ops".into(),
+                    emergency: false,
+                },
+            )
+            .expect("control-plane elevation");
+        assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 500));
+    }
+
+    #[test]
+    fn expired_elevation_rows_deny_again_but_stay_stored() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(27);
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(3),
+                100,
+                ElevationEvidence {
+                    approver: principal(28),
+                    justification: "windowed".into(),
+                    emergency: false,
+                },
+            )
+            .expect("windowed elevation");
+        assert!(grants.holds(GrantSubject::Principal(p), &metadata_scope(3), 100));
+        assert!(!grants.holds(GrantSubject::Principal(p), &metadata_scope(3), 101));
+        // Stored evidence survives expiry until GC so review stays possible.
+        assert!(grants.contains(GrantSubject::Principal(p), &metadata_scope(3)));
+        let rows = grants.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].evidence.as_ref().map(|e| e.justification.as_str()),
+            Some("windowed")
+        );
+    }
+
+    #[test]
+    fn revoke_all_for_graph_sweeps_graph_scoped_metadata_rows_only() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(29);
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(7),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(30),
+                    justification: "dropped-graph".into(),
+                    emergency: false,
+                },
+            )
+            .expect("metadata elevation on dropped graph");
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(8),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(30),
+                    justification: "sibling".into(),
+                    emergency: false,
+                },
+            )
+            .expect("metadata elevation on sibling graph");
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &Privilege::Metadata(MetadataScope::ControlPlane),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(30),
+                    justification: "cross-graph".into(),
+                    emergency: false,
+                },
+            )
+            .expect("control-plane elevation");
+        assert_eq!(
+            grants.revoke_all_for_graph(7),
+            1,
+            "exactly the dropped graph's metadata row joins the cascade"
+        );
+        assert_eq!(grants.len(), 2, "sibling and cross-graph rows survive");
+        assert!(!grants.contains(GrantSubject::Principal(p), &metadata_scope(7)));
+        assert!(grants.contains(GrantSubject::Principal(p), &metadata_scope(8)));
+        assert!(grants.contains(
+            GrantSubject::Principal(p),
+            &Privilege::Metadata(MetadataScope::ControlPlane)
+        ));
+    }
+
+    #[test]
+    fn elevation_rows_round_trip_through_the_stable_encoding() {
+        let evidence = |emergency: bool| ElevationEvidence {
+            approver: Principal::from_slice(&[0xEE; 29]),
+            justification: "incident-4711; blast radius: one graph".into(),
+            emergency,
+        };
+        let rows = vec![
+            GrantRow {
+                expires_at_ns: Some(u64::MAX),
+                predicate: None,
+                evidence: Some(evidence(false)),
+            },
+            GrantRow {
+                expires_at_ns: Some(42),
+                predicate: None,
+                evidence: Some(evidence(true)),
+            },
+        ];
+        for row in rows {
+            assert_eq!(GrantRow::from_bytes(row.to_bytes()), row);
+        }
+    }
+
+    #[test]
+    fn grant_elevation_rejects_anonymous_subject_without_persisting() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let err = grants
+            .grant_elevation(
+                GrantSubject::Principal(Principal::anonymous()),
+                &metadata_scope(1),
+                10,
+                ElevationEvidence {
+                    approver: principal(31),
+                    justification: "anon".into(),
+                    emergency: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, AuthWriteError::AnonymousPrincipal);
+        assert!(grants.is_empty(), "rejected elevation persists no row");
+    }
+
+    #[test]
+    fn elevation_evidence_is_validated_before_any_write() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let empty = grants
+            .grant_elevation(
+                GrantSubject::Principal(principal(32)),
+                &metadata_scope(1),
+                10,
+                ElevationEvidence {
+                    approver: principal(33),
+                    justification: String::new(),
+                    emergency: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(empty, AuthWriteError::EmptyJustification);
+        let over_long = grants
+            .grant_elevation(
+                GrantSubject::Principal(principal(32)),
+                &metadata_scope(1),
+                10,
+                ElevationEvidence {
+                    approver: principal(33),
+                    justification: "x".repeat(MAX_ELEVATION_JUSTIFICATION_BYTES + 1),
+                    emergency: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            over_long,
+            AuthWriteError::JustificationTooLong(MAX_ELEVATION_JUSTIFICATION_BYTES)
+        );
+        assert!(grants.is_empty(), "invalid evidence persists no row");
+    }
+
+    #[test]
+    fn metadata_privilege_keys_round_trip_and_sort_by_plane() {
+        let privileges = [
+            metadata_scope(7),
+            metadata_scope(u32::MAX),
+            Privilege::Metadata(MetadataScope::ControlPlane),
+        ];
+        for privilege in privileges {
+            for subject in [GrantSubject::Public, GrantSubject::Principal(principal(34))] {
+                let key = GrantKey::new(&privilege, &subject);
+                assert_eq!(key.decode(), (privilege.clone(), subject));
+            }
+        }
+        // Plane separation is visible in key order too: metadata keys (discriminant 3)
+        // sort after every data-plane key, so no prefix scan can conflate them.
+        let data_key = GrantKey::new(&graph_traverse(None, 3), &GrantSubject::Public);
+        let metadata_key = GrantKey::new(&metadata_scope(7), &GrantSubject::Public);
+        assert!(data_key < metadata_key);
     }
 }

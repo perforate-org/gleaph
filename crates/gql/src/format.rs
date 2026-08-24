@@ -1033,6 +1033,21 @@ impl<'a> Formatter<'a> {
                 self.kw(subject_preposition_kw),
                 subject_text
             )),
+            GrantTarget::Metadata { scope } => {
+                let scope_text = match scope {
+                    GrantMetadataScope::Graph(graph) => {
+                        format!("{} {}", self.kw("READ_METADATA ON GRAPH"), self.name(graph))
+                    }
+                    GrantMetadataScope::ControlPlane => self.kw("READ_METADATA ON CONTROL PLANE"),
+                };
+                Ok(format!(
+                    "{} {} {} {}",
+                    self.kw(verb_kw),
+                    scope_text,
+                    self.kw(subject_preposition_kw),
+                    subject_text
+                ))
+            }
         }
     }
 
@@ -1089,5 +1104,31 @@ impl<'a> Formatter<'a> {
 impl fmt::Display for KeywordCase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
+    }
+}
+
+#[cfg(all(test, feature = "gleaph"))]
+mod metadata_grant_formatting_tests {
+    use crate::format::{FormatOptions, format_query};
+
+    /// Metadata elevation statements round-trip through the canonical formatter
+    /// ([ADR 0080] §5): the formatted form reparses and formats to itself (fixed point).
+    #[test]
+    fn read_metadata_forms_round_trip_through_the_canonical_formatter() {
+        for source in [
+            "GRANT READ_METADATA ON GRAPH social TO PRINCIPAL 'w7x7r-cok77-xa'",
+            "GRANT READ_METADATA ON CONTROL PLANE TO PUBLIC",
+            "REVOKE READ_METADATA ON GRAPH social FROM PRINCIPAL 'w7x7r-cok77-xa'",
+            "REVOKE READ_METADATA ON CONTROL PLANE FROM PUBLIC",
+        ] {
+            let formatted = format_query(source, &FormatOptions::default())
+                .unwrap_or_else(|e| panic!("format {source}: {e}"));
+            assert_eq!(
+                format_query(&formatted, &FormatOptions::default())
+                    .expect("formatted form must stay parseable"),
+                formatted,
+                "canonical form of {source} must be a formatting fixed point"
+            );
+        }
     }
 }

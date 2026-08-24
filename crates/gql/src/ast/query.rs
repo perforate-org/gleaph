@@ -642,6 +642,28 @@ pub enum GrantTarget {
     /// form (ADR 0074 §1b). The bound graph resolves from the stored record on the
     /// Router; it is not part of the statement.
     PreparedQuery { name: String },
+    /// `READ_METADATA ON GRAPH <graph>` or `READ_METADATA ON CONTROL PLANE` — the
+    /// metadata-plane elevation form ([ADR 0080] §5). No resource selector and no
+    /// conditional selector: metadata rows are whole-scope and unconditional.
+    Metadata {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+        scope: GrantMetadataScope,
+    },
+}
+
+/// Scope of a metadata-plane `GRANT`/`REVOKE` target ([ADR 0080] §1).
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum GrantMetadataScope {
+    /// One graph's metadata plane, named by graph name; the host resolves it to its
+    /// canonical graph id at execution time.
+    Graph(ObjectName),
+    /// Cross-graph operational scope (`CONTROL PLANE`).
+    ControlPlane,
 }
 
 /// `REVOKE <privilege> ON GRAPH <graph> <selector> FROM <subject>` — the exact-key
