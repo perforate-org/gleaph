@@ -49,7 +49,8 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 // --- auth (canonical) ---
 const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(0);
-// --- auth: data-plane grant rows (ADR 0074 §6) ---
+// --- auth: authorization grant rows — data-plane grants and metadata elevations share
+// this region ([ADR 0074] §6, [ADR 0080]) ---
 const ROUTER_AUTH_GRANT_ROWS: MemoryId = MemoryId::new(55);
 
 // --- registry (canonical) ---

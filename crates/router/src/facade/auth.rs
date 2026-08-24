@@ -9,7 +9,10 @@
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
 use candid::Principal;
-use gleaph_auth::{AdminCaps, AuthWriteError, GrantRowEntry, GrantSubject, Privilege};
+use gleaph_auth::{
+    AdminCaps, AuthWriteError, ElevationEvidence, GrantRowEntry, GrantSubject, MetadataScope,
+    Privilege,
+};
 
 use crate::state::RouterError;
 
@@ -119,6 +122,72 @@ pub fn add_grant(
     crate::policy_pushdown::invalidate_lowered_plan_cache();
     ROUTER_AUTH_GRANTS
         .with_borrow_mut(|grants| grants.grant(subject, privilege, expires_at_ns, predicate))
+}
+
+/// Insert or replace one loop-issued elevation row ([ADR 0080] §3): the canonical
+/// issuance path for windowed, evidence-complete metadata grants. The evidence is
+/// validated here at the row-shape owner before any stable mutation.
+pub fn add_elevation_grant(
+    requester: Principal,
+    scope: MetadataScope,
+    expires_at_ns: u64,
+    approver: Principal,
+    justification: String,
+    emergency: bool,
+) -> Result<(), RouterError> {
+    let evidence = ElevationEvidence {
+        approver,
+        justification: justification.clone(),
+        emergency,
+    };
+    evidence.validate().map_err(|err| match err {
+        AuthWriteError::EmptyJustification | AuthWriteError::JustificationTooLong(_) => {
+            RouterError::InvalidArgument(err.to_string())
+        }
+        AuthWriteError::AnonymousPrincipal => RouterError::NotAuthorized,
+    })?;
+    if requester == Principal::anonymous() {
+        return Err(RouterError::NotAuthorized);
+    }
+    crate::policy_pushdown::invalidate_lowered_plan_cache();
+    ROUTER_AUTH_GRANTS
+        .with_borrow_mut(|grants| {
+            grants.grant_elevation(
+                GrantSubject::Principal(requester),
+                &Privilege::Metadata(scope),
+                expires_at_ns,
+                evidence,
+            )
+        })
+        .map_err(|err| RouterError::InvalidArgument(err.to_string()))
+}
+
+/// Whether `caller` (`caller ∪ PUBLIC`) holds an unexpired metadata-plane elevation that
+/// covers `graph_raw`: a graph-scoped `ReadMetadata` row or the cross-graph
+/// `ControlPlane` scope ([ADR 0080] §2). Exact-key probes only — no scan, and by the
+/// plane-disjointness contract these probes can never be satisfied by data-plane rows.
+pub fn holds_metadata_graph_access(graph_raw: u32, caller: &Principal) -> bool {
+    let now_ns = crate::facade::store::ic_time_ns();
+    ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+        let effective = GrantSubject::effective_for(caller);
+        [
+            (
+                effective,
+                Privilege::Metadata(MetadataScope::Graph(graph_raw)),
+            ),
+            (effective, Privilege::Metadata(MetadataScope::ControlPlane)),
+            (
+                GrantSubject::Public,
+                Privilege::Metadata(MetadataScope::Graph(graph_raw)),
+            ),
+            (
+                GrantSubject::Public,
+                Privilege::Metadata(MetadataScope::ControlPlane),
+            ),
+        ]
+        .into_iter()
+        .any(|(subject, privilege)| grants.holds(subject, &privilege, now_ns))
+    })
 }
 
 /// Remove the exact grant row; `true` when it existed (REVOKE).
@@ -252,5 +321,70 @@ mod tests {
             .expect_err("preflight must reject anonymous issuer");
         assert_eq!(err, AuthWriteError::AnonymousPrincipal);
         assert_eq!(caps_of(&valid), AdminCaps::empty());
+    }
+
+    #[test]
+    fn control_plane_elevation_covers_every_graph_and_data_rows_cover_none() {
+        use gleaph_auth::{ElevationEvidence, MetadataScope, Privilege};
+
+        let operator = principal(60);
+        ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
+            grants
+                .grant_elevation(
+                    GrantSubject::Principal(operator),
+                    &Privilege::Metadata(MetadataScope::ControlPlane),
+                    1_000,
+                    ElevationEvidence {
+                        approver: principal(61),
+                        justification: "fleet sweep".into(),
+                        emergency: false,
+                    },
+                )
+                .expect("control-plane elevation");
+        });
+        // Evaluation policy: one cross-graph row covers arbitrary graphs...
+        assert!(holds_metadata_graph_access(11, &operator));
+        assert!(holds_metadata_graph_access(12, &operator));
+        // ...while data-plane coverage stays structurally disjoint (probe at the
+        // storage layer; enforced at plan time by `authz::requirements_cover`).
+        ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+            assert!(!grants.holds(
+                GrantSubject::Principal(operator),
+                &Privilege::Graph(gleaph_auth::GraphPrivilege {
+                    graph: 11,
+                    operation: gleaph_auth::GraphOperation::Match,
+                    resource: gleaph_auth::GraphResource::VertexLabel(1),
+                }),
+                500,
+            ));
+        });
+    }
+
+    #[test]
+    fn metadata_graph_scope_and_expiry_drive_graph_metadata_access() {
+        use gleaph_auth::{ElevationEvidence, MetadataScope, Privilege};
+
+        let operator = principal(62);
+        let other = principal(63);
+        ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
+            grants
+                .grant_elevation(
+                    GrantSubject::Principal(operator),
+                    &Privilege::Metadata(MetadataScope::Graph(21)),
+                    100,
+                    ElevationEvidence {
+                        approver: principal(64),
+                        justification: "windowed".into(),
+                        emergency: false,
+                    },
+                )
+                .expect("graph-scoped elevation");
+        });
+        assert!(holds_metadata_graph_access(21, &operator));
+        assert!(!holds_metadata_graph_access(22, &operator), "scope-bound");
+        assert!(
+            !holds_metadata_graph_access(21, &other),
+            "subject-bound: another principal inherits nothing"
+        );
     }
 }

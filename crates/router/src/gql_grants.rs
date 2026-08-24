@@ -40,8 +40,9 @@ use crate::facade::stable::prepared_catalog::{PreparedPlanKey, get_prepared_plan
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 use crate::types::{
-    GrantDirectionView, GrantOperationView, GrantResourceKindView, GrantResourceView,
-    GrantSubjectView, GraphGrantSummary,
+    ElevationScopeView, ElevationSummary, GrantDirectionView, GrantEvidenceView,
+    GrantOperationView, GrantResourceKindView, GrantResourceView, GrantSubjectView,
+    GraphGrantSummary,
 };
 
 // ──── Block detection ────
@@ -894,12 +895,48 @@ fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
 
 // ──── Introspection ────
 
-/// Owner-only listing of one graph's stored grant rows (ADR 0074 §5 observability).
+/// Owner-or-caps-authority gate for grant introspection ([ADR 0074] §5 observability,
+/// review stage of [ADR 0080] §3). The registry owner always sees their graph's rows; a
+/// `MANAGE_AUTHORIZATION` holder sees them too because reviewing elevation evidence is
+/// the governing capability's duty. Invisible callers keep the ADR 0028
+/// indistinguishable `NotFound` (enforced by `get_graph_operator`).
+///
+/// This is deliberately separate from [`authorize_graph_owner`]: writing rows stays
+/// owner/cap-gated per statement kind, while reading authorization state is the broader
+/// review audience.
+fn authorize_graph_introspection(
+    store: &RouterStore,
+    graph_name: &str,
+    caller: Principal,
+) -> Result<GraphId, RouterError> {
+    let entry = store.get_graph_operator(graph_name, caller)?;
+    if entry.owner == caller || auth::has_cap(&caller, AdminCaps::MANAGE_AUTHORIZATION) {
+        Ok(entry.graph_id)
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
+/// Evidence projection of one stored row.
+fn evidence_view(evidence: &Option<gleaph_auth::ElevationEvidence>) -> Option<GrantEvidenceView> {
+    evidence.as_ref().map(|e| GrantEvidenceView {
+        approver: Some(e.approver.to_text()),
+        justification: Some(e.justification.clone()),
+        emergency: e.emergency,
+    })
+}
+
+/// Listing of one graph's stored grant rows (ADR 0074 §5 observability), including the
+/// graph-scoped metadata elevation rows ([ADR 0080] §4).
 ///
 /// The first entry is always the synthesized implicit-root marker of the registry owner
 /// (ADR 0074 §3 invariant 3): ownership is the root of data-plane authority but is never
 /// materialized as a grant row, so introspection surfaces it explicitly instead of
 /// presenting an apparently empty list. Stored rows follow in canonical key order.
+///
+/// Viewers: the registry owner plus `MANAGE_AUTHORIZATION` holders (the elevation review
+/// audience). Non-tenants receive `NotFound` (ADR 0028 non-disclosure); visible
+/// non-owners without the capability receive `Forbidden`.
 ///
 /// Rows referencing vocabulary that no longer resolves are skipped rather than misnamed:
 /// since the ADR 0074 §3 invariant-4 cascade landed, dropped-vocabulary rows are swept at
@@ -910,9 +947,14 @@ pub(crate) fn list_graph_grants(
     caller: Principal,
 ) -> Result<Vec<GraphGrantSummary>, RouterError> {
     let store = RouterStore::new();
-    let (graph_id, owner) = authorize_graph_owner(&store, graph_name, caller)?;
+    let graph_id = authorize_graph_introspection(&store, graph_name, caller)?;
     let mut summaries = vec![GraphGrantSummary {
-        subject: GrantSubjectView::Principal(owner.to_text()),
+        subject: GrantSubjectView::Principal(
+            store
+                .get_graph_operator(graph_name, caller)?
+                .owner
+                .to_text(),
+        ),
         operation: GrantOperationView::ImplicitRoot,
         direction: None,
         resource: GrantResourceView {
@@ -922,40 +964,95 @@ pub(crate) fn list_graph_grants(
         },
         expires_at_ns: None,
         predicate: None,
+        evidence: None,
     }];
     for row in auth::grant_rows() {
-        let Privilege::Graph(gp) = row.privilege else {
-            continue;
-        };
-        if gp.graph != graph_id.raw() {
-            continue;
+        match &row.privilege {
+            Privilege::Metadata(MetadataScope::Graph(target)) => {
+                if *target != graph_id.raw() {
+                    continue;
+                }
+                summaries.push(GraphGrantSummary {
+                    subject: subject_view(row.subject),
+                    operation: GrantOperationView::ReadMetadata,
+                    direction: None,
+                    resource: GrantResourceView {
+                        kind: GrantResourceKindView::Graph,
+                        label: graph_name.to_owned(),
+                        property: None,
+                    },
+                    expires_at_ns: row.expires_at_ns,
+                    predicate: None,
+                    evidence: evidence_view(&row.evidence),
+                });
+            }
+            Privilege::Graph(gp) => {
+                if gp.graph != graph_id.raw() {
+                    continue;
+                }
+                let Some((operation, direction)) = operation_view(gp.operation) else {
+                    continue;
+                };
+                let Some(resource) = resource_view(&store, graph_id, gp.resource) else {
+                    continue;
+                };
+                // Inline condition text ([ADR 0075] §1): property names resolve through the
+                // catalogs; unresolved ids print as `<property N>` so introspection stays
+                // truthful after renames.
+                let predicate = row.predicate.as_ref().map(|compiled| {
+                    compiled.display_conditions(|property_id| {
+                        store
+                            .reverse_property_name(graph_id, PropertyId::from_raw(property_id))
+                            .ok()
+                    })
+                });
+                summaries.push(GraphGrantSummary {
+                    subject: subject_view(row.subject),
+                    operation,
+                    direction,
+                    resource,
+                    expires_at_ns: row.expires_at_ns,
+                    predicate,
+                    evidence: evidence_view(&row.evidence),
+                });
+            }
+            // Prepared-query EXECUTE rows and cross-graph scopes list through their own
+            // surfaces (`list_prepared` / `list_elevations`).
+            Privilege::ExecutePreparedQuery { .. }
+            | Privilege::Metadata(MetadataScope::ControlPlane) => {}
         }
-        let Some((operation, direction)) = operation_view(gp.operation) else {
-            continue;
-        };
-        let Some(resource) = resource_view(&store, graph_id, gp.resource) else {
-            continue;
-        };
-        // Inline condition text ([ADR 0075] §1): property names resolve through the
-        // catalogs; unresolved ids print as `<property N>` so introspection stays
-        // truthful after renames.
-        let predicate = row.predicate.as_ref().map(|compiled| {
-            compiled.display_conditions(|property_id| {
-                store
-                    .reverse_property_name(graph_id, PropertyId::from_raw(property_id))
-                    .ok()
-            })
-        });
-        summaries.push(GraphGrantSummary {
-            subject: subject_view(row.subject),
-            operation,
-            direction,
-            resource,
-            expires_at_ns: row.expires_at_ns,
-            predicate,
-        });
     }
     Ok(summaries)
+}
+
+/// All stored metadata elevation rows ([ADR 0080] §3–§4), active and recently-expired,
+/// in canonical key order — the caps-gated review surface. Expired rows remain stored
+/// until GC, so post-use review sees them flagged inactive.
+pub(crate) fn list_elevations(caller: Principal) -> Result<Vec<ElevationSummary>, RouterError> {
+    auth::require_cap(&caller, AdminCaps::MANAGE_AUTHORIZATION)?;
+    let now_ns = crate::facade::store::ic_time_ns();
+    Ok(auth::grant_rows()
+        .into_iter()
+        .filter_map(|row| match row.privilege {
+            Privilege::Metadata(scope) => {
+                let scope_view = match scope {
+                    MetadataScope::Graph(graph_raw) => ElevationScopeView::Graph(
+                        graph_catalog::graph_name(GraphId::from_raw(graph_raw))
+                            .unwrap_or_else(|| format!("<graph {graph_raw}>")),
+                    ),
+                    MetadataScope::ControlPlane => ElevationScopeView::ControlPlane,
+                };
+                row.expires_at_ns.map(|expires_at_ns| ElevationSummary {
+                    requester: subject_view(row.subject),
+                    scope: scope_view,
+                    expires_at_ns,
+                    active: expires_at_ns >= now_ns,
+                    evidence: evidence_view(&row.evidence),
+                })
+            }
+            _ => None,
+        })
+        .collect())
 }
 
 fn operation_view(
@@ -1371,6 +1468,7 @@ mod publication_tests {
                 },
                 expires_at_ns: None,
                 predicate: None,
+                evidence: None,
             },
             "the implicit-root marker leads the listing"
         );

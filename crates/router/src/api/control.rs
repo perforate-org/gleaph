@@ -61,12 +61,303 @@ fn admin_grant_caps(args: types::GrantCapsArgs) -> Result<(), RouterError> {
     auth::admin_upsert_caps(&msg_caller(), args.target, args.caps)
 }
 
-/// Owner-only listing of one graph's stored data-plane grant rows (ADR 0074 §5): subject,
-/// operation, resource, direction, and expiry. Non-tenants receive `NotFound` (ADR 0028
-/// non-disclosure); tenants that are not the registry owner receive `Forbidden`.
+/// Owner listing of one graph's stored grant rows (ADR 0074 §5) plus its graph-scoped
+/// metadata elevations ([ADR 0080] §4). `MANAGE_AUTHORIZATION` holders share the review
+/// audience; non-tenants receive `NotFound` (ADR 0028 non-disclosure), visible
+/// non-owners without the capability receive `Forbidden`.
 #[query]
 fn list_graph_grants(graph_name: String) -> Result<Vec<types::GraphGrantSummary>, RouterError> {
     crate::gql_grants::list_graph_grants(&graph_name, msg_caller())
+}
+
+/// Review surface of the elevation loop ([ADR 0080] §3–§4): every stored metadata
+/// elevation row — active and recently-expired, emergency rows flagged — with its full
+/// evidence payload (requester, approver, justification, window). The issued rows ARE
+/// the evidence chain; there is no separate audit store in this slice.
+#[query]
+fn list_elevations() -> Result<Vec<types::ElevationSummary>, RouterError> {
+    crate::gql_grants::list_elevations(msg_caller())
+}
+
+/// Stage 1 of the JIT elevation loop ([ADR 0080] §3): validate a metadata-elevation
+/// request and return its canonical form. Gated on `MANAGE_AUTHORIZATION` (ADR 0080 §5);
+/// anonymous callers are rejected. Persisting nothing is deliberate — unapproved
+/// requests grant nothing and leave no state, while the approved row carries the full
+/// evidence chain.
+#[query]
+fn elevate_request(
+    args: types::ElevateRequestArgs,
+) -> Result<types::ElevateRequestArgs, RouterError> {
+    request_elevation(msg_caller(), args)
+}
+
+/// Stage-1 validation body of [`elevate_request`], callable from host tests.
+pub(crate) fn request_elevation(
+    caller: Principal,
+    args: types::ElevateRequestArgs,
+) -> Result<types::ElevateRequestArgs, RouterError> {
+    if caller == Principal::anonymous() {
+        return Err(RouterError::NotAuthorized);
+    }
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_AUTHORIZATION)?;
+    validate_elevation_request(&args)?;
+    Ok(args)
+}
+
+/// Stages 2–3 of the JIT elevation loop ([ADR 0080] §3): approve a request and issue
+/// the windowed `ReadMetadata` grant row carrying the complete evidence (requester,
+/// approver, justification, window, emergency flag).
+///
+/// Gate matrix, evaluated before any mutation:
+/// - normal form (`emergency = false`): the approver must hold `MANAGE_AUTHORIZATION`
+///   and differ from the requester;
+/// - emergency form (`emergency = true`, the only self-elevation): the caller must hold
+///   `EMERGENCY_ELEVATE` and be the requester; the row is written flagged with
+///   approver = requester.
+#[update]
+fn elevate_approve(args: types::ElevateApproveArgs) -> Result<(), RouterError> {
+    approve_elevation(msg_caller(), args)
+}
+
+/// Stages 2–3 body of [`elevate_approve`], callable from host tests.
+pub(crate) fn approve_elevation(
+    caller: Principal,
+    args: types::ElevateApproveArgs,
+) -> Result<(), RouterError> {
+    if caller == Principal::anonymous() {
+        return Err(RouterError::NotAuthorized);
+    }
+    if args.emergency {
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::EMERGENCY_ELEVATE)?;
+        if args.request.requester != caller {
+            return Err(RouterError::InvalidArgument(
+                "emergency elevation is self-elevation: requester must equal the caller; \
+                 use the approval loop otherwise"
+                    .into(),
+            ));
+        }
+    } else {
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_AUTHORIZATION)?;
+        if args.request.requester == caller {
+            return Err(RouterError::NotAuthorized);
+        }
+    }
+    validate_elevation_request(&args.request)?;
+    let scope = elevation_scope(&RouterStore::new(), &args.request.scope)?;
+    auth::add_elevation_grant(
+        args.request.requester,
+        scope,
+        crate::facade::store::ic_time_ns() + args.request.window.ns(),
+        caller,
+        args.request.justification,
+        args.emergency,
+    )
+}
+
+/// Shared request-shape validation ([ADR 0080] §3): non-empty bounded justification,
+/// resolvable scope. Pure over Router state except catalog reads, so both endpoints can
+/// run it before any decision is surfaced.
+fn validate_elevation_request(args: &types::ElevateRequestArgs) -> Result<(), RouterError> {
+    if args.justification.trim().is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "elevation requires a non-empty justification".into(),
+        ));
+    }
+    if args.justification.len() > gleaph_auth::MAX_ELEVATION_JUSTIFICATION_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "elevation justification exceeds {} bytes",
+            gleaph_auth::MAX_ELEVATION_JUSTIFICATION_BYTES
+        )));
+    }
+    match &args.scope {
+        types::ElevationScopeView::Graph(graph_name) => {
+            RouterStore::new().resolve_graph_id(graph_name)?;
+        }
+        types::ElevationScopeView::ControlPlane => {}
+    }
+    Ok(())
+}
+
+fn elevation_scope(
+    store: &RouterStore,
+    view: &types::ElevationScopeView,
+) -> Result<gleaph_auth::MetadataScope, RouterError> {
+    match view {
+        types::ElevationScopeView::Graph(graph_name) => Ok(gleaph_auth::MetadataScope::Graph(
+            store.resolve_graph_id(graph_name)?.raw(),
+        )),
+        types::ElevationScopeView::ControlPlane => Ok(gleaph_auth::MetadataScope::ControlPlane),
+    }
+}
+
+#[cfg(test)]
+mod elevation_loop_tests {
+    //! Gate matrix and evidence completeness of the JIT elevation loop ([ADR 0080]
+    //! §3): every rejection happens before any stable write, and the issued row is the
+    //! complete evidence chain.
+
+    use super::*;
+    use gleaph_auth::{AdminCaps, GrantSubject, MetadataScope, Privilege};
+
+    fn principal(byte: u8) -> Principal {
+        Principal::from_slice(&[byte; 29])
+    }
+
+    fn upsert_caps(p: Principal, caps: AdminCaps) {
+        crate::facade::stable::ROUTER_AUTH_STATE
+            .with_borrow_mut(|auth| auth.upsert_caps(p, caps).expect("non-anonymous"));
+    }
+
+    fn metadata_rows_for(subject: GrantSubject) -> Vec<gleaph_auth::GrantRowEntry> {
+        crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+            grants
+                .rows()
+                .into_iter()
+                .filter(|row| {
+                    row.subject == subject && matches!(row.privilege, Privilege::Metadata(_))
+                })
+                .collect()
+        })
+    }
+
+    fn graph_scope_args(requester: Principal, justification: &str) -> types::ElevateApproveArgs {
+        types::ElevateApproveArgs {
+            request: types::ElevateRequestArgs {
+                requester,
+                scope: types::ElevationScopeView::ControlPlane,
+                justification: justification.to_owned(),
+                window: types::ElevationWindow::Hour4,
+            },
+            emergency: false,
+        }
+    }
+
+    #[test]
+    fn anonymous_callers_are_rejected_at_both_endpoints() {
+        let requester = principal(40);
+        assert!(matches!(
+            request_elevation(
+                Principal::anonymous(),
+                graph_scope_args(requester, "incident-1").request,
+            ),
+            Err(RouterError::NotAuthorized)
+        ));
+        assert!(matches!(
+            approve_elevation(
+                Principal::anonymous(),
+                graph_scope_args(requester, "incident-1")
+            ),
+            Err(RouterError::NotAuthorized)
+        ));
+        assert!(metadata_rows_for(GrantSubject::Principal(requester)).is_empty());
+    }
+
+    #[test]
+    fn approval_requires_manage_authorization_and_a_second_principal() {
+        let approver = principal(41);
+        let requester = principal(42);
+        // No caps at all.
+        assert!(matches!(
+            approve_elevation(approver, graph_scope_args(requester, "incident-2")),
+            Err(RouterError::NotAuthorized)
+        ));
+        // Unrelated cap is not grant authority.
+        upsert_caps(approver, AdminCaps::MANAGE_FEDERATION);
+        assert!(matches!(
+            approve_elevation(approver, graph_scope_args(requester, "incident-2")),
+            Err(RouterError::NotAuthorized)
+        ));
+        assert!(metadata_rows_for(GrantSubject::Principal(requester)).is_empty());
+
+        // With the capability, self-approval stays rejected.
+        upsert_caps(approver, AdminCaps::MANAGE_AUTHORIZATION);
+        assert!(matches!(
+            approve_elevation(approver, graph_scope_args(approver, "incident-2")),
+            Err(RouterError::NotAuthorized)
+        ));
+        assert!(metadata_rows_for(GrantSubject::Principal(approver)).is_empty());
+    }
+
+    #[test]
+    fn approved_rows_carry_the_complete_evidence_chain() {
+        let approver = principal(43);
+        let requester = principal(44);
+        upsert_caps(approver, AdminCaps::MANAGE_AUTHORIZATION);
+        let args = types::ElevateApproveArgs {
+            request: types::ElevateRequestArgs {
+                requester,
+                scope: types::ElevationScopeView::ControlPlane,
+                justification: "incident-4711".to_owned(),
+                window: types::ElevationWindow::Hour24,
+            },
+            emergency: false,
+        };
+        approve_elevation(approver, args).expect("cross-principal approval issues");
+        let rows = metadata_rows_for(GrantSubject::Principal(requester));
+        assert_eq!(rows.len(), 1, "exactly one issued elevation row");
+        let row = &rows[0];
+        assert_eq!(
+            row.privilege,
+            Privilege::Metadata(MetadataScope::ControlPlane)
+        );
+        assert_eq!(
+            row.expires_at_ns,
+            Some(types::ElevationWindow::Hour24.ns()),
+            "window end = issuance time (host-test 0) + window"
+        );
+        let evidence = row.evidence.as_ref().expect("evidence-complete row");
+        assert!(!evidence.emergency);
+        assert_eq!(evidence.approver, approver);
+        assert_eq!(evidence.justification, "incident-4711");
+    }
+
+    #[test]
+    fn emergency_self_elevation_requires_the_cap_and_writes_flagged_rows() {
+        let operator = principal(45);
+        // Without EMERGENCY_ELEVATE even a MANAGE_AUTHORIZATION holder cannot self-approve.
+        upsert_caps(operator, AdminCaps::MANAGE_AUTHORIZATION);
+        let mut args = graph_scope_args(operator, "pager duty");
+        args.emergency = true;
+        assert!(matches!(
+            approve_elevation(operator, args),
+            Err(RouterError::NotAuthorized)
+        ));
+
+        // With the bit, self-elevation issues the flagged no-approval variant.
+        upsert_caps(
+            operator,
+            AdminCaps::MANAGE_AUTHORIZATION | AdminCaps::EMERGENCY_ELEVATE,
+        );
+        let mut args = graph_scope_args(operator, "pager duty");
+        args.emergency = true;
+        approve_elevation(operator, args).expect("emergency self-elevation issues");
+        let rows = metadata_rows_for(GrantSubject::Principal(operator));
+        assert_eq!(rows.len(), 1);
+        let evidence = rows[0].evidence.as_ref().expect("flagged row has evidence");
+        assert!(evidence.emergency, "the emergency flag must be set");
+        assert_eq!(evidence.approver, operator, "approver = requester");
+
+        // Emergency form with a differing requester is rejected outright.
+        let mut args = graph_scope_args(principal(46), "not self");
+        args.emergency = true;
+        assert!(matches!(
+            approve_elevation(operator, args),
+            Err(RouterError::InvalidArgument(_))
+        ));
+        assert!(metadata_rows_for(GrantSubject::Principal(principal(46))).is_empty());
+    }
+
+    #[test]
+    fn empty_justifications_are_rejected_before_any_write() {
+        let approver = principal(47);
+        let requester = principal(48);
+        upsert_caps(approver, AdminCaps::MANAGE_AUTHORIZATION);
+        assert!(matches!(
+            approve_elevation(approver, graph_scope_args(requester, "   ")),
+            Err(RouterError::InvalidArgument(_))
+        ));
+        assert!(metadata_rows_for(GrantSubject::Principal(requester)).is_empty());
+    }
 }
 
 #[query]

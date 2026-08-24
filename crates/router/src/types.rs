@@ -1375,6 +1375,74 @@ pub struct GrantCapsArgs {
     pub caps: u64,
 }
 
+// ──── JIT metadata elevation ([ADR 0080] §3–§5) ────
+
+/// Constrained elevation window ([ADR 0080] §3): the friction stays real because only
+/// these four durations are expressible on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ElevationWindow {
+    Hour1,
+    Hour4,
+    Hour24,
+    Day7,
+}
+
+impl ElevationWindow {
+    /// Window length in nanoseconds, added to the issuance time to form `expires_at`.
+    pub fn ns(self) -> u64 {
+        const HOUR_NS: u64 = 3_600_000_000_000;
+        match self {
+            ElevationWindow::Hour1 => HOUR_NS,
+            ElevationWindow::Hour4 => 4 * HOUR_NS,
+            ElevationWindow::Hour24 => 24 * HOUR_NS,
+            ElevationWindow::Day7 => 7 * 24 * HOUR_NS,
+        }
+    }
+}
+
+/// Scope of an elevation request or listed elevation row (graph by logical name; the
+/// canonical id is resolved inside the Router).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ElevationScopeView {
+    Graph(String),
+    ControlPlane,
+}
+
+/// Arguments of `elevate_request`: one validated, canonical elevation request. The
+/// request stage persists nothing — the issued grant row is the sole evidence chain
+/// ([ADR 0080] §4), so approval restates exactly these fields.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ElevateRequestArgs {
+    /// Principal to elevate; usually the caller, but a `MANAGE_AUTHORIZATION` holder
+    /// may file on behalf of another operator.
+    pub requester: Principal,
+    pub scope: ElevationScopeView,
+    /// Non-empty incident reference / justification, bounded by
+    /// `gleaph_auth::MAX_ELEVATION_JUSTIFICATION_BYTES`.
+    pub justification: String,
+    pub window: ElevationWindow,
+}
+
+/// Approval payload of `elevate_approve`: the request being approved plus whether the
+/// emergency self-elevation form is used.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ElevateApproveArgs {
+    pub request: ElevateRequestArgs,
+    /// Emergency form ([ADR 0080] §3): requires `EMERGENCY_ELEVATE`, requires
+    /// `requester == caller`, writes approver = requester with the emergency flag set.
+    pub emergency: bool,
+}
+
+/// Evidence fields of a stored elevation row, as surfaced by introspection. `approver`
+/// and `justification` are `Some` exactly on loop-issued rows; grammar-written rows
+/// carry no evidence payload.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GrantEvidenceView {
+    pub approver: Option<String>,
+    pub justification: Option<String>,
+    pub emergency: bool,
+}
+
 // ──── Data-plane grant introspection (ADR 0074 §5, slice 2a) ────
 
 /// Subject of a listed grant row: a concrete principal (text form) or the virtual
@@ -1403,6 +1471,8 @@ pub enum GrantOperationView {
     Create,
     Update,
     Delete,
+    /// Metadata-plane elevation row (`READ_METADATA`, [ADR 0080] §1).
+    ReadMetadata,
     /// Marker of the registry owner's implicit root authority over the whole graph
     /// (ADR 0074 §3 invariant 3). Synthesized by introspection only — ownership is
     /// never materialized as a stored grant row.
@@ -1438,12 +1508,29 @@ pub struct GraphGrantSummary {
     pub operation: GrantOperationView,
     pub direction: Option<GrantDirectionView>,
     pub resource: GrantResourceView,
-    /// Dormant expiry semantics ([ADR 0074] §1b): reads treat expired rows as absent.
+    /// Expiry: standing rows are `None`; elevation rows carry the window end
+    /// (expired rows read as absent but remain listed until GC).
     pub expires_at_ns: Option<u64>,
     /// Compiled conditional-policy condition printed inline ([ADR 0075] §1), e.g.
     /// `WHERE visibility = 'public' AND owner = MSG_CALLER()`. Property names resolve
     /// through the graph catalogs; unresolved ids print as `<property N>`.
     pub predicate: Option<String>,
+    /// Approval evidence; `Some` exactly on loop-issued elevation rows ([ADR 0080] §4).
+    pub evidence: Option<GrantEvidenceView>,
+}
+
+/// One stored elevation row ([ADR 0080] §3–§4), as listed by the caps-gated review
+/// surface. Active and recently-expired rows both appear — expired rows remain stored
+/// until GC so post-use review is possible.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ElevationSummary {
+    /// Elevated principal (= the requester the approval named).
+    pub requester: GrantSubjectView,
+    pub scope: ElevationScopeView,
+    /// Window end; `active` compares it against the current time.
+    pub expires_at_ns: u64,
+    pub active: bool,
+    pub evidence: Option<GrantEvidenceView>,
 }
 
 /// Arguments for one expired client-mutation-key sweep step. The sweep is
