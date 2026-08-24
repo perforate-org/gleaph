@@ -19,7 +19,7 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc};
 #[cfg(test)]
 use std::cell::RefCell;
 
-use crate::frame_source::FrameSource;
+use crate::frame_source::{FrameSource, PaintFrameWire};
 use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::hit_test;
 use crate::interaction::{GraphEvent, Hover, MouseButton, Selection};
@@ -27,6 +27,7 @@ use crate::layout::LayoutBudget;
 use crate::scene::GraphScene;
 use crate::style::{ArrowShape, GraphStyle};
 use crate::viewport::{Viewport, WorldBounds};
+use crate::worker::{ToWorker, WorkerChannel};
 
 /// A resolver that returns the label text for a node, or `None` for no label.
 type NodeLabelResolver<N> = Rc<dyn Fn(NodeId, &N) -> Option<String>>;
@@ -51,11 +52,18 @@ where
     hover: Hover,
     style: GraphStyle,
     runtime: crate::runtime::GraphRuntime<S>,
-    /// Where this view's paint frame is produced. `InProcess` is the default
-    /// and only connected source: the synchronous prepaint build. `Worker`
-    /// reserves the ADR 0076 off-main-thread producer and has no execution
-    /// path until that worker host lands (§18.2).
+    /// Where this view's paint frame is produced. `InProcess` is the default:
+    /// the synchronous prepaint build. `Worker` routes frame production to
+    /// the ADR 0076 off-main-thread worker backend through `worker_channel`
+    /// (§18.2).
     frame_source: FrameSource,
+    /// Main-thread connection toward the worker backend. Required before
+    /// `FrameSource::Worker` can dispatch; dropped when the source switches
+    /// back to `InProcess`.
+    worker_channel: Option<Box<dyn WorkerChannel<NK, EK, N, E>>>,
+    /// The most recent frame the worker delivered. Worker-mode prepaint
+    /// renders it until a newer delivery replaces it; it starts empty.
+    delivered_frame: crate::paint::PaintFrame,
     node_label: NodeLabelResolver<N>,
     edge_label: EdgeLabelResolver<E>,
     node_overlay: NodeOverlayResolver,
@@ -233,6 +241,8 @@ where
             style: GraphStyle::default(),
             runtime: crate::runtime::GraphRuntime::default(),
             frame_source: FrameSource::default(),
+            worker_channel: None,
+            delivered_frame: crate::paint::PaintFrame::new(),
             node_label: Rc::new(|_id, _node| None),
             edge_label: Rc::new(|_id, _edge| None),
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
@@ -292,11 +302,42 @@ where
 
     /// Where this view produces its paint frame (§18.2, ADR 0076).
     ///
-    /// Only [`FrameSource::InProcess`] has an execution path; the `Worker`
-    /// mode is reserved for the ADR 0076 S2 worker host and cannot be
-    /// selected yet.
+    /// `InProcess` is the default. `Worker` dispatches to the worker backend
+    /// through the connected [`WorkerChannel`]; selecting it without a
+    /// connection fails loudly at frame dispatch.
     pub fn frame_source(&self) -> FrameSource {
         self.frame_source
+    }
+
+    /// Select where this view produces its paint frame (ADR 0076 S2).
+    ///
+    /// `FrameSource::Worker` is opt-in: it routes frame production to the
+    /// worker backend, so a worker channel must be connected first (see
+    /// [`Self::connect_worker_channel`]). Switching back to `InProcess`
+    /// restores the synchronous build and drops any connection.
+    pub fn set_frame_source(&mut self, source: FrameSource) {
+        self.frame_source = source;
+        if source != FrameSource::Worker {
+            self.worker_channel = None;
+        }
+    }
+
+    /// Connect the main-thread half of the ADR 0076 worker channel.
+    ///
+    /// Requests posted by Worker-mode prepaint go to `channel`; finished
+    /// frames come back through [`Self::deliver_worker_frame`], which the
+    /// transport's message handler must call on this view state.
+    pub fn connect_worker_channel(&mut self, channel: Box<dyn WorkerChannel<NK, EK, N, E>>) {
+        self.worker_channel = Some(channel);
+    }
+
+    /// Receive one finished frame shipped by the worker backend.
+    ///
+    /// The decoded frame replaces the previously delivered one wholesale and
+    /// schedules a repaint; the next prepaint renders it.
+    pub fn deliver_worker_frame(&mut self, wire: PaintFrameWire, cx: &mut Context<Self>) {
+        self.delivered_frame = wire.decode();
+        cx.notify();
     }
 
     /// The style to use when painting this frame, applying interaction-time LOD.
@@ -522,6 +563,8 @@ where
             style: GraphStyle::default(),
             runtime: crate::runtime::GraphRuntime::default(),
             frame_source: FrameSource::default(),
+            worker_channel: None,
+            delivered_frame: crate::paint::PaintFrame::new(),
             node_label: Rc::new(|_id, node| Some(node.to_string())),
             edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
@@ -554,17 +597,36 @@ where
     ///
     /// This is the single seam between GPUI's prepaint pass and frame
     /// production: viewport sizing and the one-time initial fit run for every
-    /// source, while primitive production switches on the source. The `Worker`
-    /// source has no execution path until the ADR 0076 S2 worker host lands,
-    /// so reaching its arm is a loud defect rather than a fallback to the
-    /// in-process build.
+    /// source. `InProcess` builds synchronously from one synced scene read.
+    /// `Worker` posts an interaction-state snapshot through the connected
+    /// channel and renders the last delivered frame; reaching it without a
+    /// connection is a loud defect rather than a fallback to the in-process
+    /// build (§18.2, ADR 0076 S2).
     fn build_frame(&mut self, size: Vec2, cx: &mut Context<Self>) -> crate::paint::PaintFrame {
         self.prepare_canvas(size, cx);
         match self.frame_source {
             FrameSource::InProcess => self.build_in_process_frame(cx),
-            FrameSource::Worker => unreachable!(
-                "FrameSource::Worker has no execution path until the ADR 0076 S2 worker host lands"
-            ),
+            FrameSource::Worker => {
+                let state = self.worker_frame_state();
+                let channel = self
+                    .worker_channel
+                    .as_mut()
+                    .expect("FrameSource::Worker selected but no worker channel is connected");
+                channel.post(ToWorker::FrameState(Box::new(state)));
+                self.delivered_frame.clone()
+            }
+        }
+    }
+
+    /// The interaction-state snapshot Worker-mode prepaint sends to the
+    /// backend. The style matches [`Self::paint_style`] so interaction-time
+    /// LOD applies to worker-built frames exactly as to in-process ones.
+    fn worker_frame_state(&self) -> crate::worker::FrameState {
+        crate::worker::FrameState {
+            viewport: self.viewport,
+            style: self.paint_style(),
+            selection: self.selection.clone(),
+            hover: self.hover,
         }
     }
 
@@ -678,9 +740,10 @@ where
                         coordinates_prepaint.set(CanvasCoordinates::from_bounds(bounds));
                         // Prepaint: size the viewport from the element bounds
                         // and produce the frame through the view's frame-source
-                        // seam (InProcess today; ADR 0076 reserves the worker
-                        // source). On the first valid layout, auto-fit the
-                        // graph exactly once so it is visible without an
+                        // seam (in-process build by default; Worker posts a
+                        // request to the ADR 0076 backend and renders its last
+                        // delivered frame). On the first valid layout, auto-fit
+                        // the graph exactly once so it is visible without an
                         // explicit `fit_all` call.
                         let size =
                             Vec2::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
@@ -2375,14 +2438,40 @@ fn paint_edge_label(
 mod tests {
     use super::*;
     use crate::graph::EdgeDirection;
+    use crate::layout::FixedLayout;
     use crate::patch::GraphBatch;
     use crate::scene::GraphScene;
+    use crate::worker::{FromWorker, ToWorker, WorkerBackend};
     use gpui::{
         AppContext, Entity, Modifiers, MouseButton as GpuiMouseButton, ScrollDelta,
         ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext, point, px,
     };
 
     type TestView = GraphViewState<&'static str, &'static str, (), ()>;
+    type TestRequest = ToWorker<&'static str, &'static str, (), ()>;
+
+    /// Captures what Worker-mode prepaint posts toward the backend.
+    struct CaptureChannel {
+        requests: Rc<RefCell<Vec<TestRequest>>>,
+    }
+
+    impl WorkerChannel<&'static str, &'static str, (), ()> for CaptureChannel {
+        fn post(&mut self, request: TestRequest) {
+            self.requests.borrow_mut().push(request);
+        }
+    }
+
+    /// A fixed-layout two-node scene shared verbatim by the view's scene
+    /// entity and the worker-side replica, so built frames compare equal.
+    fn worker_test_scene() -> GraphScene<&'static str, &'static str, (), ()> {
+        let mut scene = GraphScene::new();
+        scene.merge(GraphBatch::new().node("a", ()).node("b", ()));
+        let a = scene.node_id(&"a").unwrap();
+        let b = scene.node_id(&"b").unwrap();
+        scene.set_position(a, Vec2::new(-10.0, 0.0));
+        scene.set_position(b, Vec2::new(10.0, 0.0));
+        scene.with_layout(Box::new(FixedLayout))
+    }
 
     fn test_view(cx: &mut TestAppContext) -> Entity<TestView> {
         let scene: Entity<GraphScene<&'static str, &'static str, (), ()>> = cx.new(|_| {
@@ -4233,5 +4322,83 @@ mod tests {
             &viewport,
             200.0
         ));
+    }
+
+    #[gpui::test]
+    #[should_panic(expected = "FrameSource::Worker selected but no worker channel is connected")]
+    fn worker_source_without_a_channel_fails_loudly_at_dispatch(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            view.update(cx, |vs, cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.build_frame(Vec2::new(800.0, 600.0), cx)
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn worker_source_posts_snapshots_and_paints_delivered_frames(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+            let canvas_size = Vec2::new(800.0, 600.0);
+
+            // Opt in to the worker backend with a capturing channel.
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+                assert_eq!(vs.frame_source(), FrameSource::Worker);
+            });
+
+            // First prepaint: nothing delivered yet, so the frame is empty —
+            // and one snapshot went out.
+            let first = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            assert!(first.is_empty());
+            let posted = requests.borrow_mut().len();
+            assert_eq!(posted, 1);
+
+            // Drive the worker backend from exactly what was posted, over an
+            // identical replica scene.
+            let request = requests.borrow_mut().pop().expect("snapshot");
+            let TestRequest::FrameState(state) = request else {
+                panic!("prepaint posts a frame-state snapshot");
+            };
+            let mut backend =
+                WorkerBackend::<&'static str, &'static str, (), ()>::new(worker_test_scene());
+            backend.receive(TestRequest::FrameState(state));
+            let FromWorker::Frame(wire) = backend.step().expect("a snapshot builds");
+
+            // Deliver it the way a real transport's message handler would;
+            // the next prepaint renders the delivered frame.
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(wire, cx));
+            let second = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            assert_eq!(second.nodes.len(), 2);
+            assert_eq!(second.edges.len(), 0);
+
+            // The delivered frame persists until replaced; each prepaint keeps
+            // posting fresh snapshots (latest-wins collapses them worker-side).
+            assert_eq!(requests.borrow().len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn switching_back_to_in_process_drops_the_worker_connection(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::new(RefCell::new(Vec::new())),
+                }));
+                vs.set_frame_source(FrameSource::InProcess);
+                assert!(vs.worker_channel.is_none());
+                assert_eq!(vs.frame_source(), FrameSource::InProcess);
+            });
+        });
     }
 }

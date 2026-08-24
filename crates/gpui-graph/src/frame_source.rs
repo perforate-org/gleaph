@@ -4,16 +4,17 @@
 //! is produced. Today exactly one producer exists: the synchronous in-process
 //! build during prepaint (`prepare_canvas` →
 //! [`build_indexed_paint_frame`](crate::paint::build_indexed_paint_frame)).
-//! The `Worker` variant reserves the off-main-thread producer of ADR 0076 so
-//! the seam and the transfer contract land ahead of the worker host; it has
-//! no execution path yet.
+//! The `Worker` variant names the off-main-thread producer of ADR 0076; its
+//! host side lives in [`crate::worker`].
 //!
 //! [`PaintFrameWire`] is the transfer form used across that seam: a frame
 //! linearized into structure-of-arrays planes, one flat buffer per primitive
-//! field. This slice pins only the round-trip contract — `encode` then
-//! `decode` restores the exact frame, field-for-field, order preserved — via
-//! a randomized property test; no transport reads or writes the planes until
-//! the S2 worker host exists.
+//! field. `encode` then `decode` restores the exact frame, field-for-field,
+//! order preserved. [`Self::to_wire_bytes`] and [`Self::from_wire_bytes`] are
+//! the ArrayBuffer form of those planes for the web worker transport
+//! (ADR 0076 S2): decoding validates every plane before constructing the
+//! wire, so the canonical-bytes invariant `decode` relies on holds no matter
+//! who produced the bytes.
 
 use slotmap::{Key, KeyData};
 
@@ -36,10 +37,10 @@ pub enum FrameSource {
     #[default]
     InProcess,
     /// A dedicated worker owns the graph backend and ships finished frames to
-    /// the main thread as [`PaintFrameWire`] buffers. Reserved for ADR 0076
-    /// S2: the variant exists so the seam is expressible ahead of the host,
-    /// but no construction path selects it yet, and reaching it in frame
-    /// dispatch fails loudly instead of falling back to an in-process build.
+    /// the main thread as [`PaintFrameWire`] buffers (ADR 0076 S2). Selecting
+    /// it is opt-in: [`crate::view::GraphViewState::set_frame_source`] plus a
+    /// connected [`crate::worker::WorkerChannel`]; the in-process build stays
+    /// the default.
     Worker,
 }
 
@@ -56,8 +57,8 @@ pub enum FrameSource {
 /// The planes are private and only ever written by [`Self::encode`], so they
 /// always hold canonical bytes; decode relies on that invariant and fails
 /// loudly if a plane is corrupt rather than silently producing a wrong frame.
-/// Until the S2 worker transport arrives, the wire exists only through this
-/// pair and its round-trip property test.
+/// [`Self::from_wire_bytes`] upholds that invariant at the transport
+/// boundary: it validates every byte plane before constructing a wire.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintFrameWire {
     nodes: NodePlanes,
@@ -203,6 +204,417 @@ impl PaintFrameWire {
             edge_labels,
         }
     }
+
+    /// Serialize this wire into little-endian bytes for the ADR 0076 worker
+    /// transport (one transferable `ArrayBuffer` per message).
+    ///
+    /// The layout is the plane sequence of [`NodePlanes`], [`EdgePlanes`],
+    /// [`LabelPlanes`], and [`EdgeLabelPlanes`] in declaration order; each
+    /// plane is a `u64` little-endian element count followed by that many
+    /// little-endian elements. [`Self::from_wire_bytes`] is the only defined
+    /// reader.
+    pub fn to_wire_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let nodes = &self.nodes;
+        push_u64_plane(&mut out, &nodes.id);
+        push_f32_plane(&mut out, &nodes.position);
+        push_f32_plane(&mut out, &nodes.radius);
+        push_u8_plane(&mut out, &nodes.selected);
+        push_u8_plane(&mut out, &nodes.hovered);
+        push_u8_plane(&mut out, &nodes.overlay);
+        push_u8_plane(&mut out, &nodes.simplified);
+
+        let edges = &self.edges;
+        push_u64_plane(&mut out, &edges.id);
+        push_f32_plane(&mut out, &edges.source);
+        push_f32_plane(&mut out, &edges.target);
+        push_u32_plane(&mut out, &edges.path.segments_per_element);
+        push_f32_plane(&mut out, &edges.path.points);
+        push_u8_plane(&mut out, &edges.direction);
+        push_u8_plane(&mut out, &edges.selected);
+        push_u8_plane(&mut out, &edges.hovered);
+        push_u8_plane(&mut out, &edges.overlay);
+        push_u8_plane(&mut out, &edges.omit_arrow);
+
+        let labels = &self.labels;
+        push_f32_plane(&mut out, &labels.position);
+        push_u32_plane(&mut out, &labels.text.bytes_per_label);
+        push_u8_plane(&mut out, &labels.text.bytes);
+
+        let edge_labels = &self.edge_labels;
+        push_u64_plane(&mut out, &edge_labels.edge);
+        push_f32_plane(&mut out, &edge_labels.position);
+        push_f32_plane(&mut out, &edge_labels.offset);
+        push_u32_plane(&mut out, &edge_labels.text.bytes_per_label);
+        push_u8_plane(&mut out, &edge_labels.text.bytes);
+        push_u32_plane(&mut out, &edge_labels.path.segments_per_element);
+        push_f32_plane(&mut out, &edge_labels.path.points);
+        push_f32_plane(&mut out, &edge_labels.t);
+        out
+    }
+
+    /// Parse bytes produced by [`Self::to_wire_bytes`].
+    ///
+    /// This is the trust boundary of the wire: every count, length total, and
+    /// flag/discriminant byte is validated here so the parsed wire's planes
+    /// hold canonical bytes and [`Self::decode`] keeps its "never sees a
+    /// corrupt plane" guarantee. Anything else — truncation, contradictory
+    /// plane lengths, unknown discriminants, trailing bytes — returns an
+    /// error instead of a partially wrong frame.
+    pub fn from_wire_bytes(bytes: &[u8]) -> Result<Self, WireFormatError> {
+        let mut r = WireReader::new(bytes);
+
+        let id = r.u64_plane()?;
+        let position = r.f32_plane()?;
+        let radius = r.f32_plane()?;
+        let selected = r.flag_plane("node selected")?;
+        let hovered = r.flag_plane("node hovered")?;
+        let overlay = r.overlay_plane("node overlay")?;
+        let simplified = r.flag_plane("node simplified")?;
+        if position.len() != id.len() * 2
+            || radius.len() != id.len()
+            || selected.len() != id.len()
+            || hovered.len() != id.len()
+            || overlay.len() != id.len()
+            || simplified.len() != id.len()
+        {
+            return Err(WireFormatError::InconsistentPlanes);
+        }
+
+        let edges_id = r.u64_plane()?;
+        let source = r.f32_plane()?;
+        let target = r.f32_plane()?;
+        let path_segments = r.u32_plane()?;
+        let path_points = r.f32_plane()?;
+        let direction = r.direction_plane("edge direction")?;
+        let edges_selected = r.flag_plane("edge selected")?;
+        let edges_hovered = r.flag_plane("edge hovered")?;
+        let edges_overlay = r.overlay_plane("edge overlay")?;
+        let omit_arrow = r.flag_plane("edge omit-arrow")?;
+        if source.len() != edges_id.len() * 2
+            || target.len() != edges_id.len() * 2
+            || path_points.len() != segment_point_len(&path_segments)?
+            || direction.len() != edges_id.len()
+            || edges_selected.len() != edges_id.len()
+            || edges_hovered.len() != edges_id.len()
+            || edges_overlay.len() != edges_id.len()
+            || omit_arrow.len() != edges_id.len()
+        {
+            return Err(WireFormatError::InconsistentPlanes);
+        }
+
+        let labels_position = r.f32_plane()?;
+        let text_lengths = r.u32_plane()?;
+        let text_bytes = r.u8_plane()?;
+        if labels_position.len() != text_lengths.len() * 2
+            || text_bytes.len() != text_byte_len(&text_lengths)?
+        {
+            return Err(WireFormatError::InconsistentPlanes);
+        }
+
+        let edge_bits = r.u64_plane()?;
+        let el_position = r.f32_plane()?;
+        let el_offset = r.f32_plane()?;
+        let el_text_lengths = r.u32_plane()?;
+        let el_text_bytes = r.u8_plane()?;
+        let el_path_segments = r.u32_plane()?;
+        let el_path_points = r.f32_plane()?;
+        let t = r.f32_plane()?;
+        if el_position.len() != edge_bits.len() * 2
+            || el_offset.len() != edge_bits.len() * 2
+            || el_text_lengths.len() != edge_bits.len()
+            || el_text_bytes.len() != text_byte_len(&el_text_lengths)?
+            || el_path_points.len() != segment_point_len(&el_path_segments)?
+            || t.len() != edge_bits.len()
+        {
+            return Err(WireFormatError::InconsistentPlanes);
+        }
+
+        if !r.is_empty() {
+            return Err(WireFormatError::TrailingBytes { extra: r.len() });
+        }
+
+        Ok(Self {
+            nodes: NodePlanes {
+                id,
+                position,
+                radius,
+                selected,
+                hovered,
+                overlay,
+                simplified,
+            },
+            edges: EdgePlanes {
+                id: edges_id,
+                source,
+                target,
+                path: SegmentPlane {
+                    segments_per_element: path_segments,
+                    points: path_points,
+                },
+                direction,
+                selected: edges_selected,
+                hovered: edges_hovered,
+                overlay: edges_overlay,
+                omit_arrow,
+            },
+            labels: LabelPlanes {
+                position: labels_position,
+                text: TextPlane {
+                    bytes_per_label: text_lengths,
+                    bytes: text_bytes,
+                },
+            },
+            edge_labels: EdgeLabelPlanes {
+                edge: edge_bits,
+                position: el_position,
+                offset: el_offset,
+                text: TextPlane {
+                    bytes_per_label: el_text_lengths,
+                    bytes: el_text_bytes,
+                },
+                path: SegmentPlane {
+                    segments_per_element: el_path_segments,
+                    points: el_path_points,
+                },
+                t,
+            },
+        })
+    }
+}
+
+/// Byte length of a flattened six-`f32`-per-segment point plane behind
+/// per-element segment counts.
+fn segment_point_len(segments: &[u32]) -> Result<usize, WireFormatError> {
+    segments
+        .iter()
+        .try_fold(0usize, |acc, &s| acc.checked_add(s as usize * 6))
+        .ok_or(WireFormatError::InconsistentPlanes)
+}
+
+/// Byte length of a flattened UTF-8 text plane behind per-label byte lengths.
+fn text_byte_len(lengths: &[u32]) -> Result<usize, WireFormatError> {
+    lengths
+        .iter()
+        .try_fold(0usize, |acc, &n| acc.checked_add(n as usize))
+        .ok_or(WireFormatError::InconsistentPlanes)
+}
+
+/// Why wire bytes were rejected by [`PaintFrameWire::from_wire_bytes`] or a
+/// request codec. Variants carry enough context to name the exact failure;
+/// callers should match on them rather than string-match messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireFormatError {
+    /// The byte slice ended before a complete value could be read.
+    Truncated {
+        /// Byte count the read required.
+        needed: usize,
+        /// Bytes actually left.
+        remaining: usize,
+    },
+    /// A plane's element count cannot address the bytes it claims.
+    ExcessiveLength(u64),
+    /// Two planes that describe the same elements disagree on their lengths.
+    InconsistentPlanes,
+    /// A one-byte discriminant is outside the wire vocabulary.
+    BadDiscriminant {
+        /// Which named field held the bad byte.
+        field: &'static str,
+        /// The rejected byte.
+        value: u8,
+    },
+    /// Complete message followed by unconsumed bytes.
+    TrailingBytes {
+        /// How many bytes remain.
+        extra: usize,
+    },
+    /// The request kind carries application-typed payloads (`GraphBatch`,
+    /// `GraphPatch`) whose byte form belongs to an application-supplied
+    /// payload codec; the library wire covers only library-owned content.
+    PayloadCodecRequired,
+}
+
+impl std::fmt::Display for WireFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated { needed, remaining } => {
+                write!(
+                    f,
+                    "truncated wire: needed {needed} bytes, {remaining} remain"
+                )
+            }
+            Self::ExcessiveLength(count) => {
+                write!(f, "wire plane length {count} is not addressable")
+            }
+            Self::InconsistentPlanes => write!(
+                f,
+                "inconsistent wire planes: length planes contradict each other"
+            ),
+            Self::BadDiscriminant { field, value } => {
+                write!(f, "corrupt wire: unknown {field} discriminant {value}")
+            }
+            Self::TrailingBytes { extra } => {
+                write!(f, "trailing bytes after complete wire message: {extra}")
+            }
+            Self::PayloadCodecRequired => {
+                write!(
+                    f,
+                    "request carries application-typed payloads; an application-supplied payload codec owns its byte form"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WireFormatError {}
+
+/// Sequential little-endian reader over one wire message.
+struct WireReader<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> WireReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    fn take(&mut self, needed: usize) -> Result<&'a [u8], WireFormatError> {
+        if self.bytes.len() < needed {
+            return Err(WireFormatError::Truncated {
+                needed,
+                remaining: self.bytes.len(),
+            });
+        }
+        let (head, tail) = self.bytes.split_at(needed);
+        self.bytes = tail;
+        Ok(head)
+    }
+
+    /// Read one `u64` element count as a usable `usize` element count.
+    fn count(&mut self) -> Result<usize, WireFormatError> {
+        let raw = self.u64_raw()?;
+        usize::try_from(raw).map_err(|_| WireFormatError::ExcessiveLength(raw))
+    }
+
+    /// Element count for a plane with `element_width`-byte elements,
+    /// rejecting counts whose byte span overflows `usize`.
+    fn plane_len(&mut self, element_width: usize) -> Result<usize, WireFormatError> {
+        let raw = self.count()?;
+        raw.checked_mul(element_width)
+            .map(|_| raw)
+            .ok_or(WireFormatError::ExcessiveLength(raw as u64))
+    }
+
+    fn u64_raw(&mut self) -> Result<u64, WireFormatError> {
+        let bytes = self.take(8)?;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+    }
+
+    fn u64_plane(&mut self) -> Result<Vec<u64>, WireFormatError> {
+        let n = self.plane_len(8)?;
+        Ok(self
+            .take(n * 8)?
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
+            .collect())
+    }
+
+    fn u32_plane(&mut self) -> Result<Vec<u32>, WireFormatError> {
+        let n = self.plane_len(4)?;
+        Ok(self
+            .take(n * 4)?
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
+            .collect())
+    }
+
+    fn f32_plane(&mut self) -> Result<Vec<f32>, WireFormatError> {
+        let n = self.plane_len(4)?;
+        Ok(self
+            .take(n * 4)?
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect())
+    }
+
+    fn u8_plane(&mut self) -> Result<Vec<u8>, WireFormatError> {
+        let n = self.count()?;
+        Ok(self.take(n)?.to_vec())
+    }
+
+    /// One-byte-per-element boolean plane restricted to the canonical `{0,1}`.
+    fn flag_plane(&mut self, field: &'static str) -> Result<Vec<u8>, WireFormatError> {
+        self.discriminant_plane(field, 1)
+    }
+
+    /// Overlay-category plane restricted to the canonical `0..=3`.
+    fn overlay_plane(&mut self, field: &'static str) -> Result<Vec<u8>, WireFormatError> {
+        self.discriminant_plane(field, 3)
+    }
+
+    /// Edge-direction plane restricted to the canonical `{0,1}`.
+    fn direction_plane(&mut self, field: &'static str) -> Result<Vec<u8>, WireFormatError> {
+        self.discriminant_plane(field, 1)
+    }
+
+    fn discriminant_plane(
+        &mut self,
+        field: &'static str,
+        max: u8,
+    ) -> Result<Vec<u8>, WireFormatError> {
+        let mut plane = self.u8_plane()?;
+        for &value in &plane {
+            if value > max {
+                return Err(WireFormatError::BadDiscriminant { field, value });
+            }
+        }
+        Ok(std::mem::take(&mut plane))
+    }
+}
+
+fn push_count(out: &mut Vec<u8>, count: usize) {
+    let count = u64::try_from(count).expect("plane length exceeds u64 wire range");
+    out.extend_from_slice(&count.to_le_bytes());
+}
+
+fn push_u64_plane(out: &mut Vec<u8>, plane: &[u64]) {
+    push_count(out, plane.len());
+    for v in plane {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
+fn push_u32_plane(out: &mut Vec<u8>, plane: &[u32]) {
+    push_count(out, plane.len());
+    for v in plane {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
+fn push_f32_plane(out: &mut Vec<u8>, plane: &[f32]) {
+    push_count(out, plane.len());
+    for v in plane {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
+fn push_u8_plane(out: &mut Vec<u8>, plane: &[u8]) {
+    push_count(out, plane.len());
+    out.extend_from_slice(plane);
 }
 
 /// Variable-length Bézier paths flattened behind a per-element segment count.
@@ -572,5 +984,134 @@ mod tests {
         let mut wire = PaintFrameWire::encode(&frame);
         wire.labels.text.bytes[0] = 0xFF;
         let _ = wire.decode();
+    }
+
+    /// One node and one edge make every plane's byte offset computable: each
+    /// plane is an 8-byte count plus fixed-width elements, so the corruption
+    /// targets below are derived arithmetically in declaration order.
+    fn one_node_one_edge_frame() -> PaintFrame {
+        let mut frame = PaintFrame::new();
+        frame.nodes.push(PaintNode {
+            id: NodeId::from(KeyData::from_ffi(11)),
+            position: Vec2::new(1.5, -2.5),
+            radius: 3.0,
+            selected: true,
+            hovered: false,
+            overlay: OverlayCategory::Dimmed,
+            simplified: false,
+        });
+        frame.edges.push(PaintEdge {
+            id: EdgeId::from(KeyData::from_ffi(12)),
+            source: Vec2::new(-1.0, 0.0),
+            target: Vec2::new(1.0, 0.0),
+            path: vec![(Vec2::ZERO, Vec2::X, Vec2::ONE)],
+            direction: EdgeDirection::Undirected,
+            selected: true,
+            hovered: true,
+            overlay: OverlayCategory::Accent,
+            omit_arrow: false,
+        });
+        frame
+    }
+
+    #[test]
+    fn random_frames_round_trip_through_wire_bytes() {
+        for seed in 0..64u64 {
+            let frame = random_frame(seed ^ 0xABCD_1234_0000_0001);
+            let bytes = PaintFrameWire::encode(&frame).to_wire_bytes();
+            let parsed = PaintFrameWire::from_wire_bytes(&bytes).expect("writer output must parse");
+            assert_eq!(parsed.decode(), frame, "seed {seed} must survive bytes");
+        }
+    }
+
+    #[test]
+    fn wire_bytes_reject_truncation_and_trailing_bytes() {
+        let bytes = PaintFrameWire::encode(&one_node_one_edge_frame()).to_wire_bytes();
+
+        // Every prefix cut short of the full message must be rejected, not
+        // silently accepted as a smaller-but-valid message.
+        let mut cut_points = vec![bytes.len() - 1];
+        cut_points.extend([0usize, 7, 31, 99, 200]);
+        for cut in cut_points {
+            assert!(
+                matches!(
+                    PaintFrameWire::from_wire_bytes(&bytes[..cut]),
+                    Err(WireFormatError::Truncated { .. })
+                ),
+                "prefix of length {cut} must be rejected as truncated"
+            );
+        }
+
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert_eq!(
+            PaintFrameWire::from_wire_bytes(&trailing),
+            Err(WireFormatError::TrailingBytes { extra: 1 })
+        );
+    }
+
+    #[test]
+    fn wire_bytes_reject_noncanonical_discriminants() {
+        let mut bytes = PaintFrameWire::encode(&one_node_one_edge_frame()).to_wire_bytes();
+
+        // Plane walk for this exact frame (each plane = 8-byte count +
+        // elements; the edge carries one Bézier segment = 24 point bytes):
+        // node overlay data sits at byte 70, edge direction data at 180, and
+        // the node selected flag at 52.
+        assert_eq!(bytes.len(), 305);
+        bytes[70] = 4;
+        assert_eq!(
+            PaintFrameWire::from_wire_bytes(&bytes),
+            Err(WireFormatError::BadDiscriminant {
+                field: "node overlay",
+                value: 4
+            })
+        );
+        bytes[70] = 1;
+
+        bytes[180] = 5;
+        assert_eq!(
+            PaintFrameWire::from_wire_bytes(&bytes),
+            Err(WireFormatError::BadDiscriminant {
+                field: "edge direction",
+                value: 5
+            })
+        );
+        bytes[180] = 1;
+
+        bytes[52] = 0xFF;
+        assert_eq!(
+            PaintFrameWire::from_wire_bytes(&bytes),
+            Err(WireFormatError::BadDiscriminant {
+                field: "node selected",
+                value: 0xFF
+            })
+        );
+    }
+
+    #[test]
+    fn float_bit_patterns_survive_the_byte_transport() {
+        // LE serialization must be bit-preserving, not float-arithmetic: -0.0
+        // compares equal to 0.0 under IEEE equality, so assert the bits.
+        let mut frame = PaintFrame::new();
+        frame.nodes.push(PaintNode {
+            id: NodeId::from(KeyData::from_ffi(3)),
+            position: Vec2::new(-0.0, f32::MIN_POSITIVE),
+            radius: -0.0,
+            selected: false,
+            hovered: false,
+            overlay: OverlayCategory::None,
+            simplified: false,
+        });
+
+        let parsed =
+            PaintFrameWire::from_wire_bytes(&PaintFrameWire::encode(&frame).to_wire_bytes())
+                .expect("parses");
+        let decoded = parsed.decode();
+        assert_eq!(decoded.nodes[0].radius.to_bits(), (-0.0f32).to_bits());
+        assert_eq!(
+            decoded.nodes[0].position.to_array().map(f32::to_bits),
+            [(-0.0f32).to_bits(), f32::MIN_POSITIVE.to_bits()]
+        );
     }
 }

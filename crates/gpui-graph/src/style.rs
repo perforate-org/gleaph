@@ -387,6 +387,187 @@ impl GraphStyle {
         self.edge_settle_time_ms = milliseconds;
         self
     }
+
+    /// Serialize every style field the worker-side frame build consumes into
+    /// little-endian request bytes (ADR 0076 S2).
+    ///
+    /// `label_style` is deliberately absent: label text is measured and
+    /// painted on the main thread (window text system), and the frame builder
+    /// never reads it, so the worker reconstructs the default. Field order
+    /// mirrors declaration order minus that one field; this codec lives here,
+    /// next to the fields, so adding a field forces revisiting its wire form.
+    pub(crate) fn encode_request_bytes(&self, out: &mut Vec<u8>) {
+        for value in [
+            self.node_radius,
+            self.node_simplify_threshold,
+            self.node_min_screen_radius,
+            self.node_max_screen_radius,
+            self.node_fill.h,
+            self.node_fill.s,
+            self.node_fill.l,
+            self.node_fill.a,
+            self.node_stroke_width,
+            self.node_stroke_color.h,
+            self.node_stroke_color.s,
+            self.node_stroke_color.l,
+            self.node_stroke_color.a,
+            self.node_fill_selected.h,
+            self.node_fill_selected.s,
+            self.node_fill_selected.l,
+            self.node_fill_selected.a,
+            self.node_fill_hovered.h,
+            self.node_fill_hovered.s,
+            self.node_fill_hovered.l,
+            self.node_fill_hovered.a,
+            self.node_fill_overlay.h,
+            self.node_fill_overlay.s,
+            self.node_fill_overlay.l,
+            self.node_fill_overlay.a,
+            self.node_fill_muted.h,
+            self.node_fill_muted.s,
+            self.node_fill_muted.l,
+            self.node_fill_muted.a,
+            self.edge_width,
+            self.edge_color.h,
+            self.edge_color.s,
+            self.edge_color.l,
+            self.edge_color.a,
+            self.edge_color_selected.h,
+            self.edge_color_selected.s,
+            self.edge_color_selected.l,
+            self.edge_color_selected.a,
+            self.edge_color_hovered.h,
+            self.edge_color_hovered.s,
+            self.edge_color_hovered.l,
+            self.edge_color_hovered.a,
+            self.edge_color_overlay.h,
+            self.edge_color_overlay.s,
+            self.edge_color_overlay.l,
+            self.edge_color_overlay.a,
+            self.edge_color_muted.h,
+            self.edge_color_muted.s,
+            self.edge_color_muted.l,
+            self.edge_color_muted.a,
+            self.edge_arrow_size,
+            self.edge_arrow_min_length,
+            self.edge_min_length,
+            self.label_offset,
+            self.edge_label_hide_distance,
+            self.edge_straight_threshold,
+            self.edge_straight_threshold_while_interacting,
+            self.edge_settle_time_ms,
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.push(u8::from(self.edge_arrow_enabled));
+        out.push(match self.edge_arrow_shape {
+            ArrowShape::Triangle => 0,
+            ArrowShape::Line => 1,
+            ArrowShape::Circle => 2,
+        });
+    }
+
+    /// Inverse of [`Self::encode_request_bytes`]. `label_style` comes back as
+    /// the default for the reason documented there; everything else restores
+    /// exactly.
+    pub(crate) fn decode_request_bytes(
+        bytes: &mut &[u8],
+    ) -> Result<Self, crate::frame_source::WireFormatError> {
+        use crate::frame_source::WireFormatError;
+
+        let mut floats = [0.0f32; 58];
+        for slot in &mut floats {
+            if bytes.len() < 4 {
+                return Err(WireFormatError::Truncated {
+                    needed: 4,
+                    remaining: bytes.len(),
+                });
+            }
+            let (head, tail) = bytes.split_at(4);
+            *slot = f32::from_le_bytes(head.try_into().expect("four bytes"));
+            *bytes = tail;
+        }
+        let read_flag = |bytes: &mut &[u8]| -> Result<bool, WireFormatError> {
+            if bytes.is_empty() {
+                return Err(WireFormatError::Truncated {
+                    needed: 1,
+                    remaining: 0,
+                });
+            }
+            let flag = bytes[0];
+            if flag > 1 {
+                return Err(WireFormatError::BadDiscriminant {
+                    field: "style edge-arrow enabled",
+                    value: flag,
+                });
+            }
+            *bytes = &bytes[1..];
+            Ok(flag == 1)
+        };
+        let edge_arrow_enabled = read_flag(bytes)?;
+        let arrow_byte = if bytes.is_empty() {
+            return Err(WireFormatError::Truncated {
+                needed: 1,
+                remaining: 0,
+            });
+        } else {
+            bytes[0]
+        };
+        *bytes = &bytes[1..];
+        let edge_arrow_shape = match arrow_byte {
+            0 => ArrowShape::Triangle,
+            1 => ArrowShape::Line,
+            2 => ArrowShape::Circle,
+            other => {
+                return Err(WireFormatError::BadDiscriminant {
+                    field: "style arrow shape",
+                    value: other,
+                });
+            }
+        };
+
+        let mut f = floats.into_iter();
+        // Unwraps below are total: every read has a matching slot above.
+        fn hsla(f: &mut impl Iterator<Item = f32>) -> Hsla {
+            Hsla {
+                h: f.next().unwrap(),
+                s: f.next().unwrap(),
+                l: f.next().unwrap(),
+                a: f.next().unwrap(),
+            }
+        }
+
+        Ok(Self {
+            node_radius: f.next().unwrap(),
+            node_simplify_threshold: f.next().unwrap(),
+            node_min_screen_radius: f.next().unwrap(),
+            node_max_screen_radius: f.next().unwrap(),
+            node_fill: hsla(&mut f),
+            node_stroke_width: f.next().unwrap(),
+            node_stroke_color: hsla(&mut f),
+            node_fill_selected: hsla(&mut f),
+            node_fill_hovered: hsla(&mut f),
+            node_fill_overlay: hsla(&mut f),
+            node_fill_muted: hsla(&mut f),
+            edge_width: f.next().unwrap(),
+            edge_color: hsla(&mut f),
+            edge_color_selected: hsla(&mut f),
+            edge_color_hovered: hsla(&mut f),
+            edge_color_overlay: hsla(&mut f),
+            edge_color_muted: hsla(&mut f),
+            edge_arrow_enabled,
+            edge_arrow_size: f.next().unwrap(),
+            edge_arrow_shape,
+            edge_arrow_min_length: f.next().unwrap(),
+            edge_min_length: f.next().unwrap(),
+            label_style: TextStyle::default(),
+            label_offset: f.next().unwrap(),
+            edge_label_hide_distance: f.next().unwrap(),
+            edge_straight_threshold: f.next().unwrap(),
+            edge_straight_threshold_while_interacting: f.next().unwrap(),
+            edge_settle_time_ms: f.next().unwrap(),
+        })
+    }
 }
 
 #[cfg(test)]

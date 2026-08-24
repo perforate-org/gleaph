@@ -22,6 +22,7 @@ pub mod scene;
 pub mod style;
 pub mod view;
 pub mod viewport;
+pub mod worker;
 
 pub use frame_source::{FrameSource, PaintFrameWire};
 pub use graph::{EdgeDirection, EdgeId, Graph, GraphDelta, NodeId};
@@ -45,3 +46,4 @@ pub use scene::{EdgeSceneState, GraphScene, NodeSceneState};
 pub use style::{ArrowShape, GraphStyle};
 pub use view::{GraphView, GraphViewState};
 pub use viewport::{Viewport, WorldBounds};
+pub use worker::{FromWorker, SceneMutation, ToWorker, WorkerBackend, WorkerChannel, WorkerInbox};

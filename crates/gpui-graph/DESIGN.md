@@ -1313,19 +1313,35 @@ structure and edge endpoints from worker threads, and the density grid
 crosses the parallel density pass, so the shared builder also requires
 `S: Sync`.
 
-### Frame sources and the frame wire (ADR 0076 S1)
+### Frame sources and the frame wire (ADR 0076 S1–S2)
 
 `GraphViewState` owns a `FrameSource`, the seam that decides where the coming
-frame is produced. `InProcess` is the default and the only connected mode:
-the element's prepaint calls `GraphViewState::build_frame`, which sizes the
-viewport (`prepare_canvas`, including the one-time initial fit) and then
-builds the indexed frame synchronously from one synced scene read.
-`Worker` reserves the off-main-thread producer of ADR 0076 (a dedicated
-worker owning the graph backend, shipping frames to the main thread with a
-latest-wins request protocol). The variant exists so the seam and transfer
-contract land ahead of that host; it has no execution path, no construction
-path selects it, and reaching it in frame dispatch fails loudly instead of
-falling back to an in-process build.
+frame is produced. `InProcess` is the default: the element's prepaint calls
+`GraphViewState::build_frame`, which sizes the viewport (`prepare_canvas`,
+including the one-time initial fit) and then builds the indexed frame
+synchronously from one synced scene read. `Worker` routes frame production to
+the ADR 0076 off-main-thread worker backend and is strictly opt-in:
+`set_frame_source(FrameSource::Worker)` plus a connected worker channel.
+Worker-mode prepaint posts an interaction-state snapshot toward the backend
+and renders the last delivered frame until a newer delivery replaces it;
+dispatching with no connected channel fails loudly instead of falling back to
+an in-process build.
+
+The protocol lives in `gpui_graph::worker`. Requests (`ToWorker`) are either
+scene mutations — `Merge(GraphBatch)`, `Apply(GraphPatch)`, or `SetPosition`
+— or a full interaction-state snapshot (`FrameState`: viewport, style,
+selection, hover). The worker-side `WorkerInbox` owns the backpressure
+semantics: mutations queue FIFO and are never dropped (a dropped batch would
+lose entities), while a frame-state slot keeps only the newest snapshot, so
+intermediate viewports are dropped by replacement. One drain therefore yields
+every mutation in order plus at most one snapshot. The worker-owned backend,
+`WorkerBackend`, runs the whole cycle per drain: apply mutations FIFO, spend
+one layout step, and build one indexed frame from the surviving snapshot via
+the same `build_indexed_paint_frame` path as the in-process source, using
+plain-`fn` label/overlay resolvers so the type stays shareable across a real
+worker boundary. Responses are single-variant (`FromWorker::Frame`) carrying
+the wire below; a snapshot is only ever answered once, keeping the protocol
+one-request-in-flight.
 
 `gpui_graph::frame_source::PaintFrameWire` is the transfer form of a
 `PaintFrame` across that seam: the frame linearized into structure-of-arrays
@@ -1336,12 +1352,29 @@ planes; overlay category and edge direction ride one-byte discriminant
 planes; variable-length data — Bézier paths and label text — flattens behind
 a per-element length plane (`u32` segment counts plus six `f32`s per
 segment; `u32` UTF-8 byte lengths). `encode` and `decode` restore the exact
-frame: every primitive field equal and element order preserved. The contract
-is pinned by a randomized round-trip property test plus targeted
-bit-exactness (-0.0, denormals), boundary-value, and wire-corruption cases.
-The planes are private to the module and only ever written by `encode`, so
-they hold canonical bytes and decode fails closed on anything else. No
-transport reads or writes the planes until the S2 worker host lands.
+frame: every primitive field equal and element order preserved.
+
+For the web transport each message is one transferable `ArrayBuffer`.
+`PaintFrameWire::to_wire_bytes` serializes the planes little-endian (each
+plane an `u64` count plus fixed-width elements) and `from_wire_bytes`
+validates before constructing anything: plane counts must agree
+cross-plane, flattened path/text totals must match their length planes, flag
+and discriminant bytes must be canonical, and trailing or truncated input is
+an error — the parsed wire always holds canonical bytes and `decode` keeps
+its fail-closed guarantee. Requests cross as bytes too where their content
+is library-owned (`ToWorker::encode_wire_bytes` / `decode_wire_bytes`):
+`SetPosition` moves and `FrameState` snapshots, the latter carrying every
+style field except `label_style`, which only ever affects main-thread text
+measurement and painting and rides as the default worker-side. `Merge` and
+`Apply` carry application-typed payloads whose byte form belongs to an
+application-supplied payload codec; encoding them through the library wire
+is a typed error rather than a guessed format. The wasm glue itself
+(`worker::web_transport`) only spawns a Worker from an application-supplied
+script URL and shuffles byte arrays with transferable buffers in both
+directions; the library ships no worker bundle, and the application drives
+its concrete `WorkerBackend` instantiation inside the dedicated worker
+global scope. Ordering, loss, cycle, and byte round-trip contracts are all
+pinned by native tests without any browser involvement.
 
 ## 18.3 Edge curves
 
@@ -2177,8 +2210,13 @@ once.
 The view also owns the frame-source seam (§18.2, ADR 0076): `frame_source()`
 reports where frames come from, and the element's prepaint routes through
 `build_frame`, which sizes the viewport and produces the frame from the
-active source. `InProcess` is the default and the only connected source;
-`Worker` is declared but unreachable until the S2 worker host lands.
+active source. `InProcess` is the default. `set_frame_source(FrameSource::Worker)`
+opts into the ADR 0076 worker backend, which requires a connected worker
+channel (`connect_worker_channel`) before dispatch; each prepaint then posts
+an interaction-state snapshot toward the backend and renders the last frame
+delivered via `deliver_worker_frame`, and switching back to `InProcess`
+drops the connection and restores the synchronous build. Dispatching in
+Worker mode without a connection fails loudly.
 
 ---
 

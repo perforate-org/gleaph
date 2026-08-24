@@ -133,6 +133,44 @@ impl Viewport {
     pub fn focus(&mut self, world: Vec2) {
         self.center = world;
     }
+
+    /// Serialize the camera into little-endian request bytes (ADR 0076 S2):
+    /// `center.x, center.y, zoom, size.x, size.y` as five `f32`s.
+    pub(crate) fn encode_request_bytes(&self, out: &mut Vec<u8>) {
+        for value in [
+            self.center.x,
+            self.center.y,
+            self.zoom,
+            self.size.x,
+            self.size.y,
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// Inverse of [`Self::encode_request_bytes`].
+    pub(crate) fn decode_request_bytes(
+        bytes: &mut &[u8],
+    ) -> Result<Self, crate::frame_source::WireFormatError> {
+        use crate::frame_source::WireFormatError;
+
+        if bytes.len() < 20 {
+            return Err(WireFormatError::Truncated {
+                needed: 20,
+                remaining: bytes.len(),
+            });
+        }
+        let read = |bytes: &mut &[u8]| -> f32 {
+            let (head, tail) = bytes.split_at(4);
+            *bytes = tail;
+            f32::from_le_bytes(head.try_into().expect("four bytes"))
+        };
+        Ok(Self {
+            center: Vec2::new(read(bytes), read(bytes)),
+            zoom: read(bytes),
+            size: Vec2::new(read(bytes), read(bytes)),
+        })
+    }
 }
 
 #[cfg(test)]
