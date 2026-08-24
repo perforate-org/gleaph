@@ -1206,6 +1206,45 @@ fn parsed_is_labeled_residual_with_projected_far_endpoint_returns_matching_rows(
     );
 }
 
+/// GAP-2026-08-24-003 regression: in a combined cypher+sql-compat build the
+/// parsed bracket form `IN [5, 7]` must execute and return the matching rows.
+/// The sql-compat arm used to claim `IN` unconditionally and require `(`, so
+/// this query failed to parse before it ever reached the executor.
+#[test]
+#[cfg(all(feature = "cypher", feature = "sql-compat"))]
+fn parsed_bracket_in_list_returns_matching_rows_under_combined_dialects() {
+    let store = GraphStore::new();
+    for (name, age) in [("five", 5), ("six", 6), ("seven", 7)] {
+        store
+            .insert_vertex_named(
+                ["Gap003P"],
+                [
+                    ("name", Value::Text(name.into())),
+                    ("age", Value::Int64(age)),
+                ],
+            )
+            .expect("vertex");
+    }
+
+    let run = |input: &str| {
+        let plan = plan_with_edge_inlist_stats(input);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .unwrap_or_else(|err| panic!("execute {input}: {err:?}"));
+        let mut names = text_column(&result, "p.name");
+        names.sort();
+        names
+    };
+
+    assert_eq!(
+        run("MATCH (p:Gap003P) WHERE p.age IN [5, 7] RETURN p.name"),
+        vec!["five".to_string(), "seven".to_string()],
+        "bracket-form IN must filter to ages 5 and 7"
+    );
+    let paren = run("MATCH (p:Gap003P) WHERE p.age IN (5, 7) RETURN p.name");
+    assert_eq!(paren, vec!["five".to_string(), "seven".to_string()]);
+}
+
 #[test]
 fn indexed_edge_inlist_parameter_elements_bind_same_rows_as_literals() {
     let store = GraphStore::new();

@@ -935,6 +935,68 @@ fn in_list_cypher_empty_list() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// IN feature matrix (GAP-2026-08-24-003): each feature combination pins which
+// dialect forms its `IN` predicate accepts.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Default build: no dialect extension claims `IN`, so both list forms must
+/// remain parse errors.
+#[test]
+#[cfg(not(any(feature = "cypher", feature = "sql-compat")))]
+fn in_list_is_rejected_in_the_default_build() {
+    parse_err("MATCH (b:User) WHERE b.score IN (1, 2) RETURN b.name");
+    parse_err("MATCH (b:User) WHERE b.score IN [1, 2] RETURN b.name");
+}
+
+/// Cypher-only build: the cypher arm serves both the bracket and paren forms.
+#[test]
+#[cfg(all(feature = "cypher", not(feature = "sql-compat")))]
+fn in_list_cypher_only_build_serves_both_list_forms() {
+    let bracket = parse_program_ok("MATCH (b:User) WHERE b.name IN ['Alice', 'Bob'] RETURN b.name");
+    assert!(matches!(
+        where_expr_of_first_match(&bracket).kind,
+        ExprKind::InList { .. }
+    ));
+    let paren = parse_program_ok("MATCH (b:User) WHERE b.name IN ('Alice', 'Bob') RETURN b.name");
+    assert!(matches!(
+        where_expr_of_first_match(&paren).kind,
+        ExprKind::InList { .. }
+    ));
+}
+
+/// sql-compat-only build: the extension serves the paren form; the bracket form
+/// stays rejected because no cypher arm exists to fall through to.
+#[test]
+#[cfg(all(feature = "sql-compat", not(feature = "cypher")))]
+fn in_list_sql_compat_only_build_serves_paren_and_rejects_bracket() {
+    parse_ok("MATCH (b:User) WHERE b.score IN (1, 2) RETURN b.name");
+    parse_err("MATCH (b:User) WHERE b.score IN [1, 2] RETURN b.name");
+}
+
+/// Combined build: the sql-compat arm claims only `(`-openers, so `[` falls
+/// through to the cypher bracket grammar instead of erroring.
+#[test]
+#[cfg(all(feature = "cypher", feature = "sql-compat"))]
+fn in_list_combined_build_serves_both_list_forms() {
+    let bracket = parse_program_ok("MATCH (b:User) WHERE b.name IN ['Alice', 'Bob'] RETURN b.name");
+    match &where_expr_of_first_match(&bracket).kind {
+        ExprKind::InList { list, negated, .. } => {
+            assert!(!negated, "plain IN must not be negated");
+            assert_eq!(list.len(), 2, "both elements must be captured");
+        }
+        other => panic!("expected InList, got {other:?}"),
+    }
+    let paren = parse_program_ok("MATCH (b:User) WHERE b.name IN ('Alice', 'Bob') RETURN b.name");
+    match &where_expr_of_first_match(&paren).kind {
+        ExprKind::InList { list, negated, .. } => {
+            assert!(!negated, "plain IN must not be negated");
+            assert_eq!(list.len(), 2, "both elements must be captured");
+        }
+        other => panic!("expected InList, got {other:?}"),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // EXISTS subquery
 // ════════════════════════════════════════════════════════════════════════════════
 

@@ -305,10 +305,15 @@ impl Parser<'_> {
                 continue;
             }
 
-            // [NOT] IN (list) — sql-compat extension (not in GQL)
+            // [NOT] IN (list) — sql-compat extension (not in GQL). Claims the
+            // predicate only when the opener after `IN` is `(`; a `[` opener
+            // falls through to the cypher arm's bracket grammar so combined
+            // builds accept both dialect forms (GAP-2026-08-24-003).
             #[cfg(feature = "sql-compat")]
             if (self.at_keyword("IN") || (self.at_keyword("NOT") && self.at_keyword_ahead(1, "IN")))
                 && min_prec <= Prec::Is
+                && self.peek_ahead(if self.at_keyword("IN") { 1 } else { 2 })
+                    == Some(&Token::LParen)
             {
                 let negated = self.eat_keyword("NOT");
                 self.expect_keyword("IN")?;
@@ -328,12 +333,12 @@ impl Parser<'_> {
 
             // [NOT] IN — Cypher dialect predicate. `expr IN [v1, v2]` is the
             // canonical Cypher list form; the parenthesized `expr IN (v1, v2)`
-            // form mirrors the sql-compat extension grammar above (which keeps
-            // precedence when both features are enabled, so its behavior is
-            // unchanged). `IN` is a standard Cypher operator, so the canister
-            // default dialect accepts it; the shared [`ExprKind::InList`]
-            // variant keeps type checking, planning, and execution
-            // dialect-independent.
+            // form mirrors the sql-compat extension grammar above, which claims
+            // only `(`-openers when both features are enabled (this arm then
+            // serves `[`-openers). `IN` is a standard Cypher operator, so the
+            // canister default dialect accepts it; the shared
+            // [`ExprKind::InList`] variant keeps type checking, planning, and
+            // execution dialect-independent.
             #[cfg(feature = "cypher")]
             if (self.at_keyword("IN") || (self.at_keyword("NOT") && self.at_keyword_ahead(1, "IN")))
                 && min_prec <= Prec::Is
