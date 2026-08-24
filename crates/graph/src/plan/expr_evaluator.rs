@@ -922,9 +922,8 @@ mod tests {
     #[test]
     fn in_list_without_match_is_false() {
         assert_eq!(
-            eval_in_list_expr(Value::Int64(9), &[Value::Int64(1), Value::Int64(2)]).expect(
-                "in list without match"
-            ),
+            eval_in_list_expr(Value::Int64(9), &[Value::Int64(1), Value::Int64(2)])
+                .expect("in list without match"),
             Value::Bool(false)
         );
     }
@@ -950,9 +949,8 @@ mod tests {
         // A Null element cannot prove or disprove membership: without a match the
         // result stays UNKNOWN even though other elements compared false.
         assert_eq!(
-            eval_in_list_expr(Value::Int64(9), &[Value::Int64(1), Value::Null]).expect(
-                "null element"
-            ),
+            eval_in_list_expr(Value::Int64(9), &[Value::Int64(1), Value::Null])
+                .expect("null element"),
             Value::Null
         );
     }
@@ -961,9 +959,8 @@ mod tests {
     fn in_list_match_outranks_unknown_elements() {
         // A proven match wins over an unknown comparison elsewhere in the list.
         assert_eq!(
-            eval_in_list_expr(Value::Int64(1), &[Value::Int64(1), Value::Null]).expect(
-                "match with null element"
-            ),
+            eval_in_list_expr(Value::Int64(1), &[Value::Int64(1), Value::Null])
+                .expect("match with null element"),
             Value::Bool(true)
         );
     }
