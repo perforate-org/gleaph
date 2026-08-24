@@ -1489,7 +1489,12 @@ library, split by target:
 Hosts therefore write only what is genuinely theirs: the worker script
 bootstrap, the backend configuration (layout, label resolvers), the payload
 codec, and where delivered frames go. The web example consumes exactly this;
-its per-host glue collapsed from ~150 lines to a handful of calls.
+its per-host glue collapsed from ~150 lines to a handful of calls. The explorer
+web entry (`crates/gleaph-graph-explorer/web/`) consumes the same pair —
+`PostMessageChannel` on the main thread, `serve` in the worker, codec and demo
+fixture shared through its `common/` crate — deleting its hand-rolled channel
+and worker loop; because the channel spawns a classic dedicated worker, its
+worker scripts load `--target no-modules` glue via `importScripts`.
 
 Startup ordering note (observed in the browser run): the view can post its
 first snapshot before the canvas has a settled size, so the worker may answer
