@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 06:22:29 UTC +0000
+Anchor timestamp: 2026-08-24 08:19:35 UTC +0000
 
 ## Status
 
@@ -46,6 +46,34 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-24-008 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
+
+- **Status:** Open — contract note for the future SQL LIKE feature; current behavior is
+  intentional and tested
+- **Owner:** `crates/graph/src/plan/expr_evaluator.rs` (`eval_string_predicate_expr`) owns the
+  runtime semantics; a future SQL LIKE feature would own wildcard grammar and integration
+- **Observed behavior:** Phase 1 string-predicate execution (commit introducing
+  `ExprKind::StringPredicate` evaluation) implements `ILIKE` as plain Unicode case-insensitive
+  whole-string equality: both operands are folded with `str::to_lowercase` and compared for exact
+  equality. `%` and `_` are literal characters, not wildcards.
+- **Contract basis:** No existing contract defined ILIKE semantics. Evidence surveyed:
+  parser comment (`crates/gql/src/parser/expr.rs:1344`, "[NOT] CONTAINS, [NOT] ILIKE"), AST doc
+  comment (`crates/gql/src/ast/expr.rs:145`), type-check constraint
+  (`check_string_predicate` in `crates/gql/src/type_check/infer.rs:836`, which only requires
+  string-compatible operands), and `ast/tests.rs`. No LIKE kind exists in the AST and no
+  `%`/`_` handling exists anywhere in value evaluation, so the pre-production default applies:
+  naive case-insensitive match with literal metacharacters. This complements the family:
+  `STARTS WITH` / `ENDS WITH` / `CONTAINS` are case-sensitive positional matches, `ILIKE` is the
+  case-insensitive whole-string match.
+- **Impact:** Queries written with SQL-LIKE-style patterns (`'Ada%'`) will not match prefix-style;
+  they require literal `%` in the data until a SQL LIKE feature defines wildcard semantics.
+  Non-negated `STARTS WITH` TEXT-index pushdown (Phase 2) must preserve exactly these residual
+  semantics for the non-indexed remainder.
+- **Next decision:** When a SQL LIKE feature is introduced, decide whether `LIKE` absorbs
+  wildcard grammar and whether `ILIKE` becomes its case-insensitive counterpart or stays a plain
+  case-insensitive equality. Update `eval_string_predicate_expr` and its truth-table tests from
+  this entry's contract.
 
 ### GAP-2026-08-24-003 — ADR 0074 grant statements cannot address hyphenated prepared-query names
 

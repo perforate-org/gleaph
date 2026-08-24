@@ -32,6 +32,8 @@ use super::path::{
 };
 use crate::facade::GraphStore;
 use crate::gql_execution_context::try_eval_runtime_function_call;
+#[cfg(feature = "cypher")]
+use crate::plan::expr_evaluator::eval_string_predicate_expr;
 use crate::plan::expr_evaluator::{
     SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr, eval_asin_expr,
     eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr, eval_compare_expr,
@@ -434,6 +436,22 @@ impl QueryExprEvaluator<'_> {
             }
             ExprKind::IsNull(expr) => Ok(Value::Bool(self.eval_expr(row, expr)? == Value::Null)),
             ExprKind::IsNotNull(expr) => Ok(Value::Bool(self.eval_expr(row, expr)? != Value::Null)),
+            #[cfg(feature = "cypher")]
+            ExprKind::StringPredicate {
+                expr,
+                kind,
+                pattern,
+                negated,
+            } => {
+                let left = self.eval_expr(row, expr)?;
+                let pattern = self.eval_expr(row, pattern)?;
+                let matched = eval_string_predicate_expr(left, *kind, pattern)?;
+                if *negated {
+                    eval_not_expr(matched).map_err(PlanQueryError::from)
+                } else {
+                    Ok(matched)
+                }
+            }
             ExprKind::IsLabeled {
                 expr,
                 label,
@@ -1615,6 +1633,8 @@ mod tests {
     use super::super::test_support::*;
     use super::try_read_inline_edge_property;
     use crate::plan::query::executor::eval::record_property;
+    #[cfg(feature = "cypher")]
+    use gleaph_gql::ast::StringPredicateKind;
     use gleaph_graph_kernel::entry::{
         Edge, EdgeInlinePropertyBytes, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile,
         EdgeLabelId, EdgeSlotIndex, PropertyId,
@@ -2641,6 +2661,354 @@ mod tests {
         .expect("expression in list executes");
 
         assert_eq!(text_column(&result, "name"), vec!["InList Ada"]);
+    }
+
+    #[cfg(feature = "cypher")]
+    fn seed_string_predicate_store() -> GraphStore {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["QueryPersonStringPred"],
+                [
+                    ("name", Value::Text("StrPred Ada Lovelace".into())),
+                    ("age", Value::Int64(37)),
+                ],
+            )
+            .expect("insert matching vertex");
+        store
+            .insert_vertex_named(
+                ["QueryPersonStringPred"],
+                [
+                    ("name", Value::Text("StrPred bob".into())),
+                    ("age", Value::Int64(12)),
+                ],
+            )
+            .expect("insert non-matching vertex");
+        // A vertex without the tested property exercises the NULL operand path.
+        store
+            .insert_vertex_named(["QueryPersonStringPred"], [("age", Value::Int64(5))])
+            .expect("insert null-name vertex");
+        store
+    }
+
+    /// `lhs <kind> pattern` predicate with optional NOT.
+    #[cfg(feature = "cypher")]
+    fn string_pred(lhs: Expr, kind: StringPredicateKind, pattern: Expr, negated: bool) -> Expr {
+        Expr::new(ExprKind::StringPredicate {
+            expr: Box::new(lhs),
+            kind,
+            pattern: Box::new(pattern),
+            negated,
+        })
+    }
+
+    fn run_string_pred_filter(
+        store: &GraphStore,
+        predicate: Expr,
+    ) -> Result<PlanQueryResult, PlanQueryError> {
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("QueryPersonStringPred".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![predicate],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("n", "name"), "name")],
+                distinct: false,
+            },
+        ]);
+        store.execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicate_truth_table_through_eval_expr() {
+        // Unit truth table over QueryExprEvaluator::eval_expr itself:
+        // 4 kinds x {true, false, Null left, Null right} x negated. The same
+        // text pair matches every kind and a disjoint pair matches none.
+        for kind in [
+            StringPredicateKind::StartsWith,
+            StringPredicateKind::EndsWith,
+            StringPredicateKind::Contains,
+            StringPredicateKind::ILike,
+        ] {
+            for (left, right, expected) in [
+                (
+                    Value::Text("Ada".into()),
+                    Value::Text("Ada".into()),
+                    Value::Bool(true),
+                ),
+                (
+                    Value::Text("Ada".into()),
+                    Value::Text("zzz-never".into()),
+                    Value::Bool(false),
+                ),
+                (Value::Null, Value::Text("Ada".into()), Value::Null),
+                (Value::Text("Ada".into()), Value::Null, Value::Null),
+            ] {
+                let matched = eval_test_expr(string_pred(
+                    literal(left.clone()),
+                    kind,
+                    literal(right.clone()),
+                    false,
+                ));
+                assert_eq!(matched, expected, "{kind:?} {left:?} vs {right:?}");
+
+                let expected_negated = match expected {
+                    Value::Bool(b) => Value::Bool(!b),
+                    other => other,
+                };
+                let negated =
+                    eval_test_expr(string_pred(literal(left), kind, literal(right), true));
+                assert_eq!(negated, expected_negated, "NOT {kind:?}");
+            }
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicate_non_text_operand_fails_closed_in_executor() {
+        let err = eval_expr_error_for_test(string_pred(
+            prop("n", "age"),
+            StringPredicateKind::StartsWith,
+            literal(Value::Text("3".into())),
+            false,
+        ));
+        assert!(
+            matches!(err, PlanQueryError::ExpressionIncomparableValues { .. }),
+            "expected incomparable-values error, got {err:?}"
+        );
+    }
+
+    /// Evaluates `expr` against the shared fixture row shape and returns the error.
+    #[cfg(feature = "cypher")]
+    fn eval_expr_error_for_test(expr: Expr) -> PlanQueryError {
+        let store = seed_string_predicate_store();
+        run_string_pred_filter(&store, expr).expect_err("predicate must fail closed")
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn property_filter_string_predicates_keep_only_matching_vertices() {
+        // One seed per test: graph storage is thread-local and persists for the
+        // whole test, so every case below runs read-only against the same rows.
+        let store = seed_string_predicate_store();
+        for (kind, pattern, expected) in [
+            (
+                StringPredicateKind::StartsWith,
+                "StrPred Ada",
+                vec!["StrPred Ada Lovelace"],
+            ),
+            (StringPredicateKind::EndsWith, "bob", vec!["StrPred bob"]),
+            (
+                StringPredicateKind::Contains,
+                "Lovelace",
+                vec!["StrPred Ada Lovelace"],
+            ),
+            (
+                StringPredicateKind::ILike,
+                "STRPRED BOB",
+                vec!["StrPred bob"],
+            ),
+        ] {
+            let result = run_string_pred_filter(
+                &store,
+                string_pred(
+                    prop("n", "name"),
+                    kind,
+                    literal(Value::Text(pattern.into())),
+                    false,
+                ),
+            )
+            .unwrap_or_else(|err| panic!("{kind:?} '{pattern}' must execute: {err:?}"));
+            assert_eq!(
+                text_column(&result, "name"),
+                expected,
+                "{kind:?} '{pattern}'"
+            );
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn property_filter_negated_string_predicate_keeps_null_operands_out() {
+        // NOT STARTS WITH 'StrPred Ada': Bob flips to TRUE; the NULL-name vertex
+        // stays UNKNOWN under negation and must stay out either way.
+        let store = seed_string_predicate_store();
+        for (negated, expected) in [
+            (false, vec!["StrPred Ada Lovelace"]),
+            (true, vec!["StrPred bob"]),
+        ] {
+            let result = run_string_pred_filter(
+                &store,
+                string_pred(
+                    prop("n", "name"),
+                    StringPredicateKind::StartsWith,
+                    literal(Value::Text("StrPred Ada".into())),
+                    negated,
+                ),
+            )
+            .unwrap_or_else(|err| panic!("negated={negated} must execute: {err:?}"));
+            assert_eq!(text_column(&result, "name"), expected, "negated={negated}");
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicate_null_operand_stays_unknown_and_dropped() {
+        // NULL left operand (missing name): only definite outcomes survive —
+        // STARTS WITH 'StrPred' keeps both named vertices, its negation keeps
+        // none, and the NULL-name vertex stays out either way.
+        let store = seed_string_predicate_store();
+        let result = run_string_pred_filter(
+            &store,
+            string_pred(
+                prop("n", "name"),
+                StringPredicateKind::StartsWith,
+                literal(Value::Text("StrPred".into())),
+                false,
+            ),
+        )
+        .expect("null-left executes");
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["StrPred Ada Lovelace", "StrPred bob"]
+        );
+
+        let result = run_string_pred_filter(
+            &store,
+            string_pred(
+                prop("n", "name"),
+                StringPredicateKind::StartsWith,
+                literal(Value::Text("StrPred".into())),
+                true,
+            ),
+        )
+        .expect("negated null-left executes");
+        assert!(
+            result.rows.is_empty(),
+            "NOT over UNKNOWN stays UNKNOWN, got {:?}",
+            result.rows
+        );
+
+        // NULL pattern (missing property on the right) is UNKNOWN and dropped
+        // with or without negation.
+        for negated in [false, true] {
+            let result = run_string_pred_filter(
+                &store,
+                string_pred(
+                    prop("n", "name"),
+                    StringPredicateKind::StartsWith,
+                    prop("n", "nickname"),
+                    negated,
+                ),
+            )
+            .expect("null-pattern executes");
+            assert!(
+                result.rows.is_empty(),
+                "negated={negated} NULL pattern must drop every row"
+            );
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicate_evaluates_pattern_as_general_expression() {
+        // The pattern side is an ordinary expression: 'Str' + 'Pred' folds to
+        // one Text operand before the predicate runs.
+        let store = seed_string_predicate_store();
+        let pattern = Expr::new(ExprKind::BinaryOp {
+            left: Box::new(literal(Value::Text("Str".into()))),
+            op: gleaph_gql::ast::BinaryOp::Add,
+            right: Box::new(literal(Value::Text("Pred".into()))),
+        });
+        let result = run_string_pred_filter(
+            &store,
+            string_pred(
+                prop("n", "name"),
+                StringPredicateKind::StartsWith,
+                pattern,
+                false,
+            ),
+        )
+        .expect("expression pattern executes");
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["StrPred Ada Lovelace", "StrPred bob"]
+        );
+    }
+
+    // ── End-to-end through the cypher dialect (default canister feature set) ──
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_starts_with_query_end_to_end() {
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE n.name STARTS WITH 'StrPred Ada' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher starts-with query");
+        assert_eq!(text_column(&result, "name"), vec!["StrPred Ada Lovelace"]);
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_ends_with_query_end_to_end() {
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE n.name ENDS WITH 'bob' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher ends-with query");
+        assert_eq!(text_column(&result, "name"), vec!["StrPred bob"]);
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_contains_query_end_to_end() {
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE n.name CONTAINS 'Lovelace' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher contains query");
+        assert_eq!(text_column(&result, "name"), vec!["StrPred Ada Lovelace"]);
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_ilike_query_end_to_end() {
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE n.name ILIKE 'strpred ada lovelace' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher ilike query");
+        assert_eq!(text_column(&result, "name"), vec!["StrPred Ada Lovelace"]);
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn executes_cypher_not_starts_with_query_end_to_end() {
+        // NOT STARTS WITH 'StrPred Ada' keeps only Bob; Ada flips to FALSE and
+        // the NULL-name vertex stays UNKNOWN under negation — both stay out.
+        let store = seed_string_predicate_store();
+        let plan = plan_gql(
+            "MATCH (n:QueryPersonStringPred) WHERE NOT n.name STARTS WITH 'StrPred Ada' RETURN n.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher not-starts-with query");
+        assert_eq!(text_column(&result, "name"), vec!["StrPred bob"]);
     }
 
     #[test]

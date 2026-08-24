@@ -5,6 +5,8 @@
 //! storage, bindings, or planner optimization metadata.
 
 use gleaph_gql::Value;
+#[cfg(feature = "cypher")]
+use gleaph_gql::ast::StringPredicateKind;
 use gleaph_gql::ast::{BinaryOp, CmpOp, UnaryOp, ValueType};
 use gleaph_gql::numeric_ops::{
     NumericOpError, eval_abs_numeric, eval_binary_numeric, eval_unary_numeric,
@@ -117,6 +119,35 @@ pub(crate) fn eval_in_list_expr(
 
 pub(crate) fn compare_property_values(left: &Value, right: &Value) -> Option<Ordering> {
     compare_values(left, right)
+}
+
+/// `left <kind> pattern` for a string predicate under Cypher/GQL three-valued logic.
+///
+/// A `Null` operand yields `Null`. Non-`Text` operands fail closed through the
+/// same [`ExprEvaluationError::IncomparableValues`] path as comparisons: type
+/// inference only warns on non-string operands, so execution must reject what
+/// inference merely flags. `ILike` is a plain Unicode case-insensitive
+/// whole-string equality; `%` and `_` are literal characters until a SQL LIKE
+/// feature defines wildcard semantics (GAP-2026-08-24-008).
+#[cfg(feature = "cypher")]
+pub(crate) fn eval_string_predicate_expr(
+    left: Value,
+    kind: StringPredicateKind,
+    pattern: Value,
+) -> Result<Value, ExprEvaluationError> {
+    if left == Value::Null || pattern == Value::Null {
+        return Ok(Value::Null);
+    }
+    let (Value::Text(left), Value::Text(pattern)) = (&left, &pattern) else {
+        return Err(ExprEvaluationError::IncomparableValues);
+    };
+    let matched = match kind {
+        StringPredicateKind::StartsWith => left.starts_with(pattern.as_str()),
+        StringPredicateKind::EndsWith => left.ends_with(pattern.as_str()),
+        StringPredicateKind::Contains => left.contains(pattern.as_str()),
+        StringPredicateKind::ILike => left.to_lowercase() == pattern.to_lowercase(),
+    };
+    Ok(Value::Bool(matched))
 }
 
 pub(crate) fn eval_concat_expr(left: Value, right: Value) -> Result<Value, ExprEvaluationError> {
@@ -1005,6 +1036,158 @@ mod tests {
             ),
             Value::Null
         );
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicates_match_by_kind() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        let text = Value::Text("Ada Lovelace".into());
+        for (kind, pattern, expected) in [
+            (K::StartsWith, "Ada", true),
+            (K::StartsWith, "Lovelace", false),
+            (K::EndsWith, "lace", true),
+            (K::EndsWith, "Ada", false),
+            (K::Contains, "Love", true),
+            (K::Contains, "love", false),
+            (K::ILike, "ADA LOVELACE", true),
+            (K::ILike, "ada", false),
+        ] {
+            assert_eq!(
+                eval_string_predicate_expr(text.clone(), kind, Value::Text(pattern.into()))
+                    .unwrap_or_else(|err| panic!("{kind:?} '{pattern}' must evaluate: {err:?}")),
+                Value::Bool(expected),
+                "{kind:?} '{pattern}'"
+            );
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicate_null_operand_is_unknown() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        for kind in [K::StartsWith, K::EndsWith, K::Contains, K::ILike] {
+            // Either side Null makes the predicate UNKNOWN.
+            assert_eq!(
+                eval_string_predicate_expr(Value::Null, kind, Value::Text("Ada".into()))
+                    .expect("null left operand"),
+                Value::Null,
+                "{kind:?} null left operand"
+            );
+            assert_eq!(
+                eval_string_predicate_expr(Value::Text("Ada".into()), kind, Value::Null)
+                    .expect("null pattern"),
+                Value::Null,
+                "{kind:?} null pattern"
+            );
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn negated_string_predicate_follows_three_valued_logic() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        let negate = |value| eval_not_expr(value).expect("three-valued not");
+        for kind in [K::StartsWith, K::EndsWith, K::Contains, K::ILike] {
+            let matched = eval_string_predicate_expr(
+                Value::Text("Ada".into()),
+                kind,
+                Value::Text("Ada".into()),
+            )
+            .expect("matched operand");
+            let unmatched = eval_string_predicate_expr(
+                Value::Text("Ada".into()),
+                kind,
+                Value::Text("zzz-never".into()),
+            )
+            .expect("unmatched operand");
+            assert_eq!(negate(matched), Value::Bool(false), "{kind:?} true->false");
+            assert_eq!(negate(unmatched), Value::Bool(true), "{kind:?} false->true");
+            let unknown = eval_string_predicate_expr(Value::Null, kind, Value::Text("Ada".into()))
+                .expect("unknown operand");
+            assert_eq!(
+                negate(unknown),
+                Value::Null,
+                "{kind:?} UNKNOWN stays UNKNOWN"
+            );
+        }
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn ilike_treats_percent_and_underscore_as_literals() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        // Until a SQL LIKE feature defines wildcard semantics, `%` and `_` are
+        // literal characters (GAP-2026-08-24-008).
+        assert_eq!(
+            eval_string_predicate_expr(
+                Value::Text("100%".into()),
+                K::ILike,
+                Value::Text("100%".into())
+            )
+            .expect("literal percent"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_string_predicate_expr(
+                Value::Text("100%".into()),
+                K::ILike,
+                Value::Text("100".into())
+            )
+            .expect("percent is not a trailing wildcard"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval_string_predicate_expr(
+                Value::Text("a_b".into()),
+                K::ILike,
+                Value::Text("AXB".into())
+            )
+            .expect("underscore is not a single-char wildcard"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval_string_predicate_expr(
+                Value::Text("a_b".into()),
+                K::ILike,
+                Value::Text("A_B".into())
+            )
+            .expect("literal underscore equality"),
+            Value::Bool(true)
+        );
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn ilike_folds_unicode_case_not_ascii_only() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        assert_eq!(
+            eval_string_predicate_expr(
+                Value::Text("Müller".into()),
+                K::ILike,
+                Value::Text("MÜLLER".into())
+            )
+            .expect("unicode case folding"),
+            Value::Bool(true)
+        );
+    }
+
+    #[cfg(feature = "cypher")]
+    #[test]
+    fn string_predicate_non_text_operand_fails_closed() {
+        use gleaph_gql::ast::StringPredicateKind as K;
+        for kind in [K::StartsWith, K::EndsWith, K::Contains, K::ILike] {
+            assert_eq!(
+                eval_string_predicate_expr(Value::Int64(1), kind, Value::Text("1".into())),
+                Err(ExprEvaluationError::IncomparableValues),
+                "{kind:?} non-text left operand"
+            );
+            assert_eq!(
+                eval_string_predicate_expr(Value::Text("Ada".into()), kind, Value::Int64(1)),
+                Err(ExprEvaluationError::IncomparableValues),
+                "{kind:?} non-text pattern"
+            );
+        }
     }
 
     #[test]
