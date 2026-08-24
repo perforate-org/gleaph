@@ -2734,6 +2734,70 @@ fn match_edge_unindexed_inlist_does_not_fuse_or_anchor() {
     );
 }
 
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_surplus_inlist_conjunct_stays_residual_when_one_fuses() {
+    // Two distinct indexed IN conjuncts: only the first lowers into the union
+    // anchor; the surplus conjunct stays enforced by the residual PropertyFilter
+    // (an AND of lists is never rewritten into one combined union).
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_string());
+    stats.indexed_edge_properties.insert("score".to_string());
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight IN [3] AND e.score IN [5] RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::InList(_),
+                cmp: CmpOp::Eq,
+                ..
+            } if property.as_ref() == "weight"
+        )),
+        "the first indexed IN conjunct must anchor on weight, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan { property, .. } if property.as_ref() == "score"
+        )),
+        "the surplus IN conjunct must not fuse into a second scan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_edge_inlist_predicate_on(p, "e", "score"))
+        )),
+        "the surplus IN conjunct must stay in the residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn edge_inlist_anchor_appears_in_explain_output() {
+    // The edge anchor renders its bound through the same ScanValue formatting as
+    // the vertex IndexScan, so the union bound must be visible in EXPLAIN.
+    let stats = edge_inlist_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight IN [3, 5] RETURN a, b",
+        &stats,
+    );
+
+    let output = explain_plan(&plan);
+    assert!(
+        output.contains("EdgeIndexScan(e, weight = IN [Int64(3), Int64(5)])"),
+        "explain should show the anchored edge union bound: {output}"
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // MATCH vertex nested-leaf anchors (ADR 0073 slice 4)
 // ════════════════════════════════════════════════════════════════════════════════

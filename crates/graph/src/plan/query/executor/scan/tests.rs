@@ -1159,6 +1159,129 @@ fn indexed_edge_inlist_queries_end_to_end_match_equality_semantics() {
 }
 
 #[test]
+fn indexed_edge_inlist_parameter_elements_bind_same_rows_as_literals() {
+    let store = GraphStore::new();
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let a = store
+        .insert_vertex_named(["EdgeInParamA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    for (name, weight) in [("w5", 5i64), ("w7", 7), ("w9", 9)] {
+        let b = store
+            .insert_vertex_named(["EdgeInParamB"], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("EdgeInParamRel"),
+                [("weight", Value::Int64(weight))],
+            )
+            .expect("weighted edge");
+    }
+
+    // The parsed plan keeps both parameter elements as independently resolved
+    // union probes.
+    let query = "MATCH (a:EdgeInParamA)-[e:EdgeInParamRel]->(b:EdgeInParamB) \
+                 WHERE e.weight IN [$lo, $hi] RETURN b";
+    let parameterized = plan_with_edge_inlist_stats(query);
+    assert!(
+        parameterized.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::InList(elements),
+                cmp: CmpOp::Eq,
+                ..
+            } if *elements
+                == vec![
+                    ScanValue::Parameter("$lo".into()),
+                    ScanValue::Parameter("$hi".into()),
+                ]
+        )),
+        "expected anchored EdgeIndexScan with per-element parameter probes for {query}, got {:?}",
+        parameterized.ops
+    );
+
+    // Executor parameter maps are keyed by bare names (`param_map_key` strips
+    // the `$` sigil), matching the Router wire convention.
+    let mut params_map = std::collections::BTreeMap::new();
+    params_map.insert("lo".to_string(), Value::Int64(5));
+    params_map.insert("hi".to_string(), Value::Int64(7));
+
+    let literal_plan = plan_with_edge_inlist_stats(
+        "MATCH (a:EdgeInParamA)-[e:EdgeInParamRel]->(b:EdgeInParamB) \
+         WHERE e.weight IN [5, 7] RETURN b",
+    );
+
+    let bound_b = |plan: &PhysicalPlan, params: &std::collections::BTreeMap<String, Value>| {
+        let result = store
+            .execute_plan_query(plan, params, GqlExecutionContext::default())
+            .unwrap_or_else(|err| panic!("execute edge IN scan with params {params:?}: {err:?}"));
+        let mut rows: Vec<String> = result
+            .rows
+            .iter()
+            .map(|row| format!("{:?}", row.get("b")))
+            .collect();
+        rows.sort();
+        rows
+    };
+
+    // Parameter elements must resolve to exactly the rows their inline literals bind.
+    assert_eq!(
+        bound_b(&parameterized, &params_map).len(),
+        2,
+        "weights 5 and 7 each bind one row"
+    );
+    assert_eq!(
+        bound_b(&parameterized, &params_map),
+        bound_b(&literal_plan, &params_map),
+        "parameterized and literal IN lists must bind identical row sets"
+    );
+}
+
+#[test]
+fn empty_inlist_binds_zero_rows_for_vertex_and_edge_index_scans() {
+    // `IN []` lowers into an anchored union of nothing on both sides: no probe
+    // can fire, so the index path contributes zero rows - the same semantics the
+    // residual-filtered predicate would produce without any index.
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+
+    // Edge side: three candidate edges exist, but the empty union binds none.
+    let (store, _) = edge_inlist_store();
+    let edge_plan = edge_inlist_scan_plan("EdgeInRel", Vec::new(), CmpOp::Eq);
+    let edge_result = store
+        .execute_plan_query(&edge_plan, &params(), GqlExecutionContext::default())
+        .expect("execute empty edge in-list scan");
+    assert!(
+        edge_result.rows.is_empty(),
+        "an empty IN list must contribute no rows"
+    );
+
+    // Vertex side: the identical union-of-nothing contract over the mock index.
+    let vertex_store = GraphStore::new();
+    configure_test_index(&vertex_store);
+    let (index, vertex_plan, _, _, _, _, _) = inlist_scan_fixture(&vertex_store, Vec::new());
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("uid"),
+    ]);
+    let vertex_result = pollster::block_on(execute_plan_query(
+        &vertex_store,
+        &vertex_plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute empty vertex in-list scan");
+    assert!(
+        vertex_result.rows.is_empty(),
+        "an empty IN list must contribute no rows"
+    );
+    assert!(
+        index.equal_calls.borrow().is_empty(),
+        "an empty probe union must issue no equality lookups"
+    );
+}
+
+#[test]
 fn range_index_scan_returns_no_rows_for_empty_clamped_interval() {
     let store = GraphStore::new();
     configure_test_index(&store);
