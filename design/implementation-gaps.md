@@ -47,6 +47,31 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-08-24-003 — ADR 0074 grant statements cannot address hyphenated prepared-query names
+
+- **Status:** Open — blocks `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC` for every
+  hyphenated prepared operation (ADR 0061 names are `[a-z][a-z0-9-]*`, so most real names,
+  e.g. the knowledge demo's `variable-length-reach`, are affected)
+- **Owner:** `crates/gql` authorization-statement lexer/parser (`parse_grant_statement` →
+  `expect_ident`; hyphen lexes as minus, not part of an unquoted identifier)
+- **Observed behavior:** Router rejects
+  `GRANT EXECUTE ON PREPARED QUERY cli-run-tag TO PUBLIC` with
+  `InvalidArgument("parse error: expected 'TO', got '-'")`; registration of the same name via
+  `prepare` succeeds, and CLI-side name validation accepts it. Underscore names (`cli_run_tag`)
+  fail CLI-side kebab-case validation instead — no publishable spelling exists.
+- **Expected or needed behavior:** Either the statement grammar accepts ADR 0061 prepared-name
+  syntax (hyphenated idents or quoted identifiers) for the PREPARED QUERY target, or prepared
+  names are restricted to one grammar that both sides share.
+- **Evidence:** PocketIC run in plan 0295 slice (Router wasm from this tree);
+  `crates/gql/src/parser/statement.rs` `parse_grant_statement`; parser tests assert
+  `find-users` parses, which conflicts with the runtime lexer behavior observed on the same
+  tree — reconcile before fixing.
+- **Impact:** Demo/explorer publication of hyphenated operations is blocked (workaround:
+  register hyphen-free names). No correctness gap; default-deny stays intact.
+- **Next decision:** Grammar-side fix (lexer exception for grant-target context vs quoted
+  identifier support) versus naming-contract change; needs an ADR 0074 §5 amendment note if the
+  lexer is extended.
+
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 
 - **Status:** Open — next-slice candidate
@@ -1458,6 +1483,7 @@ duplicate its state machine or ownership rules.
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
 | P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Open for slice-4 acceptance — GAP-2026-07-29-005 (ADR 0073 slices 1–3 implemented and validated; slice 4 landed on `39746f7b3`, acceptance pending Plan 0285 validation) |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
+| P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Open — GAP-2026-08-24-002 (vertex side landed: parse/eval/anchor/wire; correctness preserved, selectivity pending) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
