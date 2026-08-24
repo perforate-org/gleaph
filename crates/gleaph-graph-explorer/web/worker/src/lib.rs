@@ -13,9 +13,9 @@
 //! - [`batch_codec`] — the application-side payload codec for
 //!   `SceneMutation::Merge`. Library-encoded requests
 //!   ([`gpui_graph::ToWorker::encode_wire_bytes`]) cover moves and interaction
-//!   snapshots only; batch payloads are explicitly left to applications. The
-//!   codec rides under an application envelope tag so library bytes cross
-//!   verbatim.
+//!   snapshots only; batch payloads are explicitly left to applications via
+//!   the [`gpui_graph::worker::PayloadCodec`] seam. The codec rides under the
+//!   library's application-mutation envelope so library bytes cross verbatim.
 //! - [`paint_timing`] — the pure timing-harness core: one indexed paint-frame
 //!   build over the same deterministic `random_5000`-family fixture as
 //!   `crates/gpui-graph/benches/paint_bench.rs`, timed as-is on whatever target
@@ -31,4 +31,4 @@ pub mod paint_timing;
 #[cfg(target_arch = "wasm32")]
 mod imp;
 
-pub use batch_codec::{ENVELOPE_LIB_REQUEST, ENVELOPE_MERGE_BATCH};
+pub use batch_codec::ExplorerBatchCodec;

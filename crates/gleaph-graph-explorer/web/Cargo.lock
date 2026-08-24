@@ -1907,12 +1907,10 @@ name = "gleaph-explorer-web-app"
 version = "0.1.0"
 dependencies = [
  "futures",
- "glam",
  "gleaph-explorer-web-worker",
  "gpui",
  "gpui-graph",
  "gpui_platform",
- "js-sys",
  "wasm-bindgen",
  "web-sys",
  "web-time",

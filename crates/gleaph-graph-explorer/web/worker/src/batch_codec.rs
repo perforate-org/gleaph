@@ -2,34 +2,55 @@
 //!
 //! The gpui-graph worker protocol leaves batch/patch byte forms to
 //! applications by design: [`gpui_graph::ToWorker::encode_wire_bytes`] returns
-//! [`gpui_graph::frame_source::WireFormatError::PayloadCodecRequired`] for
-//! them rather than guessing an application type's encoding. This module is
-//! the explorer web entry's own choice for `GraphBatch<String, String, String,
-//! String>`, and the envelope tags that distinguish application messages from
-//! verbatim library requests on the same Worker port.
+//! [`WireFormatError::PayloadCodecRequired`] for them rather than guessing an
+//! application type's encoding. [`ExplorerBatchCodec`] is the explorer web
+//! entry's answer for `GraphBatch<String, String, String, String>`, riding the
+//! library's application-mutation envelope
+//! (`gpui_graph::worker::web_transport::envelope::APP_MUTATION`) — the tags
+//! distinguishing application messages from verbatim library requests belong
+//! to the library, not to this crate.
 //!
-//! Wire forms (all little-endian, fail-closed on truncation, unknown tags, or
-//! trailing bytes):
-//!
-//! - Envelope: one leading tag byte — [`ENVELOPE_LIB_REQUEST`] means the rest
-//!   of the message is exactly a library-encoded request; [`ENVELOPE_MERGE_BATCH`]
-//!   means the rest is this module's batch form.
-//! - Batch: `u64` node count, then per node a length-prefixed UTF-8 key plus
-//!   its payload string (node data doubles as the display label); then `u64`
-//!   edge count, then per edge three length-prefixed strings (key, source key,
-//!   target key) and one direction byte.
+//! Batch wire form (little-endian; truncation, unknown direction bytes, and
+//! trailing bytes are errors, never partial batches): `u64` node count, then
+//! per node a length-prefixed UTF-8 key plus its payload string (node data
+//! doubles as the display label); then `u64` edge count, then per edge three
+//! length-prefixed strings (key, source key, target key), one direction byte,
+//! and a length-prefixed label string.
 
+use gpui_graph::frame_source::WireFormatError;
+use gpui_graph::worker::{PayloadCodec, SceneMutation};
 use gpui_graph::{EdgeDirection, GraphBatch};
-
-/// The rest of the message is a library-encoded
-/// [`gpui_graph::ToWorker`](gpui_graph::ToWorker) request.
-pub const ENVELOPE_LIB_REQUEST: u8 = 1;
-/// The rest of the message is a `SceneMutation::Merge` batch in this module's
-/// application-owned form.
-pub const ENVELOPE_MERGE_BATCH: u8 = 2;
 
 const DIRECTION_DIRECTED: u8 = 1;
 const DIRECTION_UNDIRECTED: u8 = 2;
+
+/// The explorer's codec: encodes and decodes `Merge` batches carrying
+/// `String` keys/labels. Any other mutation kind has no byte form here and
+/// fails closed with `PayloadCodecRequired`.
+pub struct ExplorerBatchCodec;
+
+impl PayloadCodec<String, String, String, String> for ExplorerBatchCodec {
+    fn encode(
+        &self,
+        mutation: &SceneMutation<String, String, String, String>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), WireFormatError> {
+        match mutation {
+            SceneMutation::Merge(batch) => {
+                encode_merge_batch(batch, out);
+                Ok(())
+            }
+            _ => Err(WireFormatError::PayloadCodecRequired),
+        }
+    }
+
+    fn decode(
+        &self,
+        bytes: &[u8],
+    ) -> Result<SceneMutation<String, String, String, String>, WireFormatError> {
+        decode_merge_batch(bytes).map(SceneMutation::Merge)
+    }
+}
 
 /// Encode one merge batch (without the envelope tag).
 pub fn encode_merge_batch(batch: &GraphBatch<String, String, String, String>, out: &mut Vec<u8>) {
@@ -54,7 +75,7 @@ pub fn encode_merge_batch(batch: &GraphBatch<String, String, String, String>, ou
 /// Decode one merge batch (without the envelope tag). Fail-closed.
 pub fn decode_merge_batch(
     bytes: &[u8],
-) -> Result<GraphBatch<String, String, String, String>, CodecError> {
+) -> Result<GraphBatch<String, String, String, String>, WireFormatError> {
     let mut bytes = bytes;
     let node_count = read_count(&mut bytes)?;
     let mut nodes = Vec::with_capacity(node_count);
@@ -72,44 +93,20 @@ pub fn decode_merge_batch(
         let direction = match take_byte(&mut bytes)? {
             DIRECTION_DIRECTED => EdgeDirection::Directed,
             DIRECTION_UNDIRECTED => EdgeDirection::Undirected,
-            other => return Err(CodecError::BadDirection(other)),
+            other => {
+                return Err(WireFormatError::BadDiscriminant {
+                    field: "edge direction",
+                    value: other,
+                });
+            }
         };
         let label = take_str(&mut bytes)?;
         edges.push((key, source, target, direction, label));
     }
     if !bytes.is_empty() {
-        return Err(CodecError::TrailingBytes(bytes.len()));
+        return Err(WireFormatError::TrailingBytes { extra: bytes.len() });
     }
     Ok(GraphBatch { nodes, edges })
-}
-
-/// A decode failure. Every case leaves the caller with no partial batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodecError {
-    /// The declared element count does not fit `usize`.
-    ExcessiveLength(u64),
-    /// More bytes are required than remain.
-    Truncated { needed: usize, remaining: usize },
-    /// A length-prefixed string was not valid UTF-8.
-    InvalidUtf8,
-    /// A direction byte outside the known set.
-    BadDirection(u8),
-    /// Bytes remained after the declared content.
-    TrailingBytes(usize),
-}
-
-impl core::fmt::Display for CodecError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::ExcessiveLength(raw) => write!(f, "declared count {raw} exceeds usize"),
-            Self::Truncated { needed, remaining } => {
-                write!(f, "truncated: needed {needed} bytes, {remaining} remain")
-            }
-            Self::InvalidUtf8 => write!(f, "length-prefixed string was not UTF-8"),
-            Self::BadDirection(byte) => write!(f, "unknown direction byte {byte}"),
-            Self::TrailingBytes(extra) => write!(f, "{extra} trailing bytes"),
-        }
-    }
 }
 
 fn push_count(out: &mut Vec<u8>, count: usize) {
@@ -117,9 +114,9 @@ fn push_count(out: &mut Vec<u8>, count: usize) {
     out.extend_from_slice(&count.to_le_bytes());
 }
 
-fn read_count(bytes: &mut &[u8]) -> Result<usize, CodecError> {
+fn read_count(bytes: &mut &[u8]) -> Result<usize, WireFormatError> {
     let raw = u64::from_le_bytes(take(bytes, 8)?.try_into().expect("eight bytes"));
-    usize::try_from(raw).map_err(|_| CodecError::ExcessiveLength(raw))
+    usize::try_from(raw).map_err(|_| WireFormatError::ExcessiveLength(raw))
 }
 
 fn push_str(out: &mut Vec<u8>, value: &str) {
@@ -127,9 +124,9 @@ fn push_str(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(value.as_bytes());
 }
 
-fn take<'a>(bytes: &mut &'a [u8], needed: usize) -> Result<&'a [u8], CodecError> {
+fn take<'a>(bytes: &mut &'a [u8], needed: usize) -> Result<&'a [u8], WireFormatError> {
     if bytes.len() < needed {
-        return Err(CodecError::Truncated {
+        return Err(WireFormatError::Truncated {
             needed,
             remaining: bytes.len(),
         });
@@ -139,14 +136,14 @@ fn take<'a>(bytes: &mut &'a [u8], needed: usize) -> Result<&'a [u8], CodecError>
     Ok(head)
 }
 
-fn take_byte(bytes: &mut &[u8]) -> Result<u8, CodecError> {
+fn take_byte(bytes: &mut &[u8]) -> Result<u8, WireFormatError> {
     Ok(take(bytes, 1)?[0])
 }
 
-fn take_str(bytes: &mut &[u8]) -> Result<String, CodecError> {
+fn take_str(bytes: &mut &[u8]) -> Result<String, WireFormatError> {
     let len = read_count(bytes)?;
     let raw = take(bytes, len)?;
-    String::from_utf8(raw.to_vec()).map_err(|_| CodecError::InvalidUtf8)
+    String::from_utf8(raw.to_vec()).map_err(|_| WireFormatError::InvalidUtf8)
 }
 
 #[cfg(test)]
@@ -204,14 +201,26 @@ mod tests {
     }
 
     #[test]
-    fn empty_batch_round_trip_and_envelope_distinctness() {
+    fn empty_batch_round_trips_and_codec_covers_only_merges() {
         let mut bytes = Vec::new();
         encode_merge_batch(&GraphBatch::default(), &mut bytes);
         let decoded = decode_merge_batch(&bytes).expect("empty batch round trip");
         assert_eq!(decoded.nodes, Vec::new());
         assert_eq!(decoded.edges, Vec::new());
-        assert_eq!(ENVELOPE_LIB_REQUEST, 1);
-        assert_eq!(ENVELOPE_MERGE_BATCH, 2);
+
+        // The codec's vocabulary is exactly one mutation kind; everything
+        // else fails closed instead of guessing a byte form.
+        let mut out = Vec::new();
+        let error = ExplorerBatchCodec
+            .encode(
+                &SceneMutation::Apply(
+                    gpui_graph::GraphPatch::<String, String, String, String>::new(),
+                ),
+                &mut out,
+            )
+            .expect_err("patches have no byte form in this codec either");
+        assert_eq!(error, WireFormatError::PayloadCodecRequired);
+        assert!(out.is_empty(), "a rejected encoding must not emit bytes");
     }
 
     #[test]
@@ -240,10 +249,16 @@ mod tests {
         assert!(decode_merge_batch(&bytes).is_ok());
 
         bytes[direction_index] = 9;
-        assert!(matches!(
-            decode_merge_batch(&bytes),
-            Err(CodecError::BadDirection(9))
-        ));
+        assert!(
+            matches!(
+                decode_merge_batch(&bytes),
+                Err(WireFormatError::BadDiscriminant {
+                    field: "edge direction",
+                    value: 9,
+                })
+            ),
+            "a corrupt direction byte must be rejected"
+        );
 
         // Trailing bytes are rejected.
         let mut valid = Vec::new();
@@ -251,7 +266,7 @@ mod tests {
         valid.push(0);
         assert!(matches!(
             decode_merge_batch(&valid),
-            Err(CodecError::TrailingBytes(1))
+            Err(WireFormatError::TrailingBytes { extra: 1 })
         ));
     }
 }

@@ -78,9 +78,11 @@
                     `<td>${iterations}</td><td colspan="5" class="pending">running in worker…</td>`;
                 tbody.appendChild(row);
 
+                // Classic worker (no { type: 'module' }): the library channel
+                // spawns worker.js the same way, and bench_worker.js relies on
+                // importScripts, which only classic workers provide.
                 const worker = new Worker(
                     `bench_worker.js?nodes=${nodes}&iterations=${iterations}`,
-                    { type: 'module' },
                 );
                 worker.onmessage = (event) => {
                     const { kind, json } = event.data;

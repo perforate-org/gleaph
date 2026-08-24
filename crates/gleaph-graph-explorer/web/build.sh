@@ -24,7 +24,11 @@ cargo build \
     -p gleaph-explorer-web-worker \
     --target wasm32-unknown-unknown \
     --release
-wasm-bindgen --target web --out-dir "$OUT" \
+# no-modules (not web): the worker scripts run in a CLASSIC dedicated worker —
+# `PostMessageChannel` spawns with plain `new Worker(url)` — where ES module
+# syntax is unavailable; they load this glue via importScripts and drive the
+# global `wasm_bindgen` object.
+wasm-bindgen --target no-modules --out-dir "$OUT" \
     "target/wasm32-unknown-unknown/release/gleaph_explorer_web_worker.wasm"
 
 cp assets/index.html assets/harness.html assets/worker.js assets/bench_worker.js "$OUT/"
