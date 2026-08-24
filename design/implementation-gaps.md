@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-23
-Anchor timestamp: 2026-08-23 23:07:19 UTC +0000
+Last updated: 2026-08-24
+Anchor timestamp: 2026-08-24 00:39:25 UTC +0000
 
 ## Status
 
@@ -46,6 +46,24 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
+
+- **Status:** Open — next-slice candidate
+- **Owner:** `gleaph-gql-planner` (`EdgeFilterFusion`, `parse_edge_var_property_equality`) +
+  `gleaph-graph` executor (`execute_edge_index_scan`) + Router seed lowering (`edge_equal_anchor`)
+- **Observed behavior:** The IN-list anchor slice (commit series ending with the vertex IN union)
+  lowers only vertex predicates (`WHERE v.<indexed-prop> IN […]`) into `ScanValue::InList` union
+  point probes. An edge predicate `WHERE e.<indexed-prop> IN […]` keeps its single-value
+  `indexed_equality` path and evaluates the list as an ordinary residual filter.
+- **Expected or needed behavior:** Symmetric with the vertex anchor: a scannable non-negated edge
+  IN list could probe each element against the edge property index and union the postings.
+- **Evidence:** `crates/gql-planner/src/planner/match_plan/path/filters.rs` (vertex lowering),
+  `crates/router/src/seed.rs` (`IndexAnchor::EqualUnion`, edge arms unchanged).
+- **Impact:** Edge IN queries stay correct but scan more incident edges than necessary; no
+  correctness gap.
+- **Next decision:** Whether edge equality fusion should reuse `ScanValue::InList` directly or add
+  an edge-specific multi-probe shape that also carries the label/direction subset rule.
 
 ### GAP-2026-08-24-001 — Two stale router lib fixtures surfaced on the suite's first full run after the 8e392c127→ac380c4bb build-broken window
 

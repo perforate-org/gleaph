@@ -27,6 +27,47 @@ fn index_scan_plan_roundtrips() {
 }
 
 #[test]
+fn inlist_scan_value_roundtrips() {
+    // A ScanValue::InList bound (vertex IN-list anchor) survives the GPL bundle
+    // with its literal/parameter element list intact.
+    use gleaph_gql::ast::CmpOp;
+    use gleaph_gql_planner::plan::ScanValue;
+
+    let plan = gleaph_gql_planner::PhysicalPlan {
+        ops: vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "uid".into(),
+            value: ScanValue::InList(vec![
+                ScanValue::Literal(gleaph_gql::Value::Text("alice".into())),
+                ScanValue::Parameter("$rest".into()),
+            ]),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }],
+        ..Default::default()
+    };
+    let blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+    assert_eq!(blob[3], PLAN_WIRE_VERSION);
+    let (_, decoded) = decode_plan_bundle(&blob).expect("decode");
+    let Some(PlanOp::IndexScan {
+        property,
+        value: ScanValue::InList(elements),
+        ..
+    }) = decoded[0].ops.first()
+    else {
+        panic!("expected IndexScan with InList bound after decode");
+    };
+    assert_eq!(property.as_ref(), "uid");
+    assert_eq!(
+        elements,
+        &vec![
+            ScanValue::Literal(gleaph_gql::Value::Text("alice".into())),
+            ScanValue::Parameter("$rest".into()),
+        ]
+    );
+}
+
+#[test]
 fn inline_call_scope_roundtrips() {
     let gql = "MATCH (n) CALL () { RETURN 1 AS x } RETURN n, x";
     let program = parser::parse(gql).expect("parse");

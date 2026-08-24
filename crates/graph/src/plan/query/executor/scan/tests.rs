@@ -1,5 +1,6 @@
 use super::super::test_support::*;
 use crate::plan::query::executor::execute_plan_query_bindings_with_initial_rows;
+use gleaph_gql_planner::PhysicalPlan;
 use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::plan_exec::{
     EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
@@ -78,6 +79,184 @@ fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
     .expect("execute index scan");
 
     assert!(rows.is_empty());
+}
+
+/// Seed the mock with per-key equality hits for `uid` and build an IN-list
+/// IndexScan plan projecting the bound vertex's `uid`.
+fn inlist_scan_fixture(
+    store: &GraphStore,
+    elements: Vec<ScanValue>,
+) -> (
+    MockPropertyIndex,
+    PhysicalPlan,
+    u32,
+    Vec<u8>,
+    Vec<u8>,
+    u32,
+    u32,
+) {
+    let pid = crate::test_labels::property_id_for_name("uid").raw();
+    let alice_bytes = value_to_index_key_bytes(&Value::Text("alice".into()))
+        .unwrap()
+        .unwrap();
+    let bob_bytes = value_to_index_key_bytes(&Value::Text("bob".into()))
+        .unwrap()
+        .unwrap();
+
+    let ada = store
+        .insert_vertex_named(["InListScan"], [("uid", Value::Text("alice".into()))])
+        .expect("insert alice");
+    let bob = store
+        .insert_vertex_named(["InListScan"], [("uid", Value::Text("bob".into()))])
+        .expect("insert bob");
+    let ada_id = u32::try_from(u64::from(ada)).expect("vertex id");
+    let bob_id = u32::try_from(u64::from(bob)).expect("vertex id");
+
+    let index = MockPropertyIndex::default();
+    let plan = plan(vec![
+        PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "uid".into(),
+            value: ScanValue::InList(elements),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("n", "uid"), "uid")],
+            distinct: false,
+        },
+    ]);
+    (index, plan, pid, alice_bytes, bob_bytes, ada_id, bob_id)
+}
+
+#[test]
+fn executes_inlist_index_scan_as_union_of_point_probes() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let (index, plan, pid, alice_bytes, bob_bytes, ada_id, bob_id) = inlist_scan_fixture(
+        &store,
+        vec![
+            ScanValue::Literal(Value::Text("bob".into())),
+            ScanValue::Literal(Value::Text("alice".into())),
+        ],
+    );
+    // Distinct vertices live under distinct posting keys.
+    let ada_hit = PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: ada_id,
+    };
+    let bob_hit = PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: bob_id,
+    };
+    index.set_equal_hits_for(pid, alice_bytes.clone(), vec![ada_hit]);
+    index.set_equal_hits_for(pid, bob_bytes.clone(), vec![bob_hit]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("uid"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute in-list index scan");
+
+    assert_eq!(text_column(&result, "uid"), vec!["bob", "alice"]);
+    // Exactly one equality probe per element, in list order.
+    let calls = index.equal_calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0, pid);
+    assert_eq!(calls[0].1, bob_bytes);
+    assert_eq!(calls[1].1, alice_bytes);
+}
+
+#[test]
+fn inlist_index_scan_deduplicates_hits_across_duplicate_elements() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let (index, plan, pid, alice_bytes, _bob_bytes, ada_id, _bob_id) = inlist_scan_fixture(
+        &store,
+        vec![
+            ScanValue::Literal(Value::Text("alice".into())),
+            ScanValue::Literal(Value::Text("alice".into())),
+        ],
+    );
+    let ada_hit = PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: ada_id,
+    };
+    index.set_equal_hits_for(pid, alice_bytes.clone(), vec![ada_hit]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("uid"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute dedup in-list scan");
+
+    // A vertex equal to two list elements binds exactly one row.
+    assert_eq!(text_column(&result, "uid"), vec!["alice"]);
+}
+
+#[test]
+fn inlist_index_scan_skips_null_elements_and_missing_parameter_fails_closed() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    // Null contributes no probe; the remaining literal still resolves.
+    let (index, plan, pid, alice_bytes, _bob_bytes, ada_id, _bob_id) = inlist_scan_fixture(
+        &store,
+        vec![
+            ScanValue::Literal(Value::Null),
+            ScanValue::Literal(Value::Text("alice".into())),
+        ],
+    );
+    let ada_hit = PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: ada_id,
+    };
+    index.set_equal_hits_for(pid, alice_bytes, vec![ada_hit]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("uid"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute null-element in-list scan");
+    assert_eq!(text_column(&result, "uid"), vec!["alice"]);
+
+    // A missing parameter element fails closed instead of narrowing the union.
+    let (index, plan, _, _, _, _, _) = inlist_scan_fixture(
+        &store,
+        vec![
+            ScanValue::Parameter("$who".into()),
+            ScanValue::Literal(Value::Text("alice".into())),
+        ],
+    );
+    let err = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect_err("missing parameter must fail closed");
+    assert!(
+        matches!(err, PlanQueryError::MissingParameter { ref name } if name == "$who"),
+        "expected missing-parameter error, got {err:?}"
+    );
 }
 
 #[test]

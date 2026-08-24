@@ -41,6 +41,10 @@ pub(crate) fn resolve_scan_bound_value(
             .ok_or_else(|| PlanQueryError::MissingParameter {
                 name: name.to_string(),
             }),
+        // IN lists are expanded into per-element probes before resolution.
+        ScanValue::InList(_) => Err(PlanQueryError::UnsupportedOp(
+            "IndexScan(unexpanded IN-list scan value)",
+        )),
     }
 }
 
@@ -83,53 +87,98 @@ pub(crate) async fn execute_index_scan(
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
     let pid = property_id_for_scan(&ctx.execution, property_name)?;
-    let value = resolve_scan_bound_value(scan_value, ctx.parameters)?;
-    let Some(bytes) = validated_index_payload_bytes(&value)? else {
-        return Ok(Vec::new());
+    // An IN-list anchor unions one equality probe per element; every other scan
+    // value probes exactly one bound. Elements resolve independently so a
+    // missing parameter fails closed instead of narrowing the union silently.
+    let probe_values: Vec<Value> = match scan_value {
+        ScanValue::InList(elements) => {
+            if cmp != CmpOp::Eq {
+                return Err(PlanQueryError::UnsupportedOp(
+                    "IndexScan(IN list with non-equality comparison)",
+                ));
+            }
+            let mut resolved = Vec::with_capacity(elements.len());
+            for element in elements {
+                resolved.push(resolve_scan_bound_value(element, ctx.parameters)?);
+            }
+            resolved
+        }
+        single => vec![resolve_scan_bound_value(single, ctx.parameters)?],
     };
+    let mut probe_keys = Vec::with_capacity(probe_values.len());
+    for value in &probe_values {
+        probe_keys.push(validated_index_payload_bytes(value)?);
+    }
     let physical_index_id = crate::index::catalog_context::unique_active_vertex_physical_index_id(
         gleaph_graph_kernel::entry::PropertyId::from_raw(pid),
     )
     .ok_or(PlanQueryError::UnsupportedOp(
         "IndexScan(no unique physical index namespace)",
     ))?;
-    let hits = if cmp == CmpOp::Eq {
-        ix.lookup_equal(physical_index_id, pid, bytes).await?
-    } else {
-        match gleaph_gql::value_index_key::range_bounds(&value, cmp) {
-            Ok((low, high)) if low < high => {
-                for bound in [&low, &high] {
-                    if bound.len() > MAX_INDEX_VALUE_KEY_BYTES {
-                        return Err(PlanQueryError::InvalidExpressionValue {
-                            expression: "index range bound exceeds maximum encoded size".to_owned(),
-                        });
+
+    if cmp == CmpOp::Eq {
+        let hits = if probe_keys.len() > 1 {
+            // Union of point probes, deduplicated on (shard, vertex): a vertex
+            // whose property equals two list elements must bind exactly one row.
+            let mut seen = std::collections::BTreeSet::<(u32, u32)>::new();
+            let mut merged = Vec::new();
+            for bytes in probe_keys.into_iter().flatten() {
+                for hit in ix.lookup_equal(physical_index_id, pid, bytes).await? {
+                    if seen.insert((hit.shard_id.raw(), hit.vertex_id)) {
+                        merged.push(hit);
                     }
                 }
-                ix.lookup_range(
+            }
+            merged
+        } else {
+            let Some(bytes) = probe_keys.into_iter().flatten().next() else {
+                // A Null bound (or an empty IN list) can never satisfy equality.
+                return Ok(Vec::new());
+            };
+            ix.lookup_equal(physical_index_id, pid, bytes).await?
+        };
+        return Ok(ctx
+            .federation
+            .bind_index_hits(ctx.store, &rows, variable, &hits));
+    }
+
+    // One-sided range bound. Only reachable with a single scan value.
+    let value = probe_values
+        .into_iter()
+        .next()
+        .ok_or_else(|| PlanQueryError::UnsupportedOp("IndexScan(range without bound)"))?;
+    match gleaph_gql::value_index_key::range_bounds(&value, cmp) {
+        Ok((low, high)) if low < high => {
+            for bound in [&low, &high] {
+                if bound.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                    return Err(PlanQueryError::InvalidExpressionValue {
+                        expression: "index range bound exceeds maximum encoded size".to_owned(),
+                    });
+                }
+            }
+            let hits = ix
+                .lookup_range(
                     physical_index_id,
                     pid,
                     &PostingRangeRequest::Between { low, high },
                 )
-                .await?
-            }
-            // The domain-clamped interval is empty: no posting can satisfy the comparison.
-            Ok(_) => Vec::new(),
-            // Unsupported comparison domain (Bool/List/Record/Path/Extension/Duration): do not
-            // push down; the plan's residual filter enforces the predicate over the node scan.
-            Err(ValueIndexKeyError::UnsupportedRangeDomain) => {
-                let variable_str = Str::from(variable);
-                return execute_node_scan(ctx.store, rows, &variable_str, None, &ctx.execution);
-            }
-            Err(err) => {
-                return Err(PlanQueryError::InvalidExpressionValue {
-                    expression: format!("index scan range bound: {err}"),
-                });
-            }
+                .await?;
+            Ok(ctx
+                .federation
+                .bind_index_hits(ctx.store, &rows, variable, &hits))
         }
-    };
-    Ok(ctx
-        .federation
-        .bind_index_hits(ctx.store, &rows, variable, &hits))
+        // The domain-clamped interval is empty: no posting can satisfy the comparison.
+        Ok(_) => Ok(Vec::new()),
+        // Unsupported comparison domain (Bool/List/Record/Path/Extension/Duration): do not
+        // push down; the plan's residual filter enforces the predicate over the node scan.
+        Err(ValueIndexKeyError::UnsupportedRangeDomain) => {
+            let variable_str = Str::from(variable);
+            execute_node_scan(ctx.store, rows, &variable_str, None, &ctx.execution)
+        }
+        Err(err) => Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("index scan range bound: {err}"),
+        }),
+    }
 }
 
 pub(crate) async fn execute_conditional_index_scan(

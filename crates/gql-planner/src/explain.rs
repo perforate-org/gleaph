@@ -905,8 +905,16 @@ fn format_cmp(cmp: &CmpOp) -> &str {
 
 fn format_scan_value(val: &ScanValue) -> String {
     match val {
-        ScanValue::Literal(v) => format!("{:?}", v),
-        ScanValue::Parameter(p) => format!("${}", p),
+        ScanValue::Literal(v) => format!("{v:?}"),
+        ScanValue::Parameter(p) => format!("${p}"),
+        ScanValue::InList(elements) => format!(
+            "IN [{}]",
+            elements
+                .iter()
+                .map(format_scan_value)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

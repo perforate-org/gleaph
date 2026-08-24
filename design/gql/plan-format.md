@@ -48,6 +48,17 @@ See [execution/operators.md](../execution/operators.md) for the full list. Group
 | Output        | `Project`, `Sort`, `Limit`, `TopK`, `Aggregate`, `Materialize`   | projection / agg                   |
 | DML           | `InsertVertex`, `SetProperties`, `DeleteVertex`, …               | mutation executor                  |
 
+### `ScanValue` bounds (implemented)
+
+`IndexScan` / `EdgeIndexScan` bounds are [`ScanValue`](../../crates/gql-planner/src/plan.rs):
+`Literal` and `Parameter` probe one encoded bound; `InList` is a **union of point probes** over one
+indexed vertex property (`WHERE v.prop IN (…)` anchor). Elements resolve independently, so a missing
+parameter fails the scan closed instead of narrowing the union; Null elements contribute no probe.
+The planner emits an `InList` bound only for non-negated predicates whose every element is a
+scannable literal/parameter, keeps the original predicate in the residual `PropertyFilter` (results
+never depend on the index path), and never rewrites an AND of lists into the union. The Router
+seeds the same union as `IndexAnchor::EqualUnion` with global `(shard, vertex)` deduplication.
+
 ## Router seed contract
 
 `ExecutePlanArgs.seed_bindings_blob` is an opaque Router-to-Graph relation transport. Three

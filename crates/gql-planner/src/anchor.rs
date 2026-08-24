@@ -229,8 +229,9 @@ pub fn extract_simple_label(label: &Option<LabelExpr>) -> Option<String> {
     }
 }
 
-/// Look for `var.property = <literal>` or `var.property = $param` in a WHERE
-/// clause, where the property is indexed.
+/// Look for `var.property = <literal>` / `var.property = $param` (or the
+/// equivalent scannable `var.property IN [values…]` union) in a WHERE clause,
+/// where the property is indexed.
 fn find_equality_anchor(
     candidates: &[AnchorCandidate],
     where_expr: &Expr,
@@ -238,7 +239,8 @@ fn find_equality_anchor(
 ) -> Option<AnchorInfo> {
     let predicates = flatten_conjunction(where_expr);
     for pred in &predicates {
-        if let Some((var, prop)) = extract_equality_predicate(pred) {
+        let matched = extract_equality_predicate(pred).or_else(|| extract_inlist_predicate(pred));
+        if let Some((var, prop)) = matched {
             // Check if this variable is one of our candidates.
             if candidates.iter().any(|c| c.variable == var) {
                 // Only anchor on an index when stats confirm the property is indexed.
@@ -313,6 +315,31 @@ pub(crate) fn extract_equality_predicate(expr: &Expr) -> Option<(String, String)
         // Check right side (reversed): <value> = var.prop
         if let Some((var, prop)) = extract_property_access(right)
             && is_scannable_value(left)
+        {
+            return Some((var, prop));
+        }
+    }
+    None
+}
+
+/// Extract (variable, property) from a non-negated `var.prop IN [v1, v2, …]`.
+///
+/// Every element must be an index-scannable literal/parameter so an anchor
+/// selected through this predicate can always lower completely into
+/// [`ScanValue::InList`] point probes; negated (`NOT IN`) predicates never
+/// anchor because a probe union cannot express exclusion.
+pub(crate) fn extract_inlist_predicate(expr: &Expr) -> Option<(String, String)> {
+    if let ExprKind::InList {
+        expr: lhs,
+        list,
+        negated,
+    } = &expr.kind
+    {
+        if *negated {
+            return None;
+        }
+        if let Some((var, prop)) = extract_property_access(lhs)
+            && list.iter().all(is_scannable_value)
         {
             return Some((var, prop));
         }
@@ -438,6 +465,25 @@ pub(crate) fn scan_value_from_expr(expr: &Expr) -> Option<crate::plan::ScanValue
         ExprKind::Parameter(p) => Some(crate::plan::ScanValue::Parameter(p.clone().into())),
         _ => None,
     }
+}
+
+/// Build the [`ScanValue::InList`] point-probe union for a non-negated
+/// `IN [elements…]` predicate. Returns `None` when any element is not a
+/// scannable literal/parameter, so the predicate keeps its residual filter.
+pub(crate) fn inlist_scan_value_from_expr(expr: &Expr) -> Option<crate::plan::ScanValue> {
+    if let ExprKind::InList {
+        list,
+        negated: false,
+        ..
+    } = &expr.kind
+    {
+        let elements: Vec<crate::plan::ScanValue> = list
+            .iter()
+            .map(scan_value_from_expr)
+            .collect::<Option<Vec<_>>>()?;
+        return Some(crate::plan::ScanValue::InList(elements));
+    }
+    None
 }
 
 fn is_scannable_value(expr: &Expr) -> bool {

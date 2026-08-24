@@ -14,7 +14,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::PhysicalPlan;
-use gleaph_gql_planner::plan::{PlanOp, ScanValue};
+use gleaph_gql_planner::plan::{PlanOp, ScanValue, Str};
 use gleaph_graph_kernel::entry::{GraphId, PropertyId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
@@ -33,6 +33,13 @@ use crate::state::RouterError;
 pub enum IndexAnchor {
     /// Single equality `IndexScan` (`lookup_equal`).
     Equal(SeedProbe),
+    /// Union of equality `IndexScan` point probes over one property
+    /// (`WHERE v.prop IN (…)` anchor; per-probe `lookup_equal`, merged with
+    /// global deduplication).
+    EqualUnion {
+        variable: String,
+        probes: Vec<SeedProbe>,
+    },
     /// Leading `EdgeIndexScan` (`lookup_edge_equal`).
     EdgeEqual(EdgeSeedProbe),
     /// Single range `IndexScan` bound (`lookup_range`, one-sided only).
@@ -61,6 +68,7 @@ impl IndexAnchor {
     pub fn variable(&self) -> &str {
         match self {
             Self::Equal(probe) => probe.variable.as_str(),
+            Self::EqualUnion { variable, .. } => variable.as_str(),
             Self::EdgeEqual(probe) => probe.variable.as_str(),
             Self::Range(probe) => probe.variable.as_str(),
             Self::EdgeRange(probe) => probe.variable.as_str(),
@@ -290,7 +298,8 @@ impl SeedProbe {
         Ok(
             match IndexAnchor::from_plans(plans, parameters, store, graph_id)? {
                 Some(IndexAnchor::Equal(probe)) => Some(probe),
-                Some(IndexAnchor::Range(_))
+                Some(IndexAnchor::EqualUnion { .. })
+                | Some(IndexAnchor::Range(_))
                 | Some(IndexAnchor::Intersection { .. })
                 | Some(IndexAnchor::EdgeEqual(_))
                 | Some(IndexAnchor::EdgeRange(_))
@@ -1165,6 +1174,13 @@ fn extract_from_op(
         PlanOp::IndexScan {
             variable,
             property,
+            value: ScanValue::InList(elements),
+            cmp: CmpOp::Eq,
+            ..
+        } => equal_union_anchor(store, graph_id, parameters, variable, property, elements),
+        PlanOp::IndexScan {
+            variable,
+            property,
             value,
             cmp,
             ..
@@ -1280,6 +1296,14 @@ pub(crate) fn resolve_scan_value(
                 RouterError::InvalidArgument("seed filter value is not indexable".into())
             })?
         }
+        // Nested IN lists are not produced by the planner: an InList IndexScan is
+        // expanded into per-element probes by `equal_union_anchor` before seed
+        // resolution, so reaching this arm means a malformed plan.
+        ScanValue::InList(_) => {
+            return Err(RouterError::InvalidArgument(
+                "IN-list scan values must be expanded into per-element probes".into(),
+            ));
+        }
     };
     let Some(bytes) = bytes else {
         return Ok(None);
@@ -1288,6 +1312,50 @@ pub(crate) fn resolve_scan_value(
         RouterError::InvalidArgument("index value key exceeds maximum encoded size".into())
     })?;
     Ok(Some(bytes))
+}
+
+/// Build the union-of-point-probes anchor for a leading equality `IndexScan`
+/// whose bound is [`ScanValue::InList`].
+///
+/// Each element resolves independently; Null elements contribute no probe
+/// because no posting can equal them, while unencodable or missing-parameter
+/// elements fail closed through [`resolve_scan_value`]. An empty probe list is
+/// kept: the union of nothing matches zero rows, which mirrors `v.prop IN []`
+/// semantics.
+fn equal_union_anchor(
+    store: &RouterStore,
+    graph_id: GraphId,
+    params: &BTreeMap<String, Value>,
+    variable: &Str,
+    property: &Str,
+    elements: &[ScanValue],
+) -> Result<Option<IndexAnchor>, RouterError> {
+    let property_id = store
+        .lookup_property_id(graph_id, property.as_ref())
+        .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
+        .raw();
+    let physical_index_id = indexed_catalog::active_vertex_physical_index(
+        graph_id,
+        None,
+        PropertyId::from_raw(property_id),
+    )?;
+    let mut probes = Vec::with_capacity(elements.len());
+    for element in elements {
+        let Some(payload_bytes) = resolve_scan_value(element, params)? else {
+            continue;
+        };
+        probes.push(SeedProbe {
+            variable: variable.to_string(),
+            property: property.to_string(),
+            property_id,
+            physical_index_id,
+            payload_bytes,
+        });
+    }
+    Ok(Some(IndexAnchor::EqualUnion {
+        variable: variable.to_string(),
+        probes,
+    }))
 }
 
 /// Encode local vertex ids for one shard into `ExecutePlanArgs.seed_bindings_blob`.
@@ -1593,6 +1661,65 @@ mod tests {
                 .iter()
                 .any(|anchor| matches!(anchor, IndexAnchor::Equal(_)))
         );
+    }
+
+    #[test]
+    fn inlist_index_scan_extracts_equal_union_anchor_with_per_element_probes() {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Person",
+            )
+            .expect("intern Person");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "region",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "region",
+        );
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["region"]);
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
+            variable: Rc::from("n"),
+            property: Rc::from("region"),
+            value: ScanValue::InList(vec![
+                ScanValue::Literal(Value::Text("US".into())),
+                // A Null can never satisfy equality: no probe for it.
+                ScanValue::Literal(Value::Null),
+                ScanValue::Parameter(Rc::from("$rest")),
+            ]),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("$rest".to_string(), Value::Text("EU".into()));
+
+        let set = SeedAnchorSet::from_plans(std::slice::from_ref(&plan), &params, &store, &stats)
+            .expect("anchors")
+            .expect("seed anchors");
+
+        let Some(IndexAnchor::EqualUnion { variable, probes }) = set
+            .anchors()
+            .iter()
+            .find(|anchor| matches!(anchor, IndexAnchor::EqualUnion { .. }))
+        else {
+            panic!("expected EqualUnion anchor, got: {:?}", set.anchors());
+        };
+        assert_eq!(variable, "n");
+        assert_eq!(probes.len(), 2, "Null contributes no probe");
+        let us = gleaph_gql::value_to_index_key_bytes(&Value::Text("US".into()))
+            .expect("encode US")
+            .expect("US bytes");
+        let eu = gleaph_gql::value_to_index_key_bytes(&Value::Text("EU".into()))
+            .expect("encode EU")
+            .expect("EU bytes");
+        assert!(probes.iter().any(|probe| probe.payload_bytes == us));
+        assert!(probes.iter().any(|probe| probe.payload_bytes == eu));
+        assert!(probes.iter().all(|probe| probe.property == "region"));
     }
 
     #[test]

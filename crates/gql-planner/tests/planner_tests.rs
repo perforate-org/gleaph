@@ -2390,6 +2390,137 @@ fn optional_match_conditional_candidate_uses_range_cmp() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// MATCH vertex IN-list anchor: union of point probes over one indexed property
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// True when `expr` is exactly `var.property IN […]`.
+fn is_inlist_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
+    let ExprKind::InList { expr: lhs, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &lhs.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, ExprKind::Variable(name) if name == var) && prop == property
+}
+
+// Cypher-dialect parse coverage: these run under `--features cypher` (the
+// canister default dialect); IN does not parse in the bare GQL dialect.
+#[test]
+#[cfg(feature = "cypher")]
+fn match_inlist_anchor_lowers_to_union_index_scan() {
+    let stats = range_pushdown_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.uid IN ['alice', 'bob', $rest] RETURN n",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, value: ScanValue::InList(elements), cmp: CmpOp::Eq, .. }
+                if &**property == "uid"
+                    && *elements == vec![
+                        ScanValue::Literal(Value::Text("alice".into())),
+                        ScanValue::Literal(Value::Text("bob".into())),
+                        ScanValue::Parameter("$rest".into()),
+                    ]
+        )),
+        "expected union-of-probes IndexScan on uid with literal and parameter \
+         elements, got: {:?}",
+        plan.ops
+    );
+    let anchor = plan.annotations.optimizer.anchor.expect("anchor expected");
+    assert!(
+        matches!(
+            anchor.source,
+            AnchorSource::PropertyEquality { ref property } if &**property == "uid"
+        ),
+        "IN list must select the equality-family anchor, got: {:?}",
+        anchor.source
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_inlist_retains_residual_filter() {
+    // The union probe only narrows candidates; the original predicate stays in
+    // a residual PropertyFilter so results never depend on the index path.
+    let stats = range_pushdown_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.uid IN ['alice', 'bob'] RETURN n",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_inlist_predicate_on(p, "n", "uid"))
+        )),
+        "original IN predicate must remain as a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_not_inlist_never_anchors_and_stays_residual() {
+    // A probe union cannot express exclusion, so NOT IN must not lower into an
+    // IndexScan; the predicate is enforced entirely by residual evaluation.
+    let stats = range_pushdown_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.uid NOT IN ['alice'] RETURN n",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "NOT IN must not emit an IndexScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_inlist_predicate_on(p, "n", "uid"))
+        )),
+        "NOT IN must stay in the residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_unindexed_inlist_does_not_emit_index_scan() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    stats.indexed_vertex_properties.insert("uid".to_string());
+    // `email` is deliberately absent from every index set.
+
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.email IN ['a@x', 'b@x'] RETURN n",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "unindexed IN list must not emit IndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // MATCH vertex nested-leaf anchors (ADR 0073 slice 4)
 // ════════════════════════════════════════════════════════════════════════════════
 

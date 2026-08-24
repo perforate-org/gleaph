@@ -88,6 +88,12 @@ pub(super) fn encode_scan_value(v: &ScanValue) -> Result<ScanValueWire, String> 
     Ok(match v {
         ScanValue::Literal(lit) => ScanValueWire::Literal(rkyv_encode_value(lit)?),
         ScanValue::Parameter(p) => ScanValueWire::Parameter(p.to_string()),
+        ScanValue::InList(elements) => ScanValueWire::InList(
+            elements
+                .iter()
+                .map(encode_scan_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
     })
 }
 
@@ -95,6 +101,12 @@ pub(super) fn decode_scan_value(v: &ScanValueWire) -> Result<ScanValue, String> 
     Ok(match v {
         ScanValueWire::Literal(bytes) => ScanValue::Literal(rkyv_decode_value(bytes)?),
         ScanValueWire::Parameter(p) => ScanValue::Parameter(p.as_str().into()),
+        ScanValueWire::InList(elements) => ScanValue::InList(
+            elements
+                .iter()
+                .map(decode_scan_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
     })
 }
 

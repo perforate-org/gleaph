@@ -528,6 +528,9 @@ pub(super) fn emit_scan_for_node(
 ) {
     // Collect all equality predicates from inline properties and the inline WHERE clause.
     let mut equality_preds: Vec<(String, Expr)> = Vec::new();
+    // Non-negated `var.prop IN […]` predicates that can lower into a union of
+    // point probes.
+    let mut inlist_preds: Vec<(String, Expr)> = Vec::new();
     for p in &input.node.properties {
         equality_preds.push((
             p.name.clone(),
@@ -549,6 +552,13 @@ pub(super) fn emit_scan_for_node(
                 equality_preds.push((prop, c.clone()));
             }
         }
+        for c in flatten_conjunction(where_expr) {
+            if let Some((v, prop)) = anchor::extract_inlist_predicate(&c)
+                && v == var
+            {
+                inlist_preds.push((prop, c.clone()));
+            }
+        }
     }
     // A path-level WHERE clause is not attached to the individual NodePattern by the
     // parser. Keep its equality predicates available when an optimizer-selected node
@@ -559,6 +569,11 @@ pub(super) fn emit_scan_for_node(
             && v == var
         {
             equality_preds.push((prop, c.clone()));
+        }
+        if let Some((v, prop)) = anchor::extract_inlist_predicate(c)
+            && v == var
+        {
+            inlist_preds.push((prop, c.clone()));
         }
     }
 
@@ -600,6 +615,29 @@ pub(super) fn emit_scan_for_node(
             property_projection: None,
         });
         return;
+    }
+
+    // A scannable IN-list predicate lowers into one union-of-point-probes
+    // IndexScan. Only one leading scan may be emitted per variable, so a
+    // single-value equality scan always wins and every additional IN predicate
+    // stays enforced by its residual PropertyFilter (AND of lists is never
+    // rewritten into the union).
+    if let Some(stats) = stats {
+        for (prop, pred) in &inlist_preds {
+            if !stats.is_vertex_property_indexed(prop) {
+                continue;
+            }
+            if let Some(value) = anchor::inlist_scan_value_from_expr(pred) {
+                ops.push(PlanOp::IndexScan {
+                    variable: Str::from(var),
+                    property: prop.clone().into(),
+                    value,
+                    cmp: CmpOp::Eq,
+                    property_projection: None,
+                });
+                return;
+            }
+        }
     }
 
     // Anchor-selected range/index scan still matters when no inline indexed equality is present.

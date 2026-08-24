@@ -167,6 +167,11 @@ fn scan_value_to_edge_inline_property_bytes(
             .ok_or_else(|| PlanQueryError::MissingParameter {
                 name: name.to_string(),
             })?,
+        ScanValue::InList(_) => {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: "edge inline property predicate rejects IN-list scan values".to_owned(),
+            });
+        }
     };
     if matches!(value, Value::Null) {
         return Ok(None);
@@ -208,6 +213,9 @@ fn scan_value_to_value<'a>(
             .ok_or_else(|| PlanQueryError::MissingParameter {
                 name: name.to_string(),
             }),
+        ScanValue::InList(_) => Err(PlanQueryError::InvalidExpressionValue {
+            expression: "edge inline predicate rejects IN-list scan values".to_owned(),
+        }),
     }
 }
 

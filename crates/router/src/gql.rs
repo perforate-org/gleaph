@@ -689,6 +689,33 @@ pub(crate) fn build_router_block_plan(
     .map_err(|e| RouterError::InvalidArgument(e.to_string()))
 }
 
+/// Lowers conditional policies for one ad-hoc execution ([ADR 0075] §5): when no
+/// conditional grant applies, the input plans and blob pass through unchanged; otherwise
+/// the caller's constants are substituted into the plans and a fresh blob is encoded.
+///
+/// `plans` are the pre-lowering (authorized) shapes; `pass_through_blob` is the blob of
+/// exactly those plans. Returns the possibly-lowered plans plus their dispatch blob.
+pub(crate) fn lower_for_execution(
+    store: &RouterStore,
+    caller: &Principal,
+    graph_id: GraphId,
+    mut plans: Vec<PhysicalPlan>,
+    pass_through_blob: Vec<u8>,
+    requires_write_path: bool,
+) -> Result<(Vec<PhysicalPlan>, Vec<u8>), RouterError> {
+    let ctx = crate::policy_pushdown::LoweringContext::new(store, graph_id);
+    let lowered = crate::policy_pushdown::effective_policies(store, caller, graph_id)?;
+    if lowered.is_empty() {
+        return Ok((plans, pass_through_blob));
+    }
+    for plan in &mut plans {
+        crate::policy_pushdown::lower_into_plan(&ctx, plan, &lowered);
+    }
+    let blob = encode_block_plans(&plans, requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    Ok((plans, blob))
+}
+
 fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
     hits.iter()
         .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
@@ -832,6 +859,27 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
                 .lookup_equal(*physical_index_id, *property_id, payload_bytes.clone())
                 .await?,
         )),
+        IndexAnchor::EqualUnion { probes, .. } => {
+            // Union of point probes with global (shard, vertex) deduplication so a
+            // row matching two list elements seeds exactly once.
+            let mut merged: Vec<PostingHit> = Vec::new();
+            let mut seen = std::collections::BTreeSet::<(ShardId, u32)>::new();
+            for probe in probes {
+                for hit in index
+                    .lookup_equal(
+                        probe.physical_index_id,
+                        probe.property_id,
+                        probe.payload_bytes.clone(),
+                    )
+                    .await?
+                {
+                    if seen.insert((hit.shard_id, hit.vertex_id)) {
+                        merged.push(hit);
+                    }
+                }
+            }
+            Ok(SeedHits::Vertices(merged))
+        }
         IndexAnchor::EdgeEqual(crate::seed::EdgeSeedProbe {
             physical_index_id,
             property_id,
@@ -3109,6 +3157,10 @@ async fn run_gql_unchecked(
     // Fast path: repeated query strings inside the same ingress re-use the cached
     // parsed/planned/encoded shape. DDL/admin paths are excluded above, and the cache is
     // scoped to a single ingress so it can never outlive a catalog mutation.
+    //
+    // Cached plans are stored pre-policy-lowering ([ADR 0075] §5): the cache key is
+    // `(caller, graph, query)`, so one caller's constants always re-resolve identically,
+    // and enforcement below never sees policy-derived property demands.
     if read_mode == ReadMode::Eventual
         && let Some(ctx) = preflight
         && let Some(entry) = ctx.get_cached_plan(caller, resolved.graph_id, query)
@@ -3118,18 +3170,28 @@ async fn run_gql_unchecked(
         return match entry.dispatch {
             crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
                 // Cached plans re-enforce plan-time authorization for this caller before
-                // dispatch (the cache never widens what a caller may run).
+                // dispatch (the cache never widens what a caller may run), then lower
+                // conditional policies for this execution before dispatching.
                 crate::authz::enforce_data_plane_authorization(
                     &store,
                     &caller,
                     entry.dispatch_graph_id,
                     &plan,
                 )?;
+                let requires_write_path = plan.has_dml();
+                let (plans, plan_blob) = lower_for_execution(
+                    &store,
+                    &caller,
+                    entry.dispatch_graph_id,
+                    vec![plan],
+                    entry.plan_blob,
+                    requires_write_path,
+                )?;
                 let stats = graph_stats_for(entry.dispatch_graph_id);
                 dispatch_plan_blob_with_batch(
                     entry.dispatch_graph_id,
-                    &entry.plan_blob,
-                    std::slice::from_ref(&plan),
+                    &plan_blob,
+                    &plans,
                     &pmap,
                     params,
                     mode,
@@ -3141,11 +3203,20 @@ async fn run_gql_unchecked(
             }
             crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
                 crate::authz::enforce_data_plane_authorization(&store, &caller, graph_id, &plan)?;
+                let requires_write_path = plan.has_dml();
+                let (plans, plan_blob) = lower_for_execution(
+                    &store,
+                    &caller,
+                    graph_id,
+                    vec![plan],
+                    entry.plan_blob,
+                    requires_write_path,
+                )?;
                 let stats = graph_stats_for(graph_id);
                 dispatch_plan_blob_with_batch(
                     graph_id,
-                    &entry.plan_blob,
-                    std::slice::from_ref(&plan),
+                    &plan_blob,
+                    &plans,
                     &pmap,
                     params,
                     mode,
@@ -3204,12 +3275,32 @@ async fn run_gql_unchecked(
         dispatch.dispatch_graph_id,
         &plan,
     )?;
-    let requires_write_path = plan.has_dml();
+    // ADR 0075 §5: conditional policies lower into ordinary plan machinery strictly
+    // after enforcement (policies constrain outputs; they add no requirements), so the
+    // dispatched shape is policy-filtered while the authorized shape stays user-authored.
+    // Lowering never changes DML content (`PropertyFilter`/`IndexScan` are non-DML), so
+    // the classification check below is lowering-invariant. The ingress cache keeps the
+    // pre-lowering plan and blob so replay re-enforces against user-authored demands
+    // only and re-resolves constants per execution.
+    let cached_plan = plan.clone();
+    let requires_write_path = cached_plan.has_dml();
     if requires_write_path != flags.requires_write_path() {
         return Err(RouterError::InvalidArgument(
             "planner DML content does not match program classification".into(),
         ));
     }
+    let cached_plan_blob =
+        encode_block_plans(std::slice::from_ref(&cached_plan), requires_write_path)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let (mut plans, plan_blob) = lower_for_execution(
+        &store,
+        &caller,
+        dispatch.dispatch_graph_id,
+        vec![plan],
+        cached_plan_blob,
+        requires_write_path,
+    )?;
+    let plan = plans.pop().expect("one lowered plan");
 
     // ADR 0029 Phase 5: a federated bundle of more than one top-level DML statement is admitted only
     // when it provably has no cross-shard read; otherwise its partial-application semantics are
@@ -3294,15 +3385,15 @@ async fn run_gql_unchecked(
 
     match v2 {
         crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
-            let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
-                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
             if let Some(ctx) = preflight {
                 ctx.insert_cached_plan(
                     caller,
                     resolved.graph_id,
                     query.to_string(),
                     dispatch.dispatch_graph_id,
-                    crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan: plan.clone() },
+                    crate::use_graph::UseGraphV2Dispatch::EffectiveGraph {
+                        plan: cached_plan.clone(),
+                    },
                     plan_blob.clone(),
                 );
             }
@@ -3321,8 +3412,6 @@ async fn run_gql_unchecked(
         }
         crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
             let stats = graph_stats_for(graph_id);
-            let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
-                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
             if let Some(ctx) = preflight {
                 ctx.insert_cached_plan(
                     caller,
@@ -3331,7 +3420,7 @@ async fn run_gql_unchecked(
                     graph_id,
                     crate::use_graph::UseGraphV2Dispatch::Single {
                         graph_id,
-                        plan: plan.clone(),
+                        plan: cached_plan.clone(),
                     },
                     plan_blob.clone(),
                 );

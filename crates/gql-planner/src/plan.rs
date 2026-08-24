@@ -1195,6 +1195,11 @@ pub enum ScanValue {
     Literal(gleaph_gql::Value),
     /// A query parameter reference.
     Parameter(Str),
+    /// Union of point probes: matches rows whose indexed property equals any
+    /// element (vertex `WHERE v.prop IN (…)` anchor). Elements are resolved
+    /// independently; a missing parameter or unencodable element fails the
+    /// scan fail-closed instead of silently narrowing the union.
+    InList(Vec<ScanValue>),
 }
 
 // CmpOp is re-exported from gleaph_gql::ast::CmpOp.

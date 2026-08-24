@@ -262,10 +262,27 @@ pub enum InlineProcedureScopeWire {
 // ════════════════════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(
+    serialize_bounds(
+        __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+        __S::Error: rkyv::rancor::Source,
+    ),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source),
+    bytecheck(bounds(
+        __C: rkyv::validation::ArchiveContext,
+        __C::Error: rkyv::rancor::Source,
+    )),
+)]
 pub enum ScanValueWire {
     /// Rkyv-encoded [`Value`].
     Literal(Vec<u8>),
     Parameter(String),
+    /// Union of point probes (vertex `IN`-list anchor); each element encodes
+    /// independently so a mixed literal/parameter list survives the wire.
+    /// `omit_bounds` plus the explicit type-level bounds break the
+    /// self-recursive bound cycle, mirroring the AST pool's treatment of
+    /// recursive [`Expr`](gleaph_gql::ast::Expr) fields.
+    InList(#[rkyv(omit_bounds)] Vec<ScanValueWire>),
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
