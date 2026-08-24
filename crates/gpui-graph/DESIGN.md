@@ -1313,7 +1313,7 @@ structure and edge endpoints from worker threads, and the density grid
 crosses the parallel density pass, so the shared builder also requires
 `S: Sync`.
 
-### Frame sources and the frame wire (ADR 0076 S1–S2)
+### Frame sources and the frame wire (ADR 0076 S1–S3)
 
 `GraphViewState` owns a `FrameSource`, the seam that decides where the coming
 frame is produced. `InProcess` is the default: the element's prepaint calls
@@ -1375,6 +1375,36 @@ directions; the library ships no worker bundle, and the application drives
 its concrete `WorkerBackend` instantiation inside the dedicated worker
 global scope. Ordering, loss, cycle, and byte round-trip contracts are all
 pinned by native tests without any browser involvement.
+
+### Interaction transform and frame-side hit testing (ADR 0076 S3)
+
+Worker-mode interaction never blocks on the rebuild. While a snapshot is in
+flight, prepaint renders the delivered frame mapped onto the current viewport
+by `frame_source::transform_paint_frame`: the screen-space affine implied by
+the two cameras sharing the world (old screen ⇔ world ⇔ new screen; scale is
+the zoom ratio, translation is consistent with pans and anchored zooms at a
+constant canvas size). The map applies to node positions, edge
+source/target positions and Bézier control points, node-label anchors, and
+edge-label anchors and paths. Node radii scale with the same factor and are
+re-clamped to the style's screen-radius band — an accepted approximation of a
+true rebuild (the band clamp already applied at build time), replaced
+wholesale when the worker's rebuilt frame arrives through
+`deliver_worker_frame`. A canvas resize is not mapped: the delivered frame's
+cull no longer matches the new bounds, so `transform_paint_frame` returns
+`None` and the view renders the delivered frame unchanged until the rebuild.
+The wire carries no viewport, so a delivered frame is anchored to the most
+recently posted snapshot: exact whenever the worker has caught up, otherwise
+off by at most one round trip of camera motion — the same staleness budget as
+the transform itself.
+
+Pointer hit testing gains a frame-side counterpart, `hit_test_frame`: in
+Worker mode the view answers mouse queries from the delivered frame's own
+content instead of syncing the scene — nearest node within its drawn radius,
+otherwise the nearest edge path within the same screen threshold as the scene
+path. For every element present in the frame it agrees exactly with the
+scene-path hit test (same precedence, same threshold), and it can be at most
+one frame stale (ADR 0076 §Decision 2). The InProcess path keeps the indexed
+scene hit test unchanged.
 
 ## 18.3 Edge curves
 
@@ -2215,8 +2245,16 @@ opts into the ADR 0076 worker backend, which requires a connected worker
 channel (`connect_worker_channel`) before dispatch; each prepaint then posts
 an interaction-state snapshot toward the backend and renders the last frame
 delivered via `deliver_worker_frame`, and switching back to `InProcess`
-drops the connection and restores the synchronous build. Dispatching in
-Worker mode without a connection fails loudly.
+drops the connection, clears the worker-mode snapshot bookkeeping, and
+restores the synchronous build. Dispatching in Worker mode without a
+connection fails loudly.
+
+In Worker mode the seam also owns interaction latency (§18.2, ADR 0076 S3):
+each prepaint renders the delivered frame mapped through the interaction
+transform — pan and anchored zoom at a constant canvas size are affine and
+render immediately, while a resize waits for the rebuild — and pointer hit
+tests answer from the delivered frame via `hit_test_frame` instead of syncing
+the scene. Every delivery replaces the displayed content wholesale.
 
 ---
 

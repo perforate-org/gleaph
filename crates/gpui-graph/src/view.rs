@@ -19,7 +19,7 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc};
 #[cfg(test)]
 use std::cell::RefCell;
 
-use crate::frame_source::{FrameSource, PaintFrameWire};
+use crate::frame_source::{FrameSource, PaintFrameWire, transform_paint_frame};
 use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::hit_test;
 use crate::interaction::{GraphEvent, Hover, MouseButton, Selection};
@@ -64,6 +64,16 @@ where
     /// The most recent frame the worker delivered. Worker-mode prepaint
     /// renders it until a newer delivery replaces it; it starts empty.
     delivered_frame: crate::paint::PaintFrame,
+    /// The viewport the displayed `delivered_frame` was built with, used as
+    /// the source camera of the interaction transform. The wire carries no
+    /// viewport, so this is anchored to the most recently posted snapshot at
+    /// delivery time: exact whenever the worker has caught up, and otherwise
+    /// off by at most one round trip of camera motion (ADR 0076 §Decision 4).
+    /// `None` until the first delivery.
+    delivered_frame_viewport: Option<Viewport>,
+    /// The viewport of the most recent FrameState posted toward the worker,
+    /// consumed by `deliver_worker_frame` to anchor the arriving frame.
+    last_snapshot_viewport: Option<Viewport>,
     node_label: NodeLabelResolver<N>,
     edge_label: EdgeLabelResolver<E>,
     node_overlay: NodeOverlayResolver,
@@ -243,6 +253,8 @@ where
             frame_source: FrameSource::default(),
             worker_channel: None,
             delivered_frame: crate::paint::PaintFrame::new(),
+            delivered_frame_viewport: None,
+            last_snapshot_viewport: None,
             node_label: Rc::new(|_id, _node| None),
             edge_label: Rc::new(|_id, _edge| None),
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
@@ -314,11 +326,14 @@ where
     /// `FrameSource::Worker` is opt-in: it routes frame production to the
     /// worker backend, so a worker channel must be connected first (see
     /// [`Self::connect_worker_channel`]). Switching back to `InProcess`
-    /// restores the synchronous build and drops any connection.
+    /// restores the synchronous build, drops any connection, and clears the
+    /// worker-mode snapshot bookkeeping.
     pub fn set_frame_source(&mut self, source: FrameSource) {
         self.frame_source = source;
         if source != FrameSource::Worker {
             self.worker_channel = None;
+            self.delivered_frame_viewport = None;
+            self.last_snapshot_viewport = None;
         }
     }
 
@@ -334,9 +349,14 @@ where
     /// Receive one finished frame shipped by the worker backend.
     ///
     /// The decoded frame replaces the previously delivered one wholesale and
-    /// schedules a repaint; the next prepaint renders it.
+    /// schedules a repaint; the next prepaint renders it. Because the wire
+    /// carries no viewport, the arriving frame is anchored to the most
+    /// recently posted snapshot: exact whenever the worker has caught up with
+    /// the main thread, and otherwise within the one-round-trip staleness the
+    /// interaction transform already tolerates (ADR 0076 §Decision 4).
     pub fn deliver_worker_frame(&mut self, wire: PaintFrameWire, cx: &mut Context<Self>) {
         self.delivered_frame = wire.decode();
+        self.delivered_frame_viewport = self.last_snapshot_viewport;
         cx.notify();
     }
 
@@ -565,6 +585,8 @@ where
             frame_source: FrameSource::default(),
             worker_channel: None,
             delivered_frame: crate::paint::PaintFrame::new(),
+            delivered_frame_viewport: None,
+            last_snapshot_viewport: None,
             node_label: Rc::new(|_id, node| Some(node.to_string())),
             edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
@@ -599,23 +621,44 @@ where
     /// production: viewport sizing and the one-time initial fit run for every
     /// source. `InProcess` builds synchronously from one synced scene read.
     /// `Worker` posts an interaction-state snapshot through the connected
-    /// channel and renders the last delivered frame; reaching it without a
-    /// connection is a loud defect rather than a fallback to the in-process
-    /// build (§18.2, ADR 0076 S2).
+    /// channel and renders the last delivered frame — mapped onto the current
+    /// viewport by the interaction transform while a pan or zoom is in
+    /// flight; reaching it without a connection is a loud defect rather than
+    /// a fallback to the in-process build (§18.2, ADR 0076 S2/S3).
     fn build_frame(&mut self, size: Vec2, cx: &mut Context<Self>) -> crate::paint::PaintFrame {
         self.prepare_canvas(size, cx);
         match self.frame_source {
             FrameSource::InProcess => self.build_in_process_frame(cx),
             FrameSource::Worker => {
                 let state = self.worker_frame_state();
+                self.last_snapshot_viewport = Some(state.viewport);
                 let channel = self
                     .worker_channel
                     .as_mut()
                     .expect("FrameSource::Worker selected but no worker channel is connected");
                 channel.post(ToWorker::FrameState(Box::new(state)));
-                self.delivered_frame.clone()
+                self.interaction_transformed_frame()
             }
         }
+    }
+
+    /// The frame Worker-mode prepaint renders (ADR 0076 §Decision 4): the
+    /// delivered frame mapped onto the current viewport by the interaction
+    /// transform when the camera change is affine (pan or anchored zoom at
+    /// the delivered canvas size), otherwise — before any delivery, or after
+    /// a resize — the delivered frame unchanged. Either way it is temporary:
+    /// the worker's rebuilt frame replaces it through `deliver_worker_frame`.
+    fn interaction_transformed_frame(&self) -> crate::paint::PaintFrame {
+        self.delivered_frame_viewport
+            .and_then(|built_for| {
+                transform_paint_frame(
+                    &self.delivered_frame,
+                    &built_for,
+                    &self.viewport,
+                    &self.style,
+                )
+            })
+            .unwrap_or_else(|| self.delivered_frame.clone())
     }
 
     /// The interaction-state snapshot Worker-mode prepaint sends to the
@@ -1937,15 +1980,23 @@ where
             self.viewport.pan(delta);
             cx.emit(GraphEvent::ViewportChanged);
         } else {
-            let scene = self.scene.read(cx);
-            let synced = scene.sync_runtime(&mut self.runtime);
-            let hit = hit_test::hit_test(
-                &synced,
-                &self.viewport,
-                &self.style,
-                pos,
-                self.node_label.as_ref(),
-            );
+            // Worker mode answers pointer queries from the delivered frame
+            // snapshot (ADR 0076 §Decision 2): no main-thread scene sync, at
+            // most one frame of staleness. InProcess keeps the indexed
+            // scene hit test.
+            let hit = if self.frame_source == FrameSource::Worker {
+                hit_test::hit_test_frame(&self.delivered_frame, pos, &self.style)
+            } else {
+                let scene = self.scene.read(cx);
+                let synced = scene.sync_runtime(&mut self.runtime);
+                hit_test::hit_test(
+                    &synced,
+                    &self.viewport,
+                    &self.style,
+                    pos,
+                    self.node_label.as_ref(),
+                )
+            };
             self.hover = Hover {
                 node: hit.node,
                 edge: hit.edge,
@@ -1956,15 +2007,19 @@ where
     }
 
     fn handle_mouse_down(&mut self, pos: Vec2, click_count: usize, cx: &mut Context<Self>) {
-        let scene = self.scene.read(cx);
-        let synced = scene.sync_runtime(&mut self.runtime);
-        let hit = hit_test::hit_test(
-            &synced,
-            &self.viewport,
-            &self.style,
-            pos,
-            self.node_label.as_ref(),
-        );
+        let hit = if self.frame_source == FrameSource::Worker {
+            hit_test::hit_test_frame(&self.delivered_frame, pos, &self.style)
+        } else {
+            let scene = self.scene.read(cx);
+            let synced = scene.sync_runtime(&mut self.runtime);
+            hit_test::hit_test(
+                &synced,
+                &self.viewport,
+                &self.style,
+                pos,
+                self.node_label.as_ref(),
+            )
+        };
 
         if let Some(node) = hit.node {
             if click_count >= 2 {
@@ -4399,6 +4454,176 @@ mod tests {
                 assert!(vs.worker_channel.is_none());
                 assert_eq!(vs.frame_source(), FrameSource::InProcess);
             });
+        });
+    }
+
+    /// Drive a fresh worker backend replica from one captured request and
+    /// return the frame it ships, exactly as the real transport would.
+    fn backend_frame_for(request: TestRequest) -> crate::frame_source::PaintFrameWire {
+        let mut backend =
+            WorkerBackend::<&'static str, &'static str, (), ()>::new(worker_test_scene());
+        backend.receive(request);
+        let FromWorker::Frame(wire) = backend.step().expect("a requested snapshot builds");
+        wire
+    }
+
+    #[gpui::test]
+    fn worker_interaction_transforms_the_delivered_frame_then_replaces_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let node_a = scene.read(cx).node_id(&"a").unwrap();
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+            let canvas_size = Vec2::new(800.0, 600.0);
+            let world_a = Vec2::new(-10.0, 0.0);
+
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+            });
+
+            // First prepaint posts a snapshot and has nothing to paint yet.
+            assert!(
+                view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx))
+                    .is_empty()
+            );
+            let v0 = view.update(cx, |vs, _| *vs.viewport());
+
+            // The worker rebuild arrives and becomes the displayed frame,
+            // anchored to the snapshot it answers.
+            let wire0 = backend_frame_for(requests.borrow_mut().pop().unwrap());
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(wire0, cx));
+
+            // Pan without waiting for the worker: the next prepaint must
+            // render the delivered frame translated by the pan delta...
+            let delta = Vec2::new(40.0, -12.0);
+            view.update(cx, |vs, _cx| vs.viewport_mut().pan(delta));
+            let transformed = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            let expected = v0.world_to_screen(world_a) + delta;
+            let got = transformed
+                .nodes
+                .iter()
+                .find(|n| n.id == node_a)
+                .map(|n| n.position)
+                .expect("node survives the transform");
+            assert!(
+                (got - expected).length() < 1e-3,
+                "panned frame must show node a at {expected:?}, got {got:?}"
+            );
+            // ...while a fresh snapshot went toward the backend.
+            assert_eq!(requests.borrow().len(), 1);
+
+            // The rebuild for the panned camera arrives and replaces the
+            // temporary rendering: the next prepaint draws the true frame.
+            let v1 = view.update(cx, |vs, _| *vs.viewport());
+            let wire1 = backend_frame_for(requests.borrow_mut().pop().unwrap());
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(wire1, cx));
+            let replaced = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            assert_eq!(
+                replaced
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == node_a)
+                    .map(|n| n.position),
+                Some(v1.world_to_screen(world_a)),
+                "the rebuilt frame replaces the transformed one exactly"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn worker_resize_waits_for_the_rebuild_instead_of_transforming(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let node_a = scene.read(cx).node_id(&"a").unwrap();
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+            let canvas_size = Vec2::new(800.0, 600.0);
+
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+            });
+            view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            let v0 = view.update(cx, |vs, _| *vs.viewport());
+            let wire0 = backend_frame_for(requests.borrow_mut().pop().unwrap());
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(wire0, cx));
+
+            // A canvas resize is not an affine camera change: the delivered
+            // frame is rendered unchanged while the rebuild is awaited.
+            let resized = Vec2::new(1600.0, 600.0);
+            let rendered = view.update(cx, |vs, cx| vs.build_frame(resized, cx));
+            assert_eq!(
+                rendered
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == node_a)
+                    .map(|n| n.position),
+                Some(v0.world_to_screen(Vec2::new(-10.0, 0.0))),
+                "resized canvas must not map the stale frame"
+            );
+            // A snapshot still went out so the rebuild can arrive.
+            assert_eq!(requests.borrow().len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn worker_pointer_input_hit_tests_the_delivered_frame(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let node_b = scene.read(cx).node_id(&"b").unwrap();
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+            let canvas_size = Vec2::new(800.0, 600.0);
+
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+            });
+            view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            let v0 = view.update(cx, |vs, _| *vs.viewport());
+            let wire0 = backend_frame_for(requests.borrow_mut().pop().unwrap());
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(wire0, cx));
+
+            // Hover over node b's delivered position: hover resolves from the
+            // frame snapshot without any main-thread scene sync.
+            let on_b = v0.world_to_screen(Vec2::new(10.0, 0.0));
+            view.update(cx, |vs, cx| vs.handle_mouse_move(on_b, cx));
+            assert_eq!(view.read(cx).hover.node, Some(node_b));
+
+            // Panning the live camera must not redirect hit testing onto the
+            // synced scene: the pointer query still answers from the
+            // delivered snapshot, whose geometry sits where the last frame
+            // drew it, not where the moved camera would place it now.
+            view.update(cx, |vs, _cx| vs.viewport_mut().pan(Vec2::new(40.0, -12.0)));
+            let v_moved = view.update(cx, |vs, _| *vs.viewport());
+            assert!(
+                (v_moved.world_to_screen(Vec2::new(10.0, 0.0)) - on_b).length() > 3.0,
+                "the pan must move the live-camera projection away from the probe"
+            );
+            view.update(cx, |vs, cx| vs.handle_mouse_move(on_b, cx));
+            assert_eq!(
+                view.read(cx).hover.node,
+                Some(node_b),
+                "hover must follow the delivered snapshot, not the live scene"
+            );
+
+            // Moving off the graph clears the hover.
+            view.update(cx, |vs, cx| {
+                vs.handle_mouse_move(Vec2::new(60.0, 120.0), cx)
+            });
+            assert_eq!(view.read(cx).hover.node, None);
+
+            // Clicking the node selects and starts a drag from the same
+            // frame-side hit test.
+            view.update(cx, |vs, cx| vs.handle_mouse_down(on_b, 1, cx));
+            assert_eq!(view.read(cx).selection.nodes, vec![node_b]);
         });
     }
 }

@@ -24,10 +24,10 @@ pub mod view;
 pub mod viewport;
 pub mod worker;
 
-pub use frame_source::{FrameSource, PaintFrameWire};
+pub use frame_source::{FrameSource, PaintFrameWire, transform_paint_frame};
 pub use graph::{EdgeDirection, EdgeId, Graph, GraphDelta, NodeId};
 pub use hash::DefaultBuildHasher;
-pub use hit_test::{HitTestResult, hit_test};
+pub use hit_test::{HitTestResult, hit_test, hit_test_frame};
 pub use interaction::{GraphEvent, Hover, MouseButton, Selection};
 pub use keyed_graph::KeyedGraph;
 pub use layout::{

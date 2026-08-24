@@ -1582,8 +1582,6 @@ pub fn edge_path<N, E>(
             apply_node_avoidance(&mut control_world, source_world, target_world, ctx);
             control = viewport.world_to_screen(control_world);
         }
-        #[cfg(test)]
-        eprintln!("DBG av post_screen={:?} zoom={}", control, viewport.zoom());
         let curve = trim_curve_to_node_boundary(
             source,
             control,

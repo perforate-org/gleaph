@@ -9,6 +9,7 @@ use glam::Vec2;
 use std::hash::BuildHasher;
 
 use crate::graph::{EdgeId, NodeId};
+use crate::paint::PaintFrame;
 use crate::runtime::{EdgePrep, SyncedGraphRuntime};
 use crate::style::GraphStyle;
 use crate::viewport::{Viewport, WorldBounds};
@@ -195,6 +196,52 @@ where
     }
 }
 
+/// Hit-test a canvas-local point against a delivered worker frame
+/// (ADR 0076 S3, §Decision 2).
+///
+/// Worker-mode views have no synchronized main-thread scene read: their
+/// selectable geometry is the last delivered [`PaintFrame`], whose node
+/// positions, radii, and edge paths are exactly what was painted. The test
+/// therefore runs purely on that snapshot with the same precedence and edge
+/// threshold as the scene path — the nearest node whose drawn radius contains
+/// the point wins; otherwise the nearest edge path within
+/// `(edge_width / 2 + 2).max(3)` screen pixels. The snapshot can be at most
+/// one frame stale during interaction, which ADR 0076 accepts for hover and
+/// drag targeting.
+pub fn hit_test_frame(frame: &PaintFrame, screen_point: Vec2, style: &GraphStyle) -> HitTestResult {
+    let mut best_node: Option<(NodeId, f32)> = None;
+    for node in &frame.nodes {
+        let dist = (screen_point - node.position).length();
+        if dist <= node.radius && best_node.is_none_or(|(_, best)| dist < best) {
+            best_node = Some((node.id, dist));
+        }
+    }
+    if let Some((node, _)) = best_node {
+        return HitTestResult {
+            node: Some(node),
+            edge: None,
+        };
+    }
+
+    let threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
+    let mut best_edge: Option<(EdgeId, f32)> = None;
+    for edge in &frame.edges {
+        let dist = edge
+            .path
+            .iter()
+            .map(|(p0, p1, p2)| distance_to_quadratic_bezier(screen_point, *p0, *p1, *p2))
+            .fold(f32::INFINITY, f32::min);
+        if dist <= threshold && best_edge.is_none_or(|(_, best)| dist < best) {
+            best_edge = Some((edge.id, dist));
+        }
+    }
+
+    HitTestResult {
+        node: None,
+        edge: best_edge.map(|(edge, _)| edge),
+    }
+}
+
 /// Distance from a point to a quadratic Bézier curve, sampled at fixed steps.
 fn distance_to_quadratic_bezier(p: Vec2, a: Vec2, control: Vec2, b: Vec2) -> f32 {
     const SAMPLES: usize = 16;
@@ -225,6 +272,7 @@ fn distance_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 mod tests {
     use super::*;
     use crate::graph::EdgeDirection;
+    use crate::interaction::{Hover, Selection};
     use crate::patch::GraphBatch;
     use crate::scene::GraphScene;
     use crate::viewport::WorldBounds;
@@ -384,5 +432,112 @@ mod tests {
             result.edge.is_some(),
             "self-loop onigiri should be hittable at its base"
         );
+    }
+
+    /// The delivered-frame counterpart of [`hit_at`]: build the paint frame
+    /// the worker would ship for this scene and viewport, then hit-test it.
+    fn frame_hit_at(
+        scene: &GraphScene<&'static str, &'static str, (), ()>,
+        vp: &Viewport,
+        world: Vec2,
+    ) -> HitTestResult {
+        let style = GraphStyle::default();
+        let mut runtime = crate::runtime::GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let frame = crate::paint::build_indexed_paint_frame(crate::paint::IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &|_, _: &()| -> Option<String> { None },
+            edge_label: &|_, _: &()| -> Option<String> { None },
+            viewport: vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+        hit_test_frame(&frame, vp.world_to_screen(world), &style)
+    }
+
+    #[test]
+    fn hit_test_frame_matches_the_scene_hit_test_within_the_frame() {
+        // Every element of this scene is visible under the fitted viewport,
+        // so the frame carries all selectable geometry. For probe points on
+        // nodes, edges, and blank space, both paths must agree exactly —
+        // same precedence, same threshold.
+        let (scene, vp) = scene_setup();
+        for world in [
+            Vec2::new(0.0, 0.0),   // node a
+            Vec2::new(100.0, 0.0), // node b
+            Vec2::new(50.0, 0.0),  // straight edge midpoint
+            Vec2::new(50.0, 40.0), // blank space inside the viewport
+        ] {
+            assert_eq!(
+                frame_hit_at(&scene, &vp, world),
+                hit_at(&scene, &vp, world),
+                "frame and scene paths must agree at world {world:?}"
+            );
+        }
+
+        // The self-loop's curved path is hittable through the frame at the
+        // same point the scene path computes. The probe comes from the
+        // frame's own loop path (its axis depends on the incident edges, so
+        // predicting it here would duplicate the paint layer's math).
+        let style = GraphStyle::default();
+        let mut runtime = crate::runtime::GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let frame = crate::paint::build_indexed_paint_frame(crate::paint::IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &|_, _: &()| -> Option<String> { None },
+            edge_label: &|_, _: &()| -> Option<String> { None },
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+        let loop_edge = frame
+            .edges
+            .iter()
+            .find(|edge| edge.source == edge.target && !edge.path.is_empty())
+            .expect("self-loop present in frame");
+        let (p0, p1, p2) = loop_edge.path[0];
+        // Quadratic Bézier midpoint.
+        let mid = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
+        assert_eq!(
+            hit_test_frame(&frame, mid, &style),
+            hit_test(&synced, &vp, &style, mid, &|_, _: &()| -> Option<String> {
+                None
+            },),
+        );
+        assert!(
+            hit_test_frame(&frame, mid, &style).edge.is_some(),
+            "the loop midpoint must actually be a hit"
+        );
+    }
+
+    #[test]
+    fn hit_test_frame_distinguishes_node_edge_and_blank() {
+        let (scene, vp) = scene_setup();
+
+        // Node center: the node wins and suppresses any edge beneath it.
+        let node_hit = frame_hit_at(&scene, &vp, Vec2::new(100.0, 0.0));
+        assert!(node_hit.node.is_some());
+        assert!(node_hit.edge.is_none());
+
+        // Edge midpoint away from every node: an edge, never a node.
+        let edge_hit = frame_hit_at(&scene, &vp, Vec2::new(50.0, 0.0));
+        assert!(edge_hit.node.is_none());
+        assert!(edge_hit.edge.is_some());
+
+        // Blank space: neither.
+        let blank = frame_hit_at(&scene, &vp, Vec2::new(50.0, 40.0));
+        assert!(blank.node.is_none());
+        assert!(blank.edge.is_none());
+        assert!(!blank.is_hit());
+
+        // An empty frame hits nothing anywhere.
+        let empty = crate::paint::PaintFrame::new();
+        assert!(!hit_test_frame(&empty, Vec2::new(50.0, 50.0), &GraphStyle::default()).is_hit());
     }
 }

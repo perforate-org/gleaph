@@ -24,6 +24,8 @@ use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::paint::{
     Bezier, OverlayCategory, PaintEdge, PaintEdgeLabel, PaintFrame, PaintLabel, PaintNode,
 };
+use crate::style::GraphStyle;
+use crate::viewport::Viewport;
 
 /// Where a view's [`PaintFrame`](crate::paint::PaintFrame) is produced
 /// (ADR 0076).
@@ -381,6 +383,109 @@ impl PaintFrameWire {
             },
         })
     }
+}
+
+/// The ADR 0076 interaction transform (§Decision 4, S3): remap a delivered
+/// worker frame's geometry from the viewport it was built for to the current
+/// one, so pan and zoom render immediately while the worker rebuilds the real
+/// frame.
+///
+/// The map is the screen-space affine implied by the two cameras sharing the
+/// world: an old-viewport screen point `p` corresponds to the new viewport's
+/// screen point through old ⇔ world ⇔ new. With `k = zoom_new / zoom_old` the
+/// map is `p ↦ k·p + t` where `t` is consistent with pans and anchored zooms at
+/// a constant canvas size. It applies to node positions, edge source/target
+/// positions and Bézier control points, node-label anchors, and edge-label
+/// anchors and paths; label offset directions and path parameters are
+/// direction-only and ride unchanged.
+///
+/// Node radii are world-scaled but were clamped to the style's screen-radius
+/// band at build time, so scaling them by `k` and re-clamping is only an
+/// approximation of a true rebuild. That is accepted: this frame is a
+/// temporary interaction rendering, replaced wholesale when the worker's
+/// rebuilt frame arrives via
+/// [`deliver_worker_frame`](crate::view::GraphViewState::deliver_worker_frame).
+///
+/// Returns `None` — render the delivered frame unchanged and wait for the
+/// rebuild — when the two viewports differ in size or either zoom is not
+/// positive. A resize is outside this transform's contract: the delivered
+/// frame's cull no longer matches the new bounds, so its content cannot be
+/// mapped soundly onto them.
+pub fn transform_paint_frame(
+    frame: &PaintFrame,
+    built_for: &Viewport,
+    current: &Viewport,
+    style: &GraphStyle,
+) -> Option<PaintFrame> {
+    if built_for.size() != current.size() || built_for.zoom() <= 0.0 || current.zoom() <= 0.0 {
+        return None;
+    }
+    let scale = current.zoom() / built_for.zoom();
+    let translate = current.size() * 0.5 - built_for.size() * 0.5 * scale
+        + (built_for.center() - current.center()) * current.zoom();
+    let map = |p: Vec2| p * scale + translate;
+    let map_path = |path: &[Bezier]| {
+        path.iter()
+            .map(|(a, b, c)| (map(*a), map(*b), map(*c)))
+            .collect()
+    };
+    // Re-clamp after scaling: the band bounds stay authoritative under the
+    // approximation, so a radius never escapes the style's screen range.
+    let scaled_radius = |radius: f32| {
+        (radius * scale).clamp(style.node_min_screen_radius, style.node_max_screen_radius)
+    };
+
+    let nodes = frame
+        .nodes
+        .iter()
+        .map(|node| PaintNode {
+            position: map(node.position),
+            radius: scaled_radius(node.radius),
+            ..*node
+        })
+        .collect();
+    let edges = frame
+        .edges
+        .iter()
+        .map(|edge| PaintEdge {
+            id: edge.id,
+            source: map(edge.source),
+            target: map(edge.target),
+            path: map_path(&edge.path),
+            direction: edge.direction,
+            selected: edge.selected,
+            hovered: edge.hovered,
+            overlay: edge.overlay,
+            omit_arrow: edge.omit_arrow,
+        })
+        .collect();
+    let labels = frame
+        .labels
+        .iter()
+        .map(|label| PaintLabel {
+            position: map(label.position),
+            text: label.text.clone(),
+        })
+        .collect();
+    let edge_labels = frame
+        .edge_labels
+        .iter()
+        .map(|label| PaintEdgeLabel {
+            edge: label.edge,
+            position: map(label.position),
+            offset: label.offset,
+            text: label.text.clone(),
+            path: map_path(&label.path),
+            t: label.t,
+        })
+        .collect();
+
+    Some(PaintFrame {
+        nodes,
+        edges,
+        labels,
+        edge_labels,
+    })
 }
 
 /// Byte length of a flattened six-`f32`-per-segment point plane behind
@@ -1112,6 +1217,248 @@ mod tests {
         assert_eq!(
             decoded.nodes[0].position.to_array().map(f32::to_bits),
             [(-0.0f32).to_bits(), f32::MIN_POSITIVE.to_bits()]
+        );
+    }
+
+    /// A viewport sized `size`, centered on `center`, at `zoom`.
+    fn camera(center: Vec2, zoom: f32, size: Vec2) -> Viewport {
+        let mut viewport = Viewport::new();
+        viewport.set_size(size);
+        viewport.focus(center);
+        viewport.zoom_at(size * 0.5, zoom);
+        viewport
+    }
+
+    /// A frame with one node, one edge (two Bézier segments), one node label,
+    /// and one edge label — every geometric plane exercised by the transform.
+    fn transform_sample_frame() -> PaintFrame {
+        let mut frame = PaintFrame::new();
+        frame.nodes.push(PaintNode {
+            id: NodeId::from(KeyData::from_ffi(11)),
+            position: Vec2::new(100.0, 50.0),
+            radius: 4.0,
+            selected: true,
+            hovered: false,
+            overlay: OverlayCategory::Accent,
+            simplified: true,
+        });
+        frame.edges.push(PaintEdge {
+            id: EdgeId::from(KeyData::from_ffi(12)),
+            source: Vec2::new(100.0, 50.0),
+            target: Vec2::new(200.0, 50.0),
+            path: vec![
+                (
+                    Vec2::new(100.0, 50.0),
+                    Vec2::new(140.0, 30.0),
+                    Vec2::new(180.0, 50.0),
+                ),
+                (
+                    Vec2::new(180.0, 50.0),
+                    Vec2::new(190.0, 55.0),
+                    Vec2::new(200.0, 50.0),
+                ),
+            ],
+            direction: EdgeDirection::Directed,
+            selected: false,
+            hovered: true,
+            overlay: OverlayCategory::Dimmed,
+            omit_arrow: false,
+        });
+        frame.labels.push(PaintLabel {
+            position: Vec2::new(100.0, 60.0),
+            text: "node".to_string(),
+        });
+        frame.edge_labels.push(PaintEdgeLabel {
+            edge: EdgeId::from(KeyData::from_ffi(12)),
+            position: Vec2::new(150.0, 45.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "edge".to_string(),
+            path: vec![(
+                Vec2::new(100.0, 50.0),
+                Vec2::new(140.0, 30.0),
+                Vec2::new(200.0, 50.0),
+            )],
+            t: 0.5,
+        });
+        frame
+    }
+
+    #[test]
+    fn transform_maps_every_anchor_through_both_cameras() {
+        // The defining invariant: whatever the camera change — pan, anchored
+        // zoom, or both — a world point drawn by the old viewport lands
+        // exactly where the new viewport would draw it.
+        let size = Vec2::new(800.0, 600.0);
+        let built_for = camera(Vec2::new(-20.0, 15.0), 1.0, size);
+        let world_points = [
+            Vec2::new(-20.0, 15.0),
+            Vec2::new(35.0, -40.0),
+            Vec2::ZERO,
+            Vec2::new(120.0, 90.0),
+        ];
+        let mut frame = PaintFrame::new();
+        for (i, world) in world_points.iter().enumerate() {
+            frame.nodes.push(PaintNode {
+                id: NodeId::from(KeyData::from_ffi(i as u64)),
+                position: built_for.world_to_screen(*world),
+                radius: 4.0,
+                selected: false,
+                hovered: false,
+                overlay: OverlayCategory::None,
+                simplified: false,
+            });
+        }
+
+        for (center, zoom) in [
+            (Vec2::new(-60.0, 15.0), 1.0),  // pan only
+            (Vec2::new(-20.0, 15.0), 2.5),  // center zoom only
+            (Vec2::new(-35.0, -10.0), 0.4), // zoom-out plus pan
+            (Vec2::new(90.0, 40.0), 7.0),   // composite
+        ] {
+            let current = camera(center, zoom, size);
+            let transformed =
+                transform_paint_frame(&frame, &built_for, &current, &GraphStyle::default())
+                    .expect("same-size cameras are affine");
+            for (node, world) in transformed.nodes.iter().zip(&world_points) {
+                let expected = current.world_to_screen(*world);
+                assert!(
+                    (node.position - expected).length() < 1e-2,
+                    "world {world:?} must land where the new camera draws it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transform_pan_moves_every_anchor_by_the_pan_delta() {
+        let size = Vec2::new(800.0, 600.0);
+        let built_for = camera(Vec2::ZERO, 1.0, size);
+        let mut current = built_for;
+        let delta = Vec2::new(40.0, -12.0);
+        current.pan(delta);
+
+        let source = transform_sample_frame();
+        let transformed =
+            transform_paint_frame(&source, &built_for, &current, &GraphStyle::default())
+                .expect("pan is affine");
+
+        assert_eq!(
+            transformed.nodes[0].position,
+            source.nodes[0].position + delta
+        );
+        assert_eq!(
+            transformed.labels[0].position,
+            source.labels[0].position + delta
+        );
+        assert_eq!(
+            transformed.edge_labels[0].position,
+            source.edge_labels[0].position + delta
+        );
+        assert_eq!(
+            (transformed.edges[0].source, transformed.edges[0].target),
+            (
+                source.edges[0].source + delta,
+                source.edges[0].target + delta
+            )
+        );
+        for (segment, expected) in transformed.edges[0].path.iter().zip(&source.edges[0].path) {
+            assert_eq!(
+                *segment,
+                (expected.0 + delta, expected.1 + delta, expected.2 + delta)
+            );
+        }
+    }
+
+    #[test]
+    fn transform_anchored_zoom_keeps_the_anchor_fixed() {
+        // Zooming on a screen anchor keeps the world point under it fixed, so
+        // content drawn at the anchor stays there while everything else scales
+        // about it by the zoom ratio.
+        let size = Vec2::new(800.0, 600.0);
+        let built_for = camera(Vec2::ZERO, 1.0, size);
+        let anchor = Vec2::new(250.0, 170.0);
+        let mut current = built_for;
+        current.zoom_at(anchor, 2.0);
+
+        let mut source = transform_sample_frame();
+        source.nodes.push(PaintNode {
+            id: NodeId::from(KeyData::from_ffi(13)),
+            position: anchor,
+            ..source.nodes[0]
+        });
+        let transformed =
+            transform_paint_frame(&source, &built_for, &current, &GraphStyle::default())
+                .expect("zoom is affine");
+
+        assert_eq!(
+            transformed.nodes[1].position, anchor,
+            "the anchor point does not move"
+        );
+        let k = current.zoom() / built_for.zoom();
+        let expected_far = anchor + (source.nodes[0].position - anchor) * k;
+        assert!(
+            (transformed.nodes[0].position - expected_far).length() < 1e-3,
+            "off-anchor points scale radially about the anchor"
+        );
+    }
+
+    #[test]
+    fn transform_scales_radii_within_the_style_band() {
+        let size = Vec2::new(400.0, 300.0);
+        let built_for = camera(Vec2::ZERO, 1.0, size);
+        let mut frame = PaintFrame::new();
+        frame.nodes.push(PaintNode {
+            radius: 15.0,
+            ..transform_sample_frame().nodes[0]
+        });
+
+        // Zooming in past the ceiling clamps at the max screen radius instead
+        // of ballooning the marker.
+        let style = GraphStyle::default().with_node_max_screen_radius(20.0);
+        let zoomed_in = camera(Vec2::ZERO, 2.0, size);
+        let up = transform_paint_frame(&frame, &built_for, &zoomed_in, &style).expect("affine");
+        assert_eq!(up.nodes[0].radius, 20.0);
+
+        // Zooming out past the floor clamps at the min screen radius instead
+        // of collapsing the marker.
+        let style = GraphStyle::default().with_node_min_screen_radius(4.0);
+        let zoomed_out = camera(Vec2::ZERO, 0.25, size);
+        let down = transform_paint_frame(&frame, &built_for, &zoomed_out, &style).expect("affine");
+        assert_eq!(down.nodes[0].radius, 4.0);
+
+        // Inside the band the radius simply scales with the camera.
+        let mild = camera(Vec2::ZERO, 1.5, size);
+        let mut small = PaintFrame::new();
+        small.nodes.push(PaintNode {
+            radius: 4.0,
+            ..transform_sample_frame().nodes[0]
+        });
+        let scaled = transform_paint_frame(&small, &built_for, &mild, &GraphStyle::default())
+            .expect("affine");
+        assert!((scaled.nodes[0].radius - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn transform_rejects_size_changes() {
+        // A resize leaves the delivered frame's cull mismatched with the new
+        // bounds, so no mapping is offered: the caller renders the delivered
+        // frame unchanged and waits for the worker rebuild.
+        let style = GraphStyle::default();
+        let built_for = camera(Vec2::ZERO, 1.0, Vec2::new(800.0, 600.0));
+        let resized = camera(Vec2::ZERO, 1.0, Vec2::new(1600.0, 600.0));
+        assert_eq!(
+            transform_paint_frame(&transform_sample_frame(), &built_for, &resized, &style),
+            None
+        );
+    }
+
+    #[test]
+    fn identity_transform_reproduces_the_delivered_frame() {
+        let viewport = camera(Vec2::new(30.0, -12.0), 1.75, Vec2::new(640.0, 480.0));
+        let frame = transform_sample_frame();
+        assert_eq!(
+            transform_paint_frame(&frame, &viewport, &viewport, &GraphStyle::default()),
+            Some(frame)
         );
     }
 }
