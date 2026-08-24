@@ -448,6 +448,29 @@ fn index_seeded_equality_matches_residual_filtering() {
 
 #[test]
 fn grants_and_visibility_survive_canister_upgrade() {
+    // Pin the artifact bytes once so install and upgrade read identical modules even
+    // when a concurrent workspace build rewrites the shared pocket-ic-wasm output
+    // mid-test (a bytes mismatch would fail post_upgrade on unrelated stable cells).
+    let pinned: Vec<(&'static str, std::path::PathBuf)> =
+        ["ROUTER_WASM", "INDEX_WASM", "GRAPH_WASM"]
+            .iter()
+            .map(|name| {
+                let path = std::path::PathBuf::from(std::env::var(name).expect("wasm env"));
+                let snapshot = std::env::temp_dir().join(format!(
+                    "adr0075-upgrade-{}-{}.wasm",
+                    name,
+                    std::process::id()
+                ));
+                std::fs::copy(&path, &snapshot).expect("snapshot wasm artifact");
+                (*name, snapshot)
+            })
+            .collect();
+    for (name, path) in &pinned {
+        // SAFETY: single-threaded test setup before the runtime spawns work; the
+        // redirected paths point at byte-identical snapshots of the same artifacts.
+        unsafe { std::env::set_var(name, path) };
+    }
+
     let env = install_single_shard_federation();
     bind_typed_schema(&env);
     seed_social_graph(&env);

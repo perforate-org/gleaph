@@ -324,6 +324,16 @@ fn lower_ops_slice(
         if let Some(replacement) = decision.replacement {
             *ops.get_mut(index).expect("index within slice") = replacement;
         }
+        if !decision.dst_injections.is_empty()
+            && let PlanOp::ExpandFilter { dst_filter, .. } =
+                ops.get_mut(index).expect("index within slice")
+        {
+            for expr in &decision.dst_injections {
+                if !dst_filter.contains(expr) {
+                    dst_filter.push(expr.clone());
+                }
+            }
+        }
         for expr in decision.filters {
             ops.insert(
                 index + offset,
@@ -346,6 +356,8 @@ struct SiteDecision {
     replacement: Option<PlanOp>,
     /// Guard/plain filter expressions inserted directly after this position.
     filters: Vec<Expr>,
+    /// Union predicates appended into this `ExpandFilter`'s `dst_filter`.
+    dst_injections: Vec<Expr>,
 }
 
 fn decide_site(
@@ -358,6 +370,7 @@ fn decide_site(
         hydrate: Vec::new(),
         replacement: None,
         filters: Vec::new(),
+        dst_injections: Vec::new(),
     };
     match op {
         // Definite labeled vertex scan: the label's policy filter, index-seed eligible.
@@ -394,37 +407,40 @@ fn decide_site(
                 hydrate: group_property_names(group),
                 replacement,
                 filters,
+                dst_injections: Vec::new(),
             }
         }
-        // May-bind node sites: guarded filters over every applicable group.
-        PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. } => SiteDecision {
-            hydrate: group_property_names_all(policies),
-            replacement: None,
-            filters: guarded_filters_all(variable, policies),
-        },
-        PlanOp::Expand {
-            dst, var_len: None, ..
-        }
-        | PlanOp::ExpandFilter {
-            dst, var_len: None, ..
-        } => SiteDecision {
-            hydrate: group_property_names_all(policies),
-            replacement: None,
-            filters: guarded_filters_all(dst, policies),
-        },
-        PlanOp::EdgeBindEndpoints { near, far, .. } => {
-            let mut filters = guarded_filters_all(near, policies);
-            filters.extend(guarded_filters_all(far, policies));
+        PlanOp::ExpandFilter {
+            dst,
+            dst_filter,
+            var_len: None,
+            ..
+        } => {
+            // Expansion destinations carry their label fact inside `dst_filter`
+            // (`IsLabeled(p, Post)`), which the wire's label-resolution collection
+            // registers. Inject plain conjuncts per matching group directly there —
+            // no separate op, and the label name is guaranteed resolvable because the
+            // planner proved it from the pattern.
+            let mut dst_injections = Vec::new();
+            for group in &policies.groups {
+                if dst_has_decidable_fact(dst_filter, dst, &group.label_name) {
+                    dst_injections.push(label_filter(dst, group));
+                }
+            }
+            if dst_injections.is_empty() {
+                return none();
+            }
             SiteDecision {
                 hydrate: group_property_names_all(policies),
                 replacement: None,
-                filters,
+                filters: Vec::new(),
+                dst_injections,
             }
         }
         // Variable-length quantifiers bind group lists; shortest paths bind path
-        // records; conditional scans carry parameter-driven fallback shapes. Scalar
-        // guards would mis-evaluate or duplicate on these, so they defer their
-        // policy treatment (module docs, [ADR 0075] §7 lineage).
+        // records; conditional scans carry parameter-driven fallback shapes; unlabeled
+        // scans and edge endpoints expose no decidable label fact to attach to. These
+        // defer their policy treatment (module docs, [ADR 0075] §7 lineage).
         _ => none(),
     }
 }
@@ -593,30 +609,38 @@ fn conjunction_filters(variable: &str, comparisons: &[ResolvedComparison]) -> Ve
         .collect()
 }
 
-/// Guarded filters for may-bind sites, over every applicable group: rows bound under
-/// any other label pass untouched, rows of the policy label satisfy the label's
-/// union-of-conditions (`NOT IsLabeled(v, L) OR visible(v, L)`).
-fn guarded_filters_all(variable: &str, policies: &ResolvedPolicies) -> Vec<Expr> {
-    policies
-        .groups
+/// Builds one `<variable>.<property> <op> <literal>` comparison expression.
+/// Whether `dst_filter` contains a decidable positive `IsLabeled(dst, label)` fact —
+/// the planner's proof that the destination variable binds this policy label.
+fn dst_has_decidable_fact(dst_filter: &[Expr], dst: &str, label_name: &str) -> bool {
+    dst_filter
         .iter()
-        .map(|group| {
-            let visible = label_filter(variable, group);
-            Expr::new(ExprKind::Or(
-                Box::new(Expr::new(ExprKind::Not(Box::new(Expr::new(
-                    ExprKind::IsLabeled {
-                        expr: Box::new(Expr::new(ExprKind::Variable(variable.to_owned()))),
-                        label: LabelExpr::Name(group.label_name.clone()),
-                        negated: false,
-                    },
-                ))))),
-                Box::new(visible),
-            ))
-        })
-        .collect()
+        .any(|expr| expr_has_positive_is_labeled(expr, dst, label_name))
 }
 
-/// Builds one `<variable>.<property> <op> <literal>` comparison expression.
+fn expr_has_positive_is_labeled(expr: &Expr, dst: &str, label_name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::IsLabeled {
+            expr: base,
+            label,
+            negated,
+        } => {
+            !*negated
+                && base_kind_is_variable(base, dst)
+                && matches!(label, LabelExpr::Name(name) if name.as_str() == label_name)
+        }
+        ExprKind::And(left, right) => {
+            expr_has_positive_is_labeled(left, dst, label_name)
+                || expr_has_positive_is_labeled(right, dst, label_name)
+        }
+        _ => false,
+    }
+}
+
+fn base_kind_is_variable(base: &Expr, name: &str) -> bool {
+    matches!(&base.kind, ExprKind::Variable(v) if v == name)
+}
+
 fn comparison_expr(variable: &str, comparison: &ResolvedComparison) -> Expr {
     Expr::new(ExprKind::Compare {
         left: Box::new(Expr::new(ExprKind::PropertyAccess {
@@ -939,32 +963,60 @@ mod tests {
     }
 
     #[test]
-    fn unlabeled_scan_receives_guarded_filter_passing_other_labels() {
-        // The lowered guard shape is `NOT IsLabeled(v, Post) OR visible(v)` so vertices
-        // of any other label pass through the same pipeline untouched.
-        let group = ResolvedPolicyGroup {
-            label_id: 9,
-            label_name: "Post".to_owned(),
-            rows: vec![ResolvedConjunction {
-                subject_tag: 0,
-                comparisons: vec![ResolvedComparison {
-                    property_id: 30,
-                    property_name: "visibility".to_owned(),
-                    op: PredicateOp::Eq,
-                    value: gleaph_gql::Value::Text("public".to_owned()),
+    fn expansion_destination_injects_into_planner_label_fact() {
+        let _ = fixture();
+        // ExpandFilter destinations carry the planner's `IsLabeled(p, Post)` fact; the
+        // policy conjuncts must inject into that existing filter (whose label name is
+        // wire-registered) instead of a separate op.
+        let mut parsed = crate::prepared::plan_prepared_query(
+            "MATCH (u:User)-[:POSTED]->(p:Post) RETURN p.tag AS tag",
+            principal(9),
+        )
+        .map(|(plan, _, _)| plan)
+        .unwrap_or_else(|e| panic!("plan failed: {e:?}"));
+        assert!(
+            parsed
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
+            "expected an ExpandFilter binding p"
+        );
+
+        let policies = ResolvedPolicies {
+            fingerprint: Vec::new(),
+            groups: vec![ResolvedPolicyGroup {
+                label_id: 9,
+                label_name: "Post".to_owned(),
+                rows: vec![ResolvedConjunction {
+                    subject_tag: 0,
+                    comparisons: vec![ResolvedComparison {
+                        property_id: 30,
+                        property_name: "visibility".to_owned(),
+                        op: PredicateOp::Eq,
+                        value: gleaph_gql::Value::Text("public".to_owned()),
+                    }],
                 }],
             }],
         };
-        let policies = ResolvedPolicies {
-            fingerprint: Vec::new(),
-            groups: vec![group],
-        };
-        let mut expr = guarded_filters_all("v", &policies);
-        let rendered = format!("{:?}", expr.pop().expect("one guard per group"));
+        let store = RouterStore::new();
+        let ctx = LoweringContext::new(&store, GraphId::from_raw(7));
+        lower_into_plan(&ctx, &mut parsed, &policies);
+
+        // Every comparison conjunct lands inside the planner's dst_filter — no
+        // standalone PropertyFilter is added.
+        let mut saw_visibility_in_dst_filter = false;
+        for op in &parsed.ops {
+            if let PlanOp::ExpandFilter { dst_filter, .. } = op {
+                saw_visibility_in_dst_filter = dst_filter
+                    .iter()
+                    .any(|expr| format!("{expr:?}").contains("visibility"));
+            }
+        }
         assert!(
-            rendered.contains("Not") && rendered.contains("Or") && rendered.contains("IsLabeled"),
-            "guard must be NOT IsLabeled OR visible, got {rendered}"
+            saw_visibility_in_dst_filter,
+            "policy conjunct must join the planner label-fact filter"
         );
+        assert_eq!(parsed.ops.len(), 3, "no extra ops inserted");
     }
 
     #[test]
