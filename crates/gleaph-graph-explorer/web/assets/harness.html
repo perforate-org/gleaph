@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Gleaph explorer — wasm paint-frame timing harness (ADR 0076 S4a)</title>
+        <style>
+            body {
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                background: #11151c;
+                color: #cdd6f4;
+                padding: 2rem;
+                line-height: 1.5;
+            }
+            h1 {
+                font-size: 1rem;
+                color: #f9e2af;
+            }
+            p {
+                color: #a6adc8;
+                max-width: 70rem;
+            }
+            table {
+                border-collapse: collapse;
+                margin-top: 1rem;
+            }
+            th,
+            td {
+                border: 1px solid #45475a;
+                padding: 0.35rem 0.8rem;
+                text-align: right;
+            }
+            th:first-child,
+            td:first-child {
+                text-align: left;
+            }
+            td.pending {
+                color: #6c7086;
+            }
+            td.error {
+                color: #f38ba8;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>wasm paint-frame build — scalar timing (ADR 0076 S4a)</h1>
+        <p>
+          Times <code>build_indexed_paint_frame</code> over the same
+          deterministic random fixture as <code>gpui-graph/benches/paint_bench.rs</code>
+          (fitted 1200×800 viewport), inside a dedicated worker, on this machine.
+          Compare against the native serial baseline
+          (<code>RAYON_NUM_THREADS=1</code>) to get the wasm scalar penalty that
+          replaces the ADR's 1.2–3× estimate.
+        </p>
+        <table id="results">
+            <thead>
+                <tr>
+                    <th>nodes</th><th>edges</th><th>iters</th><th>mean ms</th>
+                    <th>p50 ms</th><th>min ms</th><th>max ms</th><th>wire bytes</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <script type="module">
+            const sizesParam = new URLSearchParams(location.search).get('nodes');
+            const sizes = sizesParam
+                ? sizesParam.split(',').map((value) => Number(value))
+                : [500, 2000, 5000];
+            const iterations = Number(new URLSearchParams(location.search).get('iterations') ?? 30);
+            const tbody = document.querySelector('#results tbody');
+
+            function runNext(index) {
+                if (index >= sizes.length) return;
+                const nodes = sizes[index];
+                const row = document.createElement('tr');
+                row.innerHTML =
+                    `<td>${nodes}</td><td class="pending">…</td>` +
+                    `<td>${iterations}</td><td colspan="5" class="pending">running in worker…</td>`;
+                tbody.appendChild(row);
+
+                const worker = new Worker(
+                    `bench_worker.js?nodes=${nodes}&iterations=${iterations}`,
+                    { type: 'module' },
+                );
+                worker.onmessage = (event) => {
+                    const { kind, json } = event.data;
+                    if (kind === 'error') {
+                        row.innerHTML =
+                            `<td>${nodes}</td><td class="error" colspan="7">${json ?? 'failed'}</td>`;
+                    } else {
+                        const stats = JSON.parse(json);
+                        row.innerHTML =
+                            `<td>${stats.nodes}</td><td>${stats.edges}</td><td>${stats.iterations}</td>` +
+                            `<td>${stats.mean_ms.toFixed(2)}</td><td>${stats.p50_ms.toFixed(2)}</td>` +
+                            `<td>${stats.min_ms.toFixed(2)}</td><td>${stats.max_ms.toFixed(2)}</td>` +
+                            `<td>${stats.wire_bytes}</td>`;
+                    }
+                    runNext(index + 1);
+                };
+                worker.onerror = (event) => {
+                    row.innerHTML = `<td>${nodes}</td><td class="error" colspan="7">worker error: ${event.message}</td>`;
+                };
+            }
+            runNext(0);
+        </script>
+    </body>
+</html>

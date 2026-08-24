@@ -26,8 +26,14 @@ Measured native baseline at 5,000 nodes / ~7,400 edges (10-core, 2026-08-24):
 - Frame wire size: ~12,300 primitives at 2.5k nodes (~0.5–1 MB linear), i.e. sub-millisecond
   as a transferable buffer copy.
 
-On wasm the same work is serial and carries an unvalidated scalar penalty (commonly 1.2–3×
-for numeric code), putting a 5k-node frame at roughly 60–120 ms of main-thread time.
+On wasm the same work is serial. S4a measured the scalar penalty directly
+(2026-08-24, same code path both sides, release + `simd128`, 60 iterations):
+the serial frame build runs ~26 ms per 5k-node frame in a browser worker
+versus ~24 ms native serial — about 1.1×, not the 1.2–3× commonly assumed for
+numeric code (this workload is branchy hash-and-cull work, which V8 compiles
+nearly at native speed). The parallel native build remains ~9 ms, so the
+worker-mode planning number is ~3× the parallel target, and thread scaling
+(S4b) is what closes that gap.
 
 ## Problem
 
@@ -137,8 +143,8 @@ Pre-production, no deployed compatibility path:
   `InProcess` stays default.
 - S3: interaction transform + async refit; hit-test snapshot.
 - S4: wasm-threads build (atomics target features) + `.ic-assets.json5` headers + CORP audit;
-  measure the wasm scalar penalty and thread scaling at this point, replacing the 1.2–3×
-  estimate.
+  the wasm scalar penalty is measured (S4a: ~1.1× vs native serial, ~26 ms per 5k-node
+  worker frame — see `crates/gpui-graph/DESIGN.md` §18.2); S4b measures thread scaling.
 
 Each slice lands with `paint_bench` / `layout_bench` green and, from S2 on, a wasm timing
 harness (wasm-pack build + browser trace) so web numbers stop being extrapolations.

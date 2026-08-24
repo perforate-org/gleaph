@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Gleaph Graph Explorer — web (ADR 0076 S4a)</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                background: #11151c;
+                overflow: hidden;
+            }
+            canvas {
+                display: block;
+            }
+        </style>
+    </head>
+    <body>
+        <!--
+          Main-thread GPUI application. The #[wasm_bindgen(start)] export boots
+          gpui_web, spawns worker.js as a module worker, injects the demo scene,
+          and renders delivered frames. Append ?nodes=2000 to size the graph.
+        -->
+        <script type="module">
+            import init from './gleaph_explorer_web_app.js';
+            init().catch((error) => console.error('[explorer-web] init failed:', error));
+        </script>
+    </body>
+</html>

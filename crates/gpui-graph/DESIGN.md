@@ -1406,6 +1406,62 @@ scene-path hit test (same precedence, same threshold), and it can be at most
 one frame stale (ADR 0076 §Decision 2). The InProcess path keeps the indexed
 scene hit test unchanged.
 
+### Browser execution and measured scalar penalty (ADR 0076 S4a)
+
+The seam's first browser execution is the explorer web entry
+(`crates/gleaph-graph-explorer/web/`, a standalone wasm workspace so root
+workspace members and the shared lockfile stay untouched). The main thread
+boots `gpui_web` (WebGPU), spawns the application-owned `worker.js` as a
+module worker, and — before the worker signals readiness — queues requests,
+because wasm initialization is asynchronous and messages posted before the
+worker registers its handler would be lost. On readiness it injects a
+deterministic demo graph through the application batch codec
+(`gleaph-explorer-web-worker::batch_codec`; the library deliberately defines
+no `Merge`/`Apply` byte form), then `set_frame_source(Worker)` +
+`connect_worker_channel` take over: every prepaint posts an interaction
+snapshot, the worker's concrete `WorkerBackend` answers inside
+`DedicatedWorkerGlobalScope` with one ForceAtlas2 step plus one indexed frame
+build, and each frame returns as one transferable `ArrayBuffer`
+(`PaintFrameWire::to_wire_bytes`). Verified in Chrome: scene merge in, frames
+out continuously (600-node demo at ~92 kB/frame with live round-trip times in
+the page overlay), no COOP/COEP/CORP headers anywhere — the single-threaded
+dispatcher fallback is expected until S4b.
+
+Two facts the browser run surfaced, both now pinned:
+
+- `Application::run` cannot host a web app: web `Platform::run` invokes the
+  launch callback and returns instead of blocking, so the last strong `AppCell`
+  reference dies with the call stack and the app stops right after its first
+  draw. The entry must use `run_embedded` and keep the returned
+  `ApplicationHandle` alive for the page's lifetime.
+- `std::time` is unsupported on wasm32-unknown-unknown and panics on use; a
+  stray `std::time::Instant::now()` in `build_paint_frame_with_runtime` (an
+  unused instrumentation leftover, removed in this slice) was the first such
+  casualty. `web_time` is the crate-wide rule for anything reachable from a
+  wasm build.
+
+The wasm scalar penalty is no longer an estimate. The timing harness runs the
+same `measure_paint_build` code path on both sides
+(`gleaph-explorer-web-worker::paint_timing`, mirroring `paint_bench`'s
+`random` fixture with a fitted 1200×800 viewport): in a dedicated worker under
+Chrome, and natively with a one-thread rayon pool as the serial baseline.
+Release builds with `simd128`, 60 timed iterations each, one 10-core host,
+2026-08-24:
+
+| nodes | wasm (worker) p50 | native serial p50 | penalty | native parallel p50 |
+| ----- | ----------------- | ----------------- | ------- | ------------------- |
+| 500   | 2.2 ms            | 2.4 ms            | ~0.9×   | —                   |
+| 2000  | 9.2 ms            | 8.2 ms            | ~1.1×   | —                   |
+| 5000  | 26.1 ms           | 23.9 ms           | ~1.1×   | 9.0 ms              |
+
+The ADR's "commonly 1.2–3×" guess overstates this workload: the frame build is
+branchy hash-and-cull work, not a tight numeric kernel, and V8's optimizing
+compiler lands within ~10% of native serial (the 500-node point is inside run
+noise). The planning number that replaces the ADR's 60–120 ms projection is
+~26 ms per 5k-node frame on the worker — about 3× the parallel native build,
+and the quantity S4b's thread scaling attacks. Wire sizes match the ADR's
+sub-megabyte projection (770 kB at 5k nodes).
+
 ## 18.3 Edge curves
 
 Edges render as quadratic Bézier curves that bow toward the side with lower

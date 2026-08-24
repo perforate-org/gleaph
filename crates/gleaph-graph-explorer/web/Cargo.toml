@@ -1,0 +1,22 @@
+# ADR 0076 S4a — explorer web entry (wasm32).
+#
+# A standalone workspace, mirroring `demo/social/wasm/`: the root Gleaph
+# workspace targets canisters and native hosts, and its member list and lockfile
+# are shared with several concurrent work streams. The web entry compiles two
+# wasm32 binaries from here without touching either:
+#
+# - `worker/` — the application-owned worker bootstrap. gpui-graph ships no
+#   worker bundle (`gpui_graph::worker::web_transport`): an application supplies
+#   its own Worker script, imports this wasm module inside a
+#   DedicatedWorkerGlobalScope, and drives a concrete `WorkerBackend`. This
+#   crate is that contract's first demonstration.
+# - `app/`    — the main-thread GPUI application (`gpui_web` platform) that
+#   spawns the worker, connects it through `connect_worker_channel`, and renders
+#   delivered frames.
+#
+# Build with `./build.sh`; serve `dist/` from any static file server. No
+# COOP/COEP/CORP headers are required: this slice is deliberately the
+# no-threads half of S4 (ADR 0076 S4b owns threads/atomics).
+[workspace]
+members = ["app", "worker"]
+resolver = "2"

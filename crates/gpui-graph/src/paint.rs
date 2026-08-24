@@ -611,7 +611,6 @@ where
     // order, which keeps the frame byte-identical across pool sizes.
     // The pre-pass arrays are indexed by position within `candidates`, while
     // `candidate_index` inside the tuple indexes the full prep arrays.
-    let __t6 = std::time::Instant::now();
     let build_edge =
         |(position, (candidate_index, id, edge, source, target, _)): (usize, &Candidate<E>)| {
             let is_self_loop = edge.source == edge.target;
