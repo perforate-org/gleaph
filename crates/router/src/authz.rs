@@ -195,6 +195,14 @@ impl RequirementSet {
         self.graphs.entry(graph.raw()).or_default()
     }
 
+    /// Test-only summary for the GAP-008 diagnosis (plan 0303).
+    #[cfg(test)]
+    pub(crate) fn test_demand_summary(&self, graph_raw: u32) -> Option<(bool, usize, usize)> {
+        self.graphs
+            .get(&graph_raw)
+            .map(|d| (d.unattributed, d.conjunctive.len(), d.alternatives.len()))
+    }
+
     fn require(&mut self, graph: GraphId, privilege: Privilege) {
         self.demands(graph).conjunctive.push(privilege);
     }
@@ -1375,7 +1383,8 @@ pub(crate) fn enforce_prepared_data_plane_authorization(
     stored: &RequirementSet,
     plan: &PhysicalPlan,
 ) -> Result<(), RouterError> {
-    if requirements_cover(stored, root_graph.raw(), caller, store) {
+    let stored_covers = requirements_cover(stored, root_graph.raw(), caller, store);
+    if stored_covers {
         return Ok(());
     }
     enforce_data_plane_authorization(store, caller, root_graph, plan)

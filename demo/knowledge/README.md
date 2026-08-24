@@ -73,11 +73,13 @@ done
 #   gleaph prepared unpublish variable-length-reach
 ```
 
-> **Known issue (2026-08-24):** non-owner `prepared run` currently still ends in
-> `forbidden` even with the full grant surface applied — tracked as
-> GAP-2026-08-24-008 (`design/implementation-gaps.md`) with the discrimination evidence.
-> Owner execution works; until the Router-side diagnosis lands, browser rows for
-> non-owner visitors are expected to fail this way.
+> **Known issue (2026-08-24, plan 0303 diagnosis):** the pass/deny boundary for
+> non-owner execution is the ELEMENT_ID projection. Ops without it execute as dev
+> (`variable-length-reach` after re-registration: 7 rows); `citation-reach` denies
+> because its edge `ELEMENT_ID(e)` read is tenancy-only in Phase 1 (no edge-property
+> grant resource), and `shortest-path` hits an unrelated planner/index-client issue
+> under active sibling development. Full matrix and separating experiment:
+> GAP-2026-08-24-008 (`design/implementation-gaps.md`) and artifacts §13–14.
 
 ### Browser host
 

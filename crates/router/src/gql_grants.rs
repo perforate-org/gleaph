@@ -997,6 +997,45 @@ mod publication_tests {
     use candid::Principal;
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 
+    /// Plan 0303 / GAP-2026-08-24-008 contract lock: the element-id-bearing demo
+    /// projection extracts exactly the per-key property-read rows that a brace-form
+    /// `GRANT READ … { … }` covers — no unattributed demand, so a non-owner holding the
+    /// PUBLIC property-list grant executes the op.
+    #[test]
+    fn element_id_projection_demands_are_coverable_property_reads() {
+        let owner = Principal::from_slice(&[7; 29]);
+        let registrar = Principal::from_slice(&[255; 29]); // has MANAGE_CATALOG via grant_admins
+        let graph = owned_graph(owner, "diag_eid");
+        let store = crate::facade::store::RouterStore::new();
+        store
+            .admin_intern_vertex_label(registrar, "diag_eid", "Concept")
+            .expect("intern Concept");
+        store
+            .admin_intern_edge_label(registrar, "diag_eid", "RELATED_TO")
+            .expect("intern RELATED_TO");
+        store
+            .admin_intern_properties(
+                registrar,
+                "diag_eid",
+                &["name".to_owned(), "definition".to_owned()],
+            )
+            .expect("intern properties");
+
+        let source = "MATCH (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,3}(b:Concept) \
+                      RETURN DISTINCT b.name AS concept, ELEMENT_ID(b) AS concept_id";
+        let (cache, bound_graph) =
+            crate::prepared::build_prepared_cache(source, owner, Some(graph)).expect("plan probeG");
+        assert_eq!(bound_graph, graph);
+        let reqs = crate::authz::extract_live(&store, &cache.plan, bound_graph);
+        println!("DIAG RequirementSet for probeG:\n{reqs:#?}");
+        let (unattributed, conj, alts) = reqs
+            .test_demand_summary(graph.raw())
+            .expect("graph demands present");
+        assert!(!unattributed, "element-id reads must stay attributable");
+        assert_eq!(conj, 5, "Match + Read + Traverse + ReadProperty×2");
+        assert_eq!(alts, 0);
+    }
+
     fn principal(byte: u8) -> Principal {
         Principal::from_slice(&[byte; 29])
     }
