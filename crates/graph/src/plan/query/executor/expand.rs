@@ -17,7 +17,7 @@ use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
 use super::{
-    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, resolve_scan_payload_bytes,
+    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, resolve_edge_equality_probe_payloads,
     row_matches_all, vertex_binding_for_projection,
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
@@ -364,9 +364,13 @@ fn edge_matches_indexed_equality(
     let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
     };
-    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
+    // An IN-list bound matches when the stored bytes equal any element payload;
+    // a Null-only bound (or empty list) matches nothing.
+    let probes = resolve_edge_equality_probe_payloads(scan_value, parameters)?;
+    let expected_any: Vec<Vec<u8>> = probes.into_iter().flatten().collect();
+    if expected_any.is_empty() {
         return Ok(false);
-    };
+    }
     let owner_vertex_id =
         canonical_forward_owner_for_expand(store, probe_vertex_id, direction, edge)?;
     let handle = EdgeHandle {
@@ -381,7 +385,9 @@ fn edge_matches_indexed_equality(
         value_to_index_key_bytes(&actual).map_err(|_| PlanQueryError::InvalidExpressionValue {
             expression: "indexed edge equality value encoding".to_owned(),
         })?;
-    Ok(actual_bytes == Some(expected))
+    Ok(expected_any
+        .iter()
+        .any(|expected| actual_bytes.as_deref() == Some(expected.as_slice())))
 }
 
 pub(crate) enum EdgeEqualityStreamFilter {
@@ -396,7 +402,10 @@ pub(crate) enum EdgeEqualityStreamFilter {
     IndexedMultiLabel(BTreeSet<(u32, u16, u32)>),
     StoreLookup {
         property_id: gleaph_graph_kernel::entry::PropertyId,
-        expected: Vec<u8>,
+        /// Encoded equality payloads; a stream edge matches when its stored bytes
+        /// equal any payload (one element for plain equality bounds, one per
+        /// element for IN-list bounds).
+        expected_any: Vec<Vec<u8>>,
     },
 }
 
@@ -418,18 +427,36 @@ pub(crate) fn edge_equality_stream_filter(
     let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
         return Ok(EdgeEqualityStreamFilter::NoMatches);
     };
-    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
+    // An IN-list bound unions one equality probe per element; every other scan
+    // value probes exactly one bound. Elements resolve independently so a
+    // missing parameter fails closed instead of narrowing the filter silently.
+    let probes = resolve_edge_equality_probe_payloads(scan_value, parameters)?;
+    let expected_any: Vec<Vec<u8>> = probes.into_iter().flatten().collect();
+    if expected_any.is_empty() {
         return Ok(EdgeEqualityStreamFilter::NoMatches);
+    }
+    let postings = if expected_any.len() == 1 {
+        edge_lookup::lookup_edge_equal_local_sync(
+            index,
+            property_id,
+            &expected_any[0],
+            edge_label_id,
+        )?
+    } else {
+        edge_lookup::lookup_edge_equal_union_local(
+            index,
+            property_id,
+            &expected_any,
+            edge_label_id,
+        )?
     };
-    let postings =
-        edge_lookup::lookup_edge_equal_local_sync(index, property_id, &expected, edge_label_id)?;
     if postings.is_empty() {
         if index.is_some() {
             return Ok(EdgeEqualityStreamFilter::NoMatches);
         }
         return Ok(EdgeEqualityStreamFilter::StoreLookup {
             property_id,
-            expected,
+            expected_any,
         });
     }
     stream_filter_from_postings(&postings)
@@ -529,7 +556,7 @@ pub(crate) fn edge_matches_stream_filter(
         }
         EdgeEqualityStreamFilter::StoreLookup {
             property_id,
-            expected,
+            expected_any,
         } => {
             let actual = if direction == EdgeDirection::PointingRight {
                 store.edge_property_at_canonical_handle(
@@ -557,7 +584,9 @@ pub(crate) fn edge_matches_stream_filter(
                     expression: "indexed edge equality value encoding".to_owned(),
                 }
             })?;
-            Ok(actual_bytes.as_deref() == Some(expected.as_slice()))
+            Ok(expected_any
+                .iter()
+                .any(|expected| actual_bytes.as_deref() == Some(expected.as_slice())))
         }
     }
 }

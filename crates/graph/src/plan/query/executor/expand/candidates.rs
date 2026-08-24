@@ -32,7 +32,7 @@ use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::{
-    EdgeSequenceOrder, resolve_scan_payload_bytes, vertex_row_matches_dst_filters,
+    EdgeSequenceOrder, resolve_edge_equality_probe_payloads, vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
 pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
@@ -985,16 +985,30 @@ fn expand_candidates_via_equality_index(
     let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
     };
-    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
+    // An IN-list bound unions one equality probe per element; every other scan
+    // value probes exactly one bound. Elements resolve independently so a
+    // missing parameter fails closed instead of narrowing the candidates.
+    let probes = resolve_edge_equality_probe_payloads(scan_value, parameters)?;
+    let expected_any: Vec<Vec<u8>> = probes.into_iter().flatten().collect();
+    if expected_any.is_empty() {
         out.clear();
         return Ok(true);
+    }
+    let postings = if expected_any.len() == 1 {
+        edge_lookup::lookup_edge_equal_local_sync(
+            None,
+            property_id,
+            &expected_any[0],
+            edge_label_id.map(|id| id.raw()),
+        )?
+    } else {
+        edge_lookup::lookup_edge_equal_union_local(
+            None,
+            property_id,
+            &expected_any,
+            edge_label_id.map(|id| id.raw()),
+        )?
     };
-    let postings = edge_lookup::lookup_edge_equal_local_sync(
-        None,
-        property_id,
-        &expected,
-        edge_label_id.map(|id| id.raw()),
-    )?;
     if postings.is_empty() {
         return Ok(false);
     }

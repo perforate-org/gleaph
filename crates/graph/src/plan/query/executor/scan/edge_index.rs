@@ -22,7 +22,7 @@ use crate::plan::query::executor::bindings::{EdgeBinding, hop_aux_scalar};
 use crate::plan::query::executor::expand::{
     ExpandDst, expand_dst_binding, expand_dst_matches_prebound_vertex,
 };
-use crate::plan::query::executor::{PlanBinding, resolve_scan_payload_bytes};
+use crate::plan::query::executor::{PlanBinding, resolve_edge_equality_probe_payloads};
 use crate::plan::query::row::PlanRow;
 
 fn property_id_for_scan(
@@ -113,10 +113,21 @@ pub(crate) fn execute_edge_index_scan(
         property.as_ref(),
     )?);
     let postings = if cmp == CmpOp::Eq {
-        let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
-            return Ok(Vec::new());
-        };
-        edge_lookup::lookup_edge_equal_local_sync(index, property_id, &expected, None)?
+        // An IN-list bound unions one equality probe per element; every other
+        // scan value probes exactly one bound. Elements resolve independently
+        // so a missing parameter fails closed instead of narrowing the union.
+        let probes = resolve_edge_equality_probe_payloads(scan_value, parameters)?;
+        let expected: Vec<Vec<u8>> = probes.into_iter().flatten().collect();
+        match expected.as_slice() {
+            // A Null bound (or an empty IN list) can never satisfy equality.
+            [] => Vec::new(),
+            [single] => {
+                edge_lookup::lookup_edge_equal_local_sync(index, property_id, single, None)?
+            }
+            multiple => {
+                edge_lookup::lookup_edge_equal_union_local(index, property_id, multiple, None)?
+            }
+        }
     } else {
         execute_edge_index_range_candidates(index, property_id, scan_value, cmp, parameters)?
     };

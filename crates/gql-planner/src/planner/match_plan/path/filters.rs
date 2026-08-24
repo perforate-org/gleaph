@@ -213,6 +213,39 @@ pub(super) fn plan_edge_filter_fusion(
         }
     }
 
+    // Scannable IN lists fuse symmetrically with equality: every single-value
+    // equality wins first (above), then the first scannable indexed IN conjunct
+    // lowers into one union-of-point-probes bound and is removed from the
+    // residuals exactly like a fused equality. Additional IN conjuncts stay
+    // residual; an AND of lists is never rewritten into one union.
+    if out.indexed_equality.is_none() {
+        if let Some((idx, prop, sv)) = find_first_indexed_edge_inlist_in_conjunctions(
+            where_conjuncts,
+            edge_var,
+            extract_simple_label(&edge.label).as_deref(),
+            edge.direction,
+            stats,
+        ) {
+            where_conjuncts.remove(idx);
+            out.indexed_equality = Some((prop.into(), sv));
+            return out;
+        }
+        if let Some(where_clause) = edge.where_clause.as_ref() {
+            let mut conj = flatten_conjunction(where_clause);
+            if let Some((idx, prop, sv)) = find_first_indexed_edge_inlist_in_conjunctions(
+                &conj,
+                edge_var,
+                extract_simple_label(&edge.label).as_deref(),
+                edge.direction,
+                stats,
+            ) {
+                conj.remove(idx);
+                out.indexed_equality = Some((prop.into(), sv));
+                out.edge_where_override = Some(conj);
+            }
+        }
+    }
+
     // One-sided range fusion: the predicate stays in place (residual filter) so an
     // executor-side fallback for unsupported comparison domains remains correct.
     if out.indexed_equality.is_none() {
@@ -356,15 +389,16 @@ fn flip_cmp_op(op: CmpOp) -> Option<CmpOp> {
     })
 }
 
-fn find_first_indexed_edge_eq_in_conjunctions(
+fn find_first_indexed_edge_bound_in_conjunctions(
     conjuncts: &[Expr],
     edge_var: &str,
     edge_label: Option<&str>,
     edge_direction: gleaph_gql::types::EdgeDirection,
     stats: &dyn GraphStats,
+    parse: fn(&Expr) -> Option<(String, String, ScanValue)>,
 ) -> Option<(usize, String, ScanValue)> {
     for (i, c) in conjuncts.iter().enumerate() {
-        if let Some((v, p, sv)) = parse_edge_var_property_equality(c)
+        if let Some((v, p, sv)) = parse(c)
             && v == edge_var
             && stats.is_edge_property_indexed_for(edge_label, &p, edge_direction)
         {
@@ -372,6 +406,40 @@ fn find_first_indexed_edge_eq_in_conjunctions(
         }
     }
     None
+}
+
+fn find_first_indexed_edge_eq_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
+    stats: &dyn GraphStats,
+) -> Option<(usize, String, ScanValue)> {
+    find_first_indexed_edge_bound_in_conjunctions(
+        conjuncts,
+        edge_var,
+        edge_label,
+        edge_direction,
+        stats,
+        parse_edge_var_property_equality,
+    )
+}
+
+fn find_first_indexed_edge_inlist_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
+    stats: &dyn GraphStats,
+) -> Option<(usize, String, ScanValue)> {
+    find_first_indexed_edge_bound_in_conjunctions(
+        conjuncts,
+        edge_var,
+        edge_label,
+        edge_direction,
+        stats,
+        parse_edge_var_property_inlist,
+    )
 }
 
 pub(super) fn parse_edge_var_property_equality(expr: &Expr) -> Option<(String, String, ScanValue)> {
@@ -382,6 +450,17 @@ pub(super) fn parse_edge_var_property_equality(expr: &Expr) -> Option<(String, S
         return anchor::scan_value_from_expr(right).map(|sv| (v.clone(), property.clone(), sv));
     }
     None
+}
+
+/// Parse a non-negated `e.prop IN [v1, v2, …]` whose left side is an edge
+/// property access and whose every element is an index-scannable
+/// literal/parameter. Negated (`NOT IN`) never parses because a probe union
+/// cannot express exclusion.
+pub(super) fn parse_edge_var_property_inlist(expr: &Expr) -> Option<(String, String, ScanValue)> {
+    let (v, property) = anchor::extract_inlist_predicate(expr)?;
+    // The extractor already enforced non-negation and per-element scannability;
+    // rebuild the bound through the same lowering the vertex anchor uses.
+    anchor::inlist_scan_value_from_expr(expr).map(|sv| (v, property, sv))
 }
 
 /// Parse `e.prop <cmp> <literal|$param>` with a one-sided range comparison; the property side may

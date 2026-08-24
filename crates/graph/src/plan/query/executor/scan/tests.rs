@@ -1,6 +1,9 @@
 use super::super::test_support::*;
 use crate::plan::query::executor::execute_plan_query_bindings_with_initial_rows;
+use gleaph_gql::parser;
+use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::PhysicalPlan;
+use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
 use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::plan_exec::{
     EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
@@ -887,6 +890,272 @@ fn edge_range_unsupported_domain_falls_back_to_store_scan_without_index_call() {
 
     assert!(index.edge_range_calls.borrow().is_empty());
     assert_eq!(result.rows.len(), 2, "superset candidates bind both edges");
+}
+
+/// Store fixture for edge IN-list scans: `a` holds three edges to labeled `b`
+/// vertices whose weights/names identify them (`w5`, `w7`, `w9`). Callers must
+/// hold `crate::test_labels::enter_indexed_edge_property_named("weight")` for
+/// the duration of the test.
+fn edge_inlist_store() -> (GraphStore, Vec<String>) {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["EdgeInA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let mut names = Vec::new();
+    for (name, weight) in [("w5", 5i64), ("w7", 7), ("w9", 9)] {
+        let b = store
+            .insert_vertex_named(["EdgeInB"], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(a, b, Some("EdgeInRel"), [("weight", Value::Int64(weight))])
+            .expect("weighted edge");
+        names.push(name.to_string());
+    }
+    (store, names)
+}
+
+/// Hand-built leading edge IN-list scan binding `b` and projecting its name.
+fn edge_inlist_scan_plan(rel_label: &str, elements: Vec<ScanValue>, cmp: CmpOp) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::EdgeIndexScan {
+            variable: "e".into(),
+            property: "weight".into(),
+            value: ScanValue::InList(elements),
+            cmp,
+            property_projection: None,
+        },
+        PlanOp::EdgeBindEndpoints {
+            edge: "e".into(),
+            near: "__anon_near".into(),
+            far: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some(rel_label.into()),
+            near_property_projection: None,
+            far_property_projection: None,
+            hop_aux_binding: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("b", "name"), "name")],
+            distinct: false,
+        },
+    ])
+}
+
+fn sorted_names(result: &PlanQueryResult) -> Vec<String> {
+    let mut names = text_column(result, "name");
+    names.sort();
+    names
+}
+
+#[test]
+fn executes_edge_inlist_index_scan_as_union_of_point_probes() {
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let (store, _) = edge_inlist_store();
+    let plan = edge_inlist_scan_plan(
+        "EdgeInRel",
+        vec![
+            ScanValue::Literal(Value::Int64(7)),
+            ScanValue::Literal(Value::Int64(5)),
+        ],
+        CmpOp::Eq,
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute edge in-list scan");
+
+    assert_eq!(
+        sorted_names(&result),
+        vec!["w5".to_string(), "w7".to_string()]
+    );
+}
+
+#[test]
+fn edge_inlist_index_scan_deduplicates_hits_across_duplicate_elements() {
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["EdgeInDedupA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    for name in ["w5", "w5b"] {
+        let b = store
+            .insert_vertex_named(["EdgeInDedupB"], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(a, b, Some("EdgeInDedupRel"), [("weight", Value::Int64(5))])
+            .expect("weighted edge");
+    }
+    // Two distinct edges match weight 5; duplicated elements must not multiply rows.
+    let plan = edge_inlist_scan_plan(
+        "EdgeInDedupRel",
+        vec![
+            ScanValue::Literal(Value::Int64(5)),
+            ScanValue::Literal(Value::Int64(5)),
+        ],
+        CmpOp::Eq,
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute dedup edge in-list scan");
+
+    assert_eq!(
+        sorted_names(&result),
+        vec!["w5".to_string(), "w5b".to_string()],
+        "each matching edge binds exactly once"
+    );
+}
+
+#[test]
+fn edge_inlist_index_scan_skips_null_elements_and_missing_parameter_fails_closed() {
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let (store, _) = edge_inlist_store();
+    // Null contributes no probe; the remaining literal still resolves.
+    let plan = edge_inlist_scan_plan(
+        "EdgeInRel",
+        vec![
+            ScanValue::Literal(Value::Null),
+            ScanValue::Literal(Value::Int64(7)),
+        ],
+        CmpOp::Eq,
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute null-element edge in-list scan");
+    assert_eq!(sorted_names(&result), vec!["w7".to_string()]);
+
+    // A missing parameter element fails closed instead of narrowing the union.
+    let plan = edge_inlist_scan_plan(
+        "EdgeInRel",
+        vec![
+            ScanValue::Parameter("$who".into()),
+            ScanValue::Literal(Value::Int64(7)),
+        ],
+        CmpOp::Eq,
+    );
+    let err = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect_err("missing parameter must fail closed");
+    assert!(
+        matches!(err, PlanQueryError::MissingParameter { ref name } if name == "$who"),
+        "expected missing-parameter error, got {err:?}"
+    );
+}
+
+#[test]
+fn edge_inlist_with_non_equality_comparison_fails_closed() {
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let (store, _) = edge_inlist_store();
+    let plan = edge_inlist_scan_plan(
+        "EdgeInRel",
+        vec![ScanValue::Literal(Value::Int64(5))],
+        CmpOp::Lt,
+    );
+
+    let err = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect_err("non-equality IN-list bound must fail closed");
+    assert!(
+        matches!(err, PlanQueryError::UnsupportedOp(msg) if msg.contains("unexpanded IN-list")),
+        "expected unexpanded IN-list error, got {err:?}"
+    );
+}
+
+/// Parses a Cypher-dialect query with `weight` registered as an indexed edge
+/// property so the planner can select the leading edge index anchor.
+fn plan_with_edge_inlist_stats(input: &str) -> PhysicalPlan {
+    let mut stats = gleaph_gql_planner::TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_string());
+    let program = parser::parse(input).unwrap_or_else(|err| panic!("parse error: {err}"));
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    let Statement::Query(composite) = &block.first else {
+        panic!("expected a query statement, got {input:?}");
+    };
+    assert!(composite.rest.is_empty(), "unexpected set operation");
+    build_plan_with_schema_and_options(
+        &composite.left,
+        PlanBuildOptions {
+            stats: Some(&stats),
+            path_extensions: &gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER,
+        },
+        &NoSchema,
+    )
+    .expect("plan should build")
+}
+
+#[test]
+fn indexed_edge_inlist_queries_end_to_end_match_equality_semantics() {
+    let store = GraphStore::new();
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let a = store
+        .insert_vertex_named(["EdgeE2A"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    for (name, weight) in [("w5", 5i64), ("w7", 7), ("w9", 9)] {
+        let b = store
+            .insert_vertex_named(["EdgeE2B"], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(a, b, Some("EdgeE2Rel"), [("weight", Value::Int64(weight))])
+            .expect("weighted edge");
+    }
+
+    let run = |input: &str| {
+        let plan = plan_with_edge_inlist_stats(input);
+        // Both WHERE forms must lower into the anchored union-of-point-probes scan,
+        // exactly like the single-value equality anchor they mirror.
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::EdgeIndexScan {
+                    property,
+                    value: ScanValue::InList(_),
+                    cmp: CmpOp::Eq,
+                    ..
+                } if property.as_ref() == "weight"
+            )),
+            "expected anchored EdgeIndexScan with InList bound for {input}, got {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .unwrap_or_else(|err| panic!("execute {input}: {err:?}"));
+        let mut bound_b: Vec<String> = result
+            .rows
+            .iter()
+            .map(|row| format!("{:?}", row.get("b")))
+            .collect();
+        bound_b.sort();
+        bound_b
+    };
+
+    // Inline pattern WHERE and path-level WHERE agree with each other…
+    let inline =
+        run("MATCH (a:EdgeE2A)-[e:EdgeE2Rel WHERE e.weight IN [5, 7]]->(b:EdgeE2B) RETURN b");
+    let path_level =
+        run("MATCH (a:EdgeE2A)-[e:EdgeE2Rel]->(b:EdgeE2B) WHERE e.weight IN [5, 7] RETURN b");
+    assert_eq!(inline.len(), 2, "weights 5 and 7 each bind one row");
+    assert_eq!(inline, path_level);
+
+    // …and a single-element IN matches exactly what its equality twin matches.
+    let in_single =
+        run("MATCH (a:EdgeE2A)-[e:EdgeE2Rel]->(b:EdgeE2B) WHERE e.weight IN [7] RETURN b");
+    let equality_plan = plan_with_edge_inlist_stats(
+        "MATCH (a:EdgeE2A)-[e:EdgeE2Rel]->(b:EdgeE2B) WHERE e.weight = 7 RETURN b",
+    );
+    let equality_result = store
+        .execute_plan_query(&equality_plan, &params(), GqlExecutionContext::default())
+        .expect("execute equality twin");
+    let mut equality_bound_b: Vec<String> = equality_result
+        .rows
+        .iter()
+        .map(|row| format!("{:?}", row.get("b")))
+        .collect();
+    equality_bound_b.sort();
+    assert_eq!(in_single.len(), 1);
+    assert_eq!(in_single, equality_bound_b);
 }
 
 #[test]

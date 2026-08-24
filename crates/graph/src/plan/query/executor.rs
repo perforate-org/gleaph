@@ -18,7 +18,7 @@ pub(crate) use eval::{
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;
 pub(crate) use path::path_binding_to_value;
-pub(crate) use scan::resolve_scan_payload_bytes;
+pub(crate) use scan::resolve_edge_equality_probe_payloads;
 
 /// The parser stores parameter names with the `$` sigil (`Parameter("$e")`), while the wire
 /// params map is keyed by the bare name — the Router convention shared by `seed.rs` /

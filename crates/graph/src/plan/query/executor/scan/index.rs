@@ -74,6 +74,23 @@ pub(crate) fn resolve_scan_payload_bytes(
     validated_index_payload_bytes(&v)
 }
 
+/// Equality probe payloads for an edge-index bound: one independently resolved
+/// payload per IN-list element, or the single payload of a literal/parameter
+/// bound. `None` payloads are Null bounds that can never satisfy equality; a
+/// missing parameter fails closed instead of narrowing the union silently.
+pub(crate) fn resolve_edge_equality_probe_payloads(
+    sv: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Vec<Option<Vec<u8>>>, PlanQueryError> {
+    match sv {
+        ScanValue::InList(elements) => elements
+            .iter()
+            .map(|element| resolve_scan_payload_bytes(element, parameters))
+            .collect(),
+        single => Ok(vec![resolve_scan_payload_bytes(single, parameters)?]),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_index_scan(
     ctx: &ExecuteCtx<'_>,

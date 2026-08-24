@@ -2521,6 +2521,220 @@ fn match_unindexed_inlist_does_not_emit_index_scan() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// MATCH edge IN-list anchor: union of point probes over one indexed edge property
+// ════════════════════════════════════════════════════════════════════════════════
+
+fn edge_inlist_stats() -> TableStats {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_string());
+    stats
+}
+
+/// True when `expr` is exactly `var.property IN […]`.
+fn is_edge_inlist_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
+    let ExprKind::InList { expr: lhs, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &lhs.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, ExprKind::Variable(name) if name == var) && prop == property
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_inlist_inline_where_lowers_to_leading_union_edge_index_scan() {
+    let stats = edge_inlist_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL WHERE e.weight IN [3, $w]]->(b:Person) RETURN a, b",
+        &stats,
+    );
+
+    let Some(first) = plan.ops.first() else {
+        panic!("expected ops, got none");
+    };
+    match first {
+        PlanOp::EdgeIndexScan {
+            property,
+            value: ScanValue::InList(elements),
+            cmp: CmpOp::Eq,
+            ..
+        } => {
+            assert_eq!(property.as_ref(), "weight");
+            assert_eq!(
+                *elements,
+                vec![
+                    ScanValue::Literal(gleaph_gql::Value::Int64(3)),
+                    ScanValue::Parameter("$w".into()),
+                ]
+            );
+        }
+        other => panic!(
+            "expected leading EdgeIndexScan with InList bound, got {other:?} in {:?}",
+            plan.ops
+        ),
+    }
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
+        "leading EdgeIndexScan must be followed by EdgeBindEndpoints, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_inlist_path_level_where_lowers_to_leading_union_edge_index_scan() {
+    // The path-level WHERE form must anchor exactly like the inline form.
+    let stats = edge_inlist_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight IN [3, 5] RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::InList(_),
+                cmp: CmpOp::Eq,
+                ..
+            } if property.as_ref() == "weight"
+        )),
+        "path-level IN must lower into a union EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_equality_wins_over_inlist_and_keeps_in_residual() {
+    // A single-value equality scan always wins; the IN conjunct stays enforced
+    // by its residual PropertyFilter.
+    let stats = edge_inlist_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight IN [3, 7] AND e.weight = 5 RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::Literal(_),
+                cmp: CmpOp::Eq,
+                ..
+            }
+        )),
+        "equality must win the leading scan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::InList(_),
+                ..
+            }
+        )),
+        "IN must not fuse when an equality bound exists, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_edge_inlist_predicate_on(p, "e", "weight"))
+        )),
+        "the IN conjunct must stay in the residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_not_inlist_never_anchors_and_stays_residual() {
+    let stats = edge_inlist_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight NOT IN [3] RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+        "NOT IN must not emit EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::Expand {
+                indexed_edge_equality: Some(_),
+                ..
+            } | PlanOp::ExpandFilter {
+                indexed_edge_equality: Some(_),
+                ..
+            }
+        )),
+        "NOT IN must not fuse into an Expand equality filter, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_edge_inlist_predicate_on(p, "e", "weight"))
+        )),
+        "NOT IN must stay in the residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_unindexed_inlist_does_not_fuse_or_anchor() {
+    let mut stats = TableStats::default();
+    // `weight` is deliberately absent from every index set.
+    stats.indexed_edge_properties.insert("score".to_string());
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight IN [3, 7] RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+        "unindexed edge IN must not emit EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::Expand {
+                indexed_edge_equality: Some(_),
+                ..
+            } | PlanOp::ExpandFilter {
+                indexed_edge_equality: Some(_),
+                ..
+            }
+        )),
+        "unindexed edge IN must not fuse into Expand equality filters, got: {:?}",
+        plan.ops
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // MATCH vertex nested-leaf anchors (ADR 0073 slice 4)
 // ════════════════════════════════════════════════════════════════════════════════
 

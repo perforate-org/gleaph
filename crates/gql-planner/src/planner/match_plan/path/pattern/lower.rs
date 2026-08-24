@@ -331,7 +331,8 @@ fn edge_has_indexed_scannable_equality(
     false
 }
 
-/// `true` when the conjunct binds an indexed equality or one-sided range bound on this edge.
+/// `true` when the conjunct binds an indexed equality, scannable IN union, or
+/// one-sided range bound on this edge.
 fn has_indexed_edge_bound(
     conjunct: &Expr,
     edge_var: &str,
@@ -340,6 +341,12 @@ fn has_indexed_edge_bound(
     stats: &dyn GraphStats,
 ) -> bool {
     if let Some((v, prop, _)) = super::super::filters::parse_edge_var_property_equality(conjunct)
+        && v == edge_var
+        && stats.is_edge_property_indexed_for(edge_label, &prop, edge_direction)
+    {
+        return true;
+    }
+    if let Some((v, prop, _)) = super::super::filters::parse_edge_var_property_inlist(conjunct)
         && v == edge_var
         && stats.is_edge_property_indexed_for(edge_label, &prop, edge_direction)
     {

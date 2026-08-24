@@ -119,6 +119,33 @@ pub(crate) fn lookup_edge_equal_local_sync(
         catalog_label_id,
     ))
 }
+
+/// Union of point-probe postings over independently resolved equality payloads
+/// (an `IN`-list anchor). Each payload probes once and postings deduplicate on
+/// edge identity, so an edge matching duplicate list elements merges into one
+/// candidate.
+pub(crate) fn lookup_edge_equal_union_local(
+    index: Option<&dyn PropertyIndexLookup>,
+    property_id: PropertyId,
+    expected_payloads: &[Vec<u8>],
+    catalog_label_id: Option<u16>,
+) -> Result<Vec<LocalEdgePosting>, PlanQueryError> {
+    let mut merged: Vec<LocalEdgePosting> = Vec::new();
+    let mut seen = std::collections::BTreeSet::<(u32, u16, u32)>::new();
+    for expected in expected_payloads {
+        for posting in lookup_edge_equal_local_sync(index, property_id, expected, catalog_label_id)?
+        {
+            if seen.insert((
+                u32::from(posting.owner_vertex_id),
+                posting.label_id,
+                posting.slot_index,
+            )) {
+                merged.push(posting);
+            }
+        }
+    }
+    Ok(merged)
+}
 /// Shard-local ordered edge range over the domain-clamped `[low, high)` encoded interval.
 ///
 /// Falls back to a canonical `EDGE_PROPERTIES` filtered scan when no graph-index client is
