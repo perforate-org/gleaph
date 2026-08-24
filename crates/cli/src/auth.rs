@@ -109,6 +109,7 @@ mod tests {
 
     #[test]
     fn session_round_trips_via_config_home() {
+        let _guard = crate::identity::test_support::lock_config_home();
         let home = temp_config_home();
         // SAFETY: single-threaded test; no other thread reads this env var concurrently.
         unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", &home) };

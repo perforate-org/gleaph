@@ -120,8 +120,17 @@ struct NetworkStartArgs {
 enum IdentityCommand {
     /// Import a PEM file (or an icp-cli identity) into the Gleaph identity store.
     Import(IdentityImportArgs),
+    /// Generate a fresh Secp256k1 identity into the store and make it the active session.
+    New(IdentityNewArgs),
     /// List identities in the Gleaph store.
     List,
+}
+
+#[derive(Debug, clap::Args)]
+struct IdentityNewArgs {
+    /// Name for the generated identity.
+    #[arg(value_name = "NAME")]
+    name: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -199,6 +208,10 @@ enum PreparedCommand {
     Apply(RemotePreparedArgs),
     /// Remove one named prepared operation from Router storage.
     Drop(DropPreparedArgs),
+    /// Grant PUBLIC execute on one registered prepared operation (ADR 0074).
+    Publish(PublicationPreparedArgs),
+    /// Remove the PUBLIC execute grant, restoring default-deny (ADR 0074).
+    Unpublish(PublicationPreparedArgs),
     /// Execute a registered read-only prepared operation with shell parameters.
     Run(RunPreparedArgs),
 }
@@ -244,6 +257,15 @@ struct DropPreparedArgs {
     #[command(flatten)]
     remote: RemotePreparedArgs,
     /// Prepared operation name to remove.
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct PublicationPreparedArgs {
+    #[command(flatten)]
+    remote: RemotePreparedArgs,
+    /// Registered prepared operation name to publish (or unpublish) for PUBLIC.
     #[arg(value_name = "NAME")]
     name: String,
 }
@@ -312,10 +334,7 @@ fn parse_and_dispatch(args: Vec<String>, env: ConfigEnv) -> Result<(), CliError>
     let Some(first) = args.first() else {
         return Err(CliError::Message("a command is required".into()));
     };
-    if !matches!(
-        first.as_str(),
-        "codegen" | "migration" | "load" | "embed" | "prepared" | "-h" | "--help"
-    ) {
+    if !is_dispatchable_top_level(first) {
         return Err(CliError::Message(format!("unknown command {first:?}")));
     }
     if matches!(first.as_str(), "-h" | "--help") {
@@ -329,6 +348,29 @@ fn parse_and_dispatch(args: Vec<String>, env: ConfigEnv) -> Result<(), CliError>
         .map_err(|error| CliError::Message(format!("resolve current directory: {error}")))?;
     let loaded = config::Config::load(&cwd, &env)?;
     dispatch(cli.command, &env, loaded.as_ref())
+}
+
+/// The tokens `parse_and_dispatch` accepts before delegating to clap (`-h`/`--help` print
+/// usage directly). This duplicates `TopLevelCommand`'s first-token names, and the
+/// duplication already stranded real subcommands once (identity / login / signup / network
+/// were unreachable from the binary between 2026-08-04 and this fix), so
+/// `dispatch_allowlist_matches_clap_subcommands` pins both directions against clap's
+/// declared subcommands.
+fn is_dispatchable_top_level(token: &str) -> bool {
+    matches!(
+        token,
+        "codegen"
+            | "migration"
+            | "load"
+            | "embed"
+            | "prepared"
+            | "identity"
+            | "login"
+            | "signup"
+            | "network"
+            | "-h"
+            | "--help"
+    )
 }
 
 fn dispatch(
@@ -501,6 +543,17 @@ fn auto_register_account(
 /// `gleaph identity`: manage Gleaph identities.
 fn execute_identity(command: IdentityCommand) -> Result<(), CliError> {
     match command {
+        IdentityCommand::New(args) => {
+            let created = identity::create(&args.name).map_err(CliError::Message)?;
+            // Same session semantics as `login --identity <stored PEM>`: the secret stays in
+            // the store; only the reference is persisted.
+            auth::save_session(&identity::Session::Pem(created.pem_path.clone()))
+                .map_err(CliError::Message)?;
+            println!("created {} -> {}", args.name, created.pem_path.display());
+            println!("principal {}", created.principal);
+            println!("active session: {}", created.pem_path.display());
+            Ok(())
+        }
         IdentityCommand::Import(args) => {
             let dest = if let Some(pem) = args.pem {
                 identity::import(&args.name, &pem).map_err(CliError::Message)?
@@ -1046,6 +1099,12 @@ fn execute_prepared(
             println!("dropped {}", args.name);
             Ok(())
         }
+        PreparedCommand::Publish(args) => {
+            execute_prepared_publication(&args.name, &args.remote, env, loaded, true)
+        }
+        PreparedCommand::Unpublish(args) => {
+            execute_prepared_publication(&args.name, &args.remote, env, loaded, false)
+        }
         PreparedCommand::Run(args) => {
             // Validate the name and every parameter before any network call so shell quoting
             // mistakes fail fast without a round trip.
@@ -1079,6 +1138,40 @@ fn execute_prepared(
             Ok(())
         }
     }
+}
+
+/// Shared body of `prepared publish` / `unpublish`: connect with the caller's identity and
+/// send the ADR 0074 PUBLIC publication statement for one registered operation.
+fn execute_prepared_publication(
+    name: &str,
+    remote_args: &RemotePreparedArgs,
+    env: &ConfigEnv,
+    loaded: Option<&LoadedConfig>,
+    publish: bool,
+) -> Result<(), CliError> {
+    use prepared::RouterPreparedTransport;
+    let remote = required_remote(
+        remote_args.canister.as_deref(),
+        remote_args.network.as_deref(),
+        remote_args.identity.as_deref(),
+        remote_args.fetch_root_key,
+        env,
+        loaded,
+    )?;
+    let mut transport = RouterPreparedTransport::connect(
+        &remote.canister,
+        &remote.network,
+        remote.identity.as_deref(),
+        remote.fetch_root_key,
+    )?;
+    if publish {
+        prepared::publish(name, &mut transport)?;
+        println!("{name} published to PUBLIC");
+    } else {
+        prepared::unpublish(name, &mut transport)?;
+        println!("{name} unpublished (default-deny restored)");
+    }
+    Ok(())
 }
 
 fn execute_migration(
@@ -1174,8 +1267,9 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::config::{ConfigEnv, LoadedConfig};
-    use super::{resolve_codegen, resolve_load, run, run_with_env};
+    use super::{Cli, is_dispatchable_top_level, resolve_codegen, resolve_load, run, run_with_env};
     use crate::load::LoadArgs;
+    use clap::CommandFactory as _;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1244,6 +1338,47 @@ mod tests {
     fn rejects_unknown_top_level_command() {
         let error = run(vec!["deploy".into()]).expect_err("unknown commands must fail");
         assert_eq!(error, "unknown command \"deploy\"");
+    }
+
+    #[test]
+    fn dispatch_allowlist_matches_clap_subcommands_in_both_directions() {
+        let declared: Vec<String> = Cli::command()
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name().to_owned())
+            .filter(|name| name != "help")
+            .collect();
+        assert!(
+            !declared.is_empty(),
+            "clap must report TopLevelCommand's subcommands for this contract to hold"
+        );
+        // Every declared variant's token passes the pre-parse gate: adding a
+        // TopLevelCommand variant without extending the allowlist fails here.
+        for name in &declared {
+            assert!(
+                is_dispatchable_top_level(name),
+                "subcommand {name:?} exists on TopLevelCommand but the parse_and_dispatch \
+                 allowlist rejects it; add it to is_dispatchable_top_level"
+            );
+        }
+        // Every gate token names a real subcommand (help tokens excepted): removing or
+        // renaming a variant without pruning the allowlist fails here.
+        for token in [
+            "codegen",
+            "migration",
+            "load",
+            "embed",
+            "prepared",
+            "identity",
+            "login",
+            "signup",
+            "network",
+        ] {
+            assert!(
+                declared.iter().any(|name| name == token),
+                "allowlist token {token:?} has no matching clap subcommand; prune \
+                 is_dispatchable_top_level"
+            );
+        }
     }
 
     #[test]

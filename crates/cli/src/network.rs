@@ -339,6 +339,7 @@ mod tests {
 
     #[test]
     fn read_alive_pid_cleans_up_stale_file() {
+        let _guard = crate::identity::test_support::lock_config_home();
         let home = temp_config_home();
         // SAFETY: single-threaded test.
         unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", &home) };

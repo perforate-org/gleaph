@@ -127,6 +127,13 @@ pub trait PreparedTransport {
         params: Vec<u8>,
         read_mode: &ReadMode,
     ) -> Result<Result<GqlQueryResult, RouterError>, String>;
+    /// Execute one standalone authorization statement through the generic `gql_mutate`
+    /// entrypoint (ADR 0074 §5: GRANT/REVOKE ride the host control path; there is no
+    /// dedicated publication endpoint). The payload result carries no rows.
+    fn authorization_statement(
+        &mut self,
+        statement: &str,
+    ) -> Result<Result<(), RouterError>, String>;
 }
 
 /// Router transport over the shared IC-agent remote.
@@ -188,6 +195,22 @@ impl PreparedTransport for RouterPreparedTransport {
                 read_mode,
             ),
         )
+    }
+
+    fn authorization_statement(
+        &mut self,
+        statement: &str,
+    ) -> Result<Result<(), RouterError>, String> {
+        // `gql_mutate` takes three separate Candid arguments (query text, parameter blob,
+        // mutation key); the statement carries no parameters. The mutation key derives
+        // deterministically from the statement so a retried publish/unpublish is idempotent
+        // on the Router's (caller, graph, key) idempotency scope.
+        let mutation_key = format!("gleaph-authorization:{statement}");
+        let decoded: Result<GqlQueryResult, RouterError> = self.remote.update_args(
+            "gql_mutate",
+            (&statement.to_string(), &Vec::<u8>::new(), &mutation_key),
+        )?;
+        Ok(decoded.map(|_| ()))
     }
 }
 
@@ -498,6 +521,62 @@ pub fn drop<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), P
     }
 }
 
+// ──── prepared publish / unpublish (ADR 0074 §5 PUBLIC publication) ────
+
+/// Build the PUBLIC publication statement for one prepared operation.
+///
+/// Grammar verified against the Router grant execution tests (`gql_grants.rs`
+/// `publication_tests::owner_publishes_public_row_and_revoke_removes_exactly_it`): a grant
+/// binds `TO PUBLIC`, a revoke removes with `FROM PUBLIC`, and revoking an absent row is an
+/// exact-key `RouterError::NotFound`.
+fn publication_statement(name: &str, publish: bool) -> Result<String, PreparedError> {
+    validate_name(name)?;
+    Ok(if publish {
+        format!("GRANT EXECUTE ON PREPARED QUERY {name} TO PUBLIC")
+    } else {
+        format!("REVOKE EXECUTE ON PREPARED QUERY {name} FROM PUBLIC")
+    })
+}
+
+/// Grant PUBLIC execute on one registered prepared operation (ADR 0074 §1b).
+///
+/// The caller must own the op's bound graph or hold `PREPARE_REGISTER`, and the op's stored
+/// requirement set must be covered by the caller's effective privileges — both enforced by
+/// the Router before its single-row write, so this surface adds no local authorization
+/// logic.
+pub fn publish<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), PreparedError> {
+    send_authorization(name, true, transport)
+}
+
+/// Remove the PUBLIC execute grant, restoring default-deny for the operation.
+pub fn unpublish<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), PreparedError> {
+    send_authorization(name, false, transport)
+}
+
+/// Send one publication statement through the authorization entrypoint. Router's typed
+/// rejections stay observable: `NotFound` names exactly what is missing (the op or the
+/// stored grant row); any other rejection is reported verbatim.
+fn send_authorization<T: PreparedTransport>(
+    name: &str,
+    publish: bool,
+    transport: &mut T,
+) -> Result<(), PreparedError> {
+    let verb = if publish { "publish" } else { "unpublish" };
+    let statement = publication_statement(name, publish)?;
+    match transport
+        .authorization_statement(&statement)
+        .map_err(PreparedError::Remote)?
+    {
+        Ok(()) => Ok(()),
+        Err(RouterError::NotFound(reason)) => Err(PreparedError::Message(format!(
+            "{verb} failed for {name:?}: not found: {reason}"
+        ))),
+        Err(error) => Err(PreparedError::Remote(format!(
+            "Router rejected {verb} for {name:?}: {error:?}"
+        ))),
+    }
+}
+
 // ──── prepared run ────
 
 /// Parse repeatable `--param NAME=VALUE` arguments into ordered named parameters.
@@ -796,9 +875,11 @@ mod tests {
         manifest: Result<PreparedManifest, RouterError>,
         prepare_results: VecDeque<Result<(), RouterError>>,
         run_results: VecDeque<Result<GqlQueryResult, RouterError>>,
+        authorization_results: VecDeque<Result<(), RouterError>>,
         calls: Vec<String>,
         sent: Vec<Vec<PreparedRegistration>>,
         queries: Vec<(String, Vec<u8>, ReadMode)>,
+        statements: Vec<String>,
     }
 
     impl FakePreparedTransport {
@@ -808,9 +889,11 @@ mod tests {
                 manifest: Err(RouterError::NotFound("no metadata".into())),
                 prepare_results: VecDeque::new(),
                 run_results: VecDeque::new(),
+                authorization_results: VecDeque::new(),
                 calls: Vec::new(),
                 sent: Vec::new(),
                 queries: Vec::new(),
+                statements: Vec::new(),
             }
         }
 
@@ -892,6 +975,14 @@ mod tests {
             Ok(self.run_results.pop_front().unwrap_or_else(|| {
                 panic!("unexpected prepared_query:{name}; queue a result first")
             }))
+        }
+
+        fn authorization_statement(
+            &mut self,
+            statement: &str,
+        ) -> Result<Result<(), RouterError>, String> {
+            self.statements.push(statement.to_owned());
+            Ok(self.authorization_results.pop_front().unwrap_or(Ok(())))
         }
     }
 
@@ -1132,6 +1223,83 @@ mod tests {
         let mut transport = FakePreparedTransport::new(HashMap::new());
         drop("my-op", &mut transport).expect("drop");
         assert_eq!(transport.calls, vec!["drop_prepared:my-op".to_string()]);
+    }
+
+    // ──── prepared publish / unpublish ────
+
+    #[test]
+    fn publication_statements_match_the_router_grant_grammar() {
+        assert_eq!(
+            publication_statement("citation-reach", true).expect("grant"),
+            "GRANT EXECUTE ON PREPARED QUERY citation-reach TO PUBLIC"
+        );
+        assert_eq!(
+            publication_statement("citation-reach", false).expect("revoke"),
+            "REVOKE EXECUTE ON PREPARED QUERY citation-reach FROM PUBLIC"
+        );
+    }
+
+    #[test]
+    fn publication_rejects_invalid_names_before_any_transport_use() {
+        let mut transport = FakePreparedTransport::new(HashMap::new());
+        assert!(matches!(
+            publish("Bad_Name", &mut transport),
+            Err(PreparedError::Name(_))
+        ));
+        assert!(
+            transport.statements.is_empty(),
+            "no statement may be built or sent for an invalid name"
+        );
+    }
+
+    #[test]
+    fn publish_sends_the_exact_grant_statement_to_the_authorization_entrypoint() {
+        let mut transport = FakePreparedTransport::new(HashMap::new());
+        publish("shortest-path", &mut transport).expect("publish");
+        assert_eq!(
+            transport.statements.as_slice(),
+            ["GRANT EXECUTE ON PREPARED QUERY shortest-path TO PUBLIC"]
+        );
+    }
+
+    #[test]
+    fn unpublish_sends_the_exact_revoke_statement() {
+        let mut transport = FakePreparedTransport::new(HashMap::new());
+        unpublish("shortest-path", &mut transport).expect("unpublish");
+        assert_eq!(
+            transport.statements.as_slice(),
+            ["REVOKE EXECUTE ON PREPARED QUERY shortest-path FROM PUBLIC"]
+        );
+    }
+
+    #[test]
+    fn publication_surfaces_router_not_found_with_its_reason() {
+        let mut transport = FakePreparedTransport::new(HashMap::new());
+        transport
+            .authorization_results
+            .push_back(Err(RouterError::NotFound(
+                "prepared query \"ghost\"".into(),
+            )));
+        let error = publish("ghost", &mut transport).expect_err("missing op must fail");
+        match error {
+            PreparedError::Message(text) => {
+                assert!(text.contains("not found"), "{text}");
+                assert!(text.contains(r#"prepared query "ghost""#), "{text}");
+            }
+            other => panic!("expected Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn publication_surfaces_not_authorized_distinctly_from_not_found() {
+        let mut transport = FakePreparedTransport::new(HashMap::new());
+        transport
+            .authorization_results
+            .push_back(Err(RouterError::NotAuthorized));
+        let error = unpublish("secret-op", &mut transport).expect_err("non-owner must fail");
+        let text = error.to_string();
+        assert!(text.contains("NotAuthorized"), "{text}");
+        assert!(!text.contains("not found"), "{text}");
     }
 
     #[test]

@@ -33,6 +33,12 @@ gleaph-prepared-api.workspace = true
 gleaph-prepared-runtime.workspace = true
 ic-agent.workspace = true
 ic-management-canister-types.workspace = true
+# Secp256k1 key generation for `identity new`. Same major as the lockfile entry pulled in by
+# ic-agent (whose PEM parser reads these PKCS#8 files back); default features provide
+# arithmetic + pkcs8/PEM encoding, rand_core 0.6 is the CryptoRngCore surface that
+# `SecretKey::random` consumes.
+k256 = { version = "0.13", features = ["pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 flate2.workspace = true
 libc.workspace = true
 reqwest.workspace = true
