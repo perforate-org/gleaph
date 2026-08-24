@@ -41,7 +41,7 @@ const EMERGENCY_ELEVATE_BITS: u64 = 1 << 7;
 /// The foreign tenant graph used as the elevation target: registered by the fixture
 /// admin on behalf of another owner, so no fixture principal owns it and the bootstrap
 /// admin is a plain non-tenant there.
-const TARGET_GRAPH: &str = "elev.target";
+const TARGET_GRAPH: &str = "elev_target";
 
 fn operator_a() -> Principal {
     Principal::from_slice(&[0xA0; 29])
@@ -53,6 +53,12 @@ fn operator_b() -> Principal {
 
 fn emergency_op() -> Principal {
     Principal::from_slice(&[0xE0; 29])
+}
+
+/// Holds EMERGENCY_ELEVATE only: proves the bit alone cannot run the *normal*
+/// approval path.
+fn emergency_only() -> Principal {
+    Principal::from_slice(&[0xE1; 29])
 }
 
 fn stranger() -> Principal {
@@ -259,11 +265,27 @@ fn jit_elevation_loop_end_to_end() {
         get_graph_err(&env, anon, TARGET_GRAPH),
         RouterError::NotFound(_)
     ));
+    // Same non-disclosure on the named-graph data path before any elevation.
+    let target_read = format!("USE {TARGET_GRAPH} MATCH (n) RETURN n");
+    let stranger_pre = gql_query_as(&env, stranger(), &target_read)
+        .map(|ok| format!("unexpectedly ok: {} rows", ok.row_count))
+        .expect_err("stranger data read must be denied");
+    assert!(
+        matches!(stranger_pre, RouterError::NotFound(_)),
+        "expected NotFound before elevation, got {stranger_pre:?}"
+    );
 
     // --- Caps setup (caps only — no rows ride along) ---
     grant_caps(&env, operator_a(), MANAGE_AUTHORIZATION_BITS);
     grant_caps(&env, operator_b(), MANAGE_AUTHORIZATION_BITS);
-    grant_caps(&env, emergency_op(), EMERGENCY_ELEVATE_BITS);
+    // Both loop endpoints are MANAGE_AUTHORIZATION-gated (ADR 0080 §5); the emergency
+    // bit additionally licenses flagged self-approval.
+    grant_caps(
+        &env,
+        emergency_op(),
+        MANAGE_AUTHORIZATION_BITS | EMERGENCY_ELEVATE_BITS,
+    );
+    grant_caps(&env, emergency_only(), EMERGENCY_ELEVATE_BITS);
     assert_eq!(elevations(&env, env.admin).len(), 0);
 
     // --- Stage 1: request validates but persists nothing ---
@@ -310,11 +332,12 @@ fn jit_elevation_loop_end_to_end() {
         ),
         RouterError::NotAuthorized
     ));
-    // An unrelated cap cannot approve either.
+    // An unrelated cap cannot approve either: EMERGENCY_ELEVATE alone does not
+    // license the normal approval path.
     assert!(matches!(
         elevate_approve_err(
             &env,
-            emergency_op(),
+            emergency_only(),
             ElevateApproveArgs {
                 request: request.clone(),
                 emergency: false,
@@ -355,6 +378,27 @@ fn jit_elevation_loop_end_to_end() {
 
     // --- Stage 4: metadata access inside the window ---
     get_graph_id_of(&env, operator_a(), TARGET_GRAPH);
+    // Plane disjointness at the boundary: give the operator their own HOME graph so
+    // ingress resolves a context, then read the ELEVATED graph's data. The metadata
+    // elevation admitted topology access above, but the scan's tenancy-only demand on
+    // the foreign graph stays uncovered — uniform Forbidden (ADR 0074 §4), never Ok.
+    register_graph_intent(
+        &env.pic,
+        env.admin,
+        env.router,
+        RegisterGraphIntent {
+            graph_name: "elev.op-home",
+            owner: operator_a(),
+            admins: Default::default(),
+            is_home: true,
+            shards: vec![RegisterGraphShard {
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                graph_canister: Principal::management_canister(),
+                index_canister: env.index,
+            }],
+        },
+    );
+    get_graph_id_of(&env, operator_a(), TARGET_GRAPH);
     // Plane disjointness at the boundary: the elevated operator is now ADMITTED past
     // graph visibility (sole visible graph resolves), but the data plane stays closed —
     // the metadata row covers none of the scan's demands, so the uniform Forbidden of
@@ -363,9 +407,13 @@ fn jit_elevation_loop_end_to_end() {
         get_graph_err(&env, stranger(), TARGET_GRAPH),
         RouterError::NotFound(_)
     ));
-    let data_read = gql_query_as(&env, operator_a(), "MATCH (n) RETURN n")
+    let data_read = gql_query_as(&env, operator_a(), &target_read)
+        .map(|ok| format!("unexpectedly ok: {} rows", ok.row_count))
         .expect_err("metadata elevation must never cover data-plane demands");
-    assert!(matches!(data_read, RouterError::Forbidden));
+    assert!(
+        matches!(data_read, RouterError::Forbidden),
+        "expected plan-time Forbidden, got {data_read:?}"
+    );
 
     // --- Stage 5: automatic expiry denies again; the row remains introspectable ---
     env.pic
@@ -394,8 +442,21 @@ fn jit_elevation_loop_end_to_end() {
         2,
         "expected count before running: exactly two rows after the emergency issuance"
     );
-    let flagged = &rows[1];
+    // Canonical key order puts the ControlPlane row first (shorter resource length);
+    // identify rows by scope instead of position.
+    let flagged = rows
+        .iter()
+        .find(|r| r.scope == ElevationScopeView::ControlPlane)
+        .expect("the emergency ControlPlane row is listed");
+    let graph_row = rows
+        .iter()
+        .find(|r| r.scope == ElevationScopeView::Graph(TARGET_GRAPH.to_string()))
+        .expect("the approved graph elevation stays listed");
     assert!(flagged.active);
+    assert!(
+        !graph_row.active,
+        "the first elevation remains listed and inactive after expiry"
+    );
     assert_eq!(flagged.scope, ElevationScopeView::ControlPlane);
     let evidence = flagged
         .evidence

@@ -2079,6 +2079,28 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   `deeply_nested_not_chain_is_rejected_not_overflowing` tests run under both default and
   all-features builds and assert the depth error path.
 
+### GAP-2026-08-25-001 — Pre-existing gleaph-gql parser failures: dashed prepared-query names fail `expect_ident` in EXECUTE publication forms
+
+- **Status:** Open (discovered 2026-08-25 during plan 0304 / ADR 0080 implementation; not
+  caused by that slice — reproduced on a pristine HEAD worktree).
+- **Owner:** `crates/gql` tokenizer/identifier grammar and prepared-query naming contract.
+- **Observed behavior:** `cargo test -p gleaph-gql --features gleaph --lib` fails
+  `parse_grant_execute_on_prepared_query_to_public_and_principal` and
+  `parse_revoke_execute_on_prepared_query_mirrors_grant`: parsing
+  `GRANT EXECUTE ON PREPARED QUERY find-users TO PUBLIC` errors with
+  `expected 'TO', got '-'`, i.e. the lexer splits dashed identifiers, so prepared names
+  containing `-` cannot be granted/revoked through the publication form. All other grant
+  tests pass; ADR 0080's new metadata forms are unaffected.
+- **Impact:** Prepared operations with dashed canonical names cannot be published or revoked
+  via GQL; the two failing tests document the intended contract (`find-users`), so the suite
+  is red independent of any in-flight slice. Blocks a green `gleaph-gql` test run for every
+  concurrent session.
+- **Needed behavior:** Either the identifier grammar admits `-` inside idents used for
+  prepared-query names, or prepared-name validation rejects dashes at registration so the
+  tests are updated to the enforced contract. Decision needed from the gql owner.
+- **Next decision:** fix tokenization vs. restrict the name charset; either way the same
+  commit updates both failing tests.
+
 ## Review cadence
 
 - The primary agent checks this ledger before final approval of a meaningful slice.
