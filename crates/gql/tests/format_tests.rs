@@ -226,6 +226,41 @@ fn formats_grant_and_revoke_round_trip_with_canonical_nodes_keyword() {
 
 #[cfg(feature = "gleaph")]
 #[test]
+fn formats_conditional_policy_selector_round_trips_canonically() {
+    let options = FormatOptions::default();
+    let grant = format_query(
+        "GRANT READ ON GRAPH social NODES Post FOR (p:Post) WHERE p.visibility = 'public' \
+         AND p.owner = MSG_CALLER() AND p.stars >= 3 TO PUBLIC",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        grant,
+        "GRANT READ ON GRAPH social NODES Post FOR (p:Post) WHERE p.visibility = 'public' \
+         AND p.owner = MSG_CALLER() AND p.stars >= 3 TO PUBLIC"
+    );
+    assert_eq!(format_query(&grant, &options).unwrap(), grant);
+
+    // Edge selectors render in undirected canonical form regardless of input spelling.
+    let edge_out = format_query(
+        "GRANT MATCH ON GRAPH g NODES T FOR ()-[e:KNOWS]->() WHERE e.weight > 5 TO PUBLIC",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        edge_out,
+        "GRANT MATCH ON GRAPH g NODES T FOR ()-[e:KNOWS]-() WHERE e.weight > 5 TO PUBLIC"
+    );
+    let edge_in = format_query(
+        "GRANT MATCH ON GRAPH g NODES T FOR <-[e:KNOWS]-() WHERE e.weight > 5 TO PUBLIC",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(edge_in, edge_out);
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
 fn formats_prepared_query_publication_round_trip() {
     let options = FormatOptions::default();
     let grant = format_query(

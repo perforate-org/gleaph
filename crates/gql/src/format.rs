@@ -961,6 +961,7 @@ impl<'a> Formatter<'a> {
                 privilege,
                 graph,
                 resource,
+                condition,
             } => {
                 let privilege_text = match privilege {
                     GrantPrivilege::Match => self.kw("MATCH"),
@@ -997,13 +998,28 @@ impl<'a> Formatter<'a> {
                         format!("{} {}", self.kw("EDGES"), label)
                     }
                 };
+                let condition_text = match condition {
+                    None => String::new(),
+                    Some(condition) => {
+                        let predicate = self.authorization_condition_predicate(
+                            &condition.predicate,
+                            &condition.selector,
+                        )?;
+                        format!(
+                            " {} {}",
+                            self.authorization_condition_selector(&condition.selector),
+                            predicate
+                        )
+                    }
+                };
                 Ok(format!(
-                    "{} {} {} {} {} {} {}",
+                    "{} {} {} {} {}{} {} {}",
                     self.kw(verb_kw),
                     privilege_text,
                     self.kw("ON GRAPH"),
                     self.name(graph),
                     resource_text,
+                    condition_text,
                     self.kw(subject_preposition_kw),
                     subject_text
                 ))
@@ -1018,6 +1034,55 @@ impl<'a> Formatter<'a> {
                 subject_text
             )),
         }
+    }
+
+    /// Renders a conditional selector in canonical form ([ADR 0075] §3): the vertex form
+    /// as `FOR (v:Label)`, the edge form undirected as `FOR ()-[e:Label]-()`.
+    #[cfg(feature = "gleaph")]
+    fn authorization_condition_selector(&self, selector: &GrantConditionSelector) -> String {
+        match selector {
+            GrantConditionSelector::Vertex { variable, label } => {
+                format!("{} ({}:{})", self.kw("FOR"), variable, label)
+            }
+            GrantConditionSelector::Edge { variable, label } => {
+                format!("{} ()-[{}:{}]-()", self.kw("FOR"), variable, label)
+            }
+        }
+    }
+
+    /// Renders the AND-ordered predicate body (`WHERE v.p = 'x' AND v.q = MSG_CALLER()`).
+    #[cfg(feature = "gleaph")]
+    fn authorization_condition_predicate(
+        &mut self,
+        predicate: &GrantPredicate,
+        selector: &GrantConditionSelector,
+    ) -> Result<String, FormatError> {
+        let variable = selector.variable().to_owned();
+        let mut out = self.kw("WHERE");
+        for (index, conjunct) in predicate.conjuncts.iter().enumerate() {
+            if index > 0 {
+                out.push_str(&format!(" {}", self.kw("AND")));
+            }
+            let value = match &conjunct.value {
+                GrantValueExpr::Literal(value) => {
+                    self.expr(&Expr::new(ExprKind::Literal(value.clone())))?
+                }
+                GrantValueExpr::MsgCaller => "MSG_CALLER()".to_owned(),
+            };
+            let op = match conjunct.op {
+                CmpOp::Eq => "=",
+                CmpOp::Ne => "<>",
+                CmpOp::Lt => "<",
+                CmpOp::Le => "<=",
+                CmpOp::Gt => ">",
+                CmpOp::Ge => ">=",
+            };
+            out.push_str(&format!(
+                " {}.{} {} {}",
+                variable, conjunct.property, op, value
+            ));
+        }
+        Ok(out)
     }
 }
 

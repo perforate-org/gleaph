@@ -5,7 +5,7 @@ Anchor timestamp: 2026-08-23 12:26:48 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred; the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar (generic parsing behind the `gleaph` feature), slice 2b plan-time privilege enforcement, and the slice 3 `EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded gates are implemented.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred; the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar (generic parsing behind the `gleaph` feature), slice 2b plan-time privilege enforcement, and the slice 3 `EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded gates are implemented.** The ISO/GQL-core `IN` predicate parses across dialects (cypher-dialect acceptance landed 2026-08-24) and non-negated scannable `IN` lists anchor index scans as unions of point probes — see [plan-format.md](plan-format.md) § `ScanValue` bounds; the ADR 0075 conditional policy selector surface (`FOR … WHERE …`, AND-only DSL with `MSG_CALLER()`) is implemented per the section below.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -778,13 +778,14 @@ the primary syntax.
 ## Data-plane authorization statements (`GRANT` / `REVOKE`)
 
 Status: **Implemented** for grammar, storage, introspection, plan-time enforcement
-(ADR 0074 slice 2b), and caller-bounded prepared-query publication (slice 3).
+(ADR 0074 slice 2b), caller-bounded prepared-query publication (slice 3), and conditional
+policy selectors with constant pushdown ([ADR 0075], Phase 2a).
 
 ### Target syntax
 
 ```gql
-GRANT <privilege> ON GRAPH <graph-name> <resource-selector> TO <subject>;
-REVOKE <privilege> ON GRAPH <graph-name> <resource-selector> FROM <subject>;
+GRANT <privilege> ON GRAPH <graph-name> <resource-selector> [ <condition> ] TO <subject>;
+REVOKE <privilege> ON GRAPH <graph-name> <resource-selector> [ <condition> ] FROM <subject>;
 GRANT EXECUTE ON PREPARED QUERY <query-name> TO <subject>;    -- subject may be PUBLIC
 REVOKE EXECUTE ON PREPARED QUERY <query-name> FROM <subject>;
 
@@ -793,6 +794,13 @@ REVOKE EXECUTE ON PREPARED QUERY <query-name> FROM <subject>;
                       | READ [ '{' property (',' property)* '}' ]
                       | CREATE | UPDATE | DELETE
 <resource-selector> ::= ( NODES | VERTICES ) label | EDGES label
+<condition>         ::= FOR ( v : label ) WHERE <policy-predicate>
+                      | FOR ()-[ e : label ]-() WHERE <policy-predicate>
+                      | FOR ()-[ e : label ]->() WHERE <policy-predicate>
+                      | FOR <-[ e : label ]-() WHERE <policy-predicate>
+<policy-predicate>  ::= <comparison> ( AND <comparison> )*        -- ADR 0075 §2, AND-only
+<comparison>        ::= v . property <cmp-op> <value>
+<value>             ::= literal | MSG_CALLER()
 <subject>           ::= PRINCIPAL '<principal-text>' | PUBLIC
 ```
 
@@ -811,6 +819,33 @@ REVOKE EXECUTE ON PREPARED QUERY <query-name> FROM <subject>;
   principal is an integration-layer concern (ADR 0034), owned by the Router. The anonymous
   principal can never hold a stored grant (ADR 0074 invariant 2); `PUBLIC` is the virtual
   subject for unauthenticated callers.
+
+### Conditional policy selectors ([ADR 0075] §3, implemented)
+
+A graph grant may carry one conditional selector: `FOR (p:Post) WHERE …` narrows what that
+row grants. The predicate DSL is deliberately minimal and deterministic:
+
+- **AND-only** ([ADR 0075] §2): comparisons joined by `AND`. `OR`, `NOT`, `XOR`,
+  arithmetic, `EXISTS`, and property-to-property comparisons each fail with their own
+  distinct parse error; conjunction depth is capped at 8.
+- Each comparison is `<selector-variable>.<property> <op> <literal | MSG_CALLER()>` with
+  the standard six comparison operators. `MSG_CALLER()` is accepted case-insensitively,
+  takes no arguments, and never carries `DISTINCT`.
+- Catalog-checked at GRANT time: the selector label must match the granted vertex label,
+  every comparison property must exist, and literal kinds must be compatible with the
+  property's declared scalar type (undeclared properties stay open-world). `MSG_CALLER()`
+  requires a character-string-typed (or undeclared) property; string literals are bounded
+  at 15 bytes by the stable row encoding.
+- Phase-2a scope: conditions bind **vertex labels** under the `MATCH`/`READ` privileges.
+  Edge-pattern selectors are recognized syntactically but rejected with a distinct error;
+  other privileges reject conditional selectors outright.
+- Re-granting the same canonical `(privilege, subject)` key replaces the stored condition
+  (last write wins); `REVOKE` removes rule and condition together and addresses only the
+  canonical key — its condition text is validated syntax, not key material.
+
+Evaluation semantics live in `design/security/rbac-and-prepared.md` (§ Conditional policy
+pushdown): per-row AND composition, union across applicable rows, Router-side
+`MSG_CALLER()` constant substitution into ordinary plan machinery.
 
 ### Prepared-query publication gates (ADR 0074 §1b)
 
@@ -852,7 +887,10 @@ MemoryId 0); the two collections are independently readable across upgrades. The
 Candid query `list_graph_grants(graph_name)` leads with the synthesized **implicit-root**
 marker of the registry owner (operation `ImplicitRoot`, whole-graph resource — ownership is
 never stored as a row, invariant 3) followed by that graph's stored rows as
-`(subject, operation, direction, resource {kind, label, property}, expires_at)`.
+`(subject, operation, direction, resource {kind, label, property}, expires_at, predicate)`.
+The `predicate` field carries the condition inline in canonical text — e.g.
+`WHERE visibility = 'public' AND owner = MSG_CALLER()` — with property names resolved
+through the graph catalogs ([ADR 0075] §1).
 
 ## Full-text, property, and hybrid search
 

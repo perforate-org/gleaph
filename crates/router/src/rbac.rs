@@ -165,6 +165,7 @@ mod tests {
                     GrantSubject::Public,
                     &Privilege::ExecutePreparedQuery { name: name.into() },
                     None,
+                    None,
                 )
                 .expect("public subject");
         });
@@ -256,6 +257,7 @@ mod tests {
                         operation: gleaph_auth::GraphOperation::Match,
                         resource: gleaph_auth::GraphResource::VertexLabel(1),
                     }),
+                    None,
                     None,
                 )
                 .expect("explicit grant");
@@ -442,6 +444,7 @@ mod tests {
                     &Privilege::ExecutePreparedQuery {
                         name: "private-q".into(),
                     },
+                    None,
                     None,
                 )
                 .expect("explicit grant");

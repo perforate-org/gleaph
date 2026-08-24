@@ -110,6 +110,65 @@ dropped id), so they fail closed uniformly — the query stays denied until its 
 query is re-registered against current catalogs. This staleness is a documented property,
 not a gap; re-registration replaces the whole record.
 
+### Conditional policy pushdown ([ADR 0075], Phase 2a — implemented)
+
+**Source:** `crates/router/src/policy_pushdown.rs` (lowering), `crates/router/src/gql_grants.rs`
+(compilation), `crates/auth` (`CompiledPredicate`, stable encoding).
+
+A grant row gains an optional compiled predicate: an AND-only conjunction of catalog-checked
+comparisons over one vertex label (`<property> <op> <literal | MSG_CALLER()>`, depth ≤ 8),
+stored in the row's stable bytes under fresh-state tags (`2`/`3`; superseded tags reject).
+One logical rule may normalize into several rows (e.g. a directed-edge grant), all carrying
+the same predicate.
+
+Semantics ([ADR 0075] §4, as refined during implementation):
+
+- **AND-only is per-row DSL shape.** Each row's condition is a conjunction; authoring has
+  no OR.
+- **Across rows, evaluation composes a union.** Grants are additive ([ADR 0074]
+  alternatives semantics): a caller covered by several predicate rows on one label sees
+  the OR of their matches. The demonstrated shape — PUBLIC narrowed to public posts plus
+  a member row for own-private posts — requires this union; "always AND" refers to policy
+  predicates being additional conjuncts over user-authored `WHERE` content within one
+  rule, never to cross-row narrowing.
+- **Implicit root stays policy-free:** ownership-derived tenancy never consults grant
+  rows, so grant-attached predicates cannot narrow owners/admins.
+
+Evaluation architecture ([ADR 0075] §5):
+
+1. After plan build **and after** data-plane enforcement (policies constrain outputs;
+   they add no requirements — requirement extraction never sees policy-derived property
+   reads), the Router collects every applicable conditional row for
+   `caller ∪ PUBLIC` on the dispatched graph, expiry-aware, in canonical key order.
+2. `MSG_CALLER()` substitutes the invoking caller as a literal constant (principal-domain
+   extension value) — the second resolution site. Shard-side runtime resolution keeps
+   serving user-authored predicates.
+3. Equality on an indexed property at a labeled pipeline-head vertex scan covered by
+   exactly one applicable row seeds the existing index-scan anchor path with the resolved
+   value; index canisters execute lookups indistinguishable from any other.
+4. All remaining comparisons lower into ordinary `PropertyFilter` ops inside the
+   dispatched plan. Definite labeled scans take plain conjunct filters; may-bind sites
+   (unlabeled/index scans without label facts, expansion destinations via
+   `Expand`/`ExpandFilter`/`EdgeBindEndpoints`) take guarded filters
+   `NOT IsLabeled(v, L) OR visible(v)` so rows of any other label pass untouched.
+   Scan/binding hydration lists gain the referenced properties so filters evaluate against
+   hydrated values.
+5. Variable-length quantifier bindings, shortest-path records, parameter-driven
+   conditional scans, and multi-graph `USE GRAPH` segments defer their policy treatment
+   ([ADR 0075] §7 lineage).
+
+Cache discipline ([ADR 0075] §5 trade-off): prepared base plans stay policy-free
+(registration artifacts); per-execution lowered shapes cache in heap keyed by the exact
+fingerprint of the lowering inputs (applicable rows' identities + resolved caller bytes +
+operation/sort identity), so plans never reuse across callers with different resolved
+constants. Any grant write invalidates the cache, making grants/revocations immediately
+effective. Ad-hoc ingress caches already key on `(caller, graph, query)` and store
+pre-lowering shapes; replay re-enforces authorization against user-authored demands and
+re-resolves constants deterministically.
+
+Introspection prints the stored condition inline (`list_graph_grants.predicate`) with
+catalog-resolved property names ([ADR 0075] §1).
+
 ## Anonymous-principal invariant
 
 **Status: Implemented**
@@ -266,8 +325,13 @@ completes parameter and result metadata (ADR 0053/0061).
 
 GQL extensions:
 
-- `IC.MSG_CALLER()` evaluated at execution time on graph
-- Used in filters and prepared-query access patterns
+- `IC.MSG_CALLER()` evaluated at execution time on graph for user-authored predicates.
+- **Second resolution site ([ADR 0075] §5, implemented):** conditional-policy predicates
+  substitute the invoking caller as a literal constant at the Router before dispatch, so
+  policy filters lower into ordinary plan machinery and shards never see caller identity
+  or a policy engine. Prepared queries re-resolve constants per invoking caller; their
+  stored static requirement sets are unaffected (policies constrain outputs, they add no
+  requirements).
 
 Document query patterns that enforce “users see only their rows” in application guides (future).
 

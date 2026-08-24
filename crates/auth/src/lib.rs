@@ -8,7 +8,8 @@
 //!   init path; principals with **no row in stable storage** hold an empty set
 //!   (**default deny**).
 //! - **Data-plane grants**: `(principal | PUBLIC) × privilege` rows with a dormant
-//!   `expires_at` field. `PUBLIC` is a virtual pseudo-subject resolved at evaluation
+//!   `expires_at` field and an optional compiled conditional-policy predicate
+//!   ([ADR 0075] §1). `PUBLIC` is a virtual pseudo-subject resolved at evaluation
 //!   time, never persisted as a principal.
 //!
 //! Default is empty everywhere → deny. Administrative capability never implies
@@ -16,11 +17,13 @@
 //! graph shards trust the router as the only GQL entrypoint.
 //!
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
+//! [ADR 0075]: https://github.com/gleaph/gleaph/blob/main/design/adr/0075-conditional-policies-constant-pushdown.md
 
 use candid::{CandidType, Principal};
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::fmt;
+use std::rc::Rc;
 
 bitflags::bitflags!(
     /// Global administrative capabilities ([ADR 0074] §1).
@@ -576,29 +579,335 @@ impl Storable for GrantKey {
     }
 }
 
+/// Comparison operator of a compiled conditional-policy comparison ([ADR 0075] §2).
+///
+/// Stable discriminants are the [`PredicateOp`] wire encoding; they never change
+/// meaning across releases (pre-production fresh-state contract).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub enum PredicateOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl PredicateOp {
+    fn discriminant(self) -> u8 {
+        match self {
+            PredicateOp::Eq => 0,
+            PredicateOp::Ne => 1,
+            PredicateOp::Lt => 2,
+            PredicateOp::Le => 3,
+            PredicateOp::Gt => 4,
+            PredicateOp::Ge => 5,
+        }
+    }
+
+    fn from_discriminant(byte: u8) -> Self {
+        match byte {
+            0 => PredicateOp::Eq,
+            1 => PredicateOp::Ne,
+            2 => PredicateOp::Lt,
+            3 => PredicateOp::Le,
+            4 => PredicateOp::Gt,
+            5 => PredicateOp::Ge,
+            other => panic!("corrupt grant row: unknown predicate op {other}"),
+        }
+    }
+}
+
+/// Scalar literal of a compiled comparison, restricted to catalog scalar kinds
+/// ([ADR 0075] §2). The compiler rejects literals whose kind does not match the
+/// property's declared scalar type.
+#[derive(Clone, Debug, PartialEq, CandidType, serde::Serialize, serde::Deserialize)]
+pub enum PredicateLiteral {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+/// Equality on encoded bytes; float payloads compare bitwise like the stable encoding.
+impl Eq for PredicateLiteral {}
+
+/// Right-hand side of one compiled comparison ([ADR 0075] §2 `ValueExpr`).
+///
+/// `MsgCaller` is stored unresolved: the Router substitutes the invoking caller as a
+/// literal constant at execution time ([ADR 0075] §5); no identity is ever persisted.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub enum PredicateValue {
+    /// Scalar literal of the property's catalog scalar type.
+    Literal(PredicateLiteral),
+    /// `MSG_CALLER()` — resolved per execution by the Router.
+    MsgCaller,
+}
+
+/// One AND-conjunct: `<property> <op> <value>` over the policy selector's label
+/// ([ADR 0075] §2). The property id is graph-scoped and monotonic, so vocabulary-drop
+/// sweeps address predicate references exactly like grant resources.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub struct PredicateComparison {
+    pub property: u32,
+    pub op: PredicateOp,
+    pub value: PredicateValue,
+}
+
+impl PredicateComparison {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(14);
+        v.extend_from_slice(&self.property.to_le_bytes());
+        v.push(self.op.discriminant());
+        match &self.value {
+            PredicateValue::MsgCaller => v.push(0),
+            PredicateValue::Literal(literal) => {
+                let (tag, payload): (u8, [u8; 16]) = match literal {
+                    PredicateLiteral::Bool(b) => (0, {
+                        let mut p = [0u8; 16];
+                        p[0] = u8::from(*b);
+                        p
+                    }),
+                    PredicateLiteral::Int(i) => {
+                        let mut p = [0u8; 16];
+                        p[..8].copy_from_slice(&i.to_le_bytes());
+                        (1, p)
+                    }
+                    PredicateLiteral::Float(f) => {
+                        let mut p = [0u8; 16];
+                        p[..8].copy_from_slice(&f.to_le_bytes());
+                        (2, p)
+                    }
+                    PredicateLiteral::String(s) => (3, prefix_bytes(s)),
+                };
+                v.push(1);
+                v.push(tag);
+                v.extend_from_slice(&payload);
+            }
+        }
+        v
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        assert!(
+            bytes.len() >= 6,
+            "corrupt grant row: truncated policy comparison"
+        );
+        let property = u32::from_le_bytes(bytes[0..4].try_into().expect("property payload"));
+        let op = PredicateOp::from_discriminant(bytes[4]);
+        let value = match bytes[5] {
+            0 => PredicateValue::MsgCaller,
+            1 => {
+                assert!(
+                    bytes.len() >= 23,
+                    "corrupt grant row: truncated literal comparison"
+                );
+                let tag = bytes[6];
+                let payload: [u8; 16] = bytes[7..23].try_into().expect("literal payload");
+                let literal = match tag {
+                    0 => PredicateLiteral::Bool(payload[0] == 1),
+                    1 => PredicateLiteral::Int(i64::from_le_bytes(
+                        payload[..8].try_into().expect("int payload"),
+                    )),
+                    2 => PredicateLiteral::Float(f64::from_le_bytes(
+                        payload[..8].try_into().expect("float payload"),
+                    )),
+                    3 => PredicateLiteral::String(decode_prefix_bytes(&payload)),
+                    other => panic!("corrupt grant row: unknown literal kind {other}"),
+                };
+                PredicateValue::Literal(literal)
+            }
+            other => panic!("corrupt grant row: unknown comparison value kind {other}"),
+        };
+        Self {
+            property,
+            op,
+            value,
+        }
+    }
+}
+
+/// Fixed-width string carrier for stable encoding: length-prefixed UTF-8 in the first
+/// byte, content in the remaining bytes. Longer literals cannot be expressed by the DSL
+/// (the compiler rejects them at GRANT time), so decoding treats an over-length prefix
+/// as corrupt state.
+fn prefix_bytes(s: &str) -> [u8; 16] {
+    let bytes = s.as_bytes();
+    assert!(
+        bytes.len() <= 15,
+        "policy string literals are capped at 15 bytes"
+    );
+    let mut out = [0u8; 16];
+    out[0] = bytes.len() as u8;
+    out[1..=bytes.len()].copy_from_slice(bytes);
+    out
+}
+
+fn decode_prefix_bytes(payload: &[u8; 16]) -> String {
+    let len = payload[0] as usize;
+    assert!(
+        len <= 15,
+        "corrupt grant row: string length {len} overflows"
+    );
+    String::from_utf8(payload[1..=len].to_vec())
+        .expect("corrupt grant row: non-utf8 policy literal")
+}
+
+/// A compiled conditional-policy predicate ([ADR 0075] §1–§2): a bounded AND-only
+/// conjunction of catalog-checked comparisons over one vertex label.
+///
+/// This is the canonical storage form attached to a grant row. Compilation from syntax,
+/// catalog validation, and lowering into plan machinery all happen in the embedding
+/// system (the Router); this crate owns only the deterministic representation and its
+/// encoding.
+///
+/// The conjunction depth cap ([`MAX_PREDICATE_CONJUNCTS`]) bounds both the encoded row
+/// size and lowering work. An empty conjunction is not representable: a grant either
+/// carries a predicate or it does not (`GrantRow.predicate`).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub struct CompiledPredicate {
+    /// Vertex label id the comparisons evaluate against (graph-scoped, monotonic).
+    pub label: u32,
+    pub conjuncts: Vec<PredicateComparison>,
+}
+
+/// Maximum AND-conjuncts per policy predicate ([ADR 0075] §2 determinism bound).
+pub const MAX_PREDICATE_CONJUNCTS: usize = 8;
+
+impl CompiledPredicate {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        assert!(
+            !self.conjuncts.is_empty(),
+            "stored predicates have at least one conjunct"
+        );
+        assert!(
+            self.conjuncts.len() <= MAX_PREDICATE_CONJUNCTS,
+            "policy conjunction exceeds the depth cap"
+        );
+        let mut v = Vec::new();
+        v.extend_from_slice(&self.label.to_le_bytes());
+        v.push(self.conjuncts.len() as u8);
+        for conjunct in &self.conjuncts {
+            v.extend_from_slice(&conjunct.to_bytes());
+        }
+        v
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= 5, "corrupt grant row: truncated predicate");
+        let label = u32::from_le_bytes(bytes[0..4].try_into().expect("label payload"));
+        let count = bytes[4] as usize;
+        assert!(
+            (1..=MAX_PREDICATE_CONJUNCTS).contains(&count),
+            "corrupt grant row: predicate conjunct count {count}"
+        );
+        let mut at = 5usize;
+        let mut conjuncts = Vec::with_capacity(count);
+        for _ in 0..count {
+            // Comparisons are self-delimiting via their value-kind byte: literal forms
+            // occupy 6 + 17 bytes, MSG_CALLER occupies 6. Scan the fixed header first,
+            // then advance by the encoded width of the value.
+            let width = match bytes.get(at + 5) {
+                Some(0) => 6,
+                Some(1) => 23,
+                _ => panic!("corrupt grant row: malformed comparison value header"),
+            };
+            conjuncts.push(PredicateComparison::decode(&bytes[at..at + width]));
+            at += width;
+        }
+        assert!(
+            at == bytes.len(),
+            "corrupt grant row: trailing predicate bytes"
+        );
+        Self { label, conjuncts }
+    }
+
+    /// Canonical inline text ([ADR 0075] §1: introspection prints the condition on the
+    /// grant). Property names resolve through catalogs at print time; this form prints
+    /// monotonic ids so introspection stays truthful when names change.
+    pub fn display_conditions(&self, property_name: impl Fn(u32) -> Option<String>) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from("WHERE ");
+        for (index, conjunct) in self.conjuncts.iter().enumerate() {
+            if index > 0 {
+                out.push_str(" AND ");
+            }
+            let name = property_name(conjunct.property)
+                .unwrap_or_else(|| format!("<property {}>", conjunct.property));
+            let op = match conjunct.op {
+                PredicateOp::Eq => "=",
+                PredicateOp::Ne => "<>",
+                PredicateOp::Lt => "<",
+                PredicateOp::Le => "<=",
+                PredicateOp::Gt => ">",
+                PredicateOp::Ge => ">=",
+            };
+            let _ = write!(out, "{name} {op} {}", display_value(&conjunct.value));
+        }
+        out
+    }
+}
+
+fn display_value(value: &PredicateValue) -> String {
+    match value {
+        PredicateValue::MsgCaller => "MSG_CALLER()".to_owned(),
+        PredicateValue::Literal(PredicateLiteral::Bool(b)) => b.to_string(),
+        PredicateValue::Literal(PredicateLiteral::Int(i)) => i.to_string(),
+        PredicateValue::Literal(PredicateLiteral::Float(f)) => f.to_string(),
+        PredicateValue::Literal(PredicateLiteral::String(s)) => format!("'{s}'"),
+    }
+}
+
 /// Stored grant row value. `expires_at_ns` is dormant in this slice ([ADR 0074] §1b): reads
 /// treat a row with `expires_at_ns < now` as absent, so later time-boxing is not a destructive
 /// schema change.
 ///
+/// `predicate` carries the optional compiled conditional-policy predicate ([ADR 0075]
+/// §1): `Some` exactly when the GRANT carried a `FOR (v:Label) WHERE …` selector.
+///
+/// Fresh-state encoding ([ADR 0075] migration): tag `2`/`3` rows carry the predicate
+/// field; superseded predicate-free tags `0`/`1` are rejected by the decoder rather than
+/// interpreted.
+///
 /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// [ADR 0075]: https://github.com/gleaph/gleaph/blob/main/design/adr/0075-conditional-policies-constant-pushdown.md
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrantRow {
     pub expires_at_ns: Option<u64>,
+    pub predicate: Option<Rc<CompiledPredicate>>,
 }
 
 impl Storable for GrantRow {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(match self.expires_at_ns {
-            None => vec![0],
-            Some(ts) => {
-                let mut v = Vec::with_capacity(9);
-                v.push(1);
-                v.extend_from_slice(&ts.to_le_bytes());
-                v
+        let mut v = Vec::new();
+        match self.predicate.as_ref() {
+            // Tag 2: predicate-free row (supersedes the rejected tag 0).
+            None => {
+                v.push(2);
+                match self.expires_at_ns {
+                    None => {}
+                    Some(ts) => {
+                        v.push(1);
+                        v.extend_from_slice(&ts.to_le_bytes());
+                    }
+                }
             }
-        })
+            // Tag 3: conditional-policy row ([ADR 0075] §1), expiry then predicate bytes.
+            Some(predicate) => {
+                v.push(3);
+                match self.expires_at_ns {
+                    None => v.push(0),
+                    Some(ts) => {
+                        v.push(1);
+                        v.extend_from_slice(&ts.to_le_bytes());
+                    }
+                }
+                v.extend_from_slice(&predicate.encode());
+            }
+        }
+        Cow::Owned(v)
     }
 
     fn into_bytes(self) -> Vec<u8> {
@@ -608,15 +917,43 @@ impl Storable for GrantRow {
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let b = bytes.as_ref();
         assert!(!b.is_empty(), "GrantRow expects at least 1 byte");
-        Self {
-            expires_at_ns: match b[0] {
-                0 => None,
-                1 => Some(u64::from_le_bytes(
-                    b[1..9].try_into().expect("GrantRow expiry payload"),
-                )),
-                other => panic!("unknown GrantRow tag {other}"),
+        match b[0] {
+            2 => Self {
+                expires_at_ns: decode_expiry_tail(&b[1..]),
+                predicate: None,
             },
+            3 => {
+                assert!(b.len() >= 2, "GrantRow conditional row needs a payload");
+                let (expires_at_ns, consumed) = decode_expiry(&b[1..]);
+                Self {
+                    expires_at_ns,
+                    predicate: Some(Rc::new(CompiledPredicate::decode(&b[1 + consumed..]))),
+                }
+            }
+            other => panic!("unknown GrantRow tag {other}"),
         }
+    }
+}
+
+/// Decode a predicate-free row's expiry tail: empty means `None`, 9 bytes of
+/// `1 ‖ u64 le` mean `Some`. Superseded tags are rejected before this point.
+fn decode_expiry_tail(b: &[u8]) -> Option<u64> {
+    if b.is_empty() {
+        return None;
+    }
+    decode_expiry(b).0
+}
+
+fn decode_expiry(b: &[u8]) -> (Option<u64>, usize) {
+    match b.first() {
+        None | Some(0) => (None, 1),
+        Some(1) => (
+            Some(u64::from_le_bytes(
+                b[1..9].try_into().expect("GrantRow expiry payload"),
+            )),
+            9,
+        ),
+        other => panic!("unknown GrantRow expiry flag {other:?}"),
     }
 }
 
@@ -647,6 +984,7 @@ impl<M: Memory> GrantState<M> {
         subject: GrantSubject,
         privilege: &Privilege,
         expires_at_ns: Option<u64>,
+        predicate: Option<Rc<CompiledPredicate>>,
     ) -> Result<(), AuthWriteError> {
         if let GrantSubject::Principal(p) = &subject
             && *p == Principal::anonymous()
@@ -654,7 +992,13 @@ impl<M: Memory> GrantState<M> {
             return Err(AuthWriteError::AnonymousPrincipal);
         }
         let key = GrantKey::new(privilege, &subject);
-        self.grants.insert(key, GrantRow { expires_at_ns });
+        self.grants.insert(
+            key,
+            GrantRow {
+                expires_at_ns,
+                predicate,
+            },
+        );
         Ok(())
     }
 
@@ -749,6 +1093,7 @@ impl<M: Memory> GrantState<M> {
                     subject,
                     privilege,
                     expires_at_ns: entry.value().expires_at_ns,
+                    predicate: entry.value().predicate.clone(),
                 }
             })
             .collect()
@@ -769,6 +1114,9 @@ pub struct GrantRowEntry {
     pub subject: GrantSubject,
     pub privilege: Privilege,
     pub expires_at_ns: Option<u64>,
+    /// Compiled conditional-policy predicate; `Some` exactly on conditional grants
+    /// ([ADR 0075] §1).
+    pub predicate: Option<Rc<CompiledPredicate>>,
 }
 
 #[cfg(test)]
@@ -964,7 +1312,7 @@ mod tests {
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         let p = principal(3);
         grants
-            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None)
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None, None)
             .expect("principal subject");
         assert!(grants.holds(GrantSubject::Principal(p), &exec_priv("q1"), 0));
         // Different query name: no grant (exact canonical key drives lookup).
@@ -1011,6 +1359,7 @@ mod tests {
                 GrantSubject::Principal(Principal::anonymous()),
                 &exec_priv("q1"),
                 None,
+                None,
             )
             .unwrap_err();
         assert_eq!(err, AuthWriteError::AnonymousPrincipal);
@@ -1022,7 +1371,7 @@ mod tests {
         use ic_stable_structures::DefaultMemoryImpl;
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         grants
-            .grant(GrantSubject::Public, &exec_priv("public-q"), None)
+            .grant(GrantSubject::Public, &exec_priv("public-q"), None, None)
             .expect("public subject is storable");
         // Anonymous evaluation resolves to the PUBLIC subject.
         let anon = GrantSubject::effective_for(&Principal::anonymous());
@@ -1038,7 +1387,7 @@ mod tests {
         use ic_stable_structures::DefaultMemoryImpl;
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         grants
-            .grant(GrantSubject::Public, &exec_priv("timed"), Some(100))
+            .grant(GrantSubject::Public, &exec_priv("timed"), Some(100), None)
             .expect("grant with expiry");
         assert!(grants.holds(GrantSubject::Public, &exec_priv("timed"), 100));
         assert!(!grants.holds(GrantSubject::Public, &exec_priv("timed"), 101));
@@ -1061,7 +1410,7 @@ mod tests {
         assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 0));
 
         grants
-            .grant(GrantSubject::Principal(p), &graph_traverse(9), None)
+            .grant(GrantSubject::Principal(p), &graph_traverse(9), None, None)
             .expect("grant on graph 9");
         assert!(grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 0));
         // A different graph's row does not leak visibility.
@@ -1070,7 +1419,7 @@ mod tests {
         assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(principal(8)), 9, 0));
         // Prepared-query EXECUTE rows are not graph data-plane grants.
         grants
-            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None)
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None, None)
             .expect("prepared execute grant");
         assert!(
             !grants.holds_any_graph_grant(GrantSubject::Principal(p), 7, 0),
@@ -1080,14 +1429,19 @@ mod tests {
         // Expired rows confer nothing; equality of expiry and now still holds.
         grants.revoke(GrantSubject::Principal(p), &graph_traverse(9));
         grants
-            .grant(GrantSubject::Principal(p), &graph_traverse(9), Some(50))
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(9),
+                Some(50),
+                None,
+            )
             .expect("expiring grant");
         assert!(grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 50));
         assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 9, 51));
 
         // The PUBLIC subject sees only PUBLIC rows.
         grants
-            .grant(GrantSubject::Public, &graph_traverse(11), None)
+            .grant(GrantSubject::Public, &graph_traverse(11), None, None)
             .expect("public grant");
         assert!(grants.holds_any_graph_grant(GrantSubject::Public, 11, 0));
         assert!(!grants.holds_any_graph_grant(GrantSubject::Principal(p), 11, 0));
@@ -1099,10 +1453,10 @@ mod tests {
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         let p = principal(6);
         grants
-            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None)
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None, None)
             .expect("grant");
         grants
-            .grant(GrantSubject::Public, &exec_priv("q1"), None)
+            .grant(GrantSubject::Public, &exec_priv("q1"), None, None)
             .expect("public grant");
         assert!(grants.revoke(GrantSubject::Principal(p), &exec_priv("q1")));
         assert!(!grants.revoke(GrantSubject::Principal(p), &exec_priv("q1")));
@@ -1112,16 +1466,138 @@ mod tests {
 
     #[test]
     fn grant_row_round_trip() {
-        for row in [
+        let predicate = || {
+            Rc::new(CompiledPredicate {
+                label: 9,
+                conjuncts: vec![
+                    PredicateComparison {
+                        property: 30,
+                        op: PredicateOp::Eq,
+                        value: PredicateValue::Literal(PredicateLiteral::Bool(true)),
+                    },
+                    PredicateComparison {
+                        property: 31,
+                        op: PredicateOp::Ge,
+                        value: PredicateValue::MsgCaller,
+                    },
+                    PredicateComparison {
+                        property: 32,
+                        op: PredicateOp::Ne,
+                        value: PredicateValue::Literal(PredicateLiteral::Int(-7)),
+                    },
+                    PredicateComparison {
+                        property: 33,
+                        op: PredicateOp::Lt,
+                        value: PredicateValue::Literal(PredicateLiteral::Float(2.5)),
+                    },
+                    PredicateComparison {
+                        property: 34,
+                        op: PredicateOp::Gt,
+                        value: PredicateValue::Literal(PredicateLiteral::String(
+                            "public".to_owned(),
+                        )),
+                    },
+                ],
+            })
+        };
+        let rows = vec![
             GrantRow {
                 expires_at_ns: None,
+                predicate: None,
             },
             GrantRow {
                 expires_at_ns: Some(u64::MAX),
+                predicate: None,
             },
-        ] {
+            GrantRow {
+                expires_at_ns: None,
+                predicate: Some(predicate()),
+            },
+            GrantRow {
+                expires_at_ns: Some(12345),
+                predicate: Some(predicate()),
+            },
+        ];
+        for row in rows {
             assert_eq!(GrantRow::from_bytes(row.to_bytes()), row);
         }
+    }
+
+    #[test]
+    fn grant_row_conditional_round_trips_through_stable_state() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(12);
+        let predicate = Rc::new(CompiledPredicate {
+            label: 4,
+            conjuncts: vec![PredicateComparison {
+                property: 6,
+                op: PredicateOp::Eq,
+                value: PredicateValue::MsgCaller,
+            }],
+        });
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(None, 3),
+                Some(900),
+                Some(predicate.clone()),
+            )
+            .expect("conditional grant");
+        // The decoded rows expose the stored predicate unchanged (stable-state read path).
+        let rows = grants.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].predicate.as_ref(), Some(&predicate));
+        assert_eq!(rows[0].expires_at_ns, Some(900));
+
+        // Re-granting without a condition replaces the stored predicate field.
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(None, 3),
+                None,
+                None,
+            )
+            .expect("unconditional re-grant");
+        let rows = grants.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].predicate, None);
+    }
+
+    #[test]
+    fn superseded_predicate_free_grant_row_tags_are_rejected() {
+        // Fresh-state contract ([ADR 0075] migration): the pre-policy tag encodings
+        // (0/1) are rejected instead of interpreted.
+        for legacy in [vec![0u8], {
+            let mut v = vec![1u8];
+            v.extend_from_slice(&50u64.to_le_bytes());
+            v
+        }] {
+            let result = std::panic::catch_unwind(|| GrantRow::from_bytes(Cow::Owned(legacy)));
+            assert!(result.is_err(), "superseded tag must be rejected");
+        }
+    }
+
+    #[test]
+    fn compiled_predicate_encoding_rejects_empty_and_oversized_conjunctions() {
+        let empty = CompiledPredicate {
+            label: 1,
+            conjuncts: Vec::new(),
+        };
+        assert!(std::panic::catch_unwind(|| empty.encode()).is_err());
+
+        let over_cap = CompiledPredicate {
+            label: 1,
+            conjuncts: vec![
+                PredicateComparison {
+                    property: 1,
+                    op: PredicateOp::Eq,
+                    value: PredicateValue::MsgCaller
+                };
+                MAX_PREDICATE_CONJUNCTS + 1
+            ],
+        };
+        assert!(std::panic::catch_unwind(|| over_cap.encode()).is_err());
     }
 
     // --- Data-plane graph privileges (ADR 0074 §2, slice 2a grammar surface) ---
@@ -1172,6 +1648,7 @@ mod tests {
                 GrantSubject::Principal(p),
                 &graph_traverse(Some(Direction::Outgoing), 3),
                 None,
+                None,
             )
             .expect("grant");
         // Exact key holds...
@@ -1214,10 +1691,15 @@ mod tests {
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         let p = principal(10);
         grants
-            .grant(GrantSubject::Principal(p), &exec_priv("q1"), Some(500))
+            .grant(
+                GrantSubject::Principal(p),
+                &exec_priv("q1"),
+                Some(500),
+                None,
+            )
             .expect("prepared grant");
         grants
-            .grant(GrantSubject::Public, &graph_traverse(None, 3), None)
+            .grant(GrantSubject::Public, &graph_traverse(None, 3), None, None)
             .expect("public traverse grant");
         let rows = grants.rows();
         assert_eq!(rows.len(), 2);
@@ -1229,6 +1711,7 @@ mod tests {
                 subject: GrantSubject::Principal(p),
                 privilege: exec_priv("q1"),
                 expires_at_ns: Some(500),
+                predicate: None,
             }
         );
         assert_eq!(
@@ -1237,6 +1720,7 @@ mod tests {
                 subject: GrantSubject::Public,
                 privilege: graph_traverse(None, 3),
                 expires_at_ns: None,
+                predicate: None,
             }
         );
     }
@@ -1246,7 +1730,12 @@ mod tests {
         use ic_stable_structures::DefaultMemoryImpl;
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         grants
-            .grant(GrantSubject::Public, &graph_traverse(None, 3), Some(100))
+            .grant(
+                GrantSubject::Public,
+                &graph_traverse(None, 3),
+                Some(100),
+                None,
+            )
             .expect("expiring grant");
         // Stored state survives expiry (contains), while evaluation treats it as absent
         // (holds) — revoke preflight must address stored rows, not effective ones.
@@ -1275,10 +1764,10 @@ mod tests {
         };
         // Dropped graph: two subjects (named + PUBLIC), two operations.
         grants
-            .grant(GrantSubject::Principal(p), &on_graph(7, 3), None)
+            .grant(GrantSubject::Principal(p), &on_graph(7, 3), None, None)
             .expect("principal row");
         grants
-            .grant(GrantSubject::Public, &match_on(7, 9), None)
+            .grant(GrantSubject::Public, &match_on(7, 9), None, None)
             .expect("public row");
         grants
             .grant(
@@ -1292,19 +1781,20 @@ mod tests {
                     },
                 }),
                 None,
+                None,
             )
             .expect("property row");
         // Survivors: same numeric label ids under a different graph, a prepared-query
         // EXECUTE row (name-keyed, graph-agnostic), and an expired row of another graph
         // that still exists as stored state.
         grants
-            .grant(GrantSubject::Principal(p), &on_graph(8, 3), None)
+            .grant(GrantSubject::Principal(p), &on_graph(8, 3), None, None)
             .expect("sibling-graph row with identical label id");
         grants
-            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None)
+            .grant(GrantSubject::Principal(p), &exec_priv("q1"), None, None)
             .expect("execute row");
         grants
-            .grant(GrantSubject::Public, &on_graph(8, 3), Some(50))
+            .grant(GrantSubject::Public, &on_graph(8, 3), Some(50), None)
             .expect("expired sibling-graph row");
 
         assert_eq!(
@@ -1341,7 +1831,7 @@ mod tests {
         let mut grants = GrantState::init(DefaultMemoryImpl::default());
         assert_eq!(grants.revoke_all_for_graph(7), 0);
         grants
-            .grant(GrantSubject::Public, &graph_traverse(None, 3), None)
+            .grant(GrantSubject::Public, &graph_traverse(None, 3), None, None)
             .expect("grant on graph 7");
         assert_eq!(
             grants.revoke_all_for_graph(8),

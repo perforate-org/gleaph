@@ -1440,6 +1440,10 @@ pub struct GraphGrantSummary {
     pub resource: GrantResourceView,
     /// Dormant expiry semantics ([ADR 0074] §1b): reads treat expired rows as absent.
     pub expires_at_ns: Option<u64>,
+    /// Compiled conditional-policy condition printed inline ([ADR 0075] §1), e.g.
+    /// `WHERE visibility = 'public' AND owner = MSG_CALLER()`. Property names resolve
+    /// through the graph catalogs; unresolved ids print as `<property N>`.
+    pub predicate: Option<String>,
 }
 
 /// Arguments for one expired client-mutation-key sweep step. The sweep is

@@ -819,7 +819,7 @@ mod tests {
             resource: GraphResource::EdgeLabel(3),
         });
         grants
-            .grant(GrantSubject::Public, &privilege, None)
+            .grant(GrantSubject::Public, &privilege, None, None)
             .expect("public grant row");
         assert_eq!(auth_state.len(), 1);
         assert_eq!(grants.len(), 1);

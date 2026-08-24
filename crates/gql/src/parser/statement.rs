@@ -13,9 +13,10 @@ use crate::ast::{
 };
 #[cfg(feature = "gleaph")]
 use crate::ast::{
-    GrantDirection, GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral,
-    GrantTarget, RevokeStatement, SearchOutputBinding, SearchOutputKind, SearchProvider,
-    SearchStatement, VectorSearchSpec,
+    Expr, ExprKind, GrantComparison, GrantCondition, GrantConditionSelector, GrantDirection,
+    GrantPredicate, GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral,
+    GrantTarget, GrantValueExpr, RevokeStatement, SearchOutputBinding, SearchOutputKind,
+    SearchProvider, SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -965,11 +966,12 @@ impl Parser<'_> {
     ///
     /// Grammar:
     /// ```text
-    /// GRANT privilege ON GRAPH objectName resourceSelector TO subject
+    /// GRANT privilege ON GRAPH objectName resourceSelector [condition] TO subject
     /// GRANT EXECUTE ON PREPARED QUERY ident TO subject
     /// privilege      := MATCH | TRAVERSE [OUTGOING | INCOMING] | READ | CREATE | UPDATE | DELETE
     /// resourceSelector := (NODES | VERTICES) ident [ "{" ident ("," ident)* "}" ]
     ///                   | EDGES ident
+    /// condition      := FOR patternSelector WHERE predicate   (ADR 0075 §3)
     /// subject        := PRINCIPAL stringLiteral | PUBLIC
     /// ```
     ///
@@ -1000,6 +1002,7 @@ impl Parser<'_> {
         self.expect_keyword("GRAPH")?;
         let graph = self.parse_object_name()?;
         let resource = self.parse_grant_resource_selector(&mut privilege)?;
+        let condition = self.parse_grant_condition_opt()?;
         self.expect_keyword("TO")?;
         let subject = self.parse_grant_subject_literal()?;
         Ok(GrantStatement {
@@ -1008,6 +1011,7 @@ impl Parser<'_> {
                 privilege,
                 graph,
                 resource,
+                condition,
             },
             subject,
         })
@@ -1036,6 +1040,7 @@ impl Parser<'_> {
         self.expect_keyword("GRAPH")?;
         let graph = self.parse_object_name()?;
         let resource = self.parse_grant_resource_selector(&mut privilege)?;
+        let condition = self.parse_grant_condition_opt()?;
         self.expect_keyword("FROM")?;
         let subject = self.parse_grant_subject_literal()?;
         Ok(RevokeStatement {
@@ -1044,11 +1049,85 @@ impl Parser<'_> {
                 privilege,
                 graph,
                 resource,
+                condition,
             },
             subject,
         })
     }
 
+    /// Parses an optional conditional policy selector ([ADR 0075] §3):
+    /// `FOR (v:Label) WHERE …` or `FOR ()-[e:Label]->() WHERE …`.
+    ///
+    /// The `WHERE` body is parsed with the ordinary expression grammar and then
+    /// restricted to the ADR 0075 §2 DSL: comparisons of one selector-variable property
+    /// against a literal or `MSG_CALLER()`, joined by `AND`. Every unsupported shape is
+    /// rejected here with its own distinct error.
+    #[cfg(feature = "gleaph")]
+    fn parse_grant_condition_opt(&mut self) -> Result<Option<GrantCondition>, GqlError> {
+        if !self.eat_keyword("FOR") {
+            return Ok(None);
+        }
+        let start = self.save();
+        let selector = self.parse_condition_selector()?;
+        self.expect_keyword("WHERE")?;
+        let expr = self.parse_expr()?;
+        let conjuncts = normalize_policy_predicate(&expr, selector.variable(), selector.label())?;
+        Ok(Some(GrantCondition {
+            span: self.span_since(start),
+            selector,
+            predicate: GrantPredicate { conjuncts },
+        }))
+    }
+
+    /// Parses `(v : Label)` or the edge forms `()-[e : Label]->()`, `()-[e : Label]-()`,
+    /// and `<-[e : Label]-()` (direction spelling is accepted but not preserved; the
+    /// canonical rendering is undirected).
+    #[cfg(feature = "gleaph")]
+    fn parse_condition_selector(&mut self) -> Result<GrantConditionSelector, GqlError> {
+        // Incoming spelling: `<-[e:L]-()`.
+        if self.eat_token(&Token::LeftArrowBracket) {
+            let (variable, label) = self.parse_edge_pattern_body()?;
+            self.expect_edge_bracket_tail()?;
+            return Ok(GrantConditionSelector::Edge { variable, label });
+        }
+        self.expect_token(&Token::LParen)?;
+        // Outgoing/undirected spelling: `()-[e:L]->()` / `()-[e:L]-()`.
+        if self.eat_token(&Token::RParen) {
+            self.expect_token(&Token::MinusLeftBracket)?;
+            let (variable, label) = self.parse_edge_pattern_body()?;
+            self.expect_edge_bracket_tail()?;
+            return Ok(GrantConditionSelector::Edge { variable, label });
+        }
+        let variable = self.expect_ident()?.to_owned();
+        self.expect_token(&Token::Colon)?;
+        let label = self.expect_ident()?.to_owned();
+        self.expect_token(&Token::RParen)?;
+        Ok(GrantConditionSelector::Vertex { variable, label })
+    }
+
+    /// Consumes the closing bracket of an edge pattern body plus its optional direction
+    /// tail, then the empty closing endpoint `()`.
+    #[cfg(feature = "gleaph")]
+    fn expect_edge_bracket_tail(&mut self) -> Result<(), GqlError> {
+        if self.eat_token(&Token::BracketRightArrow) || self.eat_token(&Token::RightBracketMinus) {
+        } else if self.eat_token(&Token::RBracket) {
+            let _ = self.eat_token(&Token::RightArrow);
+            let _ = self.eat_token(&Token::Minus);
+        } else {
+            return Err(self.expected("']' after edge pattern"));
+        }
+        self.expect_token(&Token::LParen)?;
+        self.expect_token(&Token::RParen)
+    }
+
+    /// Parses the `e : L` interior of an edge pattern bracket.
+    #[cfg(feature = "gleaph")]
+    fn parse_edge_pattern_body(&mut self) -> Result<(String, String), GqlError> {
+        let variable = self.expect_ident()?.to_owned();
+        self.expect_token(&Token::Colon)?;
+        let label = self.expect_ident()?.to_owned();
+        Ok((variable, label))
+    }
     #[cfg(feature = "gleaph")]
     fn parse_grant_privilege(&mut self) -> Result<GrantPrivilege, GqlError> {
         if self.eat_keyword("MATCH") {
@@ -1131,6 +1210,10 @@ impl Parser<'_> {
             _ => Err(self.expected("a principal string literal")),
         }
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Conditional policy predicate restriction (ADR 0075 §2)
+    // ════════════════════════════════════════════════════════════════════════
 
     // ════════════════════════════════════════════════════════════════════════
     // §14.6 — FILTER statement
@@ -1545,6 +1628,164 @@ impl Parser<'_> {
     }
 }
 
+/// Maximum comparisons in one conditional policy conjunction ([ADR 0075] §2
+/// determinism bound). The grammar-level authoring bound; the storage layer
+/// independently enforces its encoding cap as defense in depth.
+#[cfg(feature = "gleaph")]
+pub const MAX_GRANT_CONDITION_CONJUNCTS: usize = 8;
+
+/// Restricts a parsed `WHERE` expression to the ADR 0075 §2 conditional-policy DSL and
+/// normalizes it into an AND-ordered comparison list.
+///
+/// Accepted shape: `Comparison (AND Comparison)*` where each comparison is
+/// `<selector-variable>.<property> <op> <literal | MSG_CALLER()>`. Every unsupported
+/// shape is rejected with its own distinct error message so grant authors can see which
+/// construct was refused.
+#[cfg(feature = "gleaph")]
+fn normalize_policy_predicate(
+    expr: &Expr,
+    selector_variable: &str,
+    selector_label: &str,
+) -> Result<Vec<GrantComparison>, GqlError> {
+    let mut conjuncts = Vec::new();
+    collect_policy_conjuncts(expr, selector_variable, selector_label, &mut conjuncts)?;
+    Ok(conjuncts)
+}
+
+/// Recursive AND-flattening walker. `depth` is carried through recursion via the
+/// accumulated list length so the conjunction cap bounds the whole predicate.
+#[cfg(feature = "gleaph")]
+fn collect_policy_conjuncts(
+    expr: &Expr,
+    selector_variable: &str,
+    selector_label: &str,
+    out: &mut Vec<GrantComparison>,
+) -> Result<(), GqlError> {
+    match &expr.kind {
+        ExprKind::And(left, right) => {
+            collect_policy_conjuncts(left, selector_variable, selector_label, out)?;
+            collect_policy_conjuncts(right, selector_variable, selector_label, out)?;
+            Ok(())
+        }
+        ExprKind::Compare { left, op, right } => {
+            let property = policy_property_ref(left, selector_variable, selector_label)?;
+            let value = policy_value(right)?;
+            if out.len() >= MAX_GRANT_CONDITION_CONJUNCTS {
+                return Err(GqlError::Parse(format!(
+                    "conditional policy for ({selector_variable}:{selector_label}) exceeds the \
+                     maximum of {MAX_GRANT_CONDITION_CONJUNCTS} AND comparisons"
+                )));
+            }
+            out.push(GrantComparison {
+                property,
+                op: *op,
+                value,
+            });
+            Ok(())
+        }
+        ExprKind::Or(_, _) => Err(GqlError::Parse(
+            "OR is not supported in conditional policies; conditions are AND-only (ADR 0075 §2)"
+                .into(),
+        )),
+        ExprKind::Not(_) => Err(GqlError::Parse(
+            "NOT is not supported in conditional policies; conditions are AND-only (ADR 0075 §2)"
+                .into(),
+        )),
+        ExprKind::Xor(_, _) => Err(GqlError::Parse(
+            "XOR is not supported in conditional policies; conditions are AND-only (ADR 0075 §2)"
+                .into(),
+        )),
+        ExprKind::BinaryOp { .. } => Err(GqlError::Parse(
+            "arithmetic expressions are not supported in conditional policies (ADR 0075 §2)".into(),
+        )),
+        ExprKind::PropertyExists { .. }
+        | ExprKind::ExistsSubquery(_)
+        | ExprKind::ExistsPattern(_) => Err(GqlError::Parse(
+            "EXISTS is not supported in conditional policies (ReBAC conditions are a later phase)"
+                .into(),
+        )),
+        _ => Err(GqlError::Parse(format!(
+            "unsupported conditional-policy predicate shape; expected \
+             <{selector_variable}.property> <op> <literal or MSG_CALLER()> joined by AND"
+        ))),
+    }
+}
+
+/// Validates the left side of one policy comparison: exactly one property access on the
+/// selector variable.
+#[cfg(feature = "gleaph")]
+fn policy_property_ref(
+    expr: &Expr,
+    selector_variable: &str,
+    _selector_label: &str,
+) -> Result<String, GqlError> {
+    match &expr.kind {
+        ExprKind::PropertyAccess {
+            expr: base,
+            property,
+        } => match &base.kind {
+            ExprKind::Variable(name) if name == selector_variable => Ok(property.clone()),
+            ExprKind::Variable(name) => Err(GqlError::Parse(format!(
+                "conditional policy comparisons must reference the selector variable \
+                 '{name}.{property}' as '{selector_variable}.{property}'"
+            ))),
+            _ => Err(GqlError::Parse(
+                "the left side of a conditional policy comparison must be \
+                 <selector-variable>.<property>"
+                    .into(),
+            )),
+        },
+        _ => Err(GqlError::Parse(
+            "the left side of a conditional policy comparison must be \
+             <selector-variable>.<property>"
+                .into(),
+        )),
+    }
+}
+
+/// Validates the right side of one policy comparison: a scalar literal or zero-argument
+/// `MSG_CALLER()` (any case).
+#[cfg(feature = "gleaph")]
+fn policy_value(expr: &Expr) -> Result<GrantValueExpr, GqlError> {
+    match &expr.kind {
+        ExprKind::Literal(value) => Ok(GrantValueExpr::Literal(value.clone())),
+        ExprKind::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            let is_msg_caller =
+                name.parts.len() == 1 && name.parts[0].eq_ignore_ascii_case("MSG_CALLER");
+            if !is_msg_caller {
+                return Err(GqlError::Parse(format!(
+                    "'{}' is not supported in conditional policies; only MSG_CALLER() may appear \
+                     on the right side",
+                    name.parts.join(".")
+                )));
+            }
+            if !args.is_empty() || *distinct {
+                return Err(GqlError::Parse(
+                    "MSG_CALLER() takes no arguments and no DISTINCT in conditional policies"
+                        .into(),
+                ));
+            }
+            Ok(GrantValueExpr::MsgCaller)
+        }
+        ExprKind::BinaryOp { .. } => Err(GqlError::Parse(
+            "arithmetic expressions are not supported in conditional policies (ADR 0075 §2)".into(),
+        )),
+        ExprKind::PropertyAccess { .. } | ExprKind::Variable(_) => Err(GqlError::Parse(
+            "property-to-property comparisons are not supported in conditional policies; the \
+             right side must be a literal or MSG_CALLER()"
+                .into(),
+        )),
+        _ => Err(GqlError::Parse(
+            "the right side of a conditional policy comparison must be a literal or MSG_CALLER()"
+                .into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 #[cfg(all(test, not(feature = "gleaph")))]
 mod search_feature_boundary_tests {
@@ -1810,6 +2051,7 @@ mod grant_parser_tests {
                 resource: GrantResourceSelector::Vertex {
                     label: "Person".to_string()
                 },
+                condition: None,
             }
         );
         assert_eq!(
@@ -1898,6 +2140,203 @@ mod grant_parser_tests {
             GrantResourceSelector::Vertex {
                 label: "Person".to_string()
             }
+        );
+    }
+
+    // ── Conditional policy selectors (ADR 0075 §3) ──
+
+    use crate::ast::CmpOp;
+    use crate::ast::{
+        GrantComparison, GrantCondition, GrantConditionSelector, GrantPredicate, GrantValueExpr,
+    };
+
+    fn grant_condition(input: &str) -> GrantCondition {
+        let SimpleQueryStatement::Grant(stmt) = parse_valid(input) else {
+            panic!("expected Grant for {input}");
+        };
+        let GrantTarget::Graph { condition, .. } = stmt.target else {
+            panic!("expected graph target for {input}");
+        };
+        condition.expect("expected a conditional selector")
+    }
+
+    fn assert_condition_error(input: &str, fragment: &str) {
+        let err = parser::parse(input).expect_err("expected parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(fragment),
+            "error message must name the refused shape ({fragment}), got: {msg}"
+        );
+    }
+
+    #[test]
+    fn conditional_vertex_selector_parses_and_normalizes_and_chain() {
+        let condition = grant_condition(
+            "GRANT READ ON GRAPH social NODES Post \
+             FOR (p:Post) WHERE p.visibility = 'public' AND p.owner = MSG_CALLER() \
+             TO PUBLIC",
+        );
+        assert_eq!(
+            condition.selector,
+            GrantConditionSelector::Vertex {
+                variable: "p".to_string(),
+                label: "Post".to_string()
+            }
+        );
+        assert_eq!(
+            condition.predicate,
+            GrantPredicate {
+                conjuncts: vec![
+                    GrantComparison {
+                        property: "visibility".to_string(),
+                        op: CmpOp::Eq,
+                        value: GrantValueExpr::Literal(crate::Value::Text("public".to_string())),
+                    },
+                    GrantComparison {
+                        property: "owner".to_string(),
+                        op: CmpOp::Eq,
+                        value: GrantValueExpr::MsgCaller,
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn conditional_selectors_parse_all_comparison_operators_and_msg_caller_case() {
+        let condition = grant_condition(
+            "GRANT MATCH ON GRAPH g NODES T FOR (v:T) WHERE v.a <> 1 AND v.b <= 2 AND \
+             v.c < 3 AND v.d >= 4 AND v.e > 5 AND v.f = msg_caller() TO PUBLIC",
+        );
+        let ops: Vec<CmpOp> = condition.predicate.conjuncts.iter().map(|c| c.op).collect();
+        assert_eq!(
+            ops,
+            vec![
+                CmpOp::Ne,
+                CmpOp::Le,
+                CmpOp::Lt,
+                CmpOp::Ge,
+                CmpOp::Gt,
+                CmpOp::Eq
+            ]
+        );
+        assert!(matches!(
+            condition.predicate.conjuncts.last().unwrap().value,
+            GrantValueExpr::MsgCaller
+        ));
+    }
+
+    #[test]
+    fn conditional_edge_selector_parses_in_all_direction_spellings() {
+        for input in [
+            "GRANT MATCH ON GRAPH g NODES T FOR ()-[e:KNOWS]->() WHERE e.weight > 5 TO PUBLIC",
+            "GRANT MATCH ON GRAPH g NODES T FOR ()-[e:KNOWS]-() WHERE e.weight > 5 TO PUBLIC",
+            "GRANT MATCH ON GRAPH g NODES T FOR <-[e:KNOWS]-() WHERE e.weight > 5 TO PUBLIC",
+        ] {
+            let condition = grant_condition(input);
+            assert_eq!(
+                condition.selector,
+                GrantConditionSelector::Edge {
+                    variable: "e".to_string(),
+                    label: "KNOWS".to_string()
+                },
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_revoke_accepts_the_selector_form() {
+        let program = parser::parse(
+            "REVOKE READ ON GRAPH g NODES Post FOR (p:Post) WHERE p.owner = MSG_CALLER() \
+             FROM PUBLIC",
+        )
+        .expect("conditional revoke parses");
+        let tx = program.transaction_activity.expect("tx");
+        let block = tx.body.expect("body");
+        let mut found_revoke = false;
+        for stmt in block.iter_statements() {
+            let Statement::Query(query) = stmt else {
+                continue;
+            };
+            let queries = std::iter::once(&query.left).chain(query.rest.iter().map(|(_, lq)| lq));
+            for lq in queries {
+                for part in &lq.parts {
+                    if let SimpleQueryStatement::Revoke(revoke) = part {
+                        let GrantTarget::Graph { condition, .. } = &revoke.target else {
+                            panic!("expected graph target");
+                        };
+                        assert_eq!(
+                            condition.as_ref().expect("conditional selector").selector,
+                            GrantConditionSelector::Vertex {
+                                variable: "p".to_string(),
+                                label: "Post".to_string()
+                            }
+                        );
+                        found_revoke = true;
+                    }
+                }
+            }
+        }
+        assert!(found_revoke, "the REVOKE statement was not reached");
+    }
+
+    #[test]
+    fn conditional_policy_rejects_or_not_arithmetic_exists_with_distinct_errors() {
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE v.a = 1 OR v.b = 2 TO PUBLIC",
+            "OR",
+        );
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE NOT v.a = 1 TO PUBLIC",
+            "NOT",
+        );
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE v.a = 1 + 2 TO PUBLIC",
+            "arithmetic",
+        );
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (x) } TO PUBLIC",
+            "EXISTS",
+        );
+    }
+
+    #[test]
+    fn conditional_policy_rejects_wrong_variable_property_to_property_and_unknown_functions() {
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE w.a = 1 TO PUBLIC",
+            "selector variable",
+        );
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE v.a = v.b TO PUBLIC",
+            "literal or MSG_CALLER",
+        );
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE v.a = upper('x') TO PUBLIC",
+            "literal or MSG_CALLER",
+        );
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE a = 1 TO PUBLIC",
+            "<selector-variable>.<property>",
+        );
+    }
+
+    #[test]
+    fn conditional_policy_enforces_the_conjunction_depth_cap() {
+        let mut where_clause = String::from("v.p0 = 0");
+        for index in 1..12 {
+            where_clause.push_str(&format!(" AND v.p{index} = {index}"));
+        }
+        let input =
+            format!("GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE {where_clause} TO PUBLIC");
+        assert_condition_error(&input, "maximum of 8");
+    }
+
+    #[test]
+    fn conditional_selector_requires_where_body() {
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) TO PUBLIC",
+            "expected",
         );
     }
 

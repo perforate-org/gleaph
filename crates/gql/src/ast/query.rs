@@ -1,9 +1,13 @@
 use crate::token::Span;
 
 use super::catalog::{DeleteStatement, InsertStatement, ObjectName, RemoveStatement, SetStatement};
+#[cfg(feature = "gleaph")]
+use super::expr::CmpOp;
 use super::expr::Expr;
 use super::graph_type::ValueType;
 use super::pattern::GraphPattern;
+#[cfg(feature = "gleaph")]
+use crate::Value;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // §14 — Query statements
@@ -623,13 +627,16 @@ pub struct GrantStatement {
     )
 )]
 pub enum GrantTarget {
-    /// `<privilege> ON GRAPH <graph> <resource-selector>` (ADR 0074 §2/§5).
+    /// `<privilege> ON GRAPH <graph> <resource-selector>` (ADR 0074 §2/§5), optionally
+    /// with a conditional policy selector ([ADR 0075] §3).
     Graph {
         #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         privilege: GrantPrivilege,
         graph: ObjectName,
         #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         resource: GrantResourceSelector,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+        condition: Option<GrantCondition>,
     },
     /// `EXECUTE ON PREPARED QUERY <query-name>` — the caller-bounded publication
     /// form (ADR 0074 §1b). The bound graph resolves from the stored record on the
@@ -790,6 +797,135 @@ pub enum GrantResourceSelector {
 pub enum GrantSubjectLiteral {
     Principal(String),
     Public,
+}
+
+/// Conditional policy selector attached to a graph grant ([ADR 0075] §3):
+/// the `FOR (v:Label) WHERE …` / `FOR ()-[e:Label]-() WHERE …` clause.
+///
+/// The predicate is parsed into an AND-normalized comparison list ([ADR 0075] §2);
+/// disjunction, negation, arithmetic, and `EXISTS` shapes are rejected at parse time
+/// with distinct errors. Catalog binding (label/property existence, scalar-type
+/// compatibility) happens in the integration layer at GRANT time.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct GrantCondition {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    pub selector: GrantConditionSelector,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub predicate: GrantPredicate,
+}
+
+/// Pattern shape of a conditional selector ([ADR 0075] §3). Both forms carry one
+/// bound variable and one label; the edge form is recognized syntactically but its
+/// lowering is a later phase (edge-property-scoped predicates are out of scope).
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum GrantConditionSelector {
+    /// `FOR (v:Label) WHERE …`
+    Vertex { variable: String, label: String },
+    /// `FOR ()-[e:Label]->() WHERE …` (any direction spelling; canonicalized undirected)
+    Edge { variable: String, label: String },
+}
+
+#[cfg(feature = "gleaph")]
+impl GrantConditionSelector {
+    /// Variable bound by the selector pattern.
+    pub fn variable(&self) -> &str {
+        match self {
+            GrantConditionSelector::Vertex { variable, .. } => variable,
+            GrantConditionSelector::Edge { variable, .. } => variable,
+        }
+    }
+
+    /// Label required by the selector pattern.
+    pub fn label(&self) -> &str {
+        match self {
+            GrantConditionSelector::Vertex { label, .. } => label,
+            GrantConditionSelector::Edge { label, .. } => label,
+        }
+    }
+
+    /// Whether this selector is the edge-pattern form.
+    pub fn is_edge(&self) -> bool {
+        matches!(self, GrantConditionSelector::Edge { .. })
+    }
+}
+
+/// AND-normalized predicate body of a conditional selector ([ADR 0075] §2:
+/// `Comparison (AND Comparison)*`). An empty conjunction cannot be constructed —
+/// the parser requires at least one comparison after `WHERE`.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct GrantPredicate {
+    pub conjuncts: Vec<GrantComparison>,
+}
+
+/// One `<variable>.<property> <op> <value>` conjunct ([ADR 0075] §2).
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct GrantComparison {
+    pub property: String,
+    pub op: CmpOp,
+    pub value: GrantValueExpr,
+}
+
+/// Right-hand side of a conditional-policy comparison ([ADR 0075] §2 `ValueExpr`):
+/// a scalar literal or the zero-argument `MSG_CALLER()` dialect function. The Router
+/// substitutes the invoking caller as a literal constant at execution time.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum GrantValueExpr {
+    Literal(Value),
+    MsgCaller,
 }
 
 // ──── FILTER (§14.2) ────

@@ -499,11 +499,13 @@ fn unregister_graph_sweeps_grant_rows_of_the_dropped_vocabulary() {
         GrantSubject::Principal(grantee),
         &traverse_on(dropped_id.raw(), 1),
         None,
+        None,
     )
     .expect("dropped-graph principal row");
     crate::facade::auth::add_grant(
         GrantSubject::Public,
         &traverse_on(dropped_id.raw(), 1),
+        None,
         None,
     )
     .expect("dropped-graph PUBLIC row");
@@ -511,11 +513,13 @@ fn unregister_graph_sweeps_grant_rows_of_the_dropped_vocabulary() {
         GrantSubject::Principal(grantee),
         &traverse_on(survivor_id.raw(), 1),
         None,
+        None,
     )
     .expect("sibling-graph row with identical label id");
     crate::facade::auth::add_grant(
         GrantSubject::Principal(grantee),
         &Privilege::ExecutePreparedQuery { name: "q".into() },
+        None,
         None,
     )
     .expect("name-keyed execute row");

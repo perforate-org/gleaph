@@ -1381,12 +1381,14 @@ mod tests {
 
     impl GrantTable {
         fn grant(&mut self, subject: GrantSubject, privilege: &Privilege) {
-            self.state.grant(subject, privilege, None).expect("grant");
+            self.state
+                .grant(subject, privilege, None, None)
+                .expect("grant");
         }
 
         fn grant_expiring(&mut self, subject: GrantSubject, privilege: &Privilege, at: u64) {
             self.state
-                .grant(subject, privilege, Some(at))
+                .grant(subject, privilege, Some(at), None)
                 .expect("grant");
         }
 

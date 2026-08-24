@@ -624,7 +624,22 @@ async fn prepared_run_unchecked(
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
         decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let plans = vec![cache.plan.clone()];
+    // ADR 0075 §5: conditional policies re-resolve per invoking caller. The base plan
+    // stays policy-free; the lowered shape is derived (and cached under the exact
+    // resolved-constant fingerprint) only when a conditional grant binds this caller.
+    let lowered = lower_prepared_for_execution(
+        &store,
+        &caller,
+        graph_id,
+        &name,
+        sort,
+        &cache.plan,
+        cache.requires_write_path,
+    )?;
+    let (plans, plan_blob) = match lowered {
+        Some(hit) => (vec![hit.plan], hit.plan_blob),
+        None => (vec![cache.plan.clone()], cache.plan_blob.clone()),
+    };
     let stats = graph_stats_for(graph_id);
     // ADR 0034: prepared queries that contain a supported `SEARCH` shape are lowered through the
     // same Router vector-index path as ad-hoc `gql_query`. The plan is single-graph by the
@@ -664,7 +679,7 @@ async fn prepared_run_unchecked(
     // upsert, where the runtime shard count is not yet known.
     dispatch_plan_blob(
         graph_id,
-        &cache.plan_blob,
+        &plan_blob,
         &plans,
         &pmap,
         &params,
@@ -673,6 +688,59 @@ async fn prepared_run_unchecked(
         &stats,
     )
     .await
+}
+
+/// Lowers conditional policies for one prepared execution ([ADR 0075] §5).
+///
+/// The base plan and blob stay policy-free (registration artifacts). When conditional
+/// grants bind this caller (`caller ∪ PUBLIC`), the lowered shape is looked up in the
+/// heap cache keyed by the exact resolved-constant fingerprint — plans are never reused
+/// across callers with different resolutions — or derived by lowering the base plan and
+/// re-encoding the blob. `None` means no conditional grant applies and the base shape
+/// dispatches unchanged.
+fn lower_prepared_for_execution(
+    store: &RouterStore,
+    caller: &Principal,
+    graph_id: GraphId,
+    name: &str,
+    sort: Option<&[PreparedSortSpec]>,
+    base_plan: &PhysicalPlan,
+    requires_write_path: bool,
+) -> Result<Option<crate::policy_pushdown::CachedLoweredPlan>, RouterError> {
+    let lowered = crate::policy_pushdown::effective_policies(store, caller, graph_id)?;
+    if lowered.is_empty() {
+        return Ok(None);
+    }
+    // Cache identity: policy fingerprint plus the operation identity and the selected
+    // sort terms (order preserved, direction normalized), so two derived shapes of one
+    // query never alias.
+    let mut fingerprint = lowered.fingerprint.clone();
+    fingerprint.extend_from_slice(name.as_bytes());
+    fingerprint.push(0xFF);
+    if let Some(sort) = sort {
+        for spec in sort {
+            fingerprint.extend_from_slice(spec.key.as_bytes());
+            fingerprint.push(u8::from(matches!(
+                spec.direction.to_ascii_lowercase().as_str(),
+                "desc" | "descending"
+            )));
+        }
+        fingerprint.push(0xFE);
+    }
+    if let Some(cached) = crate::policy_pushdown::cached_lowered_plan(&fingerprint) {
+        return Ok(Some(cached));
+    }
+    let ctx = crate::policy_pushdown::LoweringContext::new(store, graph_id);
+    let mut plan = base_plan.clone();
+    crate::policy_pushdown::lower_into_plan(&ctx, &mut plan, &lowered);
+    let plans = vec![plan.clone()];
+    let plan_blob = encode_block_plans(&plans, requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    crate::policy_pushdown::insert_lowered_plan(&fingerprint, plan, plan_blob.clone());
+    Ok(Some(crate::policy_pushdown::CachedLoweredPlan {
+        plan: plans.into_iter().next().expect("one plan"),
+        plan_blob,
+    }))
 }
 
 /// Validate caller-supplied sort specifications against operation metadata and

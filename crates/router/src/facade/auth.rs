@@ -104,18 +104,29 @@ pub fn admin_upsert_caps(
 
 // ──── Data-plane grant rows (ADR 0074 §6) ────
 
-/// Insert or replace one grant row (`GRANT`, ADR 0074 §5). The anonymous-subject guard is
-/// defense in depth: the statement executor rejects anonymous subjects before any write.
+/// Insert or replace one grant row (`GRANT`, ADR 0074 §5), including its optional
+/// compiled conditional-policy predicate ([ADR 0075] §1). The anonymous-subject guard
+/// is defense in depth: the statement executor rejects anonymous subjects before any
+/// write.
 pub fn add_grant(
     subject: GrantSubject,
     privilege: &Privilege,
     expires_at_ns: Option<u64>,
+    predicate: Option<std::rc::Rc<gleaph_auth::CompiledPredicate>>,
 ) -> Result<(), AuthWriteError> {
-    ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.grant(subject, privilege, expires_at_ns))
+    // Any grant write may change which policy predicates apply to a caller, so the
+    // per-caller lowered-plan heap cache is invalidated eagerly ([ADR 0075] §5).
+    crate::policy_pushdown::invalidate_lowered_plan_cache();
+    ROUTER_AUTH_GRANTS
+        .with_borrow_mut(|grants| grants.grant(subject, privilege, expires_at_ns, predicate))
 }
 
 /// Remove the exact grant row; `true` when it existed (REVOKE).
 pub fn remove_grant(subject: GrantSubject, privilege: &Privilege) -> bool {
+    // Conditional-policy plans are derived from grant rows; any write invalidates the
+    // per-caller lowered-plan heap cache so revocations take effect immediately
+    // ([ADR 0075] §5).
+    crate::policy_pushdown::invalidate_lowered_plan_cache();
     ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.revoke(subject, privilege))
 }
 
@@ -125,6 +136,7 @@ pub fn remove_grant(subject: GrantSubject, privilege: &Privilege) -> bool {
 /// partitions leave the catalogs; ids are monotonic, so those rows could never
 /// match again. Returns the number of removed rows.
 pub fn sweep_graph_grants(graph_raw: u32) -> usize {
+    crate::policy_pushdown::invalidate_lowered_plan_cache();
     ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.revoke_all_for_graph(graph_raw))
 }
 

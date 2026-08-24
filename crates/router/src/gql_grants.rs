@@ -20,14 +20,18 @@
 
 use candid::Principal;
 use gleaph_auth::{
-    AdminCaps, Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource, Privilege,
+    AdminCaps, CompiledPredicate, Direction, GrantSubject, GraphOperation, GraphPrivilege,
+    GraphResource, MAX_PREDICATE_CONJUNCTS, PredicateComparison, PredicateLiteral, PredicateOp,
+    PredicateValue, Privilege,
 };
 use gleaph_gql::ast::{
-    CompositeQueryExpr, GrantDirection, GrantPrivilege, GrantResourceSelector, GrantStatement,
-    GrantSubjectLiteral, GrantTarget, LinearQueryStatement, ProcedureBindingInitializer,
-    RevokeStatement, SimpleQueryStatement, Statement, StatementBlock,
+    CompositeQueryExpr, GrantCondition, GrantConditionSelector, GrantDirection, GrantPrivilege,
+    GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget, GrantValueExpr,
+    LinearQueryStatement, ProcedureBindingInitializer, RevokeStatement, SimpleQueryStatement,
+    Statement, StatementBlock, ValueType,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
+use std::rc::Rc;
 
 use crate::facade::auth;
 use crate::facade::stable::graph_catalog;
@@ -129,6 +133,10 @@ enum PlannedAuthorization {
     Grant {
         subject: GrantSubject,
         privileges: Vec<Privilege>,
+        /// Compiled conditional-policy predicate ([ADR 0075] §1), attached to every
+        /// row this statement lowers to (one logical rule may normalize into several
+        /// rows, e.g. a `READ` with a property list).
+        predicate: Option<Rc<CompiledPredicate>>,
     },
     Revoke {
         subject: GrantSubject,
@@ -264,16 +272,24 @@ fn plan_grant(
             privilege,
             graph,
             resource,
+            condition,
         } => {
             let graph_name = gleaph_graph_catalog::object_name_key(graph);
             let (graph_id, _) = authorize_graph_owner(store, &graph_name, caller)?;
             let subject = bind_subject(&stmt.subject)?;
             let resource = resolve_resource(store, graph_id, resource)?;
             let property_ids = resolve_property_ids(store, graph_id, privilege)?;
+            let predicate = match condition {
+                None => None,
+                Some(condition) => Some(compile_condition(
+                    store, graph_id, privilege, &resource, condition,
+                )?),
+            };
             let privileges = lower_privileges(graph_id.raw(), privilege, &resource, &property_ids)?;
             Ok(PlannedAuthorization::Grant {
                 subject,
                 privileges,
+                predicate,
             })
         }
         GrantTarget::PreparedQuery { name } => {
@@ -282,6 +298,7 @@ fn plan_grant(
             Ok(PlannedAuthorization::Grant {
                 subject,
                 privileges: vec![privilege],
+                predicate: None,
             })
         }
     }
@@ -297,6 +314,13 @@ fn plan_revoke(
             privilege,
             graph,
             resource,
+            // The conditional selector is accepted syntactically but intentionally not
+            // compiled here: revocation addresses the canonical `(privilege, subject)`
+            // row — at most one row per key exists, so its condition cannot select
+            // among rows ([ADR 0075] §1: REVOKE removes rule and condition together).
+            // Re-resolving catalogs for the condition text could only reject a valid
+            // revoke after vocabulary drift.
+            condition: _,
         } => {
             let graph_name = gleaph_graph_catalog::object_name_key(graph);
             let (graph_id, _) = authorize_graph_owner(store, &graph_name, caller)?;
@@ -398,6 +422,232 @@ fn resolve_property_ids(
         .iter()
         .map(|name| Ok(store.lookup_property_id(graph_id, name)?.raw()))
         .collect()
+}
+
+// ──── Conditional policy compilation (ADR 0075 §1–§2) ────
+
+/// Compile one parsed conditional selector into the canonical stored predicate.
+///
+/// Catalog-checked at GRANT time ([ADR 0075] §2): the selector must be the vertex form
+/// matching the granted label, every comparison property must exist in the graph's
+/// property catalog, and literal kinds must be compatible with the property's declared
+/// scalar type (undeclared properties stay open-world). Pure over its resolved inputs
+/// so failures happen strictly before any stable write.
+fn compile_condition(
+    store: &RouterStore,
+    graph_id: GraphId,
+    privilege: &GrantPrivilege,
+    resource: &ResolvedResource,
+    condition: &GrantCondition,
+) -> Result<Rc<CompiledPredicate>, RouterError> {
+    // Phase-2a lowering binds conditions to vertex scans; edge-form selectors are a
+    // recognized-but-deferred surface with their own distinct error.
+    let GrantConditionSelector::Vertex { variable: _, label } = &condition.selector else {
+        return Err(RouterError::InvalidArgument(
+            "conditional policies bind vertex labels in this phase; \
+             FOR ()-[e:Label]-() selectors are not supported yet"
+                .into(),
+        ));
+    };
+    if !matches!(
+        privilege,
+        GrantPrivilege::Match | GrantPrivilege::Read { .. }
+    ) {
+        return Err(RouterError::InvalidArgument(
+            "conditional policies apply only to MATCH or READ grants in this phase".into(),
+        ));
+    }
+    // A vertex-form selector paired with an edge resource cannot bind.
+    let ResolvedResource::VertexLabel(label_raw) = resource else {
+        return Err(RouterError::InvalidArgument(
+            "conditional selectors require a NODES/VERTICES resource; \
+             edge-label grants stay unconditional in this phase"
+                .into(),
+        ));
+    };
+    let Ok(label_u16) = u16::try_from(*label_raw) else {
+        return Err(RouterError::Internal(
+            "conditional selector label id exceeds catalog space".into(),
+        ));
+    };
+    let label_name = store.reverse_vertex_label_name(
+        graph_id,
+        gleaph_graph_kernel::entry::VertexLabelId::from_raw(label_u16),
+    )?;
+    if label != &label_name {
+        return Err(RouterError::InvalidArgument(format!(
+            "conditional selector label '{label}' does not match the granted label \
+             '{label_name}'"
+        )));
+    }
+
+    // Declared scalar types for this label, for compatibility checking. Open graphs or
+    // labels absent from the binding keep the open world: any literal kind is accepted.
+    use gleaph_gql::type_check::PropertySchema as _;
+    let declared: std::collections::BTreeMap<String, ValueType> =
+        try_property_schema_for_graph_id(graph_id)?
+            .map(|schema| {
+                schema
+                    .node_property_types(std::slice::from_ref(&label_name))
+                    .into_iter()
+                    .map(|(name, value_type, _required)| (name, value_type))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+    let conjunct_count = condition.predicate.conjuncts.len();
+    if conjunct_count == 0 || conjunct_count > MAX_PREDICATE_CONJUNCTS {
+        return Err(RouterError::InvalidArgument(format!(
+            "conditional policy conjunction must hold 1..={MAX_PREDICATE_CONJUNCTS} comparisons"
+        )));
+    }
+
+    let mut conjuncts = Vec::with_capacity(conjunct_count);
+    for comparison in &condition.predicate.conjuncts {
+        let property_id = store
+            .lookup_property_id(graph_id, &comparison.property)?
+            .raw();
+        let declared_type = declared.get(&comparison.property);
+        let value = match &comparison.value {
+            GrantValueExpr::MsgCaller => {
+                check_literal_compatibility(
+                    declared_type,
+                    &PredicateValue::MsgCaller,
+                    &comparison.property,
+                )?;
+                PredicateValue::MsgCaller
+            }
+            GrantValueExpr::Literal(value) => {
+                let literal = literal_to_predicate_literal(value, &comparison.property)?;
+                let value = PredicateValue::Literal(literal);
+                check_literal_compatibility(declared_type, &value, &comparison.property)?;
+                value
+            }
+        };
+        conjuncts.push(PredicateComparison {
+            property: property_id,
+            op: predicate_op(comparison.op),
+            value,
+        });
+    }
+    Ok(Rc::new(CompiledPredicate {
+        label: *label_raw,
+        conjuncts,
+    }))
+}
+
+/// The resolved resource a conditional selector compiles against; always the statement's
+/// vertex resource (callers guarantee the selector is the vertex form).
+fn predicate_op(op: gleaph_gql::ast::CmpOp) -> PredicateOp {
+    match op {
+        gleaph_gql::ast::CmpOp::Eq => PredicateOp::Eq,
+        gleaph_gql::ast::CmpOp::Ne => PredicateOp::Ne,
+        gleaph_gql::ast::CmpOp::Lt => PredicateOp::Lt,
+        gleaph_gql::ast::CmpOp::Le => PredicateOp::Le,
+        gleaph_gql::ast::CmpOp::Gt => PredicateOp::Gt,
+        gleaph_gql::ast::CmpOp::Ge => PredicateOp::Ge,
+    }
+}
+
+/// Converts an AST literal into the canonical predicate literal, enforcing the string
+/// encoding bound of the stable grant-row format.
+fn literal_to_predicate_literal(
+    value: &gleaph_gql::Value,
+    property: &str,
+) -> Result<PredicateLiteral, RouterError> {
+    match value {
+        gleaph_gql::Value::Bool(b) => Ok(PredicateLiteral::Bool(*b)),
+        gleaph_gql::Value::Int64(i) => Ok(PredicateLiteral::Int(*i)),
+        gleaph_gql::Value::Float64(f) => Ok(PredicateLiteral::Float(*f)),
+        gleaph_gql::Value::Text(text) => {
+            if text.len() > 15 {
+                return Err(RouterError::InvalidArgument(format!(
+                    "string literal for conditional policy on {property:?} exceeds the \
+                     15-byte bound ({text:?})"
+                )));
+            }
+            Ok(PredicateLiteral::String(text.clone()))
+        }
+        other => Err(RouterError::InvalidArgument(format!(
+            "unsupported literal for conditional policy on {property:?}: {other:?}; \
+             conditional policies compare Bool, integer, float, and short string scalars"
+        ))),
+    }
+}
+
+/// Scalar-type compatibility between a literal and the property's declared type
+/// ([ADR 0075] §2). Undeclared properties are open-world and accept everything.
+fn check_literal_compatibility(
+    declared: Option<&ValueType>,
+    value: &PredicateValue,
+    property: &str,
+) -> Result<(), RouterError> {
+    let Some(value_type) = declared else {
+        return Ok(());
+    };
+    let compatible = |class: fn(&ValueType) -> bool| class(value_type);
+    let ok = match value {
+        PredicateValue::MsgCaller => is_character_string_type(value_type),
+        PredicateValue::Literal(PredicateLiteral::Bool(_)) => compatible(is_boolean_type),
+        PredicateValue::Literal(PredicateLiteral::Int(_)) => compatible(is_exact_integer_type),
+        PredicateValue::Literal(PredicateLiteral::Float(_)) => {
+            compatible(is_approximate_or_decimal_type)
+        }
+        PredicateValue::Literal(PredicateLiteral::String(_)) => {
+            compatible(is_character_string_type)
+        }
+    };
+    if ok {
+        return Ok(());
+    }
+    Err(RouterError::InvalidArgument(format!(
+        "conditional policy literal for {property:?} is incompatible with the property's \
+         declared type"
+    )))
+}
+
+fn is_boolean_type(value_type: &ValueType) -> bool {
+    matches!(value_type, ValueType::Bool { .. })
+}
+
+fn is_character_string_type(value_type: &ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::String { .. } | ValueType::Char { .. } | ValueType::Varchar { .. }
+    )
+}
+
+fn is_exact_integer_type(value_type: &ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::Int8 { .. }
+            | ValueType::Int16 { .. }
+            | ValueType::Int32 { .. }
+            | ValueType::Int64 { .. }
+            | ValueType::IntPrecision { .. }
+            | ValueType::Int128 { .. }
+            | ValueType::Int256 { .. }
+            | ValueType::Uint8 { .. }
+            | ValueType::Uint16 { .. }
+            | ValueType::Uint32 { .. }
+            | ValueType::Uint64 { .. }
+            | ValueType::UintPrecision { .. }
+            | ValueType::Uint128 { .. }
+            | ValueType::Uint256 { .. }
+    )
+}
+
+fn is_approximate_or_decimal_type(value_type: &ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::Float16 { .. }
+            | ValueType::Float32 { .. }
+            | ValueType::Float64 { .. }
+            | ValueType::Float128
+            | ValueType::Float256
+            | ValueType::FloatPrecision { .. }
+            | ValueType::Decimal { .. }
+    )
 }
 
 /// Lower one validated AST privilege onto canonical storage rows ([ADR 0074] §2).
@@ -543,9 +793,10 @@ fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
         PlannedAuthorization::Grant {
             subject,
             privileges,
+            predicate,
         } => {
             for privilege in &privileges {
-                auth::add_grant(subject, privilege, None)
+                auth::add_grant(subject, privilege, None, predicate.clone())
                     .map_err(|err| RouterError::Internal(format!("grant write rejected: {err}")))?;
             }
             Ok(())
@@ -598,6 +849,7 @@ pub(crate) fn list_graph_grants(
             property: None,
         },
         expires_at_ns: None,
+        predicate: None,
     }];
     for row in auth::grant_rows() {
         let Privilege::Graph(gp) = row.privilege else {
@@ -612,12 +864,23 @@ pub(crate) fn list_graph_grants(
         let Some(resource) = resource_view(&store, graph_id, gp.resource) else {
             continue;
         };
+        // Inline condition text ([ADR 0075] §1): property names resolve through the
+        // catalogs; unresolved ids print as `<property N>` so introspection stays
+        // truthful after renames.
+        let predicate = row.predicate.as_ref().map(|compiled| {
+            compiled.display_conditions(|property_id| {
+                store
+                    .reverse_property_name(graph_id, PropertyId::from_raw(property_id))
+                    .ok()
+            })
+        });
         summaries.push(GraphGrantSummary {
             subject: subject_view(row.subject),
             operation,
             direction,
             resource,
             expires_at_ns: row.expires_at_ns,
+            predicate,
         });
     }
     Ok(summaries)
@@ -741,7 +1004,7 @@ mod publication_tests {
     /// Registers `graph_name` as the calling owner's HOME graph (a caps-less tenant
     /// principal) so prepared registration resolves graph context; the registrar holds
     /// the topology/catalog capabilities, mirroring provisioned flows.
-    fn owned_graph(owner: Principal, graph_name: &str) -> GraphId {
+    pub(crate) fn owned_graph(owner: Principal, graph_name: &str) -> GraphId {
         let store = RouterStore::new();
         let registrar = principal(u8::MAX);
         crate::facade::auth::grant_admins(&[registrar]);
@@ -766,7 +1029,7 @@ mod publication_tests {
     }
 
     /// Interns the vocabulary the publication fixtures demand (MANAGE_CATALOG surface).
-    fn intern_vocabulary(graph_name: &str) {
+    pub(crate) fn intern_vocabulary(graph_name: &str) {
         let admin = principal(u8::MAX);
         let store = RouterStore::new();
         store
@@ -785,7 +1048,7 @@ mod publication_tests {
     }
 
     /// Executes one authorization statement through the production control path.
-    fn execute_as(caller: Principal, text: &str) -> Result<(), RouterError> {
+    pub(crate) fn execute_as(caller: Principal, text: &str) -> Result<(), RouterError> {
         let program = gleaph_gql::parser::parse(text).expect("parse authorization statement");
         let tx = program.transaction_activity.expect("transaction");
         execute_authorization_block(tx.body.as_ref().expect("block"), caller)
@@ -963,7 +1226,6 @@ mod publication_tests {
         );
         assert!(!stored(GrantSubject::Public, "anon_q"));
     }
-
     #[test]
     fn listing_synthesizes_the_owner_implicit_root_marker_first() {
         let owner = principal(12);
@@ -991,6 +1253,7 @@ mod publication_tests {
                     property: None,
                 },
                 expires_at_ns: None,
+                predicate: None,
             },
             "the implicit-root marker leads the listing"
         );
@@ -1005,6 +1268,221 @@ mod publication_tests {
             list_graph_grants("publication_introspection", stranger),
             Err(RouterError::Forbidden)
         ));
+    }
+}
+
+#[cfg(test)]
+mod conditional_policy_tests {
+    //! Statement-level compilation of conditional selectors ([ADR 0075] §1–§2): every
+    //! rejection happens before any stable write, stored predicates ride grant rows, and
+    //! introspection prints the condition inline.
+
+    use super::publication_tests::{execute_as, intern_vocabulary, owned_graph};
+    use super::*;
+    use crate::facade::auth;
+    use crate::types::{GrantOperationView, GrantSubjectView};
+
+    fn principal(byte: u8) -> Principal {
+        Principal::from_slice(&[byte; 29])
+    }
+
+    fn graph_rows(graph_name: &str, owner: Principal) -> Vec<GraphGrantSummary> {
+        list_graph_grants(graph_name, owner).expect("owner listing")
+    }
+
+    fn stored_predicates() -> Vec<(gleaph_auth::GrantSubject, Rc<CompiledPredicate>)> {
+        auth::grant_rows()
+            .into_iter()
+            .filter_map(|row| row.predicate.map(|p| (row.subject, p)))
+            .collect()
+    }
+
+    fn intern_post_vocabulary(graph_name: &str) {
+        intern_vocabulary(graph_name);
+        let admin = principal(u8::MAX);
+        let store = RouterStore::new();
+        store
+            .admin_intern_properties(
+                admin,
+                graph_name,
+                &[
+                    "visibility".to_owned(),
+                    "owner".to_owned(),
+                    "stars".to_owned(),
+                ],
+            )
+            .expect("intern properties");
+    }
+
+    #[test]
+    fn conditional_grant_stores_compiled_predicate_and_prints_it_inline() {
+        let owner = principal(21);
+        owned_graph(owner, "policy_store");
+        intern_post_vocabulary("policy_store");
+
+        execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_store NODES Pub \
+             FOR (p:Pub) WHERE p.visibility = 'public' AND p.owner = MSG_CALLER() TO PUBLIC",
+        )
+        .expect("conditional grant");
+
+        // The compiled predicate rides the stored row ([ADR 0075] §1).
+        let stored = stored_predicates();
+        assert_eq!(stored.len(), 1, "one conditional row");
+        assert_eq!(stored[0].0, GrantSubject::Public);
+        let predicate = stored[0].1.as_ref();
+        assert_eq!(predicate.label, 1, "interned Pub label id");
+        assert_eq!(predicate.conjuncts.len(), 2);
+        assert_eq!(
+            predicate.conjuncts[0].value,
+            PredicateValue::Literal(PredicateLiteral::String("public".to_owned()))
+        );
+        assert_eq!(predicate.conjuncts[1].value, PredicateValue::MsgCaller);
+
+        // Introspection prints the condition inline with catalog-resolved names.
+        let summaries = graph_rows("policy_store", owner);
+        assert_eq!(summaries.len(), 2, "implicit root + one stored row");
+        assert_eq!(
+            summaries[1].predicate.as_deref(),
+            Some("WHERE visibility = 'public' AND owner = MSG_CALLER()")
+        );
+        assert_eq!(summaries[1].operation, GrantOperationView::Read);
+        assert_eq!(summaries[1].subject, GrantSubjectView::Public);
+        assert_eq!(summaries[0].predicate, None);
+    }
+
+    #[test]
+    fn unknown_property_rejects_before_any_write() {
+        let owner = principal(22);
+        owned_graph(owner, "policy_unknown_prop");
+        intern_post_vocabulary("policy_unknown_prop");
+
+        let err = execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_unknown_prop NODES Pub \
+             FOR (p:Pub) WHERE p.nosuch = 1 TO PUBLIC",
+        )
+        .expect_err("unknown property must reject");
+        assert!(matches!(err, RouterError::NotFound(_)), "got {err:?}");
+        assert!(stored_predicates().is_empty(), "no partial write");
+        assert_eq!(crate::facade::auth::grant_rows().len(), 0);
+    }
+
+    #[test]
+    fn selector_label_mismatch_is_rejected() {
+        let owner = principal(23);
+        owned_graph(owner, "policy_label_mismatch");
+        intern_post_vocabulary("policy_label_mismatch");
+
+        let err = execute_as(
+            owner,
+            "GRANT MATCH ON GRAPH policy_label_mismatch NODES Pub \
+             FOR (p:Knows) WHERE p.visibility = 'public' TO PUBLIC",
+        )
+        .expect_err("selector label must match the granted label");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "got {err:?}"
+        );
+        assert!(stored_predicates().is_empty());
+    }
+
+    #[test]
+    fn edge_form_selector_and_edge_resource_are_rejected_distinctly() {
+        let owner = principal(24);
+        owned_graph(owner, "policy_edge_form");
+        intern_post_vocabulary("policy_edge_form");
+
+        // Edge-pattern selector on a vertex resource: recognized syntax, distinct error.
+        let err = execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_edge_form NODES Pub \
+             FOR ()-[e:KNOWS]-() WHERE e.weight = 1 TO PUBLIC",
+        )
+        .expect_err("edge-form selectors are a later phase");
+        let text = format!("{err}");
+        assert!(text.contains("vertex"), "distinct boundary error: {text}");
+        assert!(stored_predicates().is_empty());
+
+        // Vertex selector on an edge resource cannot bind either.
+        let err = execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_edge_form EDGES KNOWS \
+             FOR (p:Pub) WHERE p.visibility = 'public' TO PUBLIC",
+        )
+        .expect_err("edge resources stay unconditional in this phase");
+        assert!(format!("{err}").contains("NODES/VERTICES"));
+    }
+
+    #[test]
+    fn non_match_read_privileges_cannot_carry_conditions() {
+        let owner = principal(25);
+        owned_graph(owner, "policy_privilege_scope");
+        intern_post_vocabulary("policy_privilege_scope");
+
+        let err = execute_as(
+            owner,
+            "GRANT UPDATE ON GRAPH policy_privilege_scope NODES Pub \
+             FOR (p:Pub) WHERE p.visibility = 'public' TO PUBLIC",
+        )
+        .expect_err("conditions apply to MATCH/READ only in this phase");
+        assert!(format!("{err}").contains("MATCH or READ"));
+        assert!(stored_predicates().is_empty());
+
+        // The unconditional form stays grantable.
+        execute_as(
+            owner,
+            "GRANT UPDATE ON GRAPH policy_privilege_scope NODES Pub TO PUBLIC",
+        )
+        .expect("unconditional UPDATE still grants");
+        assert!(stored_predicates().is_empty());
+    }
+
+    #[test]
+    fn regranting_the_same_key_replaces_the_condition_last_write_wins() {
+        let owner = principal(26);
+        owned_graph(owner, "policy_replace");
+        intern_post_vocabulary("policy_replace");
+        let member = format!("PRINCIPAL '{}'", principal(28).to_text());
+
+        // First condition: stars threshold.
+        execute_as(
+            owner,
+            &format!(
+                "GRANT READ ON GRAPH policy_replace NODES Pub \
+                 FOR (p:Pub) WHERE p.stars >= 3 TO {member}"
+            ),
+        )
+        .expect("conditional grant");
+
+        // Re-granting the same canonical key replaces the stored condition.
+        execute_as(
+            owner,
+            &format!(
+                "GRANT READ ON GRAPH policy_replace NODES Pub \
+                 FOR (p:Pub) WHERE p.visibility = 'public' AND p.owner = MSG_CALLER() TO {member}"
+            ),
+        )
+        .expect("regrant replaces the condition");
+
+        let rows = auth::grant_rows();
+        assert_eq!(rows.len(), 1, "one rule per canonical key");
+        let predicate = rows[0].predicate.as_ref().expect("conditional row");
+        assert_eq!(predicate.conjuncts.len(), 2, "latest condition wins");
+        assert_eq!(
+            predicate.conjuncts[0].value,
+            PredicateValue::Literal(PredicateLiteral::String("public".to_owned()))
+        );
+
+        // REVOKE removes rule and condition together; the condition text does not
+        // address the key.
+        execute_as(
+            owner,
+            &format!("REVOKE READ ON GRAPH policy_replace NODES Pub FROM {member}"),
+        )
+        .expect("exact-key revoke");
+        assert!(auth::grant_rows().is_empty());
     }
 }
 
@@ -1157,6 +1635,105 @@ mod tests {
                     },
                 }),
             ]
+        );
+    }
+
+    // ── Conditional policy compilation (ADR 0075 §1–§2) ──
+
+    fn keyword(text: &str) -> gleaph_gql::ast::Keyword {
+        gleaph_gql::ast::Keyword(text.to_owned())
+    }
+
+    #[test]
+    fn literal_type_compatibility_classes() {
+        use gleaph_gql::ast::ValueType as VT;
+        let kw = || keyword("T");
+        let string_ty = VT::String {
+            min_length: None,
+            max_length: None,
+        };
+        let bool_ty = VT::Bool { keyword: kw() };
+        let int_ty = VT::Int64 { keyword: kw() };
+        let float_ty = VT::Float64 { keyword: kw() };
+        let decimal_ty = VT::Decimal {
+            keyword: kw(),
+            precision: None,
+            scale: None,
+        };
+        let date_ty = VT::Date;
+
+        let lit = |l| PredicateValue::Literal(l);
+        let prop = "p";
+
+        // Undeclared properties are open-world.
+        for value in [
+            PredicateValue::MsgCaller,
+            lit(PredicateLiteral::Bool(true)),
+            lit(PredicateLiteral::Int(1)),
+            lit(PredicateLiteral::Float(1.5)),
+            lit(PredicateLiteral::String("x".into())),
+        ] {
+            assert!(
+                check_literal_compatibility(None, &value, prop).is_ok(),
+                "undeclared property accepts {value:?}"
+            );
+        }
+
+        // Declared types accept only their compatible classes.
+        assert!(
+            check_literal_compatibility(Some(&bool_ty), &lit(PredicateLiteral::Bool(true)), prop)
+                .is_ok()
+        );
+        assert!(
+            check_literal_compatibility(Some(&bool_ty), &lit(PredicateLiteral::Int(1)), prop)
+                .is_err()
+        );
+
+        assert!(
+            check_literal_compatibility(Some(&int_ty), &lit(PredicateLiteral::Int(-3)), prop)
+                .is_ok()
+        );
+        assert!(
+            check_literal_compatibility(Some(&int_ty), &lit(PredicateLiteral::Float(1.0)), prop)
+                .is_err()
+        );
+        assert!(
+            check_literal_compatibility(Some(&int_ty), &PredicateValue::MsgCaller, prop).is_err()
+        );
+
+        assert!(
+            check_literal_compatibility(Some(&float_ty), &lit(PredicateLiteral::Float(2.5)), prop)
+                .is_ok()
+        );
+        assert!(
+            check_literal_compatibility(Some(&decimal_ty), &lit(PredicateLiteral::Int(7)), prop)
+                .is_err()
+        );
+
+        assert!(
+            check_literal_compatibility(
+                Some(&string_ty),
+                &lit(PredicateLiteral::String("v".into())),
+                prop
+            )
+            .is_ok()
+        );
+        assert!(
+            check_literal_compatibility(Some(&string_ty), &PredicateValue::MsgCaller, prop).is_ok()
+        );
+
+        // Temporal types accept no conditional-policy literal kind.
+        assert!(
+            check_literal_compatibility(Some(&date_ty), &lit(PredicateLiteral::Int(1)), prop)
+                .is_err()
+        );
+        assert!(
+            check_literal_compatibility(
+                Some(&date_ty),
+                &lit(PredicateLiteral::String("d".into())),
+                prop
+            )
+            .is_err()
         );
     }
 }
