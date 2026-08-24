@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 08:19:35 UTC +0000
+Anchor timestamp: 2026-08-24 22:32:52 UTC +0000
 
 ## Status
 
@@ -124,29 +124,62 @@ defect from being rediscovered without its prior reasoning.
   case-insensitive equality. Update `eval_string_predicate_expr` and its truth-table tests from
   this entry's contract.
 
-### GAP-2026-08-24-010 — Edge-side `STARTS WITH` TEXT-index pushdown is not implemented (vertex-only slice)
+### GAP-2026-08-24-010 — Edge-side `STARTS WITH` TEXT-index pushdown (vertex-only slice)
 
-- **Status:** Open — next-slice candidate; vertex-side pushdown is landed and correct on its own
+- **Status:** Resolved — edge-symmetric extension landed in the same slice family as the vertex
+  side (fix: `feat(planner,graph,router)` commit `c8f60f894`, 2026-08-24; regression
+  coverage listed below)
 - **Owner:** Edge scan family: planner (`crates/gql-planner/src/planner/match_plan/path/filters.rs`
   edge fusion + `EdgeIndexScan` emission), executor
   (`crates/graph/src/plan/query/executor/scan/edge_index.rs`), Router seed extraction
   (`crates/router/src/seed.rs` edge anchor arms), and wire/explain/cost sync
-- **Observed behavior:** The vertex slice (this commit) fuses non-negated
+- **Observed behavior:** The vertex slice fuses non-negated
   `v.prop STARTS WITH <Text literal | $param>` into `ScanValue::TextPrefix`
   (`AnchorSource::PropertyPrefix`, `IndexAnchor::Prefix` seeds) over range-indexed vertex
-  properties. Edge properties have no symmetric path: `-[e:R WHERE e.prop STARTS WITH 'x']->`
-  stays fully residual even when `e.prop` has an ordered edge index.
+  properties. Edge properties had no symmetric path: `-[e:R WHERE e.prop STARTS WITH 'x']->`
+  stayed fully residual even when `e.prop` has an ordered edge index.
+- **Resolution:** `EdgeFilterFusion.indexed_prefix` fuses after equality → IN → range and keeps the
+  predicate residual; the leading bound chain lowers to
+  `PlanOp::EdgeIndexScan { value: TextPrefix, cmp: Eq }`; eligibility flows through
+  `has_indexed_edge_bound`; executor intercepts TextPrefix before equality dispatch and derives the
+  shared `text_prefix_range_bounds` interval (`lookup_edge_range_local`, Null pattern binds no rows,
+  non-TEXT resolved pattern falls back to the canonical superset); Router extracts
+  `IndexAnchor::EdgePrefix(EdgePrefixSeedProbe)` at all three edge extraction sites via
+  `edge_prefix_anchor` (reusing `resolve_edge_equal_seed_context`) and executes it through
+  `lookup_edge_range_wires`. Landing this slice exposed and fixed the filter-pushdown stale-index
+  defect recorded as GAP-2026-08-24-011. Regression coverage: planner edge prefix matrix,
+  exact-Between-bytes mock test, missing-parameter / Null / non-TEXT contracts, native e2e boundary
+  row sets with red-proof, Router extraction + execution harness tests.
 - **Contract basis:** Same shape as GAP-2026-08-24-002 (edge IN-list symmetry): the interval
   primitive exists (`PostingRangeRequest::Between` via `lookup_edge_range`, used by edge range
-  anchors since GAP-2026-07-29-003), so the missing work is planner recognition plus
-  `EdgeRangeSeedProbe`-style prefix seeding. Bound derivation must reuse
+  anchors since GAP-2026-07-29-003); bound derivation reuses
   `text_prefix_range_bounds(_for_encoded_key)` from `crates/gql/src/value_index_key.rs`; no new
   key-encoding knowledge outside that file.
-- **Impact:** Edge prefix predicates scan all candidate edges through residual filtering instead
-  of seeking the ordered posting range.
-- **Next decision:** Mirror the vertex residual contract exactly (predicate retained, negation and
-  non-STARTS WITH kinds never anchor) and extend `plan_wire_guard` expectations only if a new
-  leading-anchor op shape is introduced rather than reusing `EdgeIndexScan`.
+
+### GAP-2026-08-24-011 — Filter-pushdown applied index moves sequentially, dragging filters before their producer
+
+- **Status:** Resolved — fixed in the same slice that discovered it (fix:
+  `feat(planner,graph,router)` commit `c8f60f894`, 2026-08-24)
+- **Owner:** `crates/gql-planner/src/pushdown/filter.rs` (`apply_filter_pushdown`)
+- **Observed behavior:** With two or more PropertyFilter moves in one pass, `(from, to)` pairs were
+  applied via sequential `remove`/`insert`. The first insertion shifts every later index, so a
+  second move addressed a stale position and dragged an unrelated filter across a producer op.
+  Concrete repro on main before the fix: any leading one-sided range edge anchor with a path-level
+  WHERE residual — `[EdgeIndexScan{Ge}, bind(a,b), PF(IsLabeled b), PF(IsLabeled a),
+  PF(e.weight >= 7)]` reordered to `[scan, PF(residual), PF(IsLabeled b), bind, PF(IsLabeled a)]`,
+  executing `MATCH (a)-[e:R]->(b) WHERE e.weight >= 7 RETURN b` failed with
+  `MissingBinding { variable: "b" }`. Equality/IN-list anchors masked the defect because their fused
+  predicates are removed from residuals, leaving only one move per pass.
+- **Impact:** Silent wrong plans (execution errors or, worse, filters evaluated against unbound
+  variables) for multi-move pushdown passes; blocked every non-equality edge pushdown e2e.
+- **Resolution:** Moves are now queued per anchor (`to - 1`, which is always an unmoved producer op)
+  and the op list is rebuilt in one pass against original positions; relative order of same-anchor
+  moves follows original positions. Regression tests:
+  `filter_pushdown_never_moves_filters_before_their_producer`
+  (planner unit invariant) and `parsed_edge_range_path_level_where_binds_projected_rows`
+  (native e2e through the shared leading-edge path).
+- **Next decision:** None open; if future passes adopt positional moves again, they must rebuild
+  rather than remove/insert incrementally.
 
 ### GAP-2026-08-24-005 — ADR 0074 grant statements cannot address hyphenated prepared-query names
 
@@ -1754,7 +1787,7 @@ duplicate its state machine or ownership rules.
 | P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-002 (`ScanValue::InList` reused end to end; planner fusion, three executor probe-union consumers, Router `EdgeEqualUnion` seeds) |
 | P2       | Cypher bracket-form `IN […]` fails to parse under combined `cypher` + `sql-compat` builds (sql-compat arm requires `(` unconditionally) | Resolved — GAP-2026-08-24-003 (sql-compat arm claims only `(`-openers; per-combo feature matrix pinned) |
 | P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Resolved — GAP-2026-08-24-004 (planner entity-use veto; whole-variable projections were unaffected) |
-| P2       | Extend edge-index anchors to accept `ScanValue::TextPrefix` prefix intervals (symmetric with the vertex STARTS WITH anchor landed 2026-08-24) | Open — GAP-2026-08-24-010 (next-slice candidate; vertex side landed) |
+| P2       | Extend edge-index anchors to accept `ScanValue::TextPrefix` prefix intervals (symmetric with the vertex STARTS WITH anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-010 (edge symmetric extension landed 2026-08-24) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:

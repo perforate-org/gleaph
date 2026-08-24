@@ -83,7 +83,20 @@ a non-TEXT resolved pattern falls back to the node scan + residual filter path l
 range domains. The original predicate always stays in the residual `PropertyFilter`, so results
 never depend on pushdown. The Router seeds the same anchor as `IndexAnchor::Prefix` carrying the
 encoded pattern key; raw `TextPrefix` bounds reaching `resolve_scan_value` are malformed-plan
-rejections. Edge-side symmetric extension is deferred (ledger GAP entry).
+rejections.
+
+**Edge symmetry (implemented):** the same contract applies to edges. A non-negated
+`e.prop STARTS WITH` over a range-indexed edge property fuses after equality → IN → range in
+`EdgeFilterFusion.indexed_prefix`, lowers through the leading-edge bound chain into
+`PlanOp::EdgeIndexScan { value: TextPrefix, cmp: Eq }`, and keeps its predicate residual. The
+executor intercepts TextPrefix before equality dispatch and reuses `lookup_edge_range_local`
+(interval identical to the vertex derivation, no `(shard, vertex)` dedup needed — edge range
+postings are already identity-deduplicated per physical namespace); a non-TEXT resolved pattern
+falls back to the canonical EDGE_PROPERTIES superset instead of a node scan. The Router extracts
+`IndexAnchor::EdgePrefix(EdgePrefixSeedProbe)` (pattern key + ADR 0012 wire-label subset via the
+shared edge seed context) and executes it as one Between request per wire label. Leading-hop
+eligibility (`has_indexed_edge_bound`) recognizes prefix bounds so first-hop deferral fires
+symmetrically with equality/IN/range.
 
 ## Router seed contract
 
