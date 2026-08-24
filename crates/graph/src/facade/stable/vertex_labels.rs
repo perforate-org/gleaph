@@ -3,19 +3,34 @@ use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VertexLabelSetBlob(Vec<VertexLabelId>);
+/// Wire-layout version of the [`VertexLabelSetBlob`] envelope (region 32).
+/// Writers prepend this byte; readers reject every other first byte so future
+/// schema revisions stay additive instead of silently misparsing.
+const LAYOUT_VERSION_V1: u8 = 1;
+
+/// Versioned stable label sidecar value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VertexLabelSetBlob {
+    V1(Vec<VertexLabelId>),
+}
+
+impl Default for VertexLabelSetBlob {
+    fn default() -> Self {
+        Self::V1(Vec::new())
+    }
+}
 
 impl VertexLabelSetBlob {
     pub fn new(
         labels: impl IntoIterator<Item = VertexLabelId>,
     ) -> Result<Self, VertexLabelStoreError> {
-        let labels = normalize_labels(labels)?;
-        Ok(Self(labels))
+        Ok(Self::V1(normalize_labels(labels)?))
     }
 
     pub fn labels(&self) -> &[VertexLabelId] {
-        &self.0
+        match self {
+            VertexLabelSetBlob::V1(labels) => labels,
+        }
     }
 }
 
@@ -27,24 +42,34 @@ impl Storable for VertexLabelSetBlob {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.0.len() * 2);
-        for label in self.0 {
+        let VertexLabelSetBlob::V1(labels) = self;
+        let mut out = Vec::with_capacity(1 + labels.len() * 2);
+        out.push(LAYOUT_VERSION_V1);
+        for label in labels {
             out.extend_from_slice(&label.to_le_bytes());
         }
         out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let Some((version, label_bytes)) = bytes.split_first() else {
+            panic!("vertex label set truncated: missing layout version byte");
+        };
+        assert_eq!(
+            *version, LAYOUT_VERSION_V1,
+            "unknown vertex label set layout version {version}"
+        );
         assert!(
-            bytes.len().is_multiple_of(2),
+            label_bytes.len().is_multiple_of(2),
             "VertexLabelSetBlob expects an even number of bytes"
         );
-        let mut labels = Vec::with_capacity(bytes.len() / 2);
-        for chunk in bytes.as_chunks::<2>().0.iter() {
+        let mut labels = Vec::with_capacity(label_bytes.len() / 2);
+        for chunk in label_bytes.as_chunks::<2>().0.iter() {
             labels.push(VertexLabelId::from_le_bytes([chunk[0], chunk[1]]));
         }
         let labels = normalize_labels(labels).expect("VertexLabelSetBlob contains label id 0");
-        Self(labels)
+        Self::V1(labels)
     }
 }
 
@@ -183,6 +208,93 @@ mod tests {
 
     fn vertex() -> Vertex {
         Vertex::default()
+    }
+
+    #[test]
+    fn roundtrips_empty_label_set_with_version_prefix() {
+        let blob = VertexLabelSetBlob::default();
+        assert!(blob.labels().is_empty());
+
+        let bytes = blob.clone().into_bytes();
+        assert_eq!(
+            bytes,
+            vec![LAYOUT_VERSION_V1],
+            "an empty label set still carries the v1 layout-version prefix"
+        );
+        assert_eq!(VertexLabelSetBlob::from_bytes(Cow::Owned(bytes)), blob);
+    }
+
+    #[test]
+    fn roundtrips_sorted_deduped_label_sets() {
+        let blob = VertexLabelSetBlob::new([
+            VertexLabelId::from_raw(1 + 30),
+            VertexLabelId::from_raw(1 + 10),
+            VertexLabelId::from_raw(1 + 20),
+            VertexLabelId::from_raw(1 + 10),
+        ])
+        .expect("non-reserved label ids");
+        let expected = vec![
+            VertexLabelId::from_raw(1 + 10),
+            VertexLabelId::from_raw(1 + 20),
+            VertexLabelId::from_raw(1 + 30),
+        ];
+        assert_eq!(blob.labels(), expected);
+
+        let bytes = blob.clone().into_bytes();
+        assert_eq!(bytes[0], LAYOUT_VERSION_V1);
+        assert_eq!(bytes.len(), 1 + expected.len() * 2);
+        assert_eq!(
+            VertexLabelSetBlob::from_bytes(Cow::Borrowed(&bytes)),
+            blob,
+            "v1 wire bytes must round-trip"
+        );
+    }
+
+    #[test]
+    fn construction_rejects_reserved_label_id_zero() {
+        assert!(matches!(
+            VertexLabelSetBlob::new([VertexLabelId::from_raw(0)]),
+            Err(VertexLabelStoreError::ReservedLabelId(id)) if id.raw() == 0
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "VertexLabelSetBlob contains label id 0")]
+    fn decode_rejects_reserved_label_id_zero() {
+        VertexLabelSetBlob::from_bytes(Cow::Borrowed(&[LAYOUT_VERSION_V1, 0x00, 0x00]));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing layout version byte")]
+    fn empty_blob_payload_is_rejected() {
+        VertexLabelSetBlob::from_bytes(Cow::Borrowed(&[]));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown vertex label set layout version")]
+    fn blob_rejects_unknown_layout_version_2() {
+        let mut bytes = VertexLabelSetBlob::new([VertexLabelId::from_raw(1 + 12)])
+            .expect("non-reserved label id")
+            .into_bytes();
+        bytes[0] = 0x02;
+        VertexLabelSetBlob::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown vertex label set layout version")]
+    fn blob_rejects_unknown_layout_version_255() {
+        let mut bytes = VertexLabelSetBlob::new([VertexLabelId::from_raw(1 + 12)])
+            .expect("non-reserved label id")
+            .into_bytes();
+        bytes[0] = 0xFF;
+        VertexLabelSetBlob::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "even number of bytes")]
+    fn truncated_blob_v1_payload_is_rejected() {
+        // Version byte followed by one byte of a u16 label id.
+        VertexLabelSetBlob::from_bytes(Cow::Borrowed(&[LAYOUT_VERSION_V1, 0x0D]));
     }
 
     #[test]

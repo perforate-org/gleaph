@@ -140,7 +140,7 @@ impl<M: Memory> EdgePropertyStore<M> {
                 slot_index,
                 property_id,
             ))
-            .map(|value| value.0)
+            .map(StoredPropertyValue::into_value)
     }
 
     pub fn set(
@@ -159,9 +159,9 @@ impl<M: Memory> EdgePropertyStore<M> {
             .properties
             .insert(
                 EdgePropertyKey::new(owner_vertex_id, label_id, slot_index, property_id),
-                StoredPropertyValue(value),
+                StoredPropertyValue::V1(value),
             )
-            .map(|previous| previous.0))
+            .map(StoredPropertyValue::into_value))
     }
 
     pub fn remove(
@@ -181,7 +181,7 @@ impl<M: Memory> EdgePropertyStore<M> {
                 slot_index,
                 property_id,
             ))
-            .map(|value| value.0)
+            .map(StoredPropertyValue::into_value)
     }
 
     pub fn properties_for_edge(
@@ -203,7 +203,8 @@ impl<M: Memory> EdgePropertyStore<M> {
         F: FnMut(EdgePropertyKey, &Value),
     {
         for entry in self.properties.iter() {
-            f(*entry.key(), &entry.value().0);
+            let StoredPropertyValue::V1(value) = entry.value();
+            f(*entry.key(), &value);
         }
     }
 
@@ -220,7 +221,7 @@ impl<M: Memory> EdgePropertyStore<M> {
         self.properties
             .range(range)
             .take(max)
-            .map(|entry| (*entry.key(), entry.value().0.clone()))
+            .map(|entry| (*entry.key(), entry.value().into_value()))
             .collect()
     }
 
@@ -242,7 +243,7 @@ impl<M: Memory> EdgePropertyStore<M> {
                 && key.slot_index() == slot_index
         }) {
             let (key, value) = entry.into_pair();
-            f(key.property_id(), value.0);
+            f(key.property_id(), value.into_value());
         }
     }
 

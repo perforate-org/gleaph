@@ -59,33 +59,57 @@ impl Storable for VertexPropertyKey {
     }
 }
 
+/// Wire-layout version of the [`StoredPropertyValue`] envelope (regions 33/34).
+/// Writers prepend this byte; readers reject every other first byte so future
+/// schema revisions stay additive instead of silently misparsing.
+const LAYOUT_VERSION_V1: u8 = 1;
+
+/// Versioned stable value for vertex/edge property stores.
 #[derive(Clone, Debug, PartialEq)]
-pub struct StoredPropertyValue(pub Value);
+pub enum StoredPropertyValue {
+    V1(Value),
+}
+
+impl StoredPropertyValue {
+    pub fn into_value(self) -> Value {
+        match self {
+            StoredPropertyValue::V1(value) => value,
+        }
+    }
+}
 
 impl Storable for StoredPropertyValue {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            self.0
-                .to_binary_bytes()
-                .expect("Value must encode to binary bytes"),
-        )
+        Cow::Owned(self.clone().into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.0
+        let StoredPropertyValue::V1(value) = self;
+        let mut encoded = value
             .to_binary_bytes()
-            .expect("Value must encode to binary bytes")
+            .expect("Value must encode to binary bytes");
+        let mut out = Vec::with_capacity(encoded.len() + 1);
+        out.push(LAYOUT_VERSION_V1);
+        out.append(&mut encoded);
+        out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(
-            Value::from_binary_bytes_with_extensions(
-                bytes.as_ref(),
-                &IcExtensionBinaryDecode::INSTANCE,
-            )
-            .expect("Value bytes must decode"),
+        let bytes = bytes.as_ref();
+        assert!(
+            !bytes.is_empty(),
+            "stored property value truncated: missing layout version byte"
+        );
+        let (version, payload) = bytes.split_first().expect("non-empty checked above");
+        assert_eq!(
+            *version, LAYOUT_VERSION_V1,
+            "unknown stored property value layout version {version}"
+        );
+        Self::V1(
+            Value::from_binary_bytes_with_extensions(payload, &IcExtensionBinaryDecode::INSTANCE)
+                .expect("Value bytes must decode"),
         )
     }
 }
@@ -130,7 +154,7 @@ impl<M: Memory> VertexPropertyStore<M> {
         }
         self.properties
             .get(&VertexPropertyKey::new(vertex_id, property_id))
-            .map(|value| value.0)
+            .map(StoredPropertyValue::into_value)
     }
 
     pub fn set(
@@ -147,9 +171,9 @@ impl<M: Memory> VertexPropertyStore<M> {
             .properties
             .insert(
                 VertexPropertyKey::new(vertex_id, property_id),
-                StoredPropertyValue(value),
+                StoredPropertyValue::V1(value),
             )
-            .map(|previous| previous.0))
+            .map(StoredPropertyValue::into_value))
     }
 
     pub fn remove(&mut self, vertex_id: VertexId, property_id: PropertyId) -> Option<Value> {
@@ -158,7 +182,7 @@ impl<M: Memory> VertexPropertyStore<M> {
         }
         self.properties
             .remove(&VertexPropertyKey::new(vertex_id, property_id))
-            .map(|value| value.0)
+            .map(StoredPropertyValue::into_value)
     }
 
     pub fn properties_for(&self, vertex_id: VertexId) -> Vec<(PropertyId, Value)> {
@@ -195,7 +219,7 @@ impl<M: Memory> VertexPropertyStore<M> {
             .take_while(|entry| entry.key().vertex_id() == vid)
         {
             let (key, value) = entry.into_pair();
-            f(key.property_id(), value.0);
+            f(key.property_id(), value.into_value());
         }
     }
 
@@ -212,7 +236,7 @@ impl<M: Memory> VertexPropertyStore<M> {
         self.properties
             .range(range)
             .take(max)
-            .map(|entry| (*entry.key(), entry.value().0.clone()))
+            .map(|entry| (*entry.key(), entry.value().into_value()))
             .collect()
     }
 
@@ -224,11 +248,77 @@ impl<M: Memory> VertexPropertyStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_gql::value::types::Decimal;
     use gleaph_gql_ic::{Principal, PrincipalValue};
     use ic_stable_structures::VectorMemory;
 
     fn store() -> VertexPropertyStore<VectorMemory> {
         VertexPropertyStore::init(VectorMemory::default())
+    }
+
+    fn roundtrip_stored_value(value: Value) {
+        let stored = StoredPropertyValue::V1(value);
+        let bytes = stored.clone().into_bytes();
+        assert_eq!(
+            bytes.first(),
+            Some(&LAYOUT_VERSION_V1),
+            "stored property values must carry the v1 layout-version prefix"
+        );
+        assert_eq!(
+            StoredPropertyValue::from_bytes(Cow::Owned(bytes)),
+            stored,
+            "v1 wire bytes must round-trip"
+        );
+    }
+
+    #[test]
+    fn roundtrips_representative_values_with_version_prefix() {
+        let ic_extension: Value =
+            PrincipalValue(Principal::from_text("aaaaa-aa").expect("management id")).into();
+        let values = vec![
+            Value::Null,
+            Value::Int64(-42),
+            Value::Int128(i128::MIN),
+            Value::Float64(2.5),
+            Value::Text("Alice".into()),
+            Value::Bytes(vec![0x00, 0xFF]),
+            Value::List(vec![Value::Null, Value::Int64(7)]),
+            Value::Record(vec![("age".to_string(), Value::Int64(42))]),
+            Value::Decimal(Decimal::from_i64(1234)),
+            ic_extension,
+        ];
+        for value in values {
+            roundtrip_stored_value(value);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "missing layout version byte")]
+    fn empty_stored_value_payload_is_rejected() {
+        StoredPropertyValue::from_bytes(Cow::Borrowed(&[]));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown stored property value layout version")]
+    fn stored_value_rejects_unknown_layout_version_2() {
+        let mut bytes = StoredPropertyValue::V1(Value::Null).into_bytes();
+        bytes[0] = 0x02;
+        StoredPropertyValue::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown stored property value layout version")]
+    fn stored_value_rejects_unknown_layout_version_255() {
+        let mut bytes = StoredPropertyValue::V1(Value::Null).into_bytes();
+        bytes[0] = 0xFF;
+        StoredPropertyValue::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "Value bytes must decode")]
+    fn truncated_stored_value_v1_payload_is_rejected() {
+        let bytes = StoredPropertyValue::V1(Value::Text("Alice".into())).into_bytes();
+        StoredPropertyValue::from_bytes(Cow::Owned(bytes[..1].to_vec()));
     }
 
     #[test]
