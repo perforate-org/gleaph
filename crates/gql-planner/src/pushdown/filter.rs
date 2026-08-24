@@ -44,16 +44,36 @@ pub fn apply_filter_pushdown(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnota
         }
     }
 
-    // Apply moves (in reverse order to preserve indices).
-    moves.sort_by_key(|b| std::cmp::Reverse(b.0));
-    for (from, to) in &moves {
-        let op = ops.remove(*from);
-        ops.insert(*to, op);
+    if moves.is_empty() {
+        return;
     }
 
-    if !moves.is_empty() {
-        annotations.optimizer.filter_pushdown_stages = moves.iter().map(|(_, to)| *to).collect();
+    // Rebuild in one pass against original positions. Applying `(from, to)` pairs
+    // sequentially shifts every later index, so a second move can drag an unrelated
+    // filter across its producer op (filters have been observed landing before the
+    // `EdgeBindEndpoints` that binds their variable). Anchors (`to - 1`) are scan /
+    // bind ops, which are never moved themselves, so queueing each move after its
+    // anchor keeps every target stable.
+    let mut taken = vec![false; ops.len()];
+    for (from, _) in &moves {
+        taken[*from] = true;
     }
+    let mut queues: Vec<Vec<(usize, PlanOp)>> = vec![Vec::new(); ops.len()];
+    for (from, to) in &moves {
+        queues[*to - 1].push((*from, ops[*from].clone()));
+    }
+    let mut out = Vec::with_capacity(ops.len());
+    for i in 0..ops.len() {
+        if !taken[i] {
+            out.push(ops[i].clone());
+        }
+        let mut slot = std::mem::take(&mut queues[i]);
+        slot.sort_by_key(|(from, _)| *from);
+        out.extend(slot.into_iter().map(|(_, op)| op));
+    }
+    *ops = out;
+
+    annotations.optimizer.filter_pushdown_stages = moves.iter().map(|(_, to)| *to).collect();
 }
 
 /// Compute which variables are available after each op in the plan.
@@ -286,4 +306,126 @@ pub fn can_push_filter_to_stage(
         }
     });
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+    use gleaph_gql::types::{EdgeDirection, LabelExpr};
+    use std::rc::Rc;
+
+    fn labeled_pred(var: &str, label: &str) -> Expr {
+        Expr::new(ExprKind::IsLabeled {
+            expr: Box::new(Expr::var(var)),
+            label: LabelExpr::Name(label.to_string()),
+            negated: false,
+        })
+    }
+
+    fn edge_range_pred(var: &str, property: &str, value: i64) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::var(var)),
+                property: property.to_string(),
+            })),
+            op: CmpOp::Ge,
+            right: Box::new(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(
+                value,
+            )))),
+        })
+    }
+
+    /// Regression: with a residual one-sided range predicate present, two moves in
+    /// one pass applied sequentially used stale indices and dragged `IsLabeled(b)`
+    /// ahead of the `EdgeBindEndpoints` that binds `b`. Every PropertyFilter must
+    /// sit after every op that produces each variable it references.
+    #[test]
+    fn filter_pushdown_never_moves_filters_before_their_producer() {
+        let ops = vec![
+            PlanOp::EdgeIndexScan {
+                variable: Rc::from("e"),
+                property: Rc::from("weight"),
+                value: crate::plan::ScanValue::Literal(gleaph_gql::Value::Int64(7)),
+                cmp: CmpOp::Ge,
+                property_projection: None,
+            },
+            PlanOp::EdgeBindEndpoints {
+                edge: Rc::from("e"),
+                near: Rc::from("a"),
+                far: Rc::from("b"),
+                direction: EdgeDirection::PointingRight,
+                label: None,
+                near_property_projection: None,
+                far_property_projection: None,
+                hop_aux_binding: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![labeled_pred("b", "B")],
+                stage: 0,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![labeled_pred("a", "A")],
+                stage: 0,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![edge_range_pred("e", "weight", 7)],
+                stage: 0,
+            },
+        ];
+        let mut ops = ops;
+        let mut annotations = PlanAnnotations::default();
+        apply_filter_pushdown(&mut ops, &mut annotations);
+
+        // The residual range predicate moves next to the scan; both endpoint label
+        // checks stay after the bind that introduces their variables.
+        let bind_pos = ops
+            .iter()
+            .position(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. }))
+            .expect("bind endpoints retained");
+        for (i, op) in ops.iter().enumerate() {
+            let PlanOp::PropertyFilter { predicates, .. } = op else {
+                continue;
+            };
+            let referenced: std::collections::BTreeSet<String> = predicates
+                .iter()
+                .flat_map(|pred| {
+                    let mut vars = Vec::new();
+                    collect_variables_ref(pred, &mut |v| vars.push(v.to_string()));
+                    vars
+                })
+                .collect();
+            let produced: std::collections::BTreeSet<String> = ops[..i]
+                .iter()
+                .flat_map(|op| -> Vec<String> {
+                    match op {
+                        PlanOp::EdgeIndexScan { variable, .. } => vec![variable.to_string()],
+                        PlanOp::EdgeBindEndpoints {
+                            edge,
+                            near,
+                            far,
+                            hop_aux_binding,
+                            ..
+                        } => {
+                            let mut vars =
+                                vec![edge.to_string(), near.to_string(), far.to_string()];
+                            if let Some(h) = hop_aux_binding {
+                                vars.push(h.to_string());
+                            }
+                            vars
+                        }
+                        _ => Vec::new(),
+                    }
+                })
+                .collect();
+            assert!(
+                referenced.is_subset(&produced),
+                "filter at {i} references {referenced:?} before its producer; ops={ops:?}"
+            );
+        }
+        assert!(
+            bind_pos < ops.len(),
+            "bind endpoints must remain in the plan"
+        );
+    }
 }

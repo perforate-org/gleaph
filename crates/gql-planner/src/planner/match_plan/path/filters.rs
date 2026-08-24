@@ -112,6 +112,9 @@ pub(super) struct EdgeFilterFusion {
     /// One-sided range bound fused into a leading `EdgeIndexScan`; the original predicate is
     /// retained as a residual filter so correctness never depends on pushdown succeeding.
     pub(super) indexed_range: Option<(Str, ScanValue, CmpOp)>,
+    /// Non-negated `STARTS WITH` fused into a leading `EdgeIndexScan` as one encoded TEXT
+    /// prefix interval; the original predicate stays residual exactly like the range bound.
+    pub(super) indexed_prefix: Option<(Str, ScanValue)>,
     pub(super) edge_inline_property_predicate: Option<EdgeInlinePropertyPredicate>,
     pub(super) edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
     pub(super) skip_inline_prop: Option<String>,
@@ -269,6 +272,35 @@ pub(super) fn plan_edge_filter_fusion(
                 stats,
             ) {
                 out.indexed_range = Some((prop.into(), sv, cmp));
+            }
+        }
+    }
+
+    // Text-prefix fusion mirrors the vertex contract and comes last (equality → IN →
+    // range → prefix): one non-negated STARTS WITH on a range-indexed edge property
+    // lowers into an encoded TEXT prefix interval while its predicate stays residual.
+    #[cfg(feature = "cypher")]
+    if out.indexed_equality.is_none() && out.indexed_range.is_none() {
+        let edge_label_binding = extract_simple_label(&edge.label);
+        let edge_label = edge_label_binding.as_deref();
+        if let Some((prop, pattern)) = find_first_indexed_edge_prefix_in_conjunctions(
+            where_conjuncts,
+            edge_var,
+            edge_label,
+            edge.direction,
+            stats,
+        ) {
+            out.indexed_prefix = Some((prop.into(), pattern));
+        } else if let Some(where_clause) = edge.where_clause.as_ref() {
+            let conj = flatten_conjunction(where_clause);
+            if let Some((prop, pattern)) = find_first_indexed_edge_prefix_in_conjunctions(
+                &conj,
+                edge_var,
+                edge_label,
+                edge.direction,
+                stats,
+            ) {
+                out.indexed_prefix = Some((prop.into(), pattern));
             }
         }
     }
@@ -498,6 +530,28 @@ pub(super) fn find_first_indexed_edge_range_in_conjunctions(
             && stats.is_edge_property_range_indexed_for(edge_label, &p, edge_direction)
         {
             return Some((p, sv, cmp));
+        }
+    }
+    None
+}
+
+/// Find `e.prop STARTS WITH <Text literal | $param>` on a range-indexed edge property.
+/// The shared vertex extractor already rejects negation and every other
+/// string-predicate kind; this wrapper adds the variable and index-membership gates.
+#[cfg(feature = "cypher")]
+pub(super) fn find_first_indexed_edge_prefix_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
+    stats: &dyn GraphStats,
+) -> Option<(String, ScanValue)> {
+    for c in conjuncts {
+        if let Some((v, p, pattern)) = anchor::extract_string_prefix_predicate(c)
+            && v == edge_var
+            && stats.is_edge_property_range_indexed_for(edge_label, &p, edge_direction)
+        {
+            return Some((p, pattern));
         }
     }
     None

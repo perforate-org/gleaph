@@ -953,6 +953,32 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
                 .await?,
             ))
         }
+        IndexAnchor::EdgePrefix(crate::seed::EdgePrefixSeedProbe {
+            physical_index_id,
+            property_id,
+            pattern_bytes,
+            wire_label_ids,
+            ..
+        }) => {
+            // Derive the encoded TEXT prefix interval from the stored pattern key. The
+            // interval is structurally non-empty (high extends low by one sentinel byte),
+            // so no empty-clamp case exists here.
+            let (low, high) =
+                gleaph_gql::value_index_key::text_prefix_range_bounds_for_encoded_key(
+                    pattern_bytes,
+                )
+                .map_err(|e| format!("edge prefix seed probe pattern is not supported: {e}"))?;
+            Ok(SeedHits::Edges(
+                lookup_edge_range_wires(
+                    index,
+                    *physical_index_id,
+                    *property_id,
+                    PostingRangeRequest::Between { low, high },
+                    wire_label_ids,
+                )
+                .await?,
+            ))
+        }
         IndexAnchor::Range(probe) => {
             // Clamp the one-sided bound to the literal's comparison-domain interval so a
             // mixed-type property cannot leak wrong-domain rows through the seeded path.
@@ -10201,6 +10227,73 @@ mod tests {
         .expect("edge range probe lookup");
         assert!(matches!(&hits, SeedHits::Edges(v) if v.is_empty()));
         assert!(index.edge_ranges.borrow().is_empty());
+    }
+
+    #[test]
+    fn edge_prefix_seed_probe_executes_text_prefix_between_per_wire_label() {
+        use gleaph_graph_kernel::index::EdgePostingHit;
+
+        let index = RangeRecordingIndex::default();
+        index.record_edge_hit(EdgePostingHit {
+            shard_id: ShardId::new(0),
+            owner_vertex_id: 5,
+            label_id: 0x8001,
+            slot_index: 3,
+        });
+        let pattern_bytes =
+            gleaph_gql::value_to_index_key_bytes(&Value::Text("Str".into()))
+                .unwrap()
+                .unwrap();
+        let anchor = crate::seed::IndexAnchor::EdgePrefix(crate::seed::EdgePrefixSeedProbe {
+            variable: "e".into(),
+            property: "name".into(),
+            property_id: 9,
+            physical_index_id: PhysicalIndexId::new(3).unwrap(),
+            pattern_bytes: pattern_bytes.clone(),
+            wire_label_ids: vec![0x8001],
+        });
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let hits = futures::executor::block_on(super::lookup_anchor_hits(
+            &index,
+            &anchor,
+            &[],
+            &mut metrics,
+        ))
+        .expect("edge prefix probe lookup");
+        let SeedHits::Edges(edges) = &hits else {
+            panic!("expected edge hits, got {hits:?}");
+        };
+        assert_eq!(edges.len(), 1);
+
+        let recorded = index.edge_ranges.borrow();
+        assert_eq!(recorded.len(), 1);
+        let (property_id, request, label) = &recorded[0];
+        assert_eq!(*property_id, 9);
+        assert_eq!(*label, Some(0x8001));
+        // The seeded interval is the half-open encoded TEXT prefix window derived
+        // from the stored key: [tag + payload, tag + payload + sentinel].
+        let gleaph_graph_kernel::index::PostingRangeRequest::Between { low, high } = request
+        else {
+            panic!("edge prefix probe must issue a Between request, got {request:?}");
+        };
+        assert_eq!(
+            low.as_slice(),
+            &pattern_bytes[..pattern_bytes.len() - 2],
+            "low strips the stored [0, 0] terminator"
+        );
+        assert_eq!(
+            high.as_slice(),
+            {
+                let mut expected = low.clone();
+                expected.push(0xFF);
+                expected
+            },
+            "high extends the stripped low by one 0xFF sentinel"
+        );
     }
 }
 

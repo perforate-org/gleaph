@@ -55,6 +55,8 @@ pub enum IndexAnchor {
     Prefix(PrefixSeedProbe),
     /// Leading one-sided range `EdgeIndexScan` (`lookup_edge_range`, domain-clamped at execution).
     EdgeRange(EdgeRangeSeedProbe),
+    /// Text prefix `EdgeIndexScan` bound (`lookup_edge_range`, encoded TEXT prefix interval).
+    EdgePrefix(EdgePrefixSeedProbe),
     /// Multiple equality arms (`lookup_intersection`).
     Intersection {
         variable: String,
@@ -83,6 +85,7 @@ impl IndexAnchor {
             Self::Range(probe) => probe.variable.as_str(),
             Self::Prefix(probe) => probe.variable.as_str(),
             Self::EdgeRange(probe) => probe.variable.as_str(),
+            Self::EdgePrefix(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
             Self::Label { variable, .. } => variable.as_str(),
             Self::LabelIntersection { variable, .. } => variable.as_str(),
@@ -317,6 +320,24 @@ pub struct EdgeRangeSeedProbe {
     pub wire_label_ids: Vec<u16>,
 }
 
+/// Text prefix `EdgeIndexScan` anchor (`lookup_edge_range`, encoded TEXT prefix interval).
+///
+/// Carries the stored pattern key; the half-open interval is derived at collection time
+/// through the shared `gql::text_prefix_range_bounds_for_encoded_key` helper (the same
+/// SSOT contract as [`PrefixSeedProbe`]). The struct stays `Hash`-stable for cache keys.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EdgePrefixSeedProbe {
+    pub variable: String,
+    pub property: String,
+    pub property_id: u32,
+    /// Router-owned physical posting namespace selected from one Active catalog row.
+    pub physical_index_id: PhysicalIndexId,
+    /// Encoded TEXT pattern key including its `[0, 0]` terminator.
+    pub pattern_bytes: Vec<u8>,
+    /// Wire label ids to scan in graph-index (ADR 0012); empty means unfiltered.
+    pub wire_label_ids: Vec<u16>,
+}
+
 impl SeedProbe {
     /// Returns `Some` only when the anchor is a single equality `IndexScan`.
     #[cfg_attr(not(test), expect(dead_code, reason = "test and tooling helper"))]
@@ -336,6 +357,7 @@ impl SeedProbe {
                 | Some(IndexAnchor::EdgeEqual(_))
                 | Some(IndexAnchor::EdgeEqualUnion { .. })
                 | Some(IndexAnchor::EdgeRange(_))
+                | Some(IndexAnchor::EdgePrefix(_))
                 | Some(IndexAnchor::Label { .. })
                 | Some(IndexAnchor::LabelIntersection { .. })
                 | None => None,
@@ -368,6 +390,21 @@ pub(crate) fn index_anchor_from_prefix_ops(
         ] => {
             let edge_label = label.as_ref().map(|l| l.as_ref());
             let query_direction = Some(*direction);
+            // The prefix arm must precede the equality arm: a TextPrefix bound
+            // rides `cmp = Eq` and would otherwise reach `resolve_scan_value`
+            // unexpanded, which is a malformed-plan rejection.
+            if let ScanValue::TextPrefix(pattern) = value {
+                return edge_prefix_anchor(
+                    store,
+                    graph_id,
+                    parameters,
+                    variable,
+                    property,
+                    pattern,
+                    edge_label,
+                    query_direction,
+                );
+            }
             match cmp {
                 CmpOp::Eq => Ok(Some(match value {
                     ScanValue::InList(elements) => edge_equal_union_anchor(
@@ -611,6 +648,50 @@ fn edge_range_anchor(
         bound_bytes,
         bound,
         wire_label_ids,
+    })))
+}
+
+/// Build an edge text-prefix anchor from a leading `EdgeIndexScan` whose bound is
+/// [`ScanValue::TextPrefix`].
+///
+/// Returns `Ok(None)` when the resolved pattern is Null or cannot form a TEXT
+/// prefix interval (non-TEXT domain, malformed encoded key): such predicates
+/// seed no rows through the prefix path and must be answered by the non-index
+/// filter path instead. Catalog resolution reuses the shared edge seed context.
+fn edge_prefix_anchor(
+    store: &RouterStore,
+    graph_id: GraphId,
+    params: &BTreeMap<String, Value>,
+    variable: impl AsRef<str>,
+    property: impl AsRef<str>,
+    pattern: &ScanValue,
+    edge_label: Option<&str>,
+    query_direction: Option<EdgeDirection>,
+) -> Result<Option<IndexAnchor>, RouterError> {
+    let Some(pattern_bytes) = resolve_scan_value(pattern, params)? else {
+        // A Null pattern matches no row under three-valued logic; the residual
+        // filter path answers the predicate without a seed.
+        return Ok(None);
+    };
+    if gleaph_gql::value_index_key::text_prefix_range_bounds_for_encoded_key(&pattern_bytes)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let ctx = resolve_edge_equal_seed_context(
+        store,
+        graph_id,
+        property.as_ref(),
+        edge_label,
+        query_direction,
+    )?;
+    Ok(Some(IndexAnchor::EdgePrefix(EdgePrefixSeedProbe {
+        variable: variable.as_ref().to_string(),
+        property: property.as_ref().to_string(),
+        property_id: ctx.property_id,
+        physical_index_id: ctx.physical_index_id,
+        pattern_bytes,
+        wire_label_ids: ctx.wire_label_ids,
     })))
 }
 
@@ -929,6 +1010,25 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                     } => Some((label.as_ref(), *direction)),
                     _ => None,
                 });
+                // The prefix arm must precede the equality arm: a TextPrefix
+                // bound rides `cmp = Eq` and would otherwise reach
+                // `resolve_scan_value` unexpanded, which is a malformed-plan
+                // rejection. Mirrors the vertex IndexScan ordering above.
+                if let (CmpOp::Eq, ScanValue::TextPrefix(pattern)) = (cmp, value) {
+                    if let Some(anchor) = edge_prefix_anchor(
+                        store,
+                        graph_id,
+                        params,
+                        variable,
+                        property,
+                        pattern,
+                        edge_label.map(|(label, _)| label),
+                        edge_label.map(|(_, direction)| direction),
+                    )? {
+                        push_unique_anchor(&mut anchors, anchor);
+                    }
+                    break;
+                }
                 let anchor = match cmp {
                     CmpOp::Eq => Some(match value {
                         ScanValue::InList(elements) => edge_equal_union_anchor(
@@ -1428,6 +1528,15 @@ fn extract_from_op(
             property.as_ref(),
             value,
             *cmp,
+        ),
+        PlanOp::EdgeIndexScan {
+            variable,
+            property,
+            value: ScanValue::TextPrefix(pattern),
+            cmp: CmpOp::Eq,
+            ..
+        } => edge_prefix_anchor(
+            store, graph_id, parameters, variable, property, pattern, None, None,
         ),
         PlanOp::EdgeIndexScan {
             variable,
@@ -2486,6 +2595,100 @@ mod tests {
             .is_ok()
         );
         assert_eq!(probe.wire_label_ids, vec![0x8001]);
+    }
+
+    /// Edge twin of the vertex prefix anchor: a leading `EdgeIndexScan{TextPrefix}`
+    /// extracts an `EdgePrefix` probe carrying the stored pattern key and the ADR 0012
+    /// wire-label subset. Null or non-TEXT resolved patterns seed no anchor.
+    #[test]
+    fn edge_prefix_scan_extracts_edge_prefix_anchor_with_wire_labels() {
+        use gleaph_gql::types::EdgeDirection;
+        use gleaph_gql_planner::plan::EdgeLabelRef;
+
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "name",
+        );
+        store
+            .admin_intern_edge_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "KNOWS",
+            )
+            .expect("intern edge label");
+        crate::facade::store::catalog_test_support::register_active_edge_index(
+            &store, graph_id, "KNOWS", "name",
+        );
+        let prefix_plan = |pattern: ScanValue| {
+            PhysicalPlan::from_ops(vec![
+                PlanOp::EdgeIndexScan {
+                    variable: Rc::from("e"),
+                    property: Rc::from("name"),
+                    value: pattern,
+                    cmp: CmpOp::Eq,
+                    property_projection: None,
+                },
+                PlanOp::EdgeBindEndpoints {
+                    edge: Rc::from("e"),
+                    near: Rc::from("a"),
+                    far: Rc::from("b"),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some(EdgeLabelRef::from("KNOWS")),
+                    near_property_projection: None,
+                    far_property_projection: None,
+                    hop_aux_binding: None,
+                },
+            ])
+        };
+
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&prefix_plan(ScanValue::TextPrefix(Box::new(
+                ScanValue::Literal(Value::Text("Str".into())),
+            )))),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("edge prefix anchor");
+        let IndexAnchor::EdgePrefix(probe) = anchor else {
+            panic!("expected EdgePrefix anchor");
+        };
+        assert_eq!(probe.variable, "e");
+        assert_eq!(probe.property_id, 1);
+        assert_eq!(
+            probe.pattern_bytes,
+            gleaph_gql::value_to_index_key_bytes(&Value::Text("Str".into()))
+                .unwrap()
+                .unwrap(),
+            "the probe carries the stored TEXT key including its terminator"
+        );
+        // The interval derived at collection time must realize the encoded prefix bounds.
+        let (low, high) = gleaph_gql::value_index_key::text_prefix_range_bounds_for_encoded_key(
+            &probe.pattern_bytes,
+        )
+        .expect("encoded prefix interval");
+        assert_eq!(low, vec![6, b'S', b't', b'r']);
+        assert_eq!(high, vec![6, b'S', b't', b'r', 0xFF]);
+        assert_eq!(probe.wire_label_ids, vec![0x8001]);
+
+        // A Null pattern matches nothing under three-valued logic: no seed.
+        let null_anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&prefix_plan(ScanValue::TextPrefix(Box::new(
+                ScanValue::Literal(Value::Null),
+            )))),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor");
+        assert!(
+            null_anchor.is_none(),
+            "Null pattern must not produce an EdgePrefix seed"
+        );
     }
 
     /// Interns the nested leaf path plus its top-level ancestor (the real DDL order,

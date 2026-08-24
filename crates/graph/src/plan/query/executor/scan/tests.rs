@@ -1343,6 +1343,320 @@ fn edge_range_unsupported_domain_falls_back_to_store_scan_without_index_call() {
     assert_eq!(result.rows.len(), 2, "superset candidates bind both edges");
 }
 
+/// Seed fixture for edge STARTS WITH scans: one source vertex with named edges
+/// covering every boundary class (exact pattern, extension, short non-match,
+/// multibyte-ending pattern, multibyte diverging sibling, last-byte branch).
+fn edge_prefix_store() -> (GraphStore, Vec<String>) {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["EdgePrefixSrc"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let mut names = Vec::new();
+    for name in ["Str", "Straw", "St", "日本語", "日々", "Apple"] {
+        let b = store
+            .insert_vertex_named(["EdgePrefixDst"], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("EdgePrefixRel"),
+                [("name", Value::Text(name.into()))],
+            )
+            .expect("named edge");
+        names.push(name.to_string());
+    }
+    (store, names)
+}
+
+/// Hand-built leading edge text-prefix scan binding `b` and projecting its name.
+fn edge_prefix_scan_plan(pattern: ScanValue, cmp: CmpOp) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::EdgeIndexScan {
+            variable: "e".into(),
+            property: "name".into(),
+            value: pattern,
+            cmp,
+            property_projection: None,
+        },
+        PlanOp::EdgeBindEndpoints {
+            edge: "e".into(),
+            near: "__anon_near".into(),
+            far: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("EdgePrefixRel".into()),
+            near_property_projection: None,
+            far_property_projection: None,
+            hop_aux_binding: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("b", "name"), "name")],
+            distinct: false,
+        },
+    ])
+}
+
+#[test]
+fn executes_edge_text_prefix_index_scan_with_exact_between_bytes() {
+    let store = GraphStore::new();
+    let pid = crate::test_labels::property_id_for_name("name").raw();
+    let index = MockPropertyIndex::default();
+    let pattern = ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Text("Str".into()))));
+    let plan = edge_prefix_scan_plan(pattern, CmpOp::Eq);
+
+    let _catalog = crate::test_labels::enter_indexed_edge_property_named("name");
+    pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute edge text-prefix index scan");
+
+    // The fused STARTS WITH lowers into the half-open encoded TEXT interval
+    // [stripped pattern key, key + [0xFF]) with no label sieve (endpoint binding
+    // owns label matching), mirroring the vertex prefix contract.
+    let calls = index.edge_range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, pid);
+    assert_eq!(calls[0].2, None);
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: vec![TAG_TEXT, b'S', b't', b'r'],
+            high: vec![TAG_TEXT, b'S', b't', b'r', 0xFF],
+        }
+    );
+}
+
+#[test]
+fn executes_empty_pattern_edge_prefix_scan_over_full_text_domain() {
+    let _weight_guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let (store, _) = edge_prefix_store();
+    // '' spans the whole TEXT domain: every TEXT-named edge is a candidate and
+    // the residual filter (absent from this hand-built plan) would keep them all.
+    let pattern = ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Text(String::new()))));
+    let plan = edge_prefix_scan_plan(pattern, CmpOp::Eq);
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute empty-pattern edge prefix scan");
+
+    assert_eq!(
+        sorted_names(&result),
+        vec![
+            "Apple".to_string(),
+            "St".to_string(),
+            "Str".to_string(),
+            "Straw".to_string(),
+            "日々".to_string(),
+            "日本語".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn edge_text_prefix_missing_parameter_fails_closed() {
+    let _guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let (store, _) = edge_prefix_store();
+    let pattern = ScanValue::TextPrefix(Box::new(ScanValue::Parameter("$pre".into())));
+    let plan = edge_prefix_scan_plan(pattern, CmpOp::Eq);
+
+    let err = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect_err("missing prefix parameter must fail closed");
+    assert!(
+        matches!(err, PlanQueryError::MissingParameter { ref name } if name == "$pre"),
+        "expected missing-parameter error, got {err:?}"
+    );
+}
+
+#[test]
+fn edge_text_prefix_null_parameter_binds_no_rows_without_range_call() {
+    let _guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let (store, _) = edge_prefix_store();
+    let pattern = ScanValue::TextPrefix(Box::new(ScanValue::Parameter("$pre".into())));
+    let plan = edge_prefix_scan_plan(pattern, CmpOp::Eq);
+    let mut params_map = std::collections::BTreeMap::new();
+    params_map.insert("pre".to_string(), Value::Null);
+
+    let index = MockPropertyIndex::default();
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params_map,
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute null-pattern edge prefix scan");
+
+    // STARTS WITH NULL is Unknown under three-valued logic: no rows, and the
+    // interval lookup must not run.
+    assert!(result.rows.is_empty());
+    assert!(index.edge_range_calls.borrow().is_empty());
+}
+
+#[test]
+fn edge_text_prefix_non_text_parameter_falls_back_to_superset_without_range_call() {
+    let _guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let (store, _) = edge_prefix_store();
+    let pattern = ScanValue::TextPrefix(Box::new(ScanValue::Parameter("$pre".into())));
+    let plan = edge_prefix_scan_plan(pattern, CmpOp::Eq);
+    let mut params_map = std::collections::BTreeMap::new();
+    params_map.insert("pre".to_string(), Value::Int64(5));
+
+    let index = MockPropertyIndex::default();
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params_map,
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute non-text edge prefix fallback");
+
+    // A non-TEXT resolved pattern cannot form a TEXT interval: no pushdown, the
+    // canonical-store superset feeds the residual filter (absent here, so every
+    // candidate binds).
+    assert!(index.edge_range_calls.borrow().is_empty());
+    assert_eq!(result.rows.len(), 6, "superset candidates bind all edges");
+}
+
+/// Parses a Cypher-dialect query with an optionally-indexed edge property so the
+/// planner can select the leading edge index anchor; passing `None` yields the
+/// unindexed plan used as the pushdown red-proof twin.
+fn plan_with_optional_edge_index_stats(input: &str, indexed_prop: Option<&str>) -> PhysicalPlan {
+    let mut stats = gleaph_gql_planner::TableStats::default();
+    if let Some(prop) = indexed_prop {
+        stats.indexed_edge_properties.insert(prop.to_string());
+    }
+    let program = parser::parse(input).unwrap_or_else(|err| panic!("parse error: {err}"));
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    let Statement::Query(composite) = &block.first else {
+        panic!("expected a query statement, got {input:?}");
+    };
+    assert!(composite.rest.is_empty(), "unexpected set operation");
+    build_plan_with_schema_and_options(
+        &composite.left,
+        PlanBuildOptions {
+            stats: Some(&stats),
+            path_extensions: &gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER,
+        },
+        &NoSchema,
+    )
+    .expect("plan should build")
+}
+
+#[test]
+fn executes_cypher_edge_startswith_pushdown_boundary_row_sets() {
+    let _guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let (store, _) = edge_prefix_store();
+
+    let mut param_pre = std::collections::BTreeMap::new();
+    param_pre.insert("pre".to_string(), Value::Text("Appl".into()));
+
+    let bound_b = |result: &crate::plan::query::executor::PlanQueryResult| {
+        let mut names = text_column(result, "b.name");
+        names.sort();
+        names
+    };
+
+    let run = |input: &str, params_map: &std::collections::BTreeMap<String, Value>| {
+        let plan = plan_with_optional_edge_index_stats(input, Some("name"));
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::EdgeIndexScan {
+                    property,
+                    value: ScanValue::TextPrefix(_),
+                    cmp: CmpOp::Eq,
+                    ..
+                } if property.as_ref() == "name"
+            )),
+            "expected anchored prefix EdgeIndexScan for {input}, got {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, params_map, GqlExecutionContext::default())
+            .unwrap_or_else(|err| panic!("execute {input}: {err:?}"));
+        bound_b(&result)
+    };
+
+    // Inline pattern WHERE and path-level WHERE agree; boundaries cover the exact
+    // pattern (binds itself plus extensions), a multibyte-ending pattern (binds its
+    // extension but not the diverging sibling), and a last-byte-branching pattern
+    // through a parameter.
+    let inline = run(
+        "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel WHERE e.name STARTS WITH 'Str']->(b:EdgePrefixDst) RETURN b.name",
+        &params(),
+    );
+    assert_eq!(
+        inline,
+        vec!["Str".to_string(), "Straw".to_string()],
+        "'Str' binds itself and its extension"
+    );
+    let path_level = run(
+        "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name STARTS WITH '日本' RETURN b.name",
+        &params(),
+    );
+    assert_eq!(
+        path_level,
+        vec!["日本語".to_string()],
+        "multibyte-ending prefix must bind its extension but not 日々"
+    );
+    let parameterized = run(
+        "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name STARTS WITH $pre RETURN b.name",
+        &param_pre,
+    );
+    assert_eq!(parameterized, vec!["Apple".to_string()]);
+
+    // Red proof: with no indexed edge property the planner keeps everything
+    // residual (no EdgeIndexScan), and the row sets are identical.
+    let run_unindexed = |input: &str, params_map: &std::collections::BTreeMap<String, Value>| {
+        let plan = plan_with_optional_edge_index_stats(input, None);
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+            "unindexed plan must not emit EdgeIndexScan, got {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, params_map, GqlExecutionContext::default())
+            .unwrap_or_else(|err| panic!("execute unindexed {input}: {err:?}"));
+        bound_b(&result)
+    };
+    assert_eq!(
+        run_unindexed(
+            "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel WHERE e.name STARTS WITH 'Str']->(b:EdgePrefixDst) RETURN b.name",
+            &params()
+        ),
+        inline,
+        "pushdown removal must not change the row set"
+    );
+    assert_eq!(
+        run_unindexed(
+            "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name STARTS WITH '日本' RETURN b.name",
+            &params()
+        ),
+        path_level,
+        "pushdown removal must not change the row set"
+    );
+    assert_eq!(
+        run_unindexed(
+            "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name STARTS WITH $pre RETURN b.name",
+            &param_pre
+        ),
+        parameterized,
+        "pushdown removal must not change the row set"
+    );
+}
+
 /// Store fixture for edge IN-list scans: `a` holds three edges to labeled `b`
 /// vertices whose weights/names identify them (`w5`, `w7`, `w9`). Callers must
 /// hold `crate::test_labels::enter_indexed_edge_property_named("weight")` for
@@ -4073,4 +4387,21 @@ fn seeded_skip_leading_label_intersection_plan_uses_seed_only() {
         rows[0].get("n"),
         Some(PlanBinding::Vertex(id)) if *id == vid
     ));
+}
+
+/// Regression for the filter-pushdown stale-index defect found while landing edge
+/// STARTS WITH: with a residual one-sided range predicate present, two moves in one
+/// pass used to drag `IsLabeled(b)` ahead of the `EdgeBindEndpoints` that binds it,
+/// failing execution with MissingBinding { variable: "b" }. The same query shape
+/// anchors through EdgeIndexScan{Ge}, so it guards the shared leading-edge path.
+#[test]
+fn parsed_edge_range_path_level_where_binds_projected_rows() {
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let (store, _) = edge_inlist_store();
+    let input = "MATCH (a:EdgeInA)-[e:EdgeInRel]->(b:EdgeInB) WHERE e.weight >= 7 RETURN b";
+    let plan = plan_with_edge_inlist_stats(input);
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("range path-level WHERE must execute after pushdown ordering fix");
+    assert_eq!(result.rows.len(), 2, "weights 7 and 9 each bind one row");
 }

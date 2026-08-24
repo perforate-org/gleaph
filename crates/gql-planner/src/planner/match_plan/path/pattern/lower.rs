@@ -332,8 +332,8 @@ fn edge_has_indexed_scannable_equality(
     false
 }
 
-/// `true` when the conjunct binds an indexed equality, scannable IN union, or
-/// one-sided range bound on this edge.
+/// `true` when the conjunct binds an indexed equality, scannable IN union,
+/// one-sided range bound, or TEXT prefix bound on this edge.
 fn has_indexed_edge_bound(
     conjunct: &Expr,
     edge_var: &str,
@@ -353,7 +353,7 @@ fn has_indexed_edge_bound(
     {
         return true;
     }
-    find_first_indexed_edge_range_in_conjunctions(
+    if find_first_indexed_edge_range_in_conjunctions(
         std::slice::from_ref(conjunct),
         edge_var,
         edge_label,
@@ -361,6 +361,22 @@ fn has_indexed_edge_bound(
         stats,
     )
     .is_some()
+    {
+        return true;
+    }
+    #[cfg(feature = "cypher")]
+    if super::super::filters::find_first_indexed_edge_prefix_in_conjunctions(
+        std::slice::from_ref(conjunct),
+        edge_var,
+        edge_label,
+        edge_direction,
+        stats,
+    )
+    .is_some()
+    {
+        return true;
+    }
+    false
 }
 
 pub(super) fn first_hop_supports_leading_edge_index(

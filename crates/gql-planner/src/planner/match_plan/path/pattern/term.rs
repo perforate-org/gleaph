@@ -223,7 +223,8 @@ pub(super) fn plan_path_term(
                         false,
                         &mut wc_clone,
                     );
-                    // Equality fuses first; a one-sided indexed range bound is the fallback.
+                    // Equality fuses first; a one-sided indexed range bound is the fallback,
+                    // then a non-negated STARTS WITH lowers into a TEXT prefix interval.
                     let leading_scan_bound = fusion_on_clone
                         .indexed_equality
                         .as_ref()
@@ -233,6 +234,18 @@ pub(super) fn plan_path_term(
                                 .indexed_range
                                 .as_ref()
                                 .map(|(prop, value, cmp)| (prop.clone(), value.clone(), *cmp))
+                        })
+                        .or_else(|| {
+                            fusion_on_clone
+                                .indexed_prefix
+                                .as_ref()
+                                .map(|(prop, pattern)| {
+                                    (
+                                        prop.clone(),
+                                        ScanValue::TextPrefix(Box::new(pattern.clone())),
+                                        CmpOp::Eq,
+                                    )
+                                })
                         });
                     let use_leading = try_leading
                         && leading_scan_bound.is_some()

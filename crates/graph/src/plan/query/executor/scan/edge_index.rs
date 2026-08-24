@@ -112,7 +112,14 @@ pub(crate) fn execute_edge_index_scan(
         execution,
         property.as_ref(),
     )?);
-    let postings = if cmp == CmpOp::Eq {
+    let postings = if let ScanValue::TextPrefix(pattern) = scan_value {
+        if cmp != CmpOp::Eq {
+            return Err(PlanQueryError::UnsupportedOp(
+                "EdgeIndexScan(text-prefix scan with non-equality comparison)",
+            ));
+        }
+        execute_edge_text_prefix_candidates(index, property_id, pattern, parameters)?
+    } else if cmp == CmpOp::Eq {
         // An IN-list bound unions one equality probe per element; every other
         // scan value probes exactly one bound. Elements resolve independently
         // so a missing parameter fails closed instead of narrowing the union.
@@ -190,6 +197,48 @@ fn execute_edge_index_range_candidates(
         ),
         Err(err) => Err(PlanQueryError::InvalidExpressionValue {
             expression: format!("edge index scan range bound: {err}"),
+        }),
+    }
+}
+
+/// Candidate postings for a fused `STARTS WITH` bound, mirroring the vertex text-prefix
+/// contract with the edge range conventions: one encoded TEXT interval over `[low, high)`,
+/// zero candidates for a Null pattern (STARTS WITH NULL is Unknown), and the filtered
+/// canonical-store superset (exactness enforced by the plan's residual filter) when the
+/// resolved pattern is not TEXT.
+fn execute_edge_text_prefix_candidates(
+    index: Option<&dyn PropertyIndexLookup>,
+    property_id: gleaph_graph_kernel::entry::PropertyId,
+    pattern: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Vec<edge_lookup::LocalEdgePosting>, PlanQueryError> {
+    let pattern_value = super::index::resolve_scan_bound_value(pattern, parameters)?;
+    match gleaph_gql::value_index_key::text_prefix_range_bounds(&pattern_value) {
+        Ok((low, high)) => {
+            for bound in [&low, &high] {
+                if bound.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                    return Err(PlanQueryError::InvalidExpressionValue {
+                        expression: "index range bound exceeds maximum encoded size".to_owned(),
+                    });
+                }
+            }
+            pollster::block_on(edge_lookup::lookup_edge_range_local(
+                index,
+                property_id,
+                &low,
+                &high,
+                None,
+            ))
+        }
+        // A Null pattern can never satisfy STARTS WITH under three-valued logic.
+        Err(ValueIndexKeyError::UnsupportedValue) if pattern_value == Value::Null => Ok(Vec::new()),
+        // A non-TEXT resolved pattern cannot form a TEXT prefix interval: do not push
+        // down; the plan's residual filter enforces the predicate over the superset.
+        Err(ValueIndexKeyError::UnsupportedRangeDomain) => Ok(
+            edge_lookup::lookup_edge_range_fallback_local(property_id, None),
+        ),
+        Err(err) => Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("edge index scan prefix bound: {err}"),
         }),
     }
 }
