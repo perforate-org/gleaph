@@ -2,3877 +2,3877 @@ benches:
   bench_compact_edge_decode_scan_128:
     total:
       calls: 1
-      instructions: 1303
+      instructions: 1224
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_batch_edge_only_expansion_existing_bucket:
     total:
       calls: 1
-      instructions: 33391
+      instructions: 32748
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_batch_inline_property_expansion_existing_bucket:
     total:
       calls: 1
-      instructions: 194755
+      instructions: 194984
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_batch_unordered_hole_fill_256:
     total:
       calls: 1
-      instructions: 118640
+      instructions: 118016
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_bypass_promotion:
     total:
       calls: 1
-      instructions: 116851
+      instructions: 115642
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_bypass_promotion:
         calls: 1
-        instructions: 115303
+        instructions: 114240
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 45062
+        instructions: 44637
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_capacity_sparse_leaf_32_vertices_1_edge:
     total:
       calls: 1
-      instructions: 12452758
+      instructions: 12361795
       heap_increase: 32
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 32
-        instructions: 8749913
+        instructions: 8702061
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 2
-        instructions: 36724
+        instructions: 36584
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 2
-        instructions: 13036
+        instructions: 12864
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 2
-        instructions: 113994
+        instructions: 110426
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 2
-        instructions: 2122
+        instructions: 1998
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 2
-        instructions: 22139
+        instructions: 21592
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 2
-        instructions: 912483
+        instructions: 886891
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 2
-        instructions: 1274
+        instructions: 1192
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 2
-        instructions: 1075080
+        instructions: 1044606
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 2
-        instructions: 1302354
+        instructions: 1266345
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 2
-        instructions: 1292694
+        instructions: 1256869
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 32
-        instructions: 21752
+        instructions: 19608
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 32
-        instructions: 35648
+        instructions: 33408
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 32
-        instructions: 12640
+        instructions: 10528
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 32
-        instructions: 44014
+        instructions: 42766
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 32
-        instructions: 25536
+        instructions: 22976
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 32
-        instructions: 21056
+        instructions: 18944
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 32
-        instructions: 150075
+        instructions: 144023
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_capacity_stable_hub_segment16_256_edges:
     total:
       calls: 1
-      instructions: 2413725
+      instructions: 2350155
       heap_increase: 0
       stable_memory_increase: 1921
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 74335
+        instructions: 74181
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 5
-        instructions: 76161
+        instructions: 76301
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 8
-        instructions: 9583
+        instructions: 9015
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 8
-        instructions: 32002
+        instructions: 29883
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 3
-        instructions: 123120
+        instructions: 120801
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 8
-        instructions: 10905
+        instructions: 10405
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 5
-        instructions: 67640
+        instructions: 69663
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 5
-        instructions: 200909
+        instructions: 195032
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 8
-        instructions: 79573
+        instructions: 82373
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 8
-        instructions: 438774
+        instructions: 426139
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 8
-        instructions: 849666
+        instructions: 837197
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 8
-        instructions: 816471
+        instructions: 805184
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 8
-        instructions: 5514
+        instructions: 4978
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 8
-        instructions: 8776
+        instructions: 8216
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5278
+        instructions: 5002
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 8
-        instructions: 3175
+        instructions: 2647
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 8
-        instructions: 9718
+        instructions: 9390
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 8
-        instructions: 6016
+        instructions: 5392
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 8
-        instructions: 16048
+        instructions: 15520
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 8
-        instructions: 57233
+        instructions: 55465
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_capacity_stable_sparse_leaf_1024_vertices_1_edge:
     total:
       calls: 1
-      instructions: 428471110
+      instructions: 441157193
       heap_increase: 0
       stable_memory_increase: 1921
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1024
-        instructions: 420141798
+        instructions: 433257946
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_capacity_stable_sparse_leaf_32_vertices_1_edge:
     total:
       calls: 1
-      instructions: 12844430
+      instructions: 13175200
       heap_increase: 0
       stable_memory_increase: 1921
     scopes:
       labeled_insert_new_label_bucket:
         calls: 32
-        instructions: 12432639
+        instructions: 12777474
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_capacity_stable_sparse_segment16_1024_vertices_1_edge:
     total:
       calls: 1
-      instructions: 264091170
+      instructions: 268107497
       heap_increase: 6
       stable_memory_increase: 1921
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1024
-        instructions: 215248787
+        instructions: 220786921
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 64
-        instructions: 1150528
+        instructions: 1146432
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 64
-        instructions: 422954
+        instructions: 417450
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 64
-        instructions: 2986014
+        instructions: 2874910
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 64
-        instructions: 61184
+        instructions: 56960
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 64
-        instructions: 559523
+        instructions: 563206
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 64
-        instructions: 29026129
+        instructions: 28228823
         heap_increase: 4
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 64
-        instructions: 37056
+        instructions: 32576
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 64
-        instructions: 33567083
+        instructions: 32626301
         heap_increase: 4
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 64
-        instructions: 40016215
+        instructions: 38932835
         heap_increase: 4
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 64
-        instructions: 39751774
+        instructions: 38677136
         heap_increase: 4
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1024
-        instructions: 692656
+        instructions: 624048
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1024
-        instructions: 1124534
+        instructions: 1052854
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1024
-        instructions: 404480
+        instructions: 336896
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1024
-        instructions: 1262119
+        instructions: 1220135
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1024
-        instructions: 770048
+        instructions: 690176
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1024
-        instructions: 629592
+        instructions: 562008
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1024
-        instructions: 4819326
+        instructions: 4632858
         heap_increase: 1
         stable_memory_increase: 0
   bench_labeled_default_bypass_iter_128:
     total:
       calls: 1
-      instructions: 25437
+      instructions: 25186
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_deferred_inline_property_fragmented_enqueue_6:
     total:
       calls: 1
-      instructions: 38201179
+      instructions: 38193533
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_deferred_enqueue_insert:
         calls: 1
-        instructions: 30599
+        instructions: 30333
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 2
-        instructions: 10179
+        instructions: 9832
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 4
-        instructions: 128239
+        instructions: 126844
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 54573
+        instructions: 53657
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_deferred_inline_property_fragmented_maintenance_6:
     total:
       calls: 1
-      instructions: 38310324
+      instructions: 38301622
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_deferred_maintenance_compaction:
         calls: 1
-        instructions: 109448
+        instructions: 108355
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_maintenance_item:
         calls: 1
-        instructions: 102864
+        instructions: 102078
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 2
-        instructions: 10179
+        instructions: 9832
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 4
-        instructions: 128239
+        instructions: 126844
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 54573
+        instructions: 53657
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_deferred_inserts_only_1024:
     total:
       calls: 1
-      instructions: 14282550
+      instructions: 14111966
       heap_increase: 36
       stable_memory_increase: 0
     scopes:
       labeled_deferred_dense_enqueue:
         calls: 1
-        instructions: 6708
+        instructions: 6620
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 4
-        instructions: 59862
+        instructions: 59582
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 4
-        instructions: 4780
+        instructions: 4496
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 4
-        instructions: 284124
+        instructions: 283416
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 4
-        instructions: 185192
+        instructions: 186296
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 4
-        instructions: 70983
+        instructions: 70384
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 4
-        instructions: 1189056
+        instructions: 1183196
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 4
-        instructions: 8752
+        instructions: 8585
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 4
-        instructions: 1521903
+        instructions: 1514057
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 4
-        instructions: 2708
+        instructions: 2440
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 4
-        instructions: 4456
+        instructions: 4176
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 4
-        instructions: 107882
+        instructions: 107078
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 4
-        instructions: 1640
+        instructions: 1376
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 4
-        instructions: 5565
+        instructions: 5409
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 4
-        instructions: 3192
+        instructions: 2872
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 4
-        instructions: 22778
+        instructions: 22514
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 4
-        instructions: 120717
+        instructions: 119331
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_deferred_maintenance_compact_vertex_span_1:
     total:
       calls: 1
-      instructions: 7633102
+      instructions: 7558900
       heap_increase: 36
       stable_memory_increase: 0
     scopes:
       labeled_compact_label_bucket_vertex_segment:
         calls: 1
-        instructions: 61780
+        instructions: 61321
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_dense_enqueue:
         calls: 1
-        instructions: 6708
+        instructions: 6620
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_maintenance_item:
         calls: 1
-        instructions: 63898
+        instructions: 63222
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_remove_dense_enqueue:
         calls: 64
-        instructions: 281984
+        instructions: 277504
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 72
-        instructions: 3118600
+        instructions: 3087337
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_direct_unlink_log_delete_then_scan:
     total:
       calls: 1
-      instructions: 1114050
+      instructions: 1152491
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_direct_unlink_log_fold_maintenance:
     total:
       calls: 1
-      instructions: 45972292
+      instructions: 45936254
       heap_increase: 672
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 18362
+        instructions: 18292
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 13507
+        instructions: 13330
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 13580
+        instructions: 13610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 1
-        instructions: 11121
+        instructions: 10819
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 1
-        instructions: 72915
+        instructions: 71219
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 1
-        instructions: 637
+        instructions: 596
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 96862
+        instructions: 94440
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 24
-        instructions: 851619
+        instructions: 842305
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_inplace_vec:
         calls: 1
-        instructions: 7348
+        instructions: 7217
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 1
-        instructions: 1444
+        instructions: 1421
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 1
-        instructions: 8226
+        instructions: 7948
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1114
+        instructions: 1044
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5987
+        instructions: 5711
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 410
+        instructions: 344
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 922
+        instructions: 856
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 10656
+        instructions: 10158
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_for_each_edges_for_label_24_x51:
     total:
       calls: 1
-      instructions: 283046
+      instructions: 262283
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_for_each_edges_for_label_48_x51:
     total:
       calls: 1
-      instructions: 413555
+      instructions: 378104
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_inline_property_bytes_log_scan_8b_inline_overflow:
     total:
       calls: 1
-      instructions: 1609640
+      instructions: 1589599
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_inline_property_exact_growth_256:
     total:
       calls: 1
-      instructions: 44475462
+      instructions: 44594218
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 14874
+        instructions: 14804
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 70003
+        instructions: 69828
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 45278
+        instructions: 45554
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 1
-        instructions: 11121
+        instructions: 10819
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 1
-        instructions: 256695
+        instructions: 256142
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 1
-        instructions: 637
+        instructions: 596
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 337098
+        instructions: 335821
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1111
+        instructions: 1041
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 8516
+        instructions: 8240
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 403
+        instructions: 337
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 1281
+        instructions: 1215
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 12910
+        instructions: 12414
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_inline_property_fragmented_compaction_only:
     total:
       calls: 1
-      instructions: 38144317
+      instructions: 38137663
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_fragmented_compaction_only:
         calls: 1
-        instructions: 72502
+        instructions: 71885
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 1
-        instructions: 5107
+        instructions: 4925
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 3
-        instructions: 112226
+        instructions: 111232
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 54573
+        instructions: 53657
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_inline_property_fragmented_first_span_4_control:
     total:
       calls: 1
-      instructions: 38125486
+      instructions: 38118228
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_fragmented_control_insert:
         calls: 1
-        instructions: 28987
+        instructions: 28535
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 2
-        instructions: 10179
+        instructions: 9832
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 4
-        instructions: 128239
+        instructions: 126844
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 54573
+        instructions: 53657
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_inline_property_fragmented_first_span_6:
     total:
       calls: 1
-      instructions: 38195267
+      instructions: 38187569
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_fragmented_trigger_insert:
         calls: 1
-        instructions: 98768
+        instructions: 97876
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 2
-        instructions: 10179
+        instructions: 9832
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 4
-        instructions: 128239
+        instructions: 126844
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 2
-        instructions: 54573
+        instructions: 53657
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_inline_property_pressure_stats_16:
     total:
       calls: 1
-      instructions: 40901804
+      instructions: 40820556
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_pressure_stats_16:
         calls: 1
-        instructions: 36215
+        instructions: 36150
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 15
-        instructions: 127735
+        instructions: 119453
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 32
-        instructions: 1108136
+        instructions: 1082583
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 16
-        instructions: 607205
+        instructions: 600771
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_inline_property_pressure_stats_256:
     total:
       calls: 1
-      instructions: 223386175
+      instructions: 210412654
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_pressure_stats_256:
         calls: 1
-        instructions: 36215
+        instructions: 36150
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 255
-        instructions: 17406428
+        instructions: 15590496
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 512
-        instructions: 59166154
+        instructions: 55447653
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 3
-        instructions: 44622
+        instructions: 44412
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 3
-        instructions: 3585
+        instructions: 3372
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 3
-        instructions: 419630
+        instructions: 390821
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 3
-        instructions: 135834
+        instructions: 136662
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 3
-        instructions: 50905
+        instructions: 50405
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 3
-        instructions: 5061627
+        instructions: 4966803
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 3
-        instructions: 6047
+        instructions: 5922
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 3
-        instructions: 5517716
+        instructions: 5393048
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 256
-        instructions: 11930925
+        instructions: 11827747
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 3
-        instructions: 136903
+        instructions: 135682
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 3
-        instructions: 423474
+        instructions: 419184
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 255
-        instructions: 1299204
+        instructions: 1254224
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 3
-        instructions: 37401
+        instructions: 37203
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 3
-        instructions: 4122
+        instructions: 4005
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 3
-        instructions: 133339
+        instructions: 133314
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 510
-        instructions: 304725
+        instructions: 271065
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 3
-        instructions: 3382458
+        instructions: 3293810
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_inline_property_pressure_stats_64:
     total:
       calls: 1
-      instructions: 55968252
+      instructions: 55022900
       heap_increase: 576
       stable_memory_increase: 0
     scopes:
       inline_property_pressure_stats_64:
         calls: 1
-        instructions: 36215
+        instructions: 36150
         heap_increase: 0
         stable_memory_increase: 0
       labeled_find_bucket_slot:
         calls: 63
-        instructions: 1275601
+        instructions: 1146959
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 128
-        instructions: 5778945
+        instructions: 5497184
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 64
-        instructions: 2686800
+        instructions: 2661214
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_existing_bucket_128:
     total:
       calls: 1
-      instructions: 8449328
+      instructions: 8372230
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 9
-        instructions: 151026
+        instructions: 150430
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 18
-        instructions: 21498
+        instructions: 20220
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 18
-        instructions: 78326
+        instructions: 75259
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 9
-        instructions: 450605
+        instructions: 443648
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 18
-        instructions: 23105
+        instructions: 22017
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 9
-        instructions: 173540
+        instructions: 172264
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 9
-        instructions: 450849
+        instructions: 442441
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 18
-        instructions: 307488
+        instructions: 306020
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 18
-        instructions: 1175713
+        instructions: 1152571
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 18
-        instructions: 2245078
+        instructions: 2210636
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 18
-        instructions: 2168651
+        instructions: 2134887
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 18
-        instructions: 12220
+        instructions: 11014
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 18
-        instructions: 20052
+        instructions: 18792
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5323
+        instructions: 5047
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 18
-        instructions: 7125
+        instructions: 5937
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 18
-        instructions: 24801
+        instructions: 24099
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 18
-        instructions: 14364
+        instructions: 12924
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 18
-        instructions: 76328
+        instructions: 75140
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 18
-        instructions: 165437
+        instructions: 161777
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_fresh_label_each_edge_256:
     total:
       calls: 1
-      instructions: 32522111
+      instructions: 31212190
       heap_increase: 51
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 256
-        instructions: 17741923
+        instructions: 16717352
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 5
-        instructions: 82441
+        instructions: 82164
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 8
-        instructions: 9560
+        instructions: 8992
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 8
-        instructions: 443949
+        instructions: 412468
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 3
-        instructions: 3845143
+        instructions: 3770041
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 8
-        instructions: 72198
+        instructions: 72164
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 5
-        instructions: 87744
+        instructions: 86882
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 5
-        instructions: 3908946
+        instructions: 3830504
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 8
-        instructions: 106285
+        instructions: 105712
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 8
-        instructions: 8282419
+        instructions: 8095066
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 8
-        instructions: 9223048
+        instructions: 9000317
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 8
-        instructions: 9189043
+        instructions: 8966670
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 8
-        instructions: 147497
+        instructions: 145945
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 8
-        instructions: 428468
+        instructions: 423844
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 239
-        instructions: 1215924
+        instructions: 1173860
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 8
-        instructions: 41289
+        instructions: 40761
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 8
-        instructions: 11153
+        instructions: 10841
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 8
-        instructions: 141833
+        instructions: 141729
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1024
-        instructions: 679528
+        instructions: 611944
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 8
-        instructions: 5539984
+        instructions: 5396180
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_last_of_many_buckets_1024:
     total:
       calls: 1
-      instructions: 24545857
+      instructions: 23972145
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 6
-        instructions: 109028
+        instructions: 108530
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 15
-        instructions: 17925
+        instructions: 16860
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 15
-        instructions: 1011991
+        instructions: 955891
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 9
-        instructions: 8427996
+        instructions: 8278004
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 15
-        instructions: 263018
+        instructions: 263914
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 6
-        instructions: 131663
+        instructions: 131033
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 6
-        instructions: 5903041
+        instructions: 5802511
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 15
-        instructions: 301441
+        instructions: 300098
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 15
-        instructions: 15491595
+        instructions: 15180998
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 15
-        instructions: 17568493
+        instructions: 17197220
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 15
-        instructions: 17504937
+        instructions: 17134246
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 15
-        instructions: 278589
+        instructions: 275679
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 15
-        instructions: 803668
+        instructions: 794998
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 30
-        instructions: 380375
+        instructions: 375095
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 15
-        instructions: 71145
+        instructions: 70155
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 15
-        instructions: 20679
+        instructions: 20094
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 15
-        instructions: 264730
+        instructions: 264535
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1920
-        instructions: 1317360
+        instructions: 1190640
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 15
-        instructions: 9352386
+        instructions: 9128924
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_multi_vertex_leaf32_2048:
     total:
       calls: 1
-      instructions: 32684676
+      instructions: 32117416
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 19
-        instructions: 397343
+        instructions: 395792
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 24
-        instructions: 156432
+        instructions: 154368
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 24
-        instructions: 1461992
+        instructions: 1417706
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 5
-        instructions: 2949540
+        instructions: 2880050
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 24
-        instructions: 81562
+        instructions: 80466
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 19
-        instructions: 425631
+        instructions: 423192
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 19
-        instructions: 10735776
+        instructions: 10472182
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 24
-        instructions: 209916
+        instructions: 208538
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 24
-        instructions: 15763661
+        instructions: 15373833
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 24
-        instructions: 19059928
+        instructions: 18613863
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 24
-        instructions: 18916750
+        instructions: 18471769
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 384
-        instructions: 260443
+        instructions: 234715
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 384
-        instructions: 427459
+        instructions: 400579
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 210
-        instructions: 1426819
+        instructions: 1389859
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 384
-        instructions: 154830
+        instructions: 129486
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 384
-        instructions: 528398
+        instructions: 513422
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 384
-        instructions: 306432
+        instructions: 275712
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 384
-        instructions: 380272
+        instructions: 354928
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 384
-        instructions: 3001460
+        instructions: 2906734
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_round_robin_64_labels_1024:
     total:
       calls: 1
-      instructions: 23038474
+      instructions: 22544132
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 1
-        instructions: 20982
+        instructions: 18927
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 8
-        instructions: 143431
+        instructions: 142866
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 17
-        instructions: 20315
+        instructions: 19108
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 17
-        instructions: 691420
+        instructions: 653824
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 9
-        instructions: 5822276
+        instructions: 5708409
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 17
-        instructions: 198408
+        instructions: 198674
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 8
-        instructions: 162580
+        instructions: 161606
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 8
-        instructions: 5345395
+        instructions: 5240576
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 17
-        instructions: 306851
+        instructions: 305424
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 17
-        instructions: 12044871
+        instructions: 11784122
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 17
-        instructions: 13860126
+        instructions: 13555514
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 17
-        instructions: 13787577
+        instructions: 13483611
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 17
-        instructions: 163481
+        instructions: 161271
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 17
-        instructions: 463458
+        instructions: 457984
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 674
-        instructions: 3692792
+        instructions: 3574068
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 17
-        instructions: 53239
+        instructions: 52117
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 17
-        instructions: 23449
+        instructions: 22786
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 17
-        instructions: 166093
+        instructions: 165872
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1088
-        instructions: 795600
+        instructions: 723792
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 17
-        instructions: 7264166
+        instructions: 7064568
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_single_bucket_1024:
     total:
       calls: 1
-      instructions: 8449338
+      instructions: 8372238
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 9
-        instructions: 151026
+        instructions: 150430
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 18
-        instructions: 21498
+        instructions: 20220
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 18
-        instructions: 78326
+        instructions: 75259
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 9
-        instructions: 450605
+        instructions: 443648
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 18
-        instructions: 23105
+        instructions: 22017
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 9
-        instructions: 173540
+        instructions: 172264
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 9
-        instructions: 450849
+        instructions: 442441
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 18
-        instructions: 307488
+        instructions: 306020
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 18
-        instructions: 1175713
+        instructions: 1152571
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 18
-        instructions: 2245078
+        instructions: 2210636
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 18
-        instructions: 2168651
+        instructions: 2134887
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 18
-        instructions: 12220
+        instructions: 11014
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 18
-        instructions: 20052
+        instructions: 18792
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5323
+        instructions: 5047
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 18
-        instructions: 7125
+        instructions: 5937
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 18
-        instructions: 24801
+        instructions: 24099
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 18
-        instructions: 14364
+        instructions: 12924
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 18
-        instructions: 76328
+        instructions: 75140
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 18
-        instructions: 165437
+        instructions: 161777
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insertion_append_on_tombstone_hub_1024:
     total:
       calls: 1
-      instructions: 8136
+      instructions: 7817
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insertion_append_on_tombstone_hub:
         calls: 1
-        instructions: 7116
+        instructions: 6859
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_iter_edges_for_label_128:
     total:
       calls: 1
-      instructions: 19546
+      instructions: 19057
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_mixed_label_hub_asc_iter_33x50:
     total:
       calls: 1
-      instructions: 461286
+      instructions: 457614
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 1
-        instructions: 12740
+        instructions: 11648
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_mixed_label_hub_insert_33x50:
     total:
       calls: 1
-      instructions: 62394405
+      instructions: 61976225
       heap_increase: 672
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 33
-        instructions: 1184146
+        instructions: 1157293
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 5
-        instructions: 85558
+        instructions: 85169
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 9
-        instructions: 10755
+        instructions: 10116
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 9
-        instructions: 691989
+        instructions: 685996
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 4
-        instructions: 1875096
+        instructions: 1859694
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 9
-        instructions: 416682
+        instructions: 419166
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 5
-        instructions: 90974
+        instructions: 90276
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 5
-        instructions: 1747225
+        instructions: 1735104
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 9
-        instructions: 136721
+        instructions: 136028
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 9
-        instructions: 4421997
+        instructions: 4385918
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 9
-        instructions: 28435
+        instructions: 27683
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 9
-        instructions: 71562
+        instructions: 70336
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 39
-        instructions: 264208
+        instructions: 257244
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 9
-        instructions: 9206
+        instructions: 8612
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 9
-        instructions: 12435
+        instructions: 12084
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 9
-        instructions: 35183
+        instructions: 34302
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 158
-        instructions: 179910
+        instructions: 169482
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 9
-        instructions: 959004
+        instructions: 935852
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_mixed_label_hub_scan_33x50:
     total:
       calls: 1
-      instructions: 359139
+      instructions: 358410
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 1
-        instructions: 12910
+        instructions: 11772
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_non_tail_bypass_insert_1024:
     total:
       calls: 1
-      instructions: 362664
+      instructions: 357013
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 15041
+        instructions: 14971
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 8475
+        instructions: 8282
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 1
-        instructions: 45554
+        instructions: 43746
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 1344
+        instructions: 1282
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 63399
+        instructions: 60865
         heap_increase: 0
         stable_memory_increase: 0
       labeled_non_tail_bypass_insert:
         calls: 1
-        instructions: 359071
+        instructions: 353567
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_edge_log_vertex:
         calls: 1
-        instructions: 133368
+        instructions: 129927
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 1
-        instructions: 141656
+        instructions: 138086
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1114
+        instructions: 1044
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 6890
+        instructions: 6614
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 410
+        instructions: 344
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 1322
+        instructions: 1256
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 10722
+        instructions: 10224
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_non_tail_bypass_insert_256:
     total:
       calls: 1
-      instructions: 343028
+      instructions: 337573
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 15041
+        instructions: 14971
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 8475
+        instructions: 8282
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 1
-        instructions: 45554
+        instructions: 43746
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 1344
+        instructions: 1282
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 63399
+        instructions: 60865
         heap_increase: 0
         stable_memory_increase: 0
       labeled_non_tail_bypass_insert:
         calls: 1
-        instructions: 339435
+        instructions: 334127
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_edge_log_vertex:
         calls: 1
-        instructions: 131536
+        instructions: 128113
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 1
-        instructions: 139824
+        instructions: 136272
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1114
+        instructions: 1044
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 6890
+        instructions: 6614
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 410
+        instructions: 344
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 1322
+        instructions: 1256
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 10722
+        instructions: 10224
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_non_tail_bypass_insert_4096:
     total:
       calls: 1
-      instructions: 382300
+      instructions: 376453
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 15041
+        instructions: 14971
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 8475
+        instructions: 8282
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 1
-        instructions: 45554
+        instructions: 43746
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 1344
+        instructions: 1282
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 63399
+        instructions: 60865
         heap_increase: 0
         stable_memory_increase: 0
       labeled_non_tail_bypass_insert:
         calls: 1
-        instructions: 378707
+        instructions: 373007
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_edge_log_vertex:
         calls: 1
-        instructions: 135200
+        instructions: 131741
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 1
-        instructions: 143488
+        instructions: 139900
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1114
+        instructions: 1044
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 6890
+        instructions: 6614
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 410
+        instructions: 344
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 1322
+        instructions: 1256
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 10722
+        instructions: 10224
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_detach_delete_hub_1024:
     total:
       calls: 1
-      instructions: 21082960
+      instructions: 20469970
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_remove_edge_skip_leaf:
         calls: 1024
-        instructions: 6142976
+        instructions: 5913600
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_detach_delete_hub_4096:
     total:
       calls: 1
-      instructions: 86996683
+      instructions: 84493056
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_remove_edge_skip_leaf:
         calls: 4096
-        instructions: 28676096
+        instructions: 27717632
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_detach_delete_hub_stepped_1024:
     total:
       calls: 1
-      instructions: 23775866
+      instructions: 23143163
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_remove_edge_skip_leaf:
         calls: 1024
-        instructions: 6146048
+        instructions: 5903360
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_detach_delete_hub_stepped_4096:
     total:
       calls: 1
-      instructions: 101373908
+      instructions: 98769831
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_remove_edge_skip_leaf:
         calls: 4096
-        instructions: 28688384
+        instructions: 27676672
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_detach_delete_satellite_of_hub_1024:
     total:
       calls: 1
-      instructions: 468611
+      instructions: 362199
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_remove_edge_skip_leaf:
         calls: 1
-        instructions: 342731
+        instructions: 237125
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_detach_delete_satellite_of_hub_4096:
     total:
       calls: 1
-      instructions: 1491217
+      instructions: 1068353
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_remove_edge_skip_leaf:
         calls: 1
-        instructions: 1354421
+        instructions: 932389
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024:
     total:
       calls: 1
-      instructions: 72741752
+      instructions: 72533741
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 27108
+        instructions: 26999
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 13510
+        instructions: 13333
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 13846
+        instructions: 13878
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 1
-        instructions: 19979
+        instructions: 19880
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 1
-        instructions: 179770
+        instructions: 176126
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 1
-        instructions: 2705
+        instructions: 2663
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 202858
+        instructions: 198488
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_inplace_vec:
         calls: 1
-        instructions: 71337
+        instructions: 70718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 1
-        instructions: 1444
+        instructions: 1421
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 1
-        instructions: 8226
+        instructions: 7948
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1114
+        instructions: 1044
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 47848
+        instructions: 47572
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 410
+        instructions: 344
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 10672
+        instructions: 10606
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 51959
+        instructions: 51461
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384:
     total:
       calls: 1
-      instructions: 15537852106
+      instructions: 15534811643
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_rewrite_copy_inplace_vec:
         calls: 1
-        instructions: 1069353
+        instructions: 1061054
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 1
-        instructions: 1444
+        instructions: 1421
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 1
-        instructions: 8229
+        instructions: 7951
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096:
     total:
       calls: 1
-      instructions: 990420692
+      instructions: 989659653
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_rewrite_copy_inplace_vec:
         calls: 1
-        instructions: 270640
+        instructions: 268485
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 1
-        instructions: 1444
+        instructions: 1421
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 1
-        instructions: 8229
+        instructions: 7951
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_delete_half_then_compact_1024:
     total:
       calls: 1
-      instructions: 153698409
+      instructions: 134356171
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_leaf_allocate_span:
         calls: 1
-        instructions: 27044
+        instructions: 26935
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 1
-        instructions: 1195
+        instructions: 1124
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 1
-        instructions: 13507
+        instructions: 13330
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 1
-        instructions: 13846
+        instructions: 13878
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 1
-        instructions: 19979
+        instructions: 19880
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 1
-        instructions: 180071
+        instructions: 176427
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 1
-        instructions: 2705
+        instructions: 2663
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 1
-        instructions: 203196
+        instructions: 198826
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 512
-        instructions: 87040148
+        instructions: 67936304
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_inplace_vec:
         calls: 1
-        instructions: 71337
+        instructions: 70718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 1
-        instructions: 1444
+        instructions: 1421
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 1
-        instructions: 8226
+        instructions: 7948
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 1
-        instructions: 677
+        instructions: 610
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 1
-        instructions: 1114
+        instructions: 1044
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 48127
+        instructions: 47851
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 1
-        instructions: 410
+        instructions: 344
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 1
-        instructions: 1374
+        instructions: 1335
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 1
-        instructions: 798
+        instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 1
-        instructions: 10672
+        instructions: 10606
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 1
-        instructions: 52517
+        instructions: 52019
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_insert_grow_1024:
     total:
       calls: 1
-      instructions: 8451383
+      instructions: 8372237
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 9
-        instructions: 151026
+        instructions: 150430
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 18
-        instructions: 21498
+        instructions: 20220
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 18
-        instructions: 78326
+        instructions: 75259
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 9
-        instructions: 450605
+        instructions: 443648
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 18
-        instructions: 23105
+        instructions: 22017
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 9
-        instructions: 173540
+        instructions: 172264
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 9
-        instructions: 450849
+        instructions: 442441
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 18
-        instructions: 307488
+        instructions: 306020
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 18
-        instructions: 1175713
+        instructions: 1152571
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 18
-        instructions: 2245078
+        instructions: 2210636
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 18
-        instructions: 2168651
+        instructions: 2134887
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 18
-        instructions: 12220
+        instructions: 11014
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 18
-        instructions: 20052
+        instructions: 18792
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5323
+        instructions: 5047
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 18
-        instructions: 7125
+        instructions: 5937
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 18
-        instructions: 24801
+        instructions: 24099
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 18
-        instructions: 14364
+        instructions: 12924
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 18
-        instructions: 76328
+        instructions: 75140
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 18
-        instructions: 165437
+        instructions: 161777
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_insert_grow_16384:
     total:
       calls: 1
-      instructions: 106704589
+      instructions: 105969978
       heap_increase: 2
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 16
-        instructions: 285289
+        instructions: 284086
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 41
-        instructions: 48983
+        instructions: 46072
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 41
-        instructions: 170832
+        instructions: 163855
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 25
-        instructions: 4245110
+        instructions: 4225785
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 41
-        instructions: 47508
+        instructions: 44994
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 16
-        instructions: 311015
+        instructions: 308882
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 16
-        instructions: 2345503
+        instructions: 2331236
         heap_increase: 2
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 41
-        instructions: 822898
+        instructions: 819313
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 41
-        instructions: 7204571
+        instructions: 7153831
         heap_increase: 2
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 41
-        instructions: 9564747
+        instructions: 9490252
         heap_increase: 2
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 41
-        instructions: 9395445
+        instructions: 9322364
         heap_increase: 2
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 41
-        instructions: 27837
+        instructions: 25090
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 41
-        instructions: 45674
+        instructions: 42804
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5323
+        instructions: 5047
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 41
-        instructions: 16210
+        instructions: 13504
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 41
-        instructions: 56403
+        instructions: 54804
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 41
-        instructions: 32718
+        instructions: 29438
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 41
-        instructions: 1323392
+        instructions: 1320686
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 41
-        instructions: 1518425
+        instructions: 1510487
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_insert_grow_4096:
     total:
       calls: 1
-      instructions: 28962692
+      instructions: 28739120
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 81302
+        instructions: 81053
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 13
-        instructions: 231089
+        instructions: 230135
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 30
-        instructions: 35838
+        instructions: 33708
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 30
-        instructions: 126590
+        instructions: 121483
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 17
-        instructions: 1364696
+        instructions: 1351555
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 30
-        instructions: 35837
+        instructions: 34005
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 13
-        instructions: 244804
+        instructions: 242986
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 13
-        instructions: 1001135
+        instructions: 989379
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 30
-        instructions: 561505
+        instructions: 559015
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 30
-        instructions: 2815078
+        instructions: 2777512
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 30
-        instructions: 4550263
+        instructions: 4494803
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 30
-        instructions: 4426496
+        instructions: 4372098
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 30
-        instructions: 20368
+        instructions: 18358
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 30
-        instructions: 33420
+        instructions: 31320
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5323
+        instructions: 5047
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 30
-        instructions: 11865
+        instructions: 9885
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 30
-        instructions: 41289
+        instructions: 40119
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 30
-        instructions: 23940
+        instructions: 21540
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 30
-        instructions: 353224
+        instructions: 351244
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 30
-        instructions: 496453
+        instructions: 490561
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_hub_point_lookup_descending_1024:
     total:
       calls: 1
-      instructions: 13569972
+      instructions: 14539538
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2_hub_scan_descending_1024:
     total:
       calls: 1
-      instructions: 13569413
+      instructions: 14538926
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2_isolated_vertex_grow_one_256:
     total:
       calls: 1
-      instructions: 2839336
+      instructions: 2808073
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 90573
+        instructions: 90105
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 5
-        instructions: 82441
+        instructions: 82164
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 8
-        instructions: 9551
+        instructions: 8983
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 8
-        instructions: 70346
+        instructions: 68851
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 3
-        instructions: 126628
+        instructions: 124309
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 8
-        instructions: 12495
+        instructions: 12027
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 5
-        instructions: 87744
+        instructions: 86882
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 5
-        instructions: 209030
+        instructions: 203970
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 8
-        instructions: 106285
+        instructions: 105712
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 8
-        instructions: 490164
+        instructions: 478962
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 8
-        instructions: 1069844
+        instructions: 1053112
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 8
-        instructions: 1004723
+        instructions: 988229
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 8
-        instructions: 5430
+        instructions: 4894
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 8
-        instructions: 8912
+        instructions: 8352
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 1
-        instructions: 5323
+        instructions: 5047
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 8
-        instructions: 3175
+        instructions: 2647
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 8
-        instructions: 11061
+        instructions: 10749
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 8
-        instructions: 6384
+        instructions: 5744
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 8
-        instructions: 15448
+        instructions: 14920
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 8
-        instructions: 56742
+        instructions: 54942
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2_saturated_leaf_grow_one_256:
     total:
       calls: 1
-      instructions: 7223436
+      instructions: 7074824
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 441242
+        instructions: 438617
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_allocate_span:
         calls: 5
-        instructions: 87312
+        instructions: 86929
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_calculate_positions:
         calls: 7
-        instructions: 45626
+        instructions: 45024
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_collect_slices:
         calls: 7
-        instructions: 423333
+        instructions: 410803
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_materialize_plans:
         calls: 2
-        instructions: 1051093
+        instructions: 1025085
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_log_segment:
         calls: 7
-        instructions: 24021
+        instructions: 23699
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_release_old_footprint:
         calls: 5
-        instructions: 109746
+        instructions: 109024
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_stream_disjoint_relocation:
         calls: 5
-        instructions: 2529650
+        instructions: 2463915
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_try_expand_in_place:
         calls: 7
-        instructions: 75926
+        instructions: 75485
         heap_increase: 0
         stable_memory_increase: 0
       labeled_leaf_weighted_slide_commit:
         calls: 7
-        instructions: 4177230
+        instructions: 4069055
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 7
-        instructions: 5065591
+        instructions: 4941061
         heap_increase: 0
         stable_memory_increase: 0
       labeled_relocate_leaf_physical_block:
         calls: 7
-        instructions: 5034014
+        instructions: 4909838
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_build_resident_buckets:
         calls: 112
-        instructions: 76048
+        instructions: 68544
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_calculate_bucket_positions:
         calls: 112
-        instructions: 124708
+        instructions: 116868
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_encode_edge_run:
         calls: 6
-        instructions: 61171
+        instructions: 60115
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_prepare_edge_buffer:
         calls: 112
-        instructions: 44330
+        instructions: 36938
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_update_accounting:
         calls: 112
-        instructions: 123465
+        instructions: 116017
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_bucket_row:
         calls: 112
-        instructions: 89376
+        instructions: 80416
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_run:
         calls: 112
-        instructions: 81040
+        instructions: 73648
         heap_increase: 0
         stable_memory_increase: 0
       labeled_vertex_write_edge_runs:
         calls: 112
-        instructions: 615813
+        instructions: 594119
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_stage2b_btree_hub_delete_half_1024:
     total:
       calls: 1
-      instructions: 45537197
+      instructions: 45018001
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_btree_hub_point_lookup_descending_1024:
     total:
       calls: 1
-      instructions: 103590740
+      instructions: 103117440
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_btree_hub_scan_descending_1024:
     total:
       calls: 1
-      instructions: 104478903
+      instructions: 104005452
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_btree_hub_scan_descending_keyonly_1024:
     total:
       calls: 1
-      instructions: 71813454
+      instructions: 71444655
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_delete_half_1024:
     total:
       calls: 1
-      instructions: 44647149
+      instructions: 44138516
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_delete_half_16384:
     total:
       calls: 1
-      instructions: 857989790
+      instructions: 848127349
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_delete_half_4096:
     total:
       calls: 1
-      instructions: 201188489
+      instructions: 198899469
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_insert_1024:
     total:
       calls: 1
-      instructions: 56126817
+      instructions: 55655010
       heap_increase: 2
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_insert_16384:
     total:
       calls: 1
-      instructions: 1105465840
+      instructions: 1095910692
       heap_increase: 31
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_insert_4096:
     total:
       calls: 1
-      instructions: 251683030
+      instructions: 249524318
       heap_increase: 5
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_point_lookup_descending_1024:
     total:
       calls: 1
-      instructions: 104299469
+      instructions: 103826322
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_stage2b_narrow_hub_scan_descending_1024:
     total:
       calls: 1
-      instructions: 105135408
+      instructions: 104662110
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_unordered_swap_compact_half_deleted_1024:
     total:
       calls: 1
-      instructions: 238840
+      instructions: 244124
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_unordered_swap_compact_half_deleted:
         calls: 1
-        instructions: 237820
+        instructions: 243166
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_unordered_tombstone_reuse_half_deleted_1024:
     total:
       calls: 1
-      instructions: 7374
+      instructions: 7119
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_unordered_tombstone_reuse_half_deleted:
         calls: 1
-        instructions: 6354
+        instructions: 6161
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_bidirectional_insert_directed_1024:
     total:
       calls: 1
-      instructions: 9658602
+      instructions: 9658554
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_bidirectional_insert_directed:
         calls: 1
-        instructions: 9657557
+        instructions: 9657571
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_bidirectional_insert_undirected_1024:
     total:
       calls: 1
-      instructions: 9668848
+      instructions: 9617616
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_bidirectional_insert_undirected:
         calls: 1
-        instructions: 9667803
+        instructions: 9616633
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_bidirectional_scan_in_out_1024:
     total:
       calls: 1
-      instructions: 2354463
+      instructions: 2388589
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_bidirectional_scan_in_out:
         calls: 1
-        instructions: 2353396
+        instructions: 2387582
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_counts_get_set_iter_1024:
     total:
       calls: 1
-      instructions: 536950
+      instructions: 560378
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_counts_get_set_iter:
         calls: 1
-        instructions: 535921
+        instructions: 559409
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_counts_push_plain_1024:
     total:
       calls: 1
-      instructions: 489798
+      instructions: 491669
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_counts_push_plain:
         calls: 1
-        instructions: 488793
+        instructions: 490726
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_deferred_bidirectional_insert_directed_1024:
     total:
       calls: 1
-      instructions: 10443746
+      instructions: 10430386
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_deferred_bidirectional_insert_directed:
         calls: 1
-        instructions: 10442721
+        instructions: 10429423
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_deferred_bidirectional_insert_undirected_1024:
     total:
       calls: 1
-      instructions: 10345129
+      instructions: 10180814
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_deferred_bidirectional_insert_undirected:
         calls: 1
-        instructions: 10344104
+        instructions: 10179847
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_deferred_bidirectional_maintenance_drain_1:
     total:
       calls: 1
-      instructions: 973250
+      instructions: 980045
       heap_increase: 0
       stable_memory_increase: 2049
     scopes:
       lara_deferred_bidirectional_maintenance_drain:
         calls: 1
-        instructions: 972138
+        instructions: 978993
         heap_increase: 0
         stable_memory_increase: 2049
   bench_lara_deferred_insert_dirty_1024:
     total:
       calls: 1
-      instructions: 5318030
+      instructions: 5301718
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_deferred_insert_dirty:
         calls: 1
-        instructions: 5317005
+        instructions: 5300755
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_deferred_maintenance_fold_1:
     total:
       calls: 1
-      instructions: 579613
+      instructions: 583325
       heap_increase: 0
       stable_memory_increase: 1153
     scopes:
       lara_deferred_maintenance_fold:
         calls: 1
-        instructions: 578501
+        instructions: 582275
         heap_increase: 0
         stable_memory_increase: 1153
   bench_lara_deferred_out_edges_iter_log_backed_128:
     total:
       calls: 1
-      instructions: 34178
+      instructions: 34737
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_deferred_out_edges_iter_log_backed:
         calls: 1
-        instructions: 33124
+        instructions: 33745
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_log_write_read_release_1024:
     total:
       calls: 1
-      instructions: 1093695
+      instructions: 1117050
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_log_write_read_release:
         calls: 1
-        instructions: 1092659
+        instructions: 1116076
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_slab_write_read_1024:
     total:
       calls: 1
-      instructions: 352598
+      instructions: 352470
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_slab_write_read:
         calls: 1
-        instructions: 351573
+        instructions: 351507
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_desc_out_edges_iter_log_backed_128:
     total:
       calls: 1
-      instructions: 32586
+      instructions: 27095
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_store_desc_out_edges_iter_log_backed:
         calls: 1
-        instructions: 31544
+        instructions: 26117
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_log_spill_128:
     total:
       calls: 1
-      instructions: 349826
+      instructions: 352642
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_store_log_spill:
         calls: 1
-        instructions: 348803
+        instructions: 351681
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_out_edges_collect_1024:
     total:
       calls: 1
-      instructions: 67801
+      instructions: 66615
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_store_out_edges_collect:
         calls: 1
-        instructions: 66796
+        instructions: 65619
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_out_edges_iter_1024:
     total:
       calls: 1
-      instructions: 159966
+      instructions: 157671
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_store_out_edges_iter:
         calls: 1
-        instructions: 158916
+        instructions: 156683
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_out_edges_iter_log_backed_128:
     total:
       calls: 1
-      instructions: 34689
+      instructions: 35379
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_store_out_edges_iter_log_backed:
         calls: 1
-        instructions: 33639
+        instructions: 34391
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_segment_tree_grow:
     total:
       calls: 1
-      instructions: 28297566
+      instructions: 28243949
       heap_increase: 180
       stable_memory_increase: 0
     scopes:
       edge_store_segment_tree_grow:
         calls: 1
-        instructions: 28296481
+        instructions: 28242926
         heap_increase: 180
         stable_memory_increase: 0
   bench_lara_edge_store_slab_insert_1024:
     total:
       calls: 1
-      instructions: 4597482
+      instructions: 4586027
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_edge_store_slab_insert:
         calls: 1
-        instructions: 4596477
+        instructions: 4585084
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_release_coalesce_1024:
     total:
       calls: 1
-      instructions: 228867
+      instructions: 242623
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_release_coalesce:
         calls: 1
-        instructions: 227819
+        instructions: 241637
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_best_fit_fallback_scan_256:
     total:
       calls: 1
-      instructions: 3651243
+      instructions: 3650548
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_best_fit_fallback_scan:
         calls: 1
-        instructions: 3650207
+        instructions: 3649583
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_best_fit_fallback_scan_4096:
     total:
       calls: 1
-      instructions: 58087163
+      instructions: 58086468
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_best_fit_fallback_scan:
         calls: 1
-        instructions: 58086047
+        instructions: 58085423
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_largest_bin_recovery_256:
     total:
       calls: 1
-      instructions: 1612959
+      instructions: 1678609
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_largest_bin_recovery:
         calls: 1
-        instructions: 1611936
+        instructions: 1677644
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_largest_bin_recovery_4096:
     total:
       calls: 1
-      instructions: 5125359
+      instructions: 5202529
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_largest_bin_recovery:
         calls: 1
-        instructions: 5124256
+        instructions: 5201484
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_reopen_1024:
     total:
       calls: 1
-      instructions: 2785205
+      instructions: 2870946
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_reopen:
         calls: 1
-        instructions: 2784168
+        instructions: 2869971
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_reopen_16384:
     total:
       calls: 1
-      instructions: 46347940
+      instructions: 47721942
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_reopen:
         calls: 1
-        instructions: 46346903
+        instructions: 47720967
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_reopen_256:
     total:
       calls: 1
-      instructions: 691078
+      instructions: 712377
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_reopen:
         calls: 1
-        instructions: 690041
+        instructions: 711402
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_reopen_262144:
     total:
       calls: 1
-      instructions: 774916695
+      instructions: 796907381
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_reopen:
         calls: 1
-        instructions: 774915658
+        instructions: 796906406
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_reopen_4096:
     total:
       calls: 1
-      instructions: 11261328
+      instructions: 11604645
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_reopen:
         calls: 1
-        instructions: 11260291
+        instructions: 11603670
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_reopen_65536:
     total:
       calls: 1
-      instructions: 189528010
+      instructions: 195025378
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_reopen:
         calls: 1
-        instructions: 189526973
+        instructions: 195024403
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_take_best_fit_split_1024:
     total:
       calls: 1
-      instructions: 1508490
+      instructions: 1590922
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_take_best_fit_split:
         calls: 1
-        instructions: 1507467
+        instructions: 1589961
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_take_best_fit_split_256:
     total:
       calls: 1
-      instructions: 1772081
+      instructions: 1868471
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_take_best_fit_split:
         calls: 1
-        instructions: 1771058
+        instructions: 1867510
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_free_span_store_take_best_fit_split_4096:
     total:
       calls: 1
-      instructions: 1823758
+      instructions: 1926673
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_free_span_store_take_best_fit_split:
         calls: 1
-        instructions: 1822655
+        instructions: 1925632
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_iter_1024:
     total:
       calls: 1
-      instructions: 1100089
+      instructions: 1115037
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_iter:
         calls: 1
-        instructions: 1099058
+        instructions: 1114068
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_iter_single_row_1024:
     total:
       calls: 1
-      instructions: 160992
+      instructions: 158697
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_iter_single_row:
         calls: 1
-        instructions: 159940
+        instructions: 157707
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_slot_order_1024:
     total:
       calls: 1
-      instructions: 1039673
+      instructions: 1041073
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_slot_order:
         calls: 1
-        instructions: 1038642
+        instructions: 1040104
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_slot_order_single_row_1024:
     total:
       calls: 1
-      instructions: 67797
+      instructions: 66617
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_slot_order_single_row:
         calls: 1
-        instructions: 66792
+        instructions: 65619
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_insert_append_heavy_1024:
     total:
       calls: 1
-      instructions: 4823908
+      instructions: 4825817
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_insert_append_heavy:
         calls: 1
-        instructions: 4822903
+        instructions: 4824874
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_local_relocation_1:
     total:
       calls: 1
-      instructions: 193234
+      instructions: 196511
       heap_increase: 0
       stable_memory_increase: 897
     scopes:
       lara_graph_local_relocation:
         calls: 1
-        instructions: 192169
+        instructions: 195508
         heap_increase: 0
         stable_memory_increase: 897
   bench_lara_graph_reopen_after_relocation_1:
     total:
       calls: 1
-      instructions: 35226
+      instructions: 34456
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_reopen_after_relocation:
         calls: 1
-        instructions: 34187
+        instructions: 33477
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_root_relocation_1:
     total:
       calls: 1
-      instructions: 155609
+      instructions: 158608
       heap_increase: 0
       stable_memory_increase: 897
     scopes:
       lara_graph_root_relocation:
         calls: 1
-        instructions: 154544
+        instructions: 157605
         heap_increase: 0
         stable_memory_increase: 897
   bench_lara_maintenance_queue_mark_pop_1024:
     total:
       calls: 1
-      instructions: 1769125
+      instructions: 1755025
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_maintenance_queue_mark_pop:
         calls: 1
-        instructions: 1768100
+        instructions: 1754062
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_slab_patch_sparse_1:
     total:
       calls: 1
-      instructions: 34473
+      instructions: 34345
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_slab_patch_sparse:
         calls: 1
-        instructions: 33441
+        instructions: 33375
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_slab_write_contig_1:
     total:
       calls: 1
-      instructions: 5733
+      instructions: 5552
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_slab_write_contig:
         calls: 1
-        instructions: 4728
+        instructions: 4609
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_slab_write_contig_24:
     total:
       calls: 1
-      instructions: 26213
+      instructions: 26032
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_slab_write_contig_24b:
         calls: 1
-        instructions: 25208
+        instructions: 25089
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_slab_write_single_1:
     total:
       calls: 1
-      instructions: 252338
+      instructions: 252141
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_slab_write_single:
         calls: 1
-        instructions: 251333
+        instructions: 251176
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_span_meta_push_get_set_reopen_1024:
     total:
       calls: 1
-      instructions: 783522
+      instructions: 817335
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_span_meta_push_get_set_reopen:
         calls: 1
-        instructions: 782493
+        instructions: 816372
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_vertex_get_set_1024:
     total:
       calls: 1
-      instructions: 684385
+      instructions: 730341
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_vertex_get_set:
         calls: 1
-        instructions: 683362
+        instructions: 729378
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_vertex_push_1024:
     total:
       calls: 1
-      instructions: 760069
+      instructions: 759941
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_vertex_push:
         calls: 1
-        instructions: 759044
+        instructions: 758978
         heap_increase: 0
         stable_memory_increase: 0
   bench_offset_live1024_extent1024_offset0_asc:
     total:
       calls: 1
-      instructions: 27146
+      instructions: 26839
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent1024_offset0_desc:
     total:
       calls: 1
-      instructions: 27067
+      instructions: 26733
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent1024_offset960_asc:
     total:
       calls: 1
-      instructions: 27146
+      instructions: 26839
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent2048_offset0_asc:
     total:
       calls: 1
-      instructions: 17347
+      instructions: 18080
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent2048_offset960_asc:
     total:
       calls: 1
-      instructions: 235406
+      instructions: 243206
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent4096_offset0_asc:
     total:
       calls: 1
-      instructions: 24251
+      instructions: 26286
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent4096_offset960_asc:
     total:
       calls: 1
-      instructions: 447818
+      instructions: 464034
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent8192_offset0_asc:
     total:
       calls: 1
-      instructions: 38059
+      instructions: 42698
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent8192_offset0_desc:
     total:
       calls: 1
-      instructions: 37351
+      instructions: 40635
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_offset_live1024_extent8192_offset960_asc:
     total:
       calls: 1
-      instructions: 872642
+      instructions: 905690
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture:
     total:
       calls: 1
-      instructions: 336721
+      instructions: 346139
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_property_first_then_selected:
     total:
       calls: 1
-      instructions: 154915
+      instructions: 154125
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_inline_property:
     total:
       calls: 1
-      instructions: 27297
+      instructions: 27351
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_inline_property_descending:
     total:
       calls: 1
-      instructions: 26238
+      instructions: 26304
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_inline_property_descending_tail:
     total:
       calls: 1
-      instructions: 178921
+      instructions: 180309
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_inline_property_filtered_reference:
     total:
       calls: 1
-      instructions: 136412
+      instructions: 150983
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_inline_property_sparse:
     total:
       calls: 1
-      instructions: 252009
+      instructions: 254156
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_inline_property_tail:
     total:
       calls: 1
-      instructions: 179387
+      instructions: 180790
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_at_with_replay:
     total:
       calls: 1
-      instructions: 5054
+      instructions: 4912
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_bypass:
     total:
       calls: 1
-      instructions: 12242
+      instructions: 12817
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_dense_asc:
     total:
       calls: 1
-      instructions: 17035
+      instructions: 16926
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_dense_desc:
     total:
       calls: 1
-      instructions: 17420
+      instructions: 17309
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_early_break:
     total:
       calls: 1
-      instructions: 9718
+      instructions: 9602
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_hybrid:
     total:
       calls: 1
-      instructions: 64402
+      instructions: 79110
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_sparse:
     total:
       calls: 1
-      instructions: 54083
+      instructions: 57255
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_window:
     total:
       calls: 1
-      instructions: 11046
+      instructions: 10736
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_edges_with_inline_property:
     total:
       calls: 1
-      instructions: 138115
+      instructions: 153185
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_in_edges_dense:
     total:
       calls: 1
-      instructions: 83858
+      instructions: 87240
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_traverse_next_visit_in_edges_hybrid_inline_property:
     total:
       calls: 1
-      instructions: 75067
+      instructions: 74406
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
