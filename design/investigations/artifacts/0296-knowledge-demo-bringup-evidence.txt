@@ -1,0 +1,209 @@
+Plan 0296 knowledge demo bring-up — runtime evidence transcript
+UTC document anchor: 2026-08-24 (session logs /tmp/gt*.log, /tmp/gq*.log; volatile originals)
+
+This file preserves the decisive terminal evidence for plan 0296 slices 1+2 after the
+volatile /tmp session logs. Sections quote exact captured output lines. Known-issue
+context lives in design/implementation-gaps.md GAP-2026-08-24-005/-006/-008.
+
+1. Identity on-ramp (`gleaph identity new dev` + `gleaph login`)
+-----------------------------------
+Command: gleaph identity new dev
+Exit: 0
+created dev -> /Users/yota/.config/gleaph/identity/keys/dev.pem
+principal rzzr7-6fwbt-vpf3d-k3p6h-v53rt-m4pxy-gaaoj-gcypc-nnuul-xlqsf-lqe
+active session: /Users/yota/.config/gleaph/identity/keys/dev.pem
+
+Command: gleaph login
+Exit: 0
+logged in as rzzr7-6fwbt-vpf3d-k3p6h-v53rt-m4pxy-gaaoj-gcypc-nnuul-xlqsf-lqe
+Result: PASS — printed principal equals the session-resolved principal (criterion 1).
+
+2. Demo-local network creation (icp-cli managed, project-scoped)
+-----------------------------------
+Command: icp network start local -d   (cwd demo/knowledge)
+Exit: 0
+Created container 1305fb8e2ea3
+For background mode, network output is captured by Docker:
+Network started on port 32769
+Note: gateway ports are dynamic and move across daemon restarts (observed
+32769 -> 32770 -> 32773 -> 32768-era shuffles); resolve via
+`icp network status local --json`. Canister state survives port moves but not
+container recreation.
+
+3. Platform installs + register_graph + migrations
+-----------------------------------
+Command: icp build --debug gleaph-router | gleaph-graph-index | gleaph-graph-shard-0
+Exit: 0 (per package; shard required retries while a sibling pane's uncommitted
+ic-stable-lara edits were mid-flight — see GAP-008 sibling-churn note)
+Output (router): Canisters built successfully
+
+Command: icp canister install … gleaph-router/index/shard (init args per bootstrap.sh)
+Exit: 0
+Canister gleaph-router installed successfully
+Canister gleaph-graph-index installed successfully
+Canister gleaph-graph-shard-0 installed successfully
+
+Command: icp canister call … register_graph "(record { graph_name = \"knowledge\"; owner =
+principal \"w5pea-s6kwf-zsox2-sqolw-b5rvy-sfrcm-u3k5d-rmspv-om34h-hu7ae-eae\"; admins = vec {};
+is_home = true; shards = vec { record { shard_id = 0 : nat32; graph_canister = …;
+index_canister = … } }; requested_resources = vec {} })"
+Exit: 0
+(variant { Ok })
+
+Command: gleaph migration apply (owner identity)
+Exit: 0
+applying 000003_knowledge_vector_index [====================] applied
+applied 3 migrations
+
+4. Bulk load + prepared apply + publication
+-----------------------------------
+Command: gleaph load --vertices seeds/vertices.jsonl --edges seeds/edges.jsonl
+Exit: 0
+loading edges    [====================] 37 / 37 (100%)
+bulk load completed (job key: knowledge-demo-initial-load-v1)
+
+Command: gleaph prepared apply (owner identity)
+Exit: 0
+citation-reach registered
+shortest-path registered
+team-readable-documents registered
+variable-length-reach registered
+
+Command: gleaph prepared publish <op> × 4 (owner identity), quoted-name statement path
+Exit: 0 for each
+citation-reach published to PUBLIC
+shortest-path published to PUBLIC
+team-readable-documents published to PUBLIC
+variable-length-reach published to PUBLIC
+
+5. Owner executions (implicit root)
+-----------------------------------
+Command: gleaph prepared run variable-length-reach (owner) — AFTER direction flip
+Exit: 0
+concept         concept_id
+GQL             [230,48,185,64,…]
+Traversal       [26,140,36,105,…]
+GraphRAG        [74,94,21,104,…]
+Access control  [150,6,103,248,…]
+Federation      [150,200,207,…]
+Vector search   [98,60,131,84,…]
+Indexing        [70,166,212,…]
+7 rows
+Pre-flip the same op returned "0 rows" — correct behavior: seeds author RELATED_TO
+edges toward 'graph-databases' (pure sink, zero outgoing). Direction flip adopted.
+
+Command: gleaph prepared run citation-reach (owner)
+Exit: 0
+0 rows
+Correct per seeds: d1 'Introduction to graph databases' has three incoming CITES and
+no outgoing CITES.
+
+Command: gleaph prepared run shortest-path (owner)
+Exit: 1
+gleaph: remote: Router rejected prepared_query: invalid argument: unsupported plan query
+operator: IndexScan(no index client)
+Status: observation continues; index/planner crates are under active sibling edits.
+
+6. Non-owner contrast experiments (GAP-2026-08-24-008 evidence set)
+-----------------------------------
+6a. Graph-independent op executes as non-owner:
+Command: gleaph prepared run probeconst (dev identity; source `RETURN 1 AS x`)
+Exit: 0
+x
+1
+1 rows
+
+6b. Minimal graph MATCH denies the same principal:
+Command: gleaph prepared run probenoeid (dev identity; source
+`MATCH (n:Concept) RETURN n.name AS name LIMIT 3`, no ELEMENT_ID)
+Exit: 1
+gleaph: remote: Router rejected prepared_query: forbidden
+
+6c. Grant surface applied and decoded as Ok via the Router's own Candid interface
+(scripts/apply-public-grants.sh, 16+4 statements): MATCH on all four node labels,
+READ with explicit property lists on all four labels, TRAVERSE on all seven edge
+labels and all four node labels. Retried dev runs stayed Forbidden.
+
+6d. Direct-principal discrimination (scripts/direct-grant-probe.sh): the same three
+Concept privileges granted TO PRINCIPAL '<dev>' instead of PUBLIC — still forbidden.
+Rules out PUBLIC-subject evaluation alone; suspicion moves to requirement expression
+or tenancy gating inside authorize_requirements (Router domain).
+
+6e. ELEMENT_ID-free probe (6b) also denies, so unattributed-ELEMENT_ID demand does not
+explain the denial by itself.
+
+7. Publication grammar workaround (GAP-2026-08-24-005)
+-----------------------------------
+Live rejection (unquoted name):
+gleaph: remote: Router rejected publish for "citation-reach": InvalidArgument("parse
+error: expected 'TO', got '-'")
+Tree-internal red tests at HEAD (feature = "gleaph"):
+parser::statement::grant_parser_tests::
+  parse_grant_execute_on_prepared_query_to_public_and_principal — FAILED
+  parse_revoke_execute_on_prepared_query_mirrors_grant — FAILED
+Workaround: double-quoted identifier rides expect_ident's QuotedIdent arm; adopted by
+crates/cli/src/prepared.rs publication_statement (commit 660d27bbd) with parser-
+acceptance unit test; verified live by section 4 above.
+
+8. Pure-CLI bring-up failures (GAP-2026-08-24-006 raw errors)
+-----------------------------------
+8a. Launcher staging (fixed, commit 1493b713c):
+gleaph: spawn launcher: No such file or directory (os error 2)
+8b. Management-canister update via launcher gateway (reproduced twice):
+gleaph: update create_canister: The replica returned an HTTP Error: Http Error:
+status 400 Bad Request, content type "text/plain; charset=utf-8", content: error:
+canister_not_found
+details: The specified canister does not exist.
+(fetch_root_key over the same gateway succeeded immediately before.)
+8c. Launcher lifetime: $TMPDIR/gleaph-local-status/status.json and the port-8000
+listener were gone seconds after each `gleaph network start -d` exited.
+
+9. Index namespace matrix (migration 000002 revision)
+-----------------------------------
+[X] both cross-label indexes present (document_title + concept_name + person_name):
+    owner prepared_query fails planning:
+    invalid argument: multiple active vertex property index namespaces for property 2
+[Y] cross-label pair removed (revised 000002 keeps document_title only):
+    chain passes end-to-end; error disappears — hypothesis confirmed.
+[Z] single cross-label index: not needed — [Y] already cleared the chain.
+Revised up.gql carries an explanatory comment; HANDOFF note stands: demo migrations
+are not a production migration policy.
+
+10. Live codegen vs fixture-generated client
+-----------------------------------
+Command: gleaph codegen --target typescript --output /tmp/gt1-live-gen.ts (live Router),
+then git diff --no-index src/generated/index.ts /tmp/gt1-live-gen.ts
+Result: 41 insertions / 32 deletions. Differences: ELEMENT_ID columns are
+semantic_type Bytes (Uint8Array), fixture guessed Text; Router-completed doc comments
+differ slightly; op names and parameter shapes identical. Live output adopted as
+canonical; fixture dev-manifest.json removed. Page type-checks against live output.
+
+11. Environment wiring + host boot
+-----------------------------------
+Command: node scripts/write-env.mjs --canister 4caro-hl777-77775-aaaba-cai --gateway-url
+http://localhost:32770
+Exit: 0
+.env.local (captured):
+VITE_GLEAPH_ROUTER_CANISTER_ID=4caro-hl777-77775-aaaba-cai
+VITE_IC_HOST=http://localhost:32770
+VITE_FETCH_ROOT_KEY=true
+
+Command: pnpm run dev
+Exit: ready banner captured
+VITE+ v0.2.9
+➜  Local:   http://localhost:3000/
+Route chunk transform check: GET /src/routes/index.tsx → 200; split component chunk
+contains the scenario selector markup.
+
+12. Plan structure gate (final phase — honest partial closure)
+-----------------------------------
+Command: python3 ~/.agents/skills/plan/scripts/validate_plan.py
+         plans/0296-knowledge-demo-bringup-backend.md --phase final
+Exit: 1
+ERROR: TODO 'scenario-page' status is 'pending'; phase 'final' requires 'completed'
+ERROR: TODO 'quickstart-smoke-executed' status is 'pending'; phase 'final' requires 'completed'
+ERROR: Completion Criteria item 2 must be checked in final phase
+ERROR: Completion Criteria item 4 must be checked in final phase
+ERROR: Completion Criteria item 5 must be checked in final phase
+Interpretation: structural shape is valid; the five remaining flags are exactly the
+GAP-2026-08-24-008-blocked items, intentionally left open rather than marked complete.
