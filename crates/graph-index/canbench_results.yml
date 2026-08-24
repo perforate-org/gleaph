@@ -2,329 +2,329 @@ benches:
   bench_filter_hits_by_equal_page:
     total:
       calls: 1
-      instructions: 4127224
+      instructions: 4093257
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       filter_hits_by_equal_page:
         calls: 1
-        instructions: 4126188
+        instructions: 4092287
         heap_increase: 0
         stable_memory_increase: 0
   bench_index_build_bounded_cleanup:
     total:
       calls: 1
-      instructions: 76077231
+      instructions: 74861965
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       index_build_bounded_cleanup:
         calls: 1
-        instructions: 76076222
+        instructions: 74861022
         heap_increase: 1
         stable_memory_increase: 0
   bench_index_build_dml_exact_replay:
     total:
       calls: 1
-      instructions: 1030193
+      instructions: 946184
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_build_dml_exact_replay:
         calls: 1
-        instructions: 1029105
+        instructions: 945161
         heap_increase: 0
         stable_memory_increase: 0
   bench_index_build_dml_first_application:
     total:
       calls: 1
-      instructions: 2040830
+      instructions: 1909156
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_build_dml_first_application:
         calls: 1
-        instructions: 2039795
+        instructions: 1908144
         heap_increase: 0
         stable_memory_increase: 0
   bench_index_build_seed_page_all_touched:
     total:
       calls: 1
-      instructions: 7678390
+      instructions: 7315346
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_build_seed_page_all_touched:
         calls: 1
-        instructions: 7677391
+        instructions: 7314413
         heap_increase: 0
         stable_memory_increase: 0
   bench_index_build_seed_page_no_touched:
     total:
       calls: 1
-      instructions: 15165610
+      instructions: 14647649
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_build_seed_page_no_touched:
         calls: 1
-        instructions: 15164611
+        instructions: 14646716
         heap_increase: 0
         stable_memory_increase: 0
   bench_index_posting_batch_256:
     total:
       calls: 1
-      instructions: 20280551
+      instructions: 20030689
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_index_posting_batch_256_max_values:
     total:
       calls: 1
-      instructions: 490618983
+      instructions: 490525231
       heap_increase: 2
       stable_memory_increase: 0
     scopes: {}
   bench_index_posting_batch_progress_encode:
     total:
       calls: 1
-      instructions: 37924
+      instructions: 40310
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_intersection_page_encode:
     total:
       calls: 1
-      instructions: 315946
+      instructions: 309600
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_layout_index_posting_insert_64:
     total:
       calls: 1
-      instructions: 3540125
+      instructions: 3490290
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       layout_index_posting_insert:
         calls: 1
-        instructions: 3539035
+        instructions: 3489266
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_equal_page_walk_arm:
     total:
       calls: 1
-      instructions: 4031759
+      instructions: 3990980
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_equal_page_walk_arm:
         calls: 1
-        instructions: 4030710
+        instructions: 3989997
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_page_eight_arms:
     total:
       calls: 1
-      instructions: 33108007
+      instructions: 32826544
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_intersection_page_eight_arms:
         calls: 1
-        instructions: 33106958
+        instructions: 32825561
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_page_eight_arms_scattered:
     total:
       calls: 1
-      instructions: 206403985
+      instructions: 204036884
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_intersection_page_eight_arms_scattered:
         calls: 1
-        instructions: 206402857
+        instructions: 204035821
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_page_four_arms:
     total:
       calls: 1
-      instructions: 16497473
+      instructions: 16313301
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_intersection_page_four_arms:
         calls: 1
-        instructions: 16496424
+        instructions: 16312318
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_page_two_arms:
     total:
       calls: 1
-      instructions: 8154621
+      instructions: 8080943
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_intersection_page_two_arms:
         calls: 1
-        instructions: 8153572
+        instructions: 8079960
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_two_arms:
     total:
       calls: 1
-      instructions: 9704033
+      instructions: 9568364
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       lookup_intersection_two_arms:
         calls: 1
-        instructions: 9702982
+        instructions: 9567379
         heap_increase: 1
         stable_memory_increase: 0
   bench_lookup_page_encode:
     total:
       calls: 1
-      instructions: 211666
+      instructions: 209300
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_lookup_range_intersection_page_adversarial_span:
     total:
       calls: 1
-      instructions: 197895
+      instructions: 194816
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_adversarial_span:
         calls: 1
-        instructions: 196846
+        instructions: 193833
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_full_range_eight_sieves:
     total:
       calls: 1
-      instructions: 49945377
+      instructions: 49389089
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_full_range_eight_sieves:
         calls: 1
-        instructions: 49944338
+        instructions: 49388116
         heap_increase: 1
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_full_range_four_sieves:
     total:
       calls: 1
-      instructions: 33117379
+      instructions: 32733173
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_full_range_four_sieves:
         calls: 1
-        instructions: 33116340
+        instructions: 32732200
         heap_increase: 1
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_full_range_one_sieve:
     total:
       calls: 1
-      instructions: 20495076
+      instructions: 20239735
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_full_range_one_sieve:
         calls: 1
-        instructions: 20494037
+        instructions: 20238762
         heap_increase: 1
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_scattered_survivor_four_sieves:
     total:
       calls: 1
-      instructions: 1114392
+      instructions: 1097831
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_scattered_survivor_four_sieves:
         calls: 1
-        instructions: 1113353
+        instructions: 1096858
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_sparse_survivor:
     total:
       calls: 1
-      instructions: 106570
+      instructions: 104776
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_sparse_survivor:
         calls: 1
-        instructions: 105442
+        instructions: 103713
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_first_page:
     total:
       calls: 1
-      instructions: 4037427
+      instructions: 3987662
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_page_between_first_page:
         calls: 1
-        instructions: 4036378
+        instructions: 3986679
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_numeric_domain_boundary:
     total:
       calls: 1
-      instructions: 15839032
+      instructions: 15640812
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_page_between_numeric_domain_boundary:
         calls: 1
-        instructions: 15837983
+        instructions: 15639829
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_resumed_page:
     total:
       calls: 1
-      instructions: 4006267
+      instructions: 3955081
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_page_between_resumed_page:
         calls: 1
-        instructions: 4005228
+        instructions: 3954108
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_sparse_range:
     total:
       calls: 1
-      instructions: 59616
+      instructions: 58516
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_page_between_sparse_range:
         calls: 1
-        instructions: 58567
+        instructions: 57533
         heap_increase: 0
         stable_memory_increase: 0
   bench_posting_range_and_purge_with_physical_prefix:
     total:
       calls: 1
-      instructions: 342839598
+      instructions: 337322376
       heap_increase: 4
       stable_memory_increase: 0
     scopes:
       posting_purge_with_physical_prefix:
         calls: 1
-        instructions: 338827120
+        instructions: 333360588
         heap_increase: 4
         stable_memory_increase: 0
       posting_range_with_physical_prefix:
         calls: 1
-        instructions: 4010010
+        instructions: 3959552
         heap_increase: 0
         stable_memory_increase: 0
-version: 0.6.0
+version: 0.7.0
