@@ -1,0 +1,5 @@
+/// Variable-length reach: which Concepts are reachable from a start Concept
+/// through `RELATED_TO` in 1..3 hops. Edges are authored toward the anchor concept
+/// (`graph-databases` is a pure sink in the seeds), so the pattern reads incoming.
+MATCH (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,3}(b:Concept)
+RETURN DISTINCT b.name AS concept, ELEMENT_ID(b) AS concept_id

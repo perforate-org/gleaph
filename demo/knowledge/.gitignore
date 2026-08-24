@@ -1,0 +1,24 @@
+node_modules
+.DS_Store
+dist
+dist-ssr
+*.local
+.env
+.nitro
+.tanstack
+.wrangler
+.output
+.vinxi
+__unconfig*
+
+# icp-cli per-project state: identities, network descriptors, canister-id caches.
+.icp/
+
+# Gleaph CLI state: platform mapping (.gleaph/data/mappings) and the per-user Router-id
+# cache (.gleaph/cache/account) are machine-local, and the load resume state is derived.
+.gleaph/
+.load-state.json
+
+# The generated typed client is produced by `pnpm generate:client` (gleaph codegen) from
+# the live Router manifest and is never committed.
+src/generated/*

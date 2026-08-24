@@ -1,0 +1,5 @@
+format_version = 1
+id = "000003_knowledge_vector_index"
+parent = "000002_knowledge_indexes"
+description = "Provision and register the Document embedding vector index on the knowledge graph"
+graph = "knowledge"

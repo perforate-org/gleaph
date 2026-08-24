@@ -1,0 +1,3 @@
+/// Shortest path: shortest RELATED_TO path between two Concepts.
+MATCH ANY SHORTEST (a:Concept {name: 'Graph databases'})-[e:RELATED_TO]->{1,4}(b:Concept {name: 'Vector search'})
+RETURN ELEMENT_ID(b) AS concept_id, b.name AS concept

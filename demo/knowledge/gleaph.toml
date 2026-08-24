@@ -1,0 +1,23 @@
+# Gleaph CLI project configuration (ADR 0062).
+#
+# Runs against the already-deployed Gleaph platform. The Router canister
+# principal is deployment-specific, supplied via GLEAPH_CANISTER or --canister.
+
+format_version = 1
+default_network = "local"
+
+[dirs]
+migrations = "migrations"
+prepared = "prepared"
+
+[load]
+graph = "knowledge"
+key = "knowledge-demo-initial-load-v1"
+state_file = ".load-state.json"
+
+[codegen]
+# `gleaph codegen` fetches the live prepared manifest from the Router
+# (GLEAPH_CANISTER or --canister) and writes the typed client to `output`.
+target = "typescript"
+output = "src/generated/index.ts"
+graph = "knowledge"

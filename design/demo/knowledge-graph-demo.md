@@ -1,6 +1,6 @@
 # Knowledge Graph Demo (GraphRAG search slice)
 
-Anchor timestamp: 2026-08-21 02:33:54 UTC +0000
+Anchor timestamp: 2026-08-24 04:20:00 UTC +0000
 
 ## Status
 
@@ -85,7 +85,9 @@ ever becomes a real requirement. Deterministic seed vectors live in
 
 1. **Variable-length reach** — from a starting Concept, which Concepts are reachable in 1..N
    `RELATED_TO` hops, with hop depth. Surfaces the path-quantifier feature a relational baseline
-   cannot express.
+   cannot express. (Implemented direction reads *incoming* edges to the anchor: the demo seeds
+   author `RELATED_TO` edges toward `graph-databases`, making it a pure sink, so an outgoing
+   pattern correctly returns 0 rows — verified during plan 0296 bring-up.)
 2. **Shortest path** — `MATCH ANY SHORTEST` from one Concept/Document to another. Surfaces
    graph-native shortest path.
 3. **Graph-constrained semantic search** — `SEARCH` a Document embedding restricted by an
@@ -93,6 +95,40 @@ ever becomes a real requirement. Deterministic seed vectors live in
    structure + vector + access in one query.
 4. **Citation reach** — Documents reachable from a source Document through `CITES` up to depth N,
    with the relationship trail returned as edge identities (the `topic-path` prototype).
+
+### Parameter surface (implemented state)
+
+Three ops are literal-bound with no parameters. Scenario 3 declares one required parameter
+`$query` (`Value::Bytes`, 768 little-endian f32s), per `prepared/team-readable-documents.gql`;
+the demo page supplies it in-page via the shared deterministic embedding module
+(`scripts/embedding-core.mjs`, also consumed by `scripts/gen-embeddings.mjs`), so no user param
+input UI exists and the top-1 row is fixed by construction to the seeded document (`d4`,
+"Vector search in graphs"). `gleaph prepared run --param` cannot express `Value::Bytes` yet, so
+scenario 3 is browser-only until the CLI gains a binary value form.
+
+## Browser access contract (ADR 0074)
+
+The page calls `prepared_query` as a plain browser principal that owns nothing, so execution is
+governed entirely by ADR 0074:
+
+- **Default deny.** Every prepared op starts non-executable for the visitor:
+  `authorize_prepared_execute` gates `prepared_query`
+  (`crates/router/src/prepared.rs`) and the GRANT/REVOKE control path is compiled in unguarded
+  (`crates/router/src/gql.rs`, authorization-only block → `execute_authorization_block`);
+  neither is feature-gated in this build.
+- **Publication.** The demo owner runs `gleaph prepared publish <op>`, which sends
+  `GRANT EXECUTE ON PREPARED QUERY <op> TO PUBLIC` through the generic `gql_mutate` entrypoint;
+  `unpublish` sends the symmetric `REVOKE … FROM PUBLIC`. Grammar and semantics are pinned by
+  the Router's own grant tests (`crates/router/src/gql_grants.rs`,
+  `publication_tests::owner_publishes_public_row_and_revoke_removes_exactly_it`: owner authority,
+  exact-key revoke, repeated revoke = `NotFound`). All four knowledge op names are hyphen-free,
+  so GAP-2026-08-24-005 does not bite.
+- **Env wiring.** The page reads three Vite variables written by
+  `demo/knowledge/scripts/write-env.mjs`. Router id SSOT precedence:
+  `--canister`/`GLEAPH_CANISTER` (explicit mode; what the bootstrap banner exports) → the
+  lazy-issuance cache `.gleaph/cache/account/<env>.router.json` (Account-based networks only).
+  Gateway URL precedence: `--gateway-url`/`GLEAPH_GATEWAY_URL` → launcher status file →
+  built-in default.
 
 ## Demo surface
 

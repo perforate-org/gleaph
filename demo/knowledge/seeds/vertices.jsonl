@@ -1,0 +1,21 @@
+{"source_id":"graph-databases","labels":["Concept"],"properties":{"name":{"Text":"Graph databases"},"definition":{"Text":"Databases that store data as nodes and edges rather than tables."}}}
+{"source_id":"gql-standard","labels":["Concept"],"properties":{"name":{"Text":"GQL"},"definition":{"Text":"ISO/IEC 39075: the ISO graph query language for property graphs."}}}
+{"source_id":"traversal","labels":["Concept"],"properties":{"name":{"Text":"Traversal"},"definition":{"Text":"Walking the graph structure by following edges between nodes."}}}
+{"source_id":"indexing","labels":["Concept"],"properties":{"name":{"Text":"Indexing"},"definition":{"Text":"Data structures that accelerate lookup of nodes, properties, or neighbors."}}}
+{"source_id":"vector-search","labels":["Concept"],"properties":{"name":{"Text":"Vector search"},"definition":{"Text":"Finding neighbors by embedding similarity rather than exact match."}}}
+{"source_id":"access-control","labels":["Concept"],"properties":{"name":{"Text":"Access control"},"definition":{"Text":"Restricting which principals may read or write which data."}}}
+{"source_id":"graphrag","labels":["Concept"],"properties":{"name":{"Text":"GraphRAG"},"definition":{"Text":"Retrieval-augmented generation grounded in a graph."}}}
+{"source_id":"federation","labels":["Concept"],"properties":{"name":{"Text":"Federation"},"definition":{"Text":"Splitting a logical graph across multiple storage shards."}}}
+{"source_id":"d1","labels":["Document"],"properties":{"title":{"Text":"Introduction to graph databases"},"body":{"Text":"Graph databases store nodes and relationships."},"is_public":{"Bool":true}}}
+{"source_id":"d2","labels":["Document"],"properties":{"title":{"Text":"The GQL standard"},"body":{"Text":"GQL is the ISO graph query language."},"is_public":{"Bool":true}}}
+{"source_id":"d3","labels":["Document"],"properties":{"title":{"Text":"Variable-length traversal"},"body":{"Text":"Match paths of one or more hops in a single pattern."},"is_public":{"Bool":true}}}
+{"source_id":"d4","labels":["Document"],"properties":{"title":{"Text":"Vector search in graphs"},"body":{"Text":"Rank nodes by embedding similarity within a graph."},"is_public":{"Bool":true}}}
+{"source_id":"d5","labels":["Document"],"properties":{"title":{"Text":"GraphRAG retrieval"},"body":{"Text":"Retrieve graph context and feed it to a language model."},"is_public":{"Bool":true}}}
+{"source_id":"d6","labels":["Document"],"properties":{"title":{"Text":"Access control in graph queries"},"body":{"Text":"Constrain results to what a caller may read."},"is_public":{"Bool":true}}}
+{"source_id":"d7","labels":["Document"],"properties":{"title":{"Text":"Indexing for traversal"},"body":{"Text":"Property and adjacency indexes make traversal fast."},"is_public":{"Bool":true}}}
+{"source_id":"d8","labels":["Document"],"properties":{"title":{"Text":"Federated graph shards"},"body":{"Text":"Scale a graph across shards without changing the query language."},"is_public":{"Bool":true}}}
+{"source_id":"alice","labels":["Person"],"properties":{"name":{"Text":"Alice"},"role":{"Text":"researcher"}}}
+{"source_id":"bob","labels":["Person"],"properties":{"name":{"Text":"Bob"},"role":{"Text":"engineer"}}}
+{"source_id":"carol","labels":["Person"],"properties":{"name":{"Text":"Carol"},"role":{"Text":"security"}}}
+{"source_id":"research","labels":["Team"],"properties":{"name":{"Text":"Research"}}}
+{"source_id":"platform","labels":["Team"],"properties":{"name":{"Text":"Platform"}}}

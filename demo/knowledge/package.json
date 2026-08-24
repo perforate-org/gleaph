@@ -1,0 +1,38 @@
+{
+  "name": "knowledge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev --port 3000",
+    "generate-routes": "tsr generate",
+    "generate:client": "gleaph codegen",
+    "write-env": "node scripts/write-env.mjs",
+    "check": "tsc --noEmit",
+    "build": "vp build",
+    "preview": "vp preview"
+  },
+  "dependencies": {
+    "@gleaph/sdk": "workspace:*",
+    "@icp-sdk/core": "^6.0.0",
+    "@solidjs/web": "next",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/solid-router": "rc",
+    "@tanstack/solid-router-devtools": "rc",
+    "solid-js": "next",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@tanstack/devtools-vite": "latest",
+    "@tanstack/router-cli": "^1.167.30",
+    "@tanstack/router-plugin": "latest",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vite-plugin-solid": "next"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lightningcss"
+    ]
+  }
+}

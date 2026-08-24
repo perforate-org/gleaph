@@ -1,0 +1,9 @@
+CREATE VECTOR INDEX document_embedding
+FOR (d:Document)
+ON d.embedding
+OPTIONS {
+  dimensions: 768,
+  similarity_function: "cosine",
+  encoding: "i8",
+  algorithm: "ivf_flat"
+}

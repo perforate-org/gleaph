@@ -1,0 +1,6 @@
+// Minimal local interface for `icp canister call` argument encoding against the Router's
+// authorization entrypoint. The full extracted router .did trips icp-cli's parser, so
+// bootstrap.sh passes this file via --candid to send GRANT/REVOKE statements.
+service : {
+  gql_mutate: (text, blob, text) -> (int);
+}

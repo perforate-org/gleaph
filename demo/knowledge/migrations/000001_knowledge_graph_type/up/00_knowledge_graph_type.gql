@@ -1,0 +1,25 @@
+CREATE GRAPH TYPE KnowledgeGraph {
+  NODE Document {
+    title STRING NOT NULL,
+    body STRING NOT NULL,
+    is_public BOOL NOT NULL
+  },
+  NODE Concept {
+    name STRING NOT NULL,
+    definition STRING NOT NULL
+  },
+  NODE Person {
+    name STRING NOT NULL,
+    role STRING NOT NULL
+  },
+  NODE Team {
+    name STRING NOT NULL
+  },
+  DIRECTED EDGE Cites LABEL CITES CONNECTING (Document -> Document),
+  DIRECTED EDGE About LABEL ABOUT CONNECTING (Document -> Concept),
+  DIRECTED EDGE Relates LABEL RELATED_TO CONNECTING (Concept -> Concept),
+  DIRECTED EDGE Authored LABEL AUTHORED_BY CONNECTING (Person -> Document),
+  DIRECTED EDGE Owns LABEL OWNS CONNECTING (Person -> Document),
+  DIRECTED EDGE BelongsTo LABEL BELONGS_TO CONNECTING (Person -> Team),
+  DIRECTED EDGE RoutedVia LABEL ROUTED_VIA CONNECTING (Person -> Document)
+}

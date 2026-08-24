@@ -1,0 +1,5 @@
+-- Property index support for the demo. Same-named properties across labels (Concept.name /
+-- Person.name) are intentionally NOT indexed: resolving such an index without a bound label
+-- trips `unique_active_physical_index`'s designed fail-closed (Router/index-DDL domain,
+-- under investigation; see plan 0296 close report matrix). Literal matchers work unindexed.
+CREATE INDEX document_title FOR (n:Document) ON (n.title)

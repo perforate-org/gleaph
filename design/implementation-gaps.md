@@ -47,6 +47,43 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-08-24-008 — PUBLIC/direct data-plane grants do not satisfy prepared-query execution even for minimal MATCH plans
+
+- **Status:** Open — blocks non-owner execution of every graph-touching prepared op on the
+  knowledge demo network; surfaced by plan 0296's quickstart (2026-08-24). Distinct from
+  GAP-2026-08-24-005 (publication grammar), which is worked around via quoted identifiers.
+- **Owner:** Router authorization semantics (`crates/router/src/authz.rs`
+  `authorize_requirements` / `enforce_prepared_data_plane_authorization`) vs the demo grant
+  surface; likely intersects ADR 0074 §4 tenancy/unattributed-demand rules.
+- **Observed behavior:** On the knowledge demo network (fresh state): after successful
+  publication (`GRANT EXECUTE … TO PUBLIC`, verified end-to-end) and after applying the full
+  PUBLIC data-plane surface decoded as `Ok` via the Router's own Candid interface —
+  `MATCH` on all four node labels, `READ … {explicit property lists}` on all four labels,
+  `TRAVERSE` on all seven edge labels **and** all four node labels, plus the same set granted
+  **directly to the caller's principal** — a non-owner `prepared_query` of a trivial
+  `MATCH (n:Concept) RETURN n.name AS name LIMIT 3` op is still rejected
+  `Forbidden`. Controls: (a) a graph-independent op (`RETURN 1 AS x`) executes as the same
+  non-owner (so EXECUTE publication works); (b) the owner executes graph ops via implicit
+  root (so planning/data are intact); (c) an ELEMENT_ID-free probe still denies, so the
+  earlier unattributed-ELEMENT_ID hypothesis alone does not explain it. Suspicions left to
+  the owning team: tenancy gating inside `authorize_requirements` (caller without an
+  Account/home binding?), demand extraction producing rows no GRANT grammar can express
+  (graph-level or ELEMENT_ID-derived), or grant-lowering/resource-shape mismatch.
+- **Expected or needed behavior:** A published prepared op whose full requirement surface is
+  granted to PUBLIC (or to the caller's principal) must execute for an arbitrary principal;
+  or the denial must name the uncovered requirement class to operators.
+- **Evidence:** session logs `/tmp/gt2-run*.log`, `/tmp/gt2-grants*.log`,
+  `scripts/apply-public-grants.sh` (statements + truthful Err-decoding via the extracted
+  router interface), `scripts/direct-grant-probe.sh`; uniform-denial contract at
+  `crates/router/src/authz.rs:1245`.
+- **Impact:** Browser/demo visitors cannot execute any scenario (the page's audience);
+  quickstart completion criterion "non-owner executes after publish" is unreachable. Owner
+  execution works, so backend/data-plane correctness is unaffected.
+- **Next decision:** Router-side diagnosis slice: expose the uncovered requirement class
+  (debug counter or operator query), reconcile tenancy expectations for account-less local
+  visitors, then decide whether the demo needs conditional policies (ADR 0075) or a tenancy
+  exception for public read surfaces.
+
 ### GAP-2026-08-24-008 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
 
 - **Status:** Open — contract note for the future SQL LIKE feature; current behavior is
@@ -75,7 +112,93 @@ defect from being rediscovered without its prior reasoning.
   case-insensitive equality. Update `eval_string_predicate_expr` and its truth-table tests from
   this entry's contract.
 
-### GAP-2026-08-24-003 — ADR 0074 grant statements cannot address hyphenated prepared-query names
+### GAP-2026-08-24-005 — ADR 0074 grant statements cannot address hyphenated prepared-query names
+
+- **Status:** Open — blocks `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC` for every
+  hyphenated prepared operation (ADR 0061 names are `[a-z][a-z0-9-]*`, so most real names,
+  e.g. the knowledge demo's `variable-length-reach`, are affected)
+  **Live-reproduction + red-test addendum (2026-08-24, plan 0296 quickstart):** the rejection is
+  no longer PocketIC-only. On a real demo-local network, `gleaph prepared publish citation-reach`
+  fails with `InvalidArgument("parse error: expected 'TO', got '-'")` (Router wasm built from the
+  current tree minutes earlier — not a stale-artifact symptom), and the tree's own
+  `grant_parser_tests` under `#[cfg(feature = "gleaph")]`
+  (`crates/gql/src/parser/statement.rs:2010`) are red on main:
+  `parse_grant_execute_on_prepared_query_to_public_and_principal` and
+  `parse_revoke_execute_on_prepared_query_mirrors_grant` both panic with the same lexer error.
+  `statement.rs` sits in the owning pane's uncommitted edit set. **Operational workaround until
+  the grammar fix:** emit the op name as a double-quoted identifier — the lexer produces
+  `Token::QuotedIdent` (`crates/gql/src/lexer.rs:628`) and grant-target `expect_ident` accepts it
+  (`crates/gql/src/parser/helpers.rs:232`) — adopted by the CLI's
+  `prepared::publication_statement` with parser-acceptance unit tests.
+- **Owner:** `crates/gql` authorization-statement lexer/parser (`parse_grant_statement` →
+  `expect_ident`; hyphen lexes as minus, not part of an unquoted identifier)
+
+### GAP-2026-08-24-007 — Committed HEAD does not build `gleaph-router`: `auth::require_admin` callers landed before their auth definitions
+
+- **Status:** Open — window is green only while the owning pane's uncommitted WIP stays in the
+  tree; resolution owned by the ADR 0075 stream (w1:pT, notified 2026-08-24)
+- **Owner:** `crates/auth/src/lib.rs` (missing definitions) vs `0d9f58421`/`73d4b3737`/`e9159938b`
+  (router-side callers: `facade/store/catalogs.rs`, `idempotency.rs`, …)
+- **Observed behavior:** An isolated worktree at `5a8e6dc8a` (current main HEAD at detection time)
+  fails to compile `gleaph-router --lib` with `E0425 cannot find function require_admin in module
+  auth` (multiple sites). The main working tree passes (`951 passed / 0 failed`) because the
+  uncommitted auth-side changes of the same workstream are still present.
+- **Expected or needed behavior:** Every commit on main must build standalone. The auth-side
+  definitions (or an equivalent refactor of the callers) must land in the same push that lands the
+  callers. Same failure mode as the `8e392c127` half-committed `edge_properties.rs` incident.
+- **Evidence:** `git show 5a8e6dc8a:crates/router/src/facade/store/catalogs.rs | rg require_admin`
+  vs absent definition in `git show 5a8e6dc8a:crates/auth/src/lib.rs`; isolated-worktree build log.
+- **Impact:** Bisect over this range reports false positives; any fresh clone/worktree at these
+  commits cannot run router tests.
+- **Detection:** w1:pQ during edge IN-list slice verification (Phase 2 final gate), 2026-08-24.
+
+### GAP-2026-08-24-006 — Pure-CLI platform bring-up fails on the Gleaph-owned launcher network
+
+- **Status:** Open — blocks the `gleaph network start` self-contained bring-up path
+  (Account/Provision deploy + ADR 0068 lazy Router issuance + ADR 0070/0071 provisioned
+  topology) on a machine-local network without icp-cli; surfaced while executing plan
+  0296's quickstart (2026-08-24)
+- **Owner:** `crates/cli/src/network.rs` (launcher lifecycle, management-canister transport)
+  and the launcher's HTTP gateway contract (`icp-cli-network-launcher` v15.0.0);
+  Account/Provision deployment flow in `network::start`
+- **Observed behavior:** Two independent failures, each reproduced twice on 2026-08-24
+  (macOS arm64, launcher v15.0.0):
+  1. *Management canister updates are rejected by the launcher gateway.* After a successful
+     launch (root-key fetch over `http://localhost:8000/api/v2/...` succeeds), the first
+     management-canister update call fails:
+     `update create_canister: The replica returned an HTTP Error: Http Error: status 400 Bad Request, content type "text/plain; charset=utf-8", content: error: canister_not_found details: The specified canister does not exist.`
+     The read-side (`fetch_root_key`, i.e. `read_state` on `aaaaa-aa`) reaches the replica,
+     so the network is up — the rejection is specific to update calls targeting
+     `aaaaa-aa`. Because `create_canister` is exactly how `network start` deploys
+     Account/Provision (`deploy_canister` → `install_canister`), no canister is deployed
+     and the mapping file is never written.
+  2. *The launched network dies with the parent CLI process.* In both runs the status file
+     `$TMPDIR/gleaph-local-status/status.json` and the gateway listener on port 8000 were
+     gone seconds after `gleaph network start -d …` exited. `-d/--background` detaches the
+     child's stdio but does not setsid it, so the launcher (and its PocketIC process chain)
+     does not survive the CLI session that started it.
+- **Expected or needed behavior:** `gleaph identity new dev && gleaph network start -d …`
+  followed by data-plane commands must work with only a clean checkout and Rust toolchain —
+  per the plan 0296 quickstart contract — including management-canister deployment of
+  Account/Provision from local wasm artifacts and a launcher that persists independently of
+  the starting process.
+- **Evidence:** `/tmp/gq-netstart2.log` through `/tmp/gq-netstart4.log` in the 0296 slice
+  session; fix for the related staging defect (v15 tarballs nest the binaries under a
+  versioned directory) landed as `normalize_extracted_launcher` in `crates/cli/src/network.rs`
+  with unit tests (`normalize_stages_nested_launcher_and_companion`,
+  `normalize_is_idempotent_when_flat_binary_already_cached`,
+  `normalize_fails_closed_when_the_archive_has_no_launcher`).
+- **Impact:** The knowledge-demo quickstart cannot use the pure-CLI bring-up path; it runs
+  against an icp-cli managed network with a directly deployed platform instead (see plan
+  0296 revision 3). No data-plane or authorization impact.
+- **Next decision:** Future slice "pure-CLI bring-up": (a) determine whether the launcher
+  gateway can route management-canister updates (or whether Account/Provision must be
+  installed via a different entrypoint), (b) daemonize/supervise the launcher chain so `-d`
+  outlives the CLI (setsid + optional supervisor), (c) then revisit whether lazy issuance
+  plus provisioned topology completes without catalog-upload plumbing (ADR 0036 has no CLI
+  upload surface today).
+
+### GAP-2026-08-24-005 — ADR 0074 grant statements cannot address hyphenated prepared-query names
 
 - **Status:** Open — blocks `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC` for every
   hyphenated prepared operation (ADR 0061 names are `[a-z][a-z0-9-]*`, so most real names,

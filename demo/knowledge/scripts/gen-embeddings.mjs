@@ -6,6 +6,10 @@
 // JSON.stringify emits the shortest round-trip decimal form for every double, which is
 // ECMAScript-mandated and stable across engines.
 //
+// The derivation core lives in scripts/embedding-core.mjs and is shared with the demo page
+// (src/lib/queryEmbedding.ts), so the browser scenario-3 query vector uses the same recipe
+// as the ingested document vectors. See that module for the arithmetic contract.
+//
 // Usage: node scripts/gen-embeddings.mjs   (writes seeds/embeddings.jsonl)
 //
 // These are synthetic stand-ins for real embedding-model output; only determinism matters for
@@ -17,29 +21,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { EMBEDDING_DIMS, SEED_PREFIX, unitVectorFromDigest } from "./embedding-core.mjs";
+
 const DEMO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERTICES_PATH = join(DEMO_ROOT, "seeds", "vertices.jsonl");
 const OUTPUT_PATH = join(DEMO_ROOT, "seeds", "embeddings.jsonl");
-const DIMS = 768;
-const SEED_PREFIX = "gleaph-knowledge-demo-embedding-v1:";
 
-function seededUnitVector(sourceId) {
-  const digest = createHash("sha256").update(SEED_PREFIX + sourceId).digest();
-  // 32-bit xorshift seeded from the first four digest bytes.
-  let state = digest.readUInt32LE(0);
-  if (state === 0) state = 0x9e3779b9;
-  const raw = new Array(DIMS);
-  for (let i = 0; i < DIMS; i++) {
-    state ^= state << 13;
-    state >>>= 0;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    // Map to [-1, 1).
-    raw[i] = (state / 2147483648) - 1;
-  }
-  const norm = Math.sqrt(raw.reduce((sum, value) => sum + value * value, 0));
-  return raw.map((value) => value / norm);
+function sha256Digest(text) {
+  return createHash("sha256").update(text).digest();
 }
 
 const rows = readFileSync(VERTICES_PATH, "utf8")
@@ -54,7 +43,10 @@ if (rows.length === 0) {
 }
 
 const lines = rows.map((row) =>
-  JSON.stringify({ source_id: row.source_id, values: seededUnitVector(row.source_id) }),
+  JSON.stringify({
+    source_id: row.source_id,
+    values: unitVectorFromDigest(sha256Digest(SEED_PREFIX + row.source_id)),
+  }),
 );
 writeFileSync(OUTPUT_PATH, lines.join("\n") + "\n");
-console.log(`wrote ${lines.length} embeddings (${DIMS} dims each) to ${OUTPUT_PATH}`);
+console.log(`wrote ${lines.length} embeddings (${EMBEDDING_DIMS} dims each) to ${OUTPUT_PATH}`);

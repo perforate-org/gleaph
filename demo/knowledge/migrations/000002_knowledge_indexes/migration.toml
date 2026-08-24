@@ -1,0 +1,5 @@
+format_version = 1
+id = "000002_knowledge_indexes"
+parent = "000001_knowledge_graph_type"
+description = "Build the property and vector indexes on the knowledge graph"
+graph = "knowledge"
