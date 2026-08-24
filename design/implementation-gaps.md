@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 02:52:47 UTC +0000
+Anchor timestamp: 2026-08-24 05:53:38 UTC +0000
 
 ## Status
 
@@ -132,31 +132,39 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-004 — Endpoint property projection on `EdgeBindEndpoints` breaks trailing `IsLabeled` filters
 
-- **Status:** Open — pre-existing on main (affects fused equality anchors today; surfaced by the
-  GAP-2026-08-24-002 end-to-end coverage)
-- **Owner:** `gleaph-graph` executor binding layout (`vertex_binding_for_projection` /
-  `EdgeBindEndpoints` execution) vs planner late-projection pushdown
+- **Status:** Resolved — planner-side entity-use veto; fix commit `0cade11a8`,
+  owning regression tests
+  `gql-planner::property_projection::tests::is_labeled_residual_keeps_bind_endpoint_slot_full`,
+  `planner_tests::trailing_is_labeled_residual_keeps_edge_bind_endpoint_vertex_binding` (+ near,
+  positive-control, and cypher/entity variants), and graph e2e
+  `parsed_is_labeled_residual_with_projected_far_endpoint_returns_matching_rows`
+- **Owner:** planner late-projection pushdown (`crates/gql-planner/src/property_projection.rs`)
+  exclusively; executor binding layout and the fail-closed non-Vertex `IsLabeled` semantics are
+  unchanged
 - **Observed behavior:** For a parsed leading-edge-anchor query whose projection touches an
   endpoint property (for example `MATCH (a:X)-[e:R WHERE e.weight = 5]->(b:Y) RETURN b.name`),
-  the planner pushes `far_property_projection = ["name"]` into `EdgeBindEndpoints` (late
-  projection) and still emits `PropertyFilter(IsLabeled(b))` after it. Execution binds `b` to a
+  the planner pushed `far_property_projection = ["name"]` into `EdgeBindEndpoints` (late
+  projection) and still emitted `PropertyFilter(IsLabeled(b))` after it. Execution bound `b` to a
   projected `PlanBinding::Value(Record)` (`vertex_binding_for_projection`, `Some(props)` arm), so
-  the subsequent `IsLabeled(b)` check no longer sees a vertex binding and drops **every** row.
-  Reproduced with a hand-built plan: identical ops with projections yield 0 rows, without
-  projections 1 row, under both default and resolved-label contexts.
-- **Expected or needed behavior:** Either projected endpoint bindings must remain label-checkable,
-  or the planner must not push endpoint property projections past trailing endpoint `IsLabeled`
-  filters for leading-edge-anchor plans.
-- **Evidence:** scratch diff of `EdgeBindEndpoints` projections in
-  `crates/graph/src/plan/query/executor/scan/tests.rs`; equality probe returns 0 rows while the
-  hand-built unprojected twin returns the expected row.
-- **Impact:** Whole-variable projections (`RETURN b`) execute correctly; property-level projections
-  over labeled endpoints return empty result sets for anchored edge scans. This equally affects
-  fused equality anchors, so it is independent of IN anchoring (IN inherits exactly the same
-  behavior, satisfying the parity requirement but not row completeness).
-- **Next decision:** Choose between preserving vertex identity alongside projected records
-  (binding-layout change) and suppressing the late-projection pushdown when trailing endpoint
-  filters exist (planner-local change); add a regression test pinning whichever contract lands.
+  the subsequent `IsLabeled(b)` check no longer saw a vertex binding and dropped **every** row.
+  Root cause: the pushdown veto (`must_remain_vertex`) only saw structural uses (SEARCH bindings,
+  traversal sources); expression-level entity use was invisible because `var_used_as_non_property_receiver`
+  short-circuited `ExprKind::IsLabeled` to `false`, so the RETURN-side `PropertyAccess(b, name)`
+  alone decided the projection.
+- **Fix:** Added a third downstream collector, `collect_entity_used_bindings`, which walks the
+  suffix expressions and records every `Variable(v)` occurrence except direct `PropertyAccess`
+  subjects, and unioned it into `must_remain_vertex`. All scan/expand/bind slots now veto to
+  `ScanProjectionPatch::FullProperties` while any entity-level use remains downstream — including
+  `expand_edge`, which previously ran its inference without any identity veto. Over-veto is
+  conservative (full hydration = pre-pushdown behavior), never changes results.
+- **Evidence:** Before the fix, the e2e regression test returned 0 rows for the projected query
+  with the unprojected whole-variable twin returning 1; after the vetoes, both return the matching
+  row. Planner-level repro pinned at plan level: `far_property_projection` stayed `Some(["name"])`
+  with a trailing `PropertyFilter(IsLabeled(b))` before the fix, `None` after.
+- **Impact:** Property-level projections over labeled endpoints now execute correctly for anchored
+  edge scans; only queries mixing endpoint property reads with entity-level use of the same
+  variable lose the projection optimization (correct results either way). Whole-variable
+  projections were never affected.
 
 ### GAP-2026-08-24-001 — Two stale router lib fixtures surfaced on the suite's first full run after the 8e392c127→ac380c4bb build-broken window
 
@@ -1553,7 +1561,7 @@ duplicate its state machine or ownership rules.
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
 | P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-002 (`ScanValue::InList` reused end to end; planner fusion, three executor probe-union consumers, Router `EdgeEqualUnion` seeds) |
 | P2       | Cypher bracket-form `IN […]` fails to parse under combined `cypher` + `sql-compat` builds (sql-compat arm requires `(` unconditionally) | Open — GAP-2026-08-24-003 (default canister dialect unaffected) |
-| P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Open — GAP-2026-08-24-004 (pre-existing for fused equality anchors; whole-variable projections unaffected) |
+| P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Resolved — GAP-2026-08-24-004 (planner entity-use veto; whole-variable projections were unaffected) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
