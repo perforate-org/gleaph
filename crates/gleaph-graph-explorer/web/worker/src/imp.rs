@@ -14,8 +14,8 @@ use gpui_graph::layout::ForceAtlas2;
 use gpui_graph::scene::GraphScene;
 use gpui_graph::worker::{WorkerBackend, web_transport};
 
-use crate::ExplorerBatchCodec;
 use crate::paint_timing;
+use gleaph_explorer_web_common::ExplorerBatchCodec;
 
 /// Boot the explorer's worker-side backend inside
 /// `DedicatedWorkerGlobalScope`.

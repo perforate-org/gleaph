@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 gpui-graph = { path = "../../../../crates/gpui-graph" }
-gleaph-explorer-web-worker = { path = "../worker" }
+gleaph-explorer-web-common = { path = "../common" }
 futures = "0.3"
 web-time = "1"
 

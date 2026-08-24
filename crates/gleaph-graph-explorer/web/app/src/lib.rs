@@ -32,8 +32,8 @@ mod imp {
     use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
     use web_time::Instant;
 
-    use gleaph_explorer_web_worker::ExplorerBatchCodec;
-    use gleaph_explorer_web_worker::paint_timing::random_fixture;
+    use gleaph_explorer_web_common::ExplorerBatchCodec;
+    use gleaph_explorer_web_common::fixture::random_fixture;
 
     const WORKER_SCRIPT_URL: &str = "worker.js";
     /// Demo-graph size when the page URL carries no `?nodes=` parameter.

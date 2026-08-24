@@ -5,18 +5,23 @@
 # are shared with several concurrent work streams. The web entry compiles two
 # wasm32 binaries from here without touching either:
 #
+# - `common/` — the application-owned data both modules share: the
+#   deterministic demo fixture and the merge-batch `PayloadCodec`. Batch byte
+#   forms belong to applications (`gpui_graph::worker::PayloadCodecRequired`),
+#   so this crate is where the explorer answers that contract.
 # - `worker/` — the application-owned worker bootstrap. gpui-graph ships no
 #   worker bundle (`gpui_graph::worker::web_transport`): an application supplies
 #   its own Worker script, imports this wasm module inside a
-#   DedicatedWorkerGlobalScope, and drives a concrete `WorkerBackend`. This
-#   crate is that contract's first demonstration.
+#   DedicatedWorkerGlobalScope, configures its `WorkerBackend`, and hands it to
+#   `web_transport::serve`.
 # - `app/`    — the main-thread GPUI application (`gpui_web` platform) that
-#   spawns the worker, connects it through `connect_worker_channel`, and renders
+#   spawns the worker through the library's `PostMessageChannel`, injects the
+#   demo scene via its `PipeHandle`, selects `FrameSource::Worker`, and renders
 #   delivered frames.
 #
 # Build with `./build.sh`; serve `dist/` from any static file server. No
 # COOP/COEP/CORP headers are required: this slice is deliberately the
 # no-threads half of S4 (ADR 0076 S4b owns threads/atomics).
 [workspace]
-members = ["app", "worker"]
+members = ["app", "common", "worker"]
 resolver = "2"

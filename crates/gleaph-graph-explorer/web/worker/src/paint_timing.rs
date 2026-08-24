@@ -12,17 +12,17 @@
 //! (`RAYON_NUM_THREADS=1`, the serial baseline). The ADR 0076 scalar-penalty
 //! estimate is replaced by wasm-serial ÷ native-serial.
 //!
-//! The fixture itself ([`random_fixture`]) doubles as the web entry's demo
-//! graph, so the browser wiring proof animates exactly the shape the harness
-//! times.
+//! The demo graph itself lives in `gleaph-explorer-web-common::fixture`
+//! (`random_fixture`), shared with the main-thread injection path; this module
+//! owns only the measurement.
 
 use std::hint::black_box;
 
 use glam::Vec2;
+use gleaph_explorer_web_common::{SceneFixture, random_fixture};
 use gpui_graph::{
     DefaultBuildHasher, GraphBatch, GraphRuntime, GraphScene, Hover, NodeId, PaintFrame,
     PaintFrameWire, Selection, Viewport, WorldBounds,
-    graph::Graph,
     paint::{IndexedPaintFrameInput, build_indexed_paint_frame},
     style::GraphStyle,
 };
@@ -89,79 +89,6 @@ pub fn measure_paint_build(node_count: usize, iterations: usize) -> PaintBuildSt
         max_ms: samples[samples.len() - 1],
         wire_bytes,
     }
-}
-
-/// Deterministic pseudo-random coordinates (xorshift), matching
-/// `benches/paint_bench.rs::Lcg`.
-struct Lcg(u64);
-
-impl Lcg {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-
-    fn coord(&mut self, span: f32) -> f32 {
-        (self.next() % 10_000) as f32 / 10_000.0 * span - span * 0.5
-    }
-}
-
-/// A deterministic random graph as a merge batch plus world-space placement:
-/// ring plus a fixed-stride shortcut (`benches/paint_bench.rs::random`), node
-/// keys `n{i}`, edge keys `e{index}` in insertion order.
-pub struct SceneFixture {
-    /// The graph content to merge into a scene.
-    pub batch: GraphBatch<String, String, String, String>,
-    /// One position per node, in batch insertion order.
-    pub positions: Vec<Vec2>,
-}
-
-/// Build the deterministic random fixture at `count` nodes.
-pub fn random_fixture(count: usize) -> SceneFixture {
-    let span = 1500.0;
-    let mut rng = Lcg(0x9E37_79B9_7F4A_7C15);
-    let mut graph = Graph::new();
-    let mut positions = Vec::with_capacity(count);
-    let ids: Vec<NodeId> = (0..count)
-        .map(|_| {
-            positions.push(Vec2::new(rng.coord(span), rng.coord(span)));
-            graph.add_node(())
-        })
-        .collect();
-    for i in 0..count {
-        let prev = (i + count - 1) % count;
-        graph.add_edge(ids[i], ids[prev], gpui_graph::EdgeDirection::Undirected, ());
-        let skip = (i + 7) % count;
-        if skip != i && skip != prev {
-            graph.add_edge(ids[i], ids[skip], gpui_graph::EdgeDirection::Undirected, ());
-        }
-    }
-
-    // Key assignment mirrors benches/paint_bench.rs: nodes n{i} in insertion
-    // order, edges e{index} over the logical graph's edge iteration order —
-    // identical topology and ordering, string-keyed for the worker protocol.
-    let mut batch = GraphBatch::new();
-    for (index, _) in graph.nodes().enumerate() {
-        batch = batch.node(format!("n{index}"), format!("n{index}"));
-    }
-    let keys: std::collections::HashMap<NodeId, String> = graph
-        .nodes()
-        .enumerate()
-        .map(|(i, (id, _))| (id, format!("n{i}")))
-        .collect();
-    for (index, (_, edge)) in graph.edges().enumerate() {
-        batch = batch.edge(
-            format!("e{index}"),
-            keys[&edge.source].clone(),
-            keys[&edge.target].clone(),
-            edge.direction,
-            String::new(),
-        );
-    }
-
-    SceneFixture { batch, positions }
 }
 
 /// The fixture merged into a scene with positions set and a viewport fitted to
@@ -257,19 +184,5 @@ mod tests {
         let stats = measure_paint_build(8, 3);
         assert_eq!(stats.nodes, 8);
         assert_eq!(stats.edges, 8);
-    }
-
-    #[test]
-    fn fixture_batches_carry_display_labels_for_every_node() {
-        let fixture = random_fixture(120);
-        assert_eq!(fixture.batch.nodes.len(), 120);
-        assert_eq!(fixture.positions.len(), 120);
-        assert!(
-            fixture
-                .batch
-                .nodes
-                .iter()
-                .all(|(key, label)| label == key && !label.is_empty())
-        );
     }
 }

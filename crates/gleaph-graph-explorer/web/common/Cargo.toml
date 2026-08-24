@@ -1,0 +1,10 @@
+[package]
+name = "gleaph-explorer-web-common"
+description = "Application-owned data shared by both explorer web wasm modules: the deterministic demo fixture and the merge-batch payload codec"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gpui-graph = { path = "../../../../crates/gpui-graph" }
+glam = "0.33"

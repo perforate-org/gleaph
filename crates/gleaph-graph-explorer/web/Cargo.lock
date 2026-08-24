@@ -1907,7 +1907,7 @@ name = "gleaph-explorer-web-app"
 version = "0.1.0"
 dependencies = [
  "futures",
- "gleaph-explorer-web-worker",
+ "gleaph-explorer-web-common",
  "gpui",
  "gpui-graph",
  "gpui_platform",
@@ -1917,10 +1917,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-explorer-web-common"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "gpui-graph",
+]
+
+[[package]]
 name = "gleaph-explorer-web-worker"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "gleaph-explorer-web-common",
  "gpui-graph",
  "js-sys",
  "serde",

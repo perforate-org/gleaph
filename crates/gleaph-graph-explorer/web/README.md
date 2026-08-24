@@ -2,23 +2,27 @@
 
 The graph explorer's minimal wasm32 web entry: a main-thread GPUI application
 (`gpui_web`) plus the **application-owned worker bootstrap** that ADR 0076 S2's
-transport contract anticipated. gpui-graph ships no worker bundle —
-`gpui_graph::worker::web_transport` documents that an application spawns its own
-Worker script and drives a concrete `WorkerBackend` inside
-`DedicatedWorkerGlobalScope`. This directory is that contract's first working
-demonstration, and the first browser execution of the S1–S3 seam.
+transport contract anticipated. gpui-graph ships no worker bundle — the main
+thread connects through the library's
+`gpui_graph::worker::web_transport::PostMessageChannel` (spawn, readiness
+replay, envelope routing, frame delivery), and the worker side is one
+`web_transport::serve(backend, codec)` call over this directory's backend
+configuration. This was the first browser execution of the S1–S3 seam; its
+hand-rolled channel plumbing was deleted when the library extracted the
+generic part.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `app/` | Main-thread GPUI app: boots `gpui_web`, generates a deterministic demo graph (`?nodes=N`, default 1500), injects it into the worker, connects `connect_worker_channel`, selects `FrameSource::Worker`, renders delivered frames with a status overlay. |
-| `worker/` | wasm module imported by the worker scripts: drives `WorkerBackend` per message (library requests verbatim + application batch codec) and hosts the paint-frame timing core. The timing core and codec are plain Rust, unit-tested natively. |
-| `assets/worker.js` | Application-owned Worker script for the real backend (module worker). |
-| `assets/bench_worker.js` | Application-owned Worker script for the timing harness. |
+| `common/` | Application-owned data both wasm modules share: the deterministic demo fixture (`?nodes=N`, default 1500) and the merge-batch `PayloadCodec`. Plain Rust, unit-tested natively. |
+| `app/` | Main-thread GPUI app: boots `gpui_web`, injects the fixture into the worker through a `PostMessageChannel` handle under the application codec, selects `FrameSource::Worker`, renders delivered frames with a status overlay. |
+| `worker/` | Worker-side wasm module: backend configuration (ForceAtlas2 + node labels) handed to `web_transport::serve`, plus the paint-frame timing core (`paint_timing.rs`, unit-tested natively). The whole browser conversation is replayed natively in its test. |
+| `assets/worker.js` | Application-owned classic-worker script for the real backend: `importScripts` the `--target no-modules` glue, boots the module, posts `"ready"`. |
+| `assets/bench_worker.js` | Same contract for the timing harness. |
 | `assets/index.html` | App page. |
 | `assets/harness.html` | Timing harness page; runs 500/2000/5000-node builds in dedicated workers and tabulates mean/p50/min/max plus wire size. |
-| `build.sh` | Builds both wasm modules (`cargo build --target wasm32-unknown-unknown --release` + `wasm-bindgen --target web`) into `dist/`. |
+| `build.sh` | Builds both wasm modules into `dist/` (app glue `--target web`; worker glue `--target no-modules`, see below). |
 
 ## Build & run
 
@@ -42,13 +46,20 @@ Browser console (app page):
 
 ```
 [explorer-worker] booted in DedicatedWorkerGlobalScope
-[explorer-web] scene injected: N nodes / ~2N edges
+[explorer-worker] wasm initialized, starting backend
+[explorer-web] scene queued for injection: N nodes / ~2N edges
 [explorer-web] frame #1 delivered: … nodes / … edges / … labels (X ms round trip)
 ```
 
 The status overlay repeats the same facts in-page; the graph animates because
 the replica steps ForceAtlas2 once per requested frame and ships each result as
 a transferable `PaintFrameWire`.
+
+**Why classic workers:** `PostMessageChannel` spawns with plain
+`new Worker(url)` — a classic dedicated worker — where ES module syntax cannot
+parse. The worker scripts therefore load wasm-bindgen glue emitted with
+`--target no-modules` via `importScripts` and keep the same `"ready"`
+handshake and transferable-buffer protocol as before.
 
 ## Scalar penalty measurement
 
