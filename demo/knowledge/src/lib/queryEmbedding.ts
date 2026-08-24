@@ -1,10 +1,13 @@
 import { EMBEDDING_DIMS, SEED_PREFIX, unitVectorFromDigest } from "../../scripts/embedding-core.mjs";
 
 /**
- * The seeded Document whose exact embedding becomes the scenario-3 query vector
- * (`d4`, "Vector search in graphs"). Because the query vector IS that document's stored
- * embedding — same shared recipe as scripts/gen-embeddings.mjs — the semantic-search
- * top-1 row is fixed by construction to this document.
+ * The Document whose exact embedding becomes the scenario-3 query vector
+ * (`d4`, "Vector search in graphs").
+ *
+ * Deriving the query vector from a Document's `source_id` with the same deterministic
+ * recipe as `scripts/gen-embeddings.mjs` keeps the in-page query reproducible. Note the
+ * current seed topology makes `d6` ("Access control in graph queries") the only
+ * Platform-team-owned public document, so scenario 3 returns exactly one row today.
  */
 export const SCENARIO_QUERY_SOURCE_ID = "d4";
 
