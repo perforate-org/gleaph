@@ -3614,6 +3614,7 @@ async fn dispatch_use_graph_join(
         row_count: projected.rows.len() as u64,
         phase: None,
         token: None,
+        truncated: None,
         rows_blob: Some(
             projected
                 .encode_blob()
@@ -5966,6 +5967,7 @@ mod tests {
             ]),
             phase: None,
             token: None,
+            truncated: None,
         };
         let err = super::ensure_gql_query_result_payload(&result, "test")
             .expect_err("oversized GQL result");

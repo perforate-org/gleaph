@@ -98,7 +98,8 @@ pub enum MutationLifecyclePhase {
 ///
 /// Mirrors `gleaph_graph_kernel::plan_exec::GqlQueryResult` (Candid variant order and field
 /// names are the wire contract). `phase`/`token` are only populated for idempotent mutations;
-/// reads always yield `None`.
+/// reads always yield `None`. `truncated` is an additive optional field (ADR 0078 §4):
+/// receivers built against older contracts ignore it, and older senders decode as `None`.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GqlQueryResult {
     /// Number of rows returned by the Router.
@@ -110,6 +111,10 @@ pub struct GqlQueryResult {
     /// Read-your-writes token for idempotent mutations (ADR 0029 §5, Phase 2). `None`
     /// for reads and untracked escape-hatch writes.
     pub token: Option<MutationToken>,
+    /// ADR 0078 §4 explicit truncation indicator for authz-aware vector search:
+    /// `Some(true)` when iterative deepening stopped before finding `k` authorized rows;
+    /// `Some(false)` when the search converged; `None` for every non-search result.
+    pub truncated: Option<bool>,
 }
 
 impl GqlQueryResult {

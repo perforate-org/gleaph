@@ -73,8 +73,7 @@ pub(crate) trait PlanCatalogView {
     /// Source facts of a registered vector index (ADR 0078 §1): the creation-fixed label
     /// set it spans and the property id of its embedding source when that embedding name is
     /// backed by a projected graph property. `None` for an unregistered index name.
-    fn vector_index_source(&self, graph: GraphId, index_name: &str)
-    -> Option<VectorIndexSource>;
+    fn vector_index_source(&self, graph: GraphId, index_name: &str) -> Option<VectorIndexSource>;
 }
 
 /// Vector-index search source facts for layer-1 requirement extraction (ADR 0078 §1).
@@ -124,11 +123,7 @@ impl PlanCatalogView for RouterCatalogView<'_> {
             .map(|id| id.raw())
     }
 
-    fn vector_index_source(
-        &self,
-        graph: GraphId,
-        index_name: &str,
-    ) -> Option<VectorIndexSource> {
+    fn vector_index_source(&self, graph: GraphId, index_name: &str) -> Option<VectorIndexSource> {
         let index_name_id =
             crate::facade::stable::index_name_catalog::lookup_index_name_id(graph, index_name)?;
         let def = crate::facade::stable::vector_index_catalog::get_vector_index_by_name_id(
@@ -839,9 +834,7 @@ fn walk_op(
         PlanOp::Filter { condition } => collect_expr_reads(condition, scope),
 
         PlanOp::Search {
-            binding,
-            provider,
-            ..
+            binding, provider, ..
         } => {
             collect_expr_reads(provider.query(), scope);
             collect_expr_reads(provider.limit(), scope);
@@ -2446,7 +2439,11 @@ mod tests {
         // visibility has no row-level filter, so the whole span must be readable.
         let half_reader = principal(8);
         let mut grants = GrantTable::default();
-        grants.vertex(GrantSubject::Principal(half_reader), GraphOperation::Match, 1);
+        grants.vertex(
+            GrantSubject::Principal(half_reader),
+            GraphOperation::Match,
+            1,
+        );
         grants.vertex_property(GrantSubject::Principal(half_reader), 1, 21);
         assert!(!allowed(&reqs, &half_reader, &grants, &[]));
         assert!(allowed(&reqs, &half_reader, &grants, &[GRAPH_RAW]));

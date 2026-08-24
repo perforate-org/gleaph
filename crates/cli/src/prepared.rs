@@ -1370,6 +1370,7 @@ mod tests {
             rows_blob: Some(rows),
             phase: None,
             token: None,
+            truncated: None,
         }
     }
 
@@ -1542,6 +1543,7 @@ mod tests {
             rows_blob: None,
             phase: None,
             token: None,
+            truncated: None,
         };
         assert_eq!(
             render_rows_table(&count_only).expect("count-only table"),
@@ -1552,6 +1554,7 @@ mod tests {
             rows_blob: Some(GqlWireRows::default().encode_blob().expect("encode")),
             phase: None,
             token: None,
+            truncated: None,
         };
         assert_eq!(
             render_rows_table(&empty_rows).expect("empty table"),

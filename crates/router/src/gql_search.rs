@@ -20,6 +20,7 @@
 //! per-shard resolved-search relation to the normal read dispatch.
 
 use candid::Encode;
+use gleaph_gql_ic_wire::{decode_rows_blob, encode_rows_blob};
 use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
 use std::collections::BTreeMap;
 
@@ -70,7 +71,9 @@ pub(crate) async fn try_execute_gql_search<V, Vf>(
     vector_search: V,
 ) -> Result<Option<GqlQueryResult>, RouterError>
 where
-    V: FnOnce(candid::Principal, VectorSearchRequest) -> Vf,
+    // FnMut because authz-aware deepening (ADR 0078 §3) invokes the same dispatch closure
+    // once per round.
+    V: FnMut(candid::Principal, VectorSearchRequest) -> Vf,
     Vf: std::future::Future<
             Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
         >,
@@ -159,108 +162,301 @@ where
                     "SEARCH ... WHERE requires a statically proved label for the searched binding in this slice".into(),
                 )
             })?;
-            let candidates = resolve_filtered_candidates(
-                graph_id,
-                store,
-                label_id,
-                &shape.binding,
-                filter,
-                &params,
-            )
-            .await?;
-            if candidates.is_empty() {
-                // Empty candidate set: skip the vector canister and dispatch an explicit empty
-                // relation so global aggregates still produce one count=0 row. The dispatch gate
-                // was already checked above, so this path does not bypass it.
-                return dispatch_empty_filtered_search(
-                    plan,
+            Some(
+                resolve_filtered_candidates(
                     graph_id,
-                    params_blob,
-                    &params,
-                    mode,
-                    stats,
                     store,
-                    caller,
-                    &position,
-                    &shape,
-                    def.metric,
+                    label_id,
+                    &shape.binding,
+                    filter,
+                    &params,
                 )
-                .await;
-            }
-            Some(candidates)
+                .await?,
+            )
         }
         None => None,
     };
-    let search_req = VectorSearchRequest {
-        index_id,
+
+    dispatch_deepening_search(
+        plan,
+        graph_id,
+        params_blob,
+        &params,
+        mode,
+        stats,
+        store,
+        caller,
+        &position,
+        def,
         query,
-        encoding: def.encoding,
-        dims: def.dims,
-        metric: def.metric,
         top_k,
-        candidate_subjects: candidate_subjects.clone(),
+        candidate_subjects,
+        target,
+        vector_search,
+    )
+    .await
+    .map(Some)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ADR 0078 §3: authz-aware iterative deepening
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Deepening growth multiplier (ADR 0078 §3): round `r` requests `ceil(k · c^r)`
+/// candidates with `c = 2`.
+const VECTOR_SEARCH_DEEPENING_MULTIPLIER_SHIFT: u32 = 1;
+
+/// Conservative instruction estimate charged to one deepening round against the query
+/// instruction budget (ADR 0078 §5). It reuses the shared per-operation batch estimate and
+/// documents that relationship here instead of introducing a second limit knob.
+const VECTOR_SEARCH_ROUND_INSTRUCTION_ESTIMATE: u64 =
+    gleaph_instruction_budget::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION;
+
+/// Request size for deepening round `r` (ADR 0078 §3): `ceil(k · 2^r)`, saturated at
+/// [`MAX_VECTOR_SEARCH_FILTER_CANDIDATES`]. The per-round request size rides the existing
+/// filtered-search constant: it already bounds exactly this work unit (one bounded ANN
+/// request plus its candidate handling), so its role is documented here rather than
+/// papered over with a derived value (ADR 0078 §5). Cumulative work across rounds is
+/// bounded by the query instruction budget through [`deepening_max_rounds`] /
+/// [`deepening_may_start_round`], not by a separate constant.
+fn deepening_request_size(top_k: u32, round: u32) -> u32 {
+    let scale = 1u64
+        .checked_shl(
+            round
+                .saturating_mul(VECTOR_SEARCH_DEEPENING_MULTIPLIER_SHIFT)
+                .min(63),
+        )
+        .unwrap_or(u64::MAX);
+    u64::from(top_k)
+        .saturating_mul(scale)
+        .min(u64::from(MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32)) as u32
+}
+
+/// Maximum number of deepening rounds admitted by the query instruction budget (ADR 0078
+/// §5): every round is conservatively charged the shared per-operation batch estimate
+/// against [`gleaph_instruction_budget::MAX_QUERY_CALL_INSTRUCTIONS`], so cumulative
+/// candidate work stays budget-bounded without a new constant.
+fn deepening_max_rounds() -> u32 {
+    u32::try_from(gleaph_instruction_budget::max_operation_count(
+        VECTOR_SEARCH_ROUND_INSTRUCTION_ESTIMATE,
+        gleaph_instruction_budget::MAX_QUERY_CALL_INSTRUCTIONS,
+    ))
+    .unwrap_or(u32::MAX)
+}
+
+/// Whether starting deepening round `next_round` stays inside the query instruction
+/// budget bound (ADR 0078 §5), consulting the live per-message counter on canister builds.
+fn deepening_may_start_round(next_round: u32) -> bool {
+    next_round < deepening_max_rounds()
+        && !gleaph_instruction_budget::should_cutoff(
+            gleaph_instruction_budget::MAX_QUERY_CALL_INSTRUCTIONS,
+            gleaph_instruction_budget::instruction_counter(),
+            VECTOR_SEARCH_ROUND_INSTRUCTION_ESTIMATE,
+            0,
+            0,
+        )
+}
+
+/// Why a deepening search stopped after a finished round (ADR 0078 §3/§4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeepeningStop {
+    /// At least k authorized rows were observed; not truncated.
+    Converged,
+    /// The vector index returned fewer candidates than requested: the candidate universe
+    /// holds fewer than k authorized rows.
+    CandidatesExhausted,
+    /// The next round would exceed the query instruction budget bound.
+    BudgetExhausted,
+}
+
+/// Classify one finished round (ADR 0078 §3/§4). `None` means another round may run:
+/// fewer than k authorized rows were observed while both the candidate universe and the
+/// budget still have room. Convergence is checked first so an exhausted-looking page
+/// behind a satisfied result never sets the marker.
+fn deepening_stop(
+    authorized_rows: u64,
+    top_k: u32,
+    candidates_exhausted: bool,
+    next_round_allowed: bool,
+) -> Option<DeepeningStop> {
+    if authorized_rows >= u64::from(top_k) {
+        return Some(DeepeningStop::Converged);
+    }
+    if !next_round_allowed {
+        return Some(DeepeningStop::BudgetExhausted);
+    }
+    if candidates_exhausted {
+        return Some(DeepeningStop::CandidatesExhausted);
+    }
+    None
+}
+
+/// Cap materialized rows at `cap` (ADR 0078 §2/§4 "return exactly k"): deepening can
+/// observe more authorized survivors than the requested k, and GQL LIMIT is an
+/// upper-bound contract, so the deterministic prefix of materialized rows is kept.
+/// Count-only results carry no materialized rows and are returned untouched.
+fn cap_result_rows(result: &mut GqlQueryResult, cap: u32) -> Result<(), RouterError> {
+    let Some(blob) = result.rows_blob.take() else {
+        return Ok(());
     };
-    let result = vector_search(target, search_req).await?;
+    let mut rows = decode_rows_blob(&blob)
+        .map_err(|e| RouterError::InvalidArgument(format!("failed to decode search rows: {e}")))?;
+    if rows.rows.len() <= cap as usize {
+        result.rows_blob = Some(blob);
+        return Ok(());
+    }
+    rows.rows.truncate(cap as usize);
+    result.row_count = rows.rows.len() as u64;
+    result.rows_blob = Some(encode_rows_blob(&rows).map_err(|e| {
+        RouterError::InvalidArgument(format!("failed to encode capped search rows: {e}"))
+    })?);
+    Ok(())
+}
 
-    match position {
+/// Execute one accepted SEARCH through the ADR 0078 §3 deepening loop: each round requests
+/// `deepening_request_size(top_k, r)` candidates, dispatches the ordinary tail plan with
+/// those seeds (grant coverage and lowered policy predicates filter inside normal
+/// execution), and stops on convergence, candidate exhaustion, or the budget bound.
+/// Non-converged stops attach the explicit truncated marker (§4).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_deepening_search<V, Vf>(
+    plan: &PhysicalPlan,
+    graph_id: GraphId,
+    params_blob: &[u8],
+    params: &BTreeMap<String, Value>,
+    mode: GqlExecutionMode,
+    stats: &RouterGraphStats,
+    store: &RouterStore,
+    caller: candid::Principal,
+    position: &SearchPosition,
+    def: vector_index_catalog::VectorIndexDefRecord,
+    query: Vec<u8>,
+    top_k: u32,
+    candidate_subjects: Option<Vec<VectorSubject>>,
+    target: candid::Principal,
+    mut vector_search: V,
+) -> Result<GqlQueryResult, RouterError>
+where
+    V: FnMut(candid::Principal, VectorSearchRequest) -> Vf,
+    Vf: std::future::Future<
+            Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
+        >,
+{
+    // Position-static dispatch artifacts are prepared once: the leading tail plan is
+    // stripped and encoded a single time, and every round re-seeds it with fresh
+    // candidates. The non-leading plan blob is likewise encoded once.
+    let leading_tail = match position {
         SearchPosition::Leading(shape) => {
-            let seeds_by_shard = build_search_seeds(
-                &shape.binding,
-                &shape.output_alias,
-                &shape.required_label_ids,
-                &result.hits,
-                def.metric,
-            )?;
-
-            let stripped_plan = strip_search_prefix(plan, &shape)?;
+            let stripped_plan = strip_search_prefix(plan, shape)?;
             let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
                 std::slice::from_ref(&stripped_plan),
                 false,
             )
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-
-            dispatch_search_read_plan(
-                graph_id,
-                plan,
-                &stripped_plan_blob,
-                &stripped_plan,
-                seeds_by_shard,
-                params_blob,
-                mode,
-                stats,
-                store,
-            )
-            .await
-            .map(Some)
+            Some((
+                stripped_plan,
+                stripped_plan_blob,
+                shape.binding.clone(),
+                shape.output_alias.clone(),
+                shape.required_label_ids.clone(),
+            ))
         }
-        SearchPosition::NonLeading(shape) => {
-            let resolved_search_by_shard = build_resolved_search_wires(
-                &shape.binding,
-                &shape.output_alias,
-                &result.hits,
-                def.metric,
-                graph_id,
-                store,
-            )?;
+        SearchPosition::NonLeading(_) => None,
+    };
+    let full_plan_blob = match position {
+        SearchPosition::NonLeading(_) => Some(
+            gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(plan), false)
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?,
+        ),
+        SearchPosition::Leading(_) => None,
+    };
 
-            let plan_blob =
-                gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(plan), false)
-                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    // An empty resolved allowlist skips the vector canister entirely (ADR 0034 Slice 6/7):
+    // zero candidates exhaust the universe at round 0 while the empty-seed dispatch below
+    // still preserves the global aggregate contract.
+    let allowlist_is_empty = matches!(&candidate_subjects, Some(subjects) if subjects.is_empty());
 
-            crate::gql::dispatch_plan_blob_with_search(
-                graph_id,
-                &plan_blob,
-                std::slice::from_ref(plan),
-                &params,
-                params_blob,
-                mode,
-                None,
-                stats,
-                Some(resolved_search_by_shard),
-                caller,
-            )
-            .await
-            .map(Some)
+    let mut round: u32 = 0;
+    loop {
+        let request_size = deepening_request_size(top_k, round);
+        let hits: Vec<VectorSearchHit> = if allowlist_is_empty {
+            Vec::new()
+        } else {
+            let search_req = VectorSearchRequest {
+                index_id: def.index_id,
+                query: query.clone(),
+                encoding: def.encoding,
+                dims: def.dims,
+                metric: def.metric,
+                top_k: request_size,
+                candidate_subjects: candidate_subjects.clone(),
+            };
+            vector_search(target, search_req).await?.hits
+        };
+
+        let mut gql_result = match position {
+            SearchPosition::Leading(_) => {
+                let (stripped_plan, stripped_plan_blob, binding, alias, required_label_ids) =
+                    leading_tail.as_ref().expect("leading artifacts prepared");
+                let seeds_by_shard =
+                    build_search_seeds(binding, alias, required_label_ids, &hits, def.metric)?;
+                dispatch_search_read_plan(
+                    graph_id,
+                    plan,
+                    stripped_plan_blob,
+                    stripped_plan,
+                    seeds_by_shard,
+                    params_blob,
+                    mode,
+                    stats,
+                    store,
+                )
+                .await?
+            }
+            SearchPosition::NonLeading(leading_shape_unused) => {
+                let resolved_search_by_shard = build_resolved_search_wires(
+                    &leading_shape_unused.binding,
+                    &leading_shape_unused.output_alias,
+                    &hits,
+                    def.metric,
+                    graph_id,
+                    store,
+                )?;
+                crate::gql::dispatch_plan_blob_with_search(
+                    graph_id,
+                    full_plan_blob.as_deref().expect("non-leading plan blob"),
+                    std::slice::from_ref(plan),
+                    params,
+                    params_blob,
+                    mode,
+                    None,
+                    stats,
+                    Some(resolved_search_by_shard),
+                    caller,
+                )
+                .await?
+            }
+        };
+
+        let candidates_exhausted = hits.len() < request_size as usize;
+        match deepening_stop(
+            gql_result.row_count,
+            top_k,
+            candidates_exhausted,
+            deepening_may_start_round(round + 1),
+        ) {
+            None => round += 1,
+            Some(DeepeningStop::Converged) => {
+                cap_result_rows(&mut gql_result, top_k)?;
+                return Ok(gql_result.with_truncated(false));
+            }
+            Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
+                debug_assert!(
+                    gql_result.row_count < u64::from(top_k),
+                    "non-converged stops require fewer than k authorized rows"
+                );
+                return Ok(gql_result.with_truncated(true));
+            }
         }
     }
 }
@@ -1256,82 +1452,6 @@ fn strip_search_prefix(
         output: plan.output.clone(),
         binding_layout: plan.binding_layout.clone(),
     })
-}
-
-/// Dispatch a filtered SEARCH whose candidate set is empty without calling the vector canister.
-/// For a leading search this strips the prefix and sends empty seeds; for a non-leading search
-/// it sends an explicit empty resolved-search relation to every live shard. Both paths preserve
-/// the global aggregate contract of returning one zero row for `count(*)` over an empty relation.
-async fn dispatch_empty_filtered_search(
-    plan: &PhysicalPlan,
-    graph_id: GraphId,
-    params_blob: &[u8],
-    params: &BTreeMap<String, Value>,
-    mode: GqlExecutionMode,
-    stats: &RouterGraphStats,
-    store: &RouterStore,
-    caller: candid::Principal,
-    position: &SearchPosition,
-    shape: &SearchShape,
-    metric: VectorMetric,
-) -> Result<Option<GqlQueryResult>, RouterError> {
-    let empty_hits: &[VectorSearchHit] = &[];
-    match position {
-        SearchPosition::Leading(_) => {
-            let stripped_plan = strip_search_prefix(plan, shape)?;
-            let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
-                std::slice::from_ref(&stripped_plan),
-                false,
-            )
-            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-            dispatch_search_read_plan(
-                graph_id,
-                plan,
-                &stripped_plan_blob,
-                &stripped_plan,
-                build_search_seeds(
-                    &shape.binding,
-                    &shape.output_alias,
-                    &shape.required_label_ids,
-                    empty_hits,
-                    metric,
-                )?,
-                params_blob,
-                mode,
-                stats,
-                store,
-            )
-            .await
-            .map(Some)
-        }
-        SearchPosition::NonLeading(_) => {
-            let resolved_search_by_shard = build_resolved_search_wires(
-                &shape.binding,
-                &shape.output_alias,
-                empty_hits,
-                metric,
-                graph_id,
-                store,
-            )?;
-            let plan_blob =
-                gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(plan), false)
-                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-            crate::gql::dispatch_plan_blob_with_search(
-                graph_id,
-                &plan_blob,
-                std::slice::from_ref(plan),
-                params,
-                params_blob,
-                mode,
-                None,
-                stats,
-                Some(resolved_search_by_shard),
-                caller,
-            )
-            .await
-            .map(Some)
-        }
-    }
 }
 
 async fn dispatch_search_read_plan(
@@ -2499,7 +2619,7 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
-    fn vector_search_unreachable() -> impl FnOnce(
+    fn vector_search_unreachable() -> impl FnMut(
         candid::Principal,
         VectorSearchRequest,
     ) -> std::future::Ready<
@@ -2516,16 +2636,19 @@ mod tests {
         hits: Vec<VectorSearchHit>,
     ) -> (
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        impl FnOnce(
+        impl FnMut(
             candid::Principal,
             VectorSearchRequest,
         ) -> std::future::Ready<Result<VectorSearchResult, RouterError>>,
     ) {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count_clone = count.clone();
+        let hits = std::rc::Rc::new(hits);
         let mock = move |_target, _req: VectorSearchRequest| {
             count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            std::future::ready(Ok(VectorSearchResult { hits }))
+            std::future::ready(Ok(VectorSearchResult {
+                hits: (*hits).clone(),
+            }))
         };
         (count, mock)
     }
@@ -2632,6 +2755,180 @@ mod tests {
     fn resolve_limit_u32_strips_dollar_prefix_for_router_params() {
         let params = BTreeMap::from([("k".to_string(), Value::Int64(42))]);
         assert_eq!(resolve_limit_u32(&param_expr("$k"), &params).unwrap(), 42);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // ADR 0078 §3/§4 unit matrix: deepening arithmetic, stop transitions,
+    // truncated-marker wiring, and the row cap.
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn deepening_request_size_doubles_and_saturates_at_the_filter_cap() {
+        // Round r requests ceil(k · 2^r): k, 2k, 4k ...
+        assert_eq!(deepening_request_size(10, 0), 10);
+        assert_eq!(deepening_request_size(10, 1), 20);
+        assert_eq!(deepening_request_size(10, 2), 40);
+        assert_eq!(deepening_request_size(1, 5), 32);
+
+        // The per-round request size saturates at MAX_VECTOR_SEARCH_FILTER_CANDIDATES —
+        // the same bound a filtered search already enforces (ADR 0078 §5).
+        assert_eq!(
+            deepening_request_size(MAX_VECTOR_SEARCH_TOP_K, 0),
+            MAX_VECTOR_SEARCH_TOP_K
+        );
+        assert_eq!(
+            deepening_request_size(MAX_VECTOR_SEARCH_TOP_K, 2),
+            MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32
+        );
+        assert_eq!(
+            deepening_request_size(MAX_VECTOR_SEARCH_TOP_K, 40),
+            MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32
+        );
+        assert_eq!(
+            deepening_request_size(3, 30),
+            MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32
+        );
+        // Extreme rounds must not panic or wrap.
+        assert_eq!(
+            deepening_request_size(10, u32::MAX),
+            MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32
+        );
+    }
+
+    #[test]
+    fn deepening_rounds_are_bounded_by_the_query_budget() {
+        // The round bound derives from the shared budget constants: every round is charged
+        // the per-operation estimate against the query ceiling (ADR 0078 §5).
+        let rounds = deepening_max_rounds();
+        assert_eq!(rounds, 10);
+        assert!(
+            u64::from(rounds) * VECTOR_SEARCH_ROUND_INSTRUCTION_ESTIMATE
+                <= gleaph_instruction_budget::MAX_QUERY_CALL_INSTRUCTIONS
+        );
+        // And the dynamic gate admits exactly the rounds below that bound in host builds
+        // (the instruction counter reads 0 off-canister).
+        assert!(!deepening_may_start_round(rounds));
+        assert!(deepening_may_start_round(rounds - 1));
+    }
+
+    #[test]
+    fn deepening_stop_state_transitions() {
+        const K: u32 = 10;
+        // Convergence wins over every exhaustion signal and never truncates.
+        for exhausted in [false, true] {
+            for allowed in [false, true] {
+                assert_eq!(
+                    deepening_stop(K as u64, K, exhausted, allowed),
+                    Some(DeepeningStop::Converged),
+                    "rows == k must converge (exhausted={exhausted}, allowed={allowed})"
+                );
+                assert_eq!(
+                    deepening_stop(u64::from(K) + 5, K, exhausted, allowed),
+                    Some(DeepeningStop::Converged)
+                );
+            }
+        }
+        // k-1 authorized rows with the budget spent: partial + truncated (budget reason).
+        assert_eq!(
+            deepening_stop((K - 1) as u64, K, false, false),
+            Some(DeepeningStop::BudgetExhausted)
+        );
+        // k-1 authorized rows with candidates gone: partial + truncated (exhaustion).
+        assert_eq!(
+            deepening_stop((K - 1) as u64, K, true, true),
+            Some(DeepeningStop::CandidatesExhausted)
+        );
+        // k-1 rows with room left: keep deepening.
+        assert_eq!(deepening_stop((K - 1) as u64, K, false, true), None);
+        // Zero rows behave like any other shortage.
+        assert_eq!(deepening_stop(0, K, false, true), None);
+        assert_eq!(
+            deepening_stop(0, K, true, true),
+            Some(DeepeningStop::CandidatesExhausted)
+        );
+
+        // Wrong-implementation probe: a stub classifier that reports Converged whenever
+        // candidates are exhausted would mask genuine truncation; the exact-variant
+        // assertions above fail for it. A stub that never stops would fail the `None`
+        // assertions by returning early exhaustion instead.
+    }
+
+    fn encoded_rows(n: usize) -> Vec<u8> {
+        use gleaph_gql_ic_wire::{GqlWireRow, GqlWireRows, GqlWireValue};
+        let rows = GqlWireRows {
+            rows: (0..n)
+                .map(|i| GqlWireRow {
+                    columns: vec![("d".to_owned(), GqlWireValue::Uint64(i as u64))],
+                })
+                .collect(),
+        };
+        encode_rows_blob(&rows).expect("encode rows")
+    }
+
+    #[test]
+    fn cap_result_rows_keeps_deterministic_prefix_and_count() {
+        // Oversampled survivors exceed the requested k: rows are capped to the k-prefix
+        // and row_count follows the materialized rows.
+        let mut result = GqlQueryResult {
+            row_count: 6,
+            rows_blob: Some(encoded_rows(6)),
+            phase: None,
+            token: None,
+            truncated: None,
+        };
+        cap_result_rows(&mut result, 4).expect("cap");
+        assert_eq!(result.row_count, 4);
+        let decoded = decode_rows_blob(result.rows_blob.as_deref().expect("blob")).expect("decode");
+        assert_eq!(decoded.rows.len(), 4);
+        assert!(matches!(
+            &decoded.rows[0].columns[0].1,
+            gleaph_gql_ic_wire::GqlWireValue::Uint64(0)
+        ));
+
+        // At or below the cap the result passes through byte-identically.
+        let exact = GqlQueryResult {
+            row_count: 4,
+            rows_blob: Some(encoded_rows(4)),
+            phase: None,
+            token: None,
+            truncated: None,
+        };
+        let mut passthrough = exact.clone();
+        cap_result_rows(&mut passthrough, 4).expect("cap");
+        assert_eq!(passthrough, exact);
+
+        // Count-only results carry nothing to cap.
+        let mut count_only = GqlQueryResult {
+            row_count: 9,
+            rows_blob: None,
+            phase: None,
+            token: None,
+            truncated: None,
+        };
+        cap_result_rows(&mut count_only, 4).expect("cap");
+        assert_eq!(count_only.row_count, 9);
+    }
+
+    #[test]
+    fn truncated_marker_rides_only_search_results() {
+        // Non-search results keep the additive field at None; search results attach an
+        // explicit Some(_) marker (wrong-implementation probe: a builder that leaves
+        // `truncated` unset fails these asserts).
+        let plain = GqlQueryResult::row_count_only(3);
+        assert_eq!(plain.truncated, None);
+
+        let converged = GqlQueryResult::row_count_only(10).with_truncated(false);
+        assert_eq!(converged.truncated, Some(false));
+
+        let truncated = GqlQueryResult {
+            row_count: 2,
+            rows_blob: None,
+            phase: None,
+            token: None,
+            truncated: None,
+        }
+        .with_truncated(true);
+        assert_eq!(truncated.truncated, Some(true));
     }
 
     #[test]

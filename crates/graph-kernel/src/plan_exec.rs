@@ -956,6 +956,10 @@ pub struct MutationTokenShard {
 /// `phase` is populated only for idempotent mutations, where Router tracks a federated
 /// saga; it is `None` for read queries and for non-idempotent escape-hatch writes that
 /// carry no tracked mutation record (ADR 0029).
+///
+/// Wire evolution note (ADR 0078 §4): `truncated` is an additive optional field on the
+/// Router→caller response only. It never crosses Router↔shard or Router↔vector-canister
+/// wires, so router/shard version skew is unaffected.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GqlQueryResult {
     pub row_count: u64,
@@ -966,6 +970,11 @@ pub struct GqlQueryResult {
     /// Read-your-writes token for idempotent mutations (ADR 0029 §5, Phase 2). `None`
     /// for reads and untracked escape-hatch writes.
     pub token: Option<MutationToken>,
+    /// ADR 0078 §4 explicit truncation indicator for authz-aware vector search.
+    /// `Some(true)` when iterative deepening stopped before finding `k` authorized rows
+    /// (candidate or instruction-budget exhaustion); `Some(false)` when the search
+    /// converged; `None` for every non-search result.
+    pub truncated: Option<bool>,
 }
 
 impl GqlQueryResult {
@@ -975,6 +984,7 @@ impl GqlQueryResult {
             rows_blob: merged.rows_blob.clone(),
             phase: None,
             token: None,
+            truncated: None,
         }
     }
 
@@ -984,6 +994,7 @@ impl GqlQueryResult {
             rows_blob: None,
             phase: None,
             token: None,
+            truncated: None,
         }
     }
 
@@ -998,6 +1009,13 @@ impl GqlQueryResult {
     #[must_use]
     pub fn with_token(mut self, token: MutationToken) -> Self {
         self.token = Some(token);
+        self
+    }
+
+    /// Attach the ADR 0078 §4 vector-search truncation indicator.
+    #[must_use]
+    pub fn with_truncated(mut self, truncated: bool) -> Self {
+        self.truncated = Some(truncated);
         self
     }
 }
