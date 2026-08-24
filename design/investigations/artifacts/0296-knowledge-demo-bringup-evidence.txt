@@ -344,6 +344,47 @@ Residual owner-only items: citation-reach (edge ELEMENT_ID(e) read is tenancy-on
 Phase 1) and shortest-path (IndexScan(no index client) under sibling index/planner
 development).
 
+16. APPENDIX: enforcement path map for `prepared_query` (hop-by-hop, plan 0303 step 1)
+-----------------------------------
+Hop 1 - requirement production at registration:
+  crates/router/src/prepared.rs:216 build_prepared_cache(query, caller, None)
+    -> parsed program planned under the caller's graph context (home graph;
+       is_home=true set by register_graph during bootstrap)
+  prepared.rs:220 authz::extract_live(&store, &cache.plan, graph_id)
+    -> authz.rs:318 extract() walks every PhysicalPlan op (walk_ops :330 / walk_op :642,
+       exhaustive match, no wildcard arm)
+  Vertex scan demands (authz.rs:479 require_vertex_scan_rows):
+    Match(VertexLabel label)                       :497
+    projection None (full hydration) -> Read(label) :502
+    projection Some(keys) -> ReadProperty(label,key):510 (unknown key -> unattributed :507)
+  Traversal demands (authz.rs:388/422 traversal_rows :345):
+    declared directed label + pattern direction -> one directional row
+    undirected/undeclared label -> unoriented row
+    wildcard/unresolvable -> require_unattributed (:396/:416/:437)
+Hop 2 - storage:
+  prepared.rs:252-259 PreparedPlanRecordV1 { graph_id, query, metadata, required_privileges }
+  written to the durable prepared catalog keyed by PreparedPlanKey(name)
+Hop 3 - execution gate A (execute privilege):
+  crates/router/src/prepared.rs:598 authorize_prepared_execute (rbac.rs:122):
+    Public/principal ExecutePreparedQuery{name} row, or registry tenancy bypass (:139);
+    else Forbidden (:142)
+Hop 4 - execution gate B (data plane):
+  prepared.rs:616 enforce_prepared_data_plane_authorization (authz.rs:1379):
+    requirements_cover(stored, caller) -> Ok
+    else fallback live walk of the dispatched derived plan
+    (enforce_data_plane_authorization :1347 = extract_live + requirements_cover)
+    -> Forbidden (:1357 uniform denial)
+Hop 5 - coverage evaluation (authz.rs:1147 authorize_requirements):
+    tenancy skip (:1158 is_graph_tenant -> registry owner/admins only, registry.rs:37
+    entry_names_tenant; NO Account state consulted - refutes H4)
+    unattributed demand -> deny (:1161)
+    conjunctive all-covered + alternatives any-group (:1164-1180)
+    row lookup: StoredGrants::covers (:1190) = holds(effective_for(caller)) OR
+    holds(Public), expiry-aware; GrantKey canonical encoding (auth/src/lib.rs:370-404)
+Divergence point for `RETURN 1 AS x`: constant-only plans produce an empty
+RequirementSet (no graph ops) -> both gates trivially pass, which is why that probe
+succeeded while MATCH probes denied.
+
 14.1 Admin-pane binding conditions for the fix (w1:pQ reply, 2026-08-24)
 -----------------------------------
 (a) var_labels fallback applies ONLY when labels are uniquely determined
