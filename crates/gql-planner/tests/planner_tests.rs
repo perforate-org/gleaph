@@ -1740,6 +1740,195 @@ fn edge_bind_endpoint_source_label_preserved_for_filtered_search() {
     );
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// Endpoint entity-use veto (GAP-2026-08-24-004)
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Projection list (`None` = full vertex binding) for the `EdgeBindEndpoints`
+/// slot binding `var`, or `None` when no such operator exists.
+fn bind_endpoint_projection(plan: &PhysicalPlan, var: &str) -> Option<Option<Vec<String>>> {
+    plan.ops.iter().find_map(|op| match op {
+        PlanOp::EdgeBindEndpoints {
+            near,
+            far,
+            near_property_projection,
+            far_property_projection,
+            ..
+        } if near.as_ref() == var || far.as_ref() == var => Some(if near.as_ref() == var {
+            near_property_projection
+                .as_ref()
+                .map(|rc| rc.iter().map(|s| s.as_ref().to_string()).collect())
+        } else {
+            far_property_projection
+                .as_ref()
+                .map(|rc| rc.iter().map(|s| s.as_ref().to_string()).collect())
+        }),
+        _ => None,
+    })
+}
+
+/// Position of a `PropertyFilter` carrying an `IsLabeled(var)` predicate.
+fn is_labeled_filter_position(plan: &PhysicalPlan, var: &str) -> Option<usize> {
+    plan.ops.iter().position(|op| {
+        matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| matches!(
+                    &p.kind,
+                    ExprKind::IsLabeled { expr, negated: false, .. }
+                        if matches!(&expr.kind, ExprKind::Variable(v) if v == var)
+                ))
+        )
+    })
+}
+
+fn indexed_weight_stats() -> TableStats {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+    stats
+}
+
+#[test]
+fn trailing_is_labeled_residual_keeps_edge_bind_endpoint_vertex_binding() {
+    // GAP-2026-08-24-004 regression: with the far endpoint projected down to a
+    // property Record, the surviving IsLabeled(b) filter saw no vertex binding
+    // and dropped every row. The projection must be vetoed while entity-level
+    // label use remains downstream.
+    let plan = plan_query_with_stats(
+        "MATCH (a:X)-[e:R WHERE e.weight = 5]->(b:Y) RETURN b.name",
+        &indexed_weight_stats(),
+    );
+
+    let bind_pos = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::EdgeBindEndpoints { far, .. } if far.as_ref() == "b"))
+        .expect("EdgeBindEndpoints binding far endpoint b must exist");
+    let filter_pos = is_labeled_filter_position(&plan, "b")
+        .expect("IsLabeled(b) residual must survive the anchored edge scan");
+    assert!(
+        filter_pos > bind_pos,
+        "label filter must evaluate after endpoints bind, ops={:?}",
+        plan.ops
+    );
+    assert_eq!(
+        bind_endpoint_projection(&plan, "b"),
+        Some(None),
+        "projected far endpoint would break the trailing IsLabeled(b), ops={:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn unlabeled_far_endpoint_still_projects_returned_property() {
+    // Positive control for the entity-use veto: with no trailing entity-level use
+    // of b, the property-level far projection must stay enabled.
+    let plan = plan_query_with_stats(
+        "MATCH (a:X)-[e:R WHERE e.weight = 5]->(b) RETURN b.name",
+        &indexed_weight_stats(),
+    );
+
+    assert_eq!(
+        bind_endpoint_projection(&plan, "b"),
+        Some(Some(vec!["name".to_string()])),
+        "property-only far endpoint should still project, ops={:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn trailing_is_labeled_on_near_endpoint_keeps_near_projection_off() {
+    let plan = plan_query_with_stats(
+        "MATCH (a:X)-[e:R WHERE e.weight = 5]->(b) RETURN a.name",
+        &indexed_weight_stats(),
+    );
+
+    let bind_pos = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::EdgeBindEndpoints { near, .. } if near.as_ref() == "a"))
+        .expect("EdgeBindEndpoints binding near endpoint a must exist");
+    let filter_pos = is_labeled_filter_position(&plan, "a")
+        .expect("IsLabeled(a) residual must survive the anchored edge scan");
+    assert!(
+        filter_pos > bind_pos,
+        "near-endpoint label filter must evaluate after endpoints bind, ops={:?}",
+        plan.ops
+    );
+    assert_eq!(
+        bind_endpoint_projection(&plan, "a"),
+        Some(None),
+        "projected near endpoint would break the trailing IsLabeled(a), ops={:?}",
+        plan.ops
+    );
+}
+
+#[cfg(feature = "cypher")]
+#[test]
+fn cypher_labels_entity_use_keeps_far_endpoint_vertex_binding() {
+    // LABELS(b) consumes the graph element itself; mixing it with a property read
+    // must veto the record projection exactly like IS LABELED does.
+    let plan = plan_query_with_stats(
+        "MATCH (a:X)-[e:R WHERE e.weight = 5]->(b:Y) RETURN labels(b), b.name",
+        &indexed_weight_stats(),
+    );
+
+    assert_eq!(
+        bind_endpoint_projection(&plan, "b"),
+        Some(None),
+        "labels(b) is entity-level use and must keep the full vertex binding, ops={:?}",
+        plan.ops
+    );
+}
+
+fn expand_edge_projection(plan: &PhysicalPlan) -> Option<Option<Vec<String>>> {
+    plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand {
+            edge,
+            edge_property_projection,
+            ..
+        }
+        | PlanOp::ExpandFilter {
+            edge,
+            edge_property_projection,
+            ..
+        } if edge.as_ref() == "e" => Some(
+            edge_property_projection
+                .as_ref()
+                .map(|rc| rc.iter().map(|s| s.as_ref().to_string()).collect()),
+        ),
+        _ => None,
+    })
+}
+
+#[test]
+fn expand_edge_slot_keeps_full_edge_for_element_id_use_with_property_read() {
+    // Mixed entity + property use of an edge variable: ELEMENT_ID(e) needs the
+    // element identity while e.weight only reads a projected property.
+    let plan =
+        plan_query("MATCH (a:X)-[e:R]->(b:Y) WHERE e.weight > 5 RETURN element_id(e), e.weight");
+
+    assert_eq!(
+        expand_edge_projection(&plan),
+        Some(None),
+        "ELEMENT_ID(e) must keep the full edge binding, ops={:?}",
+        plan.ops
+    );
+}
+
+#[cfg(feature = "cypher")]
+#[test]
+fn expand_edge_slot_keeps_full_edge_for_type_call_with_property_read() {
+    let plan = plan_query("MATCH (a:X)-[e:R]->(b:Y) WHERE e.weight > 5 RETURN type(e), e.weight");
+
+    assert_eq!(
+        expand_edge_projection(&plan),
+        Some(None),
+        "type(e) is entity-level use and must keep the full edge binding, ops={:?}",
+        plan.ops
+    );
+}
+
 #[test]
 fn test_leading_edge_index_scan_unlabeled_start_node() {
     let mut stats = TableStats::default();

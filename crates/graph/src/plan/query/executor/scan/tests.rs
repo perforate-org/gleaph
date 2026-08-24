@@ -1158,6 +1158,54 @@ fn indexed_edge_inlist_queries_end_to_end_match_equality_semantics() {
     assert_eq!(in_single, equality_bound_b);
 }
 
+/// GAP-2026-08-24-004 regression: a parsed anchored edge scan whose far endpoint
+/// carries both a trailing `IsLabeled` residual and a property-level projection
+/// must return the matching rows, not zero. The planner now vetoes the endpoint
+/// projection while entity-level label use remains downstream.
+#[test]
+fn parsed_is_labeled_residual_with_projected_far_endpoint_returns_matching_rows() {
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["Gap004A"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    for (label, name) in [("Gap004Y", "hit"), ("Gap004Z", "skip")] {
+        let b = store
+            .insert_vertex_named([label], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(a, b, Some("Gap004Rel"), [("weight", Value::Int64(5))])
+            .expect("weighted edge");
+    }
+
+    // Property-level RETURN: without the fix, IsLabeled(b:Gap004Y) evaluated
+    // against a projected Record dropped every row (0 rows instead of 1).
+    let projected = plan_with_edge_inlist_stats(
+        "MATCH (a:Gap004A)-[e:Gap004Rel WHERE e.weight = 5]->(b:Gap004Y) RETURN b.name",
+    );
+    let result = store
+        .execute_plan_query(&projected, &params(), GqlExecutionContext::default())
+        .expect("execute projected far endpoint query");
+    assert_eq!(
+        text_column(&result, "b.name"),
+        vec!["hit".to_string()],
+        "IsLabeled(b) must filter to the Gap004Y endpoint, not drop all rows"
+    );
+
+    // Whole-variable twin: same shape, `RETURN b` keeps full hydration either way.
+    let whole = plan_with_edge_inlist_stats(
+        "MATCH (a:Gap004A)-[e:Gap004Rel WHERE e.weight = 5]->(b:Gap004Y) RETURN b",
+    );
+    let result = store
+        .execute_plan_query(&whole, &params(), GqlExecutionContext::default())
+        .expect("execute whole-variable far endpoint query");
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "whole-variable RETURN b must bind exactly the Gap004Y endpoint"
+    );
+}
+
 #[test]
 fn indexed_edge_inlist_parameter_elements_bind_same_rows_as_literals() {
     let store = GraphStore::new();

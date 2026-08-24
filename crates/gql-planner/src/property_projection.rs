@@ -144,6 +144,36 @@ fn collect_traversal_source_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTr
     out
 }
 
+/// Collect variables whose graph-element identity is consumed by downstream
+/// expressions outside of pure property access (`v.prop`).
+///
+/// Every `ExprKind::Variable(v)` occurrence counts except when it is the direct
+/// subject of a `PropertyAccess`: a property read resolves against the projected
+/// record, while label checks (`IsLabeled`), element functions (`Labels`, `Nodes`,
+/// `Edges`, `Source`, `Destination`, `ElementId`), generic function arguments, and
+/// bare references need the original vertex/edge binding. Deliberately
+/// conservative: an extra member only forces full hydration for that slot, never
+/// changes results.
+fn collect_entity_used_bindings(exprs: &[&Expr]) -> BTreeSet<String> {
+    fn walk(expr: &Expr, out: &mut BTreeSet<String>) {
+        match &expr.kind {
+            // A chained base (`v.a.b`) still roots at a property access, so only a
+            // direct variable subject is exempt from entity usage.
+            ExprKind::PropertyAccess { expr: base, .. }
+                if matches!(&base.kind, ExprKind::Variable(_)) => {}
+            ExprKind::Variable(v) => {
+                out.insert(v.clone());
+            }
+            _ => for_each_immediate_child_expr(expr, |c| walk(c, out)),
+        }
+    }
+    let mut out = BTreeSet::new();
+    for e in exprs {
+        walk(e, &mut out);
+    }
+    out
+}
+
 fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
     let n = ops.len();
     let mut patches: Vec<OpProjectionPatch> = Vec::with_capacity(n);
@@ -159,12 +189,14 @@ fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
         }
         let search_bindings = collect_search_bindings(&ops[i + 1..], tail);
         let traversal_source_bindings = collect_traversal_source_bindings(&ops[i + 1..], tail);
+        let entity_used_bindings = collect_entity_used_bindings(&expr_refs);
         let patch = if projection_inference_may_be_needed(&ops[i], &expr_refs) {
             op_projection_patch(
                 &ops[i],
                 &expr_refs,
                 &search_bindings,
                 &traversal_source_bindings,
+                &entity_used_bindings,
             )
         } else {
             OpProjectionPatch::all_empty()
@@ -259,9 +291,13 @@ fn op_projection_patch(
     exprs: &[&Expr],
     search_bindings: &BTreeSet<String>,
     traversal_source_bindings: &BTreeSet<String>,
+    entity_used_bindings: &BTreeSet<String>,
 ) -> OpProjectionPatch {
-    let must_remain_vertex =
-        |var: &str| search_bindings.contains(var) || traversal_source_bindings.contains(var);
+    let must_remain_vertex = |var: &str| {
+        search_bindings.contains(var)
+            || traversal_source_bindings.contains(var)
+            || entity_used_bindings.contains(var)
+    };
 
     let mut p = OpProjectionPatch::noop();
     match op {
@@ -325,7 +361,11 @@ fn op_projection_patch(
             let idx_prop = indexed_edge_equality
                 .as_ref()
                 .map(|(prop, _)| prop.as_ref());
-            p.expand_edge = expand_edge_patch(exprs, edge.as_ref(), idx_prop);
+            p.expand_edge = if must_remain_vertex(edge.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                expand_edge_patch(exprs, edge.as_ref(), idx_prop)
+            };
             p.expand_dst = if must_remain_vertex(dst.as_ref()) {
                 ScanProjectionPatch::FullProperties
             } else {
@@ -342,7 +382,11 @@ fn op_projection_patch(
             let idx_prop = indexed_edge_equality
                 .as_ref()
                 .map(|(prop, _)| prop.as_ref());
-            p.expand_edge = expand_edge_patch(exprs, edge.as_ref(), idx_prop);
+            p.expand_edge = if must_remain_vertex(edge.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                expand_edge_patch(exprs, edge.as_ref(), idx_prop)
+            };
             let mut dst_exprs: Vec<&Expr> = dst_filter.iter().collect();
             dst_exprs.extend(exprs.iter().copied());
             p.expand_dst = if must_remain_vertex(dst.as_ref()) {
@@ -765,6 +809,84 @@ mod tests {
             infer_vertex_scan_patch(&[], "n"),
             ScanProjectionPatch::Projected(rc) if rc.is_empty()
         ));
+    }
+
+    #[test]
+    fn is_labeled_residual_keeps_bind_endpoint_slot_full() {
+        // GAP-2026-08-24-004: IsLabeled(b) consumes vertex identity even when
+        // RETURN b.name only reads a property; the far slot must stay hydrated.
+        let labeled_b = Expr::new(ExprKind::IsLabeled {
+            expr: Box::new(Expr::new(ExprKind::Variable("b".into()))),
+            label: gleaph_gql::types::LabelExpr::Name("Y".into()),
+            negated: false,
+        });
+        let b_name = Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::new(ExprKind::Variable("b".into()))),
+            property: "name".into(),
+        });
+        let bind = |far_projection| PlanOp::EdgeBindEndpoints {
+            edge: "e".into(),
+            near: "__anon_near".into(),
+            far: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            near_property_projection: None,
+            far_property_projection: far_projection,
+            hop_aux_binding: None,
+        };
+        let mut ops = vec![
+            bind(None),
+            PlanOp::PropertyFilter {
+                predicates: vec![labeled_b],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![crate::plan::ProjectColumn {
+                    expr: b_name,
+                    alias: Some("name".into()),
+                }],
+                distinct: false,
+            },
+        ];
+        apply_node_property_projections(&mut ops);
+        let PlanOp::EdgeBindEndpoints {
+            far_property_projection,
+            ..
+        } = &ops[0]
+        else {
+            panic!("expected EdgeBindEndpoints")
+        };
+        assert!(
+            far_property_projection.is_none(),
+            "trailing IsLabeled(b) must veto the far projection"
+        );
+
+        // Positive control: without the label residual the projection stays on.
+        let mut ops = vec![
+            bind(None),
+            PlanOp::Project {
+                columns: vec![crate::plan::ProjectColumn {
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("b".into()))),
+                        property: "name".into(),
+                    }),
+                    alias: Some("name".into()),
+                }],
+                distinct: false,
+            },
+        ];
+        apply_node_property_projections(&mut ops);
+        let PlanOp::EdgeBindEndpoints {
+            far_property_projection,
+            ..
+        } = &ops[0]
+        else {
+            panic!("expected EdgeBindEndpoints")
+        };
+        assert!(
+            matches!(far_property_projection, Some(rc) if rc.iter().any(|s| s.as_ref() == "name")),
+            "property-only endpoint must still project name"
+        );
     }
 
     #[test]
