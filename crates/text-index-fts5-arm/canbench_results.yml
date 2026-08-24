@@ -9,14 +9,21 @@ benches:
   bench_fts5_query_rank_m3_top10:
     total:
       calls: 1
-      instructions: 34839477
+      instructions: 34845849
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_fts5_query_term_rank_top100_scored:
+    total:
+      calls: 1
+      instructions: 34375335
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_fts5_query_term_top100:
     total:
       calls: 1
-      instructions: 261085
+      instructions: 260962
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
