@@ -49,7 +49,8 @@ use gleaph_gql::type_check::PropertySchema as _;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::expr_children::for_each_immediate_child_expr;
 use gleaph_gql_planner::plan::{
-    EdgeLabelRef, NodeLabelRef, PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, ShortestPathCost,
+    EdgeLabelRef, NodeLabelRef, PhysicalPlan, PlanOp, RemovePlanItem, SearchProviderPlan,
+    SetPlanItem, ShortestPathCost,
 };
 use gleaph_graph_kernel::entry::GraphId;
 
@@ -69,6 +70,24 @@ pub(crate) trait PlanCatalogView {
     /// schema does not declare the label's directedness (open-schema graphs).
     fn edge_label(&self, graph: GraphId, name: &str) -> Option<(u32, Option<bool>)>;
     fn property(&self, graph: GraphId, name: &str) -> Option<u32>;
+    /// Source facts of a registered vector index (ADR 0078 §1): the creation-fixed label
+    /// set it spans and the property id of its embedding source when that embedding name is
+    /// backed by a projected graph property. `None` for an unregistered index name.
+    fn vector_index_source(&self, graph: GraphId, index_name: &str)
+    -> Option<VectorIndexSource>;
+}
+
+/// Vector-index search source facts for layer-1 requirement extraction (ADR 0078 §1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VectorIndexSource {
+    /// Creation-fixed label set the index spans, as `(label id, label name)` pairs so the
+    /// walker can both demand rows on the ids and record the names as scope label facts.
+    pub(crate) labels: Vec<(u32, String)>,
+    /// Property id of the projected embedding source property (`CREATE VECTOR INDEX … ON
+    /// d.embedding` interns the embedding under the property identifier). `None` for an
+    /// ingestion-fed embedding field that is not a graph property — no value read exists
+    /// to demand in that case.
+    pub(crate) embedding_property_id: Option<u32>,
 }
 
 /// Production view over the Router graph-scoped catalogs.
@@ -103,6 +122,41 @@ impl PlanCatalogView for RouterCatalogView<'_> {
             .lookup_property_id(graph, name)
             .ok()
             .map(|id| id.raw())
+    }
+
+    fn vector_index_source(
+        &self,
+        graph: GraphId,
+        index_name: &str,
+    ) -> Option<VectorIndexSource> {
+        let index_name_id =
+            crate::facade::stable::index_name_catalog::lookup_index_name_id(graph, index_name)?;
+        let def = crate::facade::stable::vector_index_catalog::get_vector_index_by_name_id(
+            graph,
+            index_name_id,
+        )?;
+        // The embedding source property exists only when the embedding name is the
+        // projected property identifier of a semantic `CREATE VECTOR INDEX`; legacy
+        // ingestion-fed field names resolve to no property and demand no value read.
+        let embedding_property_id = crate::facade::stable::embedding_name_catalog::embedding_name(
+            graph,
+            def.embedding_name_id,
+        )
+        .and_then(|name| self.property(graph, &name));
+        let labels = def
+            .labels
+            .iter()
+            .filter_map(|label_id| {
+                self.store
+                    .reverse_vertex_label_name(graph, *label_id)
+                    .ok()
+                    .map(|name| (u32::from(label_id.raw()), name))
+            })
+            .collect();
+        Some(VectorIndexSource {
+            labels,
+            embedding_property_id,
+        })
     }
 }
 
@@ -464,6 +518,41 @@ fn require_vertex_scan_rows(
     }
 }
 
+/// Demand the scan-side rows for a vertex search (ADR 0078 §1 layer 1): `MATCH` on every
+/// label the vector index spans plus value-read coverage of the projected embedding source
+/// property per label. The label rows are conjunctive — per-candidate visibility has no
+/// row-level grant filter, so a caller must be able to read the whole spanned label set,
+/// not just one of its labels. Label names are recorded as scope facts for the searched
+/// binding so downstream deferred reads attribute like an equivalent labeled scan; a
+/// multi-label span leaves those reads ambiguous (fail closed), and an unknown index name
+/// is unattributed.
+fn require_vector_search_rows(
+    reqs: &mut RequirementSet,
+    scope: &mut Scope,
+    catalog: &dyn PlanCatalogView,
+    binding: &str,
+    index_name: &str,
+) {
+    let Some(source) = catalog.vector_index_source(scope.graph, index_name) else {
+        reqs.require_unattributed(scope.graph);
+        return;
+    };
+    let graph_raw = scope.graph.raw();
+    for (label_id, label_name) in &source.labels {
+        scope.note_vertex_label(binding, label_name);
+        reqs.require(
+            scope.graph,
+            vertex_row(graph_raw, GraphOperation::Match, *label_id),
+        );
+        if let Some(property_id) = source.embedding_property_id {
+            reqs.require(
+                scope.graph,
+                vertex_property_row(graph_raw, *label_id, property_id),
+            );
+        }
+    }
+}
+
 /// Demand one mutation row on a labeled vertex; open-schema names that stopped resolving
 /// degrade to tenancy-only coverage.
 fn require_vertex_mutation(
@@ -749,14 +838,26 @@ fn walk_op(
 
         PlanOp::Filter { condition } => collect_expr_reads(condition, scope),
 
-        PlanOp::Search { provider, .. } => {
+        PlanOp::Search {
+            binding,
+            provider,
+            ..
+        } => {
             collect_expr_reads(provider.query(), scope);
             collect_expr_reads(provider.limit(), scope);
             if let Some(filter) = provider.filter() {
                 collect_expr_reads(filter, scope);
             }
-            // Vector-index lookup itself stays ungated in Phase 1;
-            // authorization-aware vector search is Phase 2 (ADR 0074 Phases).
+            // ADR 0078 §1 layer 1: the search itself demands the same rows as a scan of
+            // its source labels (plus the projected embedding source property), so
+            // unauthorized callers are rejected before any ANN dispatch.
+            let SearchProviderPlan::VectorIndex { index_name, .. } = provider;
+            let index_name = index_name
+                .iter()
+                .map(|part| part.as_ref())
+                .collect::<Vec<_>>()
+                .join(".");
+            require_vector_search_rows(reqs, scope, catalog, binding.as_ref(), &index_name);
         }
 
         // ──── Procedure calls ────
@@ -1317,6 +1418,7 @@ mod tests {
                 ("MENTIONS", 12, None),
             ],
             properties: vec![("age", 20), ("name", 21), ("secret", 22)],
+            vector_indexes: Vec::new(),
         }
     }
 
@@ -1324,6 +1426,7 @@ mod tests {
         vertices: Vec<(&'static str, u32)>,
         edges: Vec<(&'static str, u32, Option<bool>)>,
         properties: Vec<(&'static str, u32)>,
+        vector_indexes: Vec<(&'static str, VectorIndexSource)>,
     }
 
     impl PlanCatalogView for FakeCatalog {
@@ -1362,6 +1465,17 @@ mod tests {
                 .iter()
                 .find(|(candidate, _)| *candidate == name)
                 .map(|(_, id)| *id)
+        }
+
+        fn vector_index_source(
+            &self,
+            _graph: GraphId,
+            index_name: &str,
+        ) -> Option<VectorIndexSource> {
+            self.vector_indexes
+                .iter()
+                .find(|(candidate, _)| *candidate == index_name)
+                .map(|(_, source)| source.clone())
         }
     }
 
