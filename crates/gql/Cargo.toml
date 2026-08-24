@@ -32,6 +32,9 @@ rkyv = { workspace = true, optional = true }
 default = ["cmp", "join_hash", "i256", "u256", "f16", "f128", "f256", "decimal"]
 ast-rkyv-no-span = ["dep:rkyv", "gleaph-gql-value/rkyv"]
 cmp = ["gleaph-gql-value/cmp"]
+# Cypher-compat dialect constructs (list index/slice, STARTS/ENDS WITH, CONTAINS,
+# NODES/EDGES/LABELS, VALUE/EXISTS subqueries, and the `[NOT] IN` predicate over
+# both the `[v1, v2]` list form and the sql-compat `(v1, v2)` paren form).
 cypher = []
 join_hash = ["gleaph-gql-value/join_hash"]
 i256 = ["gleaph-gql-value/i256"]

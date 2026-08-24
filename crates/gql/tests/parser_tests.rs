@@ -862,6 +862,78 @@ fn in_list_numbers() {
     parse_ok("MATCH (a:User)-[:KNOWS]->(b:User) WHERE b.score IN (1, 2, 3) RETURN b.name");
 }
 
+/// Extract the top-level WHERE expression of the first MATCH in a program.
+#[cfg(feature = "cypher")]
+fn where_expr_of_first_match(program: &gleaph_gql::ast::GqlProgram) -> &gleaph_gql::ast::Expr {
+    use gleaph_gql::ast::{LinearQueryStatement, SimpleQueryStatement};
+
+    let tx = program
+        .transaction_activity
+        .as_ref()
+        .expect("transaction activity");
+    let block = tx.body.as_ref().expect("statement block");
+    let Statement::Query(composite) = &block.first else {
+        panic!("expected a query statement");
+    };
+    let LinearQueryStatement { parts, .. } = &composite.left;
+    let Some(SimpleQueryStatement::Match(match_stmt)) = parts.first() else {
+        panic!("expected a leading MATCH");
+    };
+    match_stmt
+        .pattern
+        .where_clause
+        .as_ref()
+        .expect("WHERE clause")
+}
+
+// Cypher dialect: IN is a standard Cypher operator, so the predicate is accepted
+// with the `[v1, v2]` list form (and the `(v1, v2)` paren form shared with the
+// sql-compat extension) regardless of whether sql-compat is enabled.
+#[test]
+#[cfg(feature = "cypher")]
+fn in_list_cypher_bracket_form() {
+    let program = parse_program_ok("MATCH (b:User) WHERE b.name IN ['Alice', 'Bob'] RETURN b.name");
+    match &where_expr_of_first_match(&program).kind {
+        ExprKind::InList { list, negated, .. } => {
+            assert!(!negated, "plain IN must not be negated");
+            assert_eq!(list.len(), 2, "both elements must be captured");
+        }
+        other => panic!("expected InList, got {other:?}"),
+    }
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn not_in_list_cypher_bracket_and_paren_forms_are_negated() {
+    for query in [
+        "MATCH (b:User) WHERE b.name NOT IN ['Alice', 'Bob'] RETURN b.name",
+        "MATCH (b:User) WHERE b.name NOT IN ('Alice', 'Bob') RETURN b.name",
+    ] {
+        let program = parse_program_ok(query);
+        match &where_expr_of_first_match(&program).kind {
+            ExprKind::InList { list, negated, .. } => {
+                assert!(negated, "NOT IN must set the negated flag: {query}");
+                assert_eq!(list.len(), 2, "both elements must be captured: {query}");
+            }
+            other => panic!("expected InList for {query}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn in_list_cypher_paren_form() {
+    // With sql-compat enabled this form is served by the sql-compat block;
+    // without it, the cypher block must serve the same grammar.
+    parse_ok("MATCH (a:User)-[:KNOWS]->(b:User) WHERE b.score IN (1, 2, 3) RETURN b.name");
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn in_list_cypher_empty_list() {
+    parse_ok("MATCH (b:User) WHERE b.score IN [] RETURN b.name");
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // EXISTS subquery
 // ════════════════════════════════════════════════════════════════════════════════

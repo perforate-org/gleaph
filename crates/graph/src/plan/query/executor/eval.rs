@@ -415,7 +415,11 @@ impl QueryExprEvaluator<'_> {
                 let right = self.eval_expr(row, right)?;
                 eval_compare_expr(left, *op, right).map_err(PlanQueryError::from)
             }
-            ExprKind::InList { expr, list, negated } => {
+            ExprKind::InList {
+                expr,
+                list,
+                negated,
+            } => {
                 let left = self.eval_expr(row, expr)?;
                 let mut elements = Vec::with_capacity(list.len());
                 for element in list {
@@ -2576,13 +2580,43 @@ mod tests {
         let store = seed_in_list_store();
         let err = run_in_list_filter(
             &store,
-            in_list_pred(prop("n", "age"), vec![literal(Value::Text("old".into()))], false),
+            in_list_pred(
+                prop("n", "age"),
+                vec![literal(Value::Text("old".into()))],
+                false,
+            ),
         )
         .expect_err("type mismatch must fail closed");
         assert!(
             matches!(err, PlanQueryError::ExpressionIncomparableValues { .. }),
             "expected incomparable-values error, got {err:?}"
         );
+    }
+
+    // ── End-to-end through the cypher dialect (default canister feature set) ──
+
+    #[test]
+    fn executes_cypher_in_list_query_end_to_end() {
+        let store = seed_in_list_store();
+        let plan =
+            plan_gql("MATCH (n:QueryPersonInList) WHERE n.age IN [12, 99] RETURN n.name AS name");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher in-list query");
+        assert_eq!(text_column(&result, "name"), vec!["InList Bob"]);
+    }
+
+    #[test]
+    fn executes_cypher_not_in_list_query_end_to_end() {
+        // NOT IN [12]: Ada is kept, Bob is dropped, and the NULL-property vertex
+        // stays out because NOT UNKNOWN is still not TRUE.
+        let store = seed_in_list_store();
+        let plan =
+            plan_gql("MATCH (n:QueryPersonInList) WHERE n.age NOT IN [12] RETURN n.name AS name");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute cypher not-in query");
+        assert_eq!(text_column(&result, "name"), vec!["InList Ada"]);
     }
 
     #[test]

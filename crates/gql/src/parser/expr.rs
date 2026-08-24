@@ -326,6 +326,45 @@ impl Parser<'_> {
                 continue;
             }
 
+            // [NOT] IN — Cypher dialect predicate. `expr IN [v1, v2]` is the
+            // canonical Cypher list form; the parenthesized `expr IN (v1, v2)`
+            // form mirrors the sql-compat extension grammar above (which keeps
+            // precedence when both features are enabled, so its behavior is
+            // unchanged). `IN` is a standard Cypher operator, so the canister
+            // default dialect accepts it; the shared [`ExprKind::InList`]
+            // variant keeps type checking, planning, and execution
+            // dialect-independent.
+            #[cfg(feature = "cypher")]
+            if (self.at_keyword("IN") || (self.at_keyword("NOT") && self.at_keyword_ahead(1, "IN")))
+                && min_prec <= Prec::Is
+            {
+                let negated = self.eat_keyword("NOT");
+                self.expect_keyword("IN")?;
+                let list = if self.eat_token(&Token::LBracket) {
+                    let items = if self.at_token(&Token::RBracket) {
+                        vec![]
+                    } else {
+                        self.comma_list(|p| p.parse_expr())?
+                    };
+                    self.expect_token(&Token::RBracket)?;
+                    items
+                } else {
+                    self.expect_token(&Token::LParen)?;
+                    let items = self.comma_list(|p| p.parse_expr())?;
+                    self.expect_token(&Token::RParen)?;
+                    items
+                };
+                lhs = Expr {
+                    span: self.span_since(start),
+                    kind: ExprKind::InList {
+                        expr: Box::new(lhs),
+                        list,
+                        negated,
+                    },
+                };
+                continue;
+            }
+
             // String predicates: [NOT] LIKE / STARTS WITH / ENDS WITH / CONTAINS
             if min_prec <= Prec::Is
                 && let Some(pred) = self.try_parse_string_predicate(start, &lhs)?
