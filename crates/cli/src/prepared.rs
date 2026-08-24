@@ -529,12 +529,17 @@ pub fn drop<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), P
 /// `publication_tests::owner_publishes_public_row_and_revoke_removes_exactly_it`): a grant
 /// binds `TO PUBLIC`, a revoke removes with `FROM PUBLIC`, and revoking an absent row is an
 /// exact-key `RouterError::NotFound`.
+///
+/// The op name is emitted as a double-quoted identifier. ADR 0061 names are kebab-case and
+/// the bare lexer splits them at `-`, which rejected every real demo op live
+/// (GAP-2026-08-24-005); the quoted form rides `expect_ident`'s QuotedIdent arm and parses
+/// identically for hyphen-free names.
 fn publication_statement(name: &str, publish: bool) -> Result<String, PreparedError> {
     validate_name(name)?;
     Ok(if publish {
-        format!("GRANT EXECUTE ON PREPARED QUERY {name} TO PUBLIC")
+        format!("GRANT EXECUTE ON PREPARED QUERY \"{name}\" TO PUBLIC")
     } else {
-        format!("REVOKE EXECUTE ON PREPARED QUERY {name} FROM PUBLIC")
+        format!("REVOKE EXECUTE ON PREPARED QUERY \"{name}\" FROM PUBLIC")
     })
 }
 
@@ -1231,11 +1236,11 @@ mod tests {
     fn publication_statements_match_the_router_grant_grammar() {
         assert_eq!(
             publication_statement("citation-reach", true).expect("grant"),
-            "GRANT EXECUTE ON PREPARED QUERY citation-reach TO PUBLIC"
+            "GRANT EXECUTE ON PREPARED QUERY \"citation-reach\" TO PUBLIC"
         );
         assert_eq!(
             publication_statement("citation-reach", false).expect("revoke"),
-            "REVOKE EXECUTE ON PREPARED QUERY citation-reach FROM PUBLIC"
+            "REVOKE EXECUTE ON PREPARED QUERY \"citation-reach\" FROM PUBLIC"
         );
     }
 
@@ -1258,7 +1263,7 @@ mod tests {
         publish("shortest-path", &mut transport).expect("publish");
         assert_eq!(
             transport.statements.as_slice(),
-            ["GRANT EXECUTE ON PREPARED QUERY shortest-path TO PUBLIC"]
+            ["GRANT EXECUTE ON PREPARED QUERY \"shortest-path\" TO PUBLIC"]
         );
     }
 
@@ -1268,8 +1273,25 @@ mod tests {
         unpublish("shortest-path", &mut transport).expect("unpublish");
         assert_eq!(
             transport.statements.as_slice(),
-            ["REVOKE EXECUTE ON PREPARED QUERY shortest-path FROM PUBLIC"]
+            ["REVOKE EXECUTE ON PREPARED QUERY \"shortest-path\" FROM PUBLIC"]
         );
+    }
+
+    #[test]
+    fn publication_statements_parse_with_the_production_gql_parser() {
+        // Pins the quoted-identifier form against the production lexer/parser: the bare
+        // hyphenated name splits at `-` and is rejected live (GAP-2026-08-24-005), while
+        // the quoted form rides `expect_ident`'s QuotedIdent arm.
+        for statement in [
+            publication_statement("citation-reach", true).expect("grant"),
+            publication_statement("citation-reach", false).expect("revoke"),
+            publication_statement("team-readable-documents", true).expect("grant"),
+        ] {
+            assert!(
+                gleaph_gql::parser::parse(&statement).is_ok(),
+                "publication statement must parse: {statement}"
+            );
+        }
     }
 
     #[test]
