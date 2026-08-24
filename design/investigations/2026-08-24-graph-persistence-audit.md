@@ -47,7 +47,7 @@ future-compatibility gaps, or redundant storage. Evaluation criteria (finalized
 | # | Finding | Criterion | Priority |
 |---|---------|-----------|----------|
 | F1 | Canonical value encodings lack version guards: `StoredPropertyValue` (33/34), `VertexLabelSetBlob` (32); `CanonicalExportRecord` (51) is explicitly unversioned | D1' | **P2** — **implemented for 32/33/34** by [Plan 0296](../../plans/0296-graph-facade-value-envelopes.md); 51 remains open |
-| F2 | Edge row payload is 30-bit (~1.07e9 vertices/shard) while `VertexId` is u32 and slab indices are 36-bit — undocumented shard-capacity ceiling | A/D | **P2** |
+| F2 | Edge row payload is 30-bit (~1.07e9 vertices/shard) while `VertexId` is u32 and slab indices are 36-bit — undocumented shard-capacity ceiling | A/D | **P2** — **resolved** by [Plan 0297](../../plans/0297-lara-edge-payload-ceiling.md): bound documented as blessed-final (`design/storage/lara.md` § Shard capacity bounds; dgap-contract cross-reference) and enforced fail-closed at the minting constructors (`VertexRef::local` / `RemoteVertexId::from_raw`) with pinned boundary tests |
 | F3 | No explicit compatibility-relevance marker per region/record for the production gate | D4' | **P2** |
 | F4 | Free-span record stride 48 B carries 14 B padding and a derivable `bin_idx`; ~30% record-area shrink possible at next layout break | A | P3 |
 | F5 | `LabelBucket` word bits 60–62 are neither assigned nor validated (only bit 63 is zero-checked) | D3' hygiene | P3 |
@@ -239,7 +239,7 @@ than motivate one.
 | ID | Candidate | Priority | Notes |
 |----|-----------|----------|-------|
 | C1 | Add `Record::V1(...)` envelopes (or a version byte) to regions 32, 33/34 values; confirm 51's regenerate-on-change contract is the intended production answer or envelope it too. Wire-additive today, no behavior change | **P2** | closes F1 before the [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md) readiness gate closes. **Implemented for regions 32/33/34** ([Plan 0296](../../plans/0296-graph-facade-value-envelopes.md), 2026-08-24); region 51 decision still open |
-| C2 | Document the 30-bit edge-payload ceiling as an explicit shard-capacity bound (~1.07e9 local vertex refs) in `design/storage/lara.md` / dgap contract, and either bless it as final or schedule widening | **P2** | closes F2; pure documentation + decision |
+| C2 | Document the 30-bit edge-payload ceiling as an explicit shard-capacity bound (~1.07e9 local vertex refs) in `design/storage/lara.md` / dgap contract, and either bless it as final or schedule widening | **P2** | closes F2; pure documentation + decision — **Implemented** ([Plan 0297](../../plans/0297-lara-edge-payload-ceiling.md), 2026-08-24): documented + enforced fail-closed; **blessed as final**, widening only via a future product requirement and a new layout ADR (8-byte rows) |
 | C3 | Extend the stable-layout registry (or inventory table) with a compatibility-relevance column so the production migration checklist is mechanical | **P2** | closes F3 (D4') |
 | C4 | Hygiene batch: zero-check bucket word bits 60–62; unify LARA header reserved-byte policy (zero-fill + validate); delete dead `PropertyCatalog` alias; add the endianness-convention note | P3 | closes F5/F8/F9/F11 |
 | C5 | At the next layout-breaking reinstall window: shrink free-span stride (drop padding + derivable bin_idx), drop duplicated `shard_event_seq` from delta values, compact journal optional slots, narrow EDGE_COUNTS counters | P3 | closes F4/F6/F7/F12; each needs the §7 gate if measured hot |

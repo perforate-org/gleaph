@@ -10,8 +10,12 @@
 //! +----------+
 //! ```
 //!
-//! `target` is a [`VertexRef`] (local id plus optional remote bit). Relationship
-//! type, directionality, and per-edge inline property bytes are carried by the labeled bucket layer
+//! `target` is a [`VertexRef`] (local id plus optional remote bit). The 30-bit
+//! payload is a blessed per-shard capacity bound: the minting constructors
+//! ([`VertexRef::local`], [`RemoteVertexId::from_raw`]) reject ids above
+//! `2^30 - 1` fail-closed; decode paths accept any stored bytes so rows
+//! round-trip exactly (see [`super::vertex_ref::MAX_PAYLOAD_VERTEX_ID`]).
+//! Relationship type, directionality, and per-edge inline property bytes are carried by the labeled bucket layer
 //! and [`EdgeInlinePropertyBytesStore`], not this row.
 
 use super::EdgeInlinePropertyBytes;

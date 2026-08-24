@@ -1,8 +1,8 @@
 # LARA storage contract (DGAP alignment)
 
 **Status:** Partially Implemented (core contract: [lara.md](./lara.md) accepted)  
-**Last updated:** 2026-07-13
-**Anchor timestamp:** 2026-07-13 22:46:07 UTC +0000
+**Last updated:** 2026-08-24  
+**Anchor timestamp:** 2026-08-24 02:52:53 UTC +0000  
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/dgap/src/graph.h`), [arXiv:2403.02665](https://arxiv.org/abs/2403.02665)  
 **Source of truth:** `crates/ic-stable-lara/` (`lara.rs`, `lara/edge.rs`, `labeled.rs`)
 
@@ -130,6 +130,16 @@ Default-label bypass uses core `Vertex` row semantics directly.
 - Growth uses in-leaf weighted slide and leaf-block relocate; one `release_span` per relocate.
 - `LabeledVertex.stored_slots` tracks the per-vertex sub-range width inside the leaf block; routine insert does not tail-append at `elem_capacity`.
 - `rebalance_vertex_edge_span` and `rewrite_vertex_edge_span` resolve bases via leaf relocate when pinned; tail append is limited to unpinned rows and relocate-internal escape hatches.
+
+**Edge-row payload ceiling (blessed shard capacity bound).** Each labeled CSR
+adjacency row is a 4-byte `VertexRef` whose payload is 30 bits: at most ~1.07e9
+local vertex references per orientation (plus shard-local remote handles in the
+same domain). The bound is blessed as final for the current architecture and is
+enforced fail-closed at the minting constructors (`VertexRef::local`,
+`RemoteVertexId::from_raw`) — ids above it trap instead of masking into aliased
+neighbors. Widening requires 8-byte rows and a new layout ADR. Bound value,
+rationale, and widen trigger:
+[lara.md § Shard capacity bounds](./lara.md#shard-capacity-bounds-edge-row-payload).
 
 ---
 

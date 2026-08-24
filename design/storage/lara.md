@@ -381,6 +381,48 @@ boundary under ADR 0039. Checked locator ranges, canonical epoch, cardinality, a
 validation reject malformed, stale, truncated, or oversized records before a published value is
 returned.
 
+## Shard capacity bounds (edge-row payload)
+
+The labeled CSR edge slab stores one adjacency row per 4 bytes. The whole row
+is a `VertexRef` u32:
+
+```text
+31          30          0
++-----------+-----------+
+| tombstone |  remote   |  payload (30 bits)
++-----------+-----------+
+```
+
+**Bound:** the payload domain is `2^30 - 1` ids (`MAX_PAYLOAD_VERTEX_ID` in
+`crates/graph-kernel/src/entry/vertex_ref.rs`), i.e. at most ~1.07e9 local
+vertex references per shard orientation, plus the same domain for shard-local
+remote handles (`MAX_REMOTE_VERTEX_ID`). This is the narrowest id domain in the
+bundle: `VertexId` itself is a full u32 and slab slot indices are 36-bit, so a
+4x gap remains against the vertex column by design.
+
+**Status: blessed as final for the current architecture** (decision recorded
+2026-08-24). Sharding exists to keep shards far below this count; widening past
+30 payload bits cannot stay inside a 4-byte edge row — it means 8-byte rows and
+a new layout ADR under the pre-production fresh-state policy ([ADR
+0007 §5](../adr/0007-stable-memory-layout.md)). Widening trigger: a product
+requirement for more than 2^30 local vertex references in one shard orientation.
+
+**Enforcement (fail-closed):** raw ids enter the payload domain only through the
+minting constructors — `VertexRef::local` and `RemoteVertexId::from_raw`. Both
+reject values above the bound with a panic instead of masking high bits into an
+aliased neighbor; every edge-write path (directed/undirected DML, inline-property
+variants, batch load, tombstone rewrite via `CsrEdge::with_neighbor_vid`,
+reverse-adjacency derivation) constructs rows before the first canonical
+mutation, so the trap leaves stored state untouched. Decode paths
+(`VertexRef::from_le_bytes`/`from_raw`, `RemoteVertexId`'s `Storable` impl)
+accept any stored bytes so persisted rows round-trip exactly; a corrupt
+high-bit handle key traps at decode rather than silently aliasing.
+`ic-stable-vector-page-store` mirrors the same 30-bit vertex payload domain for
+its own packed payloads (`VERTEX_PAYLOAD_MASK`) and rejects out-of-domain ids
+with a typed error.
+
+---
+
 ## Consensus checklist
 
 Use this when reviewing LARA PRs:
