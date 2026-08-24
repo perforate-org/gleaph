@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "The Gleaph command-line interface"
 
+[lib]
+name = "gleaph_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gleaph"
 path = "src/main.rs"
@@ -16,6 +20,11 @@ gleaph-account.workspace = true
 gleaph-bulk-load-api.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true, features = ["gleaph", "serde"] }
+# Numeric vocabulary must match the rest of the cli graph (prepared-runtime enables
+# gleaph-gql f128/f256), so the shared wire enum compiles its matching variant arms.
+gleaph-gql-ic-wire = { workspace = true, features = ["f256", "nightly-f128"] }
+gleaph-gql-params.workspace = true
+gleaph-router-wire.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-index-ddl.workspace = true
 gleaph-message-sizing.workspace = true
@@ -35,3 +44,6 @@ tar.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+gleaph-gql-ic.workspace = true

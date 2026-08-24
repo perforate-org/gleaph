@@ -49,7 +49,7 @@ const INITIAL_CHUNK_ROWS: usize = 4096;
 /// NDJSON streaming: raw-line bytes bound for one candidate chunk window. Keeps peak memory
 /// independent of property-value size when individual rows are large.
 const MAX_ACCUMULATED_RAW_BYTES: usize = 4 * 1024 * 1024;
-const DEFAULT_BULK_KEY: &str = "initial-load-v1";
+pub(crate) const DEFAULT_BULK_KEY: &str = "initial-load-v1";
 const STATUS_PAGE_SIZE: u32 = 64;
 const MAX_FINALIZE_POLL_ATTEMPTS: usize = 120;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);

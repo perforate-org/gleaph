@@ -65,6 +65,7 @@ harness = true
 
 [dependencies]
 candid.workspace = true
+gleaph-cli.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true }
 gleaph-gql-planner = { path = "../gql-planner", features = ["plan-wire"] }
@@ -92,6 +93,11 @@ harness = true
 [[test]]
 name = "adr0035_router_outbound_accept_envelope"
 path = "tests/adr0035_router_outbound_accept_envelope.rs"
+harness = true
+
+[[test]]
+name = "prepared_run_cli_transport"
+path = "tests/prepared_run_cli_transport.rs"
 harness = true
 
 [[test]]

@@ -12,12 +12,16 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use gleaph_gql_ic_wire::{GqlWireRows, GqlWireValue};
+use gleaph_gql_params::{GqlParams, GqlValue, encode_gql_params, gql_param_value};
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_graph_kernel::plan_exec::{GqlQueryResult, MutationToken, ReadMode};
 use gleaph_prepared_api::{
     OperationKind, PreparedManifest, PreparedOperation, PreparedOperationRecord,
-    PreparedRegistration, ResultSchema, SortKey,
+    PreparedRegistration, PreparedSortSpec, ResultSchema, SortKey,
 };
 use gleaph_prepared_runtime::parse_prepared_source;
+use gleaph_router_wire::gql_wire_value_to_json;
 use serde::{Deserialize, Serialize};
 
 use crate::remote::RemoteTransport;
@@ -115,6 +119,14 @@ pub trait PreparedTransport {
         operations: &[PreparedRegistration],
     ) -> Result<Result<(), RouterError>, String>;
     fn drop_prepared(&mut self, name: &str) -> Result<Result<(), RouterError>, String>;
+    /// Execute one registered read-only operation through the composite-query
+    /// `prepared_query` entrypoint. `sort` is intentionally absent (no `--sort` surface).
+    fn run_query(
+        &mut self,
+        name: &str,
+        params: Vec<u8>,
+        read_mode: &ReadMode,
+    ) -> Result<Result<GqlQueryResult, RouterError>, String>;
 }
 
 /// Router transport over the shared IC-agent remote.
@@ -157,6 +169,25 @@ impl PreparedTransport for RouterPreparedTransport {
 
     fn drop_prepared(&mut self, name: &str) -> Result<Result<(), RouterError>, String> {
         self.remote.update("drop_prepared", &name.to_string())
+    }
+
+    fn run_query(
+        &mut self,
+        name: &str,
+        params: Vec<u8>,
+        read_mode: &ReadMode,
+    ) -> Result<Result<GqlQueryResult, RouterError>, String> {
+        // `prepared_query` takes four separate Candid arguments; a tuple passed as one value
+        // would encode as a single record, so this must use the multi-argument variant.
+        self.remote.query_args(
+            "prepared_query",
+            (
+                &name.to_string(),
+                &params,
+                &Option::<Vec<PreparedSortSpec>>::None,
+                read_mode,
+            ),
+        )
     }
 }
 
@@ -467,6 +498,208 @@ pub fn drop<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), P
     }
 }
 
+// ──── prepared run ────
+
+/// Parse repeatable `--param NAME=VALUE` arguments into ordered named parameters.
+///
+/// `VALUE` is one JSON scalar or array (shell quoting supplies the JSON quotes for text).
+/// Duplicate names and unparsable values are rejected before any network call.
+pub fn parse_run_params(pairs: &[String]) -> Result<GqlParams, PreparedError> {
+    let mut params: GqlParams = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let Some((name, value_text)) = pair.split_once('=') else {
+            return Err(PreparedError::Message(format!(
+                "--param expects NAME=VALUE, got {pair:?}"
+            )));
+        };
+        if name.is_empty() {
+            return Err(PreparedError::Message(format!(
+                "--param name must not be empty, got {pair:?}"
+            )));
+        }
+        if params.iter().any(|(existing, _)| existing == name) {
+            return Err(PreparedError::Message(format!(
+                "duplicate --param name {name:?}"
+            )));
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(value_text.trim()).map_err(|error| {
+                PreparedError::Message(format!(
+                    "--param {name}={value_text:?} is not a JSON scalar or array: {error}"
+                ))
+            })?;
+        params.push((name.to_owned(), gql_param_from_json(name, &value)?));
+    }
+    Ok(params)
+}
+
+/// Map one JSON scalar or array into a logical GQL parameter value. Objects are rejected:
+/// the run surface accepts scalars and arrays only.
+fn gql_param_from_json(name: &str, value: &serde_json::Value) -> Result<GqlValue, PreparedError> {
+    let value = match value {
+        serde_json::Value::Null => GqlValue::Null,
+        serde_json::Value::Bool(inner) => gql_param_value(*inner),
+        serde_json::Value::Number(number) => {
+            if let Some(signed) = number.as_i64() {
+                gql_param_value(signed)
+            } else if let Some(unsigned) = number.as_u64() {
+                gql_param_value(unsigned)
+            } else {
+                let float = number.as_f64().ok_or_else(|| {
+                    PreparedError::Message(format!("--param {name} is not a representable number"))
+                })?;
+                gql_param_value(float)
+            }
+        }
+        serde_json::Value::String(inner) => gql_param_value(inner.clone()),
+        serde_json::Value::Array(items) => GqlValue::List(
+            items
+                .iter()
+                .map(|item| gql_param_from_json(name, item))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        serde_json::Value::Object(_) => {
+            return Err(PreparedError::Message(format!(
+                "--param {name}: objects are not accepted; use a JSON scalar or array"
+            )));
+        }
+    };
+    Ok(value)
+}
+
+/// Encode parsed parameters with the shared `gleaph-gql-params` compact-binary encoder — the
+/// exact bytes the Router decodes with `decode_gql_params_blob`.
+pub fn encode_run_params(params: GqlParams) -> Result<Vec<u8>, PreparedError> {
+    encode_gql_params(params)
+        .map_err(|error| PreparedError::Message(format!("parameter encoding failed: {error}")))
+}
+
+/// Resolve the read-consistency contract from `--read-mode`: `eventual`, or
+/// `at-least <TOKEN>` where TOKEN is the mutation token JSON issued by an idempotent write.
+pub fn parse_read_mode(spec: &[String]) -> Result<ReadMode, PreparedError> {
+    let spec: Vec<&str> = spec.iter().map(String::as_str).collect();
+    match spec.as_slice() {
+        ["eventual"] => Ok(ReadMode::Eventual),
+        ["at-least"] => Err(PreparedError::Message(
+            "--read-mode at-least requires a mutation token argument".into(),
+        )),
+        ["eventual", extra] => Err(PreparedError::Message(format!(
+            "--read-mode eventual takes no extra argument, got {extra:?}"
+        ))),
+        ["at-least", token] => {
+            let token: MutationToken = serde_json::from_str(token.trim()).map_err(|error| {
+                PreparedError::Message(format!(
+                    "--read-mode at-least token is not valid MutationToken JSON: {error}"
+                ))
+            })?;
+            Ok(ReadMode::AtLeast(token))
+        }
+        [] => Err(PreparedError::Message(
+            "--read-mode requires a value; expected \"eventual\" or \"at-least <TOKEN>\"".into(),
+        )),
+        [mode, ..] => Err(PreparedError::Message(format!(
+            "unknown --read-mode {mode:?}; expected \"eventual\" or \"at-least\""
+        ))),
+    }
+}
+
+/// Execute one registered read-only prepared operation through the transport.
+///
+/// The Router `NotFound` verdict for an unknown operation surfaces its message verbatim.
+pub fn run<T: PreparedTransport>(
+    name: &str,
+    params_blob: Vec<u8>,
+    read_mode: ReadMode,
+    transport: &mut T,
+) -> Result<GqlQueryResult, PreparedError> {
+    validate_name(name)?;
+    match transport
+        .run_query(name, params_blob, &read_mode)
+        .map_err(PreparedError::Remote)?
+    {
+        Ok(result) => Ok(result),
+        Err(error) => Err(PreparedError::Remote(format!(
+            "Router rejected prepared_query: {error}"
+        ))),
+    }
+}
+
+/// Render result rows as a simple aligned table (`""` when no rows were materialized).
+pub fn render_rows_table(result: &GqlQueryResult) -> Result<String, PreparedError> {
+    let Some(blob) = &result.rows_blob else {
+        return Ok(String::new());
+    };
+    let wire = GqlWireRows::decode_blob(blob)
+        .map_err(|error| PreparedError::Message(format!("decode rows blob: {error}")))?;
+    if wire.rows.is_empty() {
+        return Ok(String::new());
+    }
+    // Column order follows the first row; later rows may only add columns, which extend the
+    // header rather than being dropped silently.
+    let mut header: Vec<String> = Vec::new();
+    let mut cells: Vec<Vec<String>> = Vec::with_capacity(wire.rows.len());
+    for row in &wire.rows {
+        let mut row_cells = Vec::with_capacity(row.columns.len());
+        for (name, value) in &row.columns {
+            if !header.iter().any(|existing| existing == name) {
+                header.push(name.clone());
+            }
+            row_cells.push(cell_string(value)?);
+        }
+        // Pad rows that omit trailing columns so every cell row matches the header width.
+        while row_cells.len() < header.len() {
+            row_cells.push(String::new());
+        }
+        cells.push(row_cells);
+    }
+    let mut widths = vec![0usize; header.len()];
+    for (index, name) in header.iter().enumerate() {
+        widths[index] = name.chars().count();
+    }
+    for row in &cells {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(cell.chars().count());
+        }
+    }
+    let pad = |text: &str, width: usize| -> String {
+        let mut out = String::from(text);
+        let used = text.chars().count();
+        out.extend(std::iter::repeat_n(' ', width - used));
+        out
+    };
+    let mut lines = Vec::with_capacity(cells.len() + 1);
+    let header_line: Vec<String> = header
+        .iter()
+        .enumerate()
+        .map(|(index, name)| pad(name, widths[index]))
+        .collect();
+    lines.push(header_line.join("  "));
+    for row in &cells {
+        let line: Vec<String> = row
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| pad(cell, widths[index]))
+            .collect();
+        lines.push(line.join("  "));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn cell_string(value: &GqlWireValue) -> Result<String, PreparedError> {
+    let json = gql_wire_value_to_json(value.clone())
+        .map_err(|error| PreparedError::Message(format!("render result value: {error}")))?;
+    Ok(match json {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    })
+}
+
+/// Render the raw result payload as pretty-printed JSON (`--json`).
+pub fn render_json(result: &GqlQueryResult) -> Result<String, PreparedError> {
+    serde_json::to_string_pretty(result)
+        .map_err(|error| PreparedError::Message(format!("serialize result: {error}")))
+}
+
 /// True when the stored record drifts from the local artifact's authored contract.
 fn prepared_drift(artifact: &PreparedOperationArtifact, record: &PreparedOperationRecord) -> bool {
     if record.query != artifact.source {
@@ -562,8 +795,10 @@ mod tests {
         records: HashMap<String, PreparedOperationRecord>,
         manifest: Result<PreparedManifest, RouterError>,
         prepare_results: VecDeque<Result<(), RouterError>>,
+        run_results: VecDeque<Result<GqlQueryResult, RouterError>>,
         calls: Vec<String>,
         sent: Vec<Vec<PreparedRegistration>>,
+        queries: Vec<(String, Vec<u8>, ReadMode)>,
     }
 
     impl FakePreparedTransport {
@@ -572,8 +807,10 @@ mod tests {
                 records,
                 manifest: Err(RouterError::NotFound("no metadata".into())),
                 prepare_results: VecDeque::new(),
+                run_results: VecDeque::new(),
                 calls: Vec::new(),
                 sent: Vec::new(),
+                queries: Vec::new(),
             }
         }
 
@@ -603,6 +840,11 @@ mod tests {
 
         fn with_prepare_results(mut self, results: Vec<Result<(), RouterError>>) -> Self {
             self.prepare_results = results.into();
+            self
+        }
+
+        fn with_run_results(mut self, results: Vec<Result<GqlQueryResult, RouterError>>) -> Self {
+            self.run_results = results.into();
             self
         }
     }
@@ -636,6 +878,20 @@ mod tests {
         fn drop_prepared(&mut self, name: &str) -> Result<Result<(), RouterError>, String> {
             self.calls.push(format!("drop_prepared:{name}"));
             Ok(Ok(()))
+        }
+
+        fn run_query(
+            &mut self,
+            name: &str,
+            params: Vec<u8>,
+            read_mode: &ReadMode,
+        ) -> Result<Result<GqlQueryResult, RouterError>, String> {
+            self.calls.push(format!("prepared_query:{name}"));
+            self.queries
+                .push((name.to_owned(), params, read_mode.clone()));
+            Ok(self.run_results.pop_front().unwrap_or_else(|| {
+                panic!("unexpected prepared_query:{name}; queue a result first")
+            }))
         }
     }
 
@@ -890,5 +1146,226 @@ mod tests {
         let metadata = registration.metadata.expect("metadata must be Some");
         assert_eq!(metadata.name, "op");
         assert_eq!(metadata.kind, OperationKind::Query);
+    }
+
+    // ──── prepared run ────
+
+    use gleaph_gql_ic_wire::GqlWireRow;
+
+    /// A result whose materialized rows carry one text column and one numeric column.
+    fn sample_rows_result() -> GqlQueryResult {
+        let rows = GqlWireRows {
+            rows: vec![
+                GqlWireRow {
+                    columns: vec![
+                        (
+                            "name".to_owned(),
+                            GqlWireValue::Text("Graph databases".into()),
+                        ),
+                        ("depth".to_owned(), GqlWireValue::Uint64(3)),
+                    ],
+                },
+                GqlWireRow {
+                    columns: vec![
+                        ("name".to_owned(), GqlWireValue::Text("GQL".into())),
+                        ("depth".to_owned(), GqlWireValue::Uint64(1)),
+                    ],
+                },
+            ],
+        }
+        .encode_blob()
+        .expect("encode rows blob");
+        GqlQueryResult {
+            row_count: 2,
+            rows_blob: Some(rows),
+            phase: None,
+            token: None,
+        }
+    }
+
+    #[test]
+    fn run_returns_result_and_table_renders_aligned_columns() {
+        let mut transport = FakePreparedTransport::new(HashMap::new())
+            .with_run_results(vec![Ok(sample_rows_result())]);
+        let params = encode_run_params(parse_run_params(&[]).expect("no params")).expect("encode");
+        let result = run(
+            "variable-length-reach",
+            params,
+            ReadMode::Eventual,
+            &mut transport,
+        )
+        .expect("run");
+        assert_eq!(result.row_count, 2);
+        assert_eq!(
+            transport.calls,
+            vec!["prepared_query:variable-length-reach"]
+        );
+
+        let table = render_rows_table(&result).expect("table");
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 3, "header plus two rows");
+        assert!(lines[0].starts_with("name"));
+        // Column alignment: both name cells start at the same offset.
+        let name_offset = lines[0].find("name").expect("header name");
+        assert_eq!(
+            lines[1].find("Graph databases").expect("row cell"),
+            name_offset
+        );
+        assert_eq!(lines[2].find("GQL").expect("second row cell"), name_offset);
+    }
+
+    #[test]
+    fn run_surfaces_unknown_operation_not_found_verbatim() {
+        let missing = "prepared query \"nope\"";
+        let mut transport = FakePreparedTransport::new(HashMap::new())
+            .with_run_results(vec![Err(RouterError::NotFound(missing.into()))]);
+        let error = run("nope", Vec::new(), ReadMode::Eventual, &mut transport)
+            .expect_err("unknown operation must fail");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(missing),
+            "the Router NotFound message must surface verbatim: {rendered}"
+        );
+    }
+
+    #[test]
+    fn run_params_round_trip_through_the_router_codec() {
+        let pairs = [
+            r#"name="Graph databases""#.to_owned(),
+            "depth=3".to_owned(),
+            "tags=[\"a\",\"b\"]".to_owned(),
+            "ratio=0.5".to_owned(),
+            "flag=true".to_owned(),
+        ];
+        let parsed = parse_run_params(&pairs).expect("parse");
+        let blob = encode_run_params(parsed).expect("encode");
+
+        // Decode with the exact Router-side decoder to prove byte-level agreement.
+        let decoded = gleaph_gql_ic::decode_gql_params_blob(&blob).expect("router decode");
+        assert_eq!(
+            decoded.get("name").expect("name param"),
+            &GqlValue::Text("Graph databases".into())
+        );
+        assert_eq!(
+            decoded.get("depth").expect("depth param"),
+            &GqlValue::Int64(3)
+        );
+        assert_eq!(
+            decoded.get("tags").expect("tags param"),
+            &GqlValue::List(vec![GqlValue::Text("a".into()), GqlValue::Text("b".into())])
+        );
+        assert_eq!(
+            decoded.get("ratio").expect("ratio param"),
+            &GqlValue::Float64(0.5)
+        );
+        assert_eq!(
+            decoded.get("flag").expect("flag param"),
+            &GqlValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn run_plumbs_at_least_token_into_the_outgoing_call() {
+        let token = MutationToken {
+            mutation_id: 7,
+            shards: vec![gleaph_graph_kernel::plan_exec::MutationTokenShard {
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                label_stats_seq: None,
+            }],
+        };
+        let mut transport = FakePreparedTransport::new(HashMap::new())
+            .with_run_results(vec![Err(RouterError::NotAuthorized)]);
+        let params = encode_run_params(parse_run_params(&["id=42".to_owned()]).expect("params"))
+            .expect("encode");
+        let error = run(
+            "some-op",
+            params.clone(),
+            ReadMode::AtLeast(token.clone()),
+            &mut transport,
+        )
+        .expect_err("queued verdict must propagate");
+        assert!(error.to_string().contains("not authorized"));
+
+        // The wrong implementation that drops the caller-selected read mode would capture
+        // Eventual here instead of the token.
+        let (sent_name, sent_params, sent_mode) = transport.queries[0].clone();
+        assert_eq!(sent_name, "some-op");
+        assert_eq!(sent_params, params);
+        assert_eq!(sent_mode, ReadMode::AtLeast(token));
+    }
+
+    #[test]
+    fn parse_run_params_rejects_invalid_input_before_any_call() {
+        // Missing '=' separator.
+        assert!(parse_run_params(&["just-a-name".to_owned()]).is_err());
+        // Empty parameter name.
+        assert!(parse_run_params(&["=1".to_owned()]).is_err());
+        // Unparsable value.
+        let error = parse_run_params(&["x={not json}".to_owned()]).expect_err("unparsable");
+        assert!(error.to_string().contains("not a JSON scalar or array"));
+        // Duplicate names.
+        let error = parse_run_params(&["x=1".to_owned(), "x=2".to_owned()])
+            .expect_err("duplicate must fail");
+        assert!(error.to_string().contains("duplicate --param name"));
+        // Object values are out of scope.
+        let error = parse_run_params(&["x={\"a\":1}".to_owned()]).expect_err("object value");
+        assert!(error.to_string().contains("objects are not accepted"));
+    }
+
+    #[test]
+    fn parse_read_mode_selects_eventual_at_least_and_rejects_unknown() {
+        assert_eq!(
+            parse_read_mode(&["eventual".to_owned()]).expect("eventual"),
+            ReadMode::Eventual
+        );
+        let token_json = r#"{"mutation_id":9,"shards":[{"shard_id":2,"label_stats_seq":null}]}"#;
+        let mode = parse_read_mode(&["at-least".to_owned(), token_json.to_owned()])
+            .expect("at-least with token");
+        let gleaph_graph_kernel::plan_exec::ReadMode::AtLeast(token) = &mode else {
+            panic!("expected AtLeast, got {mode:?}");
+        };
+        assert_eq!(token.mutation_id, 9);
+
+        assert!(
+            parse_read_mode(&["at-least".to_owned()]).is_err(),
+            "missing token"
+        );
+        assert!(
+            parse_read_mode(&["strong".to_owned()]).is_err(),
+            "unknown mode must be rejected"
+        );
+        assert!(
+            parse_read_mode(&[]).is_err(),
+            "an absent --read-mode value must not resolve"
+        );
+    }
+
+    #[test]
+    fn render_json_prints_the_raw_payload_and_empty_results_render_no_table() {
+        let json = render_json(&sample_rows_result()).expect("json");
+        assert!(json.contains("\"row_count\": 2"), "{json}");
+        assert!(json.contains("\"rows_blob\""), "{json}");
+
+        // A count-only result renders no table rather than an empty grid.
+        let count_only = GqlQueryResult {
+            row_count: 5,
+            rows_blob: None,
+            phase: None,
+            token: None,
+        };
+        assert_eq!(
+            render_rows_table(&count_only).expect("count-only table"),
+            String::new()
+        );
+        let empty_rows = GqlQueryResult {
+            row_count: 0,
+            rows_blob: Some(GqlWireRows::default().encode_blob().expect("encode")),
+            phase: None,
+            token: None,
+        };
+        assert_eq!(
+            render_rows_table(&empty_rows).expect("empty table"),
+            String::new()
+        );
     }
 }

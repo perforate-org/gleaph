@@ -1,25 +1,21 @@
 //! The top-level Gleaph command-line interface.
 
 use clap::{CommandFactory, Parser, Subcommand};
-use config::{ConfigEnv, DirKey, LoadedConfig};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use thiserror::Error;
 
-pub mod auth;
-pub mod config;
-pub mod identity;
-pub mod load;
-pub mod migration;
-pub mod network;
-pub mod prepared;
-pub mod progress;
-pub mod remote;
-
-use load::{LoadArgs, LoadError};
-use migration::{MigrationDirArgs, MigrationError};
-use prepared::PreparedDirArgs;
+use gleaph_cli::{
+    auth,
+    config::{self, ConfigEnv, DirKey, LoadedConfig},
+    identity,
+    load::{self, LoadArgs, LoadError},
+    migration::{self, MigrationDirArgs, MigrationError},
+    network,
+    prepared::{self, PreparedDirArgs},
+    remote,
+};
 
 #[derive(Debug, Error)]
 enum CliError {
@@ -191,6 +187,8 @@ enum PreparedCommand {
     Apply(RemotePreparedArgs),
     /// Remove one named prepared operation from Router storage.
     Drop(DropPreparedArgs),
+    /// Execute a registered read-only prepared operation with shell parameters.
+    Run(RunPreparedArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -239,6 +237,26 @@ struct DropPreparedArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct RunPreparedArgs {
+    #[command(flatten)]
+    remote: RemotePreparedArgs,
+    /// Registered read-only prepared operation name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Parameter binding `NAME=VALUE` where VALUE is a JSON scalar or array; repeatable.
+    #[arg(long, value_name = "NAME=VALUE")]
+    param: Vec<String>,
+    /// Read-consistency contract (ADR 0029 §5): `eventual` (default), or
+    /// `at-least <TOKEN>` where TOKEN is the mutation token issued by an idempotent
+    /// write, as JSON (`{"mutation_id":...,"shards":[...]}`).
+    #[arg(long, value_name = "MODE", num_args = 1..=2, default_value = "eventual")]
+    read_mode: Vec<String>,
+    /// Print the raw result payload as JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
 struct NewPreparedArgs {
     #[command(flatten)]
     dir: PreparedDirArgs,
@@ -284,7 +302,7 @@ fn parse_and_dispatch(args: Vec<String>, env: ConfigEnv) -> Result<(), CliError>
     };
     if !matches!(
         first.as_str(),
-        "codegen" | "migration" | "load" | "prepared" | "-h" | "--help"
+        "codegen" | "migration" | "load" | "embed" | "prepared" | "-h" | "--help"
     ) {
         return Err(CliError::Message(format!("unknown command {first:?}")));
     }
@@ -945,6 +963,38 @@ fn execute_prepared(
             println!("dropped {}", args.name);
             Ok(())
         }
+        PreparedCommand::Run(args) => {
+            // Validate the name and every parameter before any network call so shell quoting
+            // mistakes fail fast without a round trip.
+            let params = prepared::parse_run_params(&args.param)?;
+            let read_mode = prepared::parse_read_mode(&args.read_mode)?;
+            let params_blob = prepared::encode_run_params(params)?;
+            let remote = required_remote(
+                args.remote.canister.as_deref(),
+                args.remote.network.as_deref(),
+                args.remote.identity.as_deref(),
+                args.remote.fetch_root_key,
+                env,
+                loaded,
+            )?;
+            let mut transport = RouterPreparedTransport::connect(
+                &remote.canister,
+                &remote.network,
+                remote.identity.as_deref(),
+                remote.fetch_root_key,
+            )?;
+            let result = prepared::run(&args.name, params_blob, read_mode, &mut transport)?;
+            if args.json {
+                println!("{}", prepared::render_json(&result)?);
+            } else {
+                let table = prepared::render_rows_table(&result)?;
+                if !table.is_empty() {
+                    println!("{table}");
+                }
+                println!("{} rows", result.row_count);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1040,8 +1090,8 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use super::config::{ConfigEnv, LoadedConfig};
     use super::{resolve_codegen, resolve_load, run, run_with_env};
-    use crate::config::{ConfigEnv, LoadedConfig};
     use crate::load::LoadArgs;
     use std::fs;
     use std::path::{Path, PathBuf};
