@@ -1,13 +1,25 @@
 //! Durable Graph-owned scope records for ADR 0059 canonical exports.
 
-use gleaph_graph_kernel::canonical_export::CanonicalExportRecord;
+use gleaph_graph_kernel::canonical_export::{CanonicalExportRecord, CanonicalExportStableRecord};
 use gleaph_graph_kernel::index::PhysicalIndexId;
 use ic_stable_structures::{Memory, StableBTreeMap};
 
 /// One lifecycle record per physical posting namespace. Cursor positions are deliberately not
 /// stored here: the migration owner persists the opaque token returned by each export page.
 pub(crate) struct CanonicalExportScopeStore<M: Memory> {
-    scopes: StableBTreeMap<PhysicalIndexId, CanonicalExportRecord, M>,
+    scopes: StableBTreeMap<PhysicalIndexId, CanonicalExportStableRecord, M>,
+}
+
+/// Write path: every durable row carries the versioned envelope tag.
+fn to_envelope(record: CanonicalExportRecord) -> CanonicalExportStableRecord {
+    CanonicalExportStableRecord::V1(record)
+}
+
+/// Read path: unwrap the only supported envelope variant back to the business record.
+fn from_envelope(envelope: CanonicalExportStableRecord) -> CanonicalExportRecord {
+    match envelope {
+        CanonicalExportStableRecord::V1(record) => record,
+    }
 }
 
 impl<M: Memory> CanonicalExportScopeStore<M> {
@@ -18,7 +30,7 @@ impl<M: Memory> CanonicalExportScopeStore<M> {
     }
 
     pub(crate) fn get(&self, physical_index_id: PhysicalIndexId) -> Option<CanonicalExportRecord> {
-        self.scopes.get(&physical_index_id)
+        self.scopes.get(&physical_index_id).map(from_envelope)
     }
 
     pub(crate) fn insert(
@@ -26,14 +38,16 @@ impl<M: Memory> CanonicalExportScopeStore<M> {
         physical_index_id: PhysicalIndexId,
         record: CanonicalExportRecord,
     ) -> Option<CanonicalExportRecord> {
-        self.scopes.insert(physical_index_id, record)
+        self.scopes
+            .insert(physical_index_id, to_envelope(record))
+            .map(from_envelope)
     }
 
     pub(crate) fn remove(
         &mut self,
         physical_index_id: PhysicalIndexId,
     ) -> Option<CanonicalExportRecord> {
-        self.scopes.remove(&physical_index_id)
+        self.scopes.remove(&physical_index_id).map(from_envelope)
     }
 
     pub(crate) fn into_memory(self) -> M {

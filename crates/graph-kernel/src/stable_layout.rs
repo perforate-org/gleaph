@@ -811,7 +811,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "canonical export",
             "PhysicalIndexId → immutable Graph-owned canonical export scope and inline decode projection (ADR 0059)",
             RebuildPath::None,
-            ProductionCompat::RegenerateByContract,
+            ProductionCompat::VersionedSurvivor,
         ),
         region(
             "INDEX_PENDING_FLOOR",
@@ -1558,7 +1558,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
 ///
 /// Canonical regions (router auth, shard catalog, ownership, index defs) mirror `graph-index`.
 /// The vector canister is the sole durable owner of active Vector rows. Physical IVF projections
-/// (MemoryIds 5, 6, 9, 10, and 12) rebuild from those active rows through the live
+/// (MemoryIds 5, 6, 9, 10, 12, and 18) rebuild from those active rows through the live
 /// `admin_start_vector_rebuild` entry point. `VECTOR_SUBJECT_TO_ID` and `VECTOR_ROW_SLAB` declare
 /// the symbolic `client_reingestion` recovery contract, not an API: loss of their durable rows
 /// requires clients to re-ingest active vectors. `IVF_CENTROIDS` (MemoryId 6) is reserved empty in
@@ -1760,6 +1760,18 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
              subject-map slot order is unstable under removal (ADR 0064 §5). Operational bookkeeping, \
              not a query-facing index or canonical fact: it carries no rebuild path",
             RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
+        region(
+            "VECTOR_REBUILD_POOL",
+            18,
+            StableMemoryClass::Derived,
+            "vector rebuild lifecycle",
+            "Single-tenant raw pool region (ADR 0033 implementation) behind a VRP/version-1 header: \
+             frozen Sampling/Training candidate rows (pad-stride stored bytes + aux) plus the \
+             Training centroid work area, bound to one in-flight rebuild and released at teardown; \
+             reconstructible by re-running a rebuild from the active version",
+            RebuildPath::Named("admin_start_vector_rebuild"),
             ProductionCompat::Unaudited,
         ),
     ],
@@ -2027,10 +2039,10 @@ mod tests {
             compat_of("DERIVED_INDEX_OUTBOX"),
             ProductionCompat::VersionedSurvivor
         );
-        // Explicit no-envelope regeneration contract (canonical_export.rs).
+        // Versioned envelope since Plan 0301 (was RegenerateByContract).
         assert_eq!(
             compat_of("CANONICAL_EXPORT_SCOPES"),
-            ProductionCompat::RegenerateByContract
+            ProductionCompat::VersionedSurvivor
         );
         // Pure projection co-updated with journal/outbox floors.
         assert_eq!(
@@ -2229,9 +2241,9 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 18);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 17);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(17));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 19);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 18);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(18));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -2358,6 +2370,20 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[17].rebuild,
             RebuildPath::None
         ));
+        // ADR 0033 implementation: single-tenant raw rebuild-pool region, derived/rebuildable by
+        // re-running a rebuild from the active version.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[18].symbol,
+            "VECTOR_REBUILD_POOL"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[18].class,
+            StableMemoryClass::Derived
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[18].rebuild,
+            RebuildPath::Named("admin_start_vector_rebuild")
+        );
     }
 
     #[test]

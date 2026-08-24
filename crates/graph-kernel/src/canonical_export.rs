@@ -186,10 +186,20 @@ pub enum CanonicalExportPhase {
     Aborting,
 }
 
+/// Versioned Candid wire envelope for one durable MemoryId 51 value.
+///
+/// Persisted rows always carry this outer tag so a future schema revision is wire-additive
+/// (a new variant) instead of bricking decode of existing rows.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum CanonicalExportStableRecord {
+    V1(CanonicalExportRecord),
+}
+
 /// Durable value stored under one `PhysicalIndexId` in Graph MemoryId 51.
 ///
-/// The shape intentionally replaces the pre-lifecycle scope value in place. There is no legacy
-/// decoder: development stable data is regenerated when this pre-release shape changes.
+/// Rows persist through [`CanonicalExportStableRecord::V1`]: schema revisions add a new
+/// envelope variant instead of replacing bytes in place (Plan 0301; registry compat is
+/// `ProductionCompat::VersionedSurvivor`).
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct CanonicalExportRecord {
     /// Immutable logical scope identity. `catalog_epoch` is the registration (old-epoch) value;
@@ -303,7 +313,7 @@ impl Storable for CanonicalExportScope {
     }
 }
 
-impl Storable for CanonicalExportRecord {
+impl Storable for CanonicalExportStableRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
@@ -315,7 +325,11 @@ impl Storable for CanonicalExportRecord {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("canonical export record must decode")
+        match Decode!(bytes.as_ref(), Self).expect("canonical export record must decode") {
+            // Exhaustive over the envelope: a future variant forces an explicit decision here,
+            // and foreign Candid payloads fail closed through the expect above.
+            v1 @ Self::V1(_) => v1,
+        }
     }
 }
 
@@ -360,29 +374,111 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nested_canonical_export_record_round_trips_through_stable_encoding() {
-        let mut record = CanonicalExportRecord {
-            scope: scope(),
-            phase: CanonicalExportPhase::Sealing,
+    /// Builds one enveloped lifecycle record over an arbitrary scope projection.
+    fn envelope_record(
+        target: CanonicalExportTarget,
+        inline: Option<CanonicalInlineProjection>,
+        phase: CanonicalExportPhase,
+    ) -> CanonicalExportRecord {
+        CanonicalExportRecord {
+            scope: CanonicalExportScope {
+                graph_id: GraphId::from_raw(7),
+                index_name_id: IndexNameId::from_raw(9),
+                catalog_epoch: 11,
+                target,
+                inline,
+            },
+            phase,
             epoch: 12,
             admitted_through: 9,
             drained_through: 7,
-        };
-        record.scope.target = CanonicalExportTarget::Vertex {
-            label_id: 4,
-            property_id: PropertyId::from_raw(6),
-            record_source: Some(CanonicalRecordSource {
-                ancestor_property_id: PropertyId::from_raw(5),
-                field_tail: "meta.deep".to_owned(),
-            }),
-        };
-        let bytes = Storable::into_bytes(record.clone());
-        assert_eq!(
-            CanonicalExportRecord::from_bytes(Cow::Owned(bytes)),
-            record,
-            "the exact nested record_source and lifecycle watermarks survive Candid"
-        );
+        }
+    }
+
+    #[test]
+    fn v1_envelope_round_trips_every_target_across_building_and_active() {
+        let cases = [
+            (
+                "flat vertex",
+                CanonicalExportTarget::Vertex {
+                    label_id: 4,
+                    property_id: PropertyId::from_raw(6),
+                    record_source: None,
+                },
+                None,
+            ),
+            (
+                "nested vertex",
+                CanonicalExportTarget::Vertex {
+                    label_id: 4,
+                    property_id: PropertyId::from_raw(6),
+                    record_source: Some(CanonicalRecordSource {
+                        ancestor_property_id: PropertyId::from_raw(5),
+                        field_tail: "meta.deep".to_owned(),
+                    }),
+                },
+                None,
+            ),
+            (
+                "sidecar edge",
+                CanonicalExportTarget::Edge {
+                    label_id: EdgeLabelId::from_raw(3),
+                    property_id: PropertyId::from_raw(5),
+                    direction: EdgeIndexDirection::Any,
+                },
+                None,
+            ),
+            (
+                "inline edge",
+                CanonicalExportTarget::Edge {
+                    label_id: EdgeLabelId::from_raw(3),
+                    property_id: PropertyId::from_raw(5),
+                    direction: EdgeIndexDirection::Any,
+                },
+                Some(CanonicalInlineProjection {
+                    source_property_id: PropertyId::from_raw(5),
+                    byte_offset: 0,
+                    source_profile: EdgeInlinePropertyProfile {
+                        byte_width: 4,
+                        encoding: EdgeInlinePropertyEncoding::F32,
+                    },
+                    value_profile: EdgeInlinePropertyProfile {
+                        byte_width: 4,
+                        encoding: EdgeInlinePropertyEncoding::F32,
+                    },
+                }),
+            ),
+        ];
+        for phase in [CanonicalExportPhase::Building, CanonicalExportPhase::Active] {
+            for (label, target, inline) in &cases {
+                let record = envelope_record(target.clone(), inline.clone(), phase);
+                let expected = CanonicalExportStableRecord::V1(record.clone());
+                let bytes = Storable::into_bytes(expected.clone());
+
+                // The outer tag comes first: durable rows carry the V1 envelope, never a bare
+                // pre-envelope record payload.
+                assert_eq!(
+                    Decode!(bytes.as_ref(), CanonicalExportStableRecord)
+                        .expect("canonical export record must decode"),
+                    expected,
+                    "{label} rows must persist behind the V1 envelope tag",
+                );
+                assert_eq!(
+                    CanonicalExportStableRecord::from_bytes(Cow::Owned(bytes)),
+                    expected,
+                    "{label} record must survive the stable round trip in {phase:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "canonical export record must decode")]
+    fn foreign_scope_bytes_rejected_by_record_decode() {
+        // Encoded CanonicalExportScope bytes are foreign to the enveloped record layout and must
+        // fail closed instead of decoding into any envelope variant.
+        let foreign = Storable::into_bytes(scope());
+        drop(CanonicalExportStableRecord::from_bytes(Cow::Owned(foreign)));
     }
 
     #[test]
