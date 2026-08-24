@@ -1182,7 +1182,6 @@ pub(super) fn expr_is_group_compatible(expr: &Expr, group_items: &[Expr]) -> boo
                     .as_ref()
                     .is_none_or(|inner| expr_is_group_compatible(inner, group_items))
         }
-        #[cfg(feature = "sql-compat")]
         ExprKind::InList { expr, list, .. } => {
             expr_is_group_compatible(expr, group_items)
                 && list

@@ -158,7 +158,6 @@ pub(super) fn validate_expr(
             Ok(())
         }
 
-        #[cfg(feature = "sql-compat")]
         ExprKind::InList { expr, list, .. } => {
             validate_expr(expr, scope, graph_scope)?;
             for e in list {

@@ -36,10 +36,10 @@ use crate::plan::expr_evaluator::{
     SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr, eval_asin_expr,
     eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr, eval_compare_expr,
     eval_concat_expr, eval_cos_expr, eval_cosh_expr, eval_cot_expr, eval_degrees_expr,
-    eval_exp_expr, eval_floor_expr, eval_ln_expr, eval_log_expr, eval_log10_expr, eval_mod_expr,
-    eval_not_expr, eval_or_expr, eval_power_expr, eval_radians_expr, eval_sin_expr, eval_sinh_expr,
-    eval_sqrt_expr, eval_tan_expr, eval_tanh_expr, eval_unary_expr, eval_xor_expr,
-    searched_case_when_outcome,
+    eval_exp_expr, eval_floor_expr, eval_in_list_expr, eval_ln_expr, eval_log_expr,
+    eval_log10_expr, eval_mod_expr, eval_not_expr, eval_or_expr, eval_power_expr,
+    eval_radians_expr, eval_sin_expr, eval_sinh_expr, eval_sqrt_expr, eval_tan_expr,
+    eval_tanh_expr, eval_unary_expr, eval_xor_expr, searched_case_when_outcome,
 };
 use crate::plan::time::{
     current_date_value, current_datetime_value, current_local_datetime_value,
@@ -414,6 +414,19 @@ impl QueryExprEvaluator<'_> {
                 let left = self.eval_expr(row, left)?;
                 let right = self.eval_expr(row, right)?;
                 eval_compare_expr(left, *op, right).map_err(PlanQueryError::from)
+            }
+            ExprKind::InList { expr, list, negated } => {
+                let left = self.eval_expr(row, expr)?;
+                let mut elements = Vec::with_capacity(list.len());
+                for element in list {
+                    elements.push(self.eval_expr(row, element)?);
+                }
+                let matched = eval_in_list_expr(left, &elements)?;
+                if *negated {
+                    eval_not_expr(matched).map_err(PlanQueryError::from)
+                } else {
+                    Ok(matched)
+                }
             }
             ExprKind::IsNull(expr) => Ok(Value::Bool(self.eval_expr(row, expr)? == Value::Null)),
             ExprKind::IsNotNull(expr) => Ok(Value::Bool(self.eval_expr(row, expr)? != Value::Null)),
@@ -2385,6 +2398,215 @@ mod tests {
             result.rows[0].get("name"),
             Some(&Value::Text("Filter Ada".into()))
         );
+    }
+
+    /// `lhs IN (elements…)` predicate with optional NOT.
+    fn in_list_pred(lhs: Expr, elements: Vec<Expr>, negated: bool) -> Expr {
+        Expr::new(ExprKind::InList {
+            expr: Box::new(lhs),
+            list: elements,
+            negated,
+        })
+    }
+
+    fn literal(value: Value) -> Expr {
+        Expr::new(ExprKind::Literal(value))
+    }
+
+    fn run_in_list_filter(
+        store: &GraphStore,
+        predicate: Expr,
+    ) -> Result<PlanQueryResult, PlanQueryError> {
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("QueryPersonInList".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![predicate],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("n", "name"), "name")],
+                distinct: false,
+            },
+        ]);
+        store.execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+    }
+
+    fn seed_in_list_store() -> GraphStore {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["QueryPersonInList"],
+                [
+                    ("name", Value::Text("InList Ada".into())),
+                    ("age", Value::Int64(37)),
+                ],
+            )
+            .expect("insert matching vertex");
+        store
+            .insert_vertex_named(
+                ["QueryPersonInList"],
+                [
+                    ("name", Value::Text("InList Bob".into())),
+                    ("age", Value::Int64(12)),
+                ],
+            )
+            .expect("insert non-matching vertex");
+        // A vertex without the tested property exercises the NULL operand path.
+        store
+            .insert_vertex_named(
+                ["QueryPersonInList"],
+                [("name", Value::Text("InList NoAge".into()))],
+            )
+            .expect("insert null-property vertex");
+        store
+    }
+
+    #[test]
+    fn property_filter_in_list_keeps_only_matching_vertices() {
+        let store = seed_in_list_store();
+        let result = run_in_list_filter(
+            &store,
+            in_list_pred(
+                prop("n", "age"),
+                vec![literal(Value::Int64(12)), literal(Value::Int64(37))],
+                false,
+            ),
+        )
+        .expect("in list executes");
+
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["InList Ada", "InList Bob"]
+        );
+    }
+
+    #[test]
+    fn property_filter_not_in_list_negates_boolean_outcomes() {
+        // NOT IN over a list nobody matches keeps exactly the vertices with a
+        // definite (non-NULL) property: false -> true for Ada/Bob, while NoAge's
+        // NULL operand stays UNKNOWN under negation and must stay out.
+        let store = seed_in_list_store();
+        let result = run_in_list_filter(
+            &store,
+            in_list_pred(prop("n", "age"), vec![literal(Value::Int64(99))], true),
+        )
+        .expect("not in list executes");
+
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["InList Ada", "InList Bob"]
+        );
+
+        // Over a list both matching vertices belong to, every negated outcome is
+        // FALSE or UNKNOWN — no row survives.
+        let store = seed_in_list_store();
+        let result = run_in_list_filter(
+            &store,
+            in_list_pred(
+                prop("n", "age"),
+                vec![literal(Value::Int64(12)), literal(Value::Int64(37))],
+                true,
+            ),
+        )
+        .expect("not in list executes");
+        assert!(
+            result.rows.is_empty(),
+            "NOT IN must drop matches and keep UNKNOWN out, got {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn in_list_with_null_element_keeps_unknown_rows_out() {
+        // age = 9 IN (5, NULL) is UNKNOWN (dropped), not FALSE-kept by negation:
+        // NOT IN over the same list is UNKNOWN too and stays dropped.
+        for negated in [false, true] {
+            let store = seed_in_list_store();
+            let result = run_in_list_filter(
+                &store,
+                in_list_pred(
+                    prop("n", "age"),
+                    vec![
+                        literal(Value::Int64(5)),
+                        literal(Value::Null),
+                        literal(Value::Int64(9)),
+                    ],
+                    negated,
+                ),
+            )
+            .expect("null-element in list executes");
+            assert!(
+                result.rows.is_empty(),
+                "negated={negated} must drop every row under UNKNOWN, got {:?}",
+                result.rows
+            );
+        }
+    }
+
+    #[test]
+    fn in_list_missing_property_is_null_operand_and_dropped() {
+        // A vertex missing the property yields NULL IN (...) → UNKNOWN → dropped;
+        // the same holds under NOT IN (UNKNOWN is not TRUE).
+        for negated in [false, true] {
+            let store = GraphStore::new();
+            store
+                .insert_vertex_named(
+                    ["QueryPersonInList"],
+                    [("name", Value::Text("InList NoAge".into()))],
+                )
+                .expect("insert null-property vertex");
+            let result = run_in_list_filter(
+                &store,
+                in_list_pred(prop("n", "age"), vec![literal(Value::Int64(37))], negated),
+            )
+            .expect("missing-property in list executes");
+            assert!(
+                result.rows.is_empty(),
+                "negated={negated} NULL operand must stay dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn in_list_type_mismatch_fails_closed() {
+        let store = seed_in_list_store();
+        let err = run_in_list_filter(
+            &store,
+            in_list_pred(prop("n", "age"), vec![literal(Value::Text("old".into()))], false),
+        )
+        .expect_err("type mismatch must fail closed");
+        assert!(
+            matches!(err, PlanQueryError::ExpressionIncomparableValues { .. }),
+            "expected incomparable-values error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn in_list_evaluates_lhs_and_elements_as_general_expressions() {
+        // Both sides are ordinary expressions: `n.age - 25 IN (10 + 2, 7)` keeps
+        // only Ada (37 - 25 == 10 + 2); Bob (12 - 25 = -13) matches neither element.
+        let store = seed_in_list_store();
+        let lhs = Expr::new(ExprKind::BinaryOp {
+            left: Box::new(prop("n", "age")),
+            op: gleaph_gql::ast::BinaryOp::Sub,
+            right: Box::new(literal(Value::Int64(25))),
+        });
+        let element_add = Expr::new(ExprKind::BinaryOp {
+            left: Box::new(literal(Value::Int64(10))),
+            op: gleaph_gql::ast::BinaryOp::Add,
+            right: Box::new(literal(Value::Int64(2))),
+        });
+        let result = run_in_list_filter(
+            &store,
+            in_list_pred(lhs, vec![element_add, literal(Value::Int64(7))], false),
+        )
+        .expect("expression in list executes");
+
+        assert_eq!(text_column(&result, "name"), vec!["InList Ada"]);
     }
 
     #[test]

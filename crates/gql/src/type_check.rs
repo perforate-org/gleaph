@@ -1532,7 +1532,6 @@ fn expr_contains_aggregate(expr: &Expr) -> bool {
         ExprKind::ExistsSubquery(_) | ExprKind::ExistsPattern(_) | ExprKind::ValueSubquery(_) => {
             false // subquery aggregates are scoped
         }
-        #[cfg(feature = "sql-compat")]
         ExprKind::InList { expr, list, .. } => {
             expr_contains_aggregate(expr) || list.iter().any(expr_contains_aggregate)
         }

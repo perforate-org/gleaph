@@ -86,6 +86,35 @@ pub(crate) fn eval_compare_expr(
     Ok(Value::Bool(matched))
 }
 
+/// `left IN (elements…)` under Cypher/GQL three-valued logic.
+///
+/// Every element is compared eagerly with [`CmpOp::Eq`] semantics so a type
+/// mismatch anywhere in the list fails closed through the same
+/// [`ExprEvaluationError::IncomparableValues`] path as the desugared OR-chain of
+/// comparisons. Any match yields `Bool(true)`; otherwise a `Null` operand or
+/// element (unknown comparison) yields `Null`; no match and no unknown yields
+/// `Bool(false)`.
+pub(crate) fn eval_in_list_expr(
+    left: Value,
+    elements: &[Value],
+) -> Result<Value, ExprEvaluationError> {
+    let mut matched = false;
+    let mut saw_unknown = left == Value::Null;
+    for element in elements {
+        match eval_compare_expr(left.clone(), CmpOp::Eq, element.clone())? {
+            Value::Bool(true) => matched = true,
+            Value::Bool(false) => {}
+            Value::Null => saw_unknown = true,
+            other => unreachable!("eval_compare_expr returns Bool or Null, got {other:?}"),
+        }
+    }
+    Ok(match (matched, saw_unknown) {
+        (true, _) => Value::Bool(true),
+        (false, true) => Value::Null,
+        (false, false) => Value::Bool(false),
+    })
+}
+
 pub(crate) fn compare_property_values(left: &Value, right: &Value) -> Option<Ordering> {
     compare_values(left, right)
 }
@@ -875,6 +904,109 @@ mod tests {
         assert_eq!(
             eval_compare_expr(Value::Text("a".into()), CmpOp::Lt, Value::Int64(1)),
             Err(ExprEvaluationError::IncomparableValues)
+        );
+    }
+
+    #[test]
+    fn in_list_matches_any_element() {
+        assert_eq!(
+            eval_in_list_expr(
+                Value::Int64(2),
+                &[Value::Int64(1), Value::Int64(2), Value::Int64(3)]
+            )
+            .expect("in list match"),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn in_list_without_match_is_false() {
+        assert_eq!(
+            eval_in_list_expr(Value::Int64(9), &[Value::Int64(1), Value::Int64(2)]).expect(
+                "in list without match"
+            ),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn in_list_over_empty_list_is_false() {
+        assert_eq!(
+            eval_in_list_expr(Value::Int64(1), &[]).expect("empty in list"),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn in_list_null_left_operand_is_unknown() {
+        assert_eq!(
+            eval_in_list_expr(Value::Null, &[Value::Int64(1)]).expect("null left operand"),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn in_list_null_element_makes_non_match_unknown() {
+        // A Null element cannot prove or disprove membership: without a match the
+        // result stays UNKNOWN even though other elements compared false.
+        assert_eq!(
+            eval_in_list_expr(Value::Int64(9), &[Value::Int64(1), Value::Null]).expect(
+                "null element"
+            ),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn in_list_match_outranks_unknown_elements() {
+        // A proven match wins over an unknown comparison elsewhere in the list.
+        assert_eq!(
+            eval_in_list_expr(Value::Int64(1), &[Value::Int64(1), Value::Null]).expect(
+                "match with null element"
+            ),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn in_list_numeric_widening_matches_across_widths() {
+        // Equality follows the existing compare semantics: exact numerics compare
+        // across widths (Uint8(5) equals Int64(5)).
+        assert_eq!(
+            eval_in_list_expr(Value::Uint8(5), &[Value::Int64(5)]).expect("cross-width equality"),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn in_list_type_mismatch_fails_closed() {
+        // Eager evaluation: every element is compared, so a mismatch anywhere errors
+        // through the same IncomparableValues path as the desugared OR-chain.
+        assert_eq!(
+            eval_in_list_expr(Value::Int64(1), &[Value::Int64(2), Value::Text("a".into())]),
+            Err(ExprEvaluationError::IncomparableValues)
+        );
+    }
+
+    #[test]
+    fn not_in_list_negation_follows_three_valued_logic() {
+        let negate = |value| eval_not_expr(value).expect("three-valued not");
+        // true -> false
+        assert_eq!(
+            negate(eval_in_list_expr(Value::Int64(1), &[Value::Int64(1)]).expect("match")),
+            Value::Bool(false)
+        );
+        // false -> true
+        assert_eq!(
+            negate(eval_in_list_expr(Value::Int64(1), &[Value::Int64(2)]).expect("no match")),
+            Value::Bool(true)
+        );
+        // UNKNOWN stays UNKNOWN
+        assert_eq!(
+            negate(
+                eval_in_list_expr(Value::Null, &[Value::Int64(2)]).expect("unknown left operand")
+            ),
+            Value::Null
         );
     }
 

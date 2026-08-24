@@ -53,7 +53,6 @@ pub(crate) fn infer_expr(env: &TypeEnv<'_>, expr: &Expr) -> Type {
             keyword: Keyword::new("BOOL"),
         }),
 
-        #[cfg(feature = "sql-compat")]
         ExprKind::InList { .. } => Type::Scalar(ValueType::Bool {
             keyword: Keyword::new("BOOL"),
         }),

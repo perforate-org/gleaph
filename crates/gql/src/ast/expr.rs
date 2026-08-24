@@ -129,9 +129,12 @@ pub enum ExprKind {
     /// IS NOT NULL
     IsNotNull(Box<Expr>),
 
-    // ── IN predicate — sql-compat extension (not in GQL) ──
-    /// expr IN (list-of-exprs)
-    #[cfg(feature = "sql-compat")]
+    // ── IN predicate — dialect extension (not in GQL) ──
+    /// expr IN (list-of-exprs) / expr IN [list-of-exprs].
+    ///
+    /// Produced by the `sql-compat` paren form and the `cypher` list/paren forms;
+    /// the AST variant itself is dialect-independent so type checking, planning,
+    /// and execution stay feature-combination independent.
     InList {
         expr: Box<Expr>,
         list: Vec<Expr>,

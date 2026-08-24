@@ -208,7 +208,6 @@ pub fn for_each_immediate_child_expr(expr: &Expr, mut visit: impl FnMut(&Expr)) 
                 visit(p);
             }
         }
-        #[cfg(feature = "sql-compat")]
         ExprKind::InList { expr: e, list, .. } => {
             visit(e);
             for item in list {
