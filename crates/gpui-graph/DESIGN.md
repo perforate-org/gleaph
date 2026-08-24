@@ -1462,6 +1462,35 @@ noise). The planning number that replaces the ADR's 60–120 ms projection is
 and the quantity S4b's thread scaling attacks. Wire sizes match the ADR's
 sub-megabyte projection (770 kB at 5k nodes).
 
+### The application channel: `PostMessageChannel` (ADR 0076, post-S4a)
+
+S4a left the main-thread channel as ~150 lines of hand-rolled plumbing per
+host; a second host duplicated them. The generic part now ships in the
+library, split by target:
+
+- `worker::pipe_core` (platform-independent, natively unit-tested) owns the
+  replay queue (sends made before worker readiness are queued and flushed in
+  posting order), the envelope tags (`LIB_REQUEST = 1` for verbatim
+  library-encoded requests, `APP_MUTATION = 2` for application-owned bytes),
+  the `"ready"` handshake string, and the `PayloadCodec` seam — the formal
+  name for the S2 rule that merge/apply byte forms belong to applications
+  (`PayloadCodecRequired` fail-closed without one).
+- `worker::web_transport` (wasm only) hosts `PostMessageChannel`, a ready-made
+  `WorkerChannel` implementation over those primitives: module-worker spawn,
+  readiness handshake with ordered replay, envelope routing, frame delivery
+  to an app-supplied sink, error reporting (`ChannelError`; corrupt or
+  unroutable messages are dropped and reported, never partially applied), and
+  a clonable `PipeHandle` so apps keep injecting scene data after handing the
+  channel to the view. `web_transport::serve(backend, codec)` is the
+  worker-side mirror: it registers the message loop that decodes envelopes,
+  feeds the backend inbox, runs one cycle per message, and posts resulting
+  frames.
+
+Hosts therefore write only what is genuinely theirs: the worker script
+bootstrap, the backend configuration (layout, label resolvers), the payload
+codec, and where delivered frames go. The web example consumes exactly this;
+its per-host glue collapsed from ~150 lines to a handful of calls.
+
 ## 18.3 Edge curves
 
 Edges render as quadratic Bézier curves that bow toward the side with lower

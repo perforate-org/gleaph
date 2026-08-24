@@ -6,24 +6,18 @@ edition = "2024"
 publish = false
 
 # `cdylib` produces the wasm module imported by the application-owned
-# `assets/worker.js`; `rlib` keeps the fixture and batch codec compilable (and
-# unit-testable) on native targets, where the round-trip test runs.
+# `assets/worker.js`; `rlib` keeps the entry compilable (and the end-to-end
+# round-trip test runnable) on native targets.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 gpui-graph = { path = "../../.." }
+gpui-graph-web-example-common = { path = "../common" }
 glam = "0.33"
 
 # Versions pinned to exactly what the root workspace lockfile resolves for
-# gpui-graph's own web glue (`crates/gpui-graph/Cargo.toml`), so a single
-# wasm-bindgen/js-sys/web-sys build is shared and JsValue types line up across
-# the `web_transport` boundary.
+# gpui-graph's own web glue, so a single wasm-bindgen build is shared and
+# JsValue types line up across the `web_transport` boundary.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.127"
-js-sys = "=0.3.104"
-web-sys = { version = "=0.3.104", features = [
-    "MessageEvent",
-    "DedicatedWorkerGlobalScope",
-    "console",
-] }

@@ -2071,11 +2071,19 @@ dependencies = [
  "glam",
  "gpui",
  "gpui-graph",
- "gpui-graph-web-example-worker",
+ "gpui-graph-web-example-common",
  "gpui_platform",
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "gpui-graph-web-example-common"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "gpui-graph",
 ]
 
 [[package]]
@@ -2084,9 +2092,8 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "gpui-graph",
- "js-sys",
+ "gpui-graph-web-example-common",
  "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

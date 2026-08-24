@@ -1,38 +1,37 @@
 # gpui-graph web example — minimal worker-mode demo
 
 The shortest end-to-end demonstration of gpui-graph's frame-source contract
-(DESIGN.md §18.2, ADR 0076): the same ~100-vertex ForceAtlas2 graph rendered
-through the synchronous **InProcess** source (the library default) or, strictly
-opt-in, through a **Worker** that owns a graph backend replica off the main
-thread.
+(DESIGN.md §18.2): the same ~100-vertex ForceAtlas2 graph rendered through the
+synchronous **InProcess** source (the library default) or, strictly opt-in,
+through a **Worker** that owns a graph backend replica off the main thread.
 
-**Compiling to wasm does not give you a worker.** gpui-graph ships no worker
-bundle — by contract (`gpui_graph::worker::web_transport`). The wasm build of
-your app runs on the main thread exactly like a native build, and frames are
-built in-process, unless you wire up all three layers below yourself:
+**Compiling to wasm does not give you a worker.** The wasm build of your app
+runs on the main thread exactly like a native build, unless you wire up all
+three layers below yourself:
 
 | Layer | Who owns it | What it does |
 | --- | --- | --- |
 | ① Source selection | your app (a few lines) | `view.connect_worker_channel(Box::new(channel))` then `view.set_frame_source(FrameSource::Worker)` — without both, Worker mode fails loudly instead of silently falling back |
-| ② The worker script | your app (`assets/worker.js`) | spawns as an ES module worker, imports *your* worker wasm module, registers the Rust message handler, posts `"ready"`; the main thread queues requests until then and replays them |
-| ③ The channel implementation | your app (`WebWorkerChannel` in `app/src/main.rs`) | implements `WorkerChannel`: encodes requests (`ToWorker::encode_wire_bytes`), ships bytes through `web_transport` transferable `ArrayBuffer`s, parses replies (`PaintFrameWire::from_wire_bytes`) and calls `deliver_worker_frame` |
+| ② The worker script | your app (`assets/worker.js`) | spawns as an ES module worker, imports *your* worker wasm module, registers the Rust message handler, posts `"ready"`; the channel queues requests until then and replays them in posting order |
+| ③ The channel | the library's `web_transport::PostMessageChannel`, configured by your app | implements `WorkerChannel`: spawns the worker, owns the readiness handshake and replay queue, encodes library requests, routes application payload bytes through your [`PayloadCodec`](common/src/batch_codec.rs), decodes `PaintFrameWire` replies, and hands frames to your sink |
 
-What the library *does* provide: the protocol (`ToWorker` / `FromWorker`,
+What the library provides: the protocol (`ToWorker` / `FromWorker`,
 latest-wins backpressure via the backend inbox), the worker-side engine
-(`WorkerBackend`: apply mutations FIFO → one layout step → one indexed frame),
-the frame transfer form (`PaintFrameWire`), and the thin postMessage glue
-(`web_transport`). What it deliberately does not provide: your worker bundle,
-your scene-merge byte form (batches are application-typed;
-`encode_wire_bytes` answers `PayloadCodecRequired` rather than guessing — see
-`worker/src/batch_codec.rs` for a minimal application codec), and any bundler
+(`WorkerBackend`) and its message loop (`web_transport::serve`), the frame
+transfer form (`PaintFrameWire`), the postMessage primitives, and the generic
+channel above. What it deliberately does not provide: your worker bundle,
+your scene-merge byte form (batches are application-typed; without a
+registered codec, merge requests fail closed with `PayloadCodecRequired` —
+see `common/src/batch_codec.rs` for this example's choice), and any bundler
 configuration.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `app/` | Main-thread GPUI binary: boots `gpui_web` via `run_embedded`, renders ~100 vertices, selects InProcess ⇄ Worker by URL parameter, paints delivered worker frames behind a status overlay. |
-| `worker/` | Application-owned worker wasm: drives `WorkerBackend` per message (library requests verbatim under envelope tag 1, application merge batches under tag 2). The codec, demo fixture, and full request→backend→wire round trip are plain Rust, unit-tested natively. |
+| `common/` | Application-owned data both modules share: the deterministic demo fixture and the merge-batch `PayloadCodec`. This is where the example answers the "batch byte forms belong to applications" contract. Plain Rust, unit-tested natively. |
+| `app/` | Main-thread GPUI binary: boots `gpui_web` via `run_embedded`, renders ~100 vertices, selects InProcess ⇄ Worker by URL parameter, paints delivered worker frames behind a status overlay. Wasm32-only by construction (no native target gates in its source). |
+| `worker/` | Worker-side wasm module: configures a `WorkerBackend` (ForceAtlas2, node labels) and hands it to `web_transport::serve`. One gated entry function; the round trip is unit-tested natively. |
 | `assets/worker.js` | Layer ②: application-owned module-worker bootstrap with the `"ready"` handshake. |
 | `assets/index.html` | App page. |
 | `build.sh` | Builds both wasm modules into `dist/`. |
@@ -51,9 +50,6 @@ python3 -m http.server 8080 --directory dist   # any static server works
   injects the scene and paints delivered frames; the status overlay counts
   deliveries.
 
-No COOP/COEP/CORP headers are required or used: everything here is the
-no-threads half of the web story (transferable buffers only).
-
 Expected browser console in worker mode:
 
 ```
@@ -63,49 +59,56 @@ Expected browser console in worker mode:
 [example-app] frame #1 delivered: 100 nodes / … edges / … labels
 ```
 
+No COOP/COEP/CORP headers are required or used: everything here is the
+no-threads half of the web story (transferable buffers only).
+
 ## Checks without a browser
 
 ```sh
-cargo test                                   # native: codec + full worker round trip
-cargo check --target wasm32-unknown-unknown -p gpui-graph-web-example-app
-cargo check --target wasm32-unknown-unknown -p gpui-graph-web-example-worker
+cargo test                                        # default members: fixture,
+                                                  # batch codec, pipe round trip
+cargo clippy                                      # same scope
+cargo check --target wasm32-unknown-unknown \
+    -p gpui-graph-web-example-app                 # API-drift net, app side
+cargo check --target wasm32-unknown-unknown \
+    -p gpui-graph-web-example-worker              # …and worker side
 ```
 
-The wasm32 checks are the mechanical API-drift net: this example consumes only
-public gpui-graph APIs from outside the library, so breakage surfaces at
-`cargo check` time, before any browser is involved.
+The example consumes only public gpui-graph APIs from outside the library, so
+any upstream breakage surfaces at `cargo check` time, before any browser is
+involved. Bare `cargo test` / `cargo clippy` intentionally skip `app/`
+(default-members): the app binary touches browser-only library surfaces with
+no target gates in its source and is wasm32-only by construction.
 
 ## Toolchain notes
 
-Plain `build.sh` is the canonical path: two explicit `cargo build --target
-wasm32-unknown-unknown` invocations plus two `wasm-bindgen --target web` steps.
-Trunk is an optional DX route for single-module apps, but this example is
-inherently **two** modules (main-thread app + worker) with different entry
-points, so Trunk's single-index automation covers roughly half the wiring and a
-plain script stays the clearest source of truth. Product hosts routinely go
-further and let vite/webpack own hashing and code splitting; both tools wrap
-the same two wasm-bindgen outputs, so nothing in this example changes when you
-swap the driver script for a bundler.
+Plain `build.sh` is the canonical path here: two explicit
+`cargo build --target wasm32-unknown-unknown` invocations plus two
+`wasm-bindgen --target web` steps. Bundler-style dev servers automate only
+part of this shape — the example is inherently **two** modules (main-thread
+app + worker) with different entry points — so a plain script stays the
+clearest source of truth. Product hosts routinely go further and let vite /
+webpack own hashing and code splitting; both tools wrap the same two
+wasm-bindgen outputs, so nothing in this example changes when you swap the
+driver script for a bundler.
 
 ## Embedding in a framework host (Leptos / Dioxus / …)
 
 The three layers above are identical inside a framework-hosted page. gpui_web
-self-draws into its own canvas and needs no DOM participation from a framework,
-so the framework mounts one element (or nothing at all), and layers ①–③ remain:
-connect the channel, select `FrameSource::Worker`, own `worker.js` and the
-worker wasm. A Leptos/Dioxus host changes where `init()` is called from — not
-what the wiring looks like.
+self-draws into its own canvas and needs no DOM participation from a
+framework, so the framework mounts one element (or nothing at all), and layers
+①–③ remain: connect the channel, select `FrameSource::Worker`, own
+`worker.js` and the worker wasm. A framework host changes where `init()` is
+called from — not what the wiring looks like.
 
 ## Notes
 
-- This directory is a standalone mini-workspace (explicit `[workspace]`,
-  like `demo/social/wasm/`) so root-workspace members and lockfile stay
-  untouched by web-only work; dependency revisions are restated to unify with
-  the root lockfile. Keep `main.rs` out of this directory itself — cargo would
-  auto-discover `examples/web/main.rs` as an example target of `gpui-graph`.
+- This directory is a standalone mini-workspace so web-only dependency churn
+  never touches an enclosing product workspace's lockfile. `app` is excluded
+  from default-members because its sources are unconditionally browser-only;
+  build it explicitly, as `build.sh` does.
+- Keep `main.rs` out of this directory itself — cargo would auto-discover
+  `examples/web/main.rs` as an example target of `gpui-graph`.
 - Drag edits are not mirrored to the worker replica in this example
-  (`SceneMutation::SetPosition` exists for hosts that want it).
-- Extracting the explorer's generic postMessage channel (envelope tags +
-  readiness handshake + pending replay) into a reusable reference type is
-  recorded as future work; this example intentionally hand-rolls the minimum
-  instead of growing the library.
+  (`SceneMutation::SetPosition` exists and crosses the library envelope;
+  hosts that want live drags send it through `PipeHandle`).

@@ -1,0 +1,10 @@
+[package]
+name = "gpui-graph-web-example-common"
+description = "Demo graph fixture and the application-owned merge-batch payload codec shared by both wasm modules of the gpui-graph web example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gpui-graph = { path = "../../.." }
+glam = "0.33"

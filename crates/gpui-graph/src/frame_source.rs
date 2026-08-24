@@ -533,6 +533,8 @@ pub enum WireFormatError {
         /// How many bytes remain.
         extra: usize,
     },
+    /// A length-prefixed payload string was not valid UTF-8.
+    InvalidUtf8,
     /// The request kind carries application-typed payloads (`GraphBatch`,
     /// `GraphPatch`) whose byte form belongs to an application-supplied
     /// payload codec; the library wire covers only library-owned content.
@@ -560,6 +562,9 @@ impl std::fmt::Display for WireFormatError {
             }
             Self::TrailingBytes { extra } => {
                 write!(f, "trailing bytes after complete wire message: {extra}")
+            }
+            Self::InvalidUtf8 => {
+                write!(f, "length-prefixed payload string was not UTF-8")
             }
             Self::PayloadCodecRequired => {
                 write!(

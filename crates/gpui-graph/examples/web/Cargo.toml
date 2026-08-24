@@ -1,21 +1,22 @@
-# gpui-graph web example — minimal worker-mode demo (ADR 0076 §18.2).
+# gpui-graph web example — minimal worker-mode demo.
 #
-# A standalone mini-workspace, mirroring `crates/gleaph-graph-explorer/web/`
-# and `demo/social/wasm/`: the root Gleaph workspace owns the canister and
-# native-host targets, and its member list and lockfile are shared with several
-# concurrent work streams. This directory compiles two wasm32 modules from
-# here without touching either:
+# A standalone mini-workspace: this directory compiles its wasm32 modules from
+# here with their own lockfile, so web-only dependency churn never touches the
+# enclosing product workspace's members or shared lockfile. Three members:
 #
+# - `common/` — the application-owned data both modules share: the
+#   deterministic demo graph and the merge-batch `PayloadCodec`. That codec is
+#   where the example answers the library's `PayloadCodecRequired` contract:
+#   batch byte forms belong to applications, not to gpui-graph.
 # - `app/`    — the main-thread GPUI application (`gpui_web` platform). Boots
 #   with `ApplicationHandle::run_embedded`, renders the same tiny demo graph
 #   through either frame source (`?mode=` selects; `InProcess` is the library
 #   default, `Worker` is strictly opt-in via `set_frame_source` +
 #   `connect_worker_channel`).
-# - `worker/` — the application-owned worker bootstrap. gpui-graph ships no
-#   worker bundle (`gpui_graph::worker::web_transport` contract): an
-#   application supplies its own Worker script, imports this wasm module
-#   inside a `DedicatedWorkerGlobalScope`, and drives a concrete
-#   `WorkerBackend`.
+# - `worker/` — the worker-side wasm module. gpui-graph ships no worker
+#   bundle: an application supplies its own Worker script, imports this wasm
+#   module inside a `DedicatedWorkerGlobalScope`, configures its
+#   `WorkerBackend`, and hands it to `web_transport::serve`.
 #
 # Build with `./build.sh`; serve `dist/` from any static file server. See
 # README.md for the three-layer wiring this example demonstrates.
@@ -24,5 +25,10 @@
 # auto-discovered by cargo as an example target of `gpui-graph`. Each member
 # crate keeps its binary at its own `src/main.rs`.
 [workspace]
-members = ["app", "worker"]
+members = ["app", "common", "worker"]
+# Default invocations (`cargo test`, `cargo clippy`) run where native targets
+# make sense. The app binary is wasm32-only by construction — it boots
+# `gpui_web` through `run_embedded` and touches browser-only library surfaces
+# without target gates — so build it explicitly, exactly as `build.sh` does.
+default-members = ["common", "worker"]
 resolver = "2"

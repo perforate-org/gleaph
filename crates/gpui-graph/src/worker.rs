@@ -12,9 +12,13 @@
 //! - This module is platform-independent and fully native-testable: message
 //!   vocabulary ([`ToWorker`] / [`FromWorker`]), the worker-side inbox whose
 //!   latest-wins slot owns backpressure ([`WorkerInbox`]), the backend loop
-//!   ([`WorkerBackend`]), and the byte forms of library-owned request content.
-//! - [`web_transport`] (wasm only) is the thin postMessage glue; every
-//!   decision about what to send lives above it.
+//!   ([`WorkerBackend`]), the byte forms of library-owned request content,
+//!   and the replay/envelope state machine of the application channel
+//!   ([`pipe_core`] with its [`PayloadCodec`](pipe_core::PayloadCodec) seam).
+//! - [`web_transport`] (wasm only) is the postMessage glue around that core,
+//!   including the main-thread [`PostMessageChannel`](web_transport::PostMessageChannel)
+//!   and the worker-side [`serve`](web_transport::serve) loop; decisions about
+//!   application payload bytes stay with the application.
 //!
 //! Backpressure contract (ADR 0076 §3): the worker keeps only the latest
 //! interaction state, dropping intermediate snapshots, while scene mutations
@@ -23,6 +27,11 @@
 
 #[cfg(target_family = "wasm")]
 pub mod web_transport;
+
+mod pipe_core;
+
+pub use pipe_core::{Inbound, decode_inbound, encode_request};
+pub use pipe_core::{PayloadCodec, READY, envelope};
 
 use std::collections::VecDeque;
 
