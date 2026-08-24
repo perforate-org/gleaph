@@ -2911,6 +2911,248 @@ fn match_equality_only_indexed_startswith_does_not_anchor() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// MATCH edge STARTS WITH anchor: TEXT prefix interval over one range-indexed edge property
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Range-indexed (order-preserving) TEXT property `name` on edges.
+fn edge_prefix_stats() -> TableStats {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("name".to_string());
+    stats
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_startswith_inline_where_lowers_to_leading_prefix_edge_index_scan() {
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL WHERE e.name STARTS WITH 'Str']->(b:Person) RETURN a, b",
+        &edge_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::TextPrefix(pattern),
+                cmp: CmpOp::Eq,
+                ..
+            } if &**property == "name"
+                && **pattern == ScanValue::Literal(Value::Text("Str".into()))
+        )),
+        "expected leading TEXT prefix EdgeIndexScan on name, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
+        "leading prefix EdgeIndexScan must be followed by EdgeBindEndpoints, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_startswith_path_level_where_lowers_to_leading_prefix_edge_index_scan() {
+    // The path-level WHERE form must anchor exactly like the inline form.
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH 'Str' RETURN a, b",
+        &edge_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::TextPrefix(_),
+                cmp: CmpOp::Eq,
+                ..
+            } if &**property == "name"
+        )),
+        "path-level STARTS WITH must lower into a prefix EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_startswith_parameter_pattern_lowers_to_prefix_edge_index_scan() {
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH $pre RETURN a, b",
+        &edge_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::TextPrefix(pattern),
+                ..
+            } if **pattern == ScanValue::Parameter("$pre".into())
+        )),
+        "expected parameter-pattern prefix EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_startswith_keeps_residual_filter() {
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH 'Str' RETURN a, b",
+        &edge_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_startswith_predicate_on(p, "e", "name"))
+        )),
+        "original edge STARTS WITH predicate must remain residual, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_equality_wins_over_startswith_and_keeps_prefix_residual() {
+    let stats = edge_prefix_stats();
+    let anchored = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH 'Str' AND e.name = 'x' RETURN a, b",
+        &stats,
+    );
+    assert!(
+        anchored.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::Literal(_),
+                cmp: CmpOp::Eq,
+                ..
+            }
+        )),
+        "single-value equality must win the leading scan, got: {:?}",
+        anchored.ops
+    );
+    assert!(
+        !anchored.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::TextPrefix(_),
+                ..
+            }
+        )),
+        "equality win must suppress the prefix bound, got: {:?}",
+        anchored.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn edge_prefix_anchor_appears_in_explain_output() {
+    // The edge prefix anchor renders its bound through the same ScanValue
+    // formatting as the vertex IndexScan, so STARTS WITH must be visible in EXPLAIN.
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH 'Str' RETURN a, b",
+        &edge_prefix_stats(),
+    );
+
+    let output = explain_plan(&plan);
+    assert!(
+        output.contains("EdgeIndexScan(e, name = STARTS WITH Text(\"Str\"))"),
+        "explain should show the anchored edge prefix bound: {output}"
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_surplus_startswith_conjunct_keeps_unanchored_residual() {
+    // Only `name` is range-indexed: that conjunct anchors while the other
+    // STARTS WITH conjunct must stay a residual PropertyFilter.
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH 'Str' AND e.tag STARTS WITH 'y' RETURN a, b",
+        &edge_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::TextPrefix(_),
+                cmp: CmpOp::Eq,
+                ..
+            } if &**property == "name"
+        )),
+        "the indexed conjunct must anchor, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan { property, .. } if &**property == "tag"
+        )),
+        "an unindexed property must never anchor, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_startswith_predicate_on(p, "e", "tag"))
+        )),
+        "the unanchored STARTS WITH conjunct must remain residual, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_negated_or_other_string_predicates_never_emit_edge_index_scan() {
+    let cases = [
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE NOT e.name STARTS WITH 'Str' RETURN a, b",
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name ENDS WITH 'rix' RETURN a, b",
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name CONTAINS 'tri' RETURN a, b",
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name ILIKE 'str%' RETURN a, b",
+    ];
+    for input in cases {
+        let plan = plan_query_with_stats(input, &edge_prefix_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+            "{input} must not emit an EdgeIndexScan, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_unindexed_startswith_does_not_emit_edge_index_scan() {
+    let mut stats = TableStats::default();
+    // `nickname` is deliberately absent from every index set.
+    stats.indexed_edge_properties.insert("name".to_string());
+
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.nickname STARTS WITH 'Str' RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+        "unindexed edge STARTS WITH must not emit EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // MATCH edge IN-list anchor: union of point probes over one indexed edge property
 // ════════════════════════════════════════════════════════════════════════════════
 

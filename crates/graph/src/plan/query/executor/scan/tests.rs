@@ -1523,6 +1523,125 @@ fn edge_text_prefix_non_text_parameter_falls_back_to_superset_without_range_call
     assert_eq!(result.rows.len(), 6, "superset candidates bind all edges");
 }
 
+#[test]
+fn executes_edge_text_prefix_parameter_pattern_with_exact_between_bytes() {
+    let store = GraphStore::new();
+    let pid = crate::test_labels::property_id_for_name("name").raw();
+    let index = MockPropertyIndex::default();
+    let pattern = ScanValue::TextPrefix(Box::new(ScanValue::Parameter("$pfx".into())));
+    let plan = edge_prefix_scan_plan(pattern, CmpOp::Eq);
+    let mut params_map = std::collections::BTreeMap::new();
+    params_map.insert("pfx".to_string(), Value::Text("Str".into()));
+
+    let _catalog = crate::test_labels::enter_indexed_edge_property_named("name");
+    pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params_map,
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute parameterized edge text-prefix index scan");
+
+    // The resolved parameter must realize the same encoded interval as the
+    // literal form: [stripped TEXT key, key + [0xFF]).
+    let calls = index.edge_range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, pid);
+    assert_eq!(calls[0].2, None);
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: vec![TAG_TEXT, b'S', b't', b'r'],
+            high: vec![TAG_TEXT, b'S', b't', b'r', 0xFF],
+        }
+    );
+}
+
+/// True when `expr` is exactly `var.property STARTS WITH <anything>` (mirror of the
+/// planner-side helper for residual assertions on parsed plans).
+fn is_edge_startswith_residual_on(expr: &gleaph_gql::ast::Expr, var: &str, property: &str) -> bool {
+    let gleaph_gql::ast::ExprKind::StringPredicate {
+        expr: lhs,
+        kind: gleaph_gql::ast::StringPredicateKind::StartsWith,
+        negated: false,
+        ..
+    } = &expr.kind
+    else {
+        return false;
+    };
+    let gleaph_gql::ast::ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &lhs.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, gleaph_gql::ast::ExprKind::Variable(name) if name == var)
+        && prop == property
+}
+
+#[test]
+fn executes_cypher_edge_surplus_startswith_conjunct_filters_through_residual() {
+    let _guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["EdgePrefixSrc"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    for (name, tag) in [("Straw", "y-keep"), ("Stream", "n-skip"), ("St", "yes-too")] {
+        let b = store
+            .insert_vertex_named(["EdgePrefixDst"], [("name", Value::Text(name.into()))])
+            .expect("b vertex");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("EdgePrefixRel"),
+                [
+                    ("name", Value::Text(name.into())),
+                    ("tag", Value::Text(tag.into())),
+                ],
+            )
+            .expect("named edge");
+    }
+
+    // Only `name` is indexed: `name STARTS WITH 'Str'` anchors while
+    // `tag STARTS WITH 'y'` must survive as a residual PropertyFilter. The row
+    // set discriminates all three outcomes: pushdown-only would bind Straw and
+    // Stream, residual-only would bind everything.
+    let input = "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name STARTS WITH 'Str' AND e.tag STARTS WITH 'y' RETURN b.name";
+    let plan = plan_with_optional_edge_index_stats(input, Some("name"));
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::TextPrefix(_),
+                cmp: CmpOp::Eq,
+                ..
+            } if &**property == "name"
+        )),
+        "indexed conjunct must anchor, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates
+                    .iter()
+                    .any(|p| is_edge_startswith_residual_on(p, "e", "tag"))
+        )),
+        "unanchored conjunct must remain residual, got: {:?}",
+        plan.ops
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute surplus-conjunct edge prefix query");
+    assert_eq!(text_column(&result, "b.name"), vec!["Straw".to_string()]);
+}
+
 /// Parses a Cypher-dialect query with an optionally-indexed edge property so the
 /// planner can select the leading edge index anchor; passing `None` yields the
 /// unindexed plan used as the pushdown red-proof twin.
