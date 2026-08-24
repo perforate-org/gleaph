@@ -44,6 +44,10 @@ pub enum DerivedIndexQuarantineReason {
 }
 
 /// Durable delivery state for one MemoryId 46 row.
+///
+/// Rows persist through [`DerivedIndexOutboxStableRecord::V1`]: state-shape revisions add a new
+/// envelope variant instead of replacing bytes in place (Plan 0302; registry compat is
+/// `ProductionCompat::VersionedSurvivor`).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 enum DerivedIndexOutboxState {
     Pending(DerivedIndexOutboxEntry),
@@ -53,7 +57,18 @@ enum DerivedIndexOutboxState {
     },
 }
 
-impl Storable for DerivedIndexOutboxState {
+/// Versioned Candid wire envelope for one durable MemoryId 46 outbox row.
+///
+/// Persisted rows always carry this outer tag so a future state-shape revision is wire-additive
+/// (a new variant) instead of panicking decode of rows that span upgrade windows. The wrapped
+/// delivery state stays private to this file; store methods keep taking and returning bare
+/// [`DerivedIndexOutboxEntry`] values.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+enum DerivedIndexOutboxStableRecord {
+    V1(DerivedIndexOutboxState),
+}
+
+impl Storable for DerivedIndexOutboxStableRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
@@ -65,7 +80,21 @@ impl Storable for DerivedIndexOutboxState {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode DerivedIndexOutboxState")
+        match Decode!(bytes.as_ref(), Self).expect("decode DerivedIndexOutboxState") {
+            // Exhaustive over the envelope: a future variant forces an explicit decision here,
+            // and foreign Candid payloads fail closed through the expect above.
+            v1 @ Self::V1(_) => v1,
+        }
+    }
+}
+
+fn to_envelope(state: DerivedIndexOutboxState) -> DerivedIndexOutboxStableRecord {
+    DerivedIndexOutboxStableRecord::V1(state)
+}
+
+fn from_envelope(envelope: DerivedIndexOutboxStableRecord) -> DerivedIndexOutboxState {
+    match envelope {
+        DerivedIndexOutboxStableRecord::V1(state) => state,
     }
 }
 
@@ -77,7 +106,7 @@ pub(crate) struct DerivedIndexOutboxVectorTransition {
 /// Stable FIFO keyed by a monotonic sequence.  The sequence is the durable cursor identity;
 /// callers acknowledge only entries they know the target canister accepted.
 pub struct DerivedIndexOutbox<M: Memory> {
-    map: StableBTreeMap<u64, DerivedIndexOutboxState, M>,
+    map: StableBTreeMap<u64, DerivedIndexOutboxStableRecord, M>,
 }
 
 impl<M: Memory> DerivedIndexOutbox<M> {
@@ -113,7 +142,7 @@ impl<M: Memory> DerivedIndexOutbox<M> {
                     .checked_add(offset)
                     .ok_or("derived-index outbox sequence overflow")?;
                 let state = DerivedIndexOutboxState::Pending(entry.clone());
-                let _ = state.to_bytes();
+                let _ = to_envelope(state).to_bytes();
                 Ok((sequence, entry))
             })
             .collect()
@@ -148,7 +177,10 @@ impl<M: Memory> DerivedIndexOutbox<M> {
         for (sequence, entry) in &rows {
             assert!(
                 self.map
-                    .insert(*sequence, DerivedIndexOutboxState::Pending(entry.clone()),)
+                    .insert(
+                        *sequence,
+                        to_envelope(DerivedIndexOutboxState::Pending(entry.clone()))
+                    )
                     .is_none(),
                 "duplicate derived-index outbox sequence"
             );
@@ -177,10 +209,12 @@ impl<M: Memory> DerivedIndexOutbox<M> {
     }
 
     pub fn get(&self, sequence: u64) -> Option<DerivedIndexOutboxEntry> {
-        self.map.get(&sequence).map(|state| match state {
-            DerivedIndexOutboxState::Pending(entry)
-            | DerivedIndexOutboxState::Quarantined { entry, .. } => entry,
-        })
+        self.map
+            .get(&sequence)
+            .map(|state| match from_envelope(state) {
+                DerivedIndexOutboxState::Pending(entry)
+                | DerivedIndexOutboxState::Quarantined { entry, .. } => entry,
+            })
     }
 
     pub fn plan_vector_outcome(
@@ -237,14 +271,15 @@ impl<M: Memory> DerivedIndexOutbox<M> {
             assert_eq!(self.remove(*sequence), (*sequence, entry.clone()));
         }
         if let Some((sequence, entry, reason)) = transition.quarantined {
+            let previous = self.map.insert(
+                sequence,
+                to_envelope(DerivedIndexOutboxState::Quarantined {
+                    entry: entry.clone(),
+                    reason,
+                }),
+            );
             assert_eq!(
-                self.map.insert(
-                    sequence,
-                    DerivedIndexOutboxState::Quarantined {
-                        entry: entry.clone(),
-                        reason,
-                    },
-                ),
+                previous.map(from_envelope),
                 Some(DerivedIndexOutboxState::Pending(entry)),
                 "vector quarantine must replace the exact pending source row"
             );
@@ -268,9 +303,12 @@ impl<M: Memory> DerivedIndexOutbox<M> {
     }
 
     pub fn pending_is_empty(&self) -> bool {
-        self.map
-            .iter()
-            .all(|row| matches!(row.value(), DerivedIndexOutboxState::Quarantined { .. }))
+        self.map.iter().all(|row| {
+            matches!(
+                from_envelope(row.value()),
+                DerivedIndexOutboxState::Quarantined { .. }
+            )
+        })
     }
 
     pub fn len(&self) -> u64 {
@@ -281,7 +319,7 @@ impl<M: Memory> DerivedIndexOutbox<M> {
     pub fn peek(&self, limit: usize) -> Vec<(u64, DerivedIndexOutboxEntry)> {
         self.map
             .iter()
-            .filter_map(|row| match row.value() {
+            .filter_map(|row| match from_envelope(row.value()) {
                 DerivedIndexOutboxState::Pending(entry) => Some((*row.key(), entry)),
                 DerivedIndexOutboxState::Quarantined { .. } => None,
             })
@@ -294,6 +332,7 @@ impl<M: Memory> DerivedIndexOutbox<M> {
         let state = self
             .map
             .remove(&sequence)
+            .map(from_envelope)
             .expect("remove existing derived-index outbox source row");
         let entry = match state {
             DerivedIndexOutboxState::Pending(entry)
@@ -311,7 +350,10 @@ impl<M: Memory> DerivedIndexOutbox<M> {
     pub fn insert_test_entry(&mut self, sequence: u64, entry: DerivedIndexOutboxEntry) {
         assert!(
             self.map
-                .insert(sequence, DerivedIndexOutboxState::Pending(entry))
+                .insert(
+                    sequence,
+                    to_envelope(DerivedIndexOutboxState::Pending(entry))
+                )
                 .is_none()
         );
     }
@@ -417,10 +459,10 @@ mod tests {
             )
             .expect("valid terminal transition");
 
-        let expected_quarantined = DerivedIndexOutboxState::Quarantined {
+        let expected_quarantined = to_envelope(DerivedIndexOutboxState::Quarantined {
             entry: submitted[2].1.clone(),
             reason: DerivedIndexQuarantineReason::IndexDefinitionTablePressure,
-        };
+        });
         assert_eq!(outbox.map.get(&2), Some(expected_quarantined.clone()));
         assert_eq!(
             outbox.get(2),
@@ -531,7 +573,7 @@ mod tests {
 
         assert_eq!(outbox.peek(10), vec![(1, submitted[1].1.clone())]);
         assert!(matches!(
-            outbox.map.get(&0),
+            outbox.map.get(&0).map(from_envelope),
             Some(DerivedIndexOutboxState::Quarantined {
                 reason: DerivedIndexQuarantineReason::SubjectTablePressure,
                 ..
@@ -603,5 +645,128 @@ mod tests {
                 .collect::<Vec<_>>(),
             before
         );
+    }
+
+    #[test]
+    fn pending_build_dml_and_both_quarantine_reasons_round_trip_across_reopen() {
+        let memory = VectorMemory::default();
+        let mut outbox = DerivedIndexOutbox::init(memory.clone());
+        outbox.append_all(
+            11,
+            [
+                vector_entry(1),
+                vector_entry(2),
+                vector_entry(3),
+                vector_entry(4),
+                vector_entry(5),
+            ],
+        );
+        let build_dml = DerivedIndexOutboxEntry {
+            mutation_id: 12,
+            op: DerivedIndexOutboxOp::IndexBuildDml {
+                request: IndexBuildDmlRequest {
+                    physical_index_id: PhysicalIndexId::new(900_103).expect("test physical id"),
+                    catalog_epoch: 5,
+                    shard_sequence: 1,
+                    subject: gleaph_graph_kernel::index::IndexBuildSubject::Vertex {
+                        shard_id: 0,
+                        vertex_id: 77,
+                    },
+                    removals: vec![vec![0x01]],
+                    insertions: vec![vec![0x02, 0x03]],
+                },
+            },
+        };
+        // Sequenced after the vector rows so no submitted vector prefix ever contains it.
+        outbox.insert_test_entry(5, build_dml.clone());
+
+        // Quarantine one vector row under each reason, in two terminal transitions over
+        // disjoint all-vector prefixes.
+        outbox
+            .apply_vector_outcome(
+                &outbox.peek(2),
+                VectorSyncBatchOutcome::Terminal {
+                    applied: 1,
+                    failed_index: 1,
+                    error: VectorSyncTerminalError::IndexDefinitionTablePressure,
+                },
+            )
+            .expect("first terminal transition");
+        outbox
+            .apply_vector_outcome(
+                &outbox.peek(2),
+                VectorSyncBatchOutcome::Terminal {
+                    applied: 0,
+                    failed_index: 0,
+                    error: VectorSyncTerminalError::SubjectTablePressure,
+                },
+            )
+            .expect("second terminal transition");
+
+        // Both quarantine reasons are durable behind the envelope; the Build-DML row stays
+        // Pending and complete.
+        assert_eq!(outbox.len(), 5);
+        assert_eq!(
+            outbox.get(5),
+            Some(build_dml),
+            "the pending build-DML row retains its exact request"
+        );
+        assert_eq!(
+            outbox
+                .peek(10)
+                .iter()
+                .map(|(seq, _)| *seq)
+                .collect::<Vec<_>>(),
+            [3, 4, 5],
+            "quarantined rows are hidden from delivery; pending rows keep sequence order"
+        );
+        assert!(matches!(
+            outbox.map.get(&1).map(from_envelope),
+            Some(DerivedIndexOutboxState::Quarantined {
+                reason: DerivedIndexQuarantineReason::IndexDefinitionTablePressure,
+                ..
+            })
+        ));
+        assert!(matches!(
+            outbox.map.get(&2).map(from_envelope),
+            Some(DerivedIndexOutboxState::Quarantined {
+                reason: DerivedIndexQuarantineReason::SubjectTablePressure,
+                ..
+            })
+        ));
+
+        // Every row — quarantined and pending — survives reopen unchanged.
+        let durable_rows: Vec<_> = outbox
+            .map
+            .iter()
+            .map(|row| (*row.key(), row.value()))
+            .collect();
+        drop(outbox);
+        let reopened = DerivedIndexOutbox::init(memory);
+        assert_eq!(
+            reopened
+                .map
+                .iter()
+                .map(|row| (*row.key(), row.value()))
+                .collect::<Vec<_>>(),
+            durable_rows,
+            "pending and both quarantined reasons survive stable reopen without changing any row"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "decode DerivedIndexOutboxState")]
+    fn foreign_journal_entry_bytes_rejected_by_state_decode() {
+        // Encoded bare RepairJournalEntry bytes are foreign to the enveloped state layout and
+        // must fail closed instead of decoding into any variant.
+        use super::super::repair_journal::RepairJournalEntry;
+        let foreign = Encode!(&RepairJournalEntry {
+            mutation_id: 11,
+            op: entry(3),
+        })
+        .expect("encode foreign journal entry");
+        drop(DerivedIndexOutboxStableRecord::from_bytes(Cow::Owned(
+            foreign,
+        )));
     }
 }

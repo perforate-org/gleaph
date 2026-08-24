@@ -277,9 +277,11 @@ than motivate one.
   records both as `VersionedSurvivor` on purpose — their live rows
   (failed-flush repair postings, undelivered outbox operations) span upgrade
   windows and are not re-derivable — which exposes this gap instead of papering
-  over it with a rebuildable label. Envelope both before the
-  [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md)
-  readiness gate closes (Plan 0298 "Later Slices").
+  over it with a rebuildable label. **Closed by
+  [Plan 0302](../../plans/0302-repair-journal-and-outbox-envelopes.md)**
+  (2026-08-24): both regions persist behind `RepairJournalStableRecord::V1` /
+  `DerivedIndexOutboxStableRecord::V1`, completing versioned-envelope
+  discipline for every `VersionedSurvivor` region in the graph registry.
 - Vector-canister record versioning (e.g., multi-variant defs) is governed by
   its own scope; the D2' single-variant rule stated here applies graph-side.
 

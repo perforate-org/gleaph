@@ -2030,7 +2030,8 @@ mod tests {
             compat_of("UNIQUE_EFFECT_OUTBOX"),
             ProductionCompat::VersionedSurvivor
         );
-        // Bare Candid today: classified versioned to expose the missing-envelope gap.
+        // Versioned envelopes since Plan 0302 (RepairJournalStableRecord /
+        // DerivedIndexOutboxStableRecord).
         assert_eq!(
             compat_of("INDEX_REPAIR_JOURNAL"),
             ProductionCompat::VersionedSurvivor
