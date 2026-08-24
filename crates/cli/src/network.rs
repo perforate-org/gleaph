@@ -142,7 +142,53 @@ fn download_launcher() -> Result<PathBuf, String> {
         .unpack(&cache_dir)
         .map_err(|e| format!("extract launcher: {e}"))?;
 
+    // Release v15+ archives nest the binaries under a versioned directory
+    // (`<name>-<arch>-<os>-<version>/icp-cli-network-launcher`, plus the bundled
+    // `pocket-ic`), while the cache contract (and `spawn_launcher`) expects a bare
+    // `icp-cli-network-launcher` path. Stage whatever layout the archive produced into the
+    // flat cache shape.
+    normalize_extracted_launcher(&cache_dir, &launcher_path)?;
+
     Ok(launcher_path)
+}
+
+/// Locate the extracted `icp-cli-network-launcher` binary anywhere under `cache_dir` and copy
+/// it (with its sibling `pocket-ic`, which the launcher resolves next to itself) to the bare
+/// `launcher_path` cache layout. Idempotent: an already-flat archive is a no-op.
+fn normalize_extracted_launcher(cache_dir: &Path, launcher_path: &Path) -> Result<(), String> {
+    if launcher_path.is_file() {
+        return Ok(());
+    }
+    let mut found_launcher = None;
+    let mut stack = vec![cache_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("read launcher cache: {e}"))?;
+        for entry in entries {
+            let path = entry
+                .map_err(|e| format!("read launcher cache: {e}"))?
+                .path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().and_then(|name| name.to_str())
+                == Some("icp-cli-network-launcher")
+                && path != launcher_path
+            {
+                found_launcher = Some(path);
+            }
+        }
+    }
+    let Some(found) = found_launcher else {
+        return Err("launcher archive contained no icp-cli-network-launcher binary".into());
+    };
+    std::fs::copy(&found, launcher_path).map_err(|e| format!("stage launcher binary: {e}"))?;
+    if let Some(parent) = found.parent() {
+        let pocket_ic = parent.join("pocket-ic");
+        if pocket_ic.is_file() {
+            std::fs::copy(&pocket_ic, cache_dir.join("pocket-ic"))
+                .map_err(|e| format!("stage pocket-ic: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Spawn the launcher as a child process, waiting for its status file. Returns the child and the
@@ -363,5 +409,66 @@ mod tests {
 
         // SAFETY: single-threaded test; cleanup.
         unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") };
+    }
+
+    /// Stage a fake extracted archive layout: v15+ nests the binaries under a versioned
+    /// directory.
+    fn write_nested_archive(cache_dir: &Path) {
+        let versioned = cache_dir.join("icp-cli-network-launcher-arm64-darwin-v15.0.0");
+        std::fs::create_dir_all(&versioned).expect("versioned dir");
+        std::fs::write(
+            versioned.join("icp-cli-network-launcher"),
+            b"launcher-bytes",
+        )
+        .expect("write launcher");
+        std::fs::write(versioned.join("pocket-ic"), b"pocket-ic-bytes").expect("write pocket-ic");
+    }
+
+    #[test]
+    fn normalize_stages_nested_launcher_and_companion() {
+        let cache_dir = temp_config_home().join("launcher");
+        std::fs::create_dir_all(&cache_dir).expect("cache dir");
+        write_nested_archive(&cache_dir);
+        let launcher_path = cache_dir.join("icp-cli-network-launcher");
+
+        normalize_extracted_launcher(&cache_dir, &launcher_path).expect("normalize");
+
+        assert_eq!(
+            std::fs::read(&launcher_path).expect("launcher staged"),
+            b"launcher-bytes"
+        );
+        assert_eq!(
+            std::fs::read(cache_dir.join("pocket-ic")).expect("pocket-ic staged"),
+            b"pocket-ic-bytes"
+        );
+    }
+
+    #[test]
+    fn normalize_is_idempotent_when_flat_binary_already_cached() {
+        let cache_dir = temp_config_home().join("launcher");
+        std::fs::create_dir_all(&cache_dir).expect("cache dir");
+        let launcher_path = cache_dir.join("icp-cli-network-launcher");
+        std::fs::write(&launcher_path, b"already-staged").expect("pre-staged");
+
+        normalize_extracted_launcher(&cache_dir, &launcher_path).expect("no-op");
+
+        // The pre-staged binary is left untouched; nothing else is created.
+        assert_eq!(
+            std::fs::read(&launcher_path).expect("reread"),
+            b"already-staged"
+        );
+        assert!(!cache_dir.join("pocket-ic").exists());
+    }
+
+    #[test]
+    fn normalize_fails_closed_when_the_archive_has_no_launcher() {
+        let cache_dir = temp_config_home().join("launcher");
+        std::fs::create_dir_all(&cache_dir).expect("cache dir");
+
+        let error =
+            normalize_extracted_launcher(&cache_dir, &cache_dir.join("icp-cli-network-launcher"))
+                .expect_err("absent binary must fail");
+
+        assert!(error.contains("contained no icp-cli-network-launcher"));
     }
 }
