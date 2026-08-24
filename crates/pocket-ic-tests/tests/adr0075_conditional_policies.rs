@@ -482,7 +482,9 @@ fn grants_and_visibility_survive_canister_upgrade() {
     let before = gql_query_as(&env, alice(), SCAN_QUERY).expect("pre-upgrade scan");
     assert_tags(&before, &["ap", "ar", "bp"]);
 
-    let empty = Vec::<u8>::new();
+    // post_upgrade decodes its argument as Candid; an empty upgrade arg must still be
+    // encoded (`Encode!(&())`), not raw zero bytes.
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
         .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
         .expect("upgrade router canister");
