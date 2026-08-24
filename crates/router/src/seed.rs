@@ -42,6 +42,13 @@ pub enum IndexAnchor {
     },
     /// Leading `EdgeIndexScan` (`lookup_edge_equal`).
     EdgeEqual(EdgeSeedProbe),
+    /// Union of equality `EdgeIndexScan` point probes over one property
+    /// (`WHERE e.prop IN (…)` anchor; per-probe `lookup_edge_equal`, merged
+    /// with global edge-identity deduplication).
+    EdgeEqualUnion {
+        variable: String,
+        probes: Vec<EdgeSeedProbe>,
+    },
     /// Single range `IndexScan` bound (`lookup_range`, one-sided only).
     Range(RangeSeedProbe),
     /// Leading one-sided range `EdgeIndexScan` (`lookup_edge_range`, domain-clamped at execution).
@@ -70,6 +77,7 @@ impl IndexAnchor {
             Self::Equal(probe) => probe.variable.as_str(),
             Self::EqualUnion { variable, .. } => variable.as_str(),
             Self::EdgeEqual(probe) => probe.variable.as_str(),
+            Self::EdgeEqualUnion { variable, .. } => variable.as_str(),
             Self::Range(probe) => probe.variable.as_str(),
             Self::EdgeRange(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
@@ -302,6 +310,7 @@ impl SeedProbe {
                 | Some(IndexAnchor::Range(_))
                 | Some(IndexAnchor::Intersection { .. })
                 | Some(IndexAnchor::EdgeEqual(_))
+                | Some(IndexAnchor::EdgeEqualUnion { .. })
                 | Some(IndexAnchor::EdgeRange(_))
                 | Some(IndexAnchor::Label { .. })
                 | Some(IndexAnchor::LabelIntersection { .. })
@@ -336,16 +345,28 @@ pub(crate) fn index_anchor_from_prefix_ops(
             let edge_label = label.as_ref().map(|l| l.as_ref());
             let query_direction = Some(*direction);
             match cmp {
-                CmpOp::Eq => Ok(Some(edge_equal_anchor(
-                    store,
-                    graph_id,
-                    parameters,
-                    variable,
-                    property.as_ref(),
-                    value,
-                    edge_label,
-                    query_direction,
-                )?)),
+                CmpOp::Eq => Ok(Some(match value {
+                    ScanValue::InList(elements) => edge_equal_union_anchor(
+                        store,
+                        graph_id,
+                        parameters,
+                        variable,
+                        property,
+                        elements,
+                        edge_label,
+                        query_direction,
+                    )?,
+                    single => edge_equal_anchor(
+                        store,
+                        graph_id,
+                        parameters,
+                        variable,
+                        property,
+                        single,
+                        edge_label,
+                        query_direction,
+                    )?,
+                })),
                 CmpOp::Ne => Ok(None),
                 _ => edge_range_anchor(
                     store,
@@ -377,6 +398,49 @@ fn resolve_vertex_label_id(
     ))
 }
 
+/// Catalog context every edge equality seed probe shares: the interned property
+/// id, the Active physical posting namespace, and the ADR 0012 wire-label subset.
+struct EdgeEqualSeedContext {
+    property_id: u32,
+    physical_index_id: PhysicalIndexId,
+    wire_label_ids: Vec<u16>,
+}
+
+fn resolve_edge_equal_seed_context(
+    store: &RouterStore,
+    graph_id: GraphId,
+    property: &str,
+    edge_label: Option<&str>,
+    query_direction: Option<EdgeDirection>,
+) -> Result<EdgeEqualSeedContext, RouterError> {
+    let property_id = store
+        .lookup_property_id(graph_id, property)
+        .map_err(|_| RouterError::NotFound(format!("property {property}")))?
+        .raw();
+    let edge_label_catalog = edge_label
+        .map(|label| {
+            store
+                .lookup_edge_label_id(graph_id, label)
+                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))
+        })
+        .transpose()?;
+    let physical_index_id = indexed_catalog::active_edge_physical_index(
+        graph_id,
+        edge_label_catalog.map(|id| id.raw()),
+        PropertyId::from_raw(property_id),
+        query_direction,
+    )?;
+    let wire_label_ids = match (edge_label_catalog, query_direction) {
+        (Some(catalog), Some(direction)) => wire_labels_for_query(catalog, direction),
+        _ => Vec::new(),
+    };
+    Ok(EdgeEqualSeedContext {
+        property_id,
+        physical_index_id,
+        wire_label_ids,
+    })
+}
+
 fn edge_equal_anchor(
     store: &RouterStore,
     graph_id: GraphId,
@@ -389,41 +453,67 @@ fn edge_equal_anchor(
 ) -> Result<IndexAnchor, RouterError> {
     let payload_bytes = resolve_scan_value(value, params)?
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
-    let property_id = store
-        .lookup_property_id(graph_id, property.as_ref())
-        .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
-        .raw();
-    let edge_label_id = edge_label
-        .map(|label| {
-            store
-                .lookup_edge_label_id(graph_id, label)
-                .map(|id| id.raw())
-                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))
-        })
-        .transpose()?;
-    let physical_index_id = indexed_catalog::active_edge_physical_index(
+    let ctx = resolve_edge_equal_seed_context(
+        store,
         graph_id,
-        edge_label_id,
-        PropertyId::from_raw(property_id),
+        property.as_ref(),
+        edge_label,
         query_direction,
     )?;
-    let wire_label_ids = match (edge_label, query_direction) {
-        (Some(label), Some(direction)) => {
-            let catalog = store
-                .lookup_edge_label_id(graph_id, label)
-                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))?;
-            wire_labels_for_query(catalog, direction)
-        }
-        _ => Vec::new(),
-    };
     Ok(IndexAnchor::EdgeEqual(EdgeSeedProbe {
         variable: variable.as_ref().to_string(),
         property: property.as_ref().to_string(),
-        property_id,
-        physical_index_id,
+        property_id: ctx.property_id,
+        physical_index_id: ctx.physical_index_id,
         payload_bytes,
-        wire_label_ids,
+        wire_label_ids: ctx.wire_label_ids,
     }))
+}
+
+/// Build the union-of-point-probes anchor for a leading equality `EdgeIndexScan`
+/// whose bound is [`ScanValue::InList`] (the edge-side twin of [`equal_union_anchor`]).
+///
+/// Each element resolves independently; Null elements contribute no probe because
+/// no posting can equal them, while unencodable or missing-parameter elements fail
+/// closed through [`resolve_scan_value`]. An empty probe list is kept: the union of
+/// nothing matches zero rows, which mirrors `e.prop IN []` semantics. The union is
+/// built before [`resolve_scan_value`] can see an `InList` bound, keeping that arm
+/// a malformed-plan rejection.
+fn edge_equal_union_anchor(
+    store: &RouterStore,
+    graph_id: GraphId,
+    params: &BTreeMap<String, Value>,
+    variable: &Str,
+    property: &Str,
+    elements: &[ScanValue],
+    edge_label: Option<&str>,
+    query_direction: Option<EdgeDirection>,
+) -> Result<IndexAnchor, RouterError> {
+    let ctx = resolve_edge_equal_seed_context(
+        store,
+        graph_id,
+        property.as_ref(),
+        edge_label,
+        query_direction,
+    )?;
+    let mut probes = Vec::with_capacity(elements.len());
+    for element in elements {
+        let Some(payload_bytes) = resolve_scan_value(element, params)? else {
+            continue;
+        };
+        probes.push(EdgeSeedProbe {
+            variable: variable.as_ref().to_string(),
+            property: property.as_ref().to_string(),
+            property_id: ctx.property_id,
+            physical_index_id: ctx.physical_index_id,
+            payload_bytes,
+            wire_label_ids: ctx.wire_label_ids.clone(),
+        });
+    }
+    Ok(IndexAnchor::EdgeEqualUnion {
+        variable: variable.as_ref().to_string(),
+        probes,
+    })
 }
 
 fn variable_from_expr(expr: &Expr) -> Option<&str> {
@@ -782,16 +872,28 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                     _ => None,
                 });
                 let anchor = match cmp {
-                    CmpOp::Eq => Some(edge_equal_anchor(
-                        store,
-                        graph_id,
-                        params,
-                        variable,
-                        property.as_ref(),
-                        value,
-                        edge_label.map(|(label, _)| label),
-                        edge_label.map(|(_, direction)| direction),
-                    )?),
+                    CmpOp::Eq => Some(match value {
+                        ScanValue::InList(elements) => edge_equal_union_anchor(
+                            store,
+                            graph_id,
+                            params,
+                            variable,
+                            property,
+                            elements,
+                            edge_label.map(|(label, _)| label),
+                            edge_label.map(|(_, direction)| direction),
+                        )?,
+                        single => edge_equal_anchor(
+                            store,
+                            graph_id,
+                            params,
+                            variable,
+                            property.as_ref(),
+                            single,
+                            edge_label.map(|(label, _)| label),
+                            edge_label.map(|(_, direction)| direction),
+                        )?,
+                    }),
                     CmpOp::Ne => None,
                     _ => edge_range_anchor(
                         store,
@@ -1225,16 +1327,21 @@ fn extract_from_op(
             value,
             cmp,
             ..
-        } if *cmp == CmpOp::Eq => Ok(Some(edge_equal_anchor(
-            store,
-            graph_id,
-            parameters,
-            variable,
-            property.as_ref(),
-            value,
-            None,
-            None,
-        )?)),
+        } if *cmp == CmpOp::Eq => Ok(Some(match value {
+            ScanValue::InList(elements) => edge_equal_union_anchor(
+                store, graph_id, parameters, variable, property, elements, None, None,
+            )?,
+            single => edge_equal_anchor(
+                store,
+                graph_id,
+                parameters,
+                variable,
+                property.as_ref(),
+                single,
+                None,
+                None,
+            )?,
+        })),
         PlanOp::EdgeIndexScan {
             variable,
             property,
@@ -1919,6 +2026,81 @@ mod tests {
         assert_eq!(wire.entries[0].local_edge_postings.len(), 1);
         assert_eq!(wire.entries[0].local_edge_postings[0].owner_vertex_id, 3);
         assert_eq!(wire.entries[0].local_edge_postings[0].slot_index, 2);
+    }
+
+    #[test]
+    fn edge_inlist_index_scan_extracts_edge_equal_union_with_per_element_probes() {
+        use gleaph_gql::types::EdgeDirection;
+        use gleaph_gql_planner::plan::EdgeLabelRef;
+
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "weight",
+        );
+        store
+            .admin_intern_edge_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "KNOWS",
+            )
+            .expect("intern edge label");
+        crate::facade::store::catalog_test_support::register_active_edge_index(
+            &store, graph_id, "KNOWS", "weight",
+        );
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::EdgeIndexScan {
+                variable: Rc::from("e"),
+                property: Rc::from("weight"),
+                value: ScanValue::InList(vec![
+                    ScanValue::Literal(Value::Int64(5)),
+                    // A Null can never satisfy equality: no probe for it.
+                    ScanValue::Literal(Value::Null),
+                    ScanValue::Parameter(Rc::from("$rest")),
+                ]),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::EdgeBindEndpoints {
+                edge: Rc::from("e"),
+                near: Rc::from("a"),
+                far: Rc::from("b"),
+                direction: EdgeDirection::PointingRight,
+                label: Some(EdgeLabelRef::from("KNOWS")),
+                near_property_projection: None,
+                far_property_projection: None,
+                hop_aux_binding: None,
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("$rest".to_string(), Value::Int64(9));
+
+        let anchor =
+            IndexAnchor::from_plans(std::slice::from_ref(&plan), &params, &store, graph_id)
+                .expect("anchor")
+                .expect("edge equal union anchor");
+        let IndexAnchor::EdgeEqualUnion { variable, probes } = anchor else {
+            panic!("expected EdgeEqualUnion anchor, got {anchor:?}");
+        };
+        assert_eq!(variable, "e");
+        assert_eq!(probes.len(), 2, "Null contributes no probe");
+        let five = gleaph_gql::value_to_index_key_bytes(&Value::Int64(5))
+            .expect("encode 5")
+            .expect("5 bytes");
+        let nine = gleaph_gql::value_to_index_key_bytes(&Value::Int64(9))
+            .expect("encode 9")
+            .expect("9 bytes");
+        assert!(probes.iter().any(|probe| probe.payload_bytes == five));
+        assert!(probes.iter().any(|probe| probe.payload_bytes == nine));
+        assert!(probes.iter().all(|probe| probe.property == "weight"));
+        // Every element keeps the ADR 0012 wire-label subset of the query label.
+        assert!(
+            probes
+                .iter()
+                .all(|probe| probe.wire_label_ids == vec![0x8001])
+        );
     }
 
     #[test]

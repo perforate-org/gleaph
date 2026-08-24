@@ -896,6 +896,33 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
             )
             .await?,
         )),
+        IndexAnchor::EdgeEqualUnion { probes, .. } => {
+            // Union of edge point probes with global (shard, owner, label, slot)
+            // deduplication so an edge matching two list elements seeds exactly once.
+            let mut merged: Vec<gleaph_graph_kernel::index::EdgePostingHit> = Vec::new();
+            let mut seen = std::collections::BTreeSet::<(ShardId, u32, u16, u32)>::new();
+            for probe in probes {
+                for hit in lookup_edge_equal_wires(
+                    index,
+                    probe.physical_index_id,
+                    probe.property_id,
+                    probe.payload_bytes.clone(),
+                    &probe.wire_label_ids,
+                )
+                .await?
+                {
+                    if seen.insert((
+                        hit.shard_id,
+                        hit.owner_vertex_id,
+                        hit.label_id,
+                        hit.slot_index,
+                    )) {
+                        merged.push(hit);
+                    }
+                }
+            }
+            Ok(SeedHits::Edges(merged))
+        }
         IndexAnchor::EdgeRange(crate::seed::EdgeRangeSeedProbe {
             physical_index_id,
             property_id,

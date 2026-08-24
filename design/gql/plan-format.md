@@ -52,12 +52,18 @@ See [execution/operators.md](../execution/operators.md) for the full list. Group
 
 `IndexScan` / `EdgeIndexScan` bounds are [`ScanValue`](../../crates/gql-planner/src/plan.rs):
 `Literal` and `Parameter` probe one encoded bound; `InList` is a **union of point probes** over one
-indexed vertex property (`WHERE v.prop IN (…)` anchor). Elements resolve independently, so a missing
-parameter fails the scan closed instead of narrowing the union; Null elements contribute no probe.
-The planner emits an `InList` bound only for non-negated predicates whose every element is a
-scannable literal/parameter, keeps the original predicate in the residual `PropertyFilter` (results
-never depend on the index path), and never rewrites an AND of lists into the union. The Router
-seeds the same union as `IndexAnchor::EqualUnion` with global `(shard, vertex)` deduplication.
+indexed property (`WHERE v.prop IN (…)` vertex anchor, symmetrically `-[e:R WHERE e.prop IN (…)]->`
+edge anchors). Elements resolve independently, so a missing parameter fails the scan closed instead
+of narrowing the union; Null elements contribute no probe. The planner emits an `InList` bound only
+for non-negated predicates whose every element is a scannable literal/parameter, and never rewrites
+an AND of lists into the union. Residual retention follows each side's anchor convention: the vertex
+scan keeps the original predicate in the residual `PropertyFilter`, while an edge fusion removes the
+fused bound exactly like fused edge equality (per-element equality probes are index-exact). A
+single-value equality bound always wins over an IN fusion on both sides. `cmp != Eq` with an `InList`
+bound is fail-closed. The Router seeds the same union as `IndexAnchor::EqualUnion` with global
+`(shard, vertex)` deduplication for vertices and `IndexAnchor::EdgeEqualUnion` with global edge
+identity `(shard, owner, wire label, slot)` deduplication for edges; complete-prefix seed validation
+and edge inline predicate contexts still reject `InList` bounds fail-closed.
 
 ## Router seed contract
 

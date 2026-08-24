@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 00:39:25 UTC +0000
+Anchor timestamp: 2026-08-24 02:52:47 UTC +0000
 
 ## Status
 
@@ -74,7 +74,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 
-- **Status:** Open — next-slice candidate
+- **Status:** Resolved (this commit)
 - **Owner:** `gleaph-gql-planner` (`EdgeFilterFusion`, `parse_edge_var_property_equality`) +
   `gleaph-graph` executor (`execute_edge_index_scan`) + Router seed lowering (`edge_equal_anchor`)
 - **Observed behavior:** The IN-list anchor slice (commit series ending with the vertex IN union)
@@ -89,6 +89,74 @@ defect from being rediscovered without its prior reasoning.
   correctness gap.
 - **Next decision:** Whether edge equality fusion should reuse `ScanValue::InList` directly or add
   an edge-specific multi-probe shape that also carries the label/direction subset rule.
+- **Resolution (this commit):** Reused `ScanValue::InList` directly — no new wire or planner
+  shapes. The planner fuses a scannable non-negated edge IN conjunct through the existing
+  `EdgeFilterFusion.indexed_equality` slot (`parse_edge_var_property_inlist` + shared
+  `find_first_indexed_edge_bound_in_conjunctions`; every equality bound wins before any IN fusion,
+  NOT IN never anchors, and the fused bound is removed from residuals exactly like fused equality).
+  All three executor consumers of `indexed_edge_equality` gained per-element probe unions
+  (`execute_edge_index_scan`, `edge_equality_stream_filter`, `expand_candidates_via_equality_index`;
+  Null elements contribute no probe, missing parameters fail closed, duplicate list elements
+  deduplicate on edge identity, `cmp != Eq` stays fail-closed). The Router extracts
+  `IndexAnchor::EdgeEqualUnion` in all three seed-extraction sites with per-probe ADR 0012
+  wire-label subsets and global `(shard, owner, label, slot)` deduplication; `resolve_scan_value`'s
+  InList arm remains a malformed-plan rejection because unions expand before resolution. Owning
+  tests: `crates/gql-planner/tests/planner_tests.rs::match_edge_*inlist*`,
+  `crates/graph/src/plan/query/executor/scan/tests.rs::{executes_edge_inlist_*,edge_inlist_*,indexed_edge_inlist_queries_end_to_end_match_equality_semantics}`,
+  `crates/router/src/seed.rs::tests::edge_inlist_index_scan_extracts_edge_equal_union_with_per_element_probes`.
+
+### GAP-2026-08-24-003 — Cypher bracket-form `IN […]` fails to parse when `sql-compat` is enabled
+
+- **Status:** Open — pre-existing on main (surfaced while running the GAP-2026-08-24-002 suite
+  under `--all-features`)
+- **Owner:** `gleaph-gql` parser (`crates/gql/src/parser/expr.rs`, `IN` predicate arms)
+- **Observed behavior:** With both `cypher` and `sql-compat` features enabled, `expr IN [v1, v2]`
+  fails with `expected '(', got '['`. The `sql-compat` arm runs first and unconditionally requires
+  `(` after `IN`; its comment claims precedence "keeps behavior unchanged", but it aborts parsing
+  instead of falling through to the cypher arm's bracket form. Reproduced by the committed
+  `gleaph-gql` fixtures themselves (`in_list_cypher_bracket_form`,
+  `in_list_cypher_empty_list`,
+  `not_in_list_cypher_bracket_and_paren_forms_are_negated`) and by the committed vertex
+  `match_inlist_*` planner tests under `--all-features`.
+- **Expected or needed behavior:** Both dialect arms must accept their own element syntax when both
+  features are enabled: peek `[` versus `(` before committing to a form (or make the sql-compat arm
+  fall through on a non-`(` opener).
+- **Evidence:** `cargo test -p gleaph-gql --all-features in_list` (3 failures at HEAD);
+  `cargo test -p gleaph-gql-planner --all-features --test planner_tests match_inlist` (same error).
+- **Impact:** Bracket-form IN queries are rejected whenever sql-compat builds parse them;
+  feature-flagged builds diverge. Default canister dialect (cypher without sql-compat) is
+  unaffected. No runtime correctness gap on unaffected builds.
+- **Next decision:** Smallest fix is a one-token lookahead in the sql-compat arm plus a combined
+  feature test pinning both forms; coordinate with the pane currently modifying
+  `crates/gql/src/parser/statement.rs`.
+
+### GAP-2026-08-24-004 — Endpoint property projection on `EdgeBindEndpoints` breaks trailing `IsLabeled` filters
+
+- **Status:** Open — pre-existing on main (affects fused equality anchors today; surfaced by the
+  GAP-2026-08-24-002 end-to-end coverage)
+- **Owner:** `gleaph-graph` executor binding layout (`vertex_binding_for_projection` /
+  `EdgeBindEndpoints` execution) vs planner late-projection pushdown
+- **Observed behavior:** For a parsed leading-edge-anchor query whose projection touches an
+  endpoint property (for example `MATCH (a:X)-[e:R WHERE e.weight = 5]->(b:Y) RETURN b.name`),
+  the planner pushes `far_property_projection = ["name"]` into `EdgeBindEndpoints` (late
+  projection) and still emits `PropertyFilter(IsLabeled(b))` after it. Execution binds `b` to a
+  projected `PlanBinding::Value(Record)` (`vertex_binding_for_projection`, `Some(props)` arm), so
+  the subsequent `IsLabeled(b)` check no longer sees a vertex binding and drops **every** row.
+  Reproduced with a hand-built plan: identical ops with projections yield 0 rows, without
+  projections 1 row, under both default and resolved-label contexts.
+- **Expected or needed behavior:** Either projected endpoint bindings must remain label-checkable,
+  or the planner must not push endpoint property projections past trailing endpoint `IsLabeled`
+  filters for leading-edge-anchor plans.
+- **Evidence:** scratch diff of `EdgeBindEndpoints` projections in
+  `crates/graph/src/plan/query/executor/scan/tests.rs`; equality probe returns 0 rows while the
+  hand-built unprojected twin returns the expected row.
+- **Impact:** Whole-variable projections (`RETURN b`) execute correctly; property-level projections
+  over labeled endpoints return empty result sets for anchored edge scans. This equally affects
+  fused equality anchors, so it is independent of IN anchoring (IN inherits exactly the same
+  behavior, satisfying the parity requirement but not row completeness).
+- **Next decision:** Choose between preserving vertex identity alongside projected records
+  (binding-layout change) and suppressing the late-projection pushdown when trailing endpoint
+  filters exist (planner-local change); add a regression test pinning whichever contract lands.
 
 ### GAP-2026-08-24-001 — Two stale router lib fixtures surfaced on the suite's first full run after the 8e392c127→ac380c4bb build-broken window
 
@@ -1483,7 +1551,9 @@ duplicate its state machine or ownership rules.
 | P1       | Restore anchored multi-DML roll-forward saga convergence on both shards                    | Closed 2026-08-22 — GAP-2026-08-21-001 (see entry)                                           |
 | P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Open for slice-4 acceptance — GAP-2026-07-29-005 (ADR 0073 slices 1–3 implemented and validated; slice 4 landed on `39746f7b3`, acceptance pending Plan 0285 validation) |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
-| P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Open — GAP-2026-08-24-002 (vertex side landed: parse/eval/anchor/wire; correctness preserved, selectivity pending) |
+| P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-002 (`ScanValue::InList` reused end to end; planner fusion, three executor probe-union consumers, Router `EdgeEqualUnion` seeds) |
+| P2       | Cypher bracket-form `IN […]` fails to parse under combined `cypher` + `sql-compat` builds (sql-compat arm requires `(` unconditionally) | Open — GAP-2026-08-24-003 (default canister dialect unaffected) |
+| P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Open — GAP-2026-08-24-004 (pre-existing for fused equality anchors; whole-variable projections unaffected) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
