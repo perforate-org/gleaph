@@ -2,97 +2,97 @@ benches:
   bench_btree_mixed_insert_remove_1024:
     total:
       calls: 1
-      instructions: 4555059
+      instructions: 4397366
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       btree_mixed_insert_remove:
         calls: 1
-        instructions: 4554020
+        instructions: 4396386
         heap_increase: 0
         stable_memory_increase: 0
   bench_btree_mixed_insert_remove_4096:
     total:
       calls: 1
-      instructions: 9991470
+      instructions: 9661566
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       btree_mixed_insert_remove:
         calls: 1
-        instructions: 9990431
+        instructions: 9660586
         heap_increase: 0
         stable_memory_increase: 0
   bench_btree_predecessor_successor_1024:
     total:
       calls: 1
-      instructions: 36637
+      instructions: 35404
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       btree_predecessor_successor:
         calls: 1
-        instructions: 35578
+        instructions: 34415
         heap_increase: 0
         stable_memory_increase: 0
   bench_btree_predecessor_successor_4096:
     total:
       calls: 1
-      instructions: 45434
+      instructions: 43816
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       btree_predecessor_successor:
         calls: 1
-        instructions: 44375
+        instructions: 42827
         heap_increase: 0
         stable_memory_increase: 0
   bench_paged_mixed_insert_remove_1024:
     total:
       calls: 1
-      instructions: 388720
+      instructions: 385846
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       paged_mixed_insert_remove:
         calls: 1
-        instructions: 387681
+        instructions: 384871
         heap_increase: 0
         stable_memory_increase: 0
   bench_paged_mixed_insert_remove_4096:
     total:
       calls: 1
-      instructions: 427736
+      instructions: 424862
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       paged_mixed_insert_remove:
         calls: 1
-        instructions: 426697
+        instructions: 423887
         heap_increase: 0
         stable_memory_increase: 0
   bench_paged_predecessor_successor_1024:
     total:
       calls: 1
-      instructions: 5308
+      instructions: 5087
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       paged_predecessor_successor:
         calls: 1
-        instructions: 4242
+        instructions: 4093
         heap_increase: 0
         stable_memory_increase: 0
   bench_paged_predecessor_successor_4096:
     total:
       calls: 1
-      instructions: 5752
+      instructions: 5531
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       paged_predecessor_successor:
         calls: 1
-        instructions: 4686
+        instructions: 4537
         heap_increase: 0
         stable_memory_increase: 0
-version: 0.4.0
+version: 0.7.0

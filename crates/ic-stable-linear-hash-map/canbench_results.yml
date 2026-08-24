@@ -2,85 +2,85 @@ benches:
   bench_btree_get_4096:
     total:
       calls: 1
-      instructions: 72077561
+      instructions: 70134788
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       btree_get_4096:
         calls: 1
-        instructions: 72076556
+        instructions: 70133825
         heap_increase: 0
         stable_memory_increase: 0
   bench_btree_insert_4096:
     total:
       calls: 1
-      instructions: 171500133
+      instructions: 166647633
       heap_increase: 0
       stable_memory_increase: 3
     scopes:
       btree_insert_4096:
         calls: 1
-        instructions: 171499128
+        instructions: 166646690
         heap_increase: 0
         stable_memory_increase: 3
   bench_btree_remove_4096:
     total:
       calls: 1
-      instructions: 161013030
+      instructions: 156283587
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       btree_remove_4096:
         calls: 1
-        instructions: 161012025
+        instructions: 156282622
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_get_4096:
     total:
       calls: 1
-      instructions: 13912258
+      instructions: 13678530
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       linear_get_4096:
         calls: 1
-        instructions: 13911253
+        instructions: 13677565
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_insert_4096:
     total:
       calls: 1
-      instructions: 61832823
+      instructions: 63136906
       heap_increase: 0
       stable_memory_increase: 1
     scopes:
       linear_insert_4096:
         calls: 1
-        instructions: 61831818
+        instructions: 63135963
         heap_increase: 0
         stable_memory_increase: 1
   bench_linear_maintenance_4096:
     total:
       calls: 1
-      instructions: 11215474
+      instructions: 11658997
       heap_increase: 0
       stable_memory_increase: 2
     scopes:
       linear_maintenance_4096:
         calls: 1
-        instructions: 11214469
+        instructions: 11658000
         heap_increase: 0
         stable_memory_increase: 2
   bench_linear_remove_4096:
     total:
       calls: 1
-      instructions: 20760204
+      instructions: 20591108
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       linear_remove_4096:
         calls: 1
-        instructions: 20759199
+        instructions: 20590143
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.7.0
