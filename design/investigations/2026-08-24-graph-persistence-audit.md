@@ -251,8 +251,15 @@ than motivate one.
   (`ROUTER_INDEX_RETIRED`) and 55 (`ROUTER_AUTH_GRANT_ROWS`) in
   `crates/router/src/facade/stable/memory.rs:53,145`, while
   `ROUTER_STABLE_LAYOUT` and its test pin max id 53 / 54 regions
-  (`graph-kernel/src/stable_layout.rs:1772-1840`). Reconcile in a router-scoped
-  patch.
+  (`graph-kernel/src/stable_layout.rs:1772-1840`). **Closed by
+  [Plan 0304](../../plans/0304-router-registry-drift-reconciliation.md)**
+  (2026-08-25): the registry carries both regions with concrete
+  classifications (54 `VersionedSurvivor` deliberately exposing its bare-Candid
+  envelope gap — envelope work is a separate router slice; 55 `VersionedSurvivor`
+  satisfied by `GrantRow`'s tag codec), pins updated to 56 regions / max id 55,
+  ADR 0007 synced. Residuals: the MemoryId 54 envelope itself, and the
+  inventory sync deferred behind the vector pane's unstaged Status-header
+  hunks.
 - **Cross-canister duplication study** (shard↔canister catalogs on three
   canisters; Router bulk-load receipt fingerprints) requires the neighbor
   scopes; deferred per audit scope decision.

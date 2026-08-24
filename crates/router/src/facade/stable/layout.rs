@@ -2,7 +2,8 @@
 
 pub use gleaph_graph_kernel::stable_layout::ROUTER_STABLE_LAYOUT;
 
-/// Stable region count for this canister (ADR 0007 baseline plus the direct-ingestion outbox).
+/// Stable region count for this canister (ADR 0007 baseline plus the direct-ingestion
+/// outbox, the retired-index purge lane, and the data-plane grant rows).
 #[cfg_attr(
     not(test),
     expect(
@@ -20,6 +21,6 @@ mod tests {
     #[test]
     fn router_canister_layout_registry() {
         validate_layout(&ROUTER_STABLE_LAYOUT).expect("router layout invariants");
-        assert_eq!(STABLE_REGION_COUNT, 54);
+        assert_eq!(STABLE_REGION_COUNT, 56);
     }
 }

@@ -1330,6 +1330,26 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
+        // ADR 0023 D6: sole durable identity of a post-DROP posting-purge obligation.
+        region(
+            "ROUTER_INDEX_RETIRED",
+            54,
+            StableMemoryClass::Canonical,
+            "retired index purge lane",
+            "PhysicalIndexId → RetiredIndexRecord: drain targets frozen before the destructive DROP INDEX, one resume cursor per pending graph-index target, deleted only when every target confirms done; records are never overwritten",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        // ADR 0074 §6: durable data-plane grant rows.
+        region(
+            "ROUTER_AUTH_GRANT_ROWS",
+            55,
+            StableMemoryClass::Canonical,
+            "auth",
+            "StableBTreeMap<GrantKey, GrantRow> data-plane authorization rows; the hand-written row codec keeps tags 2/3 current and rejects superseded tags 0/1 on decode",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
     ],
 };
 
@@ -2057,8 +2077,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 54);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(53));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 56);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(55));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[20].symbol,
             "ROUTER_NEXT_PHYSICAL_INDEX_ID"
@@ -2122,6 +2142,39 @@ mod tests {
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[53].class,
             StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[54].symbol,
+            "ROUTER_INDEX_RETIRED"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[54].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(ROUTER_STABLE_LAYOUT.regions[54].rebuild, RebuildPath::None);
+        // RetiredIndexRecord encodes as bare Candid (encode_one/decode_one, no version byte),
+        // yet stays VersionedSurvivor deliberately: live retirement records span upgrade
+        // windows and their frozen drain-target set cannot be re-derived after the DROP, so
+        // downgrading to rebuildable would paper over the pre-production envelope gap — the
+        // same exposure as graph regions 41/46. Envelope work is a separate router slice.
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[54].compat,
+            ProductionCompat::VersionedSurvivor
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[55].symbol,
+            "ROUTER_AUTH_GRANT_ROWS"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[55].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(ROUTER_STABLE_LAYOUT.regions[55].rebuild, RebuildPath::None);
+        // GrantRow survives upgrades through its existing hand-written tag codec (tags 2/3
+        // current, superseded tags 0/1 rejected on decode); no envelope work is needed.
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[55].compat,
+            ProductionCompat::VersionedSurvivor
         );
     }
 
