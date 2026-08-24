@@ -8,6 +8,7 @@
 //! - shared visualization state vs individual view state,
 //! - graph rendering vs application UI.
 
+pub mod frame_source;
 pub mod graph;
 pub mod hash;
 pub mod hit_test;
@@ -22,6 +23,7 @@ pub mod style;
 pub mod view;
 pub mod viewport;
 
+pub use frame_source::{FrameSource, PaintFrameWire};
 pub use graph::{EdgeDirection, EdgeId, Graph, GraphDelta, NodeId};
 pub use hash::DefaultBuildHasher;
 pub use hit_test::{HitTestResult, hit_test};

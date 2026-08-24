@@ -1313,6 +1313,36 @@ structure and edge endpoints from worker threads, and the density grid
 crosses the parallel density pass, so the shared builder also requires
 `S: Sync`.
 
+### Frame sources and the frame wire (ADR 0076 S1)
+
+`GraphViewState` owns a `FrameSource`, the seam that decides where the coming
+frame is produced. `InProcess` is the default and the only connected mode:
+the element's prepaint calls `GraphViewState::build_frame`, which sizes the
+viewport (`prepare_canvas`, including the one-time initial fit) and then
+builds the indexed frame synchronously from one synced scene read.
+`Worker` reserves the off-main-thread producer of ADR 0076 (a dedicated
+worker owning the graph backend, shipping frames to the main thread with a
+latest-wins request protocol). The variant exists so the seam and transfer
+contract land ahead of that host; it has no execution path, no construction
+path selects it, and reaching it in frame dispatch fails loudly instead of
+falling back to an in-process build.
+
+`gpui_graph::frame_source::PaintFrameWire` is the transfer form of a
+`PaintFrame` across that seam: the frame linearized into structure-of-arrays
+planes, one flat buffer per primitive field. Identity planes carry slotmap
+key bits (`KeyData::as_ffi`); node, edge, and anchor geometry carries packed
+`f32`s; `selected`/`hovered`/`simplified`/`omit_arrow` ride one-byte flag
+planes; overlay category and edge direction ride one-byte discriminant
+planes; variable-length data — Bézier paths and label text — flattens behind
+a per-element length plane (`u32` segment counts plus six `f32`s per
+segment; `u32` UTF-8 byte lengths). `encode` and `decode` restore the exact
+frame: every primitive field equal and element order preserved. The contract
+is pinned by a randomized round-trip property test plus targeted
+bit-exactness (-0.0, denormals), boundary-value, and wire-corruption cases.
+The planes are private to the module and only ever written by `encode`, so
+they hold canonical bytes and decode fails closed on anything else. No
+transport reads or writes the planes until the S2 worker host lands.
+
 ## 18.3 Edge curves
 
 Edges render as quadratic Bézier curves that bow toward the side with lower
@@ -2143,6 +2173,12 @@ the viewport has no pixel size yet, so world/screen math is degenerate — and
 consuming the fit on them left the graph unfitted permanently; they are
 ignored as override signals and the next laid-out frame still fits exactly
 once.
+
+The view also owns the frame-source seam (§18.2, ADR 0076): `frame_source()`
+reports where frames come from, and the element's prepaint routes through
+`build_frame`, which sizes the viewport and produces the frame from the
+active source. `InProcess` is the default and the only connected source;
+`Worker` is declared but unreachable until the S2 worker host lands.
 
 ---
 

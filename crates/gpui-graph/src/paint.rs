@@ -49,7 +49,7 @@ pub type NodeOverlay = dyn Fn(NodeId) -> OverlayCategory;
 pub type EdgeOverlay = dyn Fn(EdgeId) -> OverlayCategory;
 
 /// A node record ready for painting.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintNode {
     /// Stable node identity.
     pub id: NodeId,
@@ -70,7 +70,7 @@ pub struct PaintNode {
 }
 
 /// An edge record ready for painting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PaintEdge {
     /// Stable edge identity.
     pub id: EdgeId,
@@ -99,7 +99,7 @@ pub struct PaintEdge {
 }
 
 /// A label record ready for painting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PaintLabel {
     /// Canvas-local pixel anchor position (the node center).
     pub position: Vec2,
@@ -108,7 +108,7 @@ pub struct PaintLabel {
 }
 
 /// An edge label record ready for painting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PaintEdgeLabel {
     /// The edge this label belongs to. A label never masks its own edge's
     /// strokes: self-loops anchor their label beside the shape, and a mask
@@ -129,7 +129,7 @@ pub struct PaintEdgeLabel {
 }
 
 /// The set of primitives to paint for one frame (§18.2).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintFrame {
     /// Visible nodes.
     pub nodes: Vec<PaintNode>,

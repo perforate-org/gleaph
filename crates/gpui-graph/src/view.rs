@@ -19,6 +19,7 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc};
 #[cfg(test)]
 use std::cell::RefCell;
 
+use crate::frame_source::FrameSource;
 use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::hit_test;
 use crate::interaction::{GraphEvent, Hover, MouseButton, Selection};
@@ -50,6 +51,11 @@ where
     hover: Hover,
     style: GraphStyle,
     runtime: crate::runtime::GraphRuntime<S>,
+    /// Where this view's paint frame is produced. `InProcess` is the default
+    /// and only connected source: the synchronous prepaint build. `Worker`
+    /// reserves the ADR 0076 off-main-thread producer and has no execution
+    /// path until that worker host lands (§18.2).
+    frame_source: FrameSource,
     node_label: NodeLabelResolver<N>,
     edge_label: EdgeLabelResolver<E>,
     node_overlay: NodeOverlayResolver,
@@ -226,6 +232,7 @@ where
             hover: Hover::default(),
             style: GraphStyle::default(),
             runtime: crate::runtime::GraphRuntime::default(),
+            frame_source: FrameSource::default(),
             node_label: Rc::new(|_id, _node| None),
             edge_label: Rc::new(|_id, _edge| None),
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
@@ -281,6 +288,15 @@ where
     /// The graph style, mutably.
     pub fn style_mut(&mut self) -> &mut GraphStyle {
         &mut self.style
+    }
+
+    /// Where this view produces its paint frame (§18.2, ADR 0076).
+    ///
+    /// Only [`FrameSource::InProcess`] has an execution path; the `Worker`
+    /// mode is reserved for the ADR 0076 S2 worker host and cannot be
+    /// selected yet.
+    pub fn frame_source(&self) -> FrameSource {
+        self.frame_source
     }
 
     /// The style to use when painting this frame, applying interaction-time LOD.
@@ -505,6 +521,7 @@ where
             hover: Hover::default(),
             style: GraphStyle::default(),
             runtime: crate::runtime::GraphRuntime::default(),
+            frame_source: FrameSource::default(),
             node_label: Rc::new(|_id, node| Some(node.to_string())),
             edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
@@ -516,6 +533,63 @@ where
             interaction_settle_task: None,
             initial_auto_fit: InitialAutoFitState::default(),
         }
+    }
+}
+
+/// Frame production through the [`FrameSource`] seam (§18.2, ADR 0076).
+///
+/// The bounds mirror [`build_indexed_paint_frame`](crate::paint::build_indexed_paint_frame):
+/// producing a frame reads graph identity and geometry across rayon workers
+/// on native targets, so the key and payload types must be `Sync`.
+impl<NK, EK, N, E, S> GraphViewState<NK, EK, N, E, S>
+where
+    NK: Eq + std::hash::Hash + Sync + 'static,
+    EK: Eq + std::hash::Hash + Sync + 'static,
+    N: Sync + 'static,
+    E: Sync + 'static,
+    S: std::hash::BuildHasher + Default + Clone + Sync + 'static,
+{
+    /// Size the viewport for the coming frame and produce its paint frame
+    /// from the active [`FrameSource`].
+    ///
+    /// This is the single seam between GPUI's prepaint pass and frame
+    /// production: viewport sizing and the one-time initial fit run for every
+    /// source, while primitive production switches on the source. The `Worker`
+    /// source has no execution path until the ADR 0076 S2 worker host lands,
+    /// so reaching its arm is a loud defect rather than a fallback to the
+    /// in-process build.
+    fn build_frame(&mut self, size: Vec2, cx: &mut Context<Self>) -> crate::paint::PaintFrame {
+        self.prepare_canvas(size, cx);
+        match self.frame_source {
+            FrameSource::InProcess => self.build_in_process_frame(cx),
+            FrameSource::Worker => unreachable!(
+                "FrameSource::Worker has no execution path until the ADR 0076 S2 worker host lands"
+            ),
+        }
+    }
+
+    /// The `InProcess` frame source: build the indexed paint frame
+    /// synchronously from one synced read of the scene (§18.2).
+    fn build_in_process_frame(&mut self, cx: &mut Context<Self>) -> crate::paint::PaintFrame {
+        let paint_style = self.paint_style();
+        let node_label = self.node_label.clone();
+        let edge_label = self.edge_label.clone();
+        let node_overlay = self.node_overlay.clone();
+        let edge_overlay = self.edge_overlay.clone();
+        let scene_entity = self.scene.clone();
+        let scene = scene_entity.read(cx);
+        let synced = scene.sync_runtime(&mut self.runtime);
+        crate::paint::build_indexed_paint_frame(crate::paint::IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &|id, node| node_label(id, node),
+            edge_label: &|id, edge| edge_label(id, edge),
+            viewport: &self.viewport,
+            style: &paint_style,
+            selection: &self.selection,
+            hover: &self.hover,
+            node_overlay: Some(&move |id| node_overlay(id)),
+            edge_overlay: Some(&move |id| edge_overlay(id)),
+        })
     }
 }
 
@@ -602,36 +676,15 @@ where
                 canvas(
                     move |bounds, _window, cx| {
                         coordinates_prepaint.set(CanvasCoordinates::from_bounds(bounds));
-                        // Prepaint: size the viewport from the element bounds and
-                        // build the paint frame from fresh scene state. On the
-                        // first valid layout, auto-fit the graph exactly once so
-                        // it is visible without an explicit `fit_all` call.
+                        // Prepaint: size the viewport from the element bounds
+                        // and produce the frame through the view's frame-source
+                        // seam (InProcess today; ADR 0076 reserves the worker
+                        // source). On the first valid layout, auto-fit the
+                        // graph exactly once so it is visible without an
+                        // explicit `fit_all` call.
                         let size =
                             Vec2::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
-                        view_prepaint.update(cx, |vs, cx| {
-                            vs.prepare_canvas(size, cx);
-                            let paint_style = vs.paint_style();
-                            let scene_entity = vs.scene.clone();
-                            let scene = scene_entity.read(cx);
-                            let synced = scene.sync_runtime(&mut vs.runtime);
-                            let node_label = vs.node_label.clone();
-                            let edge_label = vs.edge_label.clone();
-                            let node_overlay = vs.node_overlay.clone();
-                            let edge_overlay = vs.edge_overlay.clone();
-                            crate::paint::build_indexed_paint_frame(
-                                crate::paint::IndexedPaintFrameInput {
-                                    synced: &synced,
-                                    node_label: &|id, node| node_label(id, node),
-                                    edge_label: &|id, edge| edge_label(id, edge),
-                                    viewport: &vs.viewport,
-                                    style: &paint_style,
-                                    selection: &vs.selection,
-                                    hover: &vs.hover,
-                                    node_overlay: Some(&move |id| node_overlay(id)),
-                                    edge_overlay: Some(&move |id| edge_overlay(id)),
-                                },
-                            )
-                        })
+                        view_prepaint.update(cx, |vs, cx| vs.build_frame(size, cx))
                     },
                     move |_bounds, mut frame: crate::paint::PaintFrame, window, cx| {
                         let coordinates = coordinates_paint.get();
