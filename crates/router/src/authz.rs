@@ -2484,4 +2484,81 @@ mod tests {
             &[GRAPH_RAW]
         ));
     }
+
+    // ───── ADR 0078 §6: edge-subject (GLEAPH.VECTOR.*) visibility ─────
+    //
+    // Edge-inline byte vectors are fused fixed-label edge predicates evaluated during
+    // ordinary traversal execution. Their subjects are edges, so the identical visibility
+    // rule translates to: the matching edge privilege INCLUDING DIRECTION covers the
+    // inline vector read, and an invisible edge never reaches candidate evaluation.
+
+    /// Expand hop carrying a fused `GLEAPH.VECTOR.*` edge-inline vector predicate.
+    fn vector_predicate_expand(direction: EdgeDirection, label: Option<&str>) -> PlanOp {
+        use gleaph_gql_planner::plan::{EdgeVectorMetric, ScanValue};
+        let mut op = expand(direction, label);
+        if let PlanOp::Expand {
+            edge_inline_vector_predicate,
+            ..
+        } = &mut op
+        {
+            *edge_inline_vector_predicate = Some(gleaph_gql_planner::plan::EdgeInlineVectorPredicate {
+                metric: EdgeVectorMetric::L2Squared,
+                query: ScanValue::Parameter("q".into()),
+                op: gleaph_gql::ast::CmpOp::Le,
+                threshold: ScanValue::Literal(gleaph_gql::Value::Float32(0.5)),
+            });
+        }
+        op
+    }
+
+    #[test]
+    fn edge_inline_vector_rides_the_direction_aware_traversal_row() {
+        // The fused vector predicate adds NO extra demand and grants NO bypass: the
+        // demanded rows are exactly the plain traversal rows for the same direction.
+        for direction in [
+            EdgeDirection::PointingRight,
+            EdgeDirection::PointingLeft,
+            EdgeDirection::AnyDirection,
+        ] {
+            let plain = extract_ops(vec![expand(direction, Some("KNOWS"))]);
+            let fused = extract_ops(vec![vector_predicate_expand(direction, Some("KNOWS"))]);
+            assert_eq!(
+                fused, plain,
+                "edge-inline vector predicate must ride the traversal row ({direction:?})"
+            );
+
+            // Direction-aware coverage: a caller holding only the OUTGOING row cannot run
+            // the incoming shape, so its inline edge bytes stay invisible.
+            let reader = principal(11);
+            let mut grants = GrantTable::default();
+            grants.traverse(
+                GrantSubject::Principal(reader),
+                Some(Direction::Outgoing),
+                10,
+            );
+            let outgoing = matches!(direction, EdgeDirection::PointingRight);
+            assert_eq!(
+                allowed(&fused, &reader, &grants, &[]),
+                outgoing,
+                "direction-aware coverage must gate fused vector reads ({direction:?})"
+            );
+            // Wrong-implementation probe: an evaluator granting every direction admits
+            // the incoming shape too, so the assertion above discriminates.
+            assert!(allowed(&fused, &reader, &AlwaysAllow, &[]));
+        }
+    }
+
+    #[test]
+    fn edge_inline_vector_without_label_stays_tenancy_only() {
+        // Unlabeled fused shapes cannot be attributed to a grantable resource: tenancy
+        // gates them like any other wildcard traversal.
+        let fused = extract_ops(vec![vector_predicate_expand(
+            EdgeDirection::PointingRight,
+            None,
+        )]);
+        let demands = fused.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(demands.unattributed);
+        assert!(!allowed(&fused, &principal(11), &GrantTable::default(), &[]));
+        assert!(allowed(&fused, &principal(11), &GrantTable::default(), &[GRAPH_RAW]));
+    }
 }
