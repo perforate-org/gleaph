@@ -1,0 +1,23 @@
+benches:
+  bench_fts5_ingest_m:
+    total:
+      calls: 1
+      instructions: 244267210
+      heap_increase: 5
+      stable_memory_increase: 0
+    scopes: {}
+  bench_fts5_query_rank_m3_top10:
+    total:
+      calls: 1
+      instructions: 34839477
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_fts5_query_term_top100:
+    total:
+      calls: 1
+      instructions: 261085
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+version: 0.7.0

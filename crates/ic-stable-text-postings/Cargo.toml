@@ -1,0 +1,21 @@
+[package]
+name = "ic-stable-text-postings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Physical-layer text postings PoC (the future Text Index's storage facts). The crate owns
+# encodings, block layout headers, merge cursors, and deterministic fixtures, and must never
+# know analyzers, scoring formulas, GQL, Router, or graph semantics.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:candid", "dep:ic-cdk"]
+
+[dependencies]
+canbench-rs = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
+ic-cdk = { workspace = true, optional = true }
+ic-stable-structures.workspace = true

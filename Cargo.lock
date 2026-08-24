@@ -1701,7 +1701,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -2591,7 +2591,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3602,15 +3602,21 @@ dependencies = [
  "gleaph-bulk-load-api",
  "gleaph-codegen",
  "gleaph-gql",
+ "gleaph-gql-ic",
+ "gleaph-gql-ic-wire",
+ "gleaph-gql-params",
  "gleaph-graph-kernel",
  "gleaph-index-ddl",
  "gleaph-message-sizing",
  "gleaph-migration-api",
  "gleaph-prepared-api",
  "gleaph-prepared-runtime",
+ "gleaph-router-wire",
  "ic-agent",
  "ic-management-canister-types 0.9.0",
+ "k256",
  "libc",
+ "rand_core 0.6.4",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -3915,6 +3921,8 @@ dependencies = [
  "cargo_metadata",
  "flate2",
  "gleaph-account",
+ "gleaph-bulk-load-api",
+ "gleaph-cli",
  "gleaph-codegen",
  "gleaph-gql",
  "gleaph-gql-ic",
@@ -3927,6 +3935,7 @@ dependencies = [
  "pocket-ic",
  "serde",
  "serde_json",
+ "text-canister",
  "ureq",
 ]
 
@@ -4165,7 +4174,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.18",
- "windows 0.57.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -5146,7 +5155,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5353,6 +5362,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-sqlite-vfs"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2163c63ed0f6aeffc63231e6714f52352e8869013f4edc8f342ae5b99259c409"
+dependencies = [
+ "candid",
+ "cc",
+ "ic-cdk",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ic-stable-lara"
 version = "0.1.0"
 dependencies = [
@@ -5412,6 +5434,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee3372ddc0cf2a747fc26ce2d075a240ed6bfab151e63bc70109e8967f7ce6f"
 dependencies = [
  "ic_principal",
+]
+
+[[package]]
+name = "ic-stable-text-postings"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "ic-cdk",
+ "ic-stable-structures",
 ]
 
 [[package]]
@@ -10064,6 +10096,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "text-canister"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "ic-cdk-macros",
+ "ic-stable-memory-backend",
+ "ic-stable-structures",
+ "ic-stable-text-postings",
+ "serde",
+ "unicode-normalization",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "text-index-fts5-arm"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "ic-cdk",
+ "ic-sqlite-vfs",
+ "ic-stable-text-postings",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10632,6 +10690,15 @@ name = "unicode-linebreak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-properties"

@@ -1,0 +1,100 @@
+benches:
+  bench_build_segment_m2000:
+    total:
+      calls: 1
+      instructions: 188801523
+      heap_increase: 6
+      stable_memory_increase: 0
+    scopes: {}
+  bench_dict_lookup_btree_512:
+    total:
+      calls: 1
+      instructions: 14394749
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_merge_step_k4_b8192:
+    total:
+      calls: 1
+      instructions: 17997653
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_advance_ef:
+    total:
+      calls: 1
+      instructions: 25177023
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_advance_for:
+    total:
+      calls: 1
+      instructions: 38529031
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_advance_pef:
+    total:
+      calls: 1
+      instructions: 23201640
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_advance_varint:
+    total:
+      calls: 1
+      instructions: 14291010
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_walk_ef:
+    total:
+      calls: 1
+      instructions: 54287259
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_walk_for:
+    total:
+      calls: 1
+      instructions: 119052252
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_walk_pef:
+    total:
+      calls: 1
+      instructions: 328886347
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_postings_walk_varint:
+    total:
+      calls: 1
+      instructions: 31917623
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_topk_bm25_m3_top10:
+    total:
+      calls: 1
+      instructions: 17254726
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_topk_bmw_m3_top10:
+    total:
+      calls: 1
+      instructions: 29683987
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_topk_bmw_m3_top10_varint:
+    total:
+      calls: 1
+      instructions: 15782913
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+version: 0.7.0

@@ -1,0 +1,26 @@
+[package]
+name = "text-canister"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Text Index canister scaffold (ADR 0077 / plan 0294 slice 9). Owns the production analyzer,
+# the stable segment/dict/postings/tombstone/stats state, and the v0 Candid surface. Physical
+# kernels (codecs, block-max tables, merge cursors, the DAAT top-k driver) come from
+# `ic-stable-text-postings`; scoring parts are supplied by this crate at query time.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+ic-stable-memory-backend.workspace = true
+ic-stable-structures.workspace = true
+ic-stable-text-postings = { path = "../ic-stable-text-postings" }
+serde.workspace = true
+unicode-normalization = "0.1"
+unicode-segmentation = "1"

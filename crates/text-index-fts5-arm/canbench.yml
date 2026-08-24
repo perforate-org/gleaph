@@ -1,0 +1,7 @@
+# Dedicated CARGO_TARGET_DIR (../../target/canbench) so the canbench wasm never clobbers the
+# pocket-ic-e2e artifacts under ../../target. The bench wasm is built for wasm32 (with SIMD
+# from the workspace-root `.cargo/config.toml` target rustflags) because canbench's
+# instruction measurement is wasm32-only upstream (canbench TODO EXC-2019); production and
+# test canisters build for wasm64.
+build_cmd: "CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown --locked --features canbench"
+wasm_path: "../../target/canbench/wasm32-unknown-unknown/release/text_index_fts5_arm.wasm"

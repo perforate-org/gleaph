@@ -1,0 +1,34 @@
+[package]
+name = "text-index-fts5-arm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PoC comparison harness only, never production. This crate exists solely to put canbench
+# instruction / stable-memory numbers for SQLite FTS5 (via ic-sqlite-vfs) next to the custom
+# posting kernels of `ic-stable-text-postings` at decision point D1 (engine choice,
+# plan 0293). It depends on `ic-stable-text-postings` (path dep) **for the corpus fixture
+# only** (single source of fixture truth), and on SQLite via ic-sqlite-vfs as the alternative
+# engine under test. Nothing here may be reused by, or linked into, production text-index
+# layers; no public API surface beyond the bench module is intentional.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:candid", "dep:ic-cdk"]
+
+[dependencies]
+canbench-rs = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
+ic-cdk = { workspace = true, optional = true }
+ic-stable-text-postings = { path = "../ic-stable-text-postings" }
+
+# ic-sqlite-vfs's `sqlite-precompiled` feature ships a wasm32-only static archive and its
+# build script panics on every other target, so the engine under test must be wired as a
+# wasm32-only dependency: native host builds (`cargo test`/`clippy`) exercise fixture and
+# storage-counterpart logic only, while the canbench wasm build gets SQLite.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ic-sqlite-vfs = { version = "=2.0.0", default-features = false, features = [
+    "sqlite-precompiled",
+] }
