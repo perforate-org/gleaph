@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-08-01
-Anchor timestamp: 2026-08-01 01:23:28 UTC +0000
+Last updated: 2026-08-24
+Anchor timestamp: 2026-08-24 09:55:00 UTC +0000
 
 ## Purpose
 
@@ -64,6 +64,26 @@ bound is fail-closed. The Router seeds the same union as `IndexAnchor::EqualUnio
 `(shard, vertex)` deduplication for vertices and `IndexAnchor::EdgeEqualUnion` with global edge
 identity `(shard, owner, wire label, slot)` deduplication for edges; complete-prefix seed validation
 and edge inline predicate contexts still reject `InList` bounds fail-closed.
+
+### `ScanValue` text prefix bounds (implemented)
+
+A non-negated `WHERE v.prop STARTS WITH <Text literal | $param>` over a range-indexed vertex
+property fuses into one `IndexScan { value: TextPrefix(pattern), cmp: Eq }` anchor
+(`AnchorSource::PropertyPrefix`). ENDS WITH / CONTAINS / ILIKE, negation, unindexed or non-range
+properties never fuse. The executor lowers the resolved pattern through
+`gleaph_gql::text_prefix_range_bounds` into a half-open encoded-key interval `[low, high)`:
+TEXT keys are `[tag=6] + escaped(text) + [0, 0]`, so `low = stripped pattern key` and
+`high = low + [0xFF]`. UTF-8 payloads contain neither `0x00` nor `0xFF`, so no stored TEXT key can
+continue a prefix with `0xFF`; a plain byte-successor of the last pattern byte is rejected because
+multi-byte characters can terminate a prefix. The empty pattern spans the whole TEXT domain
+(`[6], [7]`), matching `STARTS WITH ''` being true for every non-Null text. BYTES-domain postings
+never enter the interval (tag ordering). The interval is deduplicated on `(shard, vertex)`.
+A missing parameter fails closed; a Null parameter binds no rows (`STARTS WITH NULL` is Unknown);
+a non-TEXT resolved pattern falls back to the node scan + residual filter path like unsupported
+range domains. The original predicate always stays in the residual `PropertyFilter`, so results
+never depend on pushdown. The Router seeds the same anchor as `IndexAnchor::Prefix` carrying the
+encoded pattern key; raw `TextPrefix` bounds reaching `resolve_scan_value` are malformed-plan
+rejections. Edge-side symmetric extension is deferred (ledger GAP entry).
 
 ## Router seed contract
 

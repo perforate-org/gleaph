@@ -44,6 +44,10 @@ pub fn choose_anchor(pattern: &GraphPattern, stats: Option<&dyn GraphStats>) -> 
         if let Some(anchor) = find_range_anchor(&candidates, where_expr, stats) {
             return Some(anchor);
         }
+        #[cfg(feature = "cypher")]
+        if let Some(anchor) = find_string_prefix_anchor(&candidates, where_expr, stats) {
+            return Some(anchor);
+        }
     }
 
     // Phase 2: Check inline property equalities from the pattern itself.
@@ -342,6 +346,73 @@ pub(crate) fn extract_inlist_predicate(expr: &Expr) -> Option<(String, String)> 
             && list.iter().all(is_scannable_value)
         {
             return Some((var, prop));
+        }
+    }
+    None
+}
+
+/// Extract `(variable, property, pattern bound)` from a non-negated
+/// `var.prop STARTS WITH <Text literal | $param>` predicate.
+///
+/// Only a Text literal or a parameter binds the pattern: a Text literal pins
+/// the TEXT posting domain at plan time, and a parameter is resolved by the
+/// executor/seed paths, which fall back to the non-index filter path when it
+/// resolves to a non-TEXT value. Negated predicates and other kinds (ENDS
+/// WITH, CONTAINS, ILIKE) never match because an encoded prefix interval can
+/// express only anchored prefixes.
+#[cfg(feature = "cypher")]
+pub(crate) fn extract_string_prefix_predicate(expr: &Expr) -> Option<(String, String, ScanValue)> {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    if let ExprKind::StringPredicate {
+        expr: lhs,
+        kind: StringPredicateKind::StartsWith,
+        pattern,
+        negated: false,
+    } = &expr.kind
+        && let Some((var, prop)) = extract_property_access(lhs)
+        && let Some(pattern_bound) = string_prefix_pattern_scan_value(pattern)
+    {
+        return Some((var, prop, pattern_bound));
+    }
+    None
+}
+
+/// Lower a `STARTS WITH` pattern expression into its [`ScanValue`] bound:
+/// a Text literal or a parameter. Other expressions keep their residual filter.
+#[cfg(feature = "cypher")]
+pub(crate) fn string_prefix_pattern_scan_value(pattern: &Expr) -> Option<ScanValue> {
+    match &pattern.kind {
+        ExprKind::Literal(gleaph_gql::Value::Text(_)) | ExprKind::Parameter(_) => {
+            scan_value_from_expr(pattern)
+        }
+        _ => None,
+    }
+}
+
+/// Look for `var.prop STARTS WITH <Text literal | $param>` on range-indexed properties.
+#[cfg(feature = "cypher")]
+fn find_string_prefix_anchor(
+    candidates: &[AnchorCandidate],
+    where_expr: &Expr,
+    stats: Option<&dyn GraphStats>,
+) -> Option<AnchorInfo> {
+    let predicates = flatten_conjunction(where_expr);
+    for pred in &predicates {
+        let Some((var, prop, pattern_bound)) = extract_string_prefix_predicate(pred) else {
+            continue;
+        };
+        if candidates.iter().any(|c| c.variable == var)
+            && let Some(stats) = stats
+            && stats.is_vertex_property_range_indexed(&prop)
+        {
+            return Some(AnchorInfo {
+                variable: var.into(),
+                source: AnchorSource::PropertyPrefix {
+                    property: prop.into(),
+                    pattern: pattern_bound,
+                },
+            });
         }
     }
     None

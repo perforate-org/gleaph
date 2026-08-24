@@ -51,6 +51,8 @@ pub enum IndexAnchor {
     },
     /// Single range `IndexScan` bound (`lookup_range`, one-sided only).
     Range(RangeSeedProbe),
+    /// Text prefix `IndexScan` bound (`lookup_range`, encoded TEXT prefix interval).
+    Prefix(PrefixSeedProbe),
     /// Leading one-sided range `EdgeIndexScan` (`lookup_edge_range`, domain-clamped at execution).
     EdgeRange(EdgeRangeSeedProbe),
     /// Multiple equality arms (`lookup_intersection`).
@@ -79,6 +81,7 @@ impl IndexAnchor {
             Self::EdgeEqual(probe) => probe.variable.as_str(),
             Self::EdgeEqualUnion { variable, .. } => variable.as_str(),
             Self::Range(probe) => probe.variable.as_str(),
+            Self::Prefix(probe) => probe.variable.as_str(),
             Self::EdgeRange(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
             Self::Label { variable, .. } => variable.as_str(),
@@ -261,6 +264,26 @@ pub struct RangeSeedProbe {
     pub bound: SeedRangeBound,
 }
 
+/// Text prefix `IndexScan` anchor (`lookup_range` over the encoded TEXT prefix interval).
+///
+/// Carries the fully encoded pattern key (`[TEXT tag] + escaped pattern + [0, 0]`); the
+/// half-open prefix interval is derived at collection time through the shared
+/// `gql::text_prefix_range_bounds_for_encoded_key` helper, keeping encoded-key knowledge in
+/// `gql::value_index_key`. The struct stays `Hash`-stable for anchor cache keys.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PrefixSeedProbe {
+    /// GQL variable to seed.
+    pub variable: String,
+    /// Property name from the plan (router catalog lookup).
+    pub property: String,
+    /// Interned property id for index canister calls.
+    pub property_id: u32,
+    /// Router-owned physical posting namespace selected from one Active catalog row.
+    pub physical_index_id: PhysicalIndexId,
+    /// Encoded TEXT pattern key including its `[0, 0]` terminator.
+    pub pattern_bytes: Vec<u8>,
+}
+
 /// Equality `EdgeIndexScan` anchor (`lookup_edge_equal`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeSeedProbe {
@@ -308,6 +331,7 @@ impl SeedProbe {
                 Some(IndexAnchor::Equal(probe)) => Some(probe),
                 Some(IndexAnchor::EqualUnion { .. })
                 | Some(IndexAnchor::Range(_))
+                | Some(IndexAnchor::Prefix(_))
                 | Some(IndexAnchor::Intersection { .. })
                 | Some(IndexAnchor::EdgeEqual(_))
                 | Some(IndexAnchor::EdgeEqualUnion { .. })
@@ -779,6 +803,25 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                 );
             }
             PlanOp::NodeScan { label: None, .. } => break,
+            // The prefix arm must precede the equality arm: a TextPrefix bound
+            // rides `cmp = Eq` and would otherwise reach `resolve_scan_value`
+            // unexpanded, which is a malformed-plan rejection.
+            PlanOp::IndexScan {
+                value: ScanValue::TextPrefix(pattern),
+                cmp: CmpOp::Eq,
+                variable,
+                property,
+                ..
+            } => {
+                if !record_bound_var(&mut bound_var, variable)? {
+                    break;
+                }
+                if let Some(anchor) =
+                    prefix_anchor(store, graph_id, params, variable, property, pattern)?
+                {
+                    push_unique_anchor(&mut anchors, anchor);
+                }
+            }
             PlanOp::IndexScan {
                 variable,
                 property,
@@ -789,10 +832,25 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                 if !record_bound_var(&mut bound_var, variable)? {
                     break;
                 }
-                push_unique_anchor(
-                    &mut anchors,
-                    equal_anchor(store, graph_id, params, variable, property.as_ref(), value)?,
-                );
+                // An InList bound expands into its union anchor before
+                // `resolve_scan_value` can see it, mirroring the vertex
+                // single-op and edge extraction paths.
+                let anchor = match value {
+                    ScanValue::InList(elements) => {
+                        equal_union_anchor(store, graph_id, params, variable, property, elements)?
+                    }
+                    single => Some(equal_anchor(
+                        store,
+                        graph_id,
+                        params,
+                        variable,
+                        property.as_ref(),
+                        single,
+                    )?),
+                };
+                if let Some(anchor) = anchor {
+                    push_unique_anchor(&mut anchors, anchor);
+                }
             }
             PlanOp::IndexScan {
                 variable,
@@ -1080,6 +1138,49 @@ fn range_anchor(
     })))
 }
 
+/// Build a text prefix anchor from a leading `IndexScan` whose bound is
+/// [`ScanValue::TextPrefix`].
+///
+/// Returns `Ok(None)` when the resolved pattern is Null or cannot form a TEXT
+/// prefix interval (non-TEXT domain, malformed encoded key): such predicates
+/// seed no rows through the prefix path and must be answered by the non-index
+/// filter path instead.
+fn prefix_anchor(
+    store: &RouterStore,
+    graph_id: GraphId,
+    params: &BTreeMap<String, Value>,
+    variable: &str,
+    property: &str,
+    pattern: &ScanValue,
+) -> Result<Option<IndexAnchor>, RouterError> {
+    let Some(pattern_bytes) = resolve_scan_value(pattern, params)? else {
+        // A Null pattern matches no row under three-valued logic; the residual
+        // filter path answers the predicate without a seed.
+        return Ok(None);
+    };
+    if gleaph_gql::value_index_key::text_prefix_range_bounds_for_encoded_key(&pattern_bytes)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let property_id = store
+        .lookup_property_id(graph_id, property)
+        .map_err(|_| RouterError::NotFound(format!("property {property}")))?
+        .raw();
+    let physical_index_id = indexed_catalog::active_vertex_physical_index(
+        graph_id,
+        None,
+        PropertyId::from_raw(property_id),
+    )?;
+    Ok(Some(IndexAnchor::Prefix(PrefixSeedProbe {
+        variable: variable.to_string(),
+        property: property.to_string(),
+        property_id,
+        physical_index_id,
+        pattern_bytes,
+    })))
+}
+
 fn anchor_from_property_predicate(
     predicate: &Expr,
     bound_var: Option<&str>,
@@ -1276,6 +1377,13 @@ fn extract_from_op(
         PlanOp::IndexScan {
             variable,
             property,
+            value: ScanValue::TextPrefix(pattern),
+            cmp: CmpOp::Eq,
+            ..
+        } => prefix_anchor(store, graph_id, parameters, variable, property, pattern),
+        PlanOp::IndexScan {
+            variable,
+            property,
             value: ScanValue::InList(elements),
             cmp: CmpOp::Eq,
             ..
@@ -1411,6 +1519,14 @@ pub(crate) fn resolve_scan_value(
                 "IN-list scan values must be expanded into per-element probes".into(),
             ));
         }
+        // A TextPrefix IndexScan is lowered into a Between prefix seed probe by
+        // `prefix_anchor` before seed resolution; reaching this arm means a
+        // malformed plan.
+        ScanValue::TextPrefix(_) => {
+            return Err(RouterError::InvalidArgument(
+                "text-prefix scan values must be expanded into a Between range seed probe".into(),
+            ));
+        }
     };
     let Some(bytes) = bytes else {
         return Ok(None);
@@ -1530,7 +1646,7 @@ mod tests {
 
     use candid::{Decode, Encode};
     use gleaph_gql::Value;
-    use gleaph_gql::ast::{CmpOp, ExprKind};
+    use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
     use gleaph_gql::types::LabelExpr;
     use gleaph_gql_planner::NodeLabelRef;
     use gleaph_gql_planner::PhysicalPlan;
@@ -1827,6 +1943,190 @@ mod tests {
         assert!(probes.iter().any(|probe| probe.payload_bytes == us));
         assert!(probes.iter().any(|probe| probe.payload_bytes == eu));
         assert!(probes.iter().all(|probe| probe.property == "region"));
+    }
+
+    /// Catalog fixture registering an active vertex index over `name`.
+    fn prefix_seed_setup() -> (RouterStore, GraphId) {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "name",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "name",
+        );
+        (store, graph_id)
+    }
+
+    #[test]
+    fn prefix_index_scan_extracts_prefix_anchor_single_op() {
+        let (store, graph_id) = prefix_seed_setup();
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["name"]);
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
+            variable: Rc::from("n"),
+            property: Rc::from("name"),
+            value: ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Text("Str".into())))),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("anchors")
+        .expect("seed anchors");
+        let Some(IndexAnchor::Prefix(probe)) = set
+            .anchors()
+            .iter()
+            .find(|anchor| matches!(anchor, IndexAnchor::Prefix(_)))
+        else {
+            panic!("expected Prefix anchor, got: {:?}", set.anchors());
+        };
+        assert_eq!(probe.variable, "n");
+        assert_eq!(probe.property, "name");
+        // The probe carries the fully encoded pattern key including terminator.
+        assert_eq!(
+            probe.pattern_bytes,
+            gleaph_gql::value_to_index_key_bytes(&Value::Text("Str".into()))
+                .unwrap()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn prefix_index_scan_extracts_prefix_anchor_with_trailing_residual_ops() {
+        // The planner keeps the STARTS WITH predicate in a residual PropertyFilter
+        // after the leading scan; seed extraction must still find the anchor.
+        let (store, graph_id) = prefix_seed_setup();
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["name"]);
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: Rc::from("n"),
+                property: Rc::from("name"),
+                value: ScanValue::TextPrefix(Box::new(ScanValue::Parameter(Rc::from("$pre")))),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::var("n")],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("$pre".to_string(), Value::Text("StrPred".into()));
+
+        let set = SeedAnchorSet::from_plans(std::slice::from_ref(&plan), &params, &store, &stats)
+            .expect("anchors")
+            .expect("seed anchors");
+        assert!(
+            set.anchors().iter().any(
+                |anchor| matches!(anchor, IndexAnchor::Prefix(probe) if probe.variable == "n")
+            ),
+            "expected Prefix anchor behind residual ops, got: {:?}",
+            set.anchors()
+        );
+    }
+
+    #[test]
+    fn prefix_index_scan_null_pattern_extracts_no_anchor() {
+        let (store, graph_id) = prefix_seed_setup();
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["name"]);
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
+            variable: Rc::from("n"),
+            property: Rc::from("name"),
+            value: ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Null))),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("anchors");
+        assert!(
+            set.is_none(),
+            "a Null pattern seeds no rows and must not produce an anchor"
+        );
+    }
+
+    #[test]
+    fn resolve_scan_value_rejects_raw_text_prefix() {
+        let err = super::resolve_scan_value(
+            &ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Text("x".into())))),
+            &BTreeMap::new(),
+        )
+        .expect_err("raw text-prefix bound must be rejected");
+        assert!(err.to_string().contains("text-prefix"));
+    }
+
+    #[test]
+    fn inlist_index_scan_with_trailing_ops_extracts_equal_union() {
+        // Regression: the multi-op equality arm used to pass InList bounds straight
+        // to `equal_anchor`, whose raw-bound rejection failed the whole extraction
+        // even though the single-op path expanded them into EqualUnion probes.
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Person",
+            )
+            .expect("intern Person");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "region",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "region",
+        );
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["region"]);
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: Rc::from("n"),
+                property: Rc::from("region"),
+                value: ScanValue::InList(vec![ScanValue::Literal(Value::Text("US".into()))]),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::var("n")],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ]);
+
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("extraction must not fail on trailing residual ops")
+        .expect("seed anchors");
+        assert!(
+            set.anchors()
+                .iter()
+                .any(|anchor| matches!(anchor, IndexAnchor::EqualUnion { .. })),
+            "InList with trailing ops must extract EqualUnion, got: {:?}",
+            set.anchors()
+        );
     }
 
     #[test]

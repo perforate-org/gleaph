@@ -2710,6 +2710,207 @@ fn match_unindexed_inlist_does_not_emit_index_scan() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// MATCH vertex STARTS WITH anchor: TEXT prefix interval over one range-indexed property
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Range-indexed TEXT property `name` plus equality-only `uid`.
+fn string_prefix_stats() -> TableStats {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    stats.range_indexed_vertex_properties.insert("age".into());
+    stats.range_indexed_vertex_properties.insert("name".into());
+    stats.indexed_vertex_properties.insert("uid".into());
+    stats
+}
+
+/// True when `expr` is exactly `var.property STARTS WITH <pattern>`.
+#[cfg(feature = "cypher")]
+fn is_startswith_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    let ExprKind::StringPredicate {
+        expr: lhs,
+        kind: StringPredicateKind::StartsWith,
+        negated: false,
+        ..
+    } = &expr.kind
+    else {
+        return false;
+    };
+    let ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &lhs.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, ExprKind::Variable(name) if name == var) && prop == property
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_startswith_anchor_lowers_to_prefix_index_scan() {
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name STARTS WITH 'Str' RETURN n",
+        &string_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if &**property == "name"
+                    && **pattern == ScanValue::Literal(Value::Text("Str".into()))
+        )),
+        "expected TEXT prefix IndexScan on name, got: {:?}",
+        plan.ops
+    );
+    let anchor = plan.annotations.optimizer.anchor.expect("anchor expected");
+    assert!(
+        matches!(
+            anchor.source,
+            AnchorSource::PropertyPrefix { ref property, .. } if &**property == "name"
+        ),
+        "STARTS WITH must select the prefix anchor family, got: {:?}",
+        anchor.source
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_startswith_parameter_pattern_lowers_to_prefix_index_scan() {
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name STARTS WITH $pre RETURN n",
+        &string_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { property, value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
+                if &**property == "name"
+                    && **pattern == ScanValue::Parameter("$pre".into())
+        )),
+        "expected TEXT prefix IndexScan with parameter pattern, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_startswith_empty_pattern_lowers_to_full_text_domain_scan() {
+    // '' spans the whole TEXT domain; the fusion itself is unchanged.
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name STARTS WITH '' RETURN n",
+        &string_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), .. }
+                if **pattern == ScanValue::Literal(Value::Text(String::new()))
+        )),
+        "expected empty-pattern prefix IndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_startswith_retains_residual_filter() {
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.name STARTS WITH 'Str' RETURN n",
+        &string_prefix_stats(),
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_startswith_predicate_on(p, "n", "name"))
+        )),
+        "original STARTS WITH predicate must remain as a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_negated_or_other_string_predicates_never_anchor_and_stay_residual() {
+    let cases = [
+        "MATCH (n:User) WHERE NOT n.name STARTS WITH 'Str' RETURN n",
+        "MATCH (n:User) WHERE n.name ENDS WITH 'rix' RETURN n",
+        "MATCH (n:User) WHERE n.name CONTAINS 'tri' RETURN n",
+        "MATCH (n:User) WHERE n.name ILIKE 'str%' RETURN n",
+    ];
+    for input in cases {
+        let plan = plan_query_with_stats(input, &string_prefix_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+            "{input} must not emit an IndexScan, got: {:?}",
+            plan.ops
+        );
+        assert!(
+            !plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::PropertyFilter { predicates, .. }
+                    if predicates
+                        .iter()
+                        .any(|p| is_startswith_predicate_on(p, "n", "name"))
+            )),
+            "{input} must not fuse a non-negated STARTS WITH residual, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_unindexed_startswith_does_not_emit_index_scan() {
+    let mut stats = string_prefix_stats();
+    // `nickname` is deliberately absent from every index set.
+    stats.range_indexed_vertex_properties.remove("nickname");
+
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.nickname STARTS WITH 'Str' RETURN n",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "unindexed STARTS WITH must not emit IndexScan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_equality_only_indexed_startswith_does_not_anchor() {
+    // `uid` has an equality index but is not range-indexed; a prefix interval needs
+    // order-preserving postings, so only the residual filter enforces the predicate.
+    let plan = plan_query_with_stats(
+        "MATCH (n:User) WHERE n.uid STARTS WITH 'ali' RETURN n",
+        &string_prefix_stats(),
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "equality-only indexed STARTS WITH must not anchor, got: {:?}",
+        plan.ops
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // MATCH edge IN-list anchor: union of point probes over one indexed edge property
 // ════════════════════════════════════════════════════════════════════════════════
 

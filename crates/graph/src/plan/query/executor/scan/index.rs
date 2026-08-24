@@ -12,6 +12,7 @@ use gleaph_graph_kernel::index::{
 use crate::facade::GraphStore;
 use crate::federation::FederationPort;
 use crate::gql_execution_context::GqlExecutionContext;
+use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::ExecuteCtx;
 use crate::plan::query::row::PlanRow;
@@ -44,6 +45,11 @@ pub(crate) fn resolve_scan_bound_value(
         // IN lists are expanded into per-element probes before resolution.
         ScanValue::InList(_) => Err(PlanQueryError::UnsupportedOp(
             "IndexScan(unexpanded IN-list scan value)",
+        )),
+        // Prefix bounds are lowered into a Between interval by the dedicated
+        // text-prefix path before the pattern itself would be resolved.
+        ScanValue::TextPrefix(_) => Err(PlanQueryError::UnsupportedOp(
+            "IndexScan(unlowered text-prefix scan value)",
         )),
     }
 }
@@ -104,6 +110,18 @@ pub(crate) async fn execute_index_scan(
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
     let pid = property_id_for_scan(&ctx.execution, property_name)?;
+    // A text-prefix anchor lowers into one Between interval over the encoded
+    // TEXT domain; it shares the one-sided range path's size validation, empty
+    // handling, and unsupported-domain node-scan fallback.
+    if let ScanValue::TextPrefix(pattern) = scan_value {
+        if cmp != CmpOp::Eq {
+            return Err(PlanQueryError::UnsupportedOp(
+                "IndexScan(text-prefix scan with non-equality comparison)",
+            ));
+        }
+        let pattern_value = resolve_scan_bound_value(pattern, ctx.parameters)?;
+        return execute_text_prefix_index_scan(ctx, rows, ix, pid, variable, pattern_value).await;
+    }
     // An IN-list anchor unions one equality probe per element; every other scan
     // value probes exactly one bound. Elements resolve independently so a
     // missing parameter fails closed instead of narrowing the union silently.
@@ -194,6 +212,66 @@ pub(crate) async fn execute_index_scan(
         }
         Err(err) => Err(PlanQueryError::InvalidExpressionValue {
             expression: format!("index scan range bound: {err}"),
+        }),
+    }
+}
+
+pub(crate) async fn execute_text_prefix_index_scan(
+    ctx: &ExecuteCtx<'_>,
+    rows: Vec<PlanRow>,
+    ix: &dyn PropertyIndexLookup,
+    pid: u32,
+    variable: &str,
+    pattern: Value,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    match gleaph_gql::value_index_key::text_prefix_range_bounds(&pattern) {
+        Ok((low, high)) => {
+            for bound in [&low, &high] {
+                if bound.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                    return Err(PlanQueryError::InvalidExpressionValue {
+                        expression: "index range bound exceeds maximum encoded size".to_owned(),
+                    });
+                }
+            }
+            let physical_index_id =
+                crate::index::catalog_context::unique_active_vertex_physical_index_id(
+                    gleaph_graph_kernel::entry::PropertyId::from_raw(pid),
+                )
+                .ok_or(PlanQueryError::UnsupportedOp(
+                    "IndexScan(no unique physical index namespace)",
+                ))?;
+            let raw_hits = ix
+                .lookup_range(
+                    physical_index_id,
+                    pid,
+                    &PostingRangeRequest::Between { low, high },
+                )
+                .await?;
+            // Deduplicate on (shard, vertex), mirroring the IN-list union: one
+            // vertex must bind exactly one row regardless of posting layout.
+            let mut seen = std::collections::BTreeSet::<(u32, u32)>::new();
+            let mut hits = Vec::with_capacity(raw_hits.len());
+            for hit in raw_hits {
+                if seen.insert((hit.shard_id.raw(), hit.vertex_id)) {
+                    hits.push(hit);
+                }
+            }
+            Ok(ctx
+                .federation
+                .bind_index_hits(ctx.store, &rows, variable, &hits))
+        }
+        // A Null pattern can never satisfy STARTS WITH under three-valued
+        // logic, so the scan binds no rows.
+        Err(ValueIndexKeyError::UnsupportedValue) if pattern == Value::Null => Ok(Vec::new()),
+        // A non-TEXT resolved pattern cannot form a TEXT prefix interval: do not
+        // push down; the plan's residual filter enforces the predicate over the
+        // node scan.
+        Err(ValueIndexKeyError::UnsupportedRangeDomain) => {
+            let variable_str = Str::from(variable);
+            execute_node_scan(ctx.store, rows, &variable_str, None, &ctx.execution)
+        }
+        Err(err) => Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("index scan prefix bound: {err}"),
         }),
     }
 }

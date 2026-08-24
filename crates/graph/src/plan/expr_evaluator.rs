@@ -128,7 +128,7 @@ pub(crate) fn compare_property_values(left: &Value, right: &Value) -> Option<Ord
 /// inference only warns on non-string operands, so execution must reject what
 /// inference merely flags. `ILike` is a plain Unicode case-insensitive
 /// whole-string equality; `%` and `_` are literal characters until a SQL LIKE
-/// feature defines wildcard semantics (GAP-2026-08-24-008).
+/// feature defines wildcard semantics (GAP-2026-08-24-009).
 #[cfg(feature = "cypher")]
 pub(crate) fn eval_string_predicate_expr(
     left: Value,
@@ -1118,7 +1118,7 @@ mod tests {
     fn ilike_treats_percent_and_underscore_as_literals() {
         use gleaph_gql::ast::StringPredicateKind as K;
         // Until a SQL LIKE feature defines wildcard semantics, `%` and `_` are
-        // literal characters (GAP-2026-08-24-008).
+        // literal characters (GAP-2026-08-24-009).
         assert_eq!(
             eval_string_predicate_expr(
                 Value::Text("100%".into()),

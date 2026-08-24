@@ -975,6 +975,25 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
                     .await?,
             ))
         }
+        IndexAnchor::Prefix(probe) => {
+            // Derive the encoded TEXT prefix interval from the stored pattern key. The
+            // interval is structurally non-empty (high extends low by one sentinel byte),
+            // so no empty-clamp case exists here.
+            let (low, high) =
+                gleaph_gql::value_index_key::text_prefix_range_bounds_for_encoded_key(
+                    &probe.pattern_bytes,
+                )
+                .map_err(|e| format!("prefix seed probe pattern is not supported: {e}"))?;
+            Ok(SeedHits::Vertices(
+                index
+                    .lookup_range(
+                        probe.physical_index_id,
+                        probe.property_id,
+                        PostingRangeRequest::Between { low, high },
+                    )
+                    .await?,
+            ))
+        }
         IndexAnchor::Intersection { specs, .. } => {
             let result = index
                 .lookup_intersection(IndexIntersectionRequest {
@@ -10042,6 +10061,43 @@ mod tests {
         .expect("probe lookup");
         assert!(matches!(&hits, SeedHits::Vertices(v) if v.is_empty()));
         assert!(index.ranges.borrow().is_empty());
+    }
+
+    #[test]
+    fn prefix_seed_probe_executes_text_prefix_between_request() {
+        // The stored pattern key [6] + 'ab' + terminator lowers to the half-open
+        // interval [[6,'a','b'], [6,'a','b',0xFF]); no empty-clamp case exists.
+        let index = RangeRecordingIndex::default();
+        let anchor = crate::seed::IndexAnchor::Prefix(crate::seed::PrefixSeedProbe {
+            variable: "n".to_owned(),
+            property: "p".to_owned(),
+            property_id: 11,
+            physical_index_id: PhysicalIndexId::new(3).expect("physical id"),
+            pattern_bytes: gleaph_gql::value_to_index_key_bytes(&Value::Text("ab".into()))
+                .unwrap()
+                .unwrap(),
+        });
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let hits = futures::executor::block_on(super::lookup_anchor_hits(
+            &index,
+            &anchor,
+            &[],
+            &mut metrics,
+        ))
+        .expect("prefix probe lookup");
+        assert!(matches!(&hits, SeedHits::Vertices(_)));
+        assert_eq!(
+            index.ranges.borrow().as_slice(),
+            &[gleaph_graph_kernel::index::PostingRangeRequest::Between {
+                low: vec![6, b'a', b'b'],
+                high: vec![6, b'a', b'b', 255],
+            }],
+            "prefix probe must issue one TEXT prefix Between request"
+        );
     }
 
     #[test]

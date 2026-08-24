@@ -84,7 +84,7 @@ defect from being rediscovered without its prior reasoning.
   visitors, then decide whether the demo needs conditional policies (ADR 0075) or a tenancy
   exception for public read surfaces.
 
-### GAP-2026-08-24-008 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
+### GAP-2026-08-24-009 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
 
 - **Status:** Open — contract note for the future SQL LIKE feature; current behavior is
   intentional and tested
@@ -111,6 +111,30 @@ defect from being rediscovered without its prior reasoning.
   wildcard grammar and whether `ILIKE` becomes its case-insensitive counterpart or stays a plain
   case-insensitive equality. Update `eval_string_predicate_expr` and its truth-table tests from
   this entry's contract.
+
+### GAP-2026-08-24-010 — Edge-side `STARTS WITH` TEXT-index pushdown is not implemented (vertex-only slice)
+
+- **Status:** Open — next-slice candidate; vertex-side pushdown is landed and correct on its own
+- **Owner:** Edge scan family: planner (`crates/gql-planner/src/planner/match_plan/path/filters.rs`
+  edge fusion + `EdgeIndexScan` emission), executor
+  (`crates/graph/src/plan/query/executor/scan/edge_index.rs`), Router seed extraction
+  (`crates/router/src/seed.rs` edge anchor arms), and wire/explain/cost sync
+- **Observed behavior:** The vertex slice (this commit) fuses non-negated
+  `v.prop STARTS WITH <Text literal | $param>` into `ScanValue::TextPrefix`
+  (`AnchorSource::PropertyPrefix`, `IndexAnchor::Prefix` seeds) over range-indexed vertex
+  properties. Edge properties have no symmetric path: `-[e:R WHERE e.prop STARTS WITH 'x']->`
+  stays fully residual even when `e.prop` has an ordered edge index.
+- **Contract basis:** Same shape as GAP-2026-08-24-002 (edge IN-list symmetry): the interval
+  primitive exists (`PostingRangeRequest::Between` via `lookup_edge_range`, used by edge range
+  anchors since GAP-2026-07-29-003), so the missing work is planner recognition plus
+  `EdgeRangeSeedProbe`-style prefix seeding. Bound derivation must reuse
+  `text_prefix_range_bounds(_for_encoded_key)` from `crates/gql/src/value_index_key.rs`; no new
+  key-encoding knowledge outside that file.
+- **Impact:** Edge prefix predicates scan all candidate edges through residual filtering instead
+  of seeking the ordered posting range.
+- **Next decision:** Mirror the vertex residual contract exactly (predicate retained, negation and
+  non-STARTS WITH kinds never anchor) and extend `plan_wire_guard` expectations only if a new
+  leading-anchor op shape is introduced rather than reusing `EdgeIndexScan`.
 
 ### GAP-2026-08-24-005 — ADR 0074 grant statements cannot address hyphenated prepared-query names
 
@@ -1718,6 +1742,7 @@ duplicate its state machine or ownership rules.
 | P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-002 (`ScanValue::InList` reused end to end; planner fusion, three executor probe-union consumers, Router `EdgeEqualUnion` seeds) |
 | P2       | Cypher bracket-form `IN […]` fails to parse under combined `cypher` + `sql-compat` builds (sql-compat arm requires `(` unconditionally) | Resolved — GAP-2026-08-24-003 (sql-compat arm claims only `(`-openers; per-combo feature matrix pinned) |
 | P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Resolved — GAP-2026-08-24-004 (planner entity-use veto; whole-variable projections were unaffected) |
+| P2       | Extend edge-index anchors to accept `ScanValue::TextPrefix` prefix intervals (symmetric with the vertex STARTS WITH anchor landed 2026-08-24) | Open — GAP-2026-08-24-010 (next-slice candidate; vertex side landed) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:

@@ -214,7 +214,8 @@ fn encode_value_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKe
     Ok(())
 }
 
-fn push_escaped_index_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+/// Escape one posting-key payload without the terminating `[0, 0]`.
+fn push_escaped_index_payload(out: &mut Vec<u8>, bytes: &[u8]) {
     for byte in bytes {
         if *byte == 0 {
             out.extend_from_slice(&[0, 255]);
@@ -222,6 +223,10 @@ fn push_escaped_index_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
             out.push(*byte);
         }
     }
+}
+
+fn push_escaped_index_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    push_escaped_index_payload(out, bytes);
     out.extend_from_slice(&[0, 0]);
 }
 
@@ -351,6 +356,66 @@ pub fn range_bounds_for_encoded_key(
         return Err(ValueIndexKeyError::UnsupportedRangeDomain);
     }
     one_sided_domain_interval(bound_key, op)
+}
+
+/// Exclusive upper-bound sentinel for TEXT prefix intervals.
+///
+/// UTF-8 payloads contain neither `0x00` nor `0xFF`, and the escape rule only emits `0xFF`
+/// as the second byte of a `[0, 255]` pair, so no stored TEXT posting key can continue a
+/// prefix with a byte equal to this sentinel. Appending it to the stripped pattern therefore
+/// keeps every key that extends the pattern below `high` while keys diverging before the end
+/// of the pattern fall outside on an earlier byte. A plain byte-successor of the last pattern
+/// byte is rejected instead because multi-byte characters can terminate a prefix, making
+/// "last byte + 1" exclude valid continuations.
+const TEXT_PREFIX_EXCLUSIVE_END: u8 = 255;
+
+/// Derive the finite half-open encoded-key interval `[low, high)` realizing
+/// `property STARTS WITH pattern` over the TEXT posting-key domain.
+///
+/// Stored TEXT keys are `[6] + escaped(text) + [0, 0]`; escaping maps `0x00` to `[0, 255]`.
+/// Because escaping is a per-byte map it preserves prefix relations, so every key whose
+/// decoded text starts with `pattern` lies in `[low, high)`, and keys whose text diverges or
+/// ends before the pattern are excluded. The empty pattern yields the whole TEXT domain
+/// (`[low, high)` = `[6], [7]`), matching `x STARTS WITH ''` being true for every non-Null
+/// text. BYTES-domain keys (`tag = 7`) never enter the interval: their leading tag byte sorts
+/// above any `[6, …]` bound.
+///
+/// `Null` rejects with [`ValueIndexKeyError::UnsupportedValue`] and every non-TEXT value with
+/// [`ValueIndexKeyError::UnsupportedRangeDomain`]; consumers must answer those through their
+/// non-index filter path instead of pushing down. This is, together with [`range_bounds`],
+/// the canonical place where GQL value-type tags meet comparison ordering — Router and
+/// Property Index must not duplicate tag or ordering knowledge.
+pub fn text_prefix_range_bounds(pattern: &Value) -> Result<(Vec<u8>, Vec<u8>), ValueIndexKeyError> {
+    let Some(bound_key) = value_to_index_key_bytes(pattern)? else {
+        return Err(ValueIndexKeyError::UnsupportedValue);
+    };
+    text_prefix_range_bounds_for_encoded_key(&bound_key)
+}
+
+/// Same contract as [`text_prefix_range_bounds`] for an already-encoded index key (for
+/// example a cached seed-probe pattern whose original [`Value`] is not retained).
+pub fn text_prefix_range_bounds_for_encoded_key(
+    pattern_key: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), ValueIndexKeyError> {
+    let (&tag, payload) = pattern_key
+        .split_first()
+        .ok_or(ValueIndexKeyError::UnsupportedRangeDomain)?;
+    // A stored TEXT key always carries at least the [0, 0] terminator after the tag;
+    // anything shorter is not a well-formed encoded TEXT value.
+    if tag != INDEX_KEY_TEXT || payload.len() < 2 {
+        return Err(ValueIndexKeyError::UnsupportedRangeDomain);
+    }
+    // The empty prefix spans the whole TEXT domain: [low, high) = [6], [7].
+    if payload.len() == 2 && payload == [END_MARKER, END_MARKER] {
+        let floor = vec![INDEX_KEY_TEXT];
+        let ceiling = lex_succ_bytes(&floor);
+        return Ok((floor, ceiling));
+    }
+    let mut low = Vec::with_capacity(pattern_key.len() - 1);
+    low.extend_from_slice(&pattern_key[..pattern_key.len() - 2]);
+    let mut high = low.clone();
+    high.push(TEXT_PREFIX_EXCLUSIVE_END);
+    Ok((low, high))
 }
 
 fn encoded_range_bound_key(value: &Value) -> Result<Vec<u8>, ValueIndexKeyError> {
@@ -1346,5 +1411,123 @@ mod tests {
         assert_eq!(bound1, bound2);
         assert_eq!(bound2, bound3);
         assert_eq!(bound3, bound4);
+    }
+
+    fn text_key(text: &str) -> Vec<u8> {
+        key(Value::Text(text.into()))
+    }
+
+    #[test]
+    fn text_prefix_range_bounds_pins_exact_interval_bytes() {
+        let (low, high) = text_prefix_range_bounds(&Value::Text("ab".into())).unwrap();
+        assert_eq!(low, vec![INDEX_KEY_TEXT, b'a', b'b']);
+        assert_eq!(high, vec![INDEX_KEY_TEXT, b'a', b'b', 255]);
+
+        let (low, high) = text_prefix_range_bounds(&Value::Text("".into())).unwrap();
+        assert_eq!(low, vec![INDEX_KEY_TEXT]);
+        assert_eq!(high, vec![INDEX_KEY_TEXT + 1], "empty pattern spans TEXT");
+
+        let (low, high) = text_prefix_range_bounds(&Value::Text("a\0b".into())).unwrap();
+        assert_eq!(low, vec![INDEX_KEY_TEXT, b'a', 0, 255, b'b']);
+        assert_eq!(high.last(), Some(&255));
+    }
+
+    #[test]
+    fn text_prefix_range_bounds_rejects_null_and_non_text_domains() {
+        assert_eq!(
+            text_prefix_range_bounds(&Value::Null),
+            Err(ValueIndexKeyError::UnsupportedValue)
+        );
+        let non_text = [
+            Value::Int64(7),
+            Value::Bool(true),
+            Value::Bytes(vec![b'a']),
+            Value::List(vec![Value::Int64(1)]),
+            Value::Date(19_000),
+        ];
+        for value in non_text {
+            assert_eq!(
+                text_prefix_range_bounds(&value),
+                Err(ValueIndexKeyError::UnsupportedRangeDomain),
+                "{value:?} must not push down as a prefix"
+            );
+        }
+        assert_eq!(
+            text_prefix_range_bounds_for_encoded_key(&[]),
+            Err(ValueIndexKeyError::UnsupportedRangeDomain)
+        );
+        assert_eq!(
+            text_prefix_range_bounds_for_encoded_key(&key(Value::Int64(7))),
+            Err(ValueIndexKeyError::UnsupportedRangeDomain)
+        );
+    }
+
+    #[test]
+    fn text_prefix_range_bounds_matches_stored_keys_exactly() {
+        let cases: [(&str, &[&str], &[&str]); 6] = [
+            // (pattern, keys inside the interval, keys outside it)
+            ("ab", &["ab", "abc", "ab\0x", "abé"], &["a", "b", "ac"]),
+            ("", &["", "a", "\u{FFFD}", "é"], &[]),
+            ("日本", &["日本", "日本語"], &["日", "米", "東"]),
+            ("a\0", &["a\0z", "a\0"], &["az", "a"]),
+            ("é", &["é", "école"], &["e", "d"]),
+            ("z", &["z", "zz", "za\0"], &["y", "x"]),
+        ];
+        for (pattern, included, excluded) in cases {
+            let (low, high) =
+                text_prefix_range_bounds(&Value::Text(pattern.into())).expect("text pattern");
+            for text in included {
+                let probe = text_key(text);
+                assert!(
+                    low <= probe && probe < high,
+                    "{text:?} must satisfy STARTS WITH {pattern:?}"
+                );
+            }
+            for text in excluded {
+                let probe = text_key(text);
+                assert!(
+                    !(low <= probe && probe < high),
+                    "{text:?} must not satisfy STARTS WITH {pattern:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn text_prefix_range_bounds_agrees_with_value_entry_and_never_spills_domain() {
+        let patterns = ["", "a", "ab\0", "é", "\u{10FFFF}"];
+        for pattern in patterns {
+            let value_entry =
+                text_prefix_range_bounds(&Value::Text(pattern.into())).expect("supported");
+            let encoded_entry =
+                text_prefix_range_bounds_for_encoded_key(&text_key(pattern)).expect("supported");
+            assert_eq!(value_entry, encoded_entry, "{pattern:?}");
+            let (low, high) = value_entry;
+            assert!(low < high, "prefix interval is never empty");
+            assert!(
+                low.starts_with(&[INDEX_KEY_TEXT]),
+                "interval stays inside the TEXT domain"
+            );
+            assert!(
+                high <= vec![INDEX_KEY_TEXT + 1],
+                "never spills past ceiling"
+            );
+        }
+        // A multi-byte character terminating the pattern is why the sentinel is 0xFF and
+        // not a byte successor of the last pattern byte: "日" ends with 0xAC whose
+        // successor 0xAD would wrongly exclude "日本" (0xE6 0x97 0xA5 0xE6 ...).
+        let (low, high) = text_prefix_range_bounds(&Value::Text("日".into())).unwrap();
+        let nippon = text_key("日本");
+        assert!(low <= nippon && nippon < high);
+    }
+
+    #[test]
+    fn text_prefix_range_bounds_separates_bytes_domain_by_tag() {
+        let (low, high) = text_prefix_range_bounds(&Value::Text("ab".into())).unwrap();
+        let bytes_probe = key(Value::Bytes(vec![b'a', b'b']));
+        assert!(
+            !(low <= bytes_probe && bytes_probe < high),
+            "BYTES-domain postings never satisfy a TEXT prefix interval"
+        );
     }
 }

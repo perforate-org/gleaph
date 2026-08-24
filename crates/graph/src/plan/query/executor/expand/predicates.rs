@@ -172,6 +172,12 @@ fn scan_value_to_edge_inline_property_bytes(
                 expression: "edge inline property predicate rejects IN-list scan values".to_owned(),
             });
         }
+        ScanValue::TextPrefix(_) => {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: "edge inline property predicate rejects text-prefix scan values"
+                    .to_owned(),
+            });
+        }
     };
     if matches!(value, Value::Null) {
         return Ok(None);
@@ -215,6 +221,9 @@ fn scan_value_to_value<'a>(
             }),
         ScanValue::InList(_) => Err(PlanQueryError::InvalidExpressionValue {
             expression: "edge inline predicate rejects IN-list scan values".to_owned(),
+        }),
+        ScanValue::TextPrefix(_) => Err(PlanQueryError::InvalidExpressionValue {
+            expression: "edge inline predicate rejects text-prefix scan values".to_owned(),
         }),
     }
 }

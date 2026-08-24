@@ -736,6 +736,457 @@ fn executes_text_range_index_scan_with_domain_clamped_between() {
     );
 }
 
+/// Seed `name` postings for STARTS WITH scans and build a TextPrefix IndexScan plan.
+fn prefix_scan_fixture(pattern: ScanValue) -> (MockPropertyIndex, PhysicalPlan, u32) {
+    let pid = crate::test_labels::property_id_for_name("name").raw();
+    let index = MockPropertyIndex::default();
+    let plan = plan(vec![
+        PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "name".into(),
+            value: pattern,
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(prop("n", "name"), "name")],
+            distinct: false,
+        },
+    ]);
+    (index, plan, pid)
+}
+
+#[test]
+fn executes_text_prefix_index_scan_with_between_and_dedup() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let ada = store
+        .insert_vertex_named(
+            ["PrefixScan"],
+            [("name", Value::Text("StrPred Ada".into()))],
+        )
+        .expect("insert ada");
+    let ada_id = u32::try_from(u64::from(ada)).unwrap();
+    let (index, plan, pid) = prefix_scan_fixture(ScanValue::TextPrefix(Box::new(
+        ScanValue::Literal(Value::Text("Str".into())),
+    )));
+    // A duplicated posting must still bind exactly one row.
+    index.range_hits.borrow_mut().extend([
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: ada_id,
+        },
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: ada_id,
+        },
+    ]);
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute prefix index scan");
+
+    assert_eq!(text_column(&result, "name"), vec!["StrPred Ada"]);
+    let calls = index.range_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, pid);
+    // The pattern lowers to [TEXT tag] + pattern bytes, exclusive high adds the
+    // 0xFF sentinel; UTF-8 payloads never contain 0xFF so every continuation is
+    // below it.
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: vec![TAG_TEXT, b'S', b't', b'r'],
+            high: vec![TAG_TEXT, b'S', b't', b'r', 255],
+        }
+    );
+}
+
+#[test]
+fn executes_empty_pattern_prefix_scan_over_full_text_domain() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let hit = store
+        .insert_vertex_named(["PrefixScanEmpty"], [("name", Value::Text("".into()))])
+        .expect("insert empty");
+    let (index, plan, _pid) = prefix_scan_fixture(ScanValue::TextPrefix(Box::new(
+        ScanValue::Literal(Value::Text(String::new())),
+    )));
+    index.range_hits.borrow_mut().push(PostingHit {
+        shard_id: ShardId::new(0),
+        vertex_id: u32::try_from(u64::from(hit)).unwrap(),
+    });
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute empty-prefix scan");
+
+    assert_eq!(result.rows.len(), 1);
+    let calls = index.range_calls.borrow();
+    assert_eq!(
+        calls[0].1,
+        PostingRangeRequest::Between {
+            low: vec![TAG_TEXT],
+            high: vec![TAG_TEXT + 1],
+        }
+    );
+}
+
+#[test]
+fn text_prefix_scan_missing_parameter_fails_closed() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let (index, plan, _pid) = prefix_scan_fixture(ScanValue::TextPrefix(Box::new(
+        ScanValue::Parameter("$pre".into()),
+    )));
+
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    let err = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect_err("missing parameter must fail closed");
+
+    assert!(
+        matches!(&err, PlanQueryError::MissingParameter { name } if name == "$pre"),
+        "got: {err:?}"
+    );
+    assert!(index.range_calls.borrow().is_empty());
+}
+
+#[test]
+fn text_prefix_null_parameter_binds_no_rows_without_range_call() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    store
+        .insert_vertex_named(["PrefixScanNull"], [("name", Value::Text("x".into()))])
+        .expect("insert");
+    let (index, plan, _pid) = prefix_scan_fixture(ScanValue::TextPrefix(Box::new(
+        ScanValue::Parameter("$pre".into()),
+    )));
+
+    let mut parameters = params();
+    parameters.insert("pre".to_string(), Value::Null);
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    reset_node_scan_visits();
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &parameters,
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("null pattern binds no rows");
+
+    // NULL STARTS WITH anything is Unknown under three-valued logic: no rows,
+    // no range lookup, and no node-scan fallback.
+    assert!(result.rows.is_empty());
+    assert!(index.range_calls.borrow().is_empty());
+    assert_eq!(node_scan_visits(), 0);
+}
+
+#[test]
+fn text_prefix_non_text_parameter_falls_back_to_node_scan() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    store
+        .insert_vertex_named(["PrefixScanFallback"], [("name", Value::Text("zz".into()))])
+        .expect("insert");
+    let (index, plan, _pid) = prefix_scan_fixture(ScanValue::TextPrefix(Box::new(
+        ScanValue::Parameter("$pre".into()),
+    )));
+
+    let mut parameters = params();
+    parameters.insert("pre".to_string(), Value::Int64(7));
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("name"),
+    ]);
+    reset_node_scan_visits();
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &parameters,
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("non-TEXT pattern falls back to node scan");
+
+    // The fallback scans every live vertex; the residual PropertyFilter of a
+    // full plan would then enforce the predicate (and fail closed on non-TEXT
+    // stored values). This manual plan has no residual filter, so the row
+    // binding itself proves the fallback ran.
+    assert!(index.range_calls.borrow().is_empty());
+    assert_eq!(node_scan_visits(), u32::from(store.vertex_count()) as usize);
+    assert_eq!(text_column(&result, "name"), vec!["zz"]);
+}
+
+/// Build a stats-driven plan for a parsed cypher query so the planner can fuse
+/// a TEXT prefix anchor for range-indexed properties.
+fn plan_query_with_table_stats(
+    input: &str,
+    stats: &gleaph_gql_planner::stats::TableStats,
+) -> PhysicalPlan {
+    let program = parser::parse(input).expect("parse");
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    let gleaph_gql::ast::Statement::Query(composite) = &block.first else {
+        panic!("expected query statement");
+    };
+    assert!(composite.rest.is_empty(), "single statement expected");
+    use gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER;
+    build_plan_with_schema_and_options(
+        &composite.left,
+        PlanBuildOptions {
+            stats: Some(stats),
+            path_extensions: &GLEAPH_PATH_EXTENSION_HANDLER,
+        },
+        &NoSchema,
+    )
+    .expect("plan should build")
+}
+
+/// STARTS WITH e2e over parsed queries: index candidates come from an honest
+/// interval simulation over the seeded names, then the residual filter decides.
+#[test]
+fn executes_cypher_startswith_pushdown_boundary_row_sets() {
+    use gleaph_gql_planner::plan::ScanValue as SV;
+    use gleaph_gql_planner::stats::TableStats;
+
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    // Boundary corpus: exact match, suffix extension, multibyte-ending pattern,
+    // shorter diverging key, last-byte branching, and foreign-domain rows.
+    let seeded = [
+        ("StrPred Ada", "StrPred Ada"),
+        ("StrPred", "StrPred"),
+        ("Str", "Str"),
+        ("Stq", "Stq"),
+        ("日本", "日本"),
+        ("日本語", "日本語"),
+        ("日々", "日々"),
+        ("Appl", "Appl"),
+        ("Apple", "Apple"),
+        ("Apply", "Apply"),
+        ("App", "App"),
+    ];
+    let mut ids = BTreeMap::new();
+    for (name, _) in seeded {
+        let vid = store
+            .insert_vertex_named(["PrefixE2E"], [("name", Value::Text(name.into()))])
+            .expect("insert seed");
+        ids.insert(
+            name.to_string(),
+            u32::try_from(u64::from(vid)).expect("vertex id"),
+        );
+    }
+
+    let cases: Vec<(&str, ScanValue, Value, Vec<&str>)> = vec![
+        // (query fragment pattern value, scan bound, param value, expected names)
+        (
+            "'Str'",
+            SV::Literal(Value::Text("Str".into())),
+            Value::Null,
+            vec!["Str", "StrPred", "StrPred Ada"],
+        ),
+        (
+            "'StrPred'",
+            SV::Literal(Value::Text("StrPred".into())),
+            Value::Null,
+            vec!["StrPred", "StrPred Ada"],
+        ),
+        // Pattern ending on a multi-byte character: byte-successor logic would
+        // wrongly exclude 日本語; the 0xFF sentinel keeps it in.
+        (
+            "'日本'",
+            SV::Literal(Value::Text("日本".into())),
+            Value::Null,
+            vec!["日本", "日本語"],
+        ),
+        // Last-byte branching: Appl matches itself, Apple, and Apply, but not
+        // the shorter diverging App.
+        (
+            "'Appl'",
+            SV::Literal(Value::Text("Appl".into())),
+            Value::Null,
+            vec!["Appl", "Apple", "Apply"],
+        ),
+        (
+            "$pre",
+            SV::Parameter("$pre".into()),
+            Value::Text("StrPred A".into()),
+            vec!["StrPred Ada"],
+        ),
+    ];
+
+    for (pattern_sql, bound, param_value, expected) in cases {
+        let indexed_stats = {
+            let mut stats = TableStats::default();
+            stats.label_cardinality.insert("PrefixE2E".to_string(), 100);
+            stats.range_indexed_vertex_properties.insert("name".into());
+            stats
+        };
+
+        let where_clause = if param_value == Value::Null {
+            format!("WHERE n.name STARTS WITH {pattern_sql}")
+        } else {
+            "WHERE n.name STARTS WITH $pre".to_string()
+        };
+        let input =
+            format!("MATCH (n:PrefixE2E) {where_clause} RETURN n.name AS name ORDER BY name");
+
+        let plan = plan_query_with_table_stats(&input, &indexed_stats);
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::IndexScan {
+                    value: SV::TextPrefix(_),
+                    ..
+                }
+            )),
+            "{input}: pushdown plan must contain a prefix IndexScan, got {:?}",
+            plan.ops
+        );
+
+        // Honest index simulation: serve exactly the postings inside the encoded
+        // prefix interval of this case's pattern value.
+        let pattern_value = match &bound {
+            SV::Parameter(_) => param_value.clone(),
+            other => crate::plan::query::executor::scan::index::resolve_scan_bound_value(
+                other,
+                &params(),
+            )
+            .expect("literal bound"),
+        };
+        let (low, high) = gleaph_gql::value_index_key::text_prefix_range_bounds(&pattern_value)
+            .expect("text pattern interval");
+        let index = MockPropertyIndex::default();
+        for (name, _) in seeded {
+            let key = value_to_index_key_bytes(&Value::Text(name.into()))
+                .unwrap()
+                .unwrap();
+            if low.as_slice() <= key.as_slice() && key.as_slice() < high.as_slice() {
+                index.range_hits.borrow_mut().push(PostingHit {
+                    shard_id: ShardId::new(0),
+                    vertex_id: ids[name],
+                });
+            }
+        }
+
+        let mut parameters = params();
+        if param_value != Value::Null {
+            parameters.insert("pre".to_string(), param_value.clone());
+        }
+        let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+            crate::test_labels::property_id_for_name("name"),
+        ]);
+        let pushed = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .unwrap_or_else(|err| panic!("{input}: pushdown execution failed: {err:?}"));
+
+        // Red proof: without a range index the planner emits NodeScan + residual
+        // PropertyFilter and the same rows must come back with no index client.
+        let unindexed_stats = {
+            let mut stats = TableStats::default();
+            stats.label_cardinality.insert("PrefixE2E".to_string(), 100);
+            stats
+        };
+        let residual_plan = plan_query_with_table_stats(&input, &unindexed_stats);
+        assert!(
+            !residual_plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+            "{input}: unindexed plan must not contain an IndexScan"
+        );
+        let residual = pollster::block_on(execute_plan_query(
+            &store,
+            &residual_plan,
+            &parameters,
+            None,
+            GqlExecutionContext::default(),
+        ))
+        .unwrap_or_else(|err| panic!("{input}: residual execution failed: {err:?}"));
+
+        assert_eq!(
+            text_column(&pushed, "name"),
+            expected,
+            "{input}: pushdown rows"
+        );
+        assert_eq!(
+            text_column(&residual, "name"),
+            expected,
+            "{input}: residual-only rows must equal pushdown rows"
+        );
+    }
+}
+
+#[test]
+fn executes_cypher_not_startswith_stays_residual_with_correct_rows() {
+    use gleaph_gql_planner::stats::TableStats;
+
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    for name in ["Ada", "Bob"] {
+        store
+            .insert_vertex_named(["PrefixNotE2E"], [("name", Value::Text(name.into()))])
+            .expect("insert seed");
+    }
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("PrefixNotE2E".into(), 10);
+    stats.range_indexed_vertex_properties.insert("name".into());
+
+    let input = "MATCH (n:PrefixNotE2E) WHERE NOT n.name STARTS WITH 'A' RETURN n.name AS name";
+    let plan = plan_query_with_table_stats(input, &stats);
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "NOT STARTS WITH must never anchor, got: {:?}",
+        plan.ops
+    );
+    let result = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute NOT STARTS WITH");
+
+    assert_eq!(text_column(&result, "name"), vec!["Bob"]);
+}
+
 #[test]
 fn executes_datetime_range_index_scan_with_subtype_pinned_between() {
     let store = GraphStore::new();

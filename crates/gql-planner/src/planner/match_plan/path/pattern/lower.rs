@@ -285,7 +285,8 @@ fn node_emits_full_vertex_scan(
         match &anchor.source {
             AnchorSource::PropertyEquality { .. }
             | AnchorSource::InlinePropertyEquality { .. }
-            | AnchorSource::PropertyRange { .. } => return false,
+            | AnchorSource::PropertyRange { .. }
+            | AnchorSource::PropertyPrefix { .. } => return false,
             AnchorSource::LabelCardinality { .. }
             | AnchorSource::SchemaEndpoint
             | AnchorSource::FullScan => {}

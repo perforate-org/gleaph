@@ -1200,6 +1200,13 @@ pub enum ScanValue {
     /// independently; a missing parameter or unencodable element fails the
     /// scan fail-closed instead of silently narrowing the union.
     InList(Vec<ScanValue>),
+    /// Text prefix probe: matches rows whose indexed TEXT property starts with
+    /// the bound pattern (`WHERE v.prop STARTS WITH <literal | $param>`
+    /// anchor). The executor lowers the resolved pattern into one half-open
+    /// encoded interval via `text_prefix_range_bounds`; a missing parameter
+    /// fails closed, a Null pattern matches no row under three-valued logic,
+    /// and a non-TEXT resolved pattern falls back to the non-index scan path.
+    TextPrefix(Box<ScanValue>),
 }
 
 // CmpOp is re-exported from gleaph_gql::ast::CmpOp.
@@ -1493,6 +1500,10 @@ pub enum AnchorSource {
         value: ScanValue,
         cmp: CmpOp,
     },
+    /// Non-negated `STARTS WITH` prefix predicate on a range-indexed TEXT
+    /// property. The pattern is a Text literal or a parameter; anything else
+    /// never anchors and stays in the residual filter.
+    PropertyPrefix { property: Str, pattern: ScanValue },
     /// Lowest-cardinality label.
     LabelCardinality { label: NodeLabelRef },
     /// Schema-inferred endpoint.

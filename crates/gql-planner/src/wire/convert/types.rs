@@ -283,6 +283,10 @@ pub enum ScanValueWire {
     /// self-recursive bound cycle, mirroring the AST pool's treatment of
     /// recursive [`Expr`](gleaph_gql::ast::Expr) fields.
     InList(#[rkyv(omit_bounds)] Vec<ScanValueWire>),
+    /// Text prefix probe (vertex `STARTS WITH` anchor). The same
+    /// `omit_bounds` treatment breaks the recursion through the boxed inner
+    /// bound.
+    TextPrefix(#[rkyv(omit_bounds)] Box<ScanValueWire>),
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

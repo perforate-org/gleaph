@@ -405,6 +405,9 @@ fn resolve_scan_value_to_value(
         ScanValue::InList(_) => Err(GqlRunError::Plan(
             "complete-prefix seed validation does not support IN-list scan values".to_owned(),
         )),
+        ScanValue::TextPrefix(_) => Err(GqlRunError::Plan(
+            "complete-prefix seed validation does not support text-prefix scan values".to_owned(),
+        )),
     }
 }
 

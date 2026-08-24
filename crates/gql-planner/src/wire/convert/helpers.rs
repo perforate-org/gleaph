@@ -94,6 +94,9 @@ pub(super) fn encode_scan_value(v: &ScanValue) -> Result<ScanValueWire, String> 
                 .map(encode_scan_value)
                 .collect::<Result<Vec<_>, _>>()?,
         ),
+        ScanValue::TextPrefix(pattern) => {
+            ScanValueWire::TextPrefix(Box::new(encode_scan_value(pattern)?))
+        }
     })
 }
 
@@ -107,6 +110,9 @@ pub(super) fn decode_scan_value(v: &ScanValueWire) -> Result<ScanValue, String> 
                 .map(decode_scan_value)
                 .collect::<Result<Vec<_>, _>>()?,
         ),
+        ScanValueWire::TextPrefix(pattern) => {
+            ScanValue::TextPrefix(Box::new(decode_scan_value(pattern)?))
+        }
     })
 }
 

@@ -81,7 +81,7 @@ pub use value::{
 };
 pub use value_index_key::{
     ValueIndexKeyError, index_key_bytes_to_value, range_bounds, range_bounds_for_encoded_key,
-    value_to_index_key_bytes,
+    text_prefix_range_bounds, text_prefix_range_bounds_for_encoded_key, value_to_index_key_bytes,
 };
 
 #[cfg(feature = "format")]

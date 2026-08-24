@@ -915,6 +915,9 @@ fn format_scan_value(val: &ScanValue) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        ScanValue::TextPrefix(pattern) => {
+            format!("STARTS WITH {}", format_scan_value(pattern))
+        }
     }
 }
 
@@ -928,6 +931,9 @@ fn format_anchor_source(source: &AnchorSource) -> String {
         }
         AnchorSource::PropertyRange { property, cmp, .. } => {
             format!("property-range on {} {:?}", property, cmp)
+        }
+        AnchorSource::PropertyPrefix { property, .. } => {
+            format!("property-prefix on {}", property)
         }
         AnchorSource::LabelCardinality { label } => {
             format!("label-cardinality: {}", label)
