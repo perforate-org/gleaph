@@ -1,0 +1,29 @@
+[package]
+name = "gpui-graph-web-example-worker"
+description = "Application-owned worker bootstrap for the gpui-graph web example: drives a minimal WorkerBackend (scene merge -> layout step -> frame build) inside DedicatedWorkerGlobalScope"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `cdylib` produces the wasm module imported by the application-owned
+# `assets/worker.js`; `rlib` keeps the fixture and batch codec compilable (and
+# unit-testable) on native targets, where the round-trip test runs.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gpui-graph = { path = "../../.." }
+glam = "0.33"
+
+# Versions pinned to exactly what the root workspace lockfile resolves for
+# gpui-graph's own web glue (`crates/gpui-graph/Cargo.toml`), so a single
+# wasm-bindgen/js-sys/web-sys build is shared and JsValue types line up across
+# the `web_transport` boundary.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.127"
+js-sys = "=0.3.104"
+web-sys = { version = "=0.3.104", features = [
+    "MessageEvent",
+    "DedicatedWorkerGlobalScope",
+    "console",
+] }

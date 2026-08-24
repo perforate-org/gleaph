@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>gpui-graph web example — InProcess ⇄ Worker</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                background: #16213a;
+                overflow: hidden;
+            }
+            canvas {
+                display: block;
+            }
+        </style>
+    </head>
+    <body>
+        <!--
+          Main-thread GPUI application (layer ② in README terms). The binary's
+          main() runs once the wasm-bindgen init() resolves; it boots gpui_web
+          via run_embedded and — with ?mode=worker — spawns this directory's
+          worker.js as a module worker. Default mode is InProcess.
+        -->
+        <script type="module">
+            import init from './gpui_graph_web_example_app.js';
+            init().catch((error) => console.error('[example-app] init failed:', error));
+        </script>
+    </body>
+</html>

@@ -1,0 +1,45 @@
+[package]
+name = "gpui-graph-web-example-app"
+description = "Main-thread GPUI web entry for the gpui-graph worker-mode example: boots gpui_web via run_embedded, renders ~100 vertices, and toggles InProcess <-> Worker frame sources"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The binary lives at `src/main.rs` (never `examples/web/main.rs`, which cargo
+# would auto-discover as an example target of gpui-graph). The bin target name
+# is underscored explicitly: bins keep hyphenated filenames otherwise, while
+# wasm-bindgen outputs and JS imports here follow the underscored cdylib-style
+# names (`gpui_graph_web_example_app.js`).
+[[bin]]
+name = "gpui_graph_web_example_app"
+path = "src/main.rs"
+
+[dependencies]
+gpui-graph = { path = "../../.." }
+gpui-graph-web-example-worker = { path = "../worker" }
+futures = "0.3"
+glam = "0.33"
+
+# Same pinned Zed revision as the root workspace (`Cargo.toml`), restated here
+# because this directory is a standalone workspace; cargo unifies both paths to
+# one checkout.
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+gpui-platform = { package = "gpui_platform", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+
+# Versions pinned to exactly what the root workspace lockfile resolves for
+# gpui-graph's own web glue (`crates/gpui-graph/Cargo.toml`), so a single
+# wasm-bindgen/js-sys/web-sys build is shared and JsValue types line up across
+# the `web_transport` boundary.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.127"
+js-sys = "=0.3.104"
+web-sys = { version = "=0.3.104", features = [
+    "Window",
+    "Location",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+    "MessageEvent",
+    "ErrorEvent",
+    "console",
+] }

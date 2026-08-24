@@ -1,0 +1,28 @@
+# gpui-graph web example — minimal worker-mode demo (ADR 0076 §18.2).
+#
+# A standalone mini-workspace, mirroring `crates/gleaph-graph-explorer/web/`
+# and `demo/social/wasm/`: the root Gleaph workspace owns the canister and
+# native-host targets, and its member list and lockfile are shared with several
+# concurrent work streams. This directory compiles two wasm32 modules from
+# here without touching either:
+#
+# - `app/`    — the main-thread GPUI application (`gpui_web` platform). Boots
+#   with `ApplicationHandle::run_embedded`, renders the same tiny demo graph
+#   through either frame source (`?mode=` selects; `InProcess` is the library
+#   default, `Worker` is strictly opt-in via `set_frame_source` +
+#   `connect_worker_channel`).
+# - `worker/` — the application-owned worker bootstrap. gpui-graph ships no
+#   worker bundle (`gpui_graph::worker::web_transport` contract): an
+#   application supplies its own Worker script, imports this wasm module
+#   inside a `DedicatedWorkerGlobalScope`, and drives a concrete
+#   `WorkerBackend`.
+#
+# Build with `./build.sh`; serve `dist/` from any static file server. See
+# README.md for the three-layer wiring this example demonstrates.
+#
+# Note: keep `main.rs` out of THIS directory — `examples/web/main.rs` would be
+# auto-discovered by cargo as an example target of `gpui-graph`. Each member
+# crate keeps its binary at its own `src/main.rs`.
+[workspace]
+members = ["app", "worker"]
+resolver = "2"
