@@ -319,3 +319,21 @@ emitted RequirementSet rows; whichever op introduces the uncovered row names the
   from scenario sources — costs explorer identity columns and weakens the demo story;
   not preferred.
 
+14.1 Admin-pane binding conditions for the fix (w1:pQ reply, 2026-08-24)
+-----------------------------------
+(a) var_labels fallback applies ONLY when labels are uniquely determined
+    (`unique_vertex_label` semantics); ambiguous/multi-label variables REMAIN
+    unattributed so non-owners stay denied — ambiguous case needs its own test.
+(b) attribution reuses ordinary coverage semantics: vertex demand -> MATCH on the
+    resolved label; edge demand -> TRAVERSE with direction. No weaker element-specific
+    rule.
+(c) rbac-and-prepared.md documents the rule: element ids follow the variable's
+    match/traverse coverage as intrinsic identity metadata of covered elements.
+(d) SEARCH-seeded case test must assert exact values, not just path shape: a
+    PUBLIC-bounded search with SELECT DISTINCT ELEMENT_ID(v) returns exactly the covered
+    subjects' ids for an anonymous caller; uncovered subjects' ids are absent.
+(e) Combined regression set on landing: adr0075_conditional_policies,
+    adr0074_plan_enforcement, adr0074_publication, plus the matrix tests above.
+(f) Implementation ordering: this pane lands the walker fix first (P1 correctness);
+    pull/rebase latest main before editing authz.rs.
+
