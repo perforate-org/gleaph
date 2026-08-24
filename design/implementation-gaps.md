@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 05:53:38 UTC +0000
+Anchor timestamp: 2026-08-24 06:22:29 UTC +0000
 
 ## Status
 
@@ -107,28 +107,33 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-003 — Cypher bracket-form `IN […]` fails to parse when `sql-compat` is enabled
 
-- **Status:** Open — pre-existing on main (surfaced while running the GAP-2026-08-24-002 suite
-  under `--all-features`)
+- **Status:** Resolved — one-token opener lookahead in the sql-compat arm; fix commit
+  `37d59c7f9`, owning regression tests
+  `gql::parser_tests::in_list_combined_build_serves_both_list_forms`,
+  `in_list_is_rejected_in_the_default_build` (default cell),
+  `in_list_cypher_only_build_serves_both_list_forms` (cypher-only cell),
+  `in_list_sql_compat_only_build_serves_paren_and_rejects_bracket` (sql-compat-only cell), and the
+  combined-build graph e2e
+  `parsed_bracket_in_list_returns_matching_rows_under_combined_dialects`
 - **Owner:** `gleaph-gql` parser (`crates/gql/src/parser/expr.rs`, `IN` predicate arms)
 - **Observed behavior:** With both `cypher` and `sql-compat` features enabled, `expr IN [v1, v2]`
-  fails with `expected '(', got '['`. The `sql-compat` arm runs first and unconditionally requires
-  `(` after `IN`; its comment claims precedence "keeps behavior unchanged", but it aborts parsing
-  instead of falling through to the cypher arm's bracket form. Reproduced by the committed
-  `gleaph-gql` fixtures themselves (`in_list_cypher_bracket_form`,
-  `in_list_cypher_empty_list`,
-  `not_in_list_cypher_bracket_and_paren_forms_are_negated`) and by the committed vertex
-  `match_inlist_*` planner tests under `--all-features`.
-- **Expected or needed behavior:** Both dialect arms must accept their own element syntax when both
-  features are enabled: peek `[` versus `(` before committing to a form (or make the sql-compat arm
-  fall through on a non-`(` opener).
-- **Evidence:** `cargo test -p gleaph-gql --all-features in_list` (3 failures at HEAD);
-  `cargo test -p gleaph-gql-planner --all-features --test planner_tests match_inlist` (same error).
-- **Impact:** Bracket-form IN queries are rejected whenever sql-compat builds parse them;
-  feature-flagged builds diverge. Default canister dialect (cypher without sql-compat) is
-  unaffected. No runtime correctness gap on unaffected builds.
-- **Next decision:** Smallest fix is a one-token lookahead in the sql-compat arm plus a combined
-  feature test pinning both forms; coordinate with the pane currently modifying
-  `crates/gql/src/parser/statement.rs`.
+  failed with `expected '(', got '['`. The `sql-compat` arm ran first and unconditionally required
+  `(` after `IN`; its comment claimed precedence "keeps behavior unchanged", but it aborted parsing
+  instead of falling through to the cypher arm's bracket form.
+- **Fix:** The sql-compat arm now claims the `IN` predicate only when the token after `IN` is `(`
+  (`peek_ahead` off the same keyword test that decides the `IN`/`NOT IN` shape). A non-`(` opener
+  falls through untouched: in combined builds the cypher bracket grammar serves it; in a
+  sql-compat-only build no arm claims it and the query still fails as a parse error. Single-feature
+  and default configurations keep their exact acceptance sets; only the error text for a rejected
+  bracket form under sql-compat-only shifts from "expected '('" to the statement-level leftover
+  token error.
+- **Evidence:** Before the fix, `in_list_combined_build_serves_both_list_forms` failed at parse;
+  with the fix all four feature combinations pass their pinned cells
+  (`cargo test -p gleaph-gql [features] in_list`: default 1, cypher 5, sql-compat 3,
+  `cypher,sql-compat` 7) plus the combined-build e2e returning rows for
+  `WHERE p.age IN [5, 7]`.
+- **Impact:** Bracket-form IN queries parse and execute under combined dialect builds; feature
+  combinations no longer diverge on `IN […]`. Default canister dialect unaffected.
 
 ### GAP-2026-08-24-004 — Endpoint property projection on `EdgeBindEndpoints` breaks trailing `IsLabeled` filters
 
@@ -1560,7 +1565,7 @@ duplicate its state machine or ownership rules.
 | P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Open for slice-4 acceptance — GAP-2026-07-29-005 (ADR 0073 slices 1–3 implemented and validated; slice 4 landed on `39746f7b3`, acceptance pending Plan 0285 validation) |
 | P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
 | P2       | Extend edge-index anchors to accept `ScanValue::InList` union probes (symmetric with the vertex IN-list anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-002 (`ScanValue::InList` reused end to end; planner fusion, three executor probe-union consumers, Router `EdgeEqualUnion` seeds) |
-| P2       | Cypher bracket-form `IN […]` fails to parse under combined `cypher` + `sql-compat` builds (sql-compat arm requires `(` unconditionally) | Open — GAP-2026-08-24-003 (default canister dialect unaffected) |
+| P2       | Cypher bracket-form `IN […]` fails to parse under combined `cypher` + `sql-compat` builds (sql-compat arm requires `(` unconditionally) | Resolved — GAP-2026-08-24-003 (sql-compat arm claims only `(`-openers; per-combo feature matrix pinned) |
 | P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Resolved — GAP-2026-08-24-004 (planner entity-use veto; whole-variable projections were unaffected) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
