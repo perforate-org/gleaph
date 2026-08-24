@@ -74,20 +74,20 @@ pub fn boot() -> Result<(), JsValue> {
     // and RETURNS instead of blocking like a native run loop. `run_embedded`
     // hands back an ApplicationHandle that keeps the app alive; park it for
     // the page's lifetime.
-    let handle =
-        gpui_platform::application_with_web_backend(gpui_platform::WebBackendPreference::Auto)
-            .run_embedded(move |cx: &mut App| {
-                let bounds = gpui::Bounds::centered(None, size(px(1024.), px(700.)), cx);
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        ..Default::default()
-                    },
-                    |_window, cx| cx.new(|cx| ExampleApp::new(mode, cx)),
-                )
-                .expect("failed to open example window");
-                cx.activate(true);
-            });
+    let handle = application_with_web_backend(WebBackendPreference::Auto).run_embedded(
+        move |cx: &mut App| {
+            let bounds = gpui::Bounds::centered(None, size(px(1024.), px(700.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |_window, cx| cx.new(|cx| ExampleApp::new(mode, cx)),
+            )
+            .expect("failed to open example window");
+            cx.activate(true);
+        },
+    );
     APP_HANDLE.with(|slot| *slot.borrow_mut() = Some(handle));
     Ok(())
 }

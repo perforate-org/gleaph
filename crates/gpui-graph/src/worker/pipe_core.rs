@@ -100,16 +100,6 @@ impl ReplayQueue {
         self.ready = true;
         self.pending.drain(..).collect()
     }
-
-    /// Whether outgoing messages transmit immediately.
-    pub fn is_ready(&self) -> bool {
-        self.ready
-    }
-
-    /// How many messages still wait for readiness.
-    pub fn pending_len(&self) -> usize {
-        self.pending.len()
-    }
 }
 
 /// One decoded main→worker payload, tagged by its envelope.
@@ -234,17 +224,13 @@ mod tests {
     #[test]
     fn replay_queue_preserves_posting_order_across_readiness() {
         let mut queue = ReplayQueue::new();
-        assert!(!queue.is_ready());
 
         // Nothing transmits before readiness; order is retained instead.
         assert!(queue.push(b"a".to_vec()).is_none());
         assert!(queue.push(b"b".to_vec()).is_none());
-        assert_eq!(queue.pending_len(), 2);
 
         let drained = queue.set_ready();
         assert_eq!(drained, vec![b"a".to_vec(), b"b".to_vec()]);
-        assert!(queue.is_ready());
-        assert_eq!(queue.pending_len(), 0);
 
         // Readiness is sticky; later messages pass straight through.
         assert!(queue.set_ready().is_empty());

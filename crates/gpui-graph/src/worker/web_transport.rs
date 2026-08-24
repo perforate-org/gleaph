@@ -109,15 +109,16 @@ struct SharedCore<NK, EK, N, E> {
     worker: Worker,
     queue: RefCell<ReplayQueue>,
     codec: RefCell<Option<Box<dyn PayloadCodec<NK, EK, N, E>>>>,
-    frames: RefCell<Box<dyn FnMut(PaintFrameWire)>>,
-    errors: RefCell<Box<dyn FnMut(ChannelError)>>,
+    frames: RefCell<FrameSink>,
+    errors: RefCell<ErrorSink>,
     /// Keeps the registered event closures alive for the page's lifetime;
     /// dropping them would detach the worker's message handler.
     closures: RefCell<Vec<ClosureHolder>>,
 }
 
 /// Type-erased keep-alive for the closures registered in [`spawn_channel`].
-struct ClosureHolder(Closure<dyn FnMut(JsValue)>);
+/// The closure is never read back — holding it is the entire purpose.
+struct ClosureHolder(#[allow(dead_code)] Closure<dyn FnMut(JsValue)>);
 
 impl<NK, EK, N, E> SharedCore<NK, EK, N, E>
 where
