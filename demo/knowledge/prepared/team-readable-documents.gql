@@ -1,0 +1,15 @@
+/// Access-constrained semantic search: Documents about `$query` that are public or owned
+/// by a member of Team "Platform" — structure + vector similarity + access control in one
+/// query plan.
+///
+/// `$query` is the encoded F32 query vector (`Value::Bytes`, dims = 768) produced by the same
+/// deterministic generator as seeds/embeddings.jsonl (scripts/gen-embeddings.mjs).
+MATCH (t:Team {name: 'Platform'})<-[:BELONGS_TO]-(p:Person)-[:OWNS]->(d:Document)
+WHERE d.is_public = TRUE
+SEARCH d IN (
+  VECTOR INDEX document_embedding
+  FOR $query
+  LIMIT 5
+) SCORE AS similarity
+RETURN ELEMENT_ID(d) AS document_id, d.title AS title, similarity
+ORDER BY similarity DESC

@@ -65,6 +65,7 @@ harness = true
 
 [dependencies]
 candid.workspace = true
+gleaph-bulk-load-api.workspace = true
 gleaph-cli.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true }
@@ -98,6 +99,11 @@ harness = true
 [[test]]
 name = "prepared_run_cli_transport"
 path = "tests/prepared_run_cli_transport.rs"
+harness = true
+
+[[test]]
+name = "knowledge_demo_vector_flow"
+path = "tests/knowledge_demo_vector_flow.rs"
 harness = true
 
 [[test]]

@@ -9,7 +9,7 @@ use thiserror::Error;
 use gleaph_cli::{
     auth,
     config::{self, ConfigEnv, DirKey, LoadedConfig},
-    identity,
+    embed, identity,
     load::{self, LoadArgs, LoadError},
     migration::{self, MigrationDirArgs, MigrationError},
     network,
@@ -28,6 +28,8 @@ enum CliError {
     #[error(transparent)]
     Load(#[from] LoadError),
     #[error(transparent)]
+    Embed(#[from] embed::EmbedError),
+    #[error(transparent)]
     Config(#[from] config::ConfigError),
     /// Argument parsing or dispatch failures.
     #[error("{0}")]
@@ -38,6 +40,7 @@ impl CliError {
     fn exit_code(&self) -> u8 {
         match self {
             CliError::Load(error) => error.exit_code(),
+            CliError::Embed(error) => error.exit_code(),
             _ => 1,
         }
     }
@@ -59,6 +62,9 @@ enum TopLevelCommand {
     Migration(MigrationCommand),
     /// Load initial vertices and edges into an existing logical graph.
     Load(LoadArgs),
+    /// Push deterministic vertex embeddings into a registered vector index.
+    #[command(subcommand)]
+    Embed(EmbedCommand),
     /// Register prepared queries from local .gql files.
     #[command(subcommand)]
     Prepared(PreparedCommand),
@@ -173,6 +179,12 @@ enum MigrationCommand {
     Status(RemoteMigrationArgs),
     /// Apply pending migrations through Router in parent order.
     Apply(RemoteMigrationArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum EmbedCommand {
+    /// Ingest NDJSON embeddings into a registered vector index for a completed bulk load.
+    Ingest(embed::EmbedIngestArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -342,6 +354,7 @@ fn dispatch(
             }
             Ok(())
         }
+        TopLevelCommand::Embed(command) => execute_embed(command, env, loaded),
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
         TopLevelCommand::Login(args) => execute_login(args, loaded),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
@@ -849,6 +862,76 @@ fn resolve_load(
         }
     }
     Ok(args)
+}
+
+/// Merge `gleaph.toml` and `GLEAPH_*` defaults into the parsed embed args. The graph, job key,
+/// and state file follow the same `[load]` table as `gleaph load` (one canonical load identity).
+fn resolve_embed(
+    mut args: embed::EmbedIngestArgs,
+    env: &ConfigEnv,
+    loaded: Option<&LoadedConfig>,
+) -> Result<embed::EmbedIngestArgs, CliError> {
+    let remote = required_remote(
+        args.canister.as_deref(),
+        args.network.as_deref(),
+        args.identity.as_deref(),
+        args.fetch_root_key,
+        env,
+        loaded,
+    )?;
+    args.canister = Some(remote.canister);
+    args.network = Some(remote.network);
+    args.identity = remote.identity;
+    args.fetch_root_key = Some(remote.fetch_root_key);
+    let config = loaded.map(|loaded| &loaded.config);
+    if args.graph.is_none() {
+        args.graph = config
+            .and_then(|config| config.load_config())
+            .and_then(|load| load.graph.clone());
+    }
+    if args.key.is_none() {
+        args.key = config
+            .and_then(|config| config.load_config())
+            .and_then(|load| load.key.clone());
+    }
+    if args.state_file.is_none() {
+        let config_state = config
+            .and_then(|config| config.load_config())
+            .and_then(|load| load.state_file.as_ref());
+        if let Some((loaded, state)) = loaded.zip(config_state) {
+            args.state_file = Some(config::resolve_config_path(&loaded.path, state));
+        }
+    }
+    Ok(args)
+}
+
+fn execute_embed(
+    command: EmbedCommand,
+    env: &ConfigEnv,
+    loaded: Option<&LoadedConfig>,
+) -> Result<(), CliError> {
+    match command {
+        EmbedCommand::Ingest(args) => {
+            let args = resolve_embed(args, env, loaded)?;
+            let summary = embed::execute(&args)?;
+            println!(
+                "embed ingest: {} applied, {} pending, {} failed",
+                summary.applied,
+                summary.pending,
+                summary.failures.len()
+            );
+            for (source_id, reason) in &summary.failures {
+                println!("failed {source_id}: {reason}");
+            }
+            if !summary.failures.is_empty() {
+                return Err(CliError::Message(format!(
+                    "{} embedding item(s) failed",
+                    summary.failures.len()
+                )));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn execute_prepared(
