@@ -12,7 +12,7 @@ three layers below yourself:
 | Layer | Who owns it | What it does |
 | --- | --- | --- |
 | ① Source selection | your app (a few lines) | `view.connect_worker_channel(Box::new(channel))` then `view.set_frame_source(FrameSource::Worker)` — without both, Worker mode fails loudly instead of silently falling back |
-| ② The worker script | your app (`assets/worker.js`) | spawns as an ES module worker, imports *your* worker wasm module, registers the Rust message handler, posts `"ready"`; the channel queues requests until then and replays them in posting order |
+| ② The worker script | your app (`assets/worker.js`) | spawned by the channel as a **module** worker (`PostMessageChannel::spawn_module`), imports *your* worker wasm module, registers the Rust message handler, posts `"ready"`; the channel queues requests until then and replays them in posting order. Classic-worker hosts use `spawn` + `--target no-modules` glue + `importScripts` instead |
 | ③ The channel | the library's `web_transport::PostMessageChannel`, configured by your app | implements `WorkerChannel`: spawns the worker, owns the readiness handshake and replay queue, encodes library requests, routes application payload bytes through your [`PayloadCodec`](common/src/batch_codec.rs), decodes `PaintFrameWire` replies, and hands frames to your sink |
 
 What the library provides: the protocol (`ToWorker` / `FromWorker`,

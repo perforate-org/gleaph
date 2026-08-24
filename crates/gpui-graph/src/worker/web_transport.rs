@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker};
+use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, WorkerType};
 
 use crate::frame_source::{PaintFrameWire, WireFormatError};
 
@@ -42,9 +42,22 @@ pub use super::pipe_core::{READY, envelope};
 /// payloads; see [`pipe_core::PayloadCodec`].
 pub use super::pipe_core::PayloadCodec;
 
-/// Spawn a worker from an application-supplied script URL.
+/// Spawn a classic worker from an application-supplied script URL.
+///
+/// Classic workers cannot use ES `import` in the bootstrap script; pair this
+/// with `wasm-bindgen --target no-modules` glue and `importScripts` (see the
+/// explorer host). For an ESM bootstrap script, use
+/// [`spawn_module_worker`](Self::spawn_module_worker) instead.
 pub fn spawn_worker(script_url: &str) -> Result<Worker, JsValue> {
     Worker::new(script_url)
+}
+
+/// Spawn a module worker (`type: "module"`) from an application-supplied
+/// script URL, for bootstrap scripts that use ES `import` syntax.
+pub fn spawn_module_worker(script_url: &str) -> Result<Worker, JsValue> {
+    let options = WorkerOptions::new();
+    options.set_type(WorkerType::Module);
+    Worker::new_with_options(script_url, &options)
 }
 
 /// Send one request message to `worker`, transferring the backing buffer.
@@ -129,14 +142,13 @@ where
     }
 }
 
-fn spawn_channel<NK, EK, N, E>(script_url: &str) -> Result<Rc<SharedCore<NK, EK, N, E>>, JsValue>
+fn spawn_channel<NK, EK, N, E>(worker: Worker) -> Rc<SharedCore<NK, EK, N, E>>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
     N: 'static,
     E: 'static,
 {
-    let worker = spawn_worker(script_url)?;
     let shared: Rc<SharedCore<NK, EK, N, E>> = Rc::new(SharedCore {
         worker: worker.clone(),
         queue: RefCell::new(ReplayQueue::new()),
@@ -184,7 +196,7 @@ where
     worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
     shared.closures.borrow_mut().push(ClosureHolder(on_error));
 
-    Ok(shared)
+    shared
 }
 
 fn encode_and_queue<NK, EK, N, E>(
@@ -235,12 +247,23 @@ where
     N: 'static,
     E: 'static,
 {
-    /// Spawn the application-owned worker at `script_url` and start listening
-    /// for replies. Sends issued before the worker signals readiness are
-    /// queued and replayed in posting order.
+    /// Spawn the application-owned **classic** worker at `script_url` and
+    /// start listening for replies. The bootstrap script must not use ES
+    /// `import` (pair with `--target no-modules` glue + `importScripts`).
+    /// Sends issued before the worker signals readiness are queued and
+    /// replayed in posting order.
     pub fn spawn(script_url: &str) -> Result<Self, JsValue> {
         Ok(Self {
-            shared: spawn_channel(script_url)?,
+            shared: spawn_channel(spawn_worker(script_url)?),
+        })
+    }
+
+    /// Spawn the application-owned **module** worker (`type: "module"`) at
+    /// `script_url`, for bootstrap scripts that use ES `import`. Behavior is
+    /// otherwise identical to [`Self::spawn`].
+    pub fn spawn_module(script_url: &str) -> Result<Self, JsValue> {
+        Ok(Self {
+            shared: spawn_channel(spawn_module_worker(script_url)?),
         })
     }
 

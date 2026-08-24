@@ -152,7 +152,7 @@ impl ExampleApp {
         let (delivery_tx, mut delivery_rx) = futures::channel::mpsc::unbounded::<PaintFrameWire>();
 
         let mut channel =
-            PostMessageChannel::<String, String, String, String>::spawn(WORKER_SCRIPT_URL)
+            PostMessageChannel::<String, String, String, String>::spawn_module(WORKER_SCRIPT_URL)
                 .expect("failed to spawn the example worker.js");
         channel.set_payload_codec(Box::new(DemoBatchCodec));
         channel.on_frame(move |wire| {
