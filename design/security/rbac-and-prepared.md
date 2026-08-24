@@ -85,7 +85,7 @@ Attribution contract (fail closed where the plan cannot name a resource):
 | Filter / projection / aggregation expressions | property reads attributed through variable→label facts; ambiguous or unresolvable attribution degrades to tenancy-only |
 | Unlabeled scans, `NOT`/wildcard label expressions, `DETACH DELETE`, unresolvable open-schema names | tenancy-only: owners/admins proceed; Phase 1 grants enumerate labels, so wildcard reads are not expressible as grants |
 | Mutations | `CREATE` for inserted elements; `UPDATE` for `SET`/`REMOVE`; `DELETE` for deletes, attributed via bound-variable labels |
-| Vector `SEARCH` | filter expressions attribute like other reads; the vector-index lookup itself stays ungated until authorization-aware vector search (Phase 2) |
+| Vector `SEARCH` | scan-equivalent rows on the index-spanned labels plus the projected embedding source property ([ADR 0078](../adr/0078-authz-aware-vector-search.md) layer 1); filter expressions attribute like other reads |
 | `USE GRAPH` segments | each child segment resolves names against its target graph's catalogs |
 
 Prepared execution evaluates the **static requirement set stored on the record** (slice 3)
@@ -114,6 +114,8 @@ not a gap; re-registration replaces the whole record.
 
 **Source:** `crates/router/src/policy_pushdown.rs` (lowering), `crates/router/src/gql_grants.rs`
 (compilation), `crates/auth` (`CompiledPredicate`, stable encoding).
+Implemented per [ADR 0075]; the §7 vector-search contract is now implemented by
+[ADR 0078](../adr/0078-authz-aware-vector-search.md) (below).
 
 A grant row gains an optional compiled predicate: an AND-only conjunction of catalog-checked
 comparisons over one vertex label (`<property> <op> <literal | MSG_CALLER()>`, depth ≤ 8),
@@ -168,6 +170,57 @@ re-resolves constants deterministically.
 
 Introspection prints the stored condition inline (`list_graph_grants.predicate`) with
 catalog-resolved property names ([ADR 0075] §1).
+
+### Authorization-aware vector search ([ADR 0078], Phase 2 — implemented)
+
+**Source:** `crates/router/src/authz.rs` (layer-1 extraction),
+`crates/router/src/gql_search.rs` (deepening), `crates/router/src/gql_search.rs` +
+`plan_exec`/router-wire `GqlQueryResult.truncated` (marker).
+
+Vector search returns the true top-k of the **authorized subset**. Three layers, one
+implementation each, no second predicate evaluator anywhere:
+
+1. **Query admission (Router, pre-dispatch).** The requirement walker treats
+   `PlanOp::Search` like a scan of every label the index spans (conjunctive `MATCH` rows)
+   plus `READ_PROPERTY` on the projected embedding source property when the embedding name
+   is a graph property; ingestion-fed embeddings add no property row. Unknown index names
+   are tenancy-only (fail closed). Because this runs inside
+   `enforce_data_plane_authorization`, an uncovered caller is rejected with the uniform
+   `Forbidden` **before any ANN spend**, and rejection is distinguishable from filtering:
+   post-dispatch visibility yields empty successes, never errors.
+2. **Per-candidate visibility (tail plan).** Search candidates seed the ordinary tail plan;
+   grant coverage and lowered [ADR 0075] policy predicates filter them exactly as ordinary
+   rows. The vector canister stays policy-blind and no caller identity propagates below
+   the Router.
+3. **Context assembly (GraphRAG):** nothing enters LLM context except through plan
+   execution, so layer 2 covers it by construction.
+
+**Iterative deepening (ADR 0078 §3/§5).** Round `r` requests `ceil(k · 2^r)` candidates,
+saturated per round at `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (the constant's existing role:
+per-round ANN request size and candidate work bound — documented at the constant rather than
+duplicated by a derived knob). After each round's tail dispatch, the loop stops on
+convergence (≥ k authorized rows), candidate exhaustion (fewer candidates returned than
+requested), or the query instruction budget bound (each round conservatively charged the
+shared per-operation estimate against `MAX_QUERY_CALL_INSTRUCTIONS`; the shared cutoff
+predicate also consults the live counter). There is no probe endpoint and no batch-probe
+evaluator: deepening changes only how many candidates feed the tail plan.
+
+**Truncation semantics (ADR 0078 §4).** GQL `LIMIT` is an upper-bound contract, so fewer
+than k authorized rows is legal but never silent: non-converged stops set the additive
+Router→caller-only `truncated` field (`Some(true)`) on `GqlQueryResult`; converged searches
+carry `Some(false)`; every non-search result stays `None`. Converged oversampling is capped
+back to k materialized rows (deterministic prefix); candidates arrive score-ordered so the
+authorized prefix is stable across identical query/data states.
+
+**Edge-subject vectors (GLEAPH.VECTOR.*, ADR 0078 §6).** Fused edge-inline vector predicates
+are evaluated during ordinary traversal execution on the shard; their bytes ride the edge
+label's direction-aware traversal row — identical rules with the edge translation, no extra
+demand, no bypass. Bytes of visible edges may be read; edges that any layer renders
+invisible never appear as candidates.
+
+Behavior change from Phase 1: vector reads now require label privileges (layer 1), so newly
+created embeddings are unreachable to callers without the spanned labels' `MATCH` rows —
+intended, and the pre-0078 free-ANN hole is closed.
 
 ## Anonymous-principal invariant
 

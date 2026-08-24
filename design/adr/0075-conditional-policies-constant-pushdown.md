@@ -1,7 +1,7 @@
 # 0075. Conditional resource policies: grant-attached predicates with router-resolved constant pushdown
 
 Date: 2026-08-24
-Status: accepted
+Status: implemented
 Last revised: 2026-08-24
 
 ## Context
@@ -110,8 +110,11 @@ capability in this slice; break-glass/JIT elevation of metadata remains governed
 
 Conditional policies bind vector search and GraphRAG: candidate generation and context
 assembly must observe policy-filtered visibility. The mechanics — oversample-and-filter
-versus constrained seeds — are deferred to the vector-authorization ADR, which inherits this
-contract plus the boundary rule that the vector canister stays policy-blind.
+versus constrained seeds — were deferred to the vector-authorization ADR, which inherits this
+contract plus the boundary rule that the vector canister stays policy-blind. That contract is
+now implemented: see [ADR 0078](./0078-authz-aware-vector-search.md) (accepted and implemented,
+2026-08-24) — the tail plan is the visibility filter, with iterative deepening and an explicit
+truncated marker.
 
 ## Consequences
 
