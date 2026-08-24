@@ -3,6 +3,25 @@
 //! Module visibility is `pub(in crate::facade)` (see `facade.rs`): only code under `facade`
 //! (notably [`super::store`]) may reference this module directly. Stable-backed
 //! error types are re-exported at the `facade` root for public `GraphStore` signatures.
+//!
+//! # Wire-ordering conventions
+//!
+//! Facade stable regions follow one of three ordering conventions. New facade
+//! stores must pick BE-for-order or explicit-`Ord` (or a fixed LE layout for
+//! opaque payloads) and state the choice at the key type:
+//!
+//! - **BE composite map keys** — byte order must equal numeric/prefix order:
+//!   `VertexPropertyKey` (8 B) and `EdgePropertyKey` (14 B) in regions 33/34
+//!   (prefix-range scans per owner), and `IndexPendingFloorKey` (17 B) in
+//!   region 52 (mutation-major barrier); plus library-provided integer keys in
+//!   regions 32/38/39/41/46.
+//! - **LE payload integers inside manual codecs** — a fixed layout, not map
+//!   order, governs: label-stats delta events (region 38) and mutation journal
+//!   records (region 39).
+//! - **Struct-`Ord`-governed LE keys** — byte order is deliberately not the
+//!   ordering source; ordering comes from derived `Ord`, documented at each
+//!   type: `EffectKey` (12 B, region 42) and `PhysicalIndexId` (8 B,
+//!   region 51).
 
 use std::cell::RefCell;
 
