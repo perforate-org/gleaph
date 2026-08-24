@@ -63,7 +63,7 @@ impl RouterStore {
         caller: Principal,
         args: ApplySchemaMigrationArgs,
     ) -> Result<ApplySchemaMigrationResult, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
 
         let ApplySchemaMigrationArgs::V1(args) = args;
         validate_apply_args(&args)?;
@@ -239,7 +239,7 @@ async fn preprovision_unregistered_create_graphs(
     statement: &str,
 ) -> Result<(), RouterError> {
     // Authorize before any remote side effect; the synchronous co-write re-checks below.
-    crate::facade::auth::require_admin(&caller)?;
+    crate::facade::auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
     let block = parse_and_validate_statement(statement)?;
     for stmt in block.iter_statements() {
         if let Statement::CreateGraph(create) = stmt {

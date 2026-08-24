@@ -511,7 +511,7 @@ impl RouterStore {
         max_scan: u32,
         now: u64,
     ) -> Result<AdminSweepMutationKeysStepResult, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if max_scan == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_scan must be greater than zero".into(),

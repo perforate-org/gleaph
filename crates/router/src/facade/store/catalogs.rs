@@ -689,7 +689,7 @@ impl RouterStore {
         logical_graph_name: &str,
         name: &str,
     ) -> Result<VertexLabelId, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
         validate_metadata_name(logical_graph_name)?;
         validate_metadata_name(name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
@@ -702,7 +702,7 @@ impl RouterStore {
         logical_graph_name: &str,
         name: &str,
     ) -> Result<EdgeLabelId, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
         validate_metadata_name(logical_graph_name)?;
         validate_metadata_name(name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
@@ -715,7 +715,7 @@ impl RouterStore {
         logical_graph_name: &str,
         names: &[String],
     ) -> Result<Vec<PropertyId>, RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
         validate_metadata_name(logical_graph_name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
         names
@@ -734,7 +734,7 @@ impl RouterStore {
         name: &str,
         profile: EdgeInlinePropertyProfile,
     ) -> Result<(), RouterError> {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
         validate_metadata_name(logical_graph_name)?;
         validate_metadata_name(name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;

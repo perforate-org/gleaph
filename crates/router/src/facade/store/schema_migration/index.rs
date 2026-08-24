@@ -121,7 +121,7 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
     args: ApplySchemaMigrationArgs,
     driver: &D,
 ) -> Result<ApplySchemaMigrationResult, RouterError> {
-    auth::require_admin(&caller)?;
+    auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
     let ApplySchemaMigrationArgs::V1(args) = args;
     super::validate_apply_args(&args)?;
 

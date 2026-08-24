@@ -254,7 +254,7 @@ impl RouterStore {
         FAck: FnMut(Principal, ShardEventSeq) -> FutAck,
         FutAck: Future<Output = Result<(), String>>,
     {
-        auth::require_admin(&caller)?;
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
         if args.max_deltas == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_deltas must be greater than zero".into(),
