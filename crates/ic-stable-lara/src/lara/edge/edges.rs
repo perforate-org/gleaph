@@ -22,7 +22,9 @@
 //! --------------------------------------------------
 //! Slab occupied tail                    ↕ 8 bytes
 //! --------------------------------------------------
-//! Reserved                              ↕ 20 bytes
+//! Initial vertex edge slots             ↕ 4 bytes
+//! --------------------------------------------------
+//! Reserved                              ↕ 16 bytes
 //! -------------------------------------------------- <- Address 64
 //! E_0                                   ↕ E::BYTES bytes
 //! --------------------------------------------------
@@ -36,7 +38,11 @@
 //! ```
 
 use crate::{
-    GrowFailed, VertexCount, read_u32, read_u64, safe_write, traits::CsrEdge, types::Address,
+    GrowFailed, VertexCount,
+    lara::reserved::{region_is_zero, write_zeroes},
+    read_u32, read_u64, safe_write,
+    traits::CsrEdge,
+    types::Address,
     write_u32, write_u64,
 };
 use ic_stable_structures::Memory;
@@ -201,6 +207,11 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
                 actual: header.stride,
             });
         }
+        // Reserved-region guard: nonzero reserved bytes mean a foreign or corrupt
+        // slab layout that must not open.
+        if !region_is_zero(&store.memory, RESERVED_OFFSET, RESERVED_SIZE) {
+            return Err(InitError::InvalidLayout);
+        }
         if !crate::slab_index::validate_elem_capacity(header.elem_capacity).is_ok() {
             return Err(InitError::ElemCapacityOverflow);
         }
@@ -218,6 +229,9 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     /// Writes the full slab header to stable memory.
+    ///
+    /// Infallible by precondition: every caller has already grown the memory for
+    /// this header, so the reserved-region zero-fill cannot need a further grow.
     pub(crate) fn write_header(&self, h: &HeaderV1) {
         self.memory.write(0, &h.magic);
         self.memory.write(3, &[h.version]);
@@ -253,7 +267,8 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
             Address::from(INITIAL_VERTEX_EDGE_SLOTS_OFFSET),
             h.initial_vertex_edge_slots,
         );
-        self.memory.write(RESERVED_OFFSET, &[0u8; RESERVED_SIZE]);
+        write_zeroes(&self.memory, RESERVED_OFFSET, RESERVED_SIZE)
+            .expect("edge slab reserved region lies within grown memory");
     }
 
     /// Updates the logical edge count field in the header.
@@ -417,7 +432,7 @@ pub fn segment_tree_leaf_count(vertex_len: VertexCount, segment_size: u32) -> u3
 
 #[cfg(test)]
 mod tests {
-    use super::{EdgeSlabStore, HeaderV1, InitError};
+    use super::{EdgeSlabStore, HeaderV1, InitError, RESERVED_OFFSET, RESERVED_SIZE};
     use crate::{
         slab_index::MAX_SLOT_EXCLUSIVE_END,
         test_support::{TestEdge, vector_memory},
@@ -425,6 +440,7 @@ mod tests {
         types::Address,
         write_u64,
     };
+    use ic_stable_structures::Memory;
 
     #[test]
     fn edge_slab_init_rejects_elem_capacity_above_index_space() {
@@ -439,6 +455,41 @@ mod tests {
         assert!(matches!(
             EdgeSlabStore::<TestEdge, _>::init(memory),
             Err(InitError::ElemCapacityOverflow)
+        ));
+    }
+
+    #[test]
+    fn edge_slab_header_reserved_region_is_zeroed_and_reopens() {
+        let memory = vector_memory();
+        let store = EdgeSlabStore::<TestEdge, _>::new(
+            memory.clone(),
+            HeaderV1::new(8, 1, 4, TestEdge::BYTES as u32, 0),
+        )
+        .expect("seed slab");
+        drop(store);
+
+        let mut reserved = [0u8; RESERVED_SIZE];
+        memory.read(RESERVED_OFFSET, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        let reopened = EdgeSlabStore::<TestEdge, _>::init(memory).expect("reopen");
+        assert_eq!(reopened.header().expect("header").elem_capacity, 8);
+    }
+
+    #[test]
+    fn edge_slab_init_rejects_nonzero_reserved_byte() {
+        let memory = vector_memory();
+        let store = EdgeSlabStore::<TestEdge, _>::new(
+            memory.clone(),
+            HeaderV1::new(8, 1, 4, TestEdge::BYTES as u32, 0),
+        )
+        .expect("seed slab");
+        drop(store);
+
+        memory.write(RESERVED_OFFSET, &[1]);
+        assert!(matches!(
+            EdgeSlabStore::<TestEdge, _>::init(memory),
+            Err(InitError::InvalidLayout)
         ));
     }
 }

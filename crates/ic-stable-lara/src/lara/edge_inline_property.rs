@@ -14,6 +14,7 @@ use crate::lara::edge_inline_property::cell::{
 use crate::lara::edge_inline_property::log::{
     HeaderV1 as InlinePropertyBytesLogHeaderV1, InlinePropertyBytesLogStore,
 };
+use crate::lara::reserved::{region_is_zero, write_zeroes};
 use crate::slab_index::{byte_exclusive_end_fits, byte_offset_fits, checked_add_byte_offset};
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
@@ -71,6 +72,12 @@ pub const HEADER_SIZE: u64 = 64;
 
 const BYTE_CAPACITY_OFFSET: u64 = 4;
 const SLAB_OCCUPIED_TAIL_OFFSET: u64 = 36;
+/// Declared reserved header bytes between `byte_capacity` and `slab_occupied_tail`.
+const RESERVED_LOW_OFFSET: u64 = 12;
+const RESERVED_LOW_SIZE: usize = 24;
+/// Declared reserved header bytes between `slab_occupied_tail` and [`HEADER_SIZE`].
+const RESERVED_HIGH_OFFSET: u64 = 44;
+const RESERVED_HIGH_SIZE: usize = 20;
 
 fn byte_offset(addr: u64) -> u64 {
     HEADER_SIZE + addr
@@ -305,6 +312,14 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         if !byte_exclusive_end_fits(header.byte_capacity) {
             return Err(InitError::ByteCapacityOverflow);
         }
+        // Reserved-region guards: nonzero reserved bytes mean a foreign or corrupt
+        // slab layout that must not open.
+        if !region_is_zero(&store.memory, RESERVED_LOW_OFFSET, RESERVED_LOW_SIZE) {
+            return Err(InitError::InvalidLayout);
+        }
+        if !region_is_zero(&store.memory, RESERVED_HIGH_OFFSET, RESERVED_HIGH_SIZE) {
+            return Err(InitError::InvalidLayout);
+        }
         Ok(store)
     }
 
@@ -332,6 +347,12 @@ impl<M: Memory> PayloadByteSlabStore<M> {
             Address::from(SLAB_OCCUPIED_TAIL_OFFSET),
             h.slab_occupied_tail,
         );
+        // Both reserved regions lie inside the header page that every caller has
+        // already grown before rewriting the header, so these writes cannot fail.
+        write_zeroes(&self.memory, RESERVED_LOW_OFFSET, RESERVED_LOW_SIZE)
+            .expect("LVG slab low reserved region lies within grown memory");
+        write_zeroes(&self.memory, RESERVED_HIGH_OFFSET, RESERVED_HIGH_SIZE)
+            .expect("LVG slab high reserved region lies within grown memory");
     }
 
     /// Grows the byte slab capacity to `n`.
@@ -1079,6 +1100,46 @@ mod tests {
     fn test_store() -> EdgeInlinePropertyBytesStore<VectorMemory> {
         EdgeInlinePropertyBytesStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1)
             .expect("store")
+    }
+
+    #[test]
+    fn slab_header_reserved_regions_are_zeroed_and_reopen() {
+        let memory = mem();
+        let store =
+            PayloadByteSlabStore::new(memory.clone(), HeaderV1::new(1024)).expect("seed slab");
+        drop(store);
+
+        let mut low = [0u8; RESERVED_LOW_SIZE];
+        memory.read(RESERVED_LOW_OFFSET, &mut low);
+        assert!(low.iter().all(|&byte| byte == 0));
+        let mut high = [0u8; RESERVED_HIGH_SIZE];
+        memory.read(RESERVED_HIGH_OFFSET, &mut high);
+        assert!(high.iter().all(|&byte| byte == 0));
+
+        let reopened = PayloadByteSlabStore::init(memory).expect("reopen");
+        assert_eq!(reopened.header().expect("header").byte_capacity, 1024);
+    }
+
+    #[test]
+    fn slab_init_rejects_nonzero_reserved_byte_in_each_region() {
+        for (offset, size) in [
+            (RESERVED_LOW_OFFSET, RESERVED_LOW_SIZE),
+            (RESERVED_HIGH_OFFSET, RESERVED_HIGH_SIZE),
+        ] {
+            let memory = mem();
+            let store =
+                PayloadByteSlabStore::new(memory.clone(), HeaderV1::new(1024)).expect("seed slab");
+            drop(store);
+
+            memory.write(offset + (size - 1) as u64, &[1]);
+            assert!(
+                matches!(
+                    PayloadByteSlabStore::init(memory.clone()),
+                    Err(InitError::InvalidLayout)
+                ),
+                "reserved byte at {offset}.. must be rejected"
+            );
+        }
     }
 
     #[test]

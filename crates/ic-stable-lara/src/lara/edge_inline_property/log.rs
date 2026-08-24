@@ -3,7 +3,13 @@
 //! Each entry stores `prev` (4 bytes) and an 8-byte inline cell. Liveness is encoded in the paired
 //! edge overflow log tombstone contract at the same `(leaf_segment, entry_idx)`.
 
-use crate::{GrowFailed, read_i32, read_u32, safe_write, types::Address, write_i32, write_u32};
+use crate::{
+    GrowFailed,
+    lara::reserved::{region_is_zero, write_zeroes},
+    read_i32, read_u32, safe_write,
+    types::Address,
+    write_i32, write_u32,
+};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
@@ -15,6 +21,9 @@ pub const MAGIC: [u8; 3] = *b"LIL";
 pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 16;
+/// Declared reserved header bytes between the stride field and [`HEADER_SIZE`].
+const HEADER_RESERVED_OFFSET: u64 = 16;
+const HEADER_RESERVED_SIZE: usize = 16;
 /// Inline property bytes log cell bytes per overflow log entry.
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
@@ -57,6 +66,8 @@ pub enum InitError {
     },
     /// The inline-property-bytes-log layout version is not supported.
     IncompatibleVersion(u8),
+    /// A declared header reserved byte is nonzero (foreign or corrupt layout).
+    ReservedRegionNonZero,
     /// The inline-property-bytes-log memory could not be allocated or was empty on reopen.
     OutOfMemory,
     /// The persisted entry stride does not match this implementation.
@@ -82,6 +93,12 @@ impl fmt::Display for InitError {
                 "unsupported inline property bytes log layout version {v}"
             ),
             Self::OutOfMemory => write!(f, "failed to allocate inline property bytes log metadata"),
+            Self::ReservedRegionNonZero => {
+                write!(
+                    f,
+                    "inline property bytes log header reserved region must be zero"
+                )
+            }
             Self::StrideMismatch { expected, actual } => {
                 write!(
                     f,
@@ -137,6 +154,12 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
                 expected,
                 actual: header.stride,
             });
+        }
+        // Reserved-region guard: nonzero reserved bytes mean a foreign or corrupt
+        // layout; fail closed with the dedicated variant. The structurally unsound
+        // backing-size guard below keeps its OutOfMemory mapping.
+        if !region_is_zero(&store.memory, HEADER_RESERVED_OFFSET, HEADER_RESERVED_SIZE) {
+            return Err(InitError::ReservedRegionNonZero);
         }
         // Backing-size guard (mirrors free_span::validate_header): reject memory smaller than
         // the layout the header declares so later per-segment offset reads cannot trap with an
@@ -251,7 +274,7 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
         write_u32(&self.memory, Address::from(4), h.segment_count);
         write_u32(&self.memory, Address::from(8), h.max_log_entries);
         write_u32(&self.memory, Address::from(12), h.stride);
-        self.memory.write(16, &[0u8; 16]);
+        write_zeroes(&self.memory, HEADER_RESERVED_OFFSET, HEADER_RESERVED_SIZE)?;
         self.header_mirror.set(*h);
         Ok(())
     }
@@ -321,6 +344,35 @@ mod tests {
         assert!(matches!(
             InlinePropertyBytesLogStore::init(mem),
             Err(InitError::OutOfMemory)
+        ));
+    }
+
+    #[test]
+    fn log_header_reserved_region_is_zeroed_and_reopens() {
+        let mem = vector_memory();
+        let store =
+            InlinePropertyBytesLogStore::new(mem.clone(), HeaderV1::new(2)).expect("seed log");
+        store.write_idx_at_least(0, 5);
+        drop(store);
+
+        let mut reserved = [0u8; HEADER_RESERVED_SIZE];
+        mem.read(HEADER_RESERVED_OFFSET, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        let reopened = InlinePropertyBytesLogStore::init(mem).expect("reopen");
+        assert_eq!(reopened.header().segment_count, 2);
+        assert_eq!(reopened.read_idx_with_header(&reopened.header(), 0), 5);
+    }
+
+    #[test]
+    fn log_init_rejects_nonzero_reserved_byte() {
+        let store =
+            InlinePropertyBytesLogStore::new(vector_memory(), HeaderV1::new(2)).expect("store");
+        let mem = store.into_memory();
+        crate::write_u32(&mem, Address::from(HEADER_RESERVED_OFFSET), 1);
+        assert!(matches!(
+            InlinePropertyBytesLogStore::init(mem),
+            Err(InitError::ReservedRegionNonZero)
         ));
     }
 }

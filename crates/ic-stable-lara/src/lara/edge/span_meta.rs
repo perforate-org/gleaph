@@ -3,7 +3,13 @@
 //! This store is placement metadata for update/maintenance work. Clean query
 //! scans must not read it.
 
-use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
+use crate::{
+    GrowFailed,
+    lara::reserved::{region_is_zero, write_zeroes},
+    read_u64, safe_write,
+    types::Address,
+    write_u64,
+};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt, marker::PhantomData};
 
@@ -13,6 +19,9 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 32;
 const LEN_OFFSET: u64 = 4;
 const STRIDE_OFFSET: u64 = 12;
+/// Declared reserved header bytes between the stride field and [`DATA_OFFSET`].
+const RESERVED_OFFSET: u64 = 16;
+const RESERVED_SIZE: usize = 16;
 const ENTRY_SIZE: u64 = 8;
 
 #[derive(Debug)]
@@ -61,6 +70,8 @@ pub enum InitError {
         /// Row width read from stable memory.
         actual: u32,
     },
+    /// A declared header reserved byte is nonzero (foreign or corrupt layout).
+    ReservedRegionNonZero,
     /// The store could not allocate its metadata.
     OutOfMemory,
 }
@@ -78,6 +89,12 @@ impl fmt::Display for InitError {
                 fmt,
                 "segment span stride mismatch: expected {expected}, got {actual}"
             ),
+            Self::ReservedRegionNonZero => {
+                write!(
+                    fmt,
+                    "segment span metadata header reserved region must be zero"
+                )
+            }
             Self::OutOfMemory => write!(fmt, "failed to allocate segment span metadata"),
         }
     }
@@ -130,6 +147,11 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
                 expected: ENTRY_SIZE as u32,
                 actual: header.stride,
             });
+        }
+        // Reserved-region guard: nonzero reserved bytes mean a foreign or corrupt
+        // layout; fail closed with the dedicated variant.
+        if !region_is_zero(&memory, RESERVED_OFFSET, RESERVED_SIZE) {
+            return Err(InitError::ReservedRegionNonZero);
         }
         Ok(Self {
             memory,
@@ -258,6 +280,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         memory.write(3, &[header.version; 1]);
         write_u64(memory, Address::from(LEN_OFFSET), header.len);
         crate::write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
+        write_zeroes(memory, RESERVED_OFFSET, RESERVED_SIZE)?;
         Ok(())
     }
 
@@ -317,6 +340,35 @@ mod tests {
             .unwrap();
         assert_eq!(store.update_physical_start(0, |p| p.wrapping_add(7)), 200);
         assert_eq!(store.get(0).physical_start, 207);
+    }
+
+    #[test]
+    fn span_meta_header_reserved_region_is_zeroed_and_reopens() {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory.clone()).unwrap();
+        store.push(SegmentSpanMeta { physical_start: 12 }).unwrap();
+        drop(store);
+
+        let mut reserved = [0u8; RESERVED_SIZE];
+        memory.read(RESERVED_OFFSET, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        let reopened = SegmentSpanMetaStore::init(memory).unwrap();
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(reopened.get(0), SegmentSpanMeta { physical_start: 12 });
+    }
+
+    #[test]
+    fn span_meta_init_rejects_nonzero_reserved_byte() {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory.clone()).unwrap();
+        drop(store);
+
+        memory.write(RESERVED_OFFSET, &[1]);
+        assert!(matches!(
+            SegmentSpanMetaStore::init(memory),
+            Err(InitError::ReservedRegionNonZero)
+        ));
     }
 }
 

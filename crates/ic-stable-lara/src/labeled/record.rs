@@ -3,7 +3,7 @@
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
-    OVERFLOW_LOG_NONE, bucket_word_has_zero_reserved, checked_add_slot_index,
+    OVERFLOW_LOG_NONE, bucket_word_has_zero_reserved_bits, checked_add_slot_index,
     decode_bucket_label_key, decode_bucket_overflow_log_head, decode_meta28,
     decode_overflow_log_byte, decode_slot_index, encode_locator_word, encode_overflow_log_byte,
     read_u40, replace_bucket_label_key, replace_bucket_overflow_log_head, slot_index_fits,
@@ -390,8 +390,8 @@ impl LabelBucket {
             .try_into()
             .expect("LabelBucket::try_read_from expects exactly Self::BYTES bytes");
         let word = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
-        if !bucket_word_has_zero_reserved(word) {
-            return Err(LabelBucketFieldError::ReservedTopBitSet);
+        if !bucket_word_has_zero_reserved_bits(word) {
+            return Err(LabelBucketFieldError::ReservedBitsSet);
         }
         let head_byte = ((word >> 52) & 0xFF) as u8;
         if head_byte != OVERFLOW_LOG_NONE && head_byte >= 170 {
@@ -440,8 +440,8 @@ impl LabelBucket {
 /// Invalid [`LabelBucket`] wire or field combinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelBucketFieldError {
-    /// Bit 63 of the packed word must be zero.
-    ReservedTopBitSet,
+    /// Bits 60–63 of the packed word are reserved and must be zero.
+    ReservedBitsSet,
     /// `edge_start` does not fit in the 36-bit slot index.
     SlotIndexOverflow,
     /// Overflow log head byte is not `0xFF` and not in `0..170`.
@@ -461,7 +461,7 @@ pub enum LabelBucketFieldError {
 impl core::fmt::Display for LabelBucketFieldError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::ReservedTopBitSet => write!(f, "label bucket reserved top bit must be zero"),
+            Self::ReservedBitsSet => write!(f, "label bucket reserved bits 60-63 must be zero"),
             Self::SlotIndexOverflow => {
                 write!(f, "label bucket edge_start exceeds 36-bit slot index")
             }
@@ -1326,13 +1326,30 @@ mod tests {
     }
 
     #[test]
-    fn label_bucket_rejects_nonzero_reserved_top_bit() {
+    fn label_bucket_rejects_nonzero_reserved_bits() {
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         bytes[7] |= 0x80;
-        let err = LabelBucket::try_read_from(&bytes).expect_err("reserved top bit");
-        assert_eq!(err, LabelBucketFieldError::ReservedTopBitSet);
+        let err = LabelBucket::try_read_from(&bytes).expect_err("reserved bits set");
+        assert_eq!(err, LabelBucketFieldError::ReservedBitsSet);
+    }
+
+    #[test]
+    fn label_bucket_rejects_each_set_reserved_bit() {
+        for (byte_mask, word_bit) in [(0x10u8, 60u32), (0x20, 61), (0x40, 62)] {
+            let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+            let mut bytes = [0u8; LabelBucket::BYTES];
+            bucket.write_to(&mut bytes);
+            bytes[7] |= byte_mask;
+            let err =
+                LabelBucket::try_read_from(&bytes).expect_err("reserved bit set on bucket word");
+            assert_eq!(
+                err,
+                LabelBucketFieldError::ReservedBitsSet,
+                "word bit {word_bit} must be rejected"
+            );
+        }
     }
 
     #[test]

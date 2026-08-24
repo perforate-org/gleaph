@@ -40,6 +40,7 @@
 use crate::{
     GrowFailed, VertexId,
     lara::edge::DEFAULT_MAX_LOG_ENTRIES,
+    lara::reserved::{region_is_zero, write_zeroes},
     read_u32, safe_write,
     slab_index::{
         decode_meta28, decode_slot_index, encode_locator_word, pack_vertex_tail28, slot_index_fits,
@@ -58,6 +59,9 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
 const STRIDE_OFFSET: u64 = 8;
+/// Declared reserved header bytes between the stride field and [`DATA_OFFSET`].
+const RESERVED_OFFSET: u64 = 12;
+const RESERVED_SIZE: usize = 52;
 /// Stack buffer width for [`VertexStore::get`] when `V::BYTES` is small enough.
 const INLINE_VERTEX_ROW_BYTES: usize = 64;
 
@@ -88,6 +92,8 @@ pub enum InitError {
     },
     /// The vertex type does not use a fixed-width [`Storable`] encoding.
     VariableWidthVertex,
+    /// A declared header reserved byte is nonzero (foreign or corrupt layout).
+    ReservedRegionNonZero,
     /// The store could not allocate its header while initializing empty memory.
     OutOfMemory,
 }
@@ -107,6 +113,9 @@ impl fmt::Display for InitError {
             }
             Self::VariableWidthVertex => {
                 write!(f, "LARA vertices must use fixed-width Storable encoding")
+            }
+            Self::ReservedRegionNonZero => {
+                write!(f, "vertex header reserved region must be zero")
             }
             Self::OutOfMemory => write!(f, "failed to allocate vertex metadata"),
         }
@@ -438,6 +447,11 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
                 actual: header.stride,
             });
         }
+        // Reserved-region guard: nonzero reserved bytes mean a foreign or corrupt
+        // layout; fail closed with the dedicated variant.
+        if !region_is_zero(&memory, RESERVED_OFFSET, RESERVED_SIZE) {
+            return Err(InitError::ReservedRegionNonZero);
+        }
         Ok(Self {
             memory,
             header_mirror: Cell::new(header),
@@ -572,6 +586,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         memory.write(3, &[header.version]);
         write_u32(memory, Address::from(LEN_OFFSET), header.len);
         write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
+        write_zeroes(memory, RESERVED_OFFSET, RESERVED_SIZE)?;
         Ok(())
     }
 
@@ -606,14 +621,14 @@ fn verify_vertex_width<V: CsrVertex>() -> Result<(), InitError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Vertex, VertexFieldError, VertexStore};
+    use super::{InitError, RESERVED_OFFSET, RESERVED_SIZE, Vertex, VertexFieldError, VertexStore};
     use crate::VectorMemory;
     use crate::{
         lara::edge::DEFAULT_MAX_LOG_ENTRIES,
         slab_index::{SLOT_INDEX_MASK, encode_locator_word, pack_vertex_tail28},
         traits::{CsrVertex, CsrVertexTombstone},
     };
-    use ic_stable_structures::Storable;
+    use ic_stable_structures::{Memory, Storable};
     use std::borrow::Cow;
     use std::mem::size_of;
 
@@ -725,6 +740,40 @@ mod tests {
             Vertex::try_read_from(&bytes),
             Err(VertexFieldError::OverflowLogHeadOutOfRange)
         );
+    }
+
+    #[test]
+    fn header_reserved_region_is_zeroed_and_reopens() {
+        let memory = VectorMemory::default();
+        let store = VertexStore::new(memory.clone()).expect("vertex store");
+        store
+            .push(Vertex::from_parts(7, 1, 1, -1, false))
+            .expect("vertex row");
+        drop(store);
+
+        let mut reserved = [0u8; RESERVED_SIZE];
+        memory.read(RESERVED_OFFSET, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        let reopened = VertexStore::<Vertex, VectorMemory>::init(memory).expect("reopen");
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(
+            reopened.get(0.into()),
+            Vertex::from_parts(7, 1, 1, -1, false)
+        );
+    }
+
+    #[test]
+    fn init_rejects_nonzero_reserved_byte() {
+        let memory = VectorMemory::default();
+        let store = VertexStore::<Vertex, VectorMemory>::new(memory.clone()).expect("vertex store");
+        drop(store);
+
+        memory.write(RESERVED_OFFSET, &[1]);
+        assert!(matches!(
+            VertexStore::<Vertex, VectorMemory>::init(memory),
+            Err(InitError::ReservedRegionNonZero)
+        ));
     }
 }
 

@@ -12,18 +12,28 @@
 //! ----------------------------------------
 //! Reserved space          ↕ 20 bytes
 //! ---------------------------------------- <- Address 32
-//! C_0                     ↕ 16 or 24 bytes
+//! C_0                     ↕ 16 bytes
 //! ----------------------------------------
-//! C_1                     ↕ 16 or 24 bytes
+//! C_1                     ↕ 16 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! C_(L-1)                 ↕ 16 or 24 bytes
+//! C_(L-1)                 ↕ 16 bytes
 //! ----------------------------------------
 //! Unallocated space
 //! ```
+//!
+//! Each count row is exactly [`ENTRY_BYTES`] = 16 bytes (`actual` + `total`,
+//! little-endian `i64` each).
 
-use crate::{GrowFailed, read_u64, safe_write, traits::CsrEdge, types::Address, write, write_u64};
+use crate::{
+    GrowFailed,
+    lara::reserved::{region_is_zero, write_zeroes},
+    read_u64, safe_write,
+    traits::CsrEdge,
+    types::Address,
+    write, write_u64,
+};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, convert::TryInto, fmt, marker::PhantomData, num::NonZero};
 
@@ -35,6 +45,9 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 32;
 /// The offset where the vector length resides.
 const LEN_OFFSET: u64 = 4;
+/// Declared reserved header bytes between the length field and [`DATA_OFFSET`].
+const RESERVED_OFFSET: u64 = 12;
+const RESERVED_SIZE: usize = 20;
 
 /// PMA segment-count row width (`actual` + `total`, little-endian `i64` each).
 pub const ENTRY_BYTES: u64 = 16;
@@ -58,6 +71,8 @@ pub enum InitError {
     /// The current version of this store does not support the version of the
     /// memory layout.
     IncompatibleVersion(u8),
+    /// A declared header reserved byte is nonzero (foreign or corrupt layout).
+    ReservedRegionNonZero,
     /// Failed to allocate memory for the vector.
     OutOfMemory,
 }
@@ -72,6 +87,9 @@ impl fmt::Display for InitError {
                 f,
                 "unsupported layout version {version}; supported version numbers are 1..={LAYOUT_VERSION}"
             ),
+            Self::ReservedRegionNonZero => {
+                write!(f, "segment edge counts header reserved region must be zero")
+            }
             Self::OutOfMemory => write!(f, "failed to allocate memory for vector metadata"),
         }
     }
@@ -160,6 +178,11 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
+        // Reserved-region guard: nonzero reserved bytes mean a foreign or corrupt
+        // layout; fail closed with the dedicated variant.
+        if !region_is_zero(&memory, RESERVED_OFFSET, RESERVED_SIZE) {
+            return Err(InitError::ReservedRegionNonZero);
+        }
 
         Ok(Self {
             memory,
@@ -173,6 +196,7 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         safe_write(memory, 0, &header.magic)?;
         memory.write(3, &[header.version; 1]);
         write_u64(memory, Address::from(4), header.len);
+        write_zeroes(memory, RESERVED_OFFSET, RESERVED_SIZE)?;
         Ok(())
     }
 
@@ -416,6 +440,7 @@ impl<'a, E: CsrEdge, M: Memory> std::iter::FusedIterator for Iter<'a, E, M> {}
 mod tests {
     use crate::VectorMemory;
     use crate::test_support::{TestEdge, vector_memory};
+    use ic_stable_structures::Memory;
 
     #[test]
     fn segment_edge_counts_entry_size_is_fixed() {
@@ -432,6 +457,52 @@ mod tests {
         };
         store.push(counts).unwrap();
         assert_eq!(store.get(0), counts);
+    }
+
+    #[test]
+    fn counts_header_reserved_region_is_zeroed_and_reopens() {
+        use crate::lara::edge::counts::{
+            RESERVED_OFFSET, RESERVED_SIZE, SegmentEdgeCounts, SegmentEdgeCountsStore,
+        };
+
+        let memory = vector_memory();
+        let store = SegmentEdgeCountsStore::<TestEdge, _>::new(memory.clone()).unwrap();
+        store
+            .push(SegmentEdgeCounts {
+                actual: 1,
+                total: 2,
+            })
+            .unwrap();
+        drop(store);
+
+        let mut reserved = [0u8; RESERVED_SIZE];
+        memory.read(RESERVED_OFFSET, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        let reopened = SegmentEdgeCountsStore::<TestEdge, _>::init(memory).unwrap();
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(
+            reopened.get(0),
+            SegmentEdgeCounts {
+                actual: 1,
+                total: 2
+            }
+        );
+    }
+
+    #[test]
+    fn counts_init_rejects_nonzero_reserved_byte() {
+        use crate::lara::edge::counts::{InitError, RESERVED_OFFSET, SegmentEdgeCountsStore};
+
+        let memory = vector_memory();
+        let store = SegmentEdgeCountsStore::<TestEdge, _>::new(memory.clone()).unwrap();
+        drop(store);
+
+        memory.write(RESERVED_OFFSET, &[1]);
+        assert!(matches!(
+            SegmentEdgeCountsStore::<TestEdge, _>::init(memory),
+            Err(InitError::ReservedRegionNonZero)
+        ));
     }
 }
 

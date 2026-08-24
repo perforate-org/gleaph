@@ -50,10 +50,10 @@ future-compatibility gaps, or redundant storage. Evaluation criteria (finalized
 | F2 | Edge row payload is 30-bit (~1.07e9 vertices/shard) while `VertexId` is u32 and slab indices are 36-bit — undocumented shard-capacity ceiling | A/D | **P2** — **resolved** by [Plan 0297](../../plans/0297-lara-edge-payload-ceiling.md): bound documented as blessed-final (`design/storage/lara.md` § Shard capacity bounds; dgap-contract cross-reference) and enforced fail-closed at the minting constructors (`VertexRef::local` / `RemoteVertexId::from_raw`) with pinned boundary tests |
 | F3 | No explicit compatibility-relevance marker per region/record for the production gate | D4' | **P2** — **closed** by [Plan 0298](../../plans/0298-registry-compat-column.md), 2026-08-24: every `GRAPH_STABLE_LAYOUT` entry carries an explicit `ProductionCompat` value (the registry is the SSOT); see §3 notes and the §8 follow-up for regions 41/46 |
 | F4 | Free-span record stride 48 B carries 14 B padding and a derivable `bin_idx`; ~30% record-area shrink possible at next layout break | A | P3 |
-| F5 | `LabelBucket` word bits 60–62 are neither assigned nor validated (only bit 63 is zero-checked) | D3' hygiene | P3 |
+| F5 | `LabelBucket` word bits 60–62 are neither assigned nor validated (only bit 63 is zero-checked) — **closed by [Plan 0299](../../plans/0299-lara-validation-hardening.md)**: decode now rejects the whole top nibble (bits 60–63) | D3' hygiene | P3 ✓ |
 | F6 | Label-stats delta event duplicates `shard_event_seq` (8 B/event) already present as the map key | E/A | P3 |
 | F7 | Journal primary reserves four fixed optional slots (28 B always resident) behind a validity bitmap | A | P3 |
-| F8 | LARA header reserved-byte policy is inconsistent (some zeroed+checked, some declared but not written) | D3' hygiene | P3 |
+| F8 | LARA header reserved-byte policy is inconsistent (some zeroed+checked, some declared but not written) — **closed by [Plan 0299](../../plans/0299-lara-validation-hardening.md)**: every store zero-fills its declared tail via a shared helper and rejects nonzero reserved bytes at open with precise variants (`InvalidLayout` where present; dedicated `ReservedRegionNonZero` in vertex / edge log / inline-prop log / counts / span-meta) | D3' hygiene | P3 ✓ |
 | F9 | Dead code: `PropertyCatalog` type alias never instantiated (`facade/stable/property_catalog.rs`) | G/cleanup | P3 |
 | F10 | `design/storage/stable-memory-inventory.md` checklist table drifted from registries (Graph row stale; Provision row stale) | G | P3 (fixed in this patch) |
 | F11 | Mixed endianness across facade keys (BE for ordered map keys 32–34/52; LE for `EffectKey`, `PhysicalIndexId`, manual codecs) | B hygiene | P4 |
@@ -241,7 +241,7 @@ than motivate one.
 | C1 | Add `Record::V1(...)` envelopes (or a version byte) to regions 32, 33/34 values; confirm 51's regenerate-on-change contract is the intended production answer or envelope it too. Wire-additive today, no behavior change | **P2** | closes F1 before the [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md) readiness gate closes. **Implemented for regions 32/33/34** ([Plan 0296](../../plans/0296-graph-facade-value-envelopes.md), 2026-08-24); region 51 decision still open |
 | C2 | Document the 30-bit edge-payload ceiling as an explicit shard-capacity bound (~1.07e9 local vertex refs) in `design/storage/lara.md` / dgap contract, and either bless it as final or schedule widening | **P2** | closes F2; pure documentation + decision — **Implemented** ([Plan 0297](../../plans/0297-lara-edge-payload-ceiling.md), 2026-08-24): documented + enforced fail-closed; **blessed as final**, widening only via a future product requirement and a new layout ADR (8-byte rows) |
 | C3 | Extend the stable-layout registry (or inventory table) with a compatibility-relevance column so the production migration checklist is mechanical | **P2** | closes F3 (D4') — **Implemented** ([Plan 0298](../../plans/0298-registry-compat-column.md), 2026-08-24): registry entries gained a required `ProductionCompat` field; all 53 graph regions classified per §3 (41/46 deliberately `VersionedSurvivor` despite bare Candid, exposing the missing-envelope gap); router/graph-index/vector/provision carry `Unaudited` placeholders until per-canister slices |
-| C4 | Hygiene batch: zero-check bucket word bits 60–62; unify LARA header reserved-byte policy (zero-fill + validate); delete dead `PropertyCatalog` alias; add the endianness-convention note | P3 | closes F5/F8/F9/F11 |
+| C4 | Hygiene batch: zero-check bucket word bits 60–62; unify LARA header reserved-byte policy (zero-fill + validate); delete dead `PropertyCatalog` alias; add the endianness-convention note | P3 | **F5/F8 implemented by [Plan 0299](../../plans/0299-lara-validation-hardening.md)** (2026-08-24, review round 2 approved); F9/F11 remain as C4b rider |
 | C5 | At the next layout-breaking reinstall window: shrink free-span stride (drop padding + derivable bin_idx), drop duplicated `shard_event_seq` from delta values, compact journal optional slots, narrow EDGE_COUNTS counters | P3 | closes F4/F6/F7/F12; each needs the §7 gate if measured hot |
 | C6 | Capture reverse-mirror share of LARA bytes via `admin_stable_memory_stats` on a representative workload; record the number here before anyone proposes removing/merging orientations | P4 | informs F-verdict longevity |
 
@@ -256,6 +256,19 @@ than motivate one.
 - **Cross-canister duplication study** (shard↔canister catalogs on three
   canisters; Router bulk-load receipt fingerprints) requires the neighbor
   scopes; deferred per audit scope decision.
+- **Router vertex-index namespace uniqueness vs label scope** (reported
+  2026-08-24 by knowledge-demo bring-up, GAP owned there): a graph with
+  multiple label-scoped indexes on one property name (`Concept.name` +
+  `Person.name`, migration 000002) makes label-unbound property resolution
+  fail closed at prepared-query time with `InvalidArgument("multiple active
+  vertex property index namespaces for property N")` — verified intentional
+  per `indexed_catalog.rs:215-217` ("selecting an arbitrary label would
+  silently return false negatives"). Labeled resolution resolves uniquely;
+  only unbound plans hit the guard. Open design decision belongs to the
+  Router/index-DDL domain: whether DDL admission should reject same-property
+  cross-label index sets, or planner must bind labels, leaving runtime
+  rejection as last resort. Not covered by this audit's slices (Router was
+  out of scope); tracked as a GAP record by the demo pane.
 - **`ic-stable-text-postings`** is workspace-built but depended on by nothing as
   of 2026-08-24; decide retain-vs-delete when the text index research lands.
 - **Graph regions 41/46 lack value envelopes** (`INDEX_REPAIR_JOURNAL`,

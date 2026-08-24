@@ -15,6 +15,7 @@ use std::{
 use ic_stable_paged_ordered_map::StablePagedOrderedMap;
 use ic_stable_structures::Memory;
 
+use crate::lara::reserved::{region_is_zero, write_zeroes};
 use crate::safe_write;
 use crate::{GrowFailed, types::Address};
 
@@ -40,6 +41,9 @@ pub const BIN_COUNT: usize = 128;
 
 const OFFSET_MAGIC: u64 = 0;
 const OFFSET_VERSION: u64 = 3;
+/// Declared reserved header bytes between the version byte and [`OFFSET_RECORD_SLOTS`].
+const OFFSET_RESERVED: u64 = 4;
+const RESERVED_SIZE: usize = 4;
 const OFFSET_RECORD_SLOTS: u64 = 8;
 const OFFSET_ACTIVE_COUNT: u64 = 16;
 const OFFSET_FREE_HEAD: u64 = 24;
@@ -1350,7 +1354,7 @@ fn record_offset(id: SpanId) -> u64 {
 fn write_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), GrowFailed> {
     crate::safe_write(memory, OFFSET_MAGIC, &h.magic)?;
     crate::safe_write(memory, OFFSET_VERSION, &[h.version])?;
-    crate::safe_write(memory, 4, &[0; 4])?;
+    write_zeroes(memory, OFFSET_RESERVED, RESERVED_SIZE)?;
     crate::write_u64(memory, Address::from(OFFSET_RECORD_SLOTS), h.record_slots);
     crate::write_u64(memory, Address::from(OFFSET_ACTIVE_COUNT), h.active_count);
     crate::write_u64(memory, Address::from(OFFSET_FREE_HEAD), h.free_head);
@@ -1385,6 +1389,9 @@ fn validate_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), InitError>
     }
     if h.version != LAYOUT_VERSION {
         return Err(InitError::IncompatibleVersion(h.version));
+    }
+    if !region_is_zero(memory, OFFSET_RESERVED, RESERVED_SIZE) {
+        return Err(InitError::InvalidLayout);
     }
     if h.active_count > h.record_slots || h.free_head > h.record_slots {
         return Err(InitError::InvalidLayout);
@@ -1452,6 +1459,32 @@ mod tests {
             })
         );
         s.validate().unwrap();
+    }
+
+    #[test]
+    fn header_reserved_region_is_zeroed_and_validated_on_reopen() {
+        let m = MemoryManager::init(DefaultMemoryImpl::default());
+        let records = m.get(MemoryId::new(12));
+        let by_start = m.get(MemoryId::new(13));
+
+        let store = FreeSpanStore::init(records.clone(), by_start.clone()).unwrap();
+        store.release_span(100, 20).unwrap();
+        drop(store);
+
+        let mut reserved = [0u8; RESERVED_SIZE];
+        records.read(OFFSET_RESERVED, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        // Normal operate -> drop -> reopen stays Ok.
+        let store = FreeSpanStore::init(records.clone(), by_start).unwrap();
+        assert_eq!(store.len(), 1);
+        drop(store);
+
+        records.write(OFFSET_RESERVED, &[1]);
+        assert!(matches!(
+            FreeSpanStore::init(records, m.get(MemoryId::new(13))),
+            Err(InitError::InvalidLayout)
+        ));
     }
 
     #[test]

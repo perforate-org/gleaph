@@ -35,8 +35,12 @@
 //! encoded only in the edge payload tombstone contract.
 
 use crate::{
-    GrowFailed, read_i32, read_u32, safe_write, traits::CsrEdge, types::Address, write_i32,
-    write_u32,
+    GrowFailed,
+    lara::reserved::{region_is_zero, write_zeroes},
+    read_i32, read_u32, safe_write,
+    traits::CsrEdge,
+    types::Address,
+    write_i32, write_u32,
 };
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt, marker::PhantomData};
@@ -47,6 +51,9 @@ pub const MAGIC: [u8; 3] = *b"LLG";
 pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 128;
+/// Declared reserved header bytes between the stride field and [`HEADER_SIZE`].
+const HEADER_RESERVED_OFFSET: u64 = 16;
+const HEADER_RESERVED_SIZE: usize = 16;
 
 /// Default per-segment overflow-log capacity.
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
@@ -89,6 +96,8 @@ pub enum InitError {
     },
     /// The stored layout version is not supported by this crate version.
     IncompatibleVersion(u8),
+    /// A declared header reserved byte is nonzero (foreign or corrupt layout).
+    ReservedRegionNonZero,
     /// The memory is empty or the log metadata could not be allocated.
     OutOfMemory,
     /// The persisted entry width does not match the edge type `E`.
@@ -105,6 +114,9 @@ impl fmt::Display for InitError {
         match self {
             Self::BadMagic { actual } => write!(f, "bad log magic {actual:?}, expected {MAGIC:?}"),
             Self::IncompatibleVersion(v) => write!(f, "unsupported log layout version {v}"),
+            Self::ReservedRegionNonZero => {
+                write!(f, "log header reserved region must be zero")
+            }
             Self::OutOfMemory => write!(f, "failed to allocate log metadata"),
             Self::StrideMismatch { expected, actual } => {
                 write!(
@@ -166,6 +178,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
                 expected,
                 actual: header.stride,
             });
+        }
+        // Reserved-region guard: nonzero reserved bytes mean a foreign or corrupt
+        // layout; fail closed with the dedicated variant. The structurally unsound
+        // backing-size guard below keeps its OutOfMemory mapping.
+        if !region_is_zero(&store.memory, HEADER_RESERVED_OFFSET, HEADER_RESERVED_SIZE) {
+            return Err(InitError::ReservedRegionNonZero);
         }
         // Backing-size guard (mirrors free_span::validate_header): the header passed the
         // magic/version/stride checks, but if the backing memory is smaller than the layout
@@ -360,7 +378,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         write_u32(&self.memory, Address::from(4), h.segment_count);
         write_u32(&self.memory, Address::from(8), h.max_log_entries);
         write_u32(&self.memory, Address::from(12), h.stride);
-        self.memory.write(16, &[0u8; 16]);
+        write_zeroes(&self.memory, HEADER_RESERVED_OFFSET, HEADER_RESERVED_SIZE)?;
         self.header_mirror.set(*h);
         Ok(())
     }
@@ -533,6 +551,35 @@ mod tests {
         assert_eq!(store.read_idx(0), 0);
         assert_eq!(store.read_idx(1), 0);
         assert_eq!(store.read_idx(2), 0);
+    }
+
+    #[test]
+    fn log_header_reserved_region_is_zeroed_and_reopens() {
+        let mem = crate::test_support::vector_memory();
+        let store =
+            LogStore::<TestEdge, _>::new(mem.clone(), HeaderV1::new(2, TestEdge::BYTES as u32))
+                .expect("seed log");
+        store.write_idx(0, 3);
+        drop(store);
+
+        let mut reserved = [0u8; HEADER_RESERVED_SIZE];
+        mem.read(HEADER_RESERVED_OFFSET, &mut reserved);
+        assert!(reserved.iter().all(|&byte| byte == 0));
+
+        let reopened = LogStore::<TestEdge, _>::init(mem).expect("reopen");
+        assert_eq!(reopened.header().segment_count, 2);
+        assert_eq!(reopened.read_idx(0), 3);
+    }
+
+    #[test]
+    fn log_init_rejects_nonzero_reserved_byte() {
+        let store = fresh_store(2);
+        let mem = store.into_memory();
+        crate::write_u32(&mem, crate::types::Address::from(HEADER_RESERVED_OFFSET), 1);
+        assert!(matches!(
+            LogStore::<TestEdge, _>::init(mem),
+            Err(InitError::ReservedRegionNonZero)
+        ));
     }
 }
 

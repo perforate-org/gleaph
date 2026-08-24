@@ -9,10 +9,10 @@ use crate::labeled::bucket_label_key::BucketLabelKey;
 
 const BUCKET_LABEL_SHIFT: u32 = 36;
 const BUCKET_LOG_SHIFT: u32 = 52;
-const BUCKET_TOP_BIT_SHIFT: u32 = 63;
+const BUCKET_RESERVED_BITS_SHIFT: u32 = 60;
 const BUCKET_LABEL_MASK: u64 = 0xFFFF << BUCKET_LABEL_SHIFT;
 const BUCKET_LOG_MASK: u64 = 0xFF << BUCKET_LOG_SHIFT;
-const BUCKET_TOP_BIT_MASK: u64 = 1 << BUCKET_TOP_BIT_SHIFT;
+const BUCKET_RESERVED_BITS_MASK: u64 = 0xF << BUCKET_RESERVED_BITS_SHIFT;
 
 /// Packs a [`super::record::LabelBucket`] wire word.
 #[inline]
@@ -68,10 +68,10 @@ pub fn decode_bucket_overflow_log_head(word: u64) -> i32 {
     decode_overflow_log_byte(((word >> BUCKET_LOG_SHIFT) & 0xFF) as u8)
 }
 
-/// Returns `true` when the bucket word top bit (bit 63) is zero.
+/// Returns `true` when the bucket word's reserved top nibble (bits 60–63) is zero.
 #[inline]
-pub fn bucket_word_has_zero_reserved(word: u64) -> bool {
-    word & BUCKET_TOP_BIT_MASK == 0
+pub fn bucket_word_has_zero_reserved_bits(word: u64) -> bool {
+    word & BUCKET_RESERVED_BITS_MASK == 0
 }
 
 #[cfg(test)]
@@ -84,7 +84,21 @@ mod tests {
         assert_eq!(decode_slot_index(word), 0x0F_FFFF_FFFF);
         assert_eq!(decode_bucket_label_key(word).raw(), 0xA5A5);
         assert_eq!(decode_bucket_overflow_log_head(word), 169);
-        assert!(bucket_word_has_zero_reserved(word));
+        assert!(bucket_word_has_zero_reserved_bits(word));
+    }
+
+    #[test]
+    fn bucket_word_reserved_bits_cover_top_nibble() {
+        let word = encode_bucket_word(0x0F_FFFF_FFFF, BucketLabelKey::from_raw(0xA5A5), 169);
+        for bit in [60u32, 61, 62, 63] {
+            assert!(
+                !bucket_word_has_zero_reserved_bits(word | (1 << bit)),
+                "reserved bit {bit} must not read as zero"
+            );
+        }
+        assert!(!bucket_word_has_zero_reserved_bits(
+            word | BUCKET_RESERVED_BITS_MASK
+        ));
     }
 
     #[test]

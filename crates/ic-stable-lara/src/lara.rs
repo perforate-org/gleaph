@@ -40,6 +40,7 @@ pub mod edge;
 pub mod edge_inline_property;
 pub mod maintenance;
 pub mod operation_error;
+mod reserved;
 pub mod vertex;
 
 use crate::lara::edge::span_meta::SPAN_PHYSICAL_UNASSIGNED;
