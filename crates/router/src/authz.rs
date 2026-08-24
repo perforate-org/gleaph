@@ -2290,6 +2290,13 @@ mod tests {
             fn property(&self, _graph: GraphId, _name: &str) -> Option<u32> {
                 None
             }
+            fn vector_index_source(
+                &self,
+                _graph: GraphId,
+                _index_name: &str,
+            ) -> Option<VectorIndexSource> {
+                None
+            }
         }
     }
 
@@ -2310,6 +2317,173 @@ mod tests {
             &reqs,
             &principal(7),
             &grants_state_with_all_listed_rows(),
+            &[GRAPH_RAW]
+        ));
+    }
+
+    // ───── ADR 0078 §1 layer 1: vector-search requirement extraction ─────
+
+    fn vector_search_op(binding: &str, index_name: &str) -> PlanOp {
+        use gleaph_gql_planner::plan::{SearchOutputKind, SearchOutputPlan, SearchProviderPlan};
+        PlanOp::Search {
+            binding: binding.into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec![Str::from(index_name)],
+                query: Expr::new(ExprKind::Literal(gleaph_gql::Value::Bytes(vec![0; 4]))),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Distance,
+                alias: "distance".into(),
+            },
+        }
+    }
+
+    /// Catalog extended with `doc_vec`: one-label span (Person=1) whose embedding name is
+    /// backed by the projected graph property age=20.
+    fn catalog_with_doc_vec() -> FakeCatalog {
+        let mut c = catalog();
+        c.vector_indexes.push((
+            "doc_vec",
+            VectorIndexSource {
+                labels: vec![(1, "Person".to_owned())],
+                embedding_property_id: Some(20),
+            },
+        ));
+        c
+    }
+
+    fn extract_in(catalog: &FakeCatalog, ops: Vec<PlanOp>) -> RequirementSet {
+        extract(&PhysicalPlan::from_ops(ops), graph(), catalog)
+    }
+
+    fn grant_reader_of_doc_vec(subject: GrantSubject) -> GrantTable {
+        let mut grants = GrantTable::default();
+        grants.vertex(subject, GraphOperation::Match, 1);
+        grants.vertex_property(subject, 1, 20);
+        grants
+    }
+
+    #[test]
+    fn vector_search_demands_scan_equivalent_rows() {
+        let reqs = extract_in(
+            &catalog_with_doc_vec(),
+            vec![vector_search_op("d", "doc_vec")],
+        );
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            demands.conjunctive,
+            vec![
+                vertex_row(GRAPH_RAW, GraphOperation::Match, 1),
+                vertex_property_row(GRAPH_RAW, 1, 20),
+            ]
+        );
+    }
+
+    #[test]
+    fn vector_search_admission_matches_row_coverage_exactly() {
+        let reqs = extract_in(
+            &catalog_with_doc_vec(),
+            vec![vector_search_op("d", "doc_vec")],
+        );
+        let reader = principal(2);
+
+        // Both rows covered -> admitted...
+        assert!(allowed(
+            &reqs,
+            &reader,
+            &grant_reader_of_doc_vec(GrantSubject::Principal(reader)),
+            &[]
+        ));
+        // ...MATCH alone is not (the embedding read is a separate demand)...
+        let mut match_only = GrantTable::default();
+        match_only.vertex(GrantSubject::Principal(reader), GraphOperation::Match, 1);
+        assert!(!allowed(&reqs, &reader, &match_only, &[]));
+        // ...a different label's rows are not...
+        let mut wrong_label = GrantTable::default();
+        wrong_label.vertex(GrantSubject::Principal(reader), GraphOperation::Match, 2);
+        wrong_label.vertex_property(GrantSubject::Principal(reader), 2, 20);
+        assert!(!allowed(&reqs, &reader, &wrong_label, &[]));
+        // ...and PUBLIC rows admit anonymous callers like an equivalent scan.
+        assert!(allowed(
+            &reqs,
+            &Principal::anonymous(),
+            &grant_reader_of_doc_vec(GrantSubject::Public),
+            &[]
+        ));
+
+        // Wrong-implementation probe: an evaluator granting everything admits the
+        // MATCH-only caller too, so the denial assertion above discriminates the real
+        // evaluator from a stub.
+        assert!(allowed(&reqs, &reader, &AlwaysAllow, &[]));
+    }
+
+    #[test]
+    fn vector_search_multi_label_span_is_conjunctive() {
+        let mut c = catalog();
+        c.vector_indexes.push((
+            "wide_vec",
+            VectorIndexSource {
+                labels: vec![(1, "Person".to_owned()), (2, "Employee".to_owned())],
+                embedding_property_id: Some(21),
+            },
+        ));
+        let reqs = extract_in(&c, vec![vector_search_op("d", "wide_vec")]);
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert_eq!(
+            demands.conjunctive,
+            vec![
+                vertex_row(GRAPH_RAW, GraphOperation::Match, 1),
+                vertex_property_row(GRAPH_RAW, 1, 21),
+                vertex_row(GRAPH_RAW, GraphOperation::Match, 2),
+                vertex_property_row(GRAPH_RAW, 2, 21),
+            ]
+        );
+
+        // A caller able to read only one spanned label is denied: per-candidate
+        // visibility has no row-level filter, so the whole span must be readable.
+        let half_reader = principal(8);
+        let mut grants = GrantTable::default();
+        grants.vertex(GrantSubject::Principal(half_reader), GraphOperation::Match, 1);
+        grants.vertex_property(GrantSubject::Principal(half_reader), 1, 21);
+        assert!(!allowed(&reqs, &half_reader, &grants, &[]));
+        assert!(allowed(&reqs, &half_reader, &grants, &[GRAPH_RAW]));
+    }
+
+    #[test]
+    fn vector_search_ingestion_fed_embedding_demands_no_property_row() {
+        let mut c = catalog();
+        c.vector_indexes.push((
+            "fed_vec",
+            VectorIndexSource {
+                labels: vec![(1, "Person".to_owned())],
+                embedding_property_id: None,
+            },
+        ));
+        let reqs = extract_in(&c, vec![vector_search_op("d", "fed_vec")]);
+        assert_eq!(
+            reqs.graphs.get(&GRAPH_RAW).unwrap().conjunctive,
+            vec![vertex_row(GRAPH_RAW, GraphOperation::Match, 1)]
+        );
+    }
+
+    #[test]
+    fn unknown_vector_index_name_is_tenancy_only() {
+        let reqs = extract_in(&catalog(), vec![vector_search_op("d", "ghost_vec")]);
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(demands.unattributed);
+        assert!(!allowed(
+            &reqs,
+            &principal(2),
+            &grant_reader_of_doc_vec(GrantSubject::Public),
+            &[]
+        ));
+        assert!(allowed(
+            &reqs,
+            &principal(2),
+            &grant_reader_of_doc_vec(GrantSubject::Public),
             &[GRAPH_RAW]
         ));
     }
