@@ -47,42 +47,70 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-2026-08-24-008 — PUBLIC/direct data-plane grants do not satisfy prepared-query execution even for minimal MATCH plans
+### GAP-2026-08-24-008 — Prepared queries carrying ELEMENT_ID projections deny non-owners even with full PUBLIC/direct data-plane grants (plan 0303 diagnosis)
 
-- **Status:** Open — blocks non-owner execution of every graph-touching prepared op on the
-  knowledge demo network; surfaced by plan 0296's quickstart (2026-08-24). Distinct from
-  GAP-2026-08-24-005 (publication grammar), which is worked around via quoted identifiers.
-- **Owner:** Router authorization semantics (`crates/router/src/authz.rs`
-  `authorize_requirements` / `enforce_prepared_data_plane_authorization`) vs the demo grant
-  surface; likely intersects ADR 0074 §4 tenancy/unattributed-demand rules.
-- **Observed behavior:** On the knowledge demo network (fresh state): after successful
-  publication (`GRANT EXECUTE … TO PUBLIC`, verified end-to-end) and after applying the full
-  PUBLIC data-plane surface decoded as `Ok` via the Router's own Candid interface —
-  `MATCH` on all four node labels, `READ … {explicit property lists}` on all four labels,
-  `TRAVERSE` on all seven edge labels **and** all four node labels, plus the same set granted
-  **directly to the caller's principal** — a non-owner `prepared_query` of a trivial
-  `MATCH (n:Concept) RETURN n.name AS name LIMIT 3` op is still rejected
-  `Forbidden`. Controls: (a) a graph-independent op (`RETURN 1 AS x`) executes as the same
-  non-owner (so EXECUTE publication works); (b) the owner executes graph ops via implicit
-  root (so planning/data are intact); (c) an ELEMENT_ID-free probe still denies, so the
-  earlier unattributed-ELEMENT_ID hypothesis alone does not explain it. Suspicions left to
-  the owning team: tenancy gating inside `authorize_requirements` (caller without an
-  Account/home binding?), demand extraction producing rows no GRANT grammar can express
-  (graph-level or ELEMENT_ID-derived), or grant-lowering/resource-shape mismatch.
-- **Expected or needed behavior:** A published prepared op whose full requirement surface is
-  granted to PUBLIC (or to the caller's principal) must execute for an arbitrary principal;
-  or the denial must name the uncovered requirement class to operators.
-- **Evidence:** session logs `/tmp/gt2-run*.log`, `/tmp/gt2-grants*.log`,
-  `scripts/apply-public-grants.sh` (statements + truthful Err-decoding via the extracted
-  router interface), `scripts/direct-grant-probe.sh`; uniform-denial contract at
-  `crates/router/src/authz.rs:1245`.
-- **Impact:** Browser/demo visitors cannot execute any scenario (the page's audience);
-  quickstart completion criterion "non-owner executes after publish" is unreachable. Owner
-  execution works, so backend/data-plane correctness is unaffected.
-- **Next decision:** Router-side diagnosis slice: expose the uncovered requirement class
-  (debug counter or operator query), reconcile tenancy expectations for account-less local
-  visitors, then decide whether the demo needs conditional policies (ADR 0075) or a tenancy
-  exception for public read surfaces.
+- **Status:** Open — root cause narrowed to named alternatives with a designed separating
+  experiment (plan 0303, 2026-08-24); fix implementation pending (admin-owned; see
+  fix-direction below). Supersedes the earlier "grants insufficient" framing: the grants
+  were verified stored and correct.
+- **Owner:** Router authorization walker (`crates/router/src/authz.rs` — `collect_expr_reads`
+  :1135, unattributed-demand sites :396/:416/:437/:489/:493/:507, coverage
+  `authorize_requirements` :1147) with planner seam (`crates/gql-planner`
+  property_projection.rs entity-hydration).
+- **Observed behavior (current-state discriminating matrix, all ops freshly registered +
+  published on a pristine demo-local network; canonical order bootstrap → grants → apply →
+  publish → run):**
+
+  | projection / shape | dev (non-owner) |
+  |---|---|
+  | `RETURN 1 AS x` (no graph) | PASS |
+  | `MATCH (n:Concept) RETURN n.name [AS name] [LIMIT n]` | PASS (3 rows) |
+  | `MATCH (n:Concept) RETURN 1 AS x LIMIT 3` | PASS |
+  | var-length incoming + DISTINCT, **no ELEMENT_ID** | PASS |
+  | single-hop incoming + DISTINCT **+ ELEMENT_ID** | DENY Forbidden |
+  | var-length incoming + DISTINCT **+ ELEMENT_ID** (= variable-length-reach) | DENY Forbidden |
+
+  Owner executes every variant (implicit-root tenancy bypass), so planning/data are intact.
+  Stored grant rows were dumped via `list_graph_grants` decoded through the router's own
+  extracted interface and contain exactly the expected PUBLIC rows
+  (Match/Read ×4 labels, Traverse Outgoing+Incoming ×7 edges, ImplicitRoot owner row);
+  adding brace-form property-list READs (→ ReadProperty rows) does not change the denial,
+  and direct `TO PRINCIPAL '<dev>'` grants for the same privileges do not either. The
+  pass/deny boundary is precisely the presence of an `ELEMENT_ID(…)` projection over a
+  traversal-bound variable.
+- **Mechanism (code-level):** the requirement walker's expression collector
+  (`authz.rs:1135 collect_expr_reads`) handles only `PropertyAccess` and `IsLabeled`;
+  `ExprKind::ElementId` contributes no attributable demand, while the element-id-consuming
+  plan (entity-hydration via `crates/gql-planner/src/property_projection.rs`
+  `collect_entity_used_bindings`) produces at least one demand that lands in a
+  `require_unattributed` arm (candidates: authz.rs:437 wildcard/unknown edge traversal,
+  :489/:493 unlabeled or unknown-label scan) or is otherwise outside GRANT grammar
+  vocabulary. Uniform-denial semantics (`authz.rs:1245`) then hide which row fails.
+  Separating experiment (Router domain): unit-test `extract()` on the dispatched
+  `cache.plan.ops` of probeE vs probeG and print the emitted `RequirementSet` debug rows.
+- **Expected or needed behavior:** element ids are intrinsic identity metadata of covered
+  elements: an element-id read must be covered by whatever grant covers the variable's
+  MATCH/TRAVERSE demand instead of forcing registry-tenant-only admission. Semantic rule to
+  record in `design/security/rbac-and-prepared.md`.
+- **Evidence:** artifacts §13–14 in
+  `design/investigations/artifacts/0296-knowledge-demo-bringup-evidence.txt`; session logs
+  `/tmp/gt3-*.log`, `/tmp/gt4-*.log`; probe scripts `scripts/register-probe.sh`,
+  `scripts/direct-grant-probe.sh`, `scripts/apply-public-grants.sh`.
+- **Impact:** every non-owner execution of any scenario op is blocked (all four knowledge
+  scenarios project element ids), so the demo's browser audience cannot run anything; plan
+  0296 completion criteria 2/4/5 remain open on this alone. No correctness gap for owners.
+- **Fix direction (proposal shared with admin pane w1:pQ):**
+  1. Walker: when `collect_expr_reads` meets `ExprKind::ElementId` over a bound variable,
+     treat it as covered by that variable's MATCH/TRAVERSE coverage (element ids follow the
+     element) — i.e., record a scope fact rather than letting the hydrated plan resolve into
+     an unattributed/ungrantable row; add the SEARCH-seeded-tail case (element-id demand on
+     search-seeded variables maps onto search admission coverage).
+  2. Wrong-impl probe: a stub evaluator treating ElementId as unattributed must fail the new
+     tests; owner/non-owner pass-deny matrix asserted with exact errors.
+  3. Semantic rule documented in rbac-and-prepared.md before merge.
+- **Detection:** w1:p0 during plan 0296 quickstart; escalated by admin pane w1:pQ as P1
+  (landed slice-2b behavior breaks DISTINCT-materialized prepared MATCH for all non-owners;
+  slice-3 publication E2E missed it because fixtures omitted DISTINCT).
 
 ### GAP-2026-08-24-009 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
 

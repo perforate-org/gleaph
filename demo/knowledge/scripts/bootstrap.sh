@@ -119,7 +119,16 @@ ensure_canister() {
 call_ok() {
   local description="$1"; shift
   local out
-  out="$(icp_cmd canister call -e local --identity "$DEPLOYER_ID" "$@")" || {
+  # icp-cli fetches the canister's embedded Candid interface by default, and the
+  # router's extracted interface trips icp-cli's parser ("Unrecognized token Query").
+  # When bootstrap has extracted it locally, pass --candid so calls type-check against
+  # a file we know decodes truthfully.
+  local candid_args=()
+  if [[ -n "${ROUTER_DID:-}" && -f "$ROUTER_DID" ]]; then
+    candid_args=(--candid "$ROUTER_DID")
+  fi
+  out="$(icp_cmd canister call -e local --identity "$DEPLOYER_ID" \
+    "${candid_args[@]}" "$@")" || {
     log "ERROR: $description call failed"; exit 1;
   }
   if [[ "$out" == *"variant {"*"Err"* ]]; then
@@ -140,6 +149,13 @@ main() {
   local skip_vector="${KNOWLEDGE_SKIP_VECTOR:-0}"
   log "Building gleaph-router (wasm32 release; long)"
   icp_cmd build --debug gleaph-router
+  # Extract the router's public interface for typed admin calls (call_ok above).
+  ROUTER_DID="$DEMO/.icp/cache/router-full.did"
+  mkdir -p "$(dirname "$ROUTER_DID")"
+  if command -v ic-wasm >/dev/null 2>&1; then
+    ic-wasm "$DEMO/.icp/cache/artifacts/gleaph-router" metadata candid:service \
+      > "$ROUTER_DID" 2>/dev/null || log "WARN: candid extraction failed; falling back to network typing"
+  fi
   log "Building gleaph-graph-index (wasm32 release)"
   icp_cmd build --debug gleaph-graph-index
   log "Building gleaph-graph-shard-0 (wasm32 release)"
@@ -212,8 +228,9 @@ main() {
   local url
   url="$(api_url)"
 
-  # Migrations run here (not in the user chain) because the vector-target attachment
-  # below must follow the DDL-created document_embedding definition.
+  # Migrations create the document_embedding definition targetless in dev mode
+  # (ADR 0071); re-registering here would Conflict on the embedding-field uniqueness,
+  # so only the target/dispatch/attach steps follow.
   local deployer_pem="$ICP_CLI_HOME/Library/Application Support/org.dfinity.icp-cli/identity/keys/$DEPLOYER_ID.pem"
   log "Applying migrations (graph type, graph, property indexes, vector index definition)"
   local gleaph_bin="$ROOT/target/debug/gleaph"
@@ -251,14 +268,13 @@ main() {
     "GRANT TRAVERSE ON GRAPH $GRAPH_NAME EDGES OWNS TO PUBLIC"
     "GRANT TRAVERSE ON GRAPH $GRAPH_NAME EDGES BELONGS_TO TO PUBLIC"
     "GRANT TRAVERSE ON GRAPH $GRAPH_NAME EDGES ROUTED_VIA TO PUBLIC"
-    "GRANT READ ON GRAPH $GRAPH_NAME EDGES CITES TO PUBLIC"
   )
   local stmt
   for stmt in "${grant_stmts[@]}"; do
     # icp-cli parses the Router's embedded Candid interface (which trips its parser), so
     # encode arguments against a local minimal interface and pass the statement as the
     # standard three-argument tuple instead of a record.
-    call_ok "$stmt" --candid "$SCRIPT_DIR/router-gql-mutate.did" gleaph-router gql_mutate "(\"$stmt\", vec {}, \"public-grant-$stmt\")"
+    call_ok "$stmt" gleaph-router gql_mutate "(\"$stmt\", vec {}, \"public-grant-$stmt\")"
   done
   if [[ "$skip_vector" == "1" ]]; then
     cat <<BANNER
@@ -279,12 +295,8 @@ BANNER
     return 0
   fi
 
-  log "Ensuring the $INDEX_NAME vector index definition (if_not_exists)"
-  call_ok "admin_register_vector_index" gleaph-router admin_register_vector_index \
-    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; embedding_name = "'"$EMBEDDING_NAME"'"; index_id = '"$INDEX_ID"' : nat32; dims = '"$EMBEDDING_DIMS"' : nat16; labels = vec { "'"$EMBEDDING_LABEL"'" }; metric = opt variant { Cosine }; encoding = opt variant { I8 }; target = opt principal "'"$vector_id"'"; if_not_exists = true })'
-
   log "Setting the vector dispatch target"
-  call_ok "admin_set_vector_index_target" gleaph-router admin_set_vector_index_target \
+  call_ok "set_vector_index_target" gleaph-router set_vector_index_target \
     '(record { logical_graph_name = "'"$GRAPH_NAME"'"; index_id = '"$INDEX_ID"' : nat32; target = principal "'"$vector_id"'" })'
 
   log "Enabling vector dispatch"

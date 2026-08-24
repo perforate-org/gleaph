@@ -207,3 +207,86 @@ ERROR: Completion Criteria item 4 must be checked in final phase
 ERROR: Completion Criteria item 5 must be checked in final phase
 Interpretation: structural shape is valid; the five remaining flags are exactly the
 GAP-2026-08-24-008-blocked items, intentionally left open rather than marked complete.
+
+13. GAP-2026-08-24-008 investigation (plan 0303) — hypothesis experiments
+-----------------------------------
+All experiments on a freshly bootstrapped demo-local network
+(bash scripts/bootstrap.sh with KNOWLEDGE_SKIP_VECTOR=1; gateway http://localhost:32779;
+canonical order: grants BEFORE prepared apply/publish). Dev identity = raw PEM principal,
+no Account exists on this network.
+
+13.0 Identity-resolution hazard discovered en route:
+`icp canister call --identity NAME` resolves NAME from a process-global store that does
+NOT follow $HOME, while `icp identity principal --identity NAME` does. With multiple
+gleaph-demo-deployer identities present (repo-root home, knowledge home), raw icp calls
+without an explicit $HOME pin silently executed as an unintended principal (k65vh-…),
+so grant batches from the original 0296 session never landed while appearing to
+succeed. All plan-0303 experiments pin $HOME to the knowledge project home; whoami
+cross-check:
+  --identity gleaph-demo-deployer -> w5pea-s6kwf-zsox2-sqolw-b5rvy-sfrcm-u3k5d-rmspv-om34h-hu7ae-eae (= registered owner)
+Honesty note: the 0296-era denial of a no-ELEMENT_ID probe (before this hazard was
+understood) is not fully re-derived by the final theory alone — its registration/
+grant interleaving is unrecoverable from session logs. The current-state matrix below
+is the authoritative result: identical sources PASS today under the same grants.
+
+13.1 H4 tenancy/account absence — REFUTED at source.
+Code: crates/router/src/authz.rs:1298 StoreTenancy::is_tenant ->
+crates/router/src/facade/store/registry.rs:1093 is_graph_tenant -> entry_names_tenant
+(registry.rs:37): `caller == entry.owner || entry.admins.contains(&caller)`.
+Pure registry predicate; no Account/tenant resolution anywhere. Tenancy only SKIPS
+grant checks for tenants; it can never deny by absence of an account.
+
+13.2 H1 vocabulary mismatch / H2 resource-scoping mismatch — REFUTED empirically.
+After re-applying the full PUBLIC surface with truthful Err-decoding through the
+router's extracted interface (--candid), all rows decode `Ok`; get_graph confirms
+graph_id = 1 = the registration-time binding; direct TO PRINCIPAL '<dev>' grants for
+Match/Read{property}/Traverse on Concept also stored Ok. Denial persisted anyway, so
+neither name/form nor graph binding explains it.
+
+13.3 H3 unattributable/ungrantable demand — CONFIRMED, narrowed to ELEMENT_ID reads.
+Discriminating matrix (each op freshly registered + published, then executed as dev):
+
+  op source (differences bold)                                dev result
+  ---------------------------------------------------------------------------
+  RETURN 1 AS x                                               PASS (1 row)
+  MATCH (n:Concept) RETURN n.name AS name LIMIT 3             PASS (3 rows)*
+  MATCH (n:Concept) RETURN n.name LIMIT 3                     PASS (3 rows)
+  MATCH (n:Concept) RETURN 1 AS x LIMIT 3                     PASS
+  … <-[e:RELATED_TO]-{1,3}(b) RETURN DISTINCT b.name          PASS (0 rows)
+  … <-[e:RELATED_TO]-(b) RETURN DISTINCT b.name,
+     ELEMENT_ID(b) AS concept_id                              DENY Forbidden
+  … <-[e:RELATED_TO]-{1,3}(b) RETURN DISTINCT b.name,
+     ELEMENT_ID(b) AS concept_id  (= variable-length-reach)   DENY Forbidden →
+                                                              PASS (7 rows) after
+                                                              prepared drop +
+                                                              re-apply + publish
+  (*) measured against the pre-revision catalog state during 0296; superseded runs are
+  retained in session logs. The stable current-state discriminator is the presence of
+  ELEMENT_ID in any traversal projection.
+
+Owner executes every variant (implicit-root tenancy bypass). The pass/deny boundary is
+therefore exactly "plan contains element-id reads": the walker's expression collector
+(crates/router/src/authz.rs:1135 collect_expr_reads) handles only PropertyAccess and
+IsLabeled and ignores ExprKind::ElementId, so element-id materialization must reach
+enforcement through some other op whose demand lands in a require_unattributed arm
+(candidates: authz.rs:437 wildcard/unknown edge traversal, :489/:493 unlabeled or
+unknown-label scan within the expanded plan). Separating experiment (Router domain):
+unit-test extract() on the dispatched cache.plan.ops for probeE vs probeG and print the
+emitted RequirementSet rows.
+
+14. Fix-direction proposal (for admin pane review; NOT implemented)
+-----------------------------------
+- Walker fix (preferred owner: Router authz + planner seam): treat element-id reads as
+  covered by the row that covers the element's own match/traverse demand — i.e., when
+  collect_expr_reads meets ExprKind::ElementId over a bound variable, record the
+  variable's label scope fact (already tracked via note_vertex_label) so no
+  unattributed row is emitted for plans otherwise covered by label grants. Contract
+  impact: element ids are system identities, not user data; ADR 0074 §4's uniform denial
+  is preserved because coverage still requires the surrounding MATCH/TRAVERSE rows.
+- Interaction with plan 0300 (ADR 0078): both touch the same slice-2b walker; landing
+  the walker extension together avoids double churn. No conflict identified with the
+  Search-row semantics added for vector search.
+- Demo-side interim option (if the walker fix must wait): remove ELEMENT_ID projections
+  from scenario sources — costs explorer identity columns and weakens the demo story;
+  not preferred.
+
