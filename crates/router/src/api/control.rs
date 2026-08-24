@@ -154,9 +154,9 @@ pub(crate) fn approve_elevation(
     )
 }
 
-/// Shared request-shape validation ([ADR 0080] §3): non-empty bounded justification,
-/// resolvable scope. Pure over Router state except catalog reads, so both endpoints can
-/// run it before any decision is surfaced.
+/// Shared request-shape validation ([ADR 0080] §3): non-empty bounded justification.
+/// Scope resolution happens through [`elevation_scope`] so both endpoints share one
+/// name→id path with identical `NotFound` behavior.
 fn validate_elevation_request(args: &types::ElevateRequestArgs) -> Result<(), RouterError> {
     if args.justification.trim().is_empty() {
         return Err(RouterError::InvalidArgument(
@@ -169,12 +169,7 @@ fn validate_elevation_request(args: &types::ElevateRequestArgs) -> Result<(), Ro
             gleaph_auth::MAX_ELEVATION_JUSTIFICATION_BYTES
         )));
     }
-    match &args.scope {
-        types::ElevationScopeView::Graph(graph_name) => {
-            RouterStore::new().resolve_graph_id(graph_name)?;
-        }
-        types::ElevationScopeView::ControlPlane => {}
-    }
+    elevation_scope(&RouterStore::new(), &args.scope)?;
     Ok(())
 }
 
