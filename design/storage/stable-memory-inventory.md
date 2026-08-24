@@ -71,6 +71,25 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 The canonical/derived split for the router registry projections is pinned by
 `router_registry_canonical_derived_split_matches_inventory`.
 
+### Production compatibility (ADR 0039 gate)
+
+Every registry entry additionally records whether its persisted bytes must survive production
+upgrades ([ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md) N-1
+gate) or may be rebuilt, regenerated, or ignored, via `ProductionCompat`
+(`gleaph_graph_kernel::stable_layout`; rustdoc on each variant states its obligation at the
+gate): `VersionedSurvivor` bytes carry a versioned envelope/header and must decode across
+upgrade windows; `Rebuildable` bytes are regenerated through the region's declared rebuild
+path; `RegenerateByContract` bytes follow an explicit documented regeneration contract instead
+of a versioned envelope; `Reserved` slots back no collection; `Unaudited` marks canisters
+whose per-canister classification slice has not run yet. This dimension is orthogonal to the
+storage classes above (canonical does not imply survivor: journal 39 is retention-bounded,
+export scopes 51 are regenerate-by-contract). The typed registry is the single source of truth
+for this classification — this document intentionally keeps no per-region copy. All 53 graph
+regions are concretely classified per the [2026-08-24 graph persistence
+audit](../investigations/2026-08-24-graph-persistence-audit.md) §3 (enforced by
+`graph_regions_fully_classified_for_production_compat`); router, graph-index,
+vector-canister, and provision entries currently carry `Unaudited`.
+
 ## Classifications
 
 Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layout::StableMemoryClass`
@@ -410,7 +429,8 @@ distinct candidate pool (Slice 8 k-means-lite training); it stays inside this Me
 not split into a separate region (ADR 0033). The value is persisted as `RawRebuildState` — the verbatim
 `VectorRebuildStateRecord` Candid bytes (on-disk format unchanged) — so the per-step fail-closed
 encoded-size guard and the persist share a single Candid encode instead of encoding twice. It is derived (reconstructible by re-running a rebuild from the active
-version) through the live `admin_start_vector_rebuild` entry point. Slice 7 also extends the
+version) through the live
+`admin_start_vector_rebuild` entry point. Slice 7 also extends the
 `VECTOR_SUBJECT_TO_ID` value (`SubjectMapEntry`) with a second `shadow_slot: Option<SlotRef>`
 (serde-default, no repack) so an atomic publish stays metadata-only; search resolves the live slot
 via `current_slot_for(active_index_version)`.
