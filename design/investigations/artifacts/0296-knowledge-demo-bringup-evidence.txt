@@ -241,7 +241,8 @@ After re-applying the full PUBLIC surface with truthful Err-decoding through the
 router's extracted interface (--candid), all rows decode `Ok`; get_graph confirms
 graph_id = 1 = the registration-time binding; direct TO PRINCIPAL '<dev>' grants for
 Match/Read{property}/Traverse on Concept also stored Ok. Denial persisted anyway, so
-neither name/form nor graph binding explains it.
+neither name/form nor graph binding explains it. (Superseded by the final-state matrix
+in 13.4, which localizes the boundary to ELEMENT_ID-bearing plans.)
 
 13.3 H3 unattributable/ungrantable demand — CONFIRMED, narrowed to ELEMENT_ID reads.
 Discriminating matrix (each op freshly registered + published, then executed as dev):
@@ -260,19 +261,47 @@ Discriminating matrix (each op freshly registered + published, then executed as 
                                                               PASS (7 rows) after
                                                               prepared drop +
                                                               re-apply + publish
-  (*) measured against the pre-revision catalog state during 0296; superseded runs are
-  retained in session logs. The stable current-state discriminator is the presence of
-  ELEMENT_ID in any traversal projection.
+  (*) measured against the pre-revision catalog state during 0296; superseded — see the
+  final-state matrix below.
+
+13.4 FINAL-STATE MATRIX (fresh bootstrap, canonical order, same network/state for all rows):
+
+  op source (differences bold)                                dev result
+  ---------------------------------------------------------------------------
+  RETURN 1 AS x                                               PASS (1 row)
+  MATCH (n:Concept) RETURN n.name [AS name] [LIMIT n]         PASS (3 rows)
+  MATCH (n:Concept) RETURN 1 AS x LIMIT 3                     PASS
+  … <-[e:RELATED_TO]-{1,3}(b) RETURN DISTINCT b.name          PASS (0 rows)
+  … <-[e:RELATED_TO]-(b) RETURN DISTINCT b.name,
+     ELEMENT_ID(b) AS concept_id                              DENY Forbidden
+  … <-[e:RELATED_TO]-{1,3}(b) RETURN DISTINCT b.name,
+     ELEMENT_ID(b) AS concept_id  (= variable-length-reach,
+     freshly re-registered)                                   DENY Forbidden
 
 Owner executes every variant (implicit-root tenancy bypass). The pass/deny boundary is
-therefore exactly "plan contains element-id reads": the walker's expression collector
-(crates/router/src/authz.rs:1135 collect_expr_reads) handles only PropertyAccess and
-IsLabeled and ignores ExprKind::ElementId, so element-id materialization must reach
-enforcement through some other op whose demand lands in a require_unattributed arm
-(candidates: authz.rs:437 wildcard/unknown edge traversal, :489/:493 unlabeled or
-unknown-label scan within the expanded plan). Separating experiment (Router domain):
-unit-test extract() on the dispatched cache.plan.ops for probeE vs probeG and print the
-emitted RequirementSet rows.
+exactly "plan contains element-id reads" — independent of registration timing (the
+re-registered variable-length-reach denies identically).
+
+Fixture-level extract() of the probeG source yields FULLY COVERABLE rows and
+unattributed=false:
+
+  conjunctive = [
+    Match(VertexLabel Concept), Read(VertexLabel Concept),
+    Traverse(None)(EdgeLabel RELATED_TO)*,
+    ReadProperty(Concept, name), ReadProperty(Concept, name)
+  ]
+  (*) Traverse(None) is a fixture artifact (edge directedness undeclared in the minimal
+      fixture); the real network grants Outgoing+Incoming rows which the walker's
+      declared-directed path also accepts.
+
+Since the modeled rows ARE covered by the applied grants yet live still denies, the
+uncovered demand must arise from the REAL dispatched plan shape under the full demo
+schema/catalog — i.e., an additional op (element-id materialization, wildcard hop, or
+unlabeled rescan introduced by entity hydration) hitting require_unattributed
+(authz.rs:437/489/493 candidates), OR a post-coverage stage rejecting hydrated plans for
+non-tenants. Named separating experiment (Router domain): unit-test extract() on the
+dispatched cache.plan.ops of probeE vs probeG under the full demo schema and print the
+emitted RequirementSet rows; whichever op introduces the uncovered row names the fix site.
 
 14. Fix-direction proposal (for admin pane review; NOT implemented)
 -----------------------------------

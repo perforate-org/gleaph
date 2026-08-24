@@ -78,16 +78,18 @@ defect from being rediscovered without its prior reasoning.
   and direct `TO PRINCIPAL '<dev>'` grants for the same privileges do not either. The
   pass/deny boundary is precisely the presence of an `ELEMENT_ID(…)` projection over a
   traversal-bound variable.
-- **Mechanism (code-level):** the requirement walker's expression collector
-  (`authz.rs:1135 collect_expr_reads`) handles only `PropertyAccess` and `IsLabeled`;
-  `ExprKind::ElementId` contributes no attributable demand, while the element-id-consuming
-  plan (entity-hydration via `crates/gql-planner/src/property_projection.rs`
-  `collect_entity_used_bindings`) produces at least one demand that lands in a
-  `require_unattributed` arm (candidates: authz.rs:437 wildcard/unknown edge traversal,
-  :489/:493 unlabeled or unknown-label scan) or is otherwise outside GRANT grammar
-  vocabulary. Uniform-denial semantics (`authz.rs:1245`) then hide which row fails.
-  Separating experiment (Router domain): unit-test `extract()` on the dispatched
-  `cache.plan.ops` of probeE vs probeG and print the emitted `RequirementSet` debug rows.
+- **Mechanism (code-level):** a fixture-level `extract()` of the probeG source yields
+  fully grantable rows (`Match`+`Read` on Concept, `Traverse(None)` on RELATED_TO,
+  `ReadProperty(Concept,name)` ×2, unattributed=false) — yet live denies for non-tenants.
+  The uncovered demand therefore arises from the REAL dispatched plan shape under the full
+  demo schema/catalog: entity hydration (`crates/gql-planner/src/property_projection.rs`
+  `collect_entity_used_bindings`, triggered by ELEMENT_ID) changes the op set such that at
+  least one demand lands in a `require_unattributed` arm (authz.rs:437 wildcard/unknown
+  edge traversal, :489/:493 unlabeled or unknown-label scan) or outside GRANT vocabulary.
+  Uniform-denial semantics (`authz.rs:1245`) then hide which row fails. Named separating
+  experiment (Router domain): unit-test `extract()` on the dispatched `cache.plan.ops` of
+  probeE (passes) vs probeG (denies) under the full demo schema and diff the emitted
+  RequirementSet rows; whichever op introduces the uncovered row names the fix site.
 - **Expected or needed behavior:** element ids are intrinsic identity metadata of covered
   elements: an element-id read must be covered by whatever grant covers the variable's
   MATCH/TRAVERSE demand instead of forcing registry-tenant-only admission. Semantic rule to
