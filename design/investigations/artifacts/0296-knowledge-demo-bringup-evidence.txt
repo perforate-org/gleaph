@@ -319,6 +319,31 @@ emitted RequirementSet rows; whichever op introduces the uncovered row names the
   from scenario sources — costs explorer identity columns and weakens the demo story;
   not preferred.
 
+15. RESOLUTION (admin-pane coordination + live verification, 2026-08-24)
+-----------------------------------
+Admin pane confirmed the walker demands are correct per-key attribution and directed a
+property-surface resolution. Final verified sequence on the fresh demo-local network:
+
+  bash scripts/bootstrap.sh                       # fresh network, installs, register,
+                                                  # migrations, grants, banner (PASS)
+  gleaph prepared apply                           # 4 ops registered (owner)
+  gleaph prepared publish <op> x4                 # PUBLIC EXECUTE rows
+  gleaph load …                                   # bulk load completed (job key:
+                                                  #   knowledge-demo-initial-load-v1)
+  gleaph prepared run variable-length-reach       # dev identity → PASS, 7 rows
+                                                  #   (GQL/Traversal/GraphRAG/
+                                                  #    Access control/Federation/
+                                                  #    Vector search/Indexing)
+
+Root cause (final): the demo grant surface lacked property-level READ rows;
+ELEMENT_ID-bearing projections demand ReadProperty(Concept, name), which only brace-form
+GRANT READ ... { property list } statements emit (resolve_property_ids enumerates only
+the statement's list). apply-public-grants.sh adds exactly those rows. Contract locked
+by element_id_projection_demands_are_coverable_property_reads (router unit test).
+Residual owner-only items: citation-reach (edge ELEMENT_ID(e) read is tenancy-only in
+Phase 1) and shortest-path (IndexScan(no index client) under sibling index/planner
+development).
+
 14.1 Admin-pane binding conditions for the fix (w1:pQ reply, 2026-08-24)
 -----------------------------------
 (a) var_labels fallback applies ONLY when labels are uniquely determined

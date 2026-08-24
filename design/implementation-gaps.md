@@ -47,72 +47,54 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-2026-08-24-008 — Prepared queries carrying ELEMENT_ID projections deny non-owners even with full PUBLIC/direct data-plane grants (plan 0303 diagnosis)
+### GAP-2026-08-24-008 - RESOLVED: ELEMENT_ID projections need property-level READ grants (plan 0303 diagnosis; no Router defect)
 
-- **Status:** Open — root cause narrowed to named alternatives with a designed separating
-  experiment (plan 0303, 2026-08-24); fix implementation pending (admin-owned; see
-  fix-direction below). Supersedes the earlier "grants insufficient" framing: the grants
-  were verified stored and correct.
-- **Owner:** Router authorization walker (`crates/router/src/authz.rs` — `collect_expr_reads`
-  :1135, unattributed-demand sites :396/:416/:437/:489/:493/:507, coverage
-  `authorize_requirements` :1147) with planner seam (`crates/gql-planner`
-  property_projection.rs entity-hydration).
-- **Observed behavior (current-state discriminating matrix, all ops freshly registered +
-  published on a pristine demo-local network; canonical order bootstrap → grants → apply →
-  publish → run):**
+- **Status:** Resolved (plan 0303, 2026-08-24). Root cause: the knowledge demo's grant
+  surface lacked **property-level READ rows**. ELEMENT_ID-bearing projections demand
+  `ReadProperty(label, property)` per projected key (`authz.rs:479-513`
+  `require_vertex_scan_rows`; see also `labeled_scan_projection_contract`), which bare
+  label-level `GRANT READ ... NODES <label>` does **not** cover (it lowers to the READ vertex
+  row plus ReadProperty rows only for explicitly enumerated properties,
+  `gql_grants.rs:413 resolve_property_ids`). Once brace-form
+  `GRANT READ ... NODES Concept { name } TO PUBLIC` rows are applied, non-owner execution
+  of `variable-length-reach` succeeds end-to-end (**7 rows**, verified live).
+- **Owner:** demo grant surface (`demo/knowledge/scripts/apply-public-grants.sh`); walker
+  semantics in `crates/router/src/authz.rs` confirmed correct (see
+  `labeled_scan_projection_contract` test).
+- **Observed behavior (final-state matrix, all ops freshly registered + published on a
+  pristine demo-local network, canonical order):**
 
   | projection / shape | dev (non-owner) |
-  |---|---|
-  | `RETURN 1 AS x` (no graph) | PASS |
-  | `MATCH (n:Concept) RETURN n.name [AS name] [LIMIT n]` | PASS (3 rows) |
-  | `MATCH (n:Concept) RETURN 1 AS x LIMIT 3` | PASS |
-  | var-length incoming + DISTINCT, **no ELEMENT_ID** | PASS |
-  | single-hop incoming + DISTINCT **+ ELEMENT_ID** | DENY Forbidden |
-  | var-length incoming + DISTINCT **+ ELEMENT_ID** (= variable-length-reach) | DENY Forbidden |
+  | --- | --- |
+  | RETURN 1 AS x (no graph) | PASS |
+  | MATCH (n:Concept) RETURN n.name [AS name] [LIMIT n] | PASS (3 rows) |
+  | MATCH (n:Concept) RETURN 1 AS x LIMIT 3 | PASS |
+  | var-length incoming + DISTINCT, no ELEMENT_ID | PASS |
+  | single-hop incoming + DISTINCT + ELEMENT_ID | DENY Forbidden |
+  | var-length incoming + DISTINCT + ELEMENT_ID (= variable-length-reach) | DENY Forbidden, then PASS (7 rows) after property-level READ grant |
 
-  Owner executes every variant (implicit-root tenancy bypass), so planning/data are intact.
-  Stored grant rows were dumped via `list_graph_grants` decoded through the router's own
-  extracted interface and contain exactly the expected PUBLIC rows
-  (Match/Read ×4 labels, Traverse Outgoing+Incoming ×7 edges, ImplicitRoot owner row);
-  adding brace-form property-list READs (→ ReadProperty rows) does not change the denial,
-  and direct `TO PRINCIPAL '<dev>'` grants for the same privileges do not either. The
-  pass/deny boundary is precisely the presence of an `ELEMENT_ID(…)` projection over a
-  traversal-bound variable.
-- **Mechanism (code-level):** a fixture-level `extract()` of the probeG source yields
-  fully grantable rows (`Match`+`Read` on Concept, `Traverse(None)` on RELATED_TO,
-  `ReadProperty(Concept,name)` ×2, unattributed=false) — yet live denies for non-tenants.
-  The uncovered demand therefore arises from the REAL dispatched plan shape under the full
-  demo schema/catalog: entity hydration (`crates/gql-planner/src/property_projection.rs`
-  `collect_entity_used_bindings`, triggered by ELEMENT_ID) changes the op set such that at
-  least one demand lands in a `require_unattributed` arm (authz.rs:437 wildcard/unknown
-  edge traversal, :489/:493 unlabeled or unknown-label scan) or outside GRANT vocabulary.
-  Uniform-denial semantics (`authz.rs:1245`) then hide which row fails. Named separating
-  experiment (Router domain): unit-test `extract()` on the dispatched `cache.plan.ops` of
-  probeE (passes) vs probeG (denies) under the full demo schema and diff the emitted
-  RequirementSet rows; whichever op introduces the uncovered row names the fix site.
-- **Expected or needed behavior:** element ids are intrinsic identity metadata of covered
-  elements: an element-id read must be covered by whatever grant covers the variable's
-  MATCH/TRAVERSE demand instead of forcing registry-tenant-only admission. Semantic rule to
-  record in `design/security/rbac-and-prepared.md`.
-- **Evidence:** artifacts §13–14 in
-  `design/investigations/artifacts/0296-knowledge-demo-bringup-evidence.txt`; session logs
-  `/tmp/gt3-*.log`, `/tmp/gt4-*.log`; probe scripts `scripts/register-probe.sh`,
-  `scripts/direct-grant-probe.sh`, `scripts/apply-public-grants.sh`.
-- **Impact:** every non-owner execution of any scenario op is blocked (all four knowledge
-  scenarios project element ids), so the demo's browser audience cannot run anything; plan
-  0296 completion criteria 2/4/5 remain open on this alone. No correctness gap for owners.
-- **Fix direction (proposal shared with admin pane w1:pQ):**
-  1. Walker: when `collect_expr_reads` meets `ExprKind::ElementId` over a bound variable,
-     treat it as covered by that variable's MATCH/TRAVERSE coverage (element ids follow the
-     element) — i.e., record a scope fact rather than letting the hydrated plan resolve into
-     an unattributed/ungrantable row; add the SEARCH-seeded-tail case (element-id demand on
-     search-seeded variables maps onto search admission coverage).
-  2. Wrong-impl probe: a stub evaluator treating ElementId as unattributed must fail the new
-     tests; owner/non-owner pass-deny matrix asserted with exact errors.
-  3. Semantic rule documented in rbac-and-prepared.md before merge.
-- **Detection:** w1:p0 during plan 0296 quickstart; escalated by admin pane w1:pQ as P1
-  (landed slice-2b behavior breaks DISTINCT-materialized prepared MATCH for all non-owners;
-  slice-3 publication E2E missed it because fixtures omitted DISTINCT).
+  Owner executes every variant via implicit-root tenancy bypass.
+- **Mechanism:** ELEMENT_ID projections demand `ReadProperty(label, property)` rows; bare
+  label-level READ grants do not emit those rows (`resolve_property_ids` enumerates only
+  the statement's property list), so hydrated plans deny for non-tenants until a
+  brace-form property-list READ grant is applied. No unattributed row is involved and no
+  Router code change is required.
+- **Expected or needed behavior:** published scenarios execute for arbitrary visitors once
+  the PUBLIC surface covers match/traverse/read including per-property reads.
+- **Evidence:** artifacts sections 13-14 in
+  `design/investigations/artifacts/0296-knowledge-demo-bringup-evidence.txt`; probe scripts
+  `scripts/register-probe.sh`, `scripts/direct-grant-probe.sh`,
+  `scripts/apply-public-grants.sh`; contract-locking test
+  `element_id_projection_demands_are_coverable_property_reads`.
+- **Impact:** resolved for vertex scenarios. Two residual follow-ups: (a) citation-reach
+  projects ELEMENT_ID(e) on an EDGE binding - edge element reads are tenancy-only in
+  Phase 1 (no edge-property grant resource), so that op stays owner-only pending an ADR
+  0074 edge-read rule; (b) shortest-path currently hits IndexScan(no index client) under
+  active sibling index/planner development (observation, not diagnosed here).
+- **Fix direction:** none required in the walker. Demo-side resolution landed via
+  apply-public-grants.sh. Optional future enhancement: let READ without a property list
+  expand to all catalogued properties of the label.
+- **Detection:** w1:p0 during plan 0296 quickstart; escalated by admin pane w1:pQ as P1.
 
 ### GAP-2026-08-24-009 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
 

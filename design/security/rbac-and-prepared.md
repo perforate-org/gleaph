@@ -82,6 +82,7 @@ Attribution contract (fail closed where the plan cannot name a resource):
 | Labeled vertex scan | `MATCH` on the label; full property map adds `READ`; explicit projections add `READ_PROPERTY` per key; empty hydration list adds nothing beyond `MATCH` |
 | Traversal hop | `TRAVERSE` rows from pattern direction × schema directedness: declared directed labels probe one directional row per orientation (undirected patterns need both); undirected or undeclared labels take the unoriented row — mirroring GRANT lowering |
 | Edge-inline property bytes | covered by the edge label's traversal row (no edge-property resource exists in Phase 1) |
+| Element-id reads (`ELEMENT_ID(v)`) on a vertex binding | covered by the variable's `MATCH` row — element ids are intrinsic identity metadata of covered elements, not separately grantable properties. On an EDGE binding they are tenancy-only in Phase 1 (no edge-property resource), so ops projecting `ELEMENT_ID(e)` stay owner-only until an edge-read rule lands |
 | Filter / projection / aggregation expressions | property reads attributed through variable→label facts; ambiguous or unresolvable attribution degrades to tenancy-only |
 | Unlabeled scans, `NOT`/wildcard label expressions, `DETACH DELETE`, unresolvable open-schema names | tenancy-only: owners/admins proceed; Phase 1 grants enumerate labels, so wildcard reads are not expressible as grants |
 | Mutations | `CREATE` for inserted elements; `UPDATE` for `SET`/`REMOVE`; `DELETE` for deletes, attributed via bound-variable labels |
