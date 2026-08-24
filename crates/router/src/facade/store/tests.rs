@@ -1811,8 +1811,12 @@ fn resolve_graph_checks_permissions() {
         store.resolve_graph("g", other),
         Err(RouterError::NotFound("g".into()))
     );
-    // Superuser bypass: a global canister Admin may resolve any graph by name.
-    assert!(store.resolve_graph("g", admin).is_ok());
+    // ADR 0080: the former global-admin superuser arm is deleted. A full-caps holder
+    // without an elevation receives identical treatment to a stranger.
+    assert_eq!(
+        store.resolve_graph("g", admin),
+        Err(RouterError::NotFound("g".into()))
+    );
 }
 
 #[test]
@@ -1848,8 +1852,11 @@ fn resolve_graph_id_authorized_enforces_tenancy() {
     let gid = lookup_graph_id("g").expect("g");
     assert_eq!(store.resolve_graph_id_authorized("g", owner), Ok(gid));
     assert_eq!(store.resolve_graph_id_authorized("g", member), Ok(gid));
-    // Superuser bypass.
-    assert_eq!(store.resolve_graph_id_authorized("g", admin), Ok(gid));
+    // ADR 0080: no superuser bypass — a full-caps non-tenant is denied like any stranger.
+    assert_eq!(
+        store.resolve_graph_id_authorized("g", admin),
+        Err(RouterError::NotFound("g".into()))
+    );
     // Non-tenant cannot even confirm existence.
     assert_eq!(
         store.resolve_graph_id_authorized("g", other),
@@ -1900,6 +1907,97 @@ fn resolve_graph_id_authorized_allows_registered_shard_canister() {
     assert_eq!(
         store.resolve_graph_id_authorized("tenant.main", graph_principal(99)),
         Err(RouterError::NotFound("tenant.main".into()))
+    );
+}
+
+/// ADR 0080 gate matrix at the metadata ACL: caps alone deny, a graph-scoped
+/// `ReadMetadata` elevation admits, and a cross-graph `ControlPlane` elevation covers
+/// multiple graphs — while the own-shard arm (tested above) stays untouched.
+#[test]
+fn metadata_elevation_replaces_the_deleted_admin_arm() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let registrar = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[registrar]);
+    // The graph belongs to a foreign tenant so the caps-holding registrar is a plain
+    // non-tenant there.
+    let owner = graph_principal(80);
+    store
+        .admin_register_graph(
+            registrar,
+            GraphRegistryEntry {
+                graph_id: GraphId::from_raw(0),
+                canister_id: Principal::management_canister(),
+                owner,
+                admins: BTreeSet::new(),
+                status: GraphStatus::Active,
+                version: 1,
+                updated_at_ns: 0,
+                provisioning_state: ProvisioningState::None,
+                is_home: false,
+            },
+            "tenant.main",
+        )
+        .expect("register graph");
+    let gid = tenant_main_graph_id();
+
+    // Former implicit holder: full caps without an elevation are treated exactly like a
+    // stranger's (ADR 0028 non-disclosure preserved).
+    assert_eq!(
+        store.resolve_graph_id_authorized("tenant.main", registrar),
+        Err(RouterError::NotFound("tenant.main".into()))
+    );
+
+    // Graph-scoped elevation admits.
+    crate::facade::auth::add_elevation_grant(
+        registrar,
+        gleaph_auth::MetadataScope::Graph(gid.raw()),
+        u64::MAX,
+        owner,
+        "incident-1".to_owned(),
+        false,
+    )
+    .expect("issue elevation");
+    assert_eq!(
+        store.resolve_graph_id_authorized("tenant.main", registrar),
+        Ok(gid)
+    );
+}
+
+#[test]
+fn control_plane_elevation_covers_multiple_graphs_at_the_metadata_acl() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let operator = graph_principal(70);
+    crate::facade::auth::grant_admins(&[operator]);
+    register_test_graph(&store, operator, "tenant.main");
+    register_test_graph(&store, operator, "other.graph");
+    let first = lookup_graph_id("tenant.main").expect("first");
+    let second = lookup_graph_id("other.graph").expect("second");
+
+    // The operator owns these fixture graphs; strip that authority by asking for a
+    // third principal instead. A ControlPlane row must cover both graphs.
+    let elevated = graph_principal(71);
+    assert_eq!(
+        store.resolve_graph_id_authorized("tenant.main", elevated),
+        Err(RouterError::NotFound("tenant.main".into()))
+    );
+    crate::facade::auth::add_elevation_grant(
+        elevated,
+        gleaph_auth::MetadataScope::ControlPlane,
+        u64::MAX,
+        operator,
+        "fleet sweep".to_owned(),
+        false,
+    )
+    .expect("issue control-plane elevation");
+    assert_eq!(
+        store.resolve_graph_id_authorized("tenant.main", elevated),
+        Ok(first)
+    );
+    assert_eq!(
+        store.resolve_graph_id_authorized("other.graph", elevated),
+        Ok(second)
     );
 }
 

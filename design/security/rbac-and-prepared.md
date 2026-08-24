@@ -1,6 +1,6 @@
 # RBAC and prepared queries
 
-> **Status (2026-08-24):** [ADR 0074](../adr/0074-data-plane-authorization-core.md) Phase 1
+> **Status (2026-08-25):** [ADR 0074](../adr/0074-data-plane-authorization-core.md) Phase 1
 > slices 1–3 are **implemented**: administrative capabilities plus per-graph data-plane
 > grants with a virtual `PUBLIC` subject and default deny; **plan-time enforcement**
 > (slice 2b): every vertex label, edge label × direction, projected property, and mutation
@@ -8,7 +8,9 @@
 > prepared publication with record-level static extraction** (slice 3): registered queries
 > store their statically extracted requirement set, publication is an explicit invariant-7-
 > gated `GRANT EXECUTE ON PREPARED QUERY` statement, and ownership is the documented
-> implicit root of data-plane authority (amended §3 invariant 3).
+> implicit root of data-plane authority (amended §3 invariant 3). [ADR 0080]
+> JIT metadata elevation is **implemented** (below): the ADR 0028 superuser bypass is
+> deleted and cross-tenant metadata reads require time-boxed, approval-backed elevation.
 
 ## Purpose
 
@@ -43,13 +45,15 @@ former `grant_role`; `my_caps` reports the caller's set).
 | `MANAGE_CATALOG`       | Graph-type catalog DDL, schema migrations, catalog interning                                    |
 | `CALL_PROCEDURE`       | Named `CALL` procedures (until procedures become catalog objects)                               |
 | `MANAGE_FEDERATION`    | Graph/shard topology, backfill, maintenance sweeps, diagnostics, vector activation/maintenance  |
-| `MANAGE_AUTHORIZATION` | Writing other principals' capability rows                                                       |
+| `MANAGE_AUTHORIZATION` | Writing other principals' capability rows; approving and reviewing metadata elevations          |
+| `EMERGENCY_ELEVATE`    | Approval-free flagged self-elevation ([ADR 0080] §3)                                            |
 
 Router gates name the narrowest governing capability (`facade::auth::require_cap`, store-level
 surfaces surface `NotAuthorized`; the GQL-path gates in `rbac.rs` surface `Forbidden`). There
 is no implicit elevation between capabilities, and administrative authority never implies
-data-plane access (ADR 0074 invariant 1). The former global Admin survives only as "holds the
-full set" (`is_admin`) for the ADR 0028 metadata bypass arm below.
+data-plane or metadata access ([ADR 0074] invariant 1; [ADR 0080] §2 deleted the former ADR
+0028 superuser arm, so caps holders without an elevation are treated exactly like strangers
+on metadata reads).
 
 ### Data-plane grants
 
@@ -223,6 +227,39 @@ Behavior change from Phase 1: vector reads now require label privileges (layer 1
 created embeddings are unreachable to callers without the spanned labels' `MATCH` rows —
 intended, and the pre-0078 free-ANN hole is closed.
 
+### JIT metadata elevation ([ADR 0080], Phase 2 — implemented)
+
+**Source:** `crates/router/src/api/control.rs` (`elevate_request`, `elevate_approve`,
+`list_elevations`), `crates/router/src/gql_grants.rs`, `crates/auth` (row shape).
+
+The ADR 0028 superuser arm is deleted: no path from administrative authority to content
+visibility exists anywhere. Cross-tenant metadata reads flow exclusively through time-boxed,
+approval-backed grants over the metadata-plane resources
+`GraphMetadata(graph_id)` / `ControlPlane` with operation `ReadMetadata`. Metadata rows share
+the grant store and grammar with data-plane rows but never coverage semantics — canonical keys
+are discriminant-separated, so a metadata demand is never satisfied by a data row and vice
+versa (proven by probe tests in both directions).
+
+Five stages, each leaving evidence in the issued row:
+
+1. **Request** — `elevate_request` validates the canonical request (requester, scope,
+   non-empty bounded justification, window from the constrained 1h/4h/24h/7d set) behind
+   `MANAGE_AUTHORIZATION`; it persists nothing, because unapproved requests grant nothing.
+2. **Approve** — `elevate_approve` requires `MANAGE_AUTHORIZATION` and `requester ≠ approver`.
+3. **Issue** — one `ReadMetadata` grant row with `expires_at = now + window` carrying the
+   complete evidence payload (requester as subject, approver, justification, emergency flag).
+4. **Use** — every authorized metadata evaluation inside the window resolves through the row;
+   expired rows read as absent automatically, so reversion needs no human action.
+5. **Review** — expired rows stay stored until GC; `list_elevations`
+   (`MANAGE_AUTHORIZATION`) lists active and recently-expired rows with their evidence, and
+   `list_graph_grants` shows graph-scoped elevations to the owner plus the review audience.
+
+Self-elevation without approval exists only through the explicit `EMERGENCY_ELEVATE` cap: it
+writes the same row shape flagged emergency with approver = requester, visible as such in
+introspection. Silent bypass paths do not exist. Grammar-written standing rows
+(`GRANT READ_METADATA …`, owner-or-`MANAGE_AUTHORIZATION` authority) are the documented
+pre-authorized-grant form; the loop remains the friction-bearing default window path.
+
 ## Anonymous-principal invariant
 
 **Status: Implemented**
@@ -269,10 +306,10 @@ Two admission stages precede dispatch (slice 2b):
 
 1. **Pre-plan gate** (`rbac::authorize_adhoc_gql`): the caps-governed `CALL_PROCEDURE`
    surface, plus ADR 0028 graph **visibility** — resolution succeeds for tenants,
-   grant-covered callers (`caller ∪ PUBLIC`), and the superuser/shard arms, and fails as
-   indistinguishable `NotFound` otherwise. The former interim tenancy-or-caps shortcut that
-   admitted any capability holder is deleted: administrative capabilities confer no
-   data-plane or visibility-by-caps-alone admission.
+   grant-covered callers (`caller ∪ PUBLIC`), metadata elevatees ([ADR 0080] §2), and the
+   own-shard arm, and fails as indistinguishable `NotFound` otherwise. The former interim
+   tenancy-or-caps shortcut and the ADR 0028 superuser bypass are both deleted:
+   administrative capabilities confer no data-plane or visibility-by-caps-alone admission.
 2. **Plan-time enforcement** (`authz::enforce_data_plane_authorization`, above): runs on
    every path that reaches dispatch — fresh builds and cached plans alike — so a cached plan
    never widens what a caller may run.
@@ -291,11 +328,12 @@ GQL catalog statements set `has_catalog_modification` in [`ProgramModificationFl
 
 | DDL surface                                                                                  | Entry                                              | Gate                                              |
 | -------------------------------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------ |
-| **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program`     | ADR 0028 visibility (tenancy ∪ grant-derived ∪ superuser/shard arms; no caps-alone admission); catalog DDL is additionally governed by `MANAGE_CATALOG` on its dedicated store surfaces |
+| **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program`     | ADR 0028 visibility (tenancy ∪ grant-derived ∪ metadata-elevation ∪ shard arms; no caps-alone admission); catalog DDL is additionally governed by `MANAGE_CATALOG` on its dedicated store surfaces |
 | **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path)                          | `authorize_index_ddl`                              | `INDEX_CREATE` or `INDEX_DROP`                    |
 | **Prepared plan registry**                                                                   | `authorize_prepared_catalog_change`                | `PREPARE_REGISTER`                                 |
 | **Federation graph registration**                                                            | `register_graph`                                   | `MANAGE_FEDERATION`                                |
 | **Shard registry / backfill / maintenance sweeps**                                           | `register_shard` / `advance_backfill` / sweeps     | `MANAGE_FEDERATION`                                |
+| **[ADR 0080] JIT elevation** (`elevate_request`, `elevate_approve`)                          | gate matrix in the endpoints                       | approve: `MANAGE_AUTHORIZATION` with requester ≠ approver; emergency self-elevation: `EMERGENCY_ELEVATE` with requester = caller |
 
 Graph type catalog DDL runs on the main GQL path **before** ingress dispatch when the transaction block contains catalog statements ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)). Catalog-only blocks return zero rows without dispatching DML/query ops.
 
@@ -311,14 +349,14 @@ RBAC capabilities above are **canister-global**. Graph-scoped _visibility_ is a 
 | ---------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tenant           | `caller == owner` or `caller ∈ admins`                                                      | The graph's tenant(s). Also the ownership-derived arm of plan-time data-plane coverage (ADR 0074 §4).                                                                                                             |
 | Grantee          | caller holding ≥1 unexpired data-plane grant row on the graph, `caller ∪ PUBLIC` (slice 2b) | Grantees of a shared graph may resolve it by name; visibility is admission only — data access stays plan-time against the grant rows.                                                                              |
-| Superuser bypass | principal holding the **full capability set** (bootstrap analogue of the former global Admin) | Operations/migration/tooling (DB-superuser analogue). Phase 1 keeps this arm scoped to control/metadata reads only — never the data plane; Phase 2 replaces it with time-boxed grants (ADR 0074 §1b). |
+| Metadata elevatee | caller holding an unexpired `ReadMetadata` elevation on the graph or a cross-graph `ControlPlane` row ([ADR 0080] §2) | Replaces the deleted superuser bypass: time-boxed, approval-backed metadata access issued through the JIT loop; admission only, never data-plane coverage. |
 | Own shard        | the graph's registered `graph_canister` (keyed in `ROUTER_SHARD_BY_GRAPH`, same `graph_id`) | Keeps federation/index-routing inter-canister calls working (`verify_shard_attachment`, `list_shards_for_graph`, `indexed_property_catalog`), which reach the router with the shard's `graph_canister` principal. |
 
 Enforcement:
 
 - **Name→id metadata endpoints** (`resolve_shard`, `lookup_graph_id`, `list_shards_for_graph`, `indexed_property_catalog`, `lookup_{vertex,edge}_label_id`, `lookup_property_id`, `reverse_{vertex,edge}_label_name`, `reverse_property_name`) resolve via `resolve_graph_id_authorized`. Previously these used a bare name lookup with no ACL (cross-tenant disclosure).
-- **Non-disclosure:** a caller without visibility gets `NotFound`, not `Forbidden`, so it cannot confirm a graph exists. `resolve_graph` follows the same rule and gains the Admin bypass. A **visible** non-owner (tenant admin or grantee) receives ordinary authority errors (`Forbidden`) on owner-only surfaces — existence is already implied by the grant relationship.
-- **Default/HOME selection:** `list_visible_graph_ids` / `resolve_home_graph_id` follow tenancy ∪ grant-derived visibility (no caps-alone bypass), so an Admin's HOME does not become ambiguous. The intentionally-public prepared prepared-query endpoints path already scopes through `list_visible_graph_ids` and is unchanged.
+- **Non-disclosure:** a caller without visibility gets `NotFound`, not `Forbidden`, so it cannot confirm a graph exists. A **visible** non-owner (tenant admin or grantee) receives ordinary authority errors (`Forbidden`) on owner-only surfaces — existence is already implied by the grant relationship.
+- **Default/HOME selection:** `list_visible_graph_ids` / `resolve_home_graph_id` follow tenancy ∪ grant-derived visibility (no caps-alone bypass, no elevation arm), so HOME resolution stays membership-based and unambiguous.
 - **Registration validation:** `validate_registration_principals` rejects the anonymous principal as `owner` or in `admins` (before any state mutation); an anonymous owner/admin would make the ACL match every unauthenticated caller. This complements the [anonymous-principal invariant](#anonymous-principal-invariant).
 
 ## Graph shard exposure
@@ -373,7 +411,8 @@ completes parameter and result metadata (ADR 0053/0061).
 - Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records
   are versioned (`PreparedPlanRecord::V1`, destructively redefined in slice 3 to carry
   `required_privileges` — fresh state required, no decode fallback)
-- Data-plane grant rows on router stable memory (`ROUTER_AUTH_GRANTS`, MemoryId 55; ADR 0074)
+- Data-plane and metadata-elevation grant rows on router stable memory (`ROUTER_AUTH_GRANTS`,
+  MemoryId 55; ADR 0074 §6, [ADR 0080] §4)
 
 ## IC caller identity
 

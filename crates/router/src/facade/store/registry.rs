@@ -42,23 +42,33 @@ fn entry_names_tenant(entry: &GraphRegistryEntry, caller: Principal) -> bool {
 ///
 /// A caller may access a graph's metadata/routing data when it is the graph `owner`, listed in
 /// `admins`, holds at least one unexpired data-plane grant on the graph (`caller ∪ PUBLIC`,
-/// ADR 0074 slice 2b), a global canister `Admin` (superuser bypass), or the graph's own
-/// registered shard canister. The last case keeps federation/index-routing inter-canister
-/// calls working: shards call the router with their `graph_canister` principal, which is keyed
-/// in [`ROUTER_SHARD_BY_GRAPH`].
+/// ADR 0074 slice 2b), holds an unexpired metadata elevation covering this graph
+/// (`ReadMetadata` on that graph or cross-graph `ControlPlane`, [ADR 0080] §2), or is the
+/// graph's own registered shard canister. The last case keeps federation/index-routing
+/// inter-canister calls working: shards call the router with their `graph_canister`
+/// principal, which is keyed in [`ROUTER_SHARD_BY_GRAPH`].
 ///
 /// Visibility is admission only: none of these arms authorize data-plane access, which is
-/// enforced at plan time against grant rows (`crate::authz`). Administrative capabilities
-/// reach metadata through the superuser arm but never the data plane (ADR 0074 invariant 1).
+/// enforced at plan time against grant rows (`crate::authz`); by the plane-disjointness
+/// contract ([ADR 0080] §1) a metadata elevation admits here but never covers data-plane
+/// demands.
+///
+/// The former global-admin superuser arm is deleted ([ADR 0080] §2): administrative
+/// capabilities confer no metadata access, so caps holders without an elevation receive
+/// identical treatment to strangers (ADR 0028 NotFound non-disclosure). Time-boxed,
+/// approval-backed grants are the only elevation.
 fn caller_may_access_graph(
     entry: &GraphRegistryEntry,
     graph_id: GraphId,
     caller: Principal,
 ) -> bool {
-    if auth::is_admin(&caller) || entry_names_tenant(entry, caller) {
+    if entry_names_tenant(entry, caller) {
         return true;
     }
     if auth::holds_any_graph_grant(graph_id.raw(), &caller) {
+        return true;
+    }
+    if auth::holds_metadata_graph_access(graph_id.raw(), &caller) {
         return true;
     }
     ROUTER_SHARD_BY_GRAPH

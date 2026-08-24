@@ -2,7 +2,7 @@
 
 Date: 2026-08-23
 Status: accepted
-Last revised: 2026-08-24
+Last revised: 2026-08-25
 
 ## Context
 
@@ -101,14 +101,15 @@ Enforcement points:
   control/metadata reads only — never the data plane — and logged as an elevated access.
   Grant storage includes a dormant `expires_at` field from day one so later time-boxing is
   not a destructive schema change.
-- *Phase 2*: the implicit bypass arm is deleted entirely. Operator metadata access becomes
-  time-boxed grants over new resource types `GraphMetadata(graph_id)` / `ControlPlane` with
-  operation `READ_METADATA`, issued through a JIT loop: justified request → approval by a
-  second distinct caps holder (later k-of-n governance; grant representation unchanged) →
-  audited issuance → elevated-use logging → automatic expiry at `expires_at` → mandatory
-  post-use review. Self-elevation without approval exists only as an explicit
-  `EMERGENCY_ELEVATE` cap whose use emits a high-priority audit event; silent bypass paths do
-  not exist. Expired-grant GC is designed together with the audit-log retention contract.
+- *Phase 2* (**landed 2026-08-25** via [ADR 0080]): the implicit bypass arm is deleted. Operator
+  metadata access is now time-boxed grants over resource scopes `GraphMetadata(graph_id)` /
+  `ControlPlane` with operation `ReadMetadata`, issued through a JIT loop: justified request →
+  approval by a second distinct caps holder (later k-of-n governance; grant representation
+  unchanged) → evidence-complete issuance (the grant row IS the record) → elevated use inside
+  the window → automatic expiry at `expires_at` → post-use review over the retained rows.
+  Self-elevation without approval exists only as an explicit `EMERGENCY_ELEVATE` cap whose rows
+  are flagged emergency in introspection; silent bypass paths do not exist. Expired-grant GC is
+  designed together with the audit-log retention contract.
 
 **`CALL` gating.** Named `CALL` stays conservative under `admin_caps(CALL_PROCEDURE)` in
 Phase 1: today's only procedures are synchronous platform operations

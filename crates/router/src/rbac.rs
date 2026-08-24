@@ -5,8 +5,8 @@
 //! PUBLIC`) plus the implicit ownership root (§3 invariant 3), never through
 //! administrative capabilities. Data-plane admission itself is **plan-time**
 //! ([`crate::authz`]): the pre-plan gate below only enforces the caps-governed `CALL`
-//! surface and ADR 0028 graph visibility (tenancy ∪ grant-derived), with non-disclosing
-//! `NotFound` for invisible graphs.
+//! surface and ADR 0028 graph visibility (tenancy ∪ grant-derived ∪ metadata-elevation,
+//! [ADR 0080] §2), with non-disclosing `NotFound` for invisible graphs.
 //!
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
@@ -29,8 +29,9 @@ use crate::state::RouterError;
 ///    procedures become catalog objects).
 /// 2. ADR 0028 graph visibility: resolution through the same resolver used for execution.
 ///    Tenants pass; callers holding an unexpired data-plane grant row on the graph
-///    (`caller ∪ PUBLIC`) pass; everyone else receives the indistinguishable `NotFound`.
-///    Administrative capabilities confer no admission here.
+///    (`caller ∪ PUBLIC`) or an unexpired metadata elevation covering it ([ADR 0080] §2)
+///    pass; everyone else — caps holders included ([ADR 0080] §2) — receives the
+///    indistinguishable `NotFound`. Administrative capabilities confer no admission here.
 ///
 /// Per-label / per-direction / per-property data-plane checking happens after the plan is
 /// built (`crate::authz::enforce_data_plane_authorization`); the former interim

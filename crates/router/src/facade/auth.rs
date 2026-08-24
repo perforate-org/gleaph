@@ -67,12 +67,6 @@ pub fn has_any_cap(principal: &Principal) -> bool {
     !caps_of(principal).is_empty()
 }
 
-/// Whether `principal` holds the full capability set — the bootstrap-superuser analogue of
-/// the former global Admin role.
-pub fn is_admin(principal: &Principal) -> bool {
-    caps_of(principal) == AdminCaps::all()
-}
-
 /// Require that `principal` holds `cap`, else [`RouterError::NotAuthorized`].
 ///
 /// Preserves the error contract of the former `require_admin` at every migrated store-level
@@ -268,23 +262,6 @@ mod tests {
         );
         // The anonymous principal must remain default-deny (no persisted elevation).
         assert_eq!(caps_of(&Principal::anonymous()), AdminCaps::empty());
-    }
-
-    #[test]
-    fn is_admin_means_full_caps_only() {
-        let partial = principal(4);
-        ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
-            auth.upsert_caps(partial, AdminCaps::all() ^ AdminCaps::MANAGE_FEDERATION)
-                .expect("non-anonymous");
-        });
-        assert!(!is_admin(&partial));
-        assert!(has_any_cap(&partial));
-
-        let full = principal(5);
-        grant_admin(full);
-        assert!(is_admin(&full));
-        assert!(!is_admin(&Principal::anonymous()));
-        assert!(!has_any_cap(&Principal::anonymous()));
     }
 
     #[test]

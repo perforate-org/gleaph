@@ -1,8 +1,16 @@
 # 0028. Per-graph tenancy enforcement on router metadata reads
 
 Date: 2026-06-21
-Status: accepted
-Last revised: 2026-06-21
+Status: accepted (amended 2026-08-25)
+Last revised: 2026-08-25
+
+> **Supersession note ([ADR 0080]).** The global-Admin superuser arm below
+> (Decision bullet 2) was a Phase-1 temporary measure ([ADR 0074] §1b). It is
+> **deleted**: administrative capabilities confer no metadata access anywhere.
+> Cross-tenant metadata reads now flow exclusively through time-boxed,
+> approval-backed `ReadMetadata` / `ControlPlane` elevation grants issued by the JIT
+> loop ([ADR 0080] §2–§3). Everything else in this ADR — per-graph tenancy, the
+> own-shard federation arm, NotFound non-disclosure, registration hardening — stands.
 
 ## Context
 
@@ -94,3 +102,6 @@ authorizing resolver.
 - **Force `owner = msg_caller()` at registration.** Rejected for now: it removes the Admin's
   ability to provision a graph on behalf of a tenant; validation against the anonymous principal
   is sufficient to close the world-exposure hole.
+
+[ADR 0074]: 0074-data-plane-authorization-core.md
+[ADR 0080]: 0080-jit-metadata-elevation.md
