@@ -378,10 +378,31 @@ Until metrics ship, use **tables A–D** at provisioning time and re-estimate af
 
 ---
 
+## Text canister (v0, measured 2026-08-24 UTC)
+
+Plan 0294 wired the ADR 0077 engine into `crates/text-canister`; figures from the persisted
+canbench baselines and the PocketIC lifecycle fixture (M=242):
+
+| Figure | Value | Source |
+|---|---|---|
+| Build/ingest M=2000 docs | 188.80 M instr (~94 k/doc) | `bench_build_segment_m2000` |
+| m3 OR top-10 query | 15.78 M varint / 17.25 M tf-scored | persisted top-k benches |
+| Logical storage @M=2000 | 141,355 B set / 193,109 B freq (vs FTS5 image 376,832 B) | parity artifact |
+| E2E cycles (PocketIC, M=242) | ingest(1 doc) ≈ 8.3 M; flush-to-done ≈ 9.0 M; merge-to-done ≈ 26 M | lifecycle log |
+
+Threshold framework (soft 350 / hard 400 / critical 450 GiB) applies unchanged; TEXT-specific
+split formulas land with capacity metrics at Router wiring. Details:
+[text-index.md](text-index.md).
+
+---
+
 ## Related documents
 
 - [property-index.md](property-index.md) — posting model, opt-in property index
 - [label-index.md](label-index.md) — label postings scale with all labeled vertices
+- [text-index.md](text-index.md) — **Planned** text canister contract (ADR 0077); measured
+  M=2000 parity figures (141–193 KB custom vs 376 KB FTS5 image; build 188.80 M instr) live in
+  the referenced investigation — TEXT region rows land here when wiring starts
 - [../adr/0006-pre-federation-foundation.md](../adr/0006-pre-federation-foundation.md) — shard registry, illustrative grouping
 - [../adr/0010-index-sharding-extensibility.md](../adr/0010-index-sharding-extensibility.md) — defer split strategy; stable wire
 - [../adr/0007-stable-memory-layout.md](../adr/0007-stable-memory-layout.md) — index region inventory

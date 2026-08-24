@@ -1,0 +1,12 @@
+[package]
+name = "rise-queries-min"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Scratch extraction of RISE's query operators (WAND / Block-Max WAND / BM-MaxScore) for the Gleaph ic-stable-text-query feasibility spike. std-only, no nightly features."
+
+[lib]
+# cdylib so the wasm32 build emits an actual .wasm artifact as build proof.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

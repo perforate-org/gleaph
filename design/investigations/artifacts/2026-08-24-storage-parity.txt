@@ -1,0 +1,4 @@
+PARITY units=3003 postings_set=63766 postings_tf=75275
+PARITY set_bytes=86392 freq_bytes=138146 dict_bytes=42107 blockmax_bytes=12856
+PARITY total_set=141355 total_freq=193109
+PARITY vs_fts5_image fts5_bytes=376832 set_pct=37.51 freq_pct=51.25

@@ -179,7 +179,10 @@ The following gaps must be closed before this ADR can describe the implemented d
 ## Open research
 
 - Vector Index federation and placement after Graph federation.
-- Text Index implementation and partition strategy, including whether FST is appropriate.
+- Text Index partition strategy. Engine decided by
+  [ADR 0077](0077-text-index-engine.md) (accepted 2026-08-24): custom segment-LSM inverted index
+  with varint postings, block-max pruning driver, and integer fixed-point scores; SplitFstReader
+  deferred until fuzzy/regex requirements land.
 - Cross-subnet result orchestration and latency policy.
 - Detailed lifecycle transitions for resource addition, replacement, removal, and recovery.
 - Router-visible procedure schema and GQL `CALL` registration contract.
@@ -187,6 +190,7 @@ The following gaps must be closed before this ADR can describe the implemented d
 ## Cross-links
 
 - [ADR 0035](0035-provision-canister-and-issuance-protocol.md) — issuance protocol and Provision ownership.
+- [ADR 0077](0077-text-index-engine.md) — Text Index engine decision (custom segment-LSM; accepted).
 - [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md) — graph-local shards and Property Index cluster routing.
 - [ADR 0031](0031-vertex-embedding-store-and-derived-vector-index.md) — derived Vector Index direction.
 - [Property Index design](../index/property-index.md) — existing posting and attach contracts.
