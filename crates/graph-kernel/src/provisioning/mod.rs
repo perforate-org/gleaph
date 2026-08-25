@@ -9,7 +9,7 @@ use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-use crate::federation::{IndexClusterId, ShardId, VectorIndexId};
+use crate::federation::{IndexClusterId, ShardId, TextIndexId, VectorIndexId};
 
 /// A provisionable resource within a deployment. The enum variant is the discriminator (it
 /// doubles as the resource kind); the inner type is a shared newtype so the stable encoding is
@@ -24,7 +24,8 @@ pub enum LogicalResource {
     /// The deployment's Router canister. A singleton per deployment (issued once during the
     /// bootstrap handover by the Account as trust subject); no payload id.
     Router,
-    // Future: TextIndex(...), Procedure(...)
+    TextIndex(TextIndexId),
+    // Future: Procedure(...)
 }
 
 impl Storable for LogicalResource {
@@ -57,6 +58,10 @@ impl Storable for LogicalResource {
                 out.push(3u8);
                 out.extend_from_slice(&[0u8; 4]);
             }
+            LogicalResource::TextIndex(text) => {
+                out.push(4u8);
+                out.extend_from_slice(&text.to_le_bytes());
+            }
         }
         out
     }
@@ -70,6 +75,7 @@ impl Storable for LogicalResource {
             1 => LogicalResource::PropertyIndex(IndexClusterId::from_le_bytes(raw)),
             2 => LogicalResource::VectorIndex(VectorIndexId::from_le_bytes(raw)),
             3 => LogicalResource::Router,
+            4 => LogicalResource::TextIndex(TextIndexId::from_le_bytes(raw)),
             other => panic!("unknown LogicalResource variant {other}"),
         }
     }

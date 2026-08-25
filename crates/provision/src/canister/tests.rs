@@ -1220,7 +1220,8 @@ fn accept_same_key_altered_envelope_conflicts_without_second_effect() {
         .get_by_request_key(&key)
         .unwrap()
         .completed_effect_count;
-    let changed_fields: [(&str, fn(&mut ProvisionRequest)); 6] = [
+    type ProvisionFieldMutator = fn(&mut ProvisionRequest);
+    let changed_fields: [(&str, ProvisionFieldMutator); 6] = [
         ("intent", |altered| {
             altered.intent_key = ProvisioningIntentKey::new(
                 "dep-a",
@@ -1881,6 +1882,7 @@ fn publish_compatible_release(r: ReleaseId) {
         publish_verified_artifact_for_release(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
         publish_verified_artifact_for_release(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact_for_release(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
+        publish_verified_artifact_for_release(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
     ];
     release_publish_with_caller(
         gov(),
@@ -2016,11 +2018,13 @@ fn release_install_rejects_unverified_artifact() {
         publish_verified_artifact_for_release(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
     let vector =
         publish_verified_artifact_for_release(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]);
+    let text =
+        publish_verified_artifact_for_release(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]);
     release_publish_with_caller(
         gov_principal(),
         ReleasePublishArgs {
             release_id: r.clone(),
-            artifact_ids: vec![router, graph, prop, vector.clone()],
+            artifact_ids: vec![router, graph, prop, vector.clone(), text],
         },
         100,
     )

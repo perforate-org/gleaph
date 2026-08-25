@@ -12,9 +12,9 @@ use crate::federation::ShardId;
 /// Candid init args for a Router canister issued by Provision.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct RouterInitArgs {
-    /// Installer principal; receives `Admin` role in stable auth.
+    /// Installer principal; receives the full administrative capability set in stable auth.
     pub issuing_principal: Principal,
-    /// Additional principals seeded as `Admin` at init.
+    /// Additional principals seeded with the full administrative capability set at init.
     #[serde(default)]
     pub initial_admins: Vec<Principal>,
     /// Optional provision-canister principal for ADR 0035 Slice 5.
@@ -60,4 +60,15 @@ pub struct VectorCanisterInitArgs {
     pub definition_map_seed: u64,
     /// Trusted hash seed persisted by the strict fresh-install subject-map create operation.
     pub subject_map_seed: u64,
+}
+
+/// Candid init args for a Text canister issued by Provision (plan 0297). The Candid shape mirrors
+/// `text_canister::TextCanisterInitArgs` exactly (`controller`); this module only fixes the wire
+/// shape so Router-built install args decode in the text canister's init handler.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct TextCanisterInitArgs {
+    /// Controller allowed to call the text canister's admin endpoints (`admin_flush`,
+    /// `admin_merge_step`, and the later backfill steps). Wired to the issuing Router so
+    /// Router-driven backfill/flush work is authorized from day one.
+    pub controller: Option<Principal>,
 }

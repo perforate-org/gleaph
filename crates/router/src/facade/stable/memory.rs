@@ -145,6 +145,13 @@ pub(crate) const ROUTER_VECTOR_INGEST_OUTBOX: MemoryId = MemoryId::new(53);
 // --- retired physical posting namespaces pending a confirmed graph-index purge (ADR 0023 D6) ---
 pub(crate) const ROUTER_INDEX_RETIRED: MemoryId = MemoryId::new(54);
 
+// --- catalog: TEXT index definition catalog (plan 0297 / ADR 0054 Text resource) ---
+/// `(graph_id, text_index_id) → TextIndexDefRecord`. Sole MemoryId 56 owner; layout version is
+/// the record's `TextIndexDefStableRecord::V1` envelope (fresh-state installs only).
+const ROUTER_TEXT_INDEXES: MemoryId = MemoryId::new(56);
+/// Next never-issued opaque text-index id (mirrors `ROUTER_NEXT_VECTOR_INDEX_ID`). Zero invalid.
+const ROUTER_NEXT_TEXT_INDEX_ID: MemoryId = MemoryId::new(57);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -355,6 +362,12 @@ pub(crate) type StableIndexRetiredMap = BTreeMap<
     super::index_retirement::RetiredIndexRecord,
     Memory,
 >;
+pub(crate) type StableTextIndexMap = BTreeMap<
+    super::text_index_catalog::TextIndexKey,
+    super::text_index_catalog::TextIndexDefRecord,
+    Memory,
+>;
+pub(crate) type StableTextIndexIdAllocator = Cell<u32, Memory>;
 
 // --- provisioning (ADR 0035 Slice 1) ---
 pub(crate) type StableProvisioningRequestMap =
@@ -446,6 +459,8 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
     (ROUTER_VECTOR_INGEST_OUTBOX, 16),
     (ROUTER_INDEX_RETIRED, 8),
+    (ROUTER_TEXT_INDEXES, 8),
+    (ROUTER_NEXT_TEXT_INDEX_ID, 1),
 ];
 
 thread_local! {
@@ -626,6 +641,17 @@ pub(crate) fn init_index_retired() -> StableIndexRetiredMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEX_RETIRED)))
 }
 
+pub(crate) fn init_text_indexes() -> StableTextIndexMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_TEXT_INDEXES)))
+}
+
+pub(crate) fn init_next_text_index_id() -> StableTextIndexIdAllocator {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_NEXT_TEXT_INDEX_ID)),
+        1,
+    )
+}
+
 pub(crate) fn init_vector_maintenance_policies() -> StableVectorMaintenancePolicyMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_MAINTENANCE_POLICIES)))
 }
@@ -722,17 +748,17 @@ mod tests {
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 56);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 58);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=55)
+                (0..=57)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 56);
-        for id in 0..=55 {
+        assert_eq!(ids.len(), 58);
+        for id in 0..=57 {
             assert!(ids.contains(&id));
         }
     }

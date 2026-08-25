@@ -156,19 +156,22 @@ impl DeploymentTrustStore {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProvisionJobStore;
 
+/// Test-only snapshot of the three provisioning maps, captured for before/after
+/// comparisons in canister tests.
+#[cfg(test)]
+type ProvisioningMapsSnapshot = (
+    Vec<(ProvisionJobRequestKey, ProvisionJobRecord)>,
+    Vec<(ProvisioningIntentKey, ProvisionJobRequestKey)>,
+    Vec<ProvisioningIntentKey>,
+);
+
 impl ProvisionJobStore {
     pub fn new() -> Self {
         Self
     }
 
     #[cfg(test)]
-    pub(crate) fn provisioning_maps_snapshot_for_test(
-        &self,
-    ) -> (
-        Vec<(ProvisionJobRequestKey, ProvisionJobRecord)>,
-        Vec<(ProvisioningIntentKey, ProvisionJobRequestKey)>,
-        Vec<ProvisioningIntentKey>,
-    ) {
+    pub(crate) fn provisioning_maps_snapshot_for_test(&self) -> ProvisioningMapsSnapshot {
         let jobs = JOB_BY_REQUEST.with_borrow(|map| {
             map.iter()
                 .map(|entry| (entry.key().clone(), entry.value()))

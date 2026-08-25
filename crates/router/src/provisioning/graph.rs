@@ -552,7 +552,7 @@ fn build_install_args_with_router(
     use candid::Encode;
     use gleaph_graph_kernel::provisioning::init_args::{
         DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, GraphInitArgs, IndexInitArgs,
-        VectorCanisterInitArgs,
+        TextCanisterInitArgs, VectorCanisterInitArgs,
     };
     args.requested_resources
         .iter()
@@ -583,6 +583,15 @@ fn build_install_args_with_router(
                     subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
                 };
                 Encode!(&init).expect("encode VectorCanisterInitArgs")
+            }
+            LogicalResource::TextIndex(_) => {
+                // The issuing Router becomes the text canister's controller so Router-driven
+                // flush/backfill steps (later slices) are authorized from day one. Candid shape
+                // mirrors `text_canister::TextCanisterInitArgs` via the shared init-args module.
+                let init = TextCanisterInitArgs {
+                    controller: Some(router_principal),
+                };
+                Encode!(&init).expect("encode TextCanisterInitArgs")
             }
             // A Router is a singleton issued once per deployment by the Account during the
             // bootstrap handover; an already-issued Router never requests another Router.

@@ -20,6 +20,7 @@ pub(crate) mod prepared_catalog;
 pub(crate) mod provision_config;
 pub(crate) mod reservation_catalog;
 pub(crate) mod schema_migration;
+pub(crate) mod text_index_catalog;
 pub(crate) mod unique_effect_pending;
 pub(crate) mod vector_activation;
 pub(crate) mod vector_index_catalog;
@@ -159,6 +160,16 @@ thread_local! {
         RefCell<memory::StableVectorMaintenancePolicyMap> =
         RefCell::new(memory::init_vector_maintenance_policies());
 
+    /// `(graph_id, text_index_id) → TEXT index definition` (plan 0297). Router-owned SSOT for
+    /// text-index definitions and their provisioned canister targets.
+    pub(crate) static ROUTER_TEXT_INDEXES: RefCell<memory::StableTextIndexMap> =
+        RefCell::new(memory::init_text_indexes());
+
+    /// Next never-issued opaque text-index id (plan 0297). Zero is invalid; ids are not reused.
+    pub(crate) static ROUTER_NEXT_TEXT_INDEX_ID:
+        RefCell<memory::StableTextIndexIdAllocator> =
+        RefCell::new(memory::init_next_text_index_id());
+
     /// `PhysicalIndexId → pending posting-purge obligation` (ADR 0023 D6). The sole durable
     /// identity of a dropped index's purge work: the catalog row is already gone, so this
     /// record — not the caller's stack — owns resumable drain progress until every frozen
@@ -232,4 +243,10 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     ROUTER_PROVISIONING_BY_GRAPH.with(|slot| slot.replace(memory::init_provisioning_by_graph()));
     ROUTER_PROVISIONING_INTENT_LOCK
         .with(|slot| slot.replace(memory::init_provisioning_intent_locks()));
+}
+
+#[cfg(test)]
+pub(crate) fn reopen_text_index_regions_for_test() {
+    ROUTER_TEXT_INDEXES.with(|slot| slot.replace(memory::init_text_indexes()));
+    ROUTER_NEXT_TEXT_INDEX_ID.with(|slot| slot.replace(memory::init_next_text_index_id()));
 }

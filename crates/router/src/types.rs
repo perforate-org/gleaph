@@ -1789,6 +1789,26 @@ pub struct VectorIndexActivationStatus {
     pub blocked_reason: Option<String>,
 }
 
+/// Wire view of a stored TEXT index status (plan 0297). `Registered` = declared without a
+/// provisioned canister (dev mode); `Ready` = provisioned text canister attached.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextIndexStatusView {
+    Registered,
+    Ready,
+}
+
+/// Wire view of one TEXT index definition (plan 0297). The logical name itself resolves
+/// through the shared index-name catalog; this row carries the creation-fixed shape.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TextIndexInfo {
+    pub text_index_id: u32,
+    pub label_id: u16,
+    pub property_id: u32,
+    pub analyzer_id: u32,
+    pub canister: Option<Principal>,
+    pub status: TextIndexStatusView,
+}
+
 /// Physical stable-memory inventory for one registered graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GraphStableMemoryStats {

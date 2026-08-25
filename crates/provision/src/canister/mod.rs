@@ -340,6 +340,7 @@ async fn deploy_job_resources(
             LogicalResource::GraphShard(_) => CanisterKind::Graph,
             LogicalResource::PropertyIndex(_) => CanisterKind::PropertyIndex,
             LogicalResource::VectorIndex(_) => CanisterKind::VectorCanister,
+            LogicalResource::TextIndex(_) => CanisterKind::TextCanister,
         };
 
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
@@ -410,6 +411,7 @@ async fn install_resource(
         CanisterKind::Graph => &manifest.graph_artifact,
         CanisterKind::PropertyIndex => &manifest.property_index_artifact,
         CanisterKind::VectorCanister => &manifest.vector_canister_artifact,
+        CanisterKind::TextCanister => &manifest.text_canister_artifact,
     };
 
     let metadata = artifact_store
@@ -618,13 +620,14 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         return Err(ArtifactError::Unauthorized);
     }
 
-    // Explicit 4-variant allowlist; Provision self-upgrade is forbidden.
+    // Explicit 5-variant allowlist; Provision self-upgrade is forbidden.
     if !matches!(
         args.canister_kind,
         CanisterKind::Router
             | CanisterKind::Graph
             | CanisterKind::PropertyIndex
             | CanisterKind::VectorCanister
+            | CanisterKind::TextCanister
     ) {
         return Err(ArtifactError::NotProvision(args.canister_kind));
     }
@@ -992,13 +995,13 @@ fn require_bootstrap_authority(caller: Principal) -> Result<Principal, ReleaseEr
     Ok(authority)
 }
 
-/// Canonicalize a `Vec<ArtifactId>` into the four-field release manifest.
+/// Canonicalize a `Vec<ArtifactId>` into the five-field release manifest.
 fn build_release_manifest(
     release_id: ReleaseId,
     artifact_ids: Vec<ArtifactId>,
     artifact_store: &ProvisionArtifactStore,
 ) -> Result<ReleaseManifest, ReleaseError> {
-    if artifact_ids.len() != 4 {
+    if artifact_ids.len() != 5 {
         return Err(ReleaseError::IncompleteManifest {
             release_id,
             missing: vec![],
@@ -1014,6 +1017,7 @@ fn build_release_manifest(
                 | CanisterKind::Graph
                 | CanisterKind::PropertyIndex
                 | CanisterKind::VectorCanister
+                | CanisterKind::TextCanister
         ) {
             return Err(ReleaseError::ProvisionKindForbidden(artifact_id.clone()));
         }
@@ -1036,6 +1040,7 @@ fn build_release_manifest(
         CanisterKind::Graph,
         CanisterKind::PropertyIndex,
         CanisterKind::VectorCanister,
+        CanisterKind::TextCanister,
     ];
     let mut missing = Vec::new();
     for kind in &required {
@@ -1061,6 +1066,7 @@ fn build_release_manifest(
         graph_artifact: by_kind.remove(&CanisterKind::Graph).unwrap(),
         property_index_artifact: by_kind.remove(&CanisterKind::PropertyIndex).unwrap(),
         vector_canister_artifact: by_kind.remove(&CanisterKind::VectorCanister).unwrap(),
+        text_canister_artifact: by_kind.remove(&CanisterKind::TextCanister).unwrap(),
     })
 }
 
@@ -1181,6 +1187,7 @@ pub(crate) fn release_activate_with_caller(
         &manifest.graph_artifact,
         &manifest.property_index_artifact,
         &manifest.vector_canister_artifact,
+        &manifest.text_canister_artifact,
     ] {
         if !matches!(
             artifact_id.canister_kind,
@@ -1188,6 +1195,7 @@ pub(crate) fn release_activate_with_caller(
                 | CanisterKind::Graph
                 | CanisterKind::PropertyIndex
                 | CanisterKind::VectorCanister
+                | CanisterKind::TextCanister
         ) {
             append_artifact_audit(
                 caller,
@@ -1456,6 +1464,7 @@ pub(crate) async fn release_install_with_caller(
             | CanisterKind::Graph
             | CanisterKind::PropertyIndex
             | CanisterKind::VectorCanister
+            | CanisterKind::TextCanister
     ) {
         append_artifact_audit(
             caller,
@@ -1533,6 +1542,7 @@ pub(crate) async fn release_install_with_caller(
         CanisterKind::Graph => &manifest.graph_artifact,
         CanisterKind::PropertyIndex => &manifest.property_index_artifact,
         CanisterKind::VectorCanister => &manifest.vector_canister_artifact,
+        CanisterKind::TextCanister => &manifest.text_canister_artifact,
     };
 
     let metadata = match artifact_store.get_metadata(artifact_id) {

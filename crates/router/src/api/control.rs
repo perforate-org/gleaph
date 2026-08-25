@@ -522,6 +522,45 @@ async fn index_vertex_property(
     .await
 }
 
+/// Declare a TEXT index on a vertex label property (plan 0297; `authorize_index_ddl`).
+///
+/// In provisioned mode this drives the ADR 0035 issuance flow for a standalone `TextIndex`
+/// resource — Provision creates + installs the text canister inside the awaited envelope
+/// exchange, and the returned canister id is registered as the definition target (`Ready`).
+/// Dev mode commits a targetless `Registered` definition. An exact re-issue is a no-op that
+/// returns the existing resource.
+#[update]
+async fn create_text_index(
+    logical_graph_name: String,
+    index_name: String,
+    vertex_label: String,
+    property: String,
+) -> Result<types::TextIndexInfo, RouterError> {
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&logical_graph_name)?;
+    crate::index_catalog::execute_create_text_index(
+        graph_id,
+        &index_name,
+        &vertex_label,
+        &property,
+    )
+    .await?;
+    crate::index_catalog::text_index_info_by_name(graph_id, &index_name)
+}
+
+/// Read one TEXT index definition by its graph-scoped logical name (plan 0297).
+#[query]
+fn get_text_index(
+    logical_graph_name: String,
+    index_name: String,
+) -> Result<types::TextIndexInfo, RouterError> {
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&logical_graph_name)?;
+    crate::index_catalog::text_index_info_by_name(graph_id, &index_name)
+}
+
 #[update]
 async fn index_edge_property(
     logical_graph_name: String,

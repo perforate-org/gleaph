@@ -1,5 +1,5 @@
 use super::{LogicalResource, ProvisioningIntentKey};
-use crate::federation::{IndexClusterId, ShardId, VectorIndexId};
+use crate::federation::{IndexClusterId, ShardId, TextIndexId, VectorIndexId};
 use ic_stable_structures::Storable;
 
 #[test]
@@ -30,6 +30,13 @@ fn logical_resource_bytes_roundtrip() {
     assert_eq!(
         LogicalResource::from_bytes(vec![3, 0, 0, 0, 0].into()),
         router
+    );
+
+    let text = LogicalResource::TextIndex(TextIndexId::new(7));
+    assert_eq!(text.into_bytes(), vec![4, 7, 0, 0, 0]);
+    assert_eq!(
+        LogicalResource::from_bytes(vec![4, 7, 0, 0, 0].into()),
+        text
     );
 }
 

@@ -126,7 +126,7 @@ type BootstrapAuthEntry = record {
 };
 // Kind of canister that an artifact can be installed into.
 // Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
-type CanisterKind = variant { Router; Graph; PropertyIndex; VectorCanister };
+type CanisterKind = variant { Router; Graph; PropertyIndex; VectorCanister; TextCanister };
 // Bootstrap trust binding for a deployment. Written only by governance principal.
 // This is authentication configuration, not graph topology or tenancy.
 type DeploymentBinding = record {
@@ -238,6 +238,7 @@ type LogicalResource = variant {
   PropertyIndex : nat32;
   VectorIndex : nat32;
   GraphShard : nat32;
+  TextIndex : nat32;
 };
 // Intent lock key for Map 47: (deployment_id, logical_resource) → marker.
 // 
@@ -294,6 +295,7 @@ type ReleaseManifest = record {
   router_artifact : ArtifactId;
   vector_canister_artifact : ArtifactId;
   release_id : text;
+  text_canister_artifact : ArtifactId;
   property_index_artifact : ArtifactId;
 };
 // Arguments for `release_publish`.
