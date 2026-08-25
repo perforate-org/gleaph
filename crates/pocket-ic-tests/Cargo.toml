@@ -113,6 +113,11 @@ path = "tests/adr0035_provisioned_create_index.rs"
 harness = true
 
 [[test]]
+name = "adr0082_rebac_exists_traversal"
+path = "tests/adr0082_rebac_exists_traversal.rs"
+harness = true
+
+[[test]]
 name = "text_index_lifecycle"
 path = "tests/text_index_lifecycle.rs"
 harness = true
