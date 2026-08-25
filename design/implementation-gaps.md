@@ -124,7 +124,9 @@ defect from being rediscovered without its prior reasoning.
   citation-reach executes for PUBLIC once the brace-form property READ rows exist (contract
   test `edge_element_id_projection_demands_stay_attributed`; probe artifact
   `design/investigations/artifacts/0306-edge-element-id-demand-probe.txt`; no edge-property
-  grant resource needed for element-id reads); (b) OPEN — shortest-path currently hits
+  grant resource needed for element-id reads; runtime execution verified
+  2026-08-26 only after GAP-2026-08-26-001 resolved the group element-id read);
+  (b) OPEN — shortest-path currently hits
   IndexScan(no index client) under active sibling index/planner development (observation,
   not diagnosed here).
 - **Fix direction:** none required in the walker. Demo-side resolution landed via
@@ -1610,6 +1612,46 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-2026-08-26-001 — RESOLVED: `ELEMENT_ID` over quantified-path group variables fail-closed as "requires element indexing"
+
+- **Status:** Resolved (plan 0307 slice A, 2026-08-26) — executor completeness for GQL
+  group variables, not a demo workaround.
+- **Severity:** P2 demo-blocking executor gap
+- **Owner:** graph executor expression evaluation
+  (`crates/graph/src/plan/query/executor/eval.rs`, `eval_element_id`)
+- **Observed behavior:** With the PUBLIC grant surface applied, the knowledge demo's
+  `citation-reach` op (`ELEMENT_ID(e)` over `-[e:CITES]->{1,3}`) failed at execution for
+  ANY caller (owner included) with `InvalidArgument("invalid query expression value for
+  'ELEMENT_ID(e) on a group edge variable requires element indexing'")`. Quantified-path
+  variables bind as groups (`PlanBinding::EdgeGroup` hop trail / `VertexGroup`), and
+  `eval_element_id` rejected all three group binding kinds since commits `51ba273c9` /
+  `c7a6eb01a` (2026-06-08). Authorization was never the blocker: requirement extraction
+  adds no demand for element-id reads (plan 0306 contract test
+  `edge_element_id_projection_demands_stay_attributed`).
+- **Expected or needed behavior:** GQL group variables are lists; an element-identity read
+  over them returns a list of element ids in group order (empty group → empty list), so
+  published ops projecting edge identity execute end-to-end for authorized callers.
+- **Resolution:** `eval_element_id` now evaluates `EdgeGroup` → `Value::List` of edge-id
+  bytes in traversal order and `VertexGroup` → list of vertex-id bytes in group order,
+  reusing the singleton-arm encodings verbatim; empty groups yield empty lists;
+  `PathGroup` stays fail-closed with an actionable message (paths are not elements; use
+  `CARDINALITY(p)` or path element access). No planner, wire, rkyv, or authz changes.
+  Tests: host-level `element_id_on_edge_group_lists_hop_ids_in_traversal_order`,
+  `element_id_on_vertex_group_preserves_order_and_empty_group_yields_empty_list`,
+  `element_id_on_path_group_stays_fail_closed_with_guidance`; PocketIC
+  `knowledge_demo_citation_reach_flow.rs` upgraded to full row-content assertions
+  (default-deny leg preserved; non-owner execution with per-row hop-count-pinned
+  `cite_edge_id` lists).
+- **Evidence:** detection run during brief #2 PocketIC validation (w1:p8, 2026-08-26);
+  root cause read of `eval.rs` / `expand/var_len.rs`
+  [group-variables.md](execution/group-variables.md); post-fix green runs recorded in the
+  Validation Transcript of `plans/0307-group-element-id.md`.
+- **Related contracts:** GAP-2026-08-24-008 Impact follow-up (a) — citation-reach runtime
+  execution is now actually proven; the 2026-08-26 plan 0306 note was extraction-correct
+  but execution remained blocked until this slice.
+- **Detection:** w1:p8 during brief #2 validation (2026-08-26); resolved same day by w1:p8
+  under brief #3.
 
 ### GAP-2026-08-25-004 — Committed HEAD fails `gleaph-router` lib-test standalone: `GqlQueryResult.truncated` constructor updates left uncommitted
 

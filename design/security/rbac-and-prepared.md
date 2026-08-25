@@ -154,6 +154,10 @@ historically conflated concerns, kept separate:
    The historical non-owner DENY of the knowledge demo's `citation-reach` was the GAP-008
    root cause (missing property-level READ rows for projected keys), not edge element-id
    semantics. No edge-property grant resource is required for element-id reads.
+   Group-binding element-id reads (quantified-path variables) now evaluate at execution as
+   a `Value::List` of element ids in traversal order, empty group → empty list (plan 0307,
+   GAP-2026-08-26-001); the authorization treatment described here is unchanged — group
+   forms add no demand beyond the same label-fact rows.
 
 The CLI surfaces the stability fact (1) at authoring time: `gleaph prepared plan` / `apply` /
 `run` print a stderr warning when an operation projects `ELEMENT_ID` on a MATCH-bound edge

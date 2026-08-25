@@ -96,6 +96,16 @@ done
 > `edge_element_id_projection_demands_stay_attributed`). What remains true of the warning:
 > citation-reach's returned edge ids are unstable physical handles — the CLI stderr warning
 > (commit 06261095f) covers exactly that stability fact.
+>
+> **Update (2026-08-26, plan 0307 / GAP-2026-08-26-001):** runtime verification corrected
+> the previous update on one point — citation-reach registered and granted cleanly but
+> could not EXECUTE for anyone yet: `ELEMENT_ID(e)` over a quantified path fail-closed as
+> "requires element indexing" (executor gap since June, independent of grants). That gap
+> is now implemented: scenario 4 executes end-to-end as dev after `apply-public-grants.sh`,
+> returning the reachable documents with `cite_edge_id` as a LIST of edge ids, one per hop
+> in traversal order (pinned by PocketIC `knowledge_demo_citation_reach_flow.rs`). The
+> stability caveat above still applies to every id in the list. `shortest-path` remains
+> blocked by the planner/index-client issue, unchanged.
 
 ### Browser host
 

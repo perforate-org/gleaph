@@ -1013,19 +1013,40 @@ impl QueryExprEvaluator<'_> {
                     edge.handle.owner_vertex_id,
                     EdgeSlotIndex::from_raw(edge.handle.slot_index.raw()),
                 )?)),
-                Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
-                    expression: format!(
-                        "ELEMENT_ID({name}) on a group edge variable requires element indexing"
-                    ),
-                }),
-                Some(PlanBinding::VertexGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
-                    expression: format!(
-                        "ELEMENT_ID({name}) on a group node variable requires element indexing"
-                    ),
-                }),
+                // A quantified-path variable binds the whole hop trail; its element ids form
+                // a list in traversal order (empty group → empty list at min=0). Each entry
+                // uses the identical encoding as the singleton edge arm.
+                Some(PlanBinding::EdgeGroup(edges)) => {
+                    let shard_id = local_shard_id(self.store);
+                    let hops = edges
+                        .iter()
+                        .map(|edge| {
+                            edge_element_id_bytes(
+                                &self.element_id_key,
+                                shard_id,
+                                edge.handle.owner_vertex_id,
+                                EdgeSlotIndex::from_raw(edge.handle.slot_index.raw()),
+                            )
+                            .map(Value::Bytes)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Value::List(hops))
+                }
+                // Same list semantics for group node variables, preserving the group order.
+                Some(PlanBinding::VertexGroup(vertices)) => {
+                    let ids = vertices
+                        .iter()
+                        .map(|vertex_id| {
+                            vertex_element_id_bytes(self.store, &self.element_id_key, *vertex_id)
+                                .map(Value::Bytes)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Value::List(ids))
+                }
                 Some(PlanBinding::PathGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
-                        "ELEMENT_ID({name}) on a group path variable requires element indexing"
+                        "ELEMENT_ID({name}) on a group path variable is not supported: paths \
+                         are not elements; use CARDINALITY({name}) or path element access instead"
                     ),
                 }),
                 Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
@@ -2134,6 +2155,159 @@ mod tests {
         assert_eq!(
             a1, a2,
             "key A result must be stable across an interleaved key B evaluation"
+        );
+    }
+
+    /// ELEMENT_ID over a quantified-path edge group lists one id per hop, in traversal
+    /// order, each byte-identical to the singleton-edge encoding of that hop.
+    #[test]
+    fn element_id_on_edge_group_lists_hop_ids_in_traversal_order() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["ElemGroupA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["ElemGroupMid"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["ElemGroupC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = crate::test_labels::edge_label_id_for_name("ElemGroupRoad");
+        let hop_ab = store
+            .insert_directed_edge(a, b, Some(label_id))
+            .expect("ab");
+        let hop_bc = store
+            .insert_directed_edge(b, c, Some(label_id))
+            .expect("bc");
+
+        let binding = |handle: EdgeHandle| {
+            let edge = store
+                .find_outgoing_edge_record(handle)
+                .expect("edge record lookup")
+                .expect("record present");
+            EdgeBinding::from_edge(handle, edge)
+        };
+        let mut row = PlanRow::new();
+        row.insert(
+            "e".to_owned(),
+            PlanBinding::EdgeGroup([binding(hop_ab), binding(hop_bc)].into()),
+        );
+
+        let key = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"elem-group-key01");
+        let evaluator = crate::plan::query::executor::context::QueryExprEvaluator {
+            store: &store,
+            parameters: &params(),
+            aggregate_specs: None,
+            caller: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            element_id_key: key,
+        };
+        let expr = gleaph_gql::ast::Expr::new(gleaph_gql::ast::ExprKind::ElementId(Box::new(
+            gleaph_gql::ast::Expr::var("e"),
+        )));
+
+        let value = evaluator
+            .eval_expr(&row, &expr)
+            .expect("element id over edge group");
+
+        let hop_id = |handle: EdgeHandle| {
+            super::edge_element_id_bytes(
+                &key,
+                super::local_shard_id(&store),
+                handle.owner_vertex_id,
+                EdgeSlotIndex::from_raw(handle.slot_index.raw()),
+            )
+            .expect("hop element id")
+        };
+        assert_eq!(
+            value,
+            Value::List(vec![
+                Value::Bytes(hop_id(hop_ab)),
+                Value::Bytes(hop_id(hop_bc)),
+            ]),
+            "ids must list per hop in traversal order with singleton-arm encoding"
+        );
+    }
+
+    /// ELEMENT_ID over a group node variable preserves group order; an empty group yields an
+    /// empty list (not NULL, not an error).
+    #[test]
+    fn element_id_on_vertex_group_preserves_order_and_empty_group_yields_empty_list() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["NodeGroupA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["NodeGroupB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+
+        let key = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"node-group-key01");
+        let evaluator = crate::plan::query::executor::context::QueryExprEvaluator {
+            store: &store,
+            parameters: &params(),
+            aggregate_specs: None,
+            caller: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            element_id_key: key,
+        };
+        let expr = gleaph_gql::ast::Expr::new(gleaph_gql::ast::ExprKind::ElementId(Box::new(
+            gleaph_gql::ast::Expr::var("g"),
+        )));
+
+        let mut populated = PlanRow::new();
+        populated.insert("g".to_owned(), PlanBinding::VertexGroup([a, b].into()));
+        let value = evaluator
+            .eval_expr(&populated, &expr)
+            .expect("element id over vertex group");
+        let vertex_id = |vertex: ic_stable_lara::VertexId| {
+            Value::Bytes(super::vertex_element_id_bytes(&store, &key, vertex).expect("vertex id"))
+        };
+        assert_eq!(
+            value,
+            Value::List(vec![vertex_id(a), vertex_id(b)]),
+            "ids must preserve the group order"
+        );
+
+        let mut empty = PlanRow::new();
+        empty.insert("g".to_owned(), PlanBinding::VertexGroup(Vec::new().into()));
+        let value = evaluator
+            .eval_expr(&empty, &expr)
+            .expect("element id over empty vertex group");
+        assert_eq!(value, Value::List(Vec::new()));
+    }
+
+    /// Group PATH variables stay fail-closed: paths are not elements.
+    #[test]
+    fn element_id_on_path_group_stays_fail_closed_with_guidance() {
+        let store = GraphStore::new();
+        let mut row = PlanRow::new();
+        row.insert("p".to_owned(), PlanBinding::PathGroup(Vec::new().into()));
+
+        let key = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"path-group-key01");
+        let evaluator = crate::plan::query::executor::context::QueryExprEvaluator {
+            store: &store,
+            parameters: &params(),
+            aggregate_specs: None,
+            caller: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            element_id_key: key,
+        };
+        let expr = gleaph_gql::ast::Expr::new(gleaph_gql::ast::ExprKind::ElementId(Box::new(
+            gleaph_gql::ast::Expr::var("p"),
+        )));
+
+        let err = evaluator
+            .eval_expr(&row, &expr)
+            .expect_err("path groups must stay rejected");
+        let PlanQueryError::InvalidExpressionValue { expression } = err else {
+            panic!("expected InvalidExpressionValue, got {err:?}")
+        };
+        assert!(
+            expression.contains("paths are not elements") && expression.contains("CARDINALITY(p)"),
+            "error must explain why and point at alternatives: {expression}"
         );
     }
 
