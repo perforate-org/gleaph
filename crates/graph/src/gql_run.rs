@@ -847,6 +847,14 @@ async fn flush_vector_pending(mutation_id: Option<u64>) -> Result<(), crate::pla
     }
 }
 
+/// Delivers any queued text-document mutations to the text canister (plan 0297). The shard's text
+/// routing target arrives with the Router TEXT attach handshake (separate in-flight slice), so no
+/// client is constructible yet and a non-empty queue defers rather than drops, mirroring
+/// [`flush_vector_pending`].
+async fn flush_text_pending() -> Result<(), crate::plan::PlanQueryError> {
+    crate::index::text_pending::flush_pending(None).await
+}
+
 /// Walk `block` in program order: run DML + flush pending; for read plans materialize [`Value`]
 /// rows, only count rows, or retain binding rows for the last read statement.
 async fn run_transaction_block(
@@ -902,6 +910,7 @@ async fn run_transaction_block_inner(
             if pending_dml {
                 pending::flush_all_pending(index, None).await?;
                 flush_vector_pending(None).await?;
+                flush_text_pending().await?;
                 pending_dml = false;
             }
             match materialize {

@@ -138,7 +138,10 @@ pub(crate) fn arm_if_needed() {
     {
         if !MAINTENANCE_SCHEDULER.with_borrow(|scheduler| scheduler.running) {
             let store = GraphStore::new();
-            if store.maintenance_queue_len() == 0 && !durable_delivery_pending(&store) {
+            if store.maintenance_queue_len() == 0
+                && !durable_delivery_pending(&store)
+                && crate::index::text_pending::pending_is_empty()
+            {
                 return;
             }
         }
@@ -213,11 +216,16 @@ async fn run_maintenance_pass() -> Option<core::time::Duration> {
         Err(_) => Some(MAINTENANCE_TIMER_FLOOR_DELAY),
     };
     // Keep ticking while the durable repair journal still holds failed-flush
-    // postings (ADR 0023 D5); a persistently unavailable index backs off to the
+    // postings (ADR 0023 D5) or unconfirmed volatile text work remains (plan
+    // 0297); either way a persistently unavailable target backs off to the
     // relaxed delay rather than hot-looping.
     match base {
         Some(delay) => Some(delay),
-        None if durable_delivery_pending(&store) => Some(MAINTENANCE_TIMER_RELAXED_DELAY),
+        None if durable_delivery_pending(&store)
+            || !crate::index::text_pending::pending_is_empty() =>
+        {
+            Some(MAINTENANCE_TIMER_RELAXED_DELAY)
+        }
         None => None,
     }
 }
@@ -286,6 +294,12 @@ async fn flush_and_repair(store: &GraphStore) {
     if store.repair_journal_is_empty() {
         let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
         let _ = crate::index::vector_pending::flush_pending(vx, None).await;
+        // Text-pending flush slot (plan 0297): the newest derived-state class flushes only once
+        // the older durable journal/outbox work has drained, so a text op can never overtake an
+        // older durable entry. The client arrives with the Router TEXT attach handshake
+        // (separate in-flight slice); until then `None` defers any queued work without dropping
+        // it and keeps the timer armed at the relaxed delay.
+        let _ = crate::index::text_pending::flush_pending(None).await;
     }
     let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }
