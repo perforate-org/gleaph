@@ -20,6 +20,12 @@
 > ([ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md)) is a
 > separate domain and is out of scope.
 
+> **Elevation retention (proposed, not implemented):** [ADR 0083](../adr/0083-authorization-audit-log.md)
+> formalizes expired elevation-row retention and GC in the grant store: a bounded review
+> window (default 90 days) with an autonomous-timer GC driver. It adds no separate audit
+> store; grant/revoke/caps history and a unified time-ordered view are deferred until DAO
+> governance is designed.
+
 ## Purpose
 
 Document Gleaph’s **in-canister access model** and how Prepared Queries fit the threat model.
