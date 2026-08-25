@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 09:55:00 UTC +0000
+Last updated: 2026-08-25
+Anchor timestamp: 2026-08-25 03:07:00 UTC +0000
 
 ## Purpose
 
@@ -97,6 +97,40 @@ falls back to the canonical EDGE_PROPERTIES superset instead of a node scan. The
 shared edge seed context) and executes it as one Between request per wire label. Leading-hop
 eligibility (`has_indexed_edge_bound`) recognizes prefix bounds so first-hop deferral fires
 symmetrically with equality/IN/range.
+
+### `IndexScan` ordered-delivery intent (implemented, ADR 0081 Slice A)
+
+The vertex `IndexScan` variant carries `ordered_by_sort: Option<Str>`. When set, the op
+**delivers its bound rows in ascending encoded-key order of that property**, and the
+planner has proven the full ADR 0081 eligibility contract (single bare
+`PropertyAccess(var, p)` ASC sort key; equality | IN | range | prefix vertex anchor on
+the same `var`+`p`; the anchored variable bound by the leading scan; only row-local,
+order-preserving operators between that scan and the sort site). The proof lives in one
+place (`gql-planner::ordered_delivery`); consumers derive behavior from the recorded
+intent:
+
+- Eligible pipelines without `LIMIT`/`OFFSET` emit no `Sort` op at all.
+- Eligible pipelines with a limit keep `Sort` so the existing Sort+Limit → `TopK`
+  fusion forms; execution then stops consuming at the first key strictly greater than
+  the boundary survivor's key (tie groups close before the stop), which stays correct
+  with residual filters between scan and TopK. `OFFSET` skips within the delivered
+  stream.
+- IN-list anchors concatenate per-element blocks in encoded payload byte order
+  (encoded byte order equals domain order by construction); equality is trivially
+  ordered; range/prefix are contiguous encoded intervals.
+- Ineligible pipelines compile exactly as before with no intent recorded, so DESC,
+  multi-key sorts, DISTINCT mediation, and edge-side sorts are unaffected.
+
+Router-seeded executions skip the leading anchor op, so the annotated op is absent from
+the executed slice and the executor's ordered-delivery gate fails closed to full
+sorting — seed order cannot violate the contract. Every current index read path
+(native single-store posting map; single index canister per logical graph with paged
+collection) delivers **one globally ordered hit stream**, so the ADR §3 R-way merge at
+the federation bind boundary degenerates to identity today; the merge becomes real work
+only when per-shard cursor streams land (see `design/implementation-gaps.md`).
+
+Wire policy: this field addition follows the pre-stability plan-wire no-bump rule;
+`PLAN_WIRE_VERSION` remains `1`.
 
 ## Router seed contract
 
@@ -341,6 +375,10 @@ Graph classifies evaluated assignments using the `ResolvedEdgeLabel.inline_schem
 2. `PropertyFilter.stage` matches planner’s pipeline staging.
 3. DML ops appear only on update path; router verifies `has_dml()` vs program classification.
 4. `Expand.emit_edge_binding` controls whether edge variable is populated.
+5. An `IndexScan` with `ordered_by_sort` set delivers rows ascending by that property's
+   encoded key; only the planner's ADR 0081 proof may set it, and consumers must fail
+   closed to full sorting when the annotated op is not the leading op of the executed
+   slice.
 
 Violations → `PlanQueryError` at execution time.
 

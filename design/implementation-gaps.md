@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-24
-Anchor timestamp: 2026-08-24 22:32:52 UTC +0000
+Last updated: 2026-08-25
+Anchor timestamp: 2026-08-25 03:07:00 UTC +0000
 
 ## Status
 
@@ -46,6 +46,37 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
+
+- **Status:** Open — non-blocking follow-up recorded while landing ADR 0081 Slice A
+  (2026-08-25). Not a regression introduced by that slice: Federation v1 already merged
+  shard-local `ORDER BY` fragments by concatenation.
+- **Owner:** Router federation merge (`crates/router/src/federation/merge.rs`
+  `FederatedMergeMode::UnionRows` → `GqlWireRows::merge_optional_batch_blobs`)
+  together with the future per-shard cursor-stream fan-out described in
+  [ADR 0081 §Decision 3](../adr/0081-index-ordered-order-by-delivery.md).
+- **Observed behavior:** Every current index read path delivers one globally ordered
+  hit stream (native single posting map; single index canister per logical graph via
+  `RouterIndexLookup::require_single_target`), so ADR 0081's R-way merge degenerates to
+  identity and shards return ascending fragments. When a query fans out over multiple
+  graph shards, the router concatenates those sorted fragments (`UnionRows`), so global
+  cross-shard ordering is not guaranteed — both for the new ordered-delivery plans and,
+  unchanged, for every pre-existing `Sort`/`TopK` plan executed per shard.
+- **Evidence:** `design/gql/plan-format.md` §"IndexScan ordered-delivery intent";
+  `crates/router/src/index_lookup.rs:315` (`require_single_target`);
+  `crates/router/src/federation/merge.rs` UnionRows branch.
+- **Expected or needed behavior:** When per-shard cursor streams exist, the federation
+  bind boundary should run an R-way heap merge of the ascending streams (ADR 0081 §3)
+  or, at the router, a merge-aware union for batches whose plans carry
+  `IndexScan { ordered_by_sort }`.
+- **Impact:** Multi-shard deployments cannot rely on router-level result ordering for
+  `ORDER BY` queries; single-shard execution (the only mode exercised by native stores
+  and current canister topologies) is unaffected.
+- **Next decision:** Fold merge-aware union into the slice that introduces per-shard
+  cursor fan-out; until then no action.
+- **Status detail:** Blocked on the cursor-stream fan-out prerequisite; revisit when
+  sharded postings land.
 
 ### GAP-2026-08-24-008 - RESOLVED: ELEMENT_ID projections need property-level READ grants (plan 0303 diagnosis; no Router defect)
 
@@ -1790,6 +1821,7 @@ duplicate its state machine or ownership rules.
 | P2       | Extend edge-index anchors to accept `ScanValue::TextPrefix` prefix intervals (symmetric with the vertex STARTS WITH anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-010 (edge symmetric extension landed 2026-08-24) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 | P3       | Cache resolved `GraphTypePropertySchema` beside the definition heap cache (steady-state O(1) catalog resolve; candidate from the 2026-08-25 canbench attribution review) | Open — GAP-2026-08-25-002 (catalog owner decision)                                           |
+| P2       | ADR 0081 index-ordered ORDER BY delivery: Slice A (single-key ASC, equality/IN/range/prefix anchors, wire intent + executor tie-boundary TopK) landed; Slice B DESC and merge-aware cross-shard union deferred | Slice A closed 2026-08-25; cross-shard union tracked as GAP-2026-08-25-003                                    |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
 the ordered scan primitive already exists through `StableBTreeMap::range()`; the remaining work is
