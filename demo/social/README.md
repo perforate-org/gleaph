@@ -39,7 +39,7 @@ The Gleaph platform must be running and the `social` graph registered. There are
    ```
 
    The Router/graph-index/graph-shard wasm artifacts are produced by the repository-root
-   `icp.yaml` build (under `target/wasm64-unknown-unknown/release/`). `--graph social` pre-registers
+   `icp.yaml` build (under `target/wasm32-unknown-unknown/release/`). `--graph social` pre-registers
    the `social` graph so the migrations and `gleaph load` resolve it.
 
 2. **Repository operator script.** Deploy the platform canisters and register the `social` graph

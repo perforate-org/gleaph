@@ -1,2 +1,2 @@
 # Default toolchain target is the host so `cargo test` runs natively.
-# For wasm64 canister artifacts, pass `--config .cargo/wasm.toml` (see wasm.toml).
+# For wasm32 canister artifacts, pass `--config .cargo/wasm.toml` (see wasm.toml).

@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - PocketIC server: `.pocket-ic/pocket-ic` (fetched at build time if missing or version mismatch). The tests execute it through `.pocket-ic/pocket-ic-launcher`, which closes unrelated inherited file descriptors before starting PocketIC. `POCKET_IC_BIN` may override it only when the binary reports the same `pocket-ic-server` version as the `pocket-ic` crate dependency; a mismatched override is ignored (stale shell exports otherwise cause composite-query timeouts). Prefer leaving `POCKET_IC_BIN` unset for local runs so the launcher stays in effect.
-- `wasm64-unknown-unknown` target: wasm64 has no prebuilt std, so the wasm is built with nightly `-Z build-std=core,alloc,std,panic_abort` (see `build.rs`); SIMD comes from the workspace-root `.cargo/config.toml` target rustflags
+- `wasm32-unknown-unknown` target: the production/benchmark target (see `build.rs`; wasm32 has a prebuilt std, so no `-Z build-std` is needed); SIMD comes from the workspace-root `.cargo/config.toml` target rustflags
 - `ic-wasm` and `candid-extractor` on PATH: after the cargo build, `build.rs` runs the shared
   `scripts/postprocess-canister-wasm.sh` over every fixture artifact (metadata insertion,
   candid extraction, ic-wasm shrink with the name section kept), so E2E installs exercise the

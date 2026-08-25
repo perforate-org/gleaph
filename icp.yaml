@@ -6,12 +6,13 @@
 #
 # yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/icp-yaml-schema.json
 
-# Canisters are built as **wasm64** (the IC runs 64-bit wasm). The `@dfinity/rust` recipe
-# hardcodes `--target wasm32-unknown-unknown`, so the recipe's build step is replicated below as a
-# script adapter with the wasm64 target plus `-Z build-std` (wasm64 has no prebuilt std) and SIMD
-# from the workspace-root `.cargo/config.toml` target rustflags. Post-processing (metadata
-# insertion, candid extraction, ic-wasm shrink with the name section kept) is owned by the shared
-# `scripts/postprocess-canister-wasm.sh` entry point that every Gleaph canister build path uses.
+# Canisters are built as **wasm32** (the production target; matches canbench benchmark builds and
+# the PocketIC E2E suite). The `@dfinity/rust` recipe hardcodes `--target wasm32-unknown-unknown`,
+# so the recipe's build step is replicated below as a script adapter to keep the shared
+# post-processing pipeline explicit, with SIMD from the workspace-root `.cargo/config.toml` target
+# rustflags. Post-processing (metadata insertion, candid extraction, ic-wasm shrink with the name
+# section kept) is owned by the shared `scripts/postprocess-canister-wasm.sh` entry point that
+# every Gleaph canister build path uses.
 # Validation-only features (`batch-instr-log`) are intentionally **not** compiled into these
 # production canister builds; the demo deploys its own explicitly-featured router build
 # (see scripts/deploy-demo-local.sh).
@@ -22,8 +23,8 @@ canisters:
       steps:
         - type: script
           commands:
-            - cargo build --package gleaph-router --target wasm64-unknown-unknown -Z build-std=core,alloc,std,panic_abort --release
-            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm64-unknown-unknown/release/gleaph_router.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - cargo build --package gleaph-router --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_router.wasm" "$ICP_WASM_OUTPUT_PATH"
             - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
 
   - name: gleaph-graph-index
@@ -31,8 +32,8 @@ canisters:
       steps:
         - type: script
           commands:
-            - cargo build --package gleaph-graph-index --target wasm64-unknown-unknown -Z build-std=core,alloc,std,panic_abort --release
-            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm64-unknown-unknown/release/gleaph_graph_index.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - cargo build --package gleaph-graph-index --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_graph_index.wasm" "$ICP_WASM_OUTPUT_PATH"
             - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
 
   - name: gleaph-graph-shard-0
@@ -40,8 +41,8 @@ canisters:
       steps:
         - type: script
           commands:
-            - cargo build --package gleaph-graph --target wasm64-unknown-unknown -Z build-std=core,alloc,std,panic_abort --release
-            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm64-unknown-unknown/release/gleaph_graph.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - cargo build --package gleaph-graph --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_graph.wasm" "$ICP_WASM_OUTPUT_PATH"
             - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
 
   - name: gleaph-vector
@@ -49,8 +50,8 @@ canisters:
       steps:
         - type: script
           commands:
-            - cargo build --package gleaph-vector-canister --target wasm64-unknown-unknown -Z build-std=core,alloc,std,panic_abort --release
-            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm64-unknown-unknown/release/gleaph_vector_canister.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - cargo build --package gleaph-vector-canister --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_vector_canister.wasm" "$ICP_WASM_OUTPUT_PATH"
             - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
 
 networks:

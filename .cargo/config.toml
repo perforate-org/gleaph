@@ -1,16 +1,15 @@
-# Canister artifacts are wasm64 (IC supports 64-bit wasm); SIMD (simd128) is enabled for every
-# wasm64 build. Scoping rustflags to the wasm64 target keeps host-side builds (cargo test/clippy)
-# untouched and applies uniformly to pocket-ic E2E, dfx/icp, and manual builds. wasm64 has no
-# prebuilt std, so each wasm64 build additionally passes `-Z build-std=core,alloc,std,panic_abort`
-# (nightly cargo; see crates/pocket-ic-tests/build.rs and the deploy script).
-[target.wasm64-unknown-unknown]
+# Canister artifacts are wasm32 (production target; matches the canbench benchmark builds and the
+# PocketIC E2E suite). SIMD (simd128) is enabled for every wasm32 build. Scoping rustflags to the
+# wasm32 target keeps host-side builds (cargo test/clippy) untouched and applies uniformly to
+# pocket-ic E2E, dfx/icp, and manual builds.
+[target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]
 
-# canbench's instruction measurement is wasm32-only upstream (canbench TODO EXC-2019: i64 tracing
-# addresses; ic0.performance_counter reports 0 for wasm64 modules), so the benchmark wasm is built
-# for wasm32 with SIMD enabled; the same kernel code is measured structurally (regression detection
-# and formulation comparison). Revisit when canbench supports wasm64.
-[target.wasm32-unknown-unknown]
+# Kept for a possible future re-switch to wasm64 (not the current production target). Stable
+# memory survives width-change upgrades in both directions, so re-switching never strands data.
+# wasm64 has no prebuilt std: such a build would additionally need nightly
+# `-Z build-std=core,alloc,std,panic_abort` on top of these SIMD rustflags.
+[target.wasm64-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]
 
 [unstable]
