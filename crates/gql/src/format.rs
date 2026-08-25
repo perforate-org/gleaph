@@ -1001,9 +1001,10 @@ impl<'a> Formatter<'a> {
                 let condition_text = match condition {
                     None => String::new(),
                     Some(condition) => {
-                        let predicate = self.authorization_condition_predicate(
+                        let predicate = self.authorization_condition(
                             &condition.predicate,
                             &condition.selector,
+                            condition.chain.as_deref(),
                         )?;
                         format!(
                             " {} {}",
@@ -1065,12 +1066,14 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Renders the AND-ordered predicate body (`WHERE v.p = 'x' AND v.q = MSG_CALLER()`).
+    /// Renders the AND-ordered predicate body (`WHERE v.p = 'x' AND v.q = MSG_CALLER()`)
+    /// plus the optional bounded EXISTS chain inline ([ADR 0082] §2).
     #[cfg(feature = "gleaph")]
-    fn authorization_condition_predicate(
+    fn authorization_condition(
         &mut self,
         predicate: &GrantPredicate,
         selector: &GrantConditionSelector,
+        chain: Option<&GrantChain>,
     ) -> Result<String, FormatError> {
         let variable = selector.variable().to_owned();
         let mut out = self.kw("WHERE");
@@ -1078,26 +1081,75 @@ impl<'a> Formatter<'a> {
             if index > 0 {
                 out.push_str(&format!(" {}", self.kw("AND")));
             }
-            let value = match &conjunct.value {
-                GrantValueExpr::Literal(value) => {
-                    self.expr(&Expr::new(ExprKind::Literal(value.clone())))?
+            out.push_str(&format!(" {}", self.comparison_text(conjunct, &variable)?));
+        }
+        if let Some(chain) = chain {
+            if !predicate.conjuncts.is_empty() {
+                out.push_str(&format!(" {}", self.kw("AND")));
+            }
+            out.push_str(&format!(" {} {{ ", self.kw("EXISTS")));
+            out.push_str(&format!("({})", chain.source_variable));
+            for hop in &chain.hops {
+                match hop.direction {
+                    GrantChainDirection::Right => out.push_str(&format!(
+                        "-[:{}]->({}:{})",
+                        hop.edge_label, hop.variable, hop.label
+                    )),
+                    GrantChainDirection::Left => out.push_str(&format!(
+                        "<-[:{}]-({}:{})",
+                        hop.edge_label, hop.variable, hop.label
+                    )),
+                    GrantChainDirection::Undirected => out.push_str(&format!(
+                        "-[:{}]-({}:{})",
+                        hop.edge_label, hop.variable, hop.label
+                    )),
                 }
-                GrantValueExpr::MsgCaller => "MSG_CALLER()".to_owned(),
-            };
-            let op = match conjunct.op {
-                CmpOp::Eq => "=",
-                CmpOp::Ne => "<>",
-                CmpOp::Lt => "<",
-                CmpOp::Le => "<=",
-                CmpOp::Gt => ">",
-                CmpOp::Ge => ">=",
-            };
-            out.push_str(&format!(
-                " {}.{} {} {}",
-                variable, conjunct.property, op, value
-            ));
+            }
+            out.push_str(&format!(" {} ", self.kw("WHERE")));
+            let terminal_variable = chain
+                .hops
+                .last()
+                .map(|hop| hop.variable.as_str())
+                .unwrap_or(chain.source_variable.as_str());
+            for (index, conjunct) in chain.terminal_conjuncts.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(&format!(" {}", self.kw("AND")));
+                }
+                out.push_str(&format!(
+                    " {}",
+                    self.comparison_text(conjunct, terminal_variable)?
+                ));
+            }
+            out.push_str(" }");
         }
         Ok(out)
+    }
+
+    /// Renders one `<variable>.<property> <op> <value>` comparison.
+    #[cfg(feature = "gleaph")]
+    fn comparison_text(
+        &mut self,
+        conjunct: &GrantComparison,
+        variable: &str,
+    ) -> Result<String, FormatError> {
+        let value = match &conjunct.value {
+            GrantValueExpr::Literal(value) => {
+                self.expr(&Expr::new(ExprKind::Literal(value.clone())))?
+            }
+            GrantValueExpr::MsgCaller => "MSG_CALLER()".to_owned(),
+        };
+        let op = match conjunct.op {
+            CmpOp::Eq => "=",
+            CmpOp::Ne => "<>",
+            CmpOp::Lt => "<",
+            CmpOp::Le => "<=",
+            CmpOp::Gt => ">",
+            CmpOp::Ge => ">=",
+        };
+        Ok(format!(
+            "{}.{} {} {}",
+            variable, conjunct.property, op, value
+        ))
     }
 }
 

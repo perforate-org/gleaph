@@ -13,10 +13,11 @@ use crate::ast::{
 };
 #[cfg(feature = "gleaph")]
 use crate::ast::{
-    Expr, ExprKind, GrantComparison, GrantCondition, GrantConditionSelector, GrantDirection,
-    GrantMetadataScope, GrantPredicate, GrantPrivilege, GrantResourceSelector, GrantStatement,
-    GrantSubjectLiteral, GrantTarget, GrantValueExpr, RevokeStatement, SearchOutputBinding,
-    SearchOutputKind, SearchProvider, SearchStatement, VectorSearchSpec,
+    Expr, ExprKind, GrantChain, GrantChainDirection, GrantChainHop, GrantComparison,
+    GrantCondition, GrantConditionSelector, GrantDirection, GrantMetadataScope, GrantPredicate,
+    GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget,
+    GrantValueExpr, RevokeStatement, SearchOutputBinding, SearchOutputKind, SearchProvider,
+    SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -1083,8 +1084,9 @@ impl Parser<'_> {
     ///
     /// The `WHERE` body is parsed with the ordinary expression grammar and then
     /// restricted to the ADR 0075 §2 DSL: comparisons of one selector-variable property
-    /// against a literal or `MSG_CALLER()`, joined by `AND`. Every unsupported shape is
-    /// rejected here with its own distinct error.
+    /// against a literal or `MSG_CALLER()`, joined by `AND`, plus — since [ADR 0082]
+    /// §2 — an optional bounded EXISTS chain AND-composed with those comparisons.
+    /// Every unsupported shape is rejected here with its own distinct error.
     #[cfg(feature = "gleaph")]
     fn parse_grant_condition_opt(&mut self) -> Result<Option<GrantCondition>, GqlError> {
         if !self.eat_keyword("FOR") {
@@ -1094,11 +1096,13 @@ impl Parser<'_> {
         let selector = self.parse_condition_selector()?;
         self.expect_keyword("WHERE")?;
         let expr = self.parse_expr()?;
-        let conjuncts = normalize_policy_predicate(&expr, selector.variable(), selector.label())?;
+        let (conjuncts, chain) =
+            normalize_policy_condition(&expr, selector.variable(), selector.label())?;
         Ok(Some(GrantCondition {
             span: self.span_since(start),
             selector,
             predicate: GrantPredicate { conjuncts },
+            chain: chain.map(Box::new),
         }))
     }
 
@@ -1669,13 +1673,54 @@ impl Parser<'_> {
 #[cfg(feature = "gleaph")]
 pub const MAX_GRANT_CONDITION_CONJUNCTS: usize = 8;
 
-/// Restricts a parsed `WHERE` expression to the ADR 0075 §2 conditional-policy DSL and
-/// normalizes it into an AND-ordered comparison list.
+/// Restricts a parsed `WHERE` expression to the ADR 0075 §2 conditional-policy DSL
+/// and normalizes it into an AND-ordered comparison list, extended by [ADR 0082] §2
+/// with an optional bounded EXISTS chain.
 ///
 /// Accepted shape: `Comparison (AND Comparison)*` where each comparison is
-/// `<selector-variable>.<property> <op> <literal | MSG_CALLER()>`. Every unsupported
-/// shape is rejected with its own distinct error message so grant authors can see which
-/// construct was refused.
+/// `<selector-variable>.<property> <op> <literal | MSG_CALLER()>`, optionally
+/// AND-composed with exactly one `EXISTS { (source)-[:E1]->… }` chain. Every
+/// unsupported shape is rejected with its own distinct error message so grant authors
+/// can see which construct was refused.
+#[cfg(feature = "gleaph")]
+fn normalize_policy_condition(
+    expr: &Expr,
+    selector_variable: &str,
+    selector_label: &str,
+) -> Result<(Vec<GrantComparison>, Option<GrantChain>), GqlError> {
+    match &expr.kind {
+        ExprKind::And(left, right) => {
+            let (mut conjuncts, left_chain) =
+                normalize_policy_condition(left, selector_variable, selector_label)?;
+            let (right_conjuncts, right_chain) =
+                normalize_policy_condition(right, selector_variable, selector_label)?;
+            if left_chain.is_some() && right_chain.is_some() {
+                return Err(GqlError::Parse(
+                    "a conditional policy accepts at most one EXISTS clause".into(),
+                ));
+            }
+            conjuncts.extend(right_conjuncts);
+            if conjuncts.len() > MAX_GRANT_CONDITION_CONJUNCTS {
+                return Err(GqlError::Parse(format!(
+                    "conditional policy for ({selector_variable}:{selector_label}) exceeds the \
+                     maximum of {MAX_GRANT_CONDITION_CONJUNCTS} AND comparisons"
+                )));
+            }
+            Ok((conjuncts, left_chain.or(right_chain)))
+        }
+        ExprKind::ExistsPattern(pattern) => Ok((
+            Vec::new(),
+            Some(extract_grant_chain(pattern, selector_variable)?),
+        )),
+        _ => Ok((
+            normalize_policy_predicate(expr, selector_variable, selector_label)?,
+            None,
+        )),
+    }
+}
+
+/// Restricts a parsed `WHERE` expression to the ADR 0075 §2 conditional-policy DSL and
+/// normalizes it into an AND-ordered comparison list.
 #[cfg(feature = "gleaph")]
 fn normalize_policy_predicate(
     expr: &Expr,
@@ -1685,6 +1730,193 @@ fn normalize_policy_predicate(
     let mut conjuncts = Vec::new();
     collect_policy_conjuncts(expr, selector_variable, selector_label, &mut conjuncts)?;
     Ok(conjuncts)
+}
+
+/// Extracts the bounded 1–2 hop chain of [ADR 0082] §2 from a parsed EXISTS pattern:
+/// `(source)-[:E1]->(mid:Label1)-[:E2]->(dest:Label2)` with a terminal-only `WHERE`
+/// reusing the comparison DSL against the terminal variable.
+#[cfg(feature = "gleaph")]
+fn extract_grant_chain(
+    pattern: &GraphPattern,
+    source_variable: &str,
+) -> Result<GrantChain, GqlError> {
+    use crate::ast::PathPatternExpr;
+
+    const MAX_CHAIN_HOPS: usize = 2;
+
+    if pattern.match_mode.is_some() || pattern.keep.is_some() {
+        return Err(GqlError::Parse(
+            "EXISTS in conditional policies accepts a single plain path pattern \
+             (no match mode or KEEP)"
+                .into(),
+        ));
+    }
+    if pattern.paths.len() != 1 {
+        return Err(GqlError::Parse(
+            "EXISTS in conditional policies accepts exactly one path pattern".into(),
+        ));
+    }
+    let path = &pattern.paths[0];
+    if path.variable.is_some() || path.prefix.is_some() || !path.extensions.is_empty() {
+        return Err(GqlError::Parse(
+            "EXISTS in conditional policies accepts a plain path pattern \
+             (no path variable, prefix, or extension)"
+                .into(),
+        ));
+    }
+    let PathPatternExpr::Term(term) = &path.expr else {
+        return Err(GqlError::Parse(
+            "EXISTS in conditional policies accepts one linear path pattern \
+             (no alternation or union)"
+                .into(),
+        ));
+    };
+
+    // Factors must alternate node/edge starting with a node, no quantifiers.
+    if term.factors.is_empty() || term.factors.len() % 2 != 1 {
+        return Err(GqlError::Parse(
+            "EXISTS in conditional policies accepts a vertex-to-vertex chain".into(),
+        ));
+    }
+    let hops_count = (term.factors.len() - 1) / 2;
+    if !(1..=MAX_CHAIN_HOPS).contains(&hops_count) {
+        return Err(GqlError::Parse(format!(
+            "EXISTS in conditional policies accepts chains of 1..={MAX_CHAIN_HOPS} hops"
+        )));
+    } // Single validation+extraction walk: factors alternate node/edge starting with a
+    // node; edges carry one concrete label and direction; vertices after the source
+    // carry a fresh variable plus a concrete label only ([ADR 0082] §2).
+    let mut variables = vec![source_variable.to_owned()];
+    let mut hops: Vec<GrantChainHop> = Vec::new();
+    let mut pending_edge: Option<(String, GrantChainDirection)> = None;
+    for (index, factor) in term.factors.iter().enumerate() {
+        if factor.quantifier.is_some() {
+            return Err(GqlError::Parse(
+                "EXISTS in conditional policies accepts single-edge hops (no quantifiers)".into(),
+            ));
+        }
+        if index % 2 == 0 {
+            let crate::ast::PathPrimary::Node(node) = &factor.primary else {
+                return Err(GqlError::Parse(
+                    "EXISTS in conditional policies accepts a vertex-to-vertex chain \
+                     (edges must sit between vertices)"
+                        .into(),
+                ));
+            };
+            if !node.properties.is_empty() || node.where_clause.is_some() {
+                return Err(GqlError::Parse(
+                    "intermediate chain vertices carry a label only in conditional policies \
+                     (WHERE is terminal-only, ADR 0082 §2)"
+                        .into(),
+                ));
+            }
+            if index == 0 {
+                // The source IS the selector variable.
+                if node.variable.as_deref() != Some(source_variable) {
+                    return Err(GqlError::Parse(format!(
+                        "the EXISTS chain must start at the selector variable '{source_variable}'"
+                    )));
+                }
+                continue;
+            }
+            let Some((edge_label, direction)) = pending_edge.take() else {
+                unreachable!("odd positions always set a pending edge");
+            };
+            let Some(variable) = node.variable.clone() else {
+                return Err(GqlError::Parse(
+                    "every chain destination binds a fresh variable in conditional policies".into(),
+                ));
+            };
+            if variables.contains(&variable) {
+                return Err(GqlError::Parse(format!(
+                    "chain variables must be fresh; '{variable}' is already bound"
+                )));
+            }
+            let label =
+                match &node.label {
+                    Some(crate::types::LabelExpr::Name(name)) => name.as_str().to_owned(),
+                    _ => return Err(GqlError::Parse(
+                        "every chain destination carries one concrete vertex label in conditional \
+                     policies (wildcards are not grantable)"
+                            .into(),
+                    )),
+                };
+            variables.push(variable.clone());
+            hops.push(GrantChainHop {
+                edge_label,
+                direction,
+                variable,
+                label,
+            });
+        } else {
+            let crate::ast::PathPrimary::Edge(edge) = &factor.primary else {
+                return Err(GqlError::Parse(
+                    "EXISTS in conditional policies accepts a vertex-to-vertex chain \
+                     (edges must sit between vertices)"
+                        .into(),
+                ));
+            };
+            if edge.variable.is_some() || !edge.properties.is_empty() || edge.where_clause.is_some()
+            {
+                return Err(GqlError::Parse(
+                    "chain edges enumerate only a concrete label in conditional policies \
+                     (no edge variables, properties, or WHERE)"
+                        .into(),
+                ));
+            }
+            let edge_label = match &edge.label {
+                Some(crate::types::LabelExpr::Name(name)) => name.as_str().to_owned(),
+                _ => return Err(GqlError::Parse(
+                    "chain edges carry exactly one concrete edge label in conditional policies \
+                     (wildcards are not grantable)"
+                        .into(),
+                )),
+            };
+            use crate::types::EdgeDirection as PatternDirection;
+            let direction = match edge.direction {
+                // The pattern grammar spells the undirected form as `AnyDirection`
+                // (and `Undirected` internally); both are the grant's undirected hop.
+                PatternDirection::PointingRight => GrantChainDirection::Right,
+                PatternDirection::PointingLeft => GrantChainDirection::Left,
+                PatternDirection::Undirected | PatternDirection::AnyDirection => {
+                    GrantChainDirection::Undirected
+                }
+                other => {
+                    return Err(GqlError::Parse(format!(
+                        "chain hop direction {other:?} is not part of the conditional-policy \
+                         grammar; spell ->, <-, or -"
+                    )));
+                }
+            };
+            pending_edge = Some((edge_label, direction));
+        }
+    }
+
+    // The terminal WHERE group reuses the exact comparison DSL against the terminal
+    // variable ([ADR 0082] §2); it is required so every chain names its gate.
+    let Some(terminal_expr) = &pattern.where_clause else {
+        return Err(GqlError::Parse(
+            "EXISTS in conditional policies requires a terminal WHERE clause naming the \
+             destination variable's properties"
+                .into(),
+        ));
+    };
+    let terminal_variable = variables
+        .last()
+        .cloned()
+        .expect("terminal variable was pushed");
+    let terminal_conjuncts = normalize_policy_predicate(terminal_expr, &terminal_variable, "")?;
+    if terminal_conjuncts.is_empty() || terminal_conjuncts.len() > MAX_GRANT_CONDITION_CONJUNCTS {
+        return Err(GqlError::Parse(format!(
+            "the terminal WHERE clause must hold 1..={MAX_GRANT_CONDITION_CONJUNCTS} AND comparisons"
+        )));
+    }
+
+    Ok(GrantChain {
+        source_variable: source_variable.to_owned(),
+        hops,
+        terminal_conjuncts,
+    })
 }
 
 /// Recursive AND-flattening walker. `depth` is carried through recursion via the
@@ -1733,11 +1965,13 @@ fn collect_policy_conjuncts(
         ExprKind::BinaryOp { .. } => Err(GqlError::Parse(
             "arithmetic expressions are not supported in conditional policies (ADR 0075 §2)".into(),
         )),
-        ExprKind::PropertyExists { .. }
-        | ExprKind::ExistsSubquery(_)
-        | ExprKind::ExistsPattern(_) => Err(GqlError::Parse(
-            "EXISTS is not supported in conditional policies (ReBAC conditions are a later phase)"
+        ExprKind::PropertyExists { .. } | ExprKind::ExistsSubquery(_) => Err(GqlError::Parse(
+            "only the bounded EXISTS pattern chain is supported in conditional policies \
+             (ADR 0082 §2)"
                 .into(),
+        )),
+        ExprKind::ExistsPattern(_) => Err(GqlError::Parse(
+            "EXISTS in conditional policies accepts exactly one bounded pattern chain".into(),
         )),
         _ => Err(GqlError::Parse(format!(
             "unsupported conditional-policy predicate shape; expected \
@@ -2373,6 +2607,137 @@ mod grant_parser_tests {
         assert_condition_error(
             "GRANT READ ON GRAPH g NODES T FOR (v:T) TO PUBLIC",
             "expected",
+        );
+    }
+
+    // ── Bounded EXISTS chain ([ADR 0082] §2) ──
+
+    use crate::ast::{GrantChainDirection, GrantChainHop};
+
+    #[test]
+    fn conditional_policy_accepts_the_one_hop_direct_grant_chain() {
+        let condition = grant_condition(
+            "GRANT READ ON GRAPH social NODES Doc \
+             FOR (d:Doc) WHERE EXISTS { (d)-[:GRANTED_TO]->(a:Account) \
+             WHERE a.principal_id = MSG_CALLER() } TO PUBLIC",
+        );
+        assert_eq!(condition.predicate.conjuncts.len(), 0, "pure-EXISTS body");
+        let chain = condition.chain.expect("chain present");
+        assert_eq!(chain.source_variable, "d");
+        assert_eq!(
+            chain.hops,
+            vec![GrantChainHop {
+                edge_label: "GRANTED_TO".to_string(),
+                direction: GrantChainDirection::Right,
+                variable: "a".to_string(),
+                label: "Account".to_string(),
+            }]
+        );
+        assert_eq!(chain.terminal_conjuncts.len(), 1);
+        assert_eq!(chain.terminal_conjuncts[0].property, "principal_id");
+        assert!(matches!(
+            chain.terminal_conjuncts[0].value,
+            GrantValueExpr::MsgCaller
+        ));
+    }
+
+    #[test]
+    fn conditional_policy_accepts_the_two_hop_org_membership_chain() {
+        for spelling in [
+            "(p)-[:SHARED_TO]->(g:Group)<-[:MEMBER_OF]-(u:Account) WHERE u.principal_id = MSG_CALLER()",
+            // Undirected middle hop spelling follows ADR 0074 §2 rules at validation.
+            "(p)-[:SHARED_TO]->(g:Group)-[:MEMBER_OF]-(u:Account) WHERE u.principal_id = MSG_CALLER()",
+        ] {
+            let condition = grant_condition(&format!(
+                "GRANT MATCH ON GRAPH social NODES Post FOR (p:Post) WHERE EXISTS {{ {spelling} }} TO PUBLIC"
+            ));
+            let chain = condition.chain.expect("chain present");
+            assert_eq!(chain.source_variable, "p");
+            assert_eq!(chain.hops.len(), 2);
+            assert_eq!(chain.hops[0].edge_label, "SHARED_TO");
+            assert_eq!(chain.hops[0].label, "Group");
+            assert_eq!(chain.terminal_conjuncts.len(), 1);
+        }
+    }
+
+    #[test]
+    fn conditional_policy_composes_property_conjuncts_with_one_chain() {
+        let condition = grant_condition(
+            "GRANT READ ON GRAPH social NODES Doc \
+             FOR (d:Doc) WHERE d.tenant = 't' AND EXISTS { (d)-[:GRANTED_TO]->(a:Account) \
+             WHERE a.principal_id = MSG_CALLER() } TO PUBLIC",
+        );
+        assert_eq!(condition.predicate.conjuncts.len(), 1);
+        assert!(condition.chain.is_some());
+    }
+
+    #[test]
+    fn conditional_policy_chain_rejections_name_every_invalid_shape() {
+        // Source must be the selector variable.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (x)-[:E]->(y:U) \
+             WHERE y.p = MSG_CALLER() } TO PUBLIC",
+            "selector variable 'v'",
+        );
+        // Three hops exceed the bound.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E1]->(x:A)-[:E2]->(y:B)-[:E3]->(z:C) \
+             WHERE z.p = MSG_CALLER() } TO PUBLIC",
+            "1..=2 hops",
+        );
+        // Unlabeled destination.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E]->(y) \
+             WHERE y.p = MSG_CALLER() } TO PUBLIC",
+            "concrete vertex label",
+        );
+        // Wildcard destination label.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E]->(y:%) \
+             WHERE y.p = MSG_CALLER() } TO PUBLIC",
+            "concrete vertex label",
+        );
+        // Missing terminal WHERE.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E]->(y:U) } TO PUBLIC",
+            "terminal WHERE",
+        );
+        // Intermediate conjuncts are refused.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E]->(m:U WHERE m.q = 1)-[:F]->(y:W) \
+             WHERE y.p = MSG_CALLER() } TO PUBLIC",
+            "label only",
+        );
+        // Duplicate variables.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E]->(v2:U)-[:F]->(v2:W) \
+             WHERE v2.p = MSG_CALLER() } TO PUBLIC",
+            "fresh",
+        );
+        // Compound directional modifier spellings are outside the grant grammar: the
+        // base parser rejects them before chain extraction runs.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)<[:E]>(y:U) \
+             WHERE y.p = MSG_CALLER() } TO PUBLIC",
+            "expected",
+        );
+        // Edge-carried details are outside the grammar.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[e:E]->(y:U) \
+             WHERE y.p = MSG_CALLER() } TO PUBLIC",
+            "no edge variables",
+        );
+        // Two chains cannot compose.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (v)-[:E]->(y:U) \
+             WHERE y.p = MSG_CALLER() } AND EXISTS { (v)-[:F]->(z:W) \
+             WHERE z.p = MSG_CALLER() } TO PUBLIC",
+            "at most one EXISTS clause",
+        );
+        // A bare node form is not a chain.
+        assert_condition_error(
+            "GRANT READ ON GRAPH g NODES T FOR (v:T) WHERE EXISTS { (x) } TO PUBLIC",
+            "EXISTS",
         );
     }
 

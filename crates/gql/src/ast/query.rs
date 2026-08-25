@@ -854,6 +854,10 @@ pub struct GrantCondition {
     pub selector: GrantConditionSelector,
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub predicate: GrantPredicate,
+    /// Optional bounded EXISTS traversal clause ([ADR 0082] §2), AND-composed with
+    /// the property conjuncts.
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub chain: Option<Box<GrantChain>>,
 }
 
 /// Pattern shape of a conditional selector ([ADR 0075] §3). Both forms carry one
@@ -948,6 +952,59 @@ pub struct GrantComparison {
 pub enum GrantValueExpr {
     Literal(Value),
     MsgCaller,
+}
+
+// ──── Bounded EXISTS traversal clause ([ADR 0082] §2) ────
+
+/// Direction spelling of one chain hop. Compound GQL directional modifiers
+/// (`LeftOrUndirected`, …) are not part of the grant grammar.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum GrantChainDirection {
+    /// `-[:E]->`
+    Right,
+    /// `<-[:E]-`
+    Left,
+    /// `-[:E]-` (undirected; ADR 0074 §2 directedness rules apply at validation).
+    Undirected,
+}
+
+/// One hop of a bounded EXISTS clause: expand along one concrete edge label in one
+/// direction to vertices of one concrete destination label.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct GrantChainHop {
+    pub edge_label: String,
+    pub direction: GrantChainDirection,
+    /// Variable bound to the reached vertex (fresh per hop; never the selector's).
+    pub variable: String,
+    /// Concrete destination label — wildcard or absent labels are not grantable.
+    pub label: String,
+}
+
+/// The bounded chain `(source)-[:E1]->(mid:L1)-[:E2]->(dest:L2) WHERE <comparisons>`
+/// ([ADR 0082] §2): 1–2 hops from the selector variable; `WHERE` is terminal-only and
+/// reuses the exact [ADR 0075] comparison DSL against the terminal variable.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct GrantChain {
+    pub source_variable: String,
+    /// 1..=2 hops in traversal order from the selector vertex.
+    pub hops: Vec<GrantChainHop>,
+    /// AND-comparisons evaluated on the terminal destination vertex (never empty).
+    pub terminal_conjuncts: Vec<GrantComparison>,
 }
 
 // ──── FILTER (§14.2) ────
