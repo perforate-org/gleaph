@@ -71,7 +71,7 @@ fn bind_typed_schema(env: &FederationEnv) {
          DIRECTED EDGE GrantedTo LABEL GRANTED_TO CONNECTING (Doc -> Acct), \
          DIRECTED EDGE SharedTo LABEL SHARED_TO CONNECTING (Doc -> Group), \
          DIRECTED EDGE MemberOf LABEL MEMBER_OF CONNECTING (Acct -> Group), \
-         UNDIRECTED EDGE Link LABEL LINK CONNECTING (Doc -- Doc) }} \
+         UNDIRECTED EDGE Link LABEL LINK CONNECTING (Doc ~ Doc) }} \
          NEXT CREATE GRAPH {GRAPH_NAME} TYPED rbt"
     );
     gql_mutate_as_admin(env, &ddl, "adr0082-bind-schema");
@@ -124,15 +124,23 @@ fn mutate_verdict(env: &FederationEnv, query: &str, key: &str) -> Result<(), Rou
 }
 
 /// Raw composite query verdict so uniform denials are observable without panicking.
-fn query_verdict(env: &FederationEnv, caller: Principal, query: &str) -> Result<GqlQueryResult, RouterError> {
+fn query_verdict(
+    env: &FederationEnv,
+    caller: Principal,
+    query: &str,
+) -> Result<GqlQueryResult, RouterError> {
     let bytes = env
         .pic
         .query_call(
             env.router,
             caller,
             "gql_query",
-            Encode!(&query.to_string(), &Vec::<u8>::new(), &gleaph_graph_kernel::plan_exec::ReadMode::Eventual)
-                .expect("encode gql_query"),
+            Encode!(
+                &query.to_string(),
+                &Vec::<u8>::new(),
+                &gleaph_graph_kernel::plan_exec::ReadMode::Eventual
+            )
+            .expect("encode gql_query"),
         )
         .expect("gql_query call");
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query")
@@ -256,7 +264,11 @@ fn one_hop_direct_grant_visibility_matrix_and_inline_introspection() {
     // ([ADR 0082] §3): both member rows carry identical condition text.
     let summaries = list_grants(&env);
     let conditional: Vec<_> = summaries.iter().filter(|s| s.predicate.is_some()).collect();
-    assert_eq!(conditional.len(), 2, "two chain rows behind the root marker");
+    assert_eq!(
+        conditional.len(),
+        2,
+        "two chain rows behind the root marker"
+    );
     for summary in &conditional {
         assert_eq!(summary.operation, GrantOperationView::Match);
         assert!(matches!(summary.subject, GrantSubjectView::Principal(_)));
@@ -379,8 +391,14 @@ fn prepared_execution_reresolves_the_chain_per_caller() {
     )
     .expect("register docfeed");
     // Invariant 7 gate: the publisher's own coverage spans the requirement set.
-    publish_prepared_query_as(&env, env.admin, "docfeed", "PUBLIC", "adr0082-publish-docfeed")
-        .expect("owner publishes docfeed");
+    publish_prepared_query_as(
+        &env,
+        env.admin,
+        "docfeed",
+        "PUBLIC",
+        "adr0082-publish-docfeed",
+    )
+    .expect("owner publishes docfeed");
 
     // ONE published query, TWO callers, TWO differently-resolved chains: the lowered
     // plan is rebuilt per invocation from each caller's constants ([ADR 0082] §8).
@@ -410,7 +428,7 @@ fn vector_search_candidates_filter_through_the_lowered_chain() {
     use gleaph_graph_kernel::vector_index::{
         VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
     };
-    use gleaph_pocket_ic_tests::{install_vector_canister};
+    use gleaph_pocket_ic_tests::install_vector_canister;
     use gleaph_router::types::{AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs};
 
     let env = install_single_shard_federation();
@@ -609,7 +627,24 @@ fn vector_search_candidates_filter_through_the_lowered_chain() {
         ]),
     );
     assert_eq!(search.row_count, 1, "deepening preserves k");
-    assert_tags(&search, &["2"]);
+    let got = int_tags(&search);
+    assert_eq!(got, vec![2], "hidden nearest neighbor must not surface");
+}
+
+/// Integer-tag projection for the vector fixture.
+fn int_tags(result: &GqlQueryResult) -> Vec<i64> {
+    use gleaph_gql_ic::GqlWireRows;
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    let mut out = Vec::new();
+    for row in wire.rows {
+        let value_row = row.try_into_value_row().expect("value row");
+        let Value::Int64(tag) = value_row.get("tag").expect("tag column") else {
+            panic!("expected int tag, got {:?}", value_row.get("tag"));
+        };
+        out.push(*tag);
+    }
+    out
 }
 
 #[test]
@@ -629,48 +664,45 @@ fn vocabulary_drop_sweeps_stale_chains_while_identical_sibling_ids_survive() {
              NEXT CREATE GRAPH {graph} TYPED rbt_{graph}"
         );
         gql_mutate_as_admin(&env, &ddl, &format!("adr0082-drop-schema-{graph}"));
+        // GRANT statements are standalone and address the graph via ON GRAPH.
         gql_mutate_as_admin(
             &env,
-            &format!("USE {graph} {{ GRANT READ ON GRAPH {graph} NODES Doc {{ tag }} TO PUBLIC }}"),
+            &format!("GRANT READ ON GRAPH {graph} NODES Doc {{ tag }} TO PUBLIC"),
             &format!("adr0082-drop-common-{graph}"),
         );
         gql_mutate_as_admin(
             &env,
             &format!(
-                "USE {graph} {{ GRANT MATCH ON GRAPH {graph} NODES Doc \
+                "GRANT MATCH ON GRAPH {graph} NODES Doc \
                  FOR (d:Doc) WHERE EXISTS {{ (d)-[:GRANTED_TO]->(a:Acct) \
-                 WHERE a.principal_id = MSG_CALLER() }} TO PUBLIC }}"
+                 WHERE a.principal_id = MSG_CALLER() }} TO PUBLIC"
             ),
             &format!("adr0082-drop-chain-{graph}"),
         );
-        gql_mutate_with_params_on(
-            &env,
-            graph,
-            "INSERT (:Acct {principal_id: $p})",
-            vec![("p", gleaph_gql_ic::principal_to_value(alice()))],
-            &format!("adr0082-drop-acct-{graph}"),
-        );
-        gql_mutate_with_params_on(
-            &env,
-            graph,
-            &format!("INSERT (:Doc {{tag: 'kept-{graph}'}})"),
-            vec![],
-            &format!("adr0082-drop-doc-{graph}"),
-        );
-        gql_mutate_with_params_on(
-            &env,
-            graph,
-            "MATCH (d:Doc), (a:Acct {principal_id: $p}) INSERT (d)-[:GRANTED_TO]->(a)",
-            vec![("p", gleaph_gql_ic::principal_to_value(alice()))],
-            &format!("adr0082-drop-edge-{graph}"),
-        );
     }
 
-    // Pre-drop: the PUBLIC chain row serves alice on both graphs.
-    for graph in [DROPPED, SURVIVOR] {
-        let view = scoped_scan(&env, alice(), graph).expect("{graph} serves pre-drop");
-        assert_eq!(view.row_count, 1);
-    }
+    // Seed one granted document on the home graph (DML dispatches to the caller's
+    // home graph; the sibling stays data-free by design).
+    insert_account(&env, alice(), "adr0082-drop-acct-home");
+    mutate_with_params(
+        &env,
+        "INSERT (:Doc {tag: 'kept'})",
+        vec![],
+        "adr0082-drop-doc-home",
+    );
+    mutate_with_params(
+        &env,
+        "MATCH (d:Doc), (a:Acct {principal_id: $p}) INSERT (d)-[:GRANTED_TO]->(a)",
+        vec![("p", gleaph_gql_ic::principal_to_value(alice()))],
+        "adr0082-drop-edge-home",
+    );
+
+    // Pre-drop: the PUBLIC chain row serves alice at home, and the sibling's scan
+    // succeeds over its (empty) data — both chains resolve against their catalogs.
+    let home_pre = scoped_scan(&env, alice(), DROPPED).expect("home serves pre-drop");
+    assert_eq!(home_pre.row_count, 1);
+    let survivor_pre = scoped_scan(&env, alice(), SURVIVOR).expect("sibling serves pre-drop");
+    assert_eq!(survivor_pre.row_count, 0);
 
     // Real teardown of tenant_a (the ADR 0074 §3 invariant-4 sweep boundary).
     let bytes = env
@@ -698,41 +730,23 @@ fn vocabulary_drop_sweeps_stale_chains_while_identical_sibling_ids_survive() {
         .expect("decode")
         .expect("graph removed");
 
-    // Post-drop: tenant_b's identical numeric ids keep serving the same caller while
-    // the dropped graph resolves nowhere at all.
-    let survivor = scoped_scan(&env, alice(), SURVIVOR).expect("survivor keeps serving");
-    assert_eq!(survivor.row_count, 1);
+    // Post-drop: tenant_b's identical numeric ids keep serving the same caller —
+    // a Forbidden here would mean the sweep ate the sibling's rows — while the
+    // dropped graph resolves nowhere at all.
+    let survivor = scoped_scan(&env, alice(), SURVIVOR).expect("sibling keeps serving");
+    assert_eq!(survivor.row_count, 0);
 
     let dropped = scoped_scan(&env, alice(), DROPPED);
+    // A non-tenant probing a dead graph gets the path-uniform denial: ad-hoc USE
+    // resolution fails closed as unattributable (`Forbidden`), while name resolution
+    // alone reports `NotFound`.
     assert!(
-        matches!(&dropped, Err(RouterError::NotFound(_))),
+        matches!(
+            &dropped,
+            Err(RouterError::Forbidden) | Err(RouterError::NotFound(_))
+        ),
         "dropped graph resolves nowhere: {dropped:?}"
     );
-}
-
-fn gql_mutate_with_params_on(
-    env: &FederationEnv,
-    graph: &str,
-    query: &str,
-    fields: Vec<(&str, Value)>,
-    key: &str,
-) {
-    let wrapped = format!("USE {graph} {{ {query} }}");
-    let bytes = env
-        .pic
-        .update_call(
-            env.router,
-            env.admin,
-            "gql_mutate",
-            Encode!(&wrapped, &params_blob(fields), &key.to_string()).expect("encode gql_mutate"),
-        )
-        .expect("gql_mutate call");
-    Decode!(&bytes, Result<GqlQueryResult, RouterError>)
-        .expect("decode gql_mutate")
-        .expect("mutate ok");
-    if graph == GRAPH_NAME {
-        drain_maintenance_via_timer(env, env.graph_source);
-    }
 }
 
 fn scoped_scan(

@@ -1115,9 +1115,13 @@ impl CompiledPredicate {
             out.push_str(&display_comparison(conjunct, |id| names.property_name(id)));
         }
         if let Some(chain) = &self.chain {
-            out.push_str(" AND EXISTS { ");
+            if !self.conjuncts.is_empty() {
+                out.push_str(" AND ");
+            }
+            out.push_str("EXISTS { ");
             out.push_str(&display_chain(self.label, chain, names));
             out.push_str(" }");
+            return out;
         }
         out
     }
