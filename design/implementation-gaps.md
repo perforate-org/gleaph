@@ -2284,6 +2284,39 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   uncovered resources on graphs visible to the asker (existence-leak boundary); (c) report
   granularity — covered-by-row detail vs uncovered-only facts.
 
+### GAP-2026-08-26-003 — main HEAD does not compile standalone: committed provisioning code imports `TextIndexId` defined only in uncommitted graph-kernel edits (half-commit recurrence)
+
+- **Status:** Open — P1 build-integrity incident detected 2026-08-26 by pane w1:p8 during
+  standalone validation of `35c18f85c` and independently reproduced by the coordinator on
+  current HEAD (`e24bb57c5`). Same type as [GAP-2026-08-24-007].
+- **Owner:** the text-index/canister track session holding the dirty defining edits
+  (`crates/graph-kernel/src/federation.rs`, `crates/graph-kernel/src/federation/shard_id.rs`
+  — `TextIndexId` at `shard_id.rs:246` with its `federation.rs:54` re-export). The
+  referencing side landed first: committed
+  `crates/graph-kernel/src/provisioning/{mod.rs,tests.rs}` import the symbol via
+  `crate::federation::{… TextIndexId …}`.
+- **Observed behavior:** a clean detached worktree at HEAD fails
+  `cargo check -p gleaph-graph-kernel --lib`:
+  `error[E0432]: unresolved import crate::federation::TextIndexId` at
+  `provisioning/mod.rs:12:50` ("no TextIndexId in federation"). Main-tree
+  `gleaph-router --lib` test targets additionally fail on text-index/index-migration WIP
+  per the w1:p8 report.
+- **Expected or needed behavior:** every commit leaves main buildable standalone: a fresh
+  clone/worktree compiles kernel lib and router lib tests without any other session's
+  uncommitted state.
+- **Evidence:** coordinator reproduction (2026-08-26): `git worktree add … --detach HEAD;
+  CARGO_TARGET_DIR=<shared> cargo check -p gleaph-graph-kernel --lib` → E0432 above;
+  w1:p8 working log; `plans/0307-group-element-id.md` Validation Transcript. Note HEAD
+  advanced during verification (`35c18f85c` → `e24bb57c5` via text-track commits
+  `c97dc08c5`, `23b23249c`) and the breakage reproduces on current HEAD — live incident,
+  not history.
+- **Impact:** bisect false positives across the whole workspace; fresh clone/worktree
+  cannot compile kernel or run router tests; any per-commit validation gate is blind.
+- **Next decision:** the owning text-track pane lands its graph-kernel defining edits
+  immediately (simultaneous-landing resolution), or a coordinator-approved minimal
+  extraction commit moves the definitions in; afterwards re-run the clean-worktree check
+  to close this entry.
+
 ## Review cadence
 
 - The primary agent checks this ledger before final approval of a meaningful slice.
