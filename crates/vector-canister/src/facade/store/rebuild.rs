@@ -1,5 +1,6 @@
 //! Bounded shadow-version rebuild lifecycle for production `nlist > 1` vector indexes
-//! (ADR 0031 Slice 7, extended with the `Training` phase in Slice 8).
+//! (ADR 0031 Slice 7, extended with the `Training` phase in Slice 8; pool storage per the ADR
+//! 0033 implementation).
 //!
 //! A rebuild builds a *shadow* index version (`target = active + 1`) alongside the live active
 //! version, dual-writes mutations into both (see [`super::mutation`]), and publishes by an atomic
@@ -7,39 +8,45 @@
 //! message performs an O(N) sweep:
 //!
 //! - `Sampling` collects a bounded distinct candidate pool from live subjects (capped by the
-//!   combined-state byte budget and the per-iteration distance-op budget).
+//!   dedicated rebuild-pool region budget and the per-iteration distance-op budget). Candidates
+//!   are appended to the durable raw pool region ([`crate::facade::stable::rebuild_pool`]); the
+//!   lifecycle record carries only a `pool_len` scalar, so no step decodes or re-encodes the pool.
 //! - `Training` refines `nlist` centroids with deterministic k-means-lite over that pool (one
-//!   bounded iteration per step), then writes the target centroids.
+//!   bounded iteration per step, rows read individually from the pool region; the centroid work
+//!   area lives beside the rows), then writes the target centroids.
 //! - `Building` shadows every live subject's vector into its nearest target partition.
 //! - `publish` is O(1): it flips `def` + centroid metadata once completeness is established.
-//! - `Cleaning` (post-publish) collapses `shadow_slot -> slot` and drops the old version's pages.
-//! - `Aborting` (from `Building`/`ReadyToPublish`) clears `shadow_slot` and drops the shadow pages.
+//! - `Cleaning` (post-publish) collapses `shadow_slot -> slot` and drops the old version's pages;
+//!   completing it releases the pool region.
+//! - `Aborting` (from `Building`/`ReadyToPublish`) clears `shadow_slot` and drops the shadow pages;
+//!   entering it releases the pool region.
 //!
 //! Shadow state is never visible to `vector_search`: search resolves the live slot via
 //! [`crate::records::FixedSubjectMapEntry::current_slot_for`] against `def.active_index_version`, which is
 //! the old version until the atomic publish.
 
 use super::authorization::assert_router_caller;
-use super::mutation::{append_slot_batch, insert_subject_entry, tombstone_slot};
+use super::mutation::{append_slot_batch, insert_subject_entry, shape_def_for, tombstone_slot};
 use super::search::{
-    assign_partition, decode_f32, encode_f32, read_centroids_at, stored_to_f32_bytes,
+    assign_partition, decode_f32, encode_f32, read_centroids_at, read_coarse_centroids_at,
+    read_leaf_children_at, stored_to_f32_bytes,
 };
 use super::{
-    MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES,
-    MAX_REBUILD_STEP_VECTOR_BYTES, MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS,
-    MAX_REBUILD_TRAINING_ITERATIONS,
+    MAX_LEAVES, MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STEP_VECTOR_BYTES,
+    MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS, MAX_REBUILD_TRAINING_ITERATIONS,
 };
 use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::{PageScratch, live_def_resolver};
+use crate::facade::stable::rebuild_pool;
 use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::subject_store::{self, SubjectScanPage};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE,
 };
 use crate::records::{
-    FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionKey, RawRebuildState,
-    RebuildCandidate, SlotRef, SubjectKey, SubjectScanCursor, SubjectScanScope, VectorIndexDef,
-    VectorRebuildStateRecord,
+    FixedSubjectMapEntry, IvfCentroidMeta, LEVELS_FLAT, LEVELS_TWO, PageKey, PartitionKey,
+    RawRebuildState, RebuildCandidate, SlotRef, SubjectKey, SubjectScanCursor, SubjectScanScope,
+    VectorIndexDef, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -53,8 +60,8 @@ use ic_stable_structures::Storable;
 use ic_stable_vector_page_store::kernel::{l2_squared_f32, l2_squared_f32_early_exit};
 
 use super::recommend_partition_maintenance;
-use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap};
 
 /// One subject awaiting its shadow row in the `Building` phase: key, owned subject entry, active
 /// slot the bytes were read from, the active bytes, and the active row's aux (the `I8` scale).
@@ -110,60 +117,114 @@ pub(super) fn partition_health_summary(
     }
 }
 
-/// Whether a rebuild's `Training` phase is feasible within the bounded-state and bounded-per-message
-/// contracts for the given target `nlist`/`dims` and the pool vs centroid widths (ADR 0031 Slice 8).
-/// Both must hold; `admin_start_vector_rebuild` rejects with `InvalidRebuildParams` otherwise:
+/// Whether a rebuild's `Training` phase is feasible within the bounded-region and bounded-per-message
+/// contracts for the given flat target `nlist`/`dims` and the pool vs centroid widths (ADR 0031
+/// Slice 8; pool storage relocated to the dedicated region by the ADR 0033 implementation). Both must
+/// hold; `admin_start_vector_rebuild` rejects with `InvalidRebuildParams` otherwise:
 ///
-/// - **Combined-state (P2):** `nlist * (pool_stride + centroid_stride) +
-///   MAX_REBUILD_STATE_OVERHEAD_BYTES <= MAX_REBUILD_STATE_BYTES`. The pool is charged at the index's
-///   native stored row width (`pad_stride_bytes`) and the centroids at canonical-f32 width
-///   (`dims * 4`), so an `I8` index pays one native-width pool copy plus one f32 centroid set, not
-///   two f32-width copies. The `+ overhead` term matches the `candidate_pool_cap` reservation,
-///   guaranteeing the pool can hold `>= nlist` candidates alongside the trained centroids.
+/// - **Pool region (P2):** the dedicated raw pool region must host at least `nlist` candidate rows
+///   (`pad_stride + aux` wide) plus `nlist` trained canonical-f32 centroids inside
+///   [`rebuild_pool::REGION_BYTES`] — the physical bound that replaced the retired Candid-envelope
+///   constraint.
 /// - **Per-iteration work (P1):** `nlist * nlist * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`, so
 ///   `>= nlist` candidates can be sampled and one k-means-lite iteration over them stays within the
 ///   per-message op budget.
+///
+/// Flat-wrapper feasibility check.
+///
+/// The exact Slice 8 contract (see [`training_start_feasible_shape`] with `nlist_fine = 1`). Kept
+/// for the flat feasibility tests; production admission goes through the shape-aware variant.
+#[cfg(test)]
 fn training_start_feasible(nlist: u32, pool_stride: u32, centroid_stride: u32, dims: u16) -> bool {
-    let nlist = nlist as u64;
-    let state_ok = nlist
-        .checked_mul(pool_stride as u64)
-        .and_then(|x| x.checked_add(nlist.checked_mul(centroid_stride as u64)?))
-        .and_then(|x| x.checked_add(MAX_REBUILD_STATE_OVERHEAD_BYTES))
-        .is_some_and(|x| x <= MAX_REBUILD_STATE_BYTES);
-    let ops_ok = nlist
-        .checked_mul(nlist)
-        .and_then(|x| x.checked_mul(dims as u64))
-        .is_some_and(|x| x <= MAX_REBUILD_TRAINING_DISTANCE_OPS);
-    state_ok && ops_ok
+    training_start_feasible_shape(nlist, 1, pool_stride, centroid_stride, dims)
 }
 
-/// Bounded distinct candidate-pool size (count) for `Training`: the smaller of the byte-budget cap
-/// (reserving `nlist` centroids at canonical-f32 width + encoding overhead inside
-/// [`MAX_REBUILD_STATE_BYTES`], P2) and the distance-op cap (so one iteration's
-/// `candidate_count * nlist * dims` stays within [`MAX_REBUILD_TRAINING_DISTANCE_OPS`], P1). The
-/// remaining bytes are divided by the native stored row width (`pool_stride`), since each candidate
-/// freezes its stored bytes. For any params accepted by `training_start_feasible` this is
-/// `>= nlist` (ADR 0031 Slice 8).
+/// Shape-aware feasibility (`training_start_feasible` with a two-level extension). The Training
+/// centroid work area is shared by every level, so both budgets are evaluated at the **work**
+/// centroid count `max(coarse, fine)`:
+///
+/// - P1 becomes `work² × dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`. For a two-level rebuild this
+///   subsumes the worst-case fine-subtree iteration: a subtree holds at most the whole pool, whose
+///   cap is `OPS / (work × dims)` rows, so one fine iteration costs at most
+///   `(OPS / (work × dims)) × f × dims = OPS × f / work <= OPS`. Practically this admits
+///   `f <= nlist` geometries and fail-closes larger branching factors.
+/// - P2 reserves the per-row coarse-id area ([`rebuild_pool::COARSE_ID_WIDTH`]) only when the
+///   rebuild is two-level, so flat capacities are byte-identical to the pre-Slice-5 layout.
+fn training_start_feasible_shape(
+    nlist: u32,
+    nlist_fine: u32,
+    pool_stride: u32,
+    centroid_stride: u32,
+    dims: u16,
+) -> bool {
+    let two_level = nlist_fine > 1;
+    let work = nlist.max(nlist_fine) as u64;
+    let ops_ok = work
+        .checked_mul(work)
+        .and_then(|x| x.checked_mul(dims as u64))
+        .is_some_and(|x| x <= MAX_REBUILD_TRAINING_DISTANCE_OPS);
+    let state_ok =
+        rebuild_pool::pool_capacity_for(pool_stride, work as u32, centroid_stride, two_level)
+            .is_some();
+    ops_ok && state_ok
+}
+
+/// Hashes a candidate's whole `(stored bytes, aux)` pair for transient dedup membership. The
+/// hash only gates an exact byte comparison, so a collision can never merge distinct vectors.
+fn candidate_hash(stored: &[u8], aux: &[u8; 8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (stored, aux).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Bounded distinct candidate-pool size (count) for `Training`: the smaller of the pool-region
+/// capacity left after reserving `work_centroids` at canonical-f32 width (P2) and the distance-op
+/// cap (so one iteration's `candidate_count * work * dims` stays within
+/// [`MAX_REBUILD_TRAINING_DISTANCE_OPS`], P1). Each candidate freezes its pad-stride stored bytes
+/// plus its aux. For any params accepted by `training_start_feasible` this is `>= nlist`
+/// (ADR 0031 Slice 8), and it equals the physical slot capacity of the pool region, so sampling's
+/// graceful cap can never overrun the region.
+/// Flat-wrapper pool cap (see [`candidate_pool_cap_shape`] with `nlist_fine = 1`). Kept for the
+/// flat feasibility tests; production sampling uses the shape-aware variant.
+#[cfg(test)]
 fn candidate_pool_cap(nlist: u32, pool_stride: u32, centroid_stride: u32, dims: u16) -> usize {
-    let nlist = nlist as u64;
-    let stride = (pool_stride as u64).max(1);
-    let dims = (dims as u64).max(1);
-    let centroid_bytes = nlist.saturating_mul(centroid_stride as u64);
-    let pool_bytes = MAX_REBUILD_STATE_BYTES
-        .saturating_sub(centroid_bytes)
-        .saturating_sub(MAX_REBUILD_STATE_OVERHEAD_BYTES);
-    let cap_by_bytes = pool_bytes / stride;
-    let cap_by_ops = MAX_REBUILD_TRAINING_DISTANCE_OPS / nlist.saturating_mul(dims).max(1);
+    candidate_pool_cap_shape(nlist, 1, pool_stride, centroid_stride, dims)
+}
+
+/// Shape-aware variant of [`candidate_pool_cap`] evaluating both budgets at
+/// `max(coarse, fine)` (see [`training_start_feasible_shape`]).
+fn candidate_pool_cap_shape(
+    nlist: u32,
+    nlist_fine: u32,
+    pool_stride: u32,
+    centroid_stride: u32,
+    dims: u16,
+) -> usize {
+    let two_level = nlist_fine > 1;
+    let work = nlist.max(nlist_fine);
+    let dims64 = (dims as u64).max(1);
+    let cap_by_bytes =
+        rebuild_pool::pool_capacity_for(pool_stride, work, centroid_stride, two_level).unwrap_or(0);
+    let cap_by_ops =
+        MAX_REBUILD_TRAINING_DISTANCE_OPS / (work as u64).saturating_mul(dims64).max(1);
     cap_by_bytes.min(cap_by_ops) as usize
 }
 
 /// Reads the current rebuild state for an index (`Idle` when none is recorded). Shared with the
 /// mutation path so dual-write can branch on the lifecycle phase.
 pub(super) fn rebuild_state_of(index_id: u32) -> VectorRebuildStateRecord {
-    VECTOR_REBUILD_STATE
-        .with_borrow(|m| m.get(&index_id))
-        .map(|raw| VectorRebuildStateRecord::from_bytes(Cow::Owned(raw.0)))
-        .unwrap_or_default()
+    let raw = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _get_scope = bench_scope("rebuild_state_get");
+        VECTOR_REBUILD_STATE.with_borrow(|m| m.get(&index_id))
+    };
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _decode_scope = bench_scope("rebuild_state_decode");
+        raw.map(|raw| VectorRebuildStateRecord::from_bytes(Cow::Owned(raw.0)))
+            .unwrap_or_default()
+    }
 }
 
 /// Persists a rebuild state, removing the row entirely for `Idle` so an inactive index keeps no
@@ -191,28 +252,59 @@ fn status_of(state: &VectorRebuildStateRecord) -> VectorRebuildStatus {
         VectorRebuildStateRecord::Sampling {
             target_index_version,
             nlist,
-            candidates,
+            pool_len,
             ..
         } => VectorRebuildStatus {
             phase: VectorRebuildPhase::Sampling,
             target_index_version: *target_index_version,
             nlist: *nlist,
             subjects_processed: 0,
-            candidates_collected: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
+            candidates_collected: *pool_len,
             training_iteration: 0,
         },
         VectorRebuildStateRecord::Training {
             target_index_version,
             nlist,
             iteration,
-            candidates,
+            pool_len,
             ..
         } => VectorRebuildStatus {
             phase: VectorRebuildPhase::Training,
             target_index_version: *target_index_version,
             nlist: *nlist,
             subjects_processed: 0,
-            candidates_collected: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
+            candidates_collected: *pool_len,
+            training_iteration: *iteration,
+        },
+        VectorRebuildStateRecord::TrainCoarse {
+            target_index_version,
+            nlist,
+            iteration,
+            pool_len,
+            ..
+        } => VectorRebuildStatus {
+            phase: VectorRebuildPhase::TrainCoarse,
+            target_index_version: *target_index_version,
+            nlist: *nlist,
+            subjects_processed: 0,
+            candidates_collected: *pool_len,
+            training_iteration: *iteration,
+        },
+        VectorRebuildStateRecord::TrainFine {
+            target_index_version,
+            nlist,
+            coarse_cursor,
+            iteration,
+            pool_len,
+            ..
+        } => VectorRebuildStatus {
+            phase: VectorRebuildPhase::TrainFine {
+                coarse_cursor: *coarse_cursor,
+            },
+            target_index_version: *target_index_version,
+            nlist: *nlist,
+            subjects_processed: 0,
+            candidates_collected: *pool_len,
             training_iteration: *iteration,
         },
         VectorRebuildStateRecord::Building {
@@ -231,6 +323,7 @@ fn status_of(state: &VectorRebuildStateRecord) -> VectorRebuildStatus {
         VectorRebuildStateRecord::ReadyToPublish {
             target_index_version,
             nlist,
+            ..
         } => VectorRebuildStatus {
             phase: VectorRebuildPhase::ReadyToPublish,
             target_index_version: *target_index_version,
@@ -407,16 +500,44 @@ fn drop_version_pages(
 
 /// Deletes the `0..nlist` partition heads and centroids of `(index_id, version)`. O(`nlist`),
 /// bounded by [`MAX_NLIST`]; called only once a version's pages are fully drained.
-fn drop_version_heads_and_centroids(index_id: u32, version: u64, nlist: u32) {
+/// Deletes the partition heads and centroids of `(index_id, version)` for **both key levels**
+/// (Slice 5): the level-0 coarse keys `0..nlist` of a two-level generation and every leaf key
+/// `0..leaves` (a flat generation's leaf count is its `nlist`). Called only once a version's
+/// pages are fully drained. The counts come from the teardown record's frozen shape, so a shape
+/// change between generations cannot strand keys.
+fn drop_version_heads_and_centroids(
+    index_id: u32,
+    version: u64,
+    nlist: u32,
+    levels: u8,
+    nlist_fine: u32,
+) {
+    let leaves = if levels == LEVELS_TWO {
+        nlist.saturating_mul(nlist_fine)
+    } else {
+        nlist
+    };
     VECTOR_PARTITION_HEADS.with_borrow_mut(|heads| {
-        for p in 0..nlist {
+        if levels == LEVELS_TWO {
+            for p in 0..nlist {
+                heads
+                    .remove(&PartitionKey::coarse(index_id, version, p))
+                    .expect("partition head remove");
+            }
+        }
+        for p in 0..leaves {
             heads
                 .remove(&PartitionKey::new(index_id, version, p))
                 .expect("partition head remove");
         }
     });
     IVF_CENTROIDS.with_borrow_mut(|centroids| {
-        for p in 0..nlist {
+        if levels == LEVELS_TWO {
+            for p in 0..nlist {
+                centroids.remove(&PartitionKey::coarse(index_id, version, p));
+            }
+        }
+        for p in 0..leaves {
             centroids.remove(&PartitionKey::new(index_id, version, p));
         }
     });
@@ -431,6 +552,36 @@ pub(crate) fn admin_start_vector_rebuild(
     index_id: u32,
     nlist: u32,
     sample_limit: u32,
+) -> Result<(), VectorCanisterError> {
+    admin_start_vector_rebuild_with_fine(caller, index_id, nlist, sample_limit, None, None)
+}
+
+/// Shape-aware rebuild start (Slice 5). `fine_nlist = None` starts the unchanged flat lifecycle;
+/// `Some(f)` (with `f >= 2`) starts a two-level (`levels = 2`) rebuild whose target generation
+/// holds `nlist` coarse centroids and `nlist * f` leaves packed as `coarse * f + fine`.
+///
+/// `code_tier = Some(true)` (Slice 6, ADR 0078) builds the shadow generation with the 1-bit
+/// RaBitQ first-stage code tier; the public encoding never changes and the advertised result
+/// quality stays the original tier. The flag is persisted in the rebuild-pool header at `begin`
+/// and consumed by the transition into `Building`.
+///
+/// Two-level admission adds, on top of the flat checks:
+/// - `f >= 2` (a single-child hierarchy is flat with extra storage);
+/// - `nlist * f <= MAX_LEAVES` (u32 partition-id packing and per-generation head capacity);
+/// - the shared work-area feasibility at `max(nlist, f)` (see [`training_start_feasible_shape`]):
+///   both P1 and P2 are evaluated at the largest level, which also bounds the worst-case fine
+///   subtree iteration (a subtree holds at most the whole pool).
+///
+/// A tier-on target additionally fails closed when its page shape cannot fit even one row per
+/// page (`shape_def_for` → `InvalidRebuildParams`), so an unbuildable geometry is rejected before
+/// any state is written.
+pub(crate) fn admin_start_vector_rebuild_with_fine(
+    caller: Principal,
+    index_id: u32,
+    nlist: u32,
+    sample_limit: u32,
+    fine_nlist: Option<u32>,
+    code_tier: Option<bool>,
 ) -> Result<(), VectorCanisterError> {
     assert_router_caller(caller)?;
     let def = definition_store::get(index_id)
@@ -447,25 +598,62 @@ pub(crate) fn admin_start_vector_rebuild(
     if sample_limit < nlist || sample_limit > MAX_REBUILD_SAMPLE_LIMIT {
         return Err(VectorCanisterError::InvalidRebuildParams);
     }
-    // Bound the combined durable rebuild state (candidate pool + trained centroids) and the
+    let (levels, nlist_fine) = match fine_nlist {
+        None => (LEVELS_FLAT, 1),
+        // A single-child hierarchy is flat with extra storage, not a meaningful shape.
+        Some(f) if f < 2 => return Err(VectorCanisterError::InvalidRebuildParams),
+        Some(f) => {
+            let leaves = nlist
+                .checked_mul(f)
+                .ok_or(VectorCanisterError::InvalidRebuildParams)?;
+            if leaves > MAX_LEAVES {
+                return Err(VectorCanisterError::InvalidRebuildParams);
+            }
+            (LEVELS_TWO, f)
+        }
+    };
+    // Bound the durable rebuild-pool region (candidate pool + trained centroid work area) and the
     // per-iteration `Training` work; both scale with `dims`. The pool freezes native stored rows
-    // (the index's `pad_stride_bytes` width); the trained centroids are always canonical f32
-    // (`dims * 4` bytes each), so the state budget charges pool and centroid widths separately.
-    if !training_start_feasible(
+    // (the index's `pad_stride_bytes` width plus aux), the trained centroids are always canonical
+    // f32 (`dims * 4` bytes each), and both share the region budget.
+    if !training_start_feasible_shape(
         nlist,
+        nlist_fine,
         def.pad_stride_bytes,
         u32::from(def.dims) * 4,
         def.dims,
     ) {
         return Err(VectorCanisterError::InvalidRebuildParams);
     }
+    let code_tier = code_tier.unwrap_or(false);
+    // Fail-closed page-shape feasibility of the TARGET generation before any state is written:
+    // the tier-on geometry shrinks `slots_per_page` and must fit at least one row per page.
+    shape_def_for(&def, levels, nlist_fine, code_tier)
+        .map_err(|_| VectorCanisterError::InvalidRebuildParams)?;
     if !matches!(rebuild_state_of(index_id), VectorRebuildStateRecord::Idle) {
+        return Err(VectorCanisterError::RebuildAlreadyActive);
+    }
+    // The pool region is single-tenant: another index's in-flight rebuild serializes this start
+    // behind its own. Abort or complete that rebuild first.
+    if rebuild_pool::bound_index().is_some_and(|bound| bound != index_id) {
         return Err(VectorCanisterError::RebuildAlreadyActive);
     }
     let target = def
         .active_index_version
         .checked_add(1)
         .ok_or(VectorCanisterError::AllocatorOverflow)?;
+    // Bind + zero the pool region before the lifecycle row exists; both writes commit atomically
+    // with this message. The centroid work area hosts whichever level is training
+    // (`max(nlist, nlist_fine)` sets), and a two-level pool reserves the coarse-id array.
+    let work_centroids = nlist.max(nlist_fine);
+    rebuild_pool::begin(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        u32::from(def.dims) * 4,
+        levels == LEVELS_TWO,
+        code_tier,
+    )?;
     put_rebuild_state(
         index_id,
         VectorRebuildStateRecord::Sampling {
@@ -474,7 +662,9 @@ pub(crate) fn admin_start_vector_rebuild(
             sample_limit,
             cursor: None,
             subjects_scanned: 0,
-            candidates: Vec::new(),
+            pool_len: 0,
+            levels,
+            nlist_fine,
         },
     );
     Ok(())
@@ -569,6 +759,9 @@ fn rebuild_step_inner(
             sampling_step(index_id, state, max_subjects, max_vector_bytes)?
         }
         VectorRebuildStateRecord::Training { .. } => training_step(index_id, state)?,
+        // Two-level pipeline: coarse k-means, then per-subtree fine jobs (Slice 5).
+        VectorRebuildStateRecord::TrainCoarse { .. } => train_coarse_step(index_id, state)?,
+        VectorRebuildStateRecord::TrainFine { .. } => train_fine_step(index_id, state)?,
         VectorRebuildStateRecord::Building { .. } => {
             building_step(index_id, state, max_subjects, max_vector_bytes)?
         }
@@ -578,6 +771,10 @@ fn rebuild_step_inner(
     // Status is read before the move into the persist block (it only needs the phase/cursor
     // summary, not ownership).
     let status = status_of(&next);
+    if matches!(next, VectorRebuildStateRecord::Failed { .. }) {
+        // The candidate pool is dead state once sampling failed; release it with the transition.
+        rebuild_pool::release();
+    }
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_persist_state");
@@ -585,20 +782,11 @@ fn rebuild_step_inner(
             VectorRebuildStateRecord::Idle => {
                 VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.remove(&index_id));
             }
+            // The record is scalars-only since the pool moved to the dedicated region, so the
+            // persist is a single small Candid encode + store (ADR 0033 implementation).
             next => {
-                // Fail-closed encoded-size guard (P2): `Training` is the only durable rebuild
-                // value whose size scales with sampled data (`candidates + centroids`). Encode
-                // exactly once, re-check the Candid-encoded length before persisting any Training
-                // transition (`Sampling -> Training` and each `Training -> Training` re-persist),
-                // and store those same bytes verbatim. An oversized value returns a trap-free
-                // error and leaves the prior recoverable state intact.
-                let is_training = matches!(next, VectorRebuildStateRecord::Training { .. });
-                let bytes = next.into_bytes();
-                if is_training && bytes.len() as u64 > MAX_REBUILD_STATE_BYTES {
-                    return Err(VectorCanisterError::InvalidRebuildParams);
-                }
                 VECTOR_REBUILD_STATE
-                    .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(bytes)));
+                    .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(next.into_bytes())));
             }
         }
     }
@@ -618,10 +806,11 @@ pub(crate) fn rebuild_step_with_budget(
 }
 
 /// Bounded `Sampling` step (ADR 0031 Slice 8): examines up to `max_subjects` rows, accumulating a
-/// bounded distinct candidate pool (`candidate_pool_cap`) from live subjects. Once sampling is
-/// done (range exhausted, `sample_limit` consumed, or the pool cap reached) it transitions to
-/// `Training` if `>= nlist` distinct candidates were collected, else to `Failed`. No centroids
-/// are written here; `Training` writes them on its transition to `Building`.
+/// bounded distinct candidate pool (`candidate_pool_cap`) from live subjects in the durable pool
+/// region (ADR 0033 implementation). Once sampling is done (range exhausted, `sample_limit`
+/// consumed, or the pool cap reached) it transitions to `Training` if `>= nlist` distinct
+/// candidates were collected, else to `Failed`. No centroids are written here; `Training` writes
+/// them on its transition to `Building`.
 fn sampling_step(
     index_id: u32,
     state: VectorRebuildStateRecord,
@@ -634,7 +823,9 @@ fn sampling_step(
         sample_limit,
         cursor,
         mut subjects_scanned,
-        mut candidates,
+        pool_len,
+        levels,
+        nlist_fine,
     } = state
     else {
         unreachable!("sampling_step called off Sampling");
@@ -645,19 +836,39 @@ fn sampling_step(
         .map_err(VectorCanisterError::from)?
         .ok_or(VectorCanisterError::UnknownIndex)?;
     let active = def.active_index_version;
-    // Candidates freeze native stored rows (the index's `pad_stride_bytes` width), while the
-    // trained centroids are canonical f32, so the pool cap charges those widths separately.
-    let pool_cap = candidate_pool_cap(
+    let two_level = nlist_fine > 1;
+    // Candidates freeze native stored rows (pad-stride wide plus aux), while the trained
+    // centroids are canonical f32, so both share the region budget at their own widths. The work
+    // area and coarse-id reservation follow the target shape (see `training_start_feasible_shape`).
+    let centroid_stride = u32::from(def.dims) * 4;
+    let work_centroids = nlist.max(nlist_fine);
+    let pool_cap = candidate_pool_cap_shape(
         nlist,
+        nlist_fine,
         def.pad_stride_bytes,
-        u32::from(def.dims) * 4,
+        centroid_stride,
         def.dims,
     );
+    // Fail-closed resume validation: the durable pool region must be bound to this rebuild and
+    // hold exactly the length the lifecycle record claims, before any scan work runs.
+    let opened = rebuild_pool::open(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        two_level,
+    )
+    .map_err(VectorCanisterError::from)?;
+    if opened.pool_len != pool_len {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+    let mut durable_len: usize = pool_len as usize;
 
     let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
     let mut range_exhausted = false;
     let mut bytes_buffered = 0u64;
     let mut live_rows: Vec<RebuildCandidate> = Vec::new();
+    let mut accepted: Vec<RebuildCandidate> = Vec::new();
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_sampling_scan");
@@ -683,7 +894,17 @@ fn sampling_step(
             };
             if next.restarted {
                 subjects_scanned = 0;
-                candidates.clear();
+                // The scan geometry changed, so the accumulated pool is tied to stale cursors:
+                // discard the durable rows exactly as the old in-record pool was cleared.
+                rebuild_pool::reset_pool_rows(
+                    index_id,
+                    def.pad_stride_bytes,
+                    work_centroids,
+                    centroid_stride,
+                    two_level,
+                )
+                .map_err(VectorCanisterError::from)?;
+                durable_len = 0;
                 to_read.clear();
                 bytes_buffered = 0;
             }
@@ -740,16 +961,18 @@ fn sampling_step(
                     end += 1;
                 }
                 if loaded {
-                    let row_count = scratch.row_count();
                     for (_, slot) in &to_read[i..end] {
-                        if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                        // Single decode decides liveness and yields the aux bytes; `live_row_info`
+                        // rejects an uninitialized slot (at/after `row_count`) and a tombstoned
+                        // row, matching the per-subject `read_row_bytes` `None` path.
+                        let Some(info) = scratch.live_row_info(slot.slot) else {
                             continue;
-                        }
+                        };
                         // Sampling freezes each row in its native stored form (bytes + aux
                         // scale); f32 exists only transiently inside seed/Training computation.
                         live_rows.push(RebuildCandidate {
                             stored: scratch.vec_slice(slot.slot).to_vec(),
-                            aux: scratch.row_info(slot.slot).aux,
+                            aux: info.aux,
                         });
                     }
                 }
@@ -758,46 +981,92 @@ fn sampling_step(
         }
     }
 
-    // Distinct membership via a transient set seeded from the existing pool (P1): keeps the
-    // per-step dedup cost ~O(total candidate bytes) instead of `candidates.contains` being
-    // O(existing candidates * vector_width) for every new candidate. The key is the whole
-    // `(stored bytes, aux)` pair: identical quantized bytes under different scales are distinct
-    // vectors. The set is heap-only; the durable state stays `Vec<RebuildCandidate>`.
-    let mut pool_cap_reached = candidates.len() >= pool_cap;
+    // Distinct membership over the durable pool without cloning pool bytes (P1, ADR 0033
+    // implementation): the existing rows are streamed once and reduced to `hash -> row indices`,
+    // so a new candidate's dedup check hashes its own bytes and, on a hash hit only, re-reads the
+    // few colliding rows for an exact `(stored bytes, aux)` comparison — identical quantized bytes
+    // under different scales stay distinct vectors. Rows accepted earlier in the SAME step are
+    // checked against the in-memory batch (their region slots are not written until the bulk
+    // append below), so same-step duplicates are excluded exactly as cross-step ones were. The
+    // maps are heap-only and transient.
+    let mut pool_cap_reached = durable_len >= pool_cap;
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_sampling_dedup");
-        let mut seen: RapidHashSet<RebuildCandidate> =
-            RapidHashSet::with_capacity(candidates.len() + live_rows.len());
-        seen.extend(candidates.iter().cloned());
+        let mut seen: HashMap<u64, Vec<u32>> =
+            HashMap::with_capacity(durable_len.max(live_rows.len()) * 2);
+        rebuild_pool::for_each_row(def.pad_stride_bytes, |index, stored, aux| {
+            seen.entry(candidate_hash(stored, &aux))
+                .or_default()
+                .push(index);
+        })
+        .map_err(VectorCanisterError::from)?;
+        // Hash gate over this step's accepted rows; the vec holds offsets into `accepted`.
+        let mut accepted_by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
         for row in live_rows {
-            if candidates.len() >= pool_cap {
+            if durable_len >= pool_cap {
                 pool_cap_reached = true;
                 break;
             }
-            if seen.insert(row.clone()) {
-                candidates.push(row);
-                if candidates.len() >= pool_cap {
+            let hash = candidate_hash(&row.stored, &row.aux);
+            let duplicate = seen.get(&hash).is_some_and(|indices| {
+                indices
+                    .iter()
+                    .any(|&i| rebuild_pool::read_row(i, def.pad_stride_bytes) == row)
+            }) || accepted_by_hash
+                .get(&hash)
+                .is_some_and(|offsets| offsets.iter().any(|&k| accepted[k] == row));
+            if !duplicate {
+                accepted_by_hash
+                    .entry(hash)
+                    .or_default()
+                    .push(accepted.len());
+                accepted.push(row);
+                durable_len += 1;
+                if durable_len >= pool_cap {
                     pool_cap_reached = true;
                 }
             }
         }
     }
+    // One bulk append persists the accepted rows and advances the durable pool length.
+    if !accepted.is_empty() {
+        rebuild_pool::append_rows(
+            index_id,
+            def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            two_level,
+            &accepted,
+        )
+        .map_err(VectorCanisterError::from)?;
+    }
 
     let budget_exhausted = subjects_scanned >= sample_limit as u64;
     let sampling_done = range_exhausted || budget_exhausted || pool_cap_reached;
     if sampling_done {
-        if candidates.len() >= nlist as usize {
-            // The fail-closed encoded-size guard (P2) is applied centrally in
-            // `rebuild_step_inner` before persisting, covering this transition and every
-            // subsequent `Training` re-persist uniformly.
-            return Ok(VectorRebuildStateRecord::Training {
-                target_index_version,
-                nlist,
-                sample_limit,
-                iteration: 0,
-                candidates,
-                centroids: Vec::new(),
+        if durable_len >= nlist as usize {
+            // A two-level rebuild enters the split coarse→fine training pipeline; flat keeps the
+            // single-level `Training` phase unchanged.
+            return Ok(if two_level {
+                VectorRebuildStateRecord::TrainCoarse {
+                    target_index_version,
+                    nlist,
+                    nlist_fine,
+                    sample_limit,
+                    iteration: 0,
+                    pool_len: durable_len as u32,
+                }
+            } else {
+                VectorRebuildStateRecord::Training {
+                    target_index_version,
+                    nlist,
+                    sample_limit,
+                    iteration: 0,
+                    pool_len: durable_len as u32,
+                    levels,
+                    nlist_fine,
+                }
             });
         }
         return Ok(VectorRebuildStateRecord::Failed {
@@ -812,71 +1081,44 @@ fn sampling_step(
         sample_limit,
         cursor: last_cursor,
         subjects_scanned,
-        candidates,
+        pool_len: durable_len as u32,
+        levels,
+        nlist_fine,
     })
 }
 
-/// Bounded deterministic k-means-lite `Training` step (ADR 0031 Slice 8). Performs exactly one
-/// full iteration over the bounded candidate pool per call: assigns each candidate to its nearest
-/// current centroid (ties to the lowest id, via the same rule as `assign_partition`), recomputes
-/// each centroid as the arithmetic mean of its members, and keeps a previous centroid unchanged
-/// for an empty cluster. The per-iteration work `candidate_count * nlist * dims` is bounded by
-/// [`MAX_REBUILD_TRAINING_DISTANCE_OPS`] (the `Sampling` pool cap); sums/counts are transient
-/// heap buffers (`O(nlist * dims)`), never persisted. Once the recomputed centroids equal the
-/// previous iteration's (the assignment is stable) or [`MAX_REBUILD_TRAINING_ITERATIONS`] is
-/// reached, it writes exactly `nlist` centroids to `IVF_CENTROIDS` and transitions to `Building`
-/// (the early-exit is exact: a converged centroid set reproduces itself, so stopping early changes
-/// no result).
-fn training_step(
-    index_id: u32,
-    state: VectorRebuildStateRecord,
-) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
-    let VectorRebuildStateRecord::Training {
-        target_index_version,
-        nlist,
-        sample_limit,
-        iteration,
-        candidates,
-        mut centroids,
-    } = state
-    else {
-        unreachable!("training_step called off Training");
-    };
-    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-    let _scope = bench_scope("rebuild_training");
-    let def = definition_store::get(index_id)
-        .map_err(VectorCanisterError::from)?
-        .ok_or(VectorCanisterError::UnknownIndex)?;
+/// One deterministic k-means-lite iteration over `candidates` against the current centroid set
+/// (ADR 0031 Slice 8). Assigns each candidate to its nearest centroid (ties to the lowest id, via
+/// the same rule as `assign_partition`; centroid-level early exit), recomputes each centroid as
+/// the arithmetic mean of its members (spherical renormalization for cosine; a zero-norm mean or
+/// an empty cluster keeps the previous centroid), and reports whether the recomputed set equals
+/// the input exactly — the assignment is stable, so k-means has converged and stopping early is
+/// exact (a converged set reproduces itself). Pure: identical float semantics for flat `Training`
+/// and every two-level level ([`train_coarse_step`]/[`train_fine_step`]). The per-iteration work
+/// `candidate_count * centroids * dims` is bounded by [`MAX_REBUILD_TRAINING_DISTANCE_OPS`] via
+/// the sampling pool cap; sums/counts are transient heap buffers, never persisted.
+fn kmeans_lite_iteration(
+    def: &VectorIndexDef,
+    candidates: &[RebuildCandidate],
+    mut centroids: Vec<Vec<u8>>,
+) -> (Vec<Vec<u8>>, bool) {
     let dims = def.dims as usize;
-    let nlist_usize = nlist as usize;
-
-    // Iteration 0: seed centroids via deterministic furthest-point selection (spread across the
-    // pool) rather than the first `nlist` candidates, which can cluster together and stall
-    // convergence. The recompute below is deterministic (same assignment -> same mean), so if it
-    // leaves the centroids unchanged the assignment is stable and k-means has converged: a
-    // further iteration would reproduce the same centroids, so stopping early is exact.
-    if centroids.is_empty() {
-        centroids = furthest_point_seed(&candidates, nlist_usize, &def);
-    }
-    // The centroids used for this iteration's assignment.
     let prev_centroids = centroids.clone();
-
-    let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; nlist_usize];
-    let mut counts: Vec<u64> = vec![0u64; nlist_usize];
+    let k = centroids.len();
+    let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; k];
+    let mut counts: Vec<u64> = vec![0u64; k];
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_training_assign");
         let decoded_centroids: Vec<Vec<f32>> = centroids.iter().map(|c| decode_f32(c)).collect();
-        for cand in &candidates {
+        for cand in candidates {
             // Each candidate is decoded from its frozen stored form exactly once per iteration;
             // the assignment scores canonical f32 bytes against the f32 centroids. An `F32` row
             // already is canonical f32, so its bytes are borrowed without a copy; only an `I8`
             // row materializes a transient dequantized buffer.
             let v = match def.encoding {
                 VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
-                VectorEncoding::I8 => {
-                    Cow::Owned(stored_to_f32_bytes(&def, &cand.stored, &cand.aux))
-                }
+                VectorEncoding::I8 => Cow::Owned(stored_to_f32_bytes(def, &cand.stored, &cand.aux)),
             };
             let mut best = 0usize;
             let mut best_d = f32::INFINITY;
@@ -884,7 +1126,8 @@ fn training_step(
                 // Centroid-level early exit: a centroid whose partial L2 already exceeds the
                 // running best cannot be the nearest (L2 partial sums are monotone), so skip it.
                 // A tie does not trigger the strict-exceeds exit, preserving the lowest-id
-                // tie-break; a non-finite centroid is skipped (a NaN distance never beats `best_d`).
+                // tie-break; a non-finite centroid is skipped (a NaN distance never beats
+                // `best_d`).
                 let Some(d) = l2_squared_f32_early_exit(&v, centroid, best_d) else {
                     continue;
                 };
@@ -904,7 +1147,7 @@ fn training_step(
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_training_recompute");
         let is_cosine = def.metric == VectorMetric::Cosine;
-        for p in 0..nlist_usize {
+        for p in 0..k {
             if counts[p] == 0 {
                 continue;
             }
@@ -926,8 +1169,98 @@ fn training_step(
             centroids[p] = encode_f32(&new_centroid);
         }
     }
-    let iteration = iteration + 1;
     let converged = prev_centroids == centroids;
+    (centroids, converged)
+}
+
+/// Bounded deterministic k-means-lite `Training` step (ADR 0031 Slice 8), the flat (`levels = 1`)
+/// phase. Performs exactly one full iteration over the bounded candidate pool per call via
+/// [`kmeans_lite_iteration`] (one bounded step per message, rows read individually from the pool
+/// region; the centroid work area lives beside the rows), then writes exactly `nlist` centroids to
+/// `IVF_CENTROIDS` on convergence or [`MAX_REBUILD_TRAINING_ITERATIONS`] and transitions to
+/// `Building`. The two-level pipeline uses [`train_coarse_step`]/[`train_fine_step`] instead.
+fn training_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::Training {
+        target_index_version,
+        nlist,
+        sample_limit,
+        iteration,
+        pool_len,
+        levels,
+        nlist_fine,
+    } = state
+    else {
+        unreachable!("training_step called off Training");
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("rebuild_training");
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    let nlist_usize = nlist as usize;
+    let centroid_stride = u32::from(def.dims) * 4;
+
+    // Fail-closed resume validation: the pool region must still be bound to this rebuild and hold
+    // exactly the frozen pool the lifecycle record claims.
+    let opened = rebuild_pool::open(
+        index_id,
+        def.pad_stride_bytes,
+        nlist,
+        centroid_stride,
+        false,
+    )
+    .map_err(VectorCanisterError::from)?;
+    if opened.pool_len != pool_len {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+    // Load the frozen pool rows (fixed-width binary reads; no Candid decode, ADR 0033
+    // implementation).
+    let candidates = rebuild_pool::load_rows(
+        index_id,
+        def.pad_stride_bytes,
+        nlist,
+        centroid_stride,
+        false,
+    )
+    .map_err(VectorCanisterError::from)?;
+    // The Training centroid work area lives beside the pool rows in the same region: empty before
+    // seeding, exactly `nlist` centroids afterwards.
+    let mut centroids = rebuild_pool::get_centroids(
+        index_id,
+        def.pad_stride_bytes,
+        nlist,
+        centroid_stride,
+        false,
+    )
+    .map_err(VectorCanisterError::from)?;
+
+    // Iteration 0: seed centroids via deterministic furthest-point selection (spread across the
+    // pool) rather than the first `nlist` candidates, which can cluster together and stall
+    // convergence. See [`kmeans_lite_iteration`] for the exact early-exit contract.
+    if centroids.is_empty() {
+        if iteration != 0 {
+            // A resumed iteration > 0 must find its previous iteration's work area.
+            return Err(VectorCanisterError::RebuildPoolInvalid);
+        }
+        centroids = furthest_point_seed(&candidates, nlist_usize, &def);
+        rebuild_pool::put_centroids(
+            index_id,
+            def.pad_stride_bytes,
+            nlist,
+            centroid_stride,
+            false,
+            &centroids,
+        )
+        .map_err(VectorCanisterError::from)?;
+    } else if centroids.len() != nlist_usize {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+
+    let (centroids, converged) = kmeans_lite_iteration(&def, &candidates, centroids);
+    let iteration = iteration + 1;
 
     if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
         IVF_CENTROIDS.with_borrow_mut(|m| {
@@ -943,21 +1276,550 @@ fn training_step(
             nlist,
             cursor: None,
             subjects_processed: 0,
+            levels,
+            nlist_fine,
+            // The shadow generation's code tier was persisted at `begin` (pool header, Slice 6).
+            code_tier: opened.code_tier,
         });
     }
 
+    // Persist the refined centroid work area beside the pool rows for the next iteration.
+    rebuild_pool::put_centroids(
+        index_id,
+        def.pad_stride_bytes,
+        nlist,
+        centroid_stride,
+        false,
+        &centroids,
+    )
+    .map_err(VectorCanisterError::from)?;
     Ok(VectorRebuildStateRecord::Training {
         target_index_version,
         nlist,
         sample_limit,
         iteration,
-        candidates,
-        centroids,
+        pool_len,
+        levels,
+        nlist_fine,
+    })
+}
+
+/// Canonical-f32 componentwise mean over a subtree's frozen members, in pool-index order (the
+/// deterministic accumulation order). Returns `None` for an empty member list.
+pub(super) fn member_mean_bytes(
+    def: &VectorIndexDef,
+    candidates: &[RebuildCandidate],
+) -> Option<Vec<u8>> {
+    let dims = def.dims as usize;
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut sums = vec![0.0f32; dims];
+    for cand in candidates {
+        let v = match def.encoding {
+            VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
+            VectorEncoding::I8 => Cow::Owned(stored_to_f32_bytes(def, &cand.stored, &cand.aux)),
+        };
+        for (acc, x) in sums.iter_mut().zip(v.as_chunks::<4>().0) {
+            *acc += f32::from_le_bytes(*x);
+        }
+    }
+    let inv = 1.0f32 / candidates.len() as f32;
+    Some(encode_f32(
+        &sums.iter().map(|s| s * inv).collect::<Vec<_>>(),
+    ))
+}
+
+/// Slice 5 **empty/insufficient subtree rules**, applied when a fine subtree job completes.
+///
+/// - **Empty** (`members = 0`, so `trained` is empty and `member_mean` is `None`): every one of
+///   the `f` leaf centroids is a copy of the subtree's coarse centroid (`coarse_centroid`).
+/// - **Insufficient** (`0 < members < f`): k-means ran over `k = members` seeds, so slots
+///   `0..k` hold trained centroids; each unfilled slot (ascending) receives a copy of the trained
+///   centroid **nearest to the subtree's member mean** (L2², ties broken to the lowest slot id).
+///
+/// Both rules are deterministic and allocate no new geometry: duplicated leaves simply share a
+/// centroid, ε₂ selection (`<=` threshold) always selects all duplicates together, and row
+/// placement collapses onto the lowest duplicate id. Documented identically in
+/// `design/index/vector-index.md`.
+pub(super) fn complete_subtree_leaf_centroids(
+    trained: Vec<Vec<u8>>,
+    member_mean: Option<&[u8]>,
+    coarse_centroid: &[u8],
+    f: usize,
+) -> Vec<Vec<u8>> {
+    let Some(mean) = member_mean else {
+        // Empty subtree: replicate the coarse centroid into every leaf slot.
+        return vec![coarse_centroid.to_vec(); f];
+    };
+    let k = trained.len();
+    debug_assert!(k >= 1 && k <= f);
+    // The member mean is byte-encoded; decode once and score every trained centroid against it
+    // with the same kernel the assignment paths use.
+    let mean_query = decode_f32(mean);
+    let mut out = trained;
+    for _ in k..f {
+        let mut best = 0usize;
+        let mut best_d = f32::INFINITY;
+        for (p, centroid) in out[..k].iter().enumerate() {
+            let d = l2_squared_f32(centroid, &mean_query);
+            if d < best_d {
+                best_d = d;
+                best = p;
+            }
+        }
+        out.push(out[best].clone());
+    }
+    out
+}
+
+/// Reads one centroid (canonical f32 components) at an exact partition key, rejecting a
+/// wrong-width payload. The key carries the full `(index_id, version, partition)` scope.
+fn read_single_centroid(key: PartitionKey, dims: u16) -> Option<Vec<f32>> {
+    let bytes = IVF_CENTROIDS.with_borrow(|m| m.get(&key))?;
+    let centroid = decode_f32(&bytes);
+    (centroid.len() == dims as usize).then_some(centroid)
+}
+
+/// Writes one subtree's `f` leaf centroids into `IVF_CENTROIDS` at the packed leaf ids
+/// `[coarse * f, (coarse + 1) * f)`.
+fn write_subtree_leaf_centroids(
+    index_id: u32,
+    version: u64,
+    nlist_fine: u32,
+    coarse: u32,
+    leaves: &[Vec<u8>],
+) {
+    let base = coarse * nlist_fine;
+    IVF_CENTROIDS.with_borrow_mut(|m| {
+        for (rel, bytes) in leaves.iter().enumerate() {
+            m.insert(
+                PartitionKey::new(index_id, version, base + rel as u32),
+                bytes.clone(),
+            );
+        }
+    });
+}
+
+/// Two-level `TrainCoarse` step (Slice 5): k-means over the whole candidate pool at the coarse
+/// count, byte-for-byte the same convergence rule, seeding, and one-iteration-per-step budget as
+/// flat [`training_step`]. On completion the coarse centroids land on the **level-0** keys, the
+/// shared centroid work area is reset for the differently-sized fine sets, and the lifecycle
+/// enters `TrainFine` at coarse cursor `0`.
+fn train_coarse_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::TrainCoarse {
+        target_index_version,
+        nlist,
+        nlist_fine,
+        sample_limit,
+        iteration,
+        pool_len,
+    } = state
+    else {
+        unreachable!("train_coarse_step called off TrainCoarse");
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("rebuild_training");
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    let nlist_usize = nlist as usize;
+    let work_centroids = nlist.max(nlist_fine);
+    let centroid_stride = u32::from(def.dims) * 4;
+
+    let opened = rebuild_pool::open(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+    )
+    .map_err(VectorCanisterError::from)?;
+    if opened.pool_len != pool_len {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+    let candidates = rebuild_pool::load_rows(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+    )
+    .map_err(VectorCanisterError::from)?;
+    let mut centroids = rebuild_pool::get_centroids(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+    )
+    .map_err(VectorCanisterError::from)?;
+
+    if centroids.is_empty() {
+        if iteration != 0 {
+            return Err(VectorCanisterError::RebuildPoolInvalid);
+        }
+        centroids = furthest_point_seed(&candidates, nlist_usize, &def);
+        rebuild_pool::put_centroids(
+            index_id,
+            def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            true,
+            &centroids,
+        )
+        .map_err(VectorCanisterError::from)?;
+    } else if centroids.len() != nlist_usize {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+
+    let (centroids, converged) = kmeans_lite_iteration(&def, &candidates, centroids);
+    let iteration = iteration + 1;
+
+    if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
+        IVF_CENTROIDS.with_borrow_mut(|m| {
+            for (p, bytes) in centroids.iter().enumerate() {
+                m.insert(
+                    PartitionKey::coarse(index_id, target_index_version, p as u32),
+                    bytes.clone(),
+                );
+            }
+        });
+        // The fine jobs seed sets of `nlist_fine` (which may differ from `nlist`); clear the
+        // recorded length so the first fine seeding is accepted as fresh.
+        rebuild_pool::reset_centroids(
+            index_id,
+            def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            true,
+        )
+        .map_err(VectorCanisterError::from)?;
+        return Ok(VectorRebuildStateRecord::TrainFine {
+            target_index_version,
+            nlist,
+            nlist_fine,
+            sample_limit,
+            coarse_cursor: 0,
+            iteration: 0,
+            pool_len,
+        });
+    }
+
+    rebuild_pool::put_centroids(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+        &centroids,
+    )
+    .map_err(VectorCanisterError::from)?;
+    Ok(VectorRebuildStateRecord::TrainCoarse {
+        target_index_version,
+        nlist,
+        nlist_fine,
+        sample_limit,
+        iteration,
+        pool_len,
+    })
+}
+
+/// One bounded pass persisting every pool row's nearest coarse subtree id (lowest-id tie-break,
+/// same rule as `assign_partition`) into the durable coarse-id array. Costs one Training
+/// iteration's worth of distance ops (`pool_len * nlist_coarse * dims`), charged to its own
+/// message before any fine job runs; fine jobs then resume from exactly this membership without
+/// rescoring the pool.
+fn assign_pool_coarse_ids(
+    index_id: u32,
+    def: &VectorIndexDef,
+    target_index_version: u64,
+    nlist_coarse: u32,
+) -> Result<(), VectorCanisterError> {
+    let centroid_stride = u32::from(def.dims) * 4;
+    let coarse: Vec<Vec<f32>> = (0..nlist_coarse)
+        .map(|p| {
+            read_single_centroid(
+                PartitionKey::coarse(index_id, target_index_version, p),
+                def.dims,
+            )
+            .ok_or(VectorCanisterError::RebuildIncomplete)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ids: Vec<u32> = Vec::new();
+    rebuild_pool::for_each_row(def.pad_stride_bytes, |_row_index, stored, aux| {
+        let v = match def.encoding {
+            VectorEncoding::F32 => Cow::Borrowed(stored),
+            VectorEncoding::I8 => Cow::Owned(stored_to_f32_bytes(def, stored, &aux)),
+        };
+        ids.push(assign_partition(&coarse, &v));
+    })
+    .map_err(VectorCanisterError::from)?;
+    rebuild_pool::put_coarse_ids(
+        index_id,
+        def.pad_stride_bytes,
+        nlist_coarse,
+        centroid_stride,
+        &ids,
+    )?;
+    Ok(())
+}
+
+/// Two-level `TrainFine` step (Slice 5). Message units, in order:
+///
+/// 1. **Assignment pass** (once, when the durable `assigned_len` is still zero): every pool row's
+///    nearest coarse id is persisted ([`assign_pool_coarse_ids`]); the message ends there.
+/// 2. **One k-means-lite iteration** of the current subtree's job (`coarse_cursor`): the
+///    subtree's member rows are gathered from the durable ids, seeded at iteration 0 with
+///    `min(nlist_fine, members)` furthest-point centroids, and refined via
+///    [`kmeans_lite_iteration`] — identical convergence rule and budget as flat `Training`.
+/// 3. **Subtree completion**: on convergence or the iteration cap the subtree's `nlist_fine` leaf
+///    centroids (after the [`complete_subtree_leaf_centroids`] empty/insufficient rules) are
+///    written to the packed leaf-id range, the work area resets, and the cursor advances. The
+///    last subtree transitions to `Building`.
+///
+/// Each job re-validates feasibility (one iteration over its actual members at width
+/// `nlist_fine` within [`MAX_REBUILD_TRAINING_DISTANCE_OPS`]) — admission already bounds members
+/// by the pool cap, so a violation indicates corruption and fails the rebuild closed.
+fn train_fine_step(
+    index_id: u32,
+    state: VectorRebuildStateRecord,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let VectorRebuildStateRecord::TrainFine {
+        target_index_version,
+        nlist,
+        nlist_fine,
+        sample_limit,
+        coarse_cursor,
+        iteration,
+        pool_len,
+    } = state
+    else {
+        unreachable!("train_fine_step called off TrainFine");
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("rebuild_training");
+    let def = definition_store::get(index_id)
+        .map_err(VectorCanisterError::from)?
+        .ok_or(VectorCanisterError::UnknownIndex)?;
+    let work_centroids = nlist.max(nlist_fine);
+    let centroid_stride = u32::from(def.dims) * 4;
+
+    let opened = rebuild_pool::open(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+    )
+    .map_err(VectorCanisterError::from)?;
+    if opened.pool_len != pool_len {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+
+    // Unit 1: the once-per-rebuild coarse assignment pass.
+    if opened.assigned_len == 0 {
+        assign_pool_coarse_ids(index_id, &def, target_index_version, nlist)?;
+        return Ok(VectorRebuildStateRecord::TrainFine {
+            target_index_version,
+            nlist,
+            nlist_fine,
+            sample_limit,
+            coarse_cursor,
+            iteration,
+            pool_len,
+        });
+    }
+
+    if coarse_cursor >= nlist {
+        // A resumed cursor beyond the last subtree is corruption, not progress.
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+
+    // Gather this subtree's member row indices from the durable coarse-id array (a 4-byte-per-row
+    // stream; the rows themselves are read individually below).
+    let mut members: Vec<u32> = Vec::new();
+    rebuild_pool::for_each_coarse_id(|row_index, coarse| {
+        if coarse == coarse_cursor {
+            members.push(row_index);
+        }
+    })
+    .map_err(VectorCanisterError::from)?;
+
+    // Per-job feasibility re-validation (see function doc).
+    let job_ops = (members.len() as u64)
+        .checked_mul(u64::from(nlist_fine))
+        .and_then(|x| x.checked_mul(u64::from(def.dims)));
+    if !job_ops.is_some_and(|x| x <= MAX_REBUILD_TRAINING_DISTANCE_OPS) {
+        return Ok(VectorRebuildStateRecord::Failed {
+            target_index_version,
+            reason: "fine subtree job exceeds the per-iteration training budget".to_string(),
+        });
+    }
+
+    let candidates: Vec<RebuildCandidate> = members
+        .iter()
+        .map(|&row_index| rebuild_pool::read_row(row_index, def.pad_stride_bytes))
+        .collect();
+    let seeded_k = nlist_fine.min(candidates.len() as u32) as usize;
+    let mut centroids = rebuild_pool::get_centroids(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+    )
+    .map_err(VectorCanisterError::from)?;
+
+    if centroids.is_empty() {
+        if iteration != 0 {
+            // A resumed iteration > 0 must find its previous iteration's work area.
+            return Err(VectorCanisterError::RebuildPoolInvalid);
+        }
+        if candidates.is_empty() {
+            // Empty-subtree rule: all leaves replicate the coarse centroid; no k-means runs.
+            let coarse_centroid = read_single_centroid(
+                PartitionKey::coarse(index_id, target_index_version, coarse_cursor),
+                def.dims,
+            )
+            .ok_or(VectorCanisterError::RebuildIncomplete)?;
+            let encoded = encode_f32(&coarse_centroid);
+            write_subtree_leaf_centroids(
+                index_id,
+                target_index_version,
+                nlist_fine,
+                coarse_cursor,
+                &vec![encoded; nlist_fine as usize],
+            );
+            return advance_after_subtree(
+                target_index_version,
+                nlist,
+                nlist_fine,
+                sample_limit,
+                pool_len,
+                coarse_cursor,
+                opened.code_tier,
+            );
+        }
+        centroids = furthest_point_seed(&candidates, seeded_k, &def);
+        rebuild_pool::put_centroids(
+            index_id,
+            def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            true,
+            &centroids,
+        )
+        .map_err(VectorCanisterError::from)?;
+    } else if centroids.len() != seeded_k {
+        return Err(VectorCanisterError::RebuildPoolInvalid);
+    }
+
+    let (centroids, converged) = kmeans_lite_iteration(&def, &candidates, centroids);
+    let iteration = iteration + 1;
+
+    if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
+        // Insufficient-subtree rule fills any missing slots deterministically.
+        let leaves = complete_subtree_leaf_centroids(
+            centroids,
+            member_mean_bytes(&def, &candidates).as_deref(),
+            // Only used by the empty case, which never reaches here.
+            &[],
+            nlist_fine as usize,
+        );
+        write_subtree_leaf_centroids(
+            index_id,
+            target_index_version,
+            nlist_fine,
+            coarse_cursor,
+            &leaves,
+        );
+        rebuild_pool::reset_centroids(
+            index_id,
+            def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            true,
+        )
+        .map_err(VectorCanisterError::from)?;
+        return advance_after_subtree(
+            target_index_version,
+            nlist,
+            nlist_fine,
+            sample_limit,
+            pool_len,
+            coarse_cursor,
+            opened.code_tier,
+        );
+    }
+
+    rebuild_pool::put_centroids(
+        index_id,
+        def.pad_stride_bytes,
+        work_centroids,
+        centroid_stride,
+        true,
+        &centroids,
+    )
+    .map_err(VectorCanisterError::from)?;
+    Ok(VectorRebuildStateRecord::TrainFine {
+        target_index_version,
+        nlist,
+        nlist_fine,
+        sample_limit,
+        coarse_cursor,
+        iteration,
+        pool_len,
+    })
+}
+
+/// Advances the fine pipeline past a completed subtree: `Building` after the last one, otherwise
+/// the next coarse cursor with a fresh iteration counter. `code_tier` is the shadow generation's
+/// flag read from the pool header (Slice 6) and frozen into the `Building` record.
+#[allow(clippy::too_many_arguments)]
+fn advance_after_subtree(
+    target_index_version: u64,
+    nlist: u32,
+    nlist_fine: u32,
+    sample_limit: u32,
+    pool_len: u32,
+    completed_coarse: u32,
+    code_tier: bool,
+) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
+    let next_cursor = completed_coarse + 1;
+    if next_cursor >= nlist {
+        return Ok(VectorRebuildStateRecord::Building {
+            target_index_version,
+            nlist,
+            cursor: None,
+            subjects_processed: 0,
+            levels: LEVELS_TWO,
+            nlist_fine,
+            code_tier,
+        });
+    }
+    Ok(VectorRebuildStateRecord::TrainFine {
+        target_index_version,
+        nlist,
+        nlist_fine,
+        sample_limit,
+        coarse_cursor: next_cursor,
+        iteration: 0,
+        pool_len,
     })
 }
 
 /// Bounded `Building` step: shadows up to `max_subjects` still-live subjects into their nearest
 /// target partition. Transitions to `ReadyToPublish` once the subject range is exhausted.
+///
+/// Slice 5 two-level assignment: each row first picks its nearest **coarse** centroid (lowest-id
+/// tie-break), then the best **leaf** within that coarse's contiguous child range
+/// `[c·f, (c+1)·f)` (shortest distance, lowest-id tie-break). Child ranges are read from stable
+/// memory per distinct coarse in the batch, so the heap cost is one subtree set at a time rather
+/// than every leaf of the generation. Flat assignment is unchanged.
 fn building_step(
     index_id: u32,
     state: VectorRebuildStateRecord,
@@ -969,6 +1831,9 @@ fn building_step(
         nlist,
         cursor,
         mut subjects_processed,
+        levels,
+        nlist_fine,
+        code_tier,
     } = state
     else {
         unreachable!("building_step called off Building");
@@ -979,6 +1844,8 @@ fn building_step(
         .map_err(VectorCanisterError::from)?
         .ok_or(VectorCanisterError::UnknownIndex)?;
     let active = def.active_index_version;
+    // Flat: the whole target centroid set. Two-level: only the coarse set is loaded here; leaf
+    // child sets are read lazily per distinct coarse after the batch is grouped (below).
     let centroids = read_centroids_at(index_id, target_index_version, nlist, def.dims)
         .ok_or(VectorCanisterError::RebuildIncomplete)?;
 
@@ -1072,14 +1939,15 @@ fn building_step(
                     end += 1;
                 }
                 if loaded {
-                    let row_count = scratch.row_count();
                     for (_, key, entry, slot) in &to_read[i..end] {
-                        if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                        // Single decode decides liveness and yields the aux bytes; `live_row_info`
+                        // rejects an uninitialized slot (at/after `row_count`) and a tombstoned
+                        // row, matching the per-subject `read_row_bytes` `None` path.
+                        let Some(info) = scratch.live_row_info(slot.slot) else {
                             continue;
-                        }
+                        };
                         let bytes = scratch.vec_slice(slot.slot).to_vec();
-                        let aux = scratch.row_info(slot.slot).aux;
-                        pending.push((*key, *entry, *slot, bytes, aux));
+                        pending.push((*key, *entry, *slot, bytes, info.aux));
                     }
                 }
                 i = end;
@@ -1090,24 +1958,73 @@ fn building_step(
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_building_append");
+        // Shadow rows are written with the SHADOW generation's geometry (Slice 6 SSOT): derived
+        // once per step from the same pure function the dual-write and publish paths use.
+        let shadow_def = shape_def_for(&def, levels, nlist_fine, code_tier)?;
         // Pre-compute each row's nearest target partition and group by partition, so a whole
         // partition's shadow rows are appended in one batched page-store call (amortizing page
         // directory commits across rows) and each subject entry is updated with a single map
         // insert (no redundant get). The guard below is still checked per row because the
-        // subject's live slot must be the one we read bytes from.
-        let mut by_partition: Vec<Vec<ShadowPendingRow>> =
-            (0..nlist as usize).map(|_| Vec::new()).collect();
-        for (key, entry, active_slot, bytes, aux) in pending {
-            // Partition assignment is in f32 space (dequantizing an `I8` row with its aux scale),
-            // matching the upsert `active_partition` so pre- and post-rebuild assignment agree.
-            let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
-            let partition = assign_partition(&centroids, &assign_bytes);
-            by_partition[partition as usize].push((key, entry, active_slot, bytes, aux));
-        }
-        for (partition, bucket) in by_partition.into_iter().enumerate() {
-            if bucket.is_empty() {
-                continue;
+        // subject's live slot must be the one we read bytes from. Partition groups iterate in
+        // ascending id order in both shapes.
+        let two_level = levels == LEVELS_TWO;
+        let grouped: Vec<(u32, Vec<ShadowPendingRow>)> = if two_level {
+            // Stage 1: group the batch by nearest coarse.
+            let mut by_coarse: BTreeMap<u32, Vec<ShadowPendingRow>> = BTreeMap::new();
+            for (key, entry, active_slot, bytes, aux) in pending {
+                // Coarse assignment is in f32 space, matching the upsert path so pre- and
+                // post-rebuild assignment agree.
+                let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
+                let coarse = assign_partition(&centroids, &assign_bytes);
+                by_coarse
+                    .entry(coarse)
+                    .or_default()
+                    .push((key, entry, active_slot, bytes, aux));
             }
+            // Stage 2: per distinct coarse, read its contiguous child range once and pick the
+            // best leaf (lowest-id tie-break).
+            let mut by_leaf: BTreeMap<u32, Vec<ShadowPendingRow>> = BTreeMap::new();
+            for (coarse, bucket) in by_coarse {
+                let children = read_leaf_children_at(
+                    index_id,
+                    target_index_version,
+                    coarse,
+                    nlist_fine,
+                    def.dims,
+                )
+                .ok_or(VectorCanisterError::RebuildIncomplete)?;
+                let base = coarse * nlist_fine;
+                for (key, entry, active_slot, bytes, aux) in bucket {
+                    let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
+                    let rel = assign_partition(&children, &assign_bytes);
+                    by_leaf.entry(base + rel).or_default().push((
+                        key,
+                        entry,
+                        active_slot,
+                        bytes,
+                        aux,
+                    ));
+                }
+            }
+            by_leaf.into_iter().collect()
+        } else {
+            let mut by_partition: Vec<Vec<ShadowPendingRow>> =
+                (0..nlist as usize).map(|_| Vec::new()).collect();
+            for (key, entry, active_slot, bytes, aux) in pending {
+                // Partition assignment is in f32 space (dequantizing an `I8` row with its aux scale),
+                // matching the upsert `active_partition` so pre- and post-rebuild assignment agree.
+                let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
+                let partition = assign_partition(&centroids, &assign_bytes);
+                by_partition[partition as usize].push((key, entry, active_slot, bytes, aux));
+            }
+            by_partition
+                .into_iter()
+                .enumerate()
+                .map(|(p, b)| (p as u32, b))
+                .filter(|(_, b)| !b.is_empty())
+                .collect()
+        };
+        for (partition, bucket) in grouped {
             let shadow_slots = {
                 let rows: Vec<(VectorSubject, &[u8], [u8; 8])> = bucket
                     .iter()
@@ -1116,8 +2033,8 @@ fn building_step(
                 append_slot_batch(
                     index_id,
                     target_index_version,
-                    partition as u32,
-                    &def,
+                    partition,
+                    &shadow_def,
                     &rows,
                 )?
             };
@@ -1152,6 +2069,9 @@ fn building_step(
         Ok(VectorRebuildStateRecord::ReadyToPublish {
             target_index_version,
             nlist,
+            levels,
+            nlist_fine,
+            code_tier,
         })
     } else {
         Ok(VectorRebuildStateRecord::Building {
@@ -1159,6 +2079,9 @@ fn building_step(
             nlist,
             cursor: last_cursor,
             subjects_processed,
+            levels,
+            nlist_fine,
+            code_tier,
         })
     }
 }
@@ -1260,6 +2183,9 @@ pub(crate) fn admin_publish_vector_rebuild(
     let VectorRebuildStateRecord::ReadyToPublish {
         target_index_version,
         nlist,
+        levels,
+        nlist_fine,
+        code_tier,
     } = state
     else {
         return Err(VectorCanisterError::RebuildNotReadyToPublish);
@@ -1267,15 +2193,43 @@ pub(crate) fn admin_publish_vector_rebuild(
     let mut def = definition_store::get(index_id)
         .map_err(VectorCanisterError::from)?
         .ok_or(VectorCanisterError::UnknownIndex)?;
-    // O(`nlist`) centroid presence check (bounded by MAX_NLIST); not a subject scan.
-    if read_centroids_at(index_id, target_index_version, nlist, def.dims).is_none() {
+    // Completeness check at the shadow generation (not a subject scan). A two-level generation
+    // requires the level-0 coarse set **and** every packed leaf set; flat requires the leaf set.
+    // This deliberately bypasses the heap centroid cache: the version-scope rule reserves the
+    // cache for reads at the definition's active generation, and this read targets the pre-flip
+    // shadow version.
+    let leaves = if levels == LEVELS_TWO {
+        nlist
+            .checked_mul(nlist_fine)
+            .ok_or(VectorCanisterError::RebuildIncomplete)?
+    } else {
+        nlist
+    };
+    let complete = read_centroids_at(index_id, target_index_version, leaves, def.dims).is_some()
+        && (levels != LEVELS_TWO
+            || read_coarse_centroids_at(index_id, target_index_version, nlist, def.dims).is_some());
+    if !complete {
         return Err(VectorCanisterError::RebuildIncomplete);
     }
     let old_version = def.active_index_version;
     let old_nlist = def.nlist;
+    // The old generation's shape is frozen into the Cleaning record for its teardown.
+    let old_levels = def.levels;
+    let old_nlist_fine = def.nlist_fine;
 
     def.active_index_version = target_index_version;
     def.nlist = nlist;
+    def.levels = levels;
+    def.nlist_fine = nlist_fine;
+    // The code tier flips with the generation (Slice 6): the published def's frozen width and
+    // flag now describe the pages just built, so search routes through Stage A/B exactly when
+    // scanned rows carry code segments.
+    def.code_tier = code_tier;
+    def.code_stride_bytes = if code_tier {
+        VectorIndexDef::canonical_code_stride_bytes(def.dims)
+    } else {
+        0
+    };
     definition_store::insert(index_id, def)
         .map(|_| ())
         .map_err(VectorCanisterError::from)?;
@@ -1296,6 +2250,8 @@ pub(crate) fn admin_publish_vector_rebuild(
         VectorRebuildStateRecord::Cleaning {
             old_version,
             old_nlist,
+            old_levels,
+            old_nlist_fine,
             target_index_version,
             subject_cursor: None,
             page_cursor: None,
@@ -1304,8 +2260,9 @@ pub(crate) fn admin_publish_vector_rebuild(
     Ok(())
 }
 
-/// Aborts an in-flight rebuild. From `Sampling`/`Failed` (nothing persisted) it returns straight
-/// to `Idle` in O(1); from `Building`/`ReadyToPublish` it enters the bounded `Aborting` teardown.
+/// Aborts an in-flight rebuild. From `Sampling`/`Failed` it returns straight to `Idle` in O(1)
+/// (releasing the pool region); from `Building`/`ReadyToPublish` it enters the bounded `Aborting`
+/// teardown (also releasing the pool region at abort entry).
 pub(crate) fn admin_abort_vector_rebuild(
     caller: Principal,
     index_id: u32,
@@ -1315,26 +2272,40 @@ pub(crate) fn admin_abort_vector_rebuild(
     let next = match state {
         VectorRebuildStateRecord::Sampling { .. }
         | VectorRebuildStateRecord::Training { .. }
+        | VectorRebuildStateRecord::TrainCoarse { .. }
+        | VectorRebuildStateRecord::TrainFine { .. }
         | VectorRebuildStateRecord::Failed { .. } => {
-            // Nothing durable outside the rebuild-state row: `Sampling`/`Training` write no
-            // pages, no shadow slots, and no `IVF_CENTROIDS` (Training centroids live in the
-            // state record until the transition to `Building`). O(1) back to `Idle`.
+            // No pages, no shadow slots, and no `IVF_CENTROIDS` were written; the pool region is
+            // released with the transition back to `Idle`. O(1).
+            rebuild_pool::release();
             VectorRebuildStateRecord::Idle
         }
         VectorRebuildStateRecord::Building {
             target_index_version,
             nlist,
+            levels,
+            nlist_fine,
             ..
         }
         | VectorRebuildStateRecord::ReadyToPublish {
             target_index_version,
             nlist,
-        } => VectorRebuildStateRecord::Aborting {
-            target_index_version,
-            target_nlist: nlist,
-            subject_cursor: None,
-            page_cursor: None,
-        },
+            levels,
+            nlist_fine,
+            code_tier: _,
+        } => {
+            // The candidate pool is dead state from `Building` on; release it at abort entry
+            // (ADR 0033 implementation teardown contract).
+            rebuild_pool::release();
+            VectorRebuildStateRecord::Aborting {
+                target_index_version,
+                target_nlist: nlist,
+                target_levels: levels,
+                target_nlist_fine: nlist_fine,
+                subject_cursor: None,
+                page_cursor: None,
+            }
+        }
         VectorRebuildStateRecord::Idle
         | VectorRebuildStateRecord::Cleaning { .. }
         | VectorRebuildStateRecord::Aborting { .. } => {
@@ -1375,6 +2346,8 @@ fn cleaning_step(
     let VectorRebuildStateRecord::Cleaning {
         old_version,
         old_nlist,
+        old_levels,
+        old_nlist_fine,
         target_index_version,
         subject_cursor,
         page_cursor,
@@ -1393,6 +2366,8 @@ fn cleaning_step(
         return Ok(VectorRebuildStateRecord::Cleaning {
             old_version,
             old_nlist,
+            old_levels,
+            old_nlist_fine,
             target_index_version,
             subject_cursor: if exhausted {
                 subjects_done_marker(scope)
@@ -1405,12 +2380,22 @@ fn cleaning_step(
 
     let (next_page, exhausted) = drop_version_pages(index_id, old_version, page_cursor, max_work);
     if exhausted {
-        drop_version_heads_and_centroids(index_id, old_version, old_nlist);
+        drop_version_heads_and_centroids(
+            index_id,
+            old_version,
+            old_nlist,
+            old_levels,
+            old_nlist_fine,
+        );
+        // Teardown complete: release the rebuild-pool region (ADR 0033 implementation lifecycle).
+        rebuild_pool::release();
         Ok(VectorRebuildStateRecord::Idle)
     } else {
         Ok(VectorRebuildStateRecord::Cleaning {
             old_version,
             old_nlist,
+            old_levels,
+            old_nlist_fine,
             target_index_version,
             subject_cursor,
             page_cursor: next_page,
@@ -1428,6 +2413,8 @@ fn aborting_step(
     let VectorRebuildStateRecord::Aborting {
         target_index_version,
         target_nlist,
+        target_levels,
+        target_nlist_fine,
         subject_cursor,
         page_cursor,
     } = state
@@ -1445,6 +2432,8 @@ fn aborting_step(
         return Ok(VectorRebuildStateRecord::Aborting {
             target_index_version,
             target_nlist,
+            target_levels,
+            target_nlist_fine,
             subject_cursor: if exhausted {
                 subjects_done_marker(scope)
             } else {
@@ -1457,12 +2446,23 @@ fn aborting_step(
     let (next_page, exhausted) =
         drop_version_pages(index_id, target_index_version, page_cursor, max_work);
     if exhausted {
-        drop_version_heads_and_centroids(index_id, target_index_version, target_nlist);
+        drop_version_heads_and_centroids(
+            index_id,
+            target_index_version,
+            target_nlist,
+            target_levels,
+            target_nlist_fine,
+        );
+        // Defensive: the pool region was already released at abort entry; keep the invariant
+        // "teardown to `Idle` leaves no pool binding" against any interrupted older state.
+        rebuild_pool::release();
         Ok(VectorRebuildStateRecord::Idle)
     } else {
         Ok(VectorRebuildStateRecord::Aborting {
             target_index_version,
             target_nlist,
+            target_levels,
+            target_nlist_fine,
             subject_cursor,
             page_cursor: next_page,
         })
@@ -1567,34 +2567,35 @@ fn clear_shadow_slots(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES, MAX_REBUILD_STEP_WORK,
-        MAX_REBUILD_TRAINING_DISTANCE_OPS, candidate_pool_cap, clamp_step_work,
-        training_start_feasible,
+        MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS, candidate_pool_cap,
+        clamp_step_work, training_start_feasible,
     };
+    use crate::facade::stable::rebuild_pool;
 
     #[test]
     fn training_start_feasible_enforces_both_bounds() {
-        // Tiny config: well within both the combined-state and op budgets.
+        // Tiny config: well within both the pool-region and op budgets.
         assert!(training_start_feasible(2, 16, 16, 4));
 
-        // Combined-state (P2): `nlist * (pool_stride + centroid_stride) + overhead >
-        // MAX_REBUILD_STATE_BYTES` is rejected.
+        // Pool region (P2): a geometry that cannot host `nlist` candidate rows (pad-stride + aux)
+        // plus `nlist` trained f32 centroids inside `rebuild_pool::REGION_BYTES` is rejected. With
+        // `nlist = MAX_NLIST`, both the slot and centroid arrays scale with stride, so a large
+        // enough stride exceeds the region budget.
         let stride = 4 * 1050u32; // dims = 1050
         let nlist = 1024u32;
         assert!(
-            nlist as u64 * (stride as u64 + stride as u64) + MAX_REBUILD_STATE_OVERHEAD_BYTES
-                > MAX_REBUILD_STATE_BYTES,
-            "fixture must exceed the combined-state cap"
+            rebuild_pool::pool_capacity_for(stride, nlist, stride, false).is_none(),
+            "fixture must exceed the pool-region budget"
         );
         assert!(!training_start_feasible(nlist, stride, stride, 1050));
 
-        // Op budget (P1) in isolation: small strides keep the state cap satisfied while
-        // `nlist^2 * dims` exceeds the per-iteration op budget. (`nlist` here is only used to drive
-        // the pure check; the caller separately clamps `nlist <= MAX_NLIST`.)
+        // Op budget (P1) in isolation: a small stride keeps the region budget satisfied while
+        // `nlist^2 * dims` exceeds the per-iteration op budget. (`nlist` here is only used to
+        // drive the pure check; the caller separately clamps `nlist <= MAX_NLIST`.)
         let nlist = 40_000u32;
         assert!(
-            nlist as u64 * (4 + 4) + MAX_REBUILD_STATE_OVERHEAD_BYTES <= MAX_REBUILD_STATE_BYTES,
-            "fixture must satisfy the combined-state cap"
+            rebuild_pool::pool_capacity_for(4, nlist, 4, false).is_some(),
+            "fixture must satisfy the pool-region budget"
         );
         // dims = 1, so `nlist^2 * dims` is just `nlist^2`.
         assert!(
@@ -1602,47 +2603,6 @@ mod tests {
             "fixture must exceed the op budget"
         );
         assert!(!training_start_feasible(nlist, 4, 4, 1));
-    }
-
-    #[test]
-    fn encoded_training_state_stays_within_cap() {
-        use crate::records::{RebuildCandidate, VectorRebuildStateRecord};
-        use ic_stable_structures::storable::Storable;
-        // Near-worst case: a wide stride so a full candidate pool plus `nlist` centroids sits right
-        // under the envelope. The Candid-encoded length (enum tag + vec-length + nested-vec
-        // overhead) must still fit within `MAX_REBUILD_STATE_BYTES`, validating the overhead
-        // reserve (ADR 0031 Slice 8, P2).
-        let nlist = 16u32;
-        let dims = 768u16;
-        let stride = 4 * dims as u32;
-        assert!(training_start_feasible(nlist, stride, stride, dims));
-        let pool = candidate_pool_cap(nlist, stride, stride, dims);
-        let candidates: Vec<RebuildCandidate> = (0..pool)
-            .map(|i| {
-                let mut v = vec![0u8; stride as usize];
-                v[0..4].copy_from_slice(&(i as u32).to_le_bytes());
-                RebuildCandidate {
-                    stored: v,
-                    aux: [0u8; 8],
-                }
-            })
-            .collect();
-        let centroids: Vec<Vec<u8>> = (0..nlist as usize)
-            .map(|_| vec![0u8; stride as usize])
-            .collect();
-        let state = VectorRebuildStateRecord::Training {
-            target_index_version: 2,
-            nlist,
-            sample_limit: 1_000_000,
-            iteration: 0,
-            candidates,
-            centroids,
-        };
-        let encoded = state.to_bytes().len() as u64;
-        assert!(
-            encoded <= MAX_REBUILD_STATE_BYTES,
-            "encoded Training state {encoded} exceeds cap {MAX_REBUILD_STATE_BYTES}"
-        );
     }
 
     #[test]
@@ -1667,6 +2627,33 @@ mod tests {
                 candidate_pool_cap(nlist, pool_stride, centroid_stride, dims) >= nlist as usize,
                 "pool cap below nlist for ({nlist}, {pool_stride}, {centroid_stride}, {dims})"
             );
+        }
+    }
+
+    #[test]
+    fn candidate_pool_cap_matches_region_slot_capacity() {
+        // The sampling policy cap and the physical region capacity are the same number whenever
+        // the byte budget binds, so graceful cap-stop can never overrun the region array.
+        for (nlist, pool_stride, centroid_stride, dims) in [
+            (2u32, 16u32, 16u32, 4u16),
+            (64, 3072, 3072, 768),
+            (64, 1536, 6144, 1536),
+        ] {
+            if !training_start_feasible(nlist, pool_stride, centroid_stride, dims) {
+                continue;
+            }
+            let region_cap =
+                rebuild_pool::pool_capacity_for(pool_stride, nlist, centroid_stride, false)
+                    .expect("cap");
+            let ops_cap = MAX_REBUILD_TRAINING_DISTANCE_OPS
+                / ((nlist as u64).max(1) * u64::from(dims).max(1)).max(1);
+            if region_cap <= ops_cap {
+                assert_eq!(
+                    candidate_pool_cap(nlist, pool_stride, centroid_stride, dims) as u64,
+                    region_cap,
+                    "byte-bound cap must equal the physical slot capacity"
+                );
+            }
         }
     }
 

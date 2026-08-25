@@ -20,7 +20,7 @@ use crate::facade::stable::definition_store;
 use crate::facade::stable::subject_store;
 use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS};
 use crate::records::{
-    FixedSubjectMapEntry, IvfCentroidMeta, PartitionKey, SubjectKey, VectorIndexDef,
+    FixedSubjectMapEntry, IvfCentroidMeta, LEVELS_FLAT, PartitionKey, SubjectKey, VectorIndexDef,
 };
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
@@ -94,6 +94,7 @@ pub(crate) fn seed_ivf_with_metric_for_test(
         pad_stride_bytes,
         meta_stride_bytes,
         run_capacity,
+        0,
     )
     .expect("seed page capacity below one slot");
     for c in centroids {
@@ -136,6 +137,11 @@ pub(crate) fn seed_ivf_with_metric_for_test(
         run_capacity,
         max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
         slots_per_page,
+        levels: LEVELS_FLAT,
+        nlist_fine: 1,
+        code_tier: false,
+        code_stride_bytes: 0,
+        rotation_seed: VectorIndexDef::rotation_seed_for(index_id),
     };
 
     // Live slots, assigned to the nearest centroid partition.

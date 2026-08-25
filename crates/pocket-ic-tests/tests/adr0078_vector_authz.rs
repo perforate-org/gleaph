@@ -44,10 +44,9 @@ use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, e2e_insert_edge_with_label,
-    e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_two_properties,
-    e2e_set_vertex_property, ensure_edge_label, ensure_property, ensure_vertex_label,
-    install_single_shard_federation, install_vector_canister,
+    FederationEnv, GRAPH_NAME, e2e_insert_edge_with_label, e2e_insert_vertex_with_label,
+    e2e_insert_vertex_with_label_and_two_properties, e2e_set_vertex_property, ensure_edge_label,
+    ensure_property, ensure_vertex_label, install_single_shard_federation, install_vector_canister,
 };
 use gleaph_router::types::{AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs};
 
@@ -326,7 +325,11 @@ fn query_as(
     }
 }
 
-fn search_as(env: &FederationEnv, caller: Principal, k: i64) -> Result<GqlQueryResult, RouterError> {
+fn search_as(
+    env: &FederationEnv,
+    caller: Principal,
+    k: i64,
+) -> Result<GqlQueryResult, RouterError> {
     query_as(env, caller, SEARCH_QUERY, search_params(k))
 }
 
@@ -342,7 +345,11 @@ fn tags(result: &GqlQueryResult) -> Vec<i64> {
             other => panic!("expected int tag, got {other:?}"),
         }
     }
-    assert_eq!(tags.len() as u64, result.row_count, "row_count matches rows");
+    assert_eq!(
+        tags.len() as u64,
+        result.row_count,
+        "row_count matches rows"
+    );
     tags
 }
 
@@ -378,15 +385,57 @@ fn k_preserved_when_hidden_vertices_rank_higher() {
 
     // Global ranking by ascending distance (query = zeros): both PRIVATE documents rank
     // above both public ones, so fetch-k-then-filter would return zero rows for k=2.
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 1, 1, 0.25);
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 2, 1, 0.5);
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 3, 0, 1.0);
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 4, 0, 1.5);
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        1,
+        1,
+        0.25,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        2,
+        1,
+        0.5,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        3,
+        0,
+        1.0,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        4,
+        0,
+        1.5,
+    );
 
     // PUBLIC narrows to public documents; the tag projection rides the READ row.
     grant(
         &env,
-        format!("GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) WHERE d.visibility = 0 TO PUBLIC"),
+        format!(
+            "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) WHERE d.visibility = 0 TO PUBLIC"
+        ),
         "adr0078-grant-public-docs",
     );
     grant(
@@ -398,7 +447,11 @@ fn k_preserved_when_hidden_vertices_rank_higher() {
     // Deepening recovers the true top-2 of the authorized subset.
     let result = search_as(&env, Principal::anonymous(), 2).expect("k preserved");
     assert_eq!(tags(&result), vec![3, 4], "authorized top-2 in score order");
-    assert_eq!(result.truncated, Some(false), "converged search is not truncated");
+    assert_eq!(
+        result.truncated,
+        Some(false),
+        "converged search is not truncated"
+    );
 
     // Deterministic ordering: identical state, identical authorized prefix.
     let again = search_as(&env, Principal::anonymous(), 2).expect("repeat");
@@ -418,16 +471,54 @@ fn hidden_heavy_graph_returns_partial_rows_with_truncated_marker() {
 
     // Six private documents occupy ranks 1..=6; only two public documents exist below
     // them, so k=3 forces deepening until candidate exhaustion.
-    for (tag, value) in [(10, 0.05), (11, 0.1), (12, 0.15), (13, 0.2), (14, 0.25), (15, 0.3)]
-    {
-        seed_document(&env, vector, doc_label, visibility_id, tag_id, None, tag, 1, value);
+    for (tag, value) in [
+        (10, 0.05),
+        (11, 0.1),
+        (12, 0.15),
+        (13, 0.2),
+        (14, 0.25),
+        (15, 0.3),
+    ] {
+        seed_document(
+            &env,
+            vector,
+            doc_label,
+            visibility_id,
+            tag_id,
+            None,
+            tag,
+            1,
+            value,
+        );
     }
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 20, 0, 1.0);
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 21, 0, 1.5);
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        20,
+        0,
+        1.0,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        21,
+        0,
+        1.5,
+    );
 
     grant(
         &env,
-        format!("GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) WHERE d.visibility = 0 TO PUBLIC"),
+        format!(
+            "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) WHERE d.visibility = 0 TO PUBLIC"
+        ),
         "adr0078-grant-public-docs",
     );
     grant(
@@ -437,8 +528,16 @@ fn hidden_heavy_graph_returns_partial_rows_with_truncated_marker() {
     );
 
     let result = search_as(&env, Principal::anonymous(), 3).expect("partial result");
-    assert_eq!(tags(&result), vec![20, 21], "authorized prefix in score order");
-    assert_eq!(result.truncated, Some(true), "candidate exhaustion sets the marker");
+    assert_eq!(
+        tags(&result),
+        vec![20, 21],
+        "authorized prefix in score order"
+    );
+    assert_eq!(
+        result.truncated,
+        Some(true),
+        "candidate exhaustion sets the marker"
+    );
 
     // Determinism across identical states: same prefix, same marker.
     let repeat = search_as(&env, Principal::anonymous(), 3).expect("repeat partial");
@@ -453,16 +552,56 @@ fn policy_predicates_filter_candidates_like_ordinary_rows() {
 
     // Public pair plus two private documents; private document 31 belongs to alice
     // (owner pinned to its own tag, see [`seed_document`]).
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 30, 0, 0.5);
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 40, 0, 2.5);
     seed_document(
-        &env, vector, doc_label, visibility_id, tag_id, Some(owner_id), 31, 1, 1.0,
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        30,
+        0,
+        0.5,
     );
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 41, 1, 1.5);
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        40,
+        0,
+        2.5,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        Some(owner_id),
+        31,
+        1,
+        1.0,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        41,
+        1,
+        1.5,
+    );
 
     grant(
         &env,
-        format!("GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) WHERE d.visibility = 0 TO PUBLIC"),
+        format!(
+            "GRANT MATCH ON GRAPH {GRAPH_NAME} NODES Document FOR (d:Document) WHERE d.visibility = 0 TO PUBLIC"
+        ),
         "adr0078-grant-public-docs",
     );
     grant(
@@ -500,7 +639,11 @@ fn policy_predicates_filter_candidates_like_ordinary_rows() {
     // Parity evidence: the plain labeled scan under the identical predicate matrix
     // returns the same row set ([ADR 0075] §4 equivalence carried onto candidates).
     let baseline = query_as(&env, alice(), SCAN_QUERY, Vec::new()).expect("scan baseline");
-    assert_eq!(tags(&baseline), tags(&alice_view), "policy ≡ ordinary-row filtering");
+    assert_eq!(
+        tags(&baseline),
+        tags(&alice_view),
+        "policy ≡ ordinary-row filtering"
+    );
 
     // Stranger: only the PUBLIC row applies inside candidate filtering.
     let stranger_view = search_as(&env, stranger(), 2).expect("stranger search");
@@ -512,8 +655,28 @@ fn layer1_rejects_unauthorized_callers_before_ann_dispatch() {
     let (env, vector) = setup_env();
     let (doc_label, visibility_id, tag_id, _) = doc_label_and_property_ids(&env);
 
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 1, 0, 1.0);
-    seed_document(&env, vector, doc_label, visibility_id, tag_id, None, 2, 0, 1.5);
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        1,
+        0,
+        1.0,
+    );
+    seed_document(
+        &env,
+        vector,
+        doc_label,
+        visibility_id,
+        tag_id,
+        None,
+        2,
+        0,
+        1.5,
+    );
 
     // Graph-context resolution requires every caller to hold at least one visible
     // grant row, so the denial probes hold an irrelevant User row: they can address
@@ -639,8 +802,15 @@ fn edge_subject_visibility_is_direction_aware() {
         use gleaph_gql_ic::GqlWireRows;
         let blob = forward.rows_blob.expect("rows blob");
         let wire = GqlWireRows::decode_blob(&blob).expect("decode rows");
-        let row = wire.rows[0].clone().try_into_value_row().expect("value row");
-        assert_eq!(row.get("edges"), Some(&Value::Int64(2)), "both edges visible");
+        let row = wire.rows[0]
+            .clone()
+            .try_into_value_row()
+            .expect("value row");
+        assert_eq!(
+            row.get("edges"),
+            Some(&Value::Int64(2)),
+            "both edges visible"
+        );
     }
 
     // Without the INCOMING row the reverse pattern is uniformly denied: those edges are

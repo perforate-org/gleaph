@@ -15,13 +15,13 @@ mod tests {
         validate_class_invariants(&VECTOR_INDEX_STABLE_LAYOUT).expect("class invariants");
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(),
-            17,
-            "17 allocated stores"
+            18,
+            "18 allocated stores"
         );
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.region_count(),
-            18,
-            "18 numbered slots with 8 unallocated"
+            19,
+            "19 numbered slots with 8 unallocated"
         );
     }
 }

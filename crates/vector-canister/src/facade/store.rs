@@ -48,7 +48,15 @@ pub(crate) const INITIAL_INDEX_VERSION: u64 = 1;
 /// Upper bound on a production rebuild's `nlist` (ADR 0031 Slice 7). Bounds the centroid/head counts
 /// and the durable `Sampling.candidates` vector so worst-case rebuild-state bytes
 /// (`MAX_NLIST * stride_bytes`) and the O(`nlist`) teardown reads/deletes stay within budget.
+/// Applied **per level** for a two-level rebuild: the coarse count is capped by `MAX_NLIST` and
+/// the total leaf count by [`MAX_LEAVES`].
 pub(crate) const MAX_NLIST: u32 = 1024;
+
+/// Upper bound on the total leaf count (`nlist * nlist_fine`) of a two-level index generation
+/// (Slice 5). Grounds: leaf ids pack into `u32` partition-id space as `coarse * f + fine`
+/// (`65,536²` leaves would overflow practical head/page addressing budgets), and heads/pages are
+/// materialized per leaf, so the bound caps both the key space and head capacity per generation.
+pub(crate) const MAX_LEAVES: u32 = 65_536;
 
 /// Upper bound on the number of live subjects a rebuild's `Sampling` phase will examine while
 /// collecting centroid candidates (ADR 0031 Slice 7). Bounds the total sampling work.
@@ -78,31 +86,16 @@ pub(crate) const MAX_COMPACT_STEP_PAGES: u32 = 20_000;
 /// this budget, so every step makes forward progress even for pages larger than the cap.
 pub(crate) const MAX_COMPACT_STEP_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Upper bound on the Candid-encoded `VectorRebuildStateRecord` value, i.e. the combined durable
-/// rebuild-state envelope (ADR 0031 Slice 7/8). This is an encoded `to_bytes().len()` cap (it
-/// accounts for enum/vec-length/nested-vec overhead), not a raw-vector-bytes cap. The `Training`
-/// value holds both the candidate pool and the trained centroids, so the candidate pool is sized to
-/// reserve `nlist * dims * 4` canonical-f32 centroid bytes plus [`MAX_REBUILD_STATE_OVERHEAD_BYTES`]
-/// inside this envelope (the pool itself is charged at the index's native stored row width); the
-/// sampling->`Training` transition additionally re-checks the encoded length and
-/// fails closed (`InvalidRebuildParams`) rather than trapping if it would exceed the cap.
-pub(crate) const MAX_REBUILD_STATE_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Conservative reserve subtracted from [`MAX_REBUILD_STATE_BYTES`] when sizing the candidate pool,
-/// absorbing the Candid enum tag / vec-length / nested-vec encoding overhead so the encoded
-/// `Training` value stays within the envelope at the boundary (ADR 0031 Slice 8).
-pub(crate) const MAX_REBUILD_STATE_OVERHEAD_BYTES: u64 = 64 * 1024;
-
 /// Maximum k-means-lite iterations a `Training` phase performs before writing centroids and
 /// transitioning to `Building` (ADR 0031 Slice 8). Each iteration is one bounded `*_step` message.
 pub(crate) const MAX_REBUILD_TRAINING_ITERATIONS: u32 = 8;
 
 /// Per-iteration distance-op ceiling for `Training`: the candidate pool is sized so one full
 /// k-means-lite iteration's `candidate_count * nlist * dims` distance computations never exceed this
-/// budget (ADR 0031 Slice 8). Chosen large enough that any `nlist`/`dims` admitted by
-/// [`MAX_REBUILD_STATE_BYTES`] can still sample `>= nlist` candidates (so the op check is a
-/// defensive feasibility guard the state cap normally subsumes), yet small enough that one iteration
-/// stays within the per-message instruction budget.
+/// budget (ADR 0031 Slice 8). Chosen large enough that any geometry admitted by the rebuild-pool
+/// region budget (`rebuild_pool::REGION_BYTES`) can still sample `>= nlist` candidates (so the op
+/// check is a defensive feasibility guard the region budget normally subsumes), yet small enough
+/// that one iteration stays within the per-message instruction budget.
 pub(crate) const MAX_REBUILD_TRAINING_DISTANCE_OPS: u64 = 1_100_000_000;
 
 #[cfg(any(test, feature = "canbench"))]
@@ -113,12 +106,13 @@ pub(crate) use authorization::{
     admin_attach_shard_canister, admin_detach_shard_canister, init_from_args,
     open_definition_store_after_upgrade, open_subject_store_after_upgrade,
 };
+// The flat-only start signature survives for the flat lifecycle regression tests and benches;
+// the wire surface goes through `admin_start_vector_rebuild_with_fine` (Slice 5).
 #[cfg(test)]
 pub(crate) use authorization::{attach_single_shard_for_test, detach_shard_step_for_test};
-pub(crate) use centroid_cache::{
-    admin_vector_centroid_cache_clear, admin_vector_centroid_cache_status,
-    admin_vector_centroid_cache_warmup,
-};
+#[cfg(feature = "canbench")]
+pub(crate) use centroid_cache::warm_index;
+pub(crate) use centroid_cache::{admin_vector_centroid_cache_status, warm_all};
 pub(crate) use compact::{
     admin_start_vector_slab_compact, admin_vector_slab_compact_status,
     admin_vector_slab_compact_step,
@@ -133,12 +127,14 @@ pub(crate) use mutation::{
 pub(crate) use mutation::{
     preflight_vector_sync_batch, vector_remove, vector_sync_batch_outcome_chunk, vector_upsert,
 };
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) use rebuild::admin_start_vector_rebuild;
 pub(crate) use rebuild::{
-    admin_abort_vector_rebuild, admin_publish_vector_rebuild, admin_start_vector_rebuild,
-    admin_start_vector_rebuild_if_recommended, admin_vector_partition_health,
-    admin_vector_partition_health_step, admin_vector_rebuild_cleanup_step,
-    admin_vector_rebuild_status, admin_vector_rebuild_step, admin_vector_slab_stats,
-    admin_vector_slab_stats_step,
+    admin_abort_vector_rebuild, admin_publish_vector_rebuild,
+    admin_start_vector_rebuild_if_recommended, admin_start_vector_rebuild_with_fine,
+    admin_vector_partition_health, admin_vector_partition_health_step,
+    admin_vector_rebuild_cleanup_step, admin_vector_rebuild_status, admin_vector_rebuild_step,
+    admin_vector_slab_stats, admin_vector_slab_stats_step,
 };
 pub(crate) use search::vector_search;
 #[cfg(any(test, feature = "canbench"))]

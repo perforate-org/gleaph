@@ -28,6 +28,25 @@ use core::arch::wasm64::{
     i32x4_extend_low_i16x8, v128, v128_load,
 };
 
+/// Counts matching bits between two code-word byte spans (`XNOR` + `popcount` over whole
+/// little-endian `u64` words). Both spans must be the same non-zero, multiple-of-8 length (the
+/// stored per-row code width); a mismatch is a caller bug and panics fail-closed. This is the
+/// physical bit-op of the two-tier precision first-stage estimator — the estimator math that
+/// turns the count into a distance stays in the domain layer.
+///
+/// Returns the number of matching bits in `[0, 8 × bytes.len()]`.
+pub fn popcount_xnor_words(a: &[u8], b: &[u8]) -> u32 {
+    debug_assert_eq!(a.len(), b.len(), "code spans must be equal width");
+    debug_assert!(a.len().is_multiple_of(8), "code spans must be word-granular");
+    let mut matched = 0u32;
+    for (wa, wb) in a.as_chunks::<8>().0.iter().zip(b.as_chunks::<8>().0) {
+        let x = u64::from_le_bytes(*wa);
+        let y = u64::from_le_bytes(*wb);
+        matched += (!(x ^ y)).count_ones();
+    }
+    matched
+}
+
 /// Sums the four f32 lanes of `v`.
 #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
 #[inline(always)]
@@ -630,6 +649,29 @@ mod tests {
 
     fn f32_row(values: &[f32]) -> Vec<u8> {
         values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn popcount_xnor_counts_matching_bits() {
+        // Identical words: every bit matches.
+        let a = 0x0123_4567_89ab_cdefu64.to_le_bytes();
+        assert_eq!(popcount_xnor_words(&a, &a), 64);
+        // Complement words: no bit matches.
+        let b = (!0x0123_4567_89ab_cdefu64).to_le_bytes();
+        assert_eq!(popcount_xnor_words(&a, &b), 0);
+        // Two words, mixed: count is additive.
+        let two_a = [a.as_slice(), b.as_slice()].concat();
+        let two_b = [a.as_slice(), a.as_slice()].concat();
+        assert_eq!(popcount_xnor_words(&two_a, &two_b), 64);
+        // All-zero spans match fully.
+        let zeros = [0u8; 16];
+        assert_eq!(popcount_xnor_words(&zeros, &zeros), 128);
+    }
+
+    #[test]
+    #[should_panic(expected = "equal width")]
+    fn popcount_xnor_rejects_width_mismatch() {
+        let _ = popcount_xnor_words(&[0u8; 8], &[0u8; 16]);
     }
 
     /// Encodes an f32 vector to `I8` with the kernel's convention: `s = max|x|`, `i8_i = round(127*x/s)`

@@ -131,6 +131,11 @@ mod tests {
             run_capacity: 1,
             max_page_bytes: 64,
             slots_per_page: 2,
+            levels: crate::records::LEVELS_FLAT,
+            nlist_fine: 1,
+            code_tier: false,
+            code_stride_bytes: 0,
+            rotation_seed: 0,
         }
     }
 

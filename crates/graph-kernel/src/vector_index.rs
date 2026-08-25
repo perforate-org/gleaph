@@ -535,8 +535,18 @@ pub enum VectorRebuildPhase {
     Idle,
     Sampling,
     /// Deterministic k-means-lite centroid refinement over the bounded candidate pool (ADR 0031
-    /// Slice 8), between `Sampling` and `Building`.
+    /// Slice 8), between `Sampling` and `Building`. Flat (`levels = 1`) rebuilds only; a two-level
+    /// rebuild runs [`VectorRebuildPhase::TrainCoarse`] then
+    /// [`VectorRebuildPhase::TrainFine`] instead.
     Training,
+    /// Two-level (Slice 5): coarse-level k-means over the whole candidate pool at the coarse
+    /// count, with the same one-iteration-per-step budget and convergence rule as flat `Training`.
+    TrainCoarse,
+    /// Two-level (Slice 5): per-subtree fine k-means jobs in coarse-id order; `coarse_cursor` is
+    /// the next coarse subtree id to train.
+    TrainFine {
+        coarse_cursor: u32,
+    },
     Building,
     ReadyToPublish,
     Cleaning,
@@ -1086,6 +1096,10 @@ pub enum VectorCanisterError {
     CompactionAlreadyActive,
     /// No slab compaction is active (step with nothing to do).
     NoActiveCompaction,
+    /// The durable rebuild-pool region (ADR 0033 implementation) failed its fail-closed resume
+    /// validation: absent, corrupt header, bound to a different index, or geometrically
+    /// inconsistent with the lifecycle record.
+    RebuildPoolInvalid,
 }
 
 impl std::fmt::Display for VectorCanisterError {
@@ -1140,6 +1154,9 @@ impl std::fmt::Display for VectorCanisterError {
             }
             Self::CompactionAlreadyActive => "a vector slab compaction is already active",
             Self::NoActiveCompaction => "no vector slab compaction is active",
+            Self::RebuildPoolInvalid => {
+                "the durable rebuild-pool region failed its resume validation"
+            }
         };
         f.write_str(text)
     }

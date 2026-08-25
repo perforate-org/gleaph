@@ -2510,12 +2510,13 @@ mod tests {
             ..
         } = &mut op
         {
-            *edge_inline_vector_predicate = Some(gleaph_gql_planner::plan::EdgeInlineVectorPredicate {
-                metric: EdgeVectorMetric::L2Squared,
-                query: ScanValue::Parameter("q".into()),
-                op: gleaph_gql::ast::CmpOp::Le,
-                threshold: ScanValue::Literal(gleaph_gql::Value::Float32(0.5)),
-            });
+            *edge_inline_vector_predicate =
+                Some(gleaph_gql_planner::plan::EdgeInlineVectorPredicate {
+                    metric: EdgeVectorMetric::L2Squared,
+                    query: ScanValue::Parameter("q".into()),
+                    op: gleaph_gql::ast::CmpOp::Le,
+                    threshold: ScanValue::Literal(gleaph_gql::Value::Float32(0.5)),
+                });
         }
         op
     }
@@ -2567,7 +2568,17 @@ mod tests {
         )]);
         let demands = fused.graphs.get(&GRAPH_RAW).expect("demands");
         assert!(demands.unattributed);
-        assert!(!allowed(&fused, &principal(11), &GrantTable::default(), &[]));
-        assert!(allowed(&fused, &principal(11), &GrantTable::default(), &[GRAPH_RAW]));
+        assert!(!allowed(
+            &fused,
+            &principal(11),
+            &GrantTable::default(),
+            &[]
+        ));
+        assert!(allowed(
+            &fused,
+            &principal(11),
+            &GrantTable::default(),
+            &[GRAPH_RAW]
+        ));
     }
 }

@@ -77,9 +77,12 @@ pub(crate) fn init(args: VectorCanisterInitArgs) {
 
 /// Rebind the definition and subject-store heap owners. Each retains an unavailable exact-open
 /// result for subsequent request handling instead of creating or resetting a nonempty region.
+/// Afterwards, restore the derived heap centroid cache so a reopened canister serves centroid
+/// scoring warm without an operator round-trip (internal; no caller guard).
 pub(crate) fn post_upgrade() {
     store::open_definition_store_after_upgrade();
     store::open_subject_store_after_upgrade();
+    store::warm_all();
 }
 
 /// Test-only PocketIC seam for simulating the post-upgrade pre-open window without touching stable
@@ -302,9 +305,18 @@ pub(crate) fn admin_start_vector_rebuild(
     index_id: u32,
     nlist: u32,
     sample_limit: u32,
+    fine_nlist: Option<u32>,
+    code_tier: Option<bool>,
 ) -> Result<(), String> {
-    store::admin_start_vector_rebuild(msg_caller(), index_id, nlist, sample_limit)
-        .map_err(|e| e.to_string())
+    store::admin_start_vector_rebuild_with_fine(
+        msg_caller(),
+        index_id,
+        nlist,
+        sample_limit,
+        fine_nlist,
+        code_tier,
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_start_vector_rebuild_if_recommended(
@@ -366,16 +378,6 @@ pub(crate) fn admin_vector_partition_health_step(
 ) -> Result<VectorPartitionHealthStep, String> {
     store::admin_vector_partition_health_step(msg_caller(), index_id, cursor, max_pages)
         .map_err(|e| e.to_string())
-}
-
-pub(crate) fn admin_vector_centroid_cache_warmup(
-    index_id: u32,
-) -> Result<VectorCentroidCacheStatus, String> {
-    store::admin_vector_centroid_cache_warmup(msg_caller(), index_id).map_err(|e| e.to_string())
-}
-
-pub(crate) fn admin_vector_centroid_cache_clear() -> Result<VectorCentroidCacheStatus, String> {
-    store::admin_vector_centroid_cache_clear(msg_caller()).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_vector_centroid_cache_status() -> Result<VectorCentroidCacheStatus, String> {

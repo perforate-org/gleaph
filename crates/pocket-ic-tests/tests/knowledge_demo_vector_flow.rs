@@ -27,12 +27,12 @@ use gleaph_cli::embed::{
     AdminIngestVertexEmbeddingBatchArgs, EmbedIngestTransport, IngestPlan, run_with_transport,
 };
 use gleaph_gql::Value;
-use gleaph_gql_ic::{wire::encode_gql_params_blob, GqlWireRows};
+use gleaph_gql_ic::{GqlWireRows, wire::encode_gql_params_blob};
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_pocket_ic_tests::{
-    bulk_load_as_admin, bulk_load_status_as_admin, ensure_vertex_label, gql_mutate_as_admin,
-    gql_query_with_params_as_admin, install_single_shard_federation, install_vector_canister,
-    prepare_batch_as_admin, prepared_query_with_params_as, FederationEnv, GRAPH_NAME,
+    FederationEnv, GRAPH_NAME, bulk_load_as_admin, bulk_load_status_as_admin, ensure_vertex_label,
+    gql_mutate_as_admin, gql_query_with_params_as_admin, install_single_shard_federation,
+    install_vector_canister, prepare_batch_as_admin, prepared_query_with_params_as,
 };
 use gleaph_prepared_api::PreparedRegistration;
 use gleaph_router::types::AdminAttachVectorIndexShardArgs;
@@ -85,9 +85,11 @@ fn first_index_id(env: &FederationEnv) -> u32 {
             Encode!(&GRAPH_NAME.to_string()).expect("encode"),
         )
         .expect("list_vector_indexes call");
-    let list: Result<Vec<gleaph_router::types::VectorIndexInfo>, RouterError> =
-        Decode!(&bytes, Result<Vec<gleaph_router::types::VectorIndexInfo>, RouterError>)
-            .expect("decode");
+    let list: Result<Vec<gleaph_router::types::VectorIndexInfo>, RouterError> = Decode!(
+        &bytes,
+        Result<Vec<gleaph_router::types::VectorIndexInfo>, RouterError>
+    )
+    .expect("decode");
     let defs = list.expect("list");
     assert_eq!(defs.len(), 1, "exactly one vector index is registered");
     defs[0].index_id

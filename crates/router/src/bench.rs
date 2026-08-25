@@ -75,8 +75,8 @@ fn bench_layout_router_stable_reopen_touch() -> canbench_rs::BenchResult {
 
 fn setup_vector_frontier_rows_1024(one_marker_per_lane: bool) {
     use crate::facade::stable::vector_ingest_outbox::{
-        VectorIngestIntentPhase, VectorIngestOutboxKey, VectorIngestOutboxState,
-        VectorIngestOutboxValue, MAX_VECTOR_INGEST_OUTBOX_ROWS, MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES,
+        MAX_VECTOR_INGEST_OUTBOX_ROW_BYTES, MAX_VECTOR_INGEST_OUTBOX_ROWS, VectorIngestIntentPhase,
+        VectorIngestOutboxKey, VectorIngestOutboxState, VectorIngestOutboxValue,
     };
     use candid::Principal;
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
@@ -156,9 +156,11 @@ fn bench_router_frontier_key_only_scan_1024_lanes_one_marker_each() -> canbench_
     let expected = crate::facade::stable::vector_ingest_outbox::derive_frontier_snapshots()
         .expect("bench frontier derivation");
     assert_eq!(expected.len(), 1024);
-    assert!(expected
-        .iter()
-        .all(|snapshot| snapshot.marker_keys.len() == 1));
+    assert!(
+        expected
+            .iter()
+            .all(|snapshot| snapshot.marker_keys.len() == 1)
+    );
     canbench_rs::bench_fn(|| {
         let _scope =
             canbench_rs::bench_scope("router_frontier_key_only_scan_1024_lanes_one_marker_each");

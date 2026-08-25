@@ -4,7 +4,8 @@
 //! MemoryIds: router auth → shard catalog → ownership config → index defs → centroid meta →
 //! reserved centroids → subject clock → partition heads → pages → rebuild state → row slab →
 //! maintenance state. MemoryId 8 is unallocated (retired id reverse map); MemoryId 11 holds the
-//! slab-compaction driver state (plan 0278).
+//! slab-compaction driver state (plan 0278); MemoryId 18 is the raw rebuild-pool region
+//! (ADR 0033 implementation).
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -58,6 +59,10 @@ const VECTOR_DELETED_SUBJECTS: MemoryId = MemoryId::new(17);
 // reuses the retired VECTOR_ID_TO_SUBJECT slot so MemoryIds 9/10/12/13/14 stay stable without a
 // repack.
 const VECTOR_SLAB_COMPACTION_STATE: MemoryId = MemoryId::new(11);
+// ADR 0033 implementation: single-tenant raw rebuild-pool region (Sampling/Training candidate rows
+// + Training centroid work area) behind a minimal VRP/version-1 header. Owned exclusively by
+// `facade/stable/rebuild_pool.rs`.
+pub(crate) const VECTOR_REBUILD_POOL: MemoryId = MemoryId::new(18);
 
 pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
@@ -252,6 +257,10 @@ pub(crate) fn init_page_meta() -> StablePageMetaMap {
 
 pub(crate) fn init_row_slab() -> Memory {
     MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_ROW_SLAB))
+}
+
+pub(crate) fn rebuild_pool_memory() -> Memory {
+    MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_REBUILD_POOL))
 }
 
 pub(crate) fn init_rebuild_state() -> StableRebuildStateMap {

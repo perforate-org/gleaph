@@ -115,6 +115,10 @@ pub(crate) fn admin_vector_maintenance_step(
     match rebuild {
         VectorRebuildStateRecord::Sampling { .. }
         | VectorRebuildStateRecord::Training { .. }
+        // The two-level coarse→fine training pipeline advances one bounded step per call too
+        // (Slice 5).
+        | VectorRebuildStateRecord::TrainCoarse { .. }
+        | VectorRebuildStateRecord::TrainFine { .. }
         | VectorRebuildStateRecord::Building { .. } => {
             return Ok(
                 match admin_vector_rebuild_step(caller, index_id, req.rebuild_max_subjects) {
@@ -177,8 +181,9 @@ pub(crate) fn admin_vector_maintenance_step(
         return Ok(VectorMaintenanceStepResult::Scanning { exhausted: false });
     }
 
-    // Recompute the O(nlist) head-only skew summary server-side; never trust caller-attested skew.
-    let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
+    // Recompute the head-only skew summary server-side; never trust caller-attested skew. Heads
+    // are leaf-keyed, so the walk covers the generation's full leaf count.
+    let summary = partition_health_summary(index_id, def.leaf_count(), def.active_index_version);
     merged.index_id = index_id;
     let recommendation = recommend_partition_maintenance(&summary, &merged, &req.policy)?;
     match recommendation {

@@ -277,11 +277,12 @@ fn rebuild_if_recommended_starts_rebuild_and_rejects_stale() {
 }
 
 #[test]
-fn centroid_cache_endpoints_roundtrip_and_guard() {
+fn centroid_cache_status_roundtrip_and_guard() {
     let env = install_federation();
     let vector = ready_vector_with_tombstone(&env);
 
-    // Status is reachable and starts empty.
+    // Status is reachable and starts empty on a fresh install (the cache is restored automatically
+    // by post_upgrade, and this index has no trained partitioned generation).
     let status: Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, String> = {
         let bytes = env
             .pic
@@ -301,49 +302,6 @@ fn centroid_cache_endpoints_roundtrip_and_guard() {
     let status = status.expect("status ok");
     assert_eq!(status.entries, 0);
     assert_eq!(status.max_bytes, 8 * 1024 * 1024);
-
-    // Warmup on a degenerate (nlist = 1) index caches nothing.
-    let warmed = {
-        let bytes = env
-            .pic
-            .update_call(
-                vector,
-                env.router,
-                "admin_vector_centroid_cache_warmup",
-                Encode!(&INDEX_ID).expect("encode warmup"),
-            )
-            .expect("cache warmup call");
-        Decode!(
-            &bytes,
-            Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, String>
-        )
-        .expect("decode warmup")
-        .expect("warmup ok")
-    };
-    assert_eq!(
-        warmed.entries, 0,
-        "a degenerate index has no centroid set to warm"
-    );
-
-    // Clear is reachable.
-    let cleared = {
-        let bytes = env
-            .pic
-            .update_call(
-                vector,
-                env.router,
-                "admin_vector_centroid_cache_clear",
-                Encode!().expect("encode clear"),
-            )
-            .expect("cache clear call");
-        Decode!(
-            &bytes,
-            Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, String>
-        )
-        .expect("decode clear")
-        .expect("clear ok")
-    };
-    assert_eq!(cleared.entries, 0);
 
     // A non-router caller is rejected by the guard (the message is rejected, not an Ok result).
     let rejected = env.pic.query_call(

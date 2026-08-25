@@ -578,7 +578,11 @@ fn start_into_building(n: u32, nlist: u32) {
         assert!(
             matches!(
                 status.phase,
-                VectorRebuildPhase::Sampling | VectorRebuildPhase::Training
+                VectorRebuildPhase::Sampling
+                    | VectorRebuildPhase::Training
+                    // Two-level training pipeline phases precede Building too (Slice 5).
+                    | VectorRebuildPhase::TrainCoarse
+                    | VectorRebuildPhase::TrainFine { .. }
             ),
             "unexpected phase before Building: {:?}",
             status.phase
@@ -655,6 +659,113 @@ macro_rules! rebuild_full_clustered_bench {
 rebuild_full_clustered_bench!(bench_rebuild_full_clustered_d128_nlist16, 128, 16);
 rebuild_full_clustered_bench!(bench_rebuild_full_clustered_d384_nlist16, 384, 16);
 rebuild_full_clustered_bench!(bench_rebuild_full_clustered_d768_nlist64, 768, 64);
+
+// --- Slice 5: two-level (`levels = 2`) full rebuild + query vs equivalent flat ---
+
+/// Seeds `n` byte-distinct clustered vectors through the production upsert path at **I8** storage
+/// (`n / clusters` vectors per cluster, spaced by [`CLUSTER_SPACING`] so training converges fast).
+fn setup_i8_clustered_store(dims: u16, n: u32, clusters: u32) {
+    reset_for_test_or_bench(&VectorCanisterInitArgs {
+        router_canister: router(),
+        definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+        subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+    })
+    .expect("init");
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_owner(),
+    )
+    .expect("attach shard");
+    for i in 0..n {
+        let cluster = i % clusters;
+        let value = cluster as f32 * CLUSTER_SPACING + (i / clusters) as f32 * 0.001;
+        let op = VectorEmbeddingSyncOp {
+            index_id: INDEX_ID,
+            embedding_name_id: 0,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: i,
+            },
+            mutation_id: 1,
+            encoding: VectorEncoding::I8,
+            dims,
+            metric: VectorMetric::L2Squared,
+            bytes: vec_bytes(dims, value),
+            remove: false,
+        };
+        vector_upsert(shard_owner(), &op).expect("seed upsert");
+    }
+}
+
+/// An I8-index search request over the clustered fixture (`value` sits between cluster centers so
+/// ε₂ = 0 selects exactly one subtree/leaf).
+fn i8_clustered_req(dims: u16, value: f32) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(dims, value),
+        encoding: VectorEncoding::I8,
+        dims,
+        metric: VectorMetric::L2Squared,
+        top_k: 10,
+        candidate_subjects: None,
+    }
+}
+
+/// Full two-level pipeline (`c = 16`, `f = 16` -> 256 packed leaves: coarse k-means ->
+/// per-subtree fine jobs -> Building -> publish) plus one ε₂ query against the published
+/// hierarchy. The flat counterpart is [`bench_rebuild_full_flat_d768_i8_nlist256`] at the same
+/// total leaf count.
+#[bench(raw)]
+fn bench_rebuild_full_twolevel_d768_i8_c16_f16() -> canbench_rs::BenchResult {
+    let dims = 768u16;
+    setup_i8_clustered_store(dims, REBUILD_N, 16);
+    admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 16, REBUILD_N + 1, Some(16), None)
+        .expect("two-level start");
+    let req = i8_clustered_req(dims, 384.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_rebuild_full_twolevel_d768_i8_c16_f16");
+        loop {
+            let status = admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N).expect("step");
+            match status.phase {
+                VectorRebuildPhase::ReadyToPublish => break,
+                VectorRebuildPhase::Failed => panic!("rebuild failed"),
+                _ => {}
+            }
+        }
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        let result = vector_search_tuned(black_box(&req), SearchTuning { eps_query: 0.0 })
+            .expect("two-level query");
+        black_box(result);
+    })
+}
+
+/// Comparison baseline: a **flat** rebuild published directly at the same total leaf count
+/// (`nlist = 256`) over the identical seeded dataset, plus one ε₂ query — the direct
+/// two-level-vs-flat cost pairing.
+#[bench(raw)]
+fn bench_rebuild_full_flat_d768_i8_nlist256() -> canbench_rs::BenchResult {
+    let dims = 768u16;
+    setup_i8_clustered_store(dims, REBUILD_N, 16);
+    let req = i8_clustered_req(dims, 384.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_rebuild_full_flat_d768_i8_nlist256");
+        admin_start_vector_rebuild(router(), INDEX_ID, 256, REBUILD_N + 1).expect("flat start");
+        loop {
+            let status = admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N).expect("step");
+            match status.phase {
+                VectorRebuildPhase::ReadyToPublish => break,
+                VectorRebuildPhase::Failed => panic!("rebuild failed"),
+                _ => {}
+            }
+        }
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish flat");
+        let result = vector_search_tuned(black_box(&req), SearchTuning { eps_query: 0.0 })
+            .expect("flat query");
+        black_box(result);
+    })
+}
 
 macro_rules! training_step_bench {
     ($name:ident, $dims:expr, $nlist:expr) => {
@@ -806,13 +917,13 @@ fn bench_partition_health_scan_tombstoned_d128() -> canbench_rs::BenchResult {
 macro_rules! cache_search_bench {
     ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr, $warm:expr) => {
         /// Partition-page search with the heap centroid cache cold vs warm (ADR 0031 Slice 9). The
-        /// warm variant first runs `admin_vector_centroid_cache_warmup` (an update path) so the
+        /// warm variant first populates the cache through the internal update-path warm so the
         /// `#[query]` search reads decoded centroids from the heap instead of `IVF_CENTROIDS`.
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
             setup_partitioned_store($dims, SCAN_N, $nlist);
             if $warm {
-                admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
+                warm_index(INDEX_ID);
             }
             let req = search_req($dims, 10);
             canbench_rs::bench_fn(|| {
@@ -835,14 +946,15 @@ cache_search_bench!(bench_ivf_cache_warm_d128_nlist64_eps1, 128, 64, 1.0, true);
 cache_search_bench!(bench_ivf_cache_cold_d768_nlist64_eps1, 768, 64, 1.0, false);
 cache_search_bench!(bench_ivf_cache_warm_d768_nlist64_eps1, 768, 64, 1.0, true);
 
-/// Cost of a single centroid-cache warmup (`IVF_CENTROIDS` read + decode + heap insert) for an
-/// `nlist`-partition index — the bounded update-path work an operator pays once per generation.
+/// Cost of a single centroid-cache population (`IVF_CENTROIDS` read + decode + heap insert) for an
+/// `nlist`-partition index — the bounded work paid once per generation, via the post-upgrade
+/// `warm_all` sweep or the first update-path centroid read.
 #[bench(raw)]
 fn bench_centroid_cache_warmup_d768_nlist64() -> canbench_rs::BenchResult {
     setup_partitioned_store(768, SCAN_N, 64);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_centroid_cache_warmup_d768_nlist64");
-        let status = admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
+        let status = warm_index(INDEX_ID);
         black_box(status);
     })
 }
@@ -1358,5 +1470,156 @@ fn bench_vector_sync_batch_outcome_encode() -> canbench_rs::BenchResult {
         let progress = Encode!(black_box(&responses[0])).expect("encode progress response");
         let terminal = Encode!(black_box(&responses[1])).expect("encode terminal response");
         black_box((progress, terminal))
+    })
+}
+
+// --- Slice 6 (ADR 0078): two-tier precision code tier ---
+
+/// Drives a started rebuild to `ReadyToPublish` and publishes it, so the published generation's
+/// shape (and its code tier) becomes the active search target.
+fn run_rebuild_to_publish(nlist: u32, fine: Option<u32>, code_tier: bool) {
+    admin_start_vector_rebuild_with_fine(
+        router(),
+        INDEX_ID,
+        nlist,
+        REBUILD_N + 1,
+        fine,
+        Some(code_tier),
+    )
+    .expect("tier rebuild start");
+    loop {
+        let status = admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N).expect("step");
+        match status.phase {
+            VectorRebuildPhase::ReadyToPublish => break,
+            VectorRebuildPhase::Failed => panic!("rebuild failed"),
+            _ => {}
+        }
+    }
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+}
+
+/// End-to-end d1536 search over a **rebuilt, published** generation with ε₂ = INF (every partition
+/// scanned), so the OFF/ON pairing isolates exactly one variable — whether each row is scored by
+/// the F32 kernel or by the code-tier Stage A estimate + shortlist rerank. The pair at k10/k100
+/// also shows the shortlist capacity `C = clamp(8k, 128..=1024)` effect.
+macro_rules! tier_search_bench {
+    ($name:ident, $dims:expr, $top_k:expr, $code_tier:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            setup_partitioned_store($dims, SCAN_N, 16);
+            run_rebuild_to_publish(16, None, $code_tier);
+            let req = search_req_value($dims, $top_k, SWEEP_QUERY);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = vector_search_tuned(
+                    black_box(&req),
+                    SearchTuning {
+                        eps_query: f32::INFINITY,
+                    },
+                )
+                .expect("tier-pair search");
+                black_box(result);
+            })
+        }
+    };
+}
+
+tier_search_bench!(bench_code_tier_off_d1536_k10_epsinf, 1536, 10, false);
+tier_search_bench!(bench_code_tier_on_d1536_k10_epsinf, 1536, 10, true);
+tier_search_bench!(bench_code_tier_off_d1536_k100_epsinf, 1536, 100, false);
+tier_search_bench!(bench_code_tier_on_d1536_k100_epsinf, 1536, 100, true);
+
+/// Query-side rotation + binarization cost in isolation (`QueryCode::prepare` at the d1536 design
+/// target): paid once per search when the active generation carries codes.
+#[bench(raw)]
+fn bench_code_query_rotation_d1536() -> canbench_rs::BenchResult {
+    let def = crate::records::test_support::tier_def(1536, VectorEncoding::F32);
+    let query = cvec(1536, SWEEP_QUERY);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_code_query_rotation_d1536");
+        let prepared = crate::code_tier::QueryCode::prepare(&def, black_box(&query));
+        black_box(prepared)
+    })
+}
+
+/// Upsert delta on a tier-on **active** generation: same single new-subject upsert as
+/// [`bench_upsert_normal_d128`], but every appended row also runs the seeded rotation +
+/// sign packing for the code segment.
+#[bench(raw)]
+fn bench_upsert_tier_on_d128() -> canbench_rs::BenchResult {
+    setup_partitioned_store(128, REBUILD_N, 16);
+    // The partitioned seeder never attaches the shard (seeding bypasses ownership); the upsert
+    // below goes through the production caller-ownership check, so attach before benchmarking.
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_owner(),
+    )
+    .expect("attach shard");
+    run_rebuild_to_publish(16, None, true);
+    let op = new_subject_upsert(128, REBUILD_N + 1, 7.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_upsert_tier_on_d128");
+        vector_upsert(shard_owner(), black_box(&op)).expect("upsert")
+    })
+}
+
+/// Controlled counterpart to [`bench_upsert_tier_on_d128`] with the code tier OFF: the identical
+/// partitioned + rebuilt + published fixture (`nlist = 16`, same seeder, same shard attach, same
+/// new-subject upsert), so `tier_on − tieroff` isolates the code-tier write cost and
+/// `tieroff − bench_upsert_normal_d128` isolates the partitioned-fixture cost (partition selection
+/// over a cold centroid cache instead of the lazy degenerate partition). Not persisted: it is a
+/// follow-up investigation control, not a tracked baseline.
+#[bench(raw)]
+fn bench_upsert_partitioned_tieroff_d128_nlist16() -> canbench_rs::BenchResult {
+    setup_partitioned_store(128, REBUILD_N, 16);
+    // Same ownership fix-up as [`bench_upsert_tier_on_d128`]: the partitioned seeder bypasses
+    // caller-ownership, the production upsert below does not.
+    admin_attach_shard_canister(
+        router(),
+        GraphId::from_raw(1),
+        ShardId::new(0),
+        shard_owner(),
+    )
+    .expect("attach shard");
+    run_rebuild_to_publish(16, None, false);
+    let op = new_subject_upsert(128, REBUILD_N + 1, 7.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_upsert_partitioned_tieroff_d128_nlist16");
+        vector_upsert(shard_owner(), black_box(&op)).expect("upsert")
+    })
+}
+
+/// Two-level smoke with the tier ON: full c16/f16 I8 pipeline plus one query against the
+/// published hierarchy — the Slice 5 pairing rerun under the new row geometry.
+#[bench(raw)]
+fn bench_rebuild_full_twolevel_d768_i8_c16_f16_tieron() -> canbench_rs::BenchResult {
+    let dims = 768u16;
+    setup_i8_clustered_store(dims, REBUILD_N, 16);
+    admin_start_vector_rebuild_with_fine(
+        router(),
+        INDEX_ID,
+        16,
+        REBUILD_N + 1,
+        Some(16),
+        Some(true),
+    )
+    .expect("two-level tier-on start");
+    let req = i8_clustered_req(dims, 384.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_rebuild_full_twolevel_d768_i8_c16_f16_tieron");
+        loop {
+            let status = admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N).expect("step");
+            match status.phase {
+                VectorRebuildPhase::ReadyToPublish => break,
+                VectorRebuildPhase::Failed => panic!("rebuild failed"),
+                _ => {}
+            }
+        }
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        let result = vector_search_tuned(black_box(&req), SearchTuning { eps_query: 0.0 })
+            .expect("two-level tier-on query");
+        black_box(result)
     })
 }

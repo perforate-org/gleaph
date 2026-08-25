@@ -6,6 +6,7 @@ pub(crate) mod definition_store;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod page_store;
+pub(crate) mod rebuild_pool;
 pub(crate) mod region_store;
 pub(crate) mod subject_store;
 
@@ -75,6 +76,10 @@ pub(crate) fn reset_definition_domain(
                                             "VECTOR_MAINTENANCE_STATE",
                                         )
                                     })?;
+
+                                // The rebuild-pool region has no collection handle; its release
+                                // (header zeroing) is infallible over the grown region.
+                                crate::facade::stable::rebuild_pool::release();
 
                                 let incarnation = definition_store::commit_reset(ticket)?;
                                 subject_store::commit_reset(subject_ticket)?;

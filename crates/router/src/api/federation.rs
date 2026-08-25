@@ -410,7 +410,9 @@ async fn scan_slab_stats(
         .map_err(RouterError::Internal)
 }
 
-/// Heap centroid cache status, forwarded to the graph's vector target.
+/// Heap centroid cache status, forwarded to the graph's vector target. The cache is warmed
+/// automatically by the vector canister after post-upgrade reopen and populated lazily on its
+/// update-path centroid reads, so no warm/clear operator surface exists.
 #[query(composite = true)]
 async fn get_vector_centroid_cache(
     graph_name: String,
@@ -422,46 +424,34 @@ async fn get_vector_centroid_cache(
         .map_err(RouterError::Internal)
 }
 
-/// Warm the heap centroid cache on the activated vector target.
-#[update]
-async fn warm_vector_centroid_cache(
-    graph_name: String,
-    index_id: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
-    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
-    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
-    crate::vector_sync::forward_admin_vector_centroid_cache_warmup(target, index_id)
-        .await
-        .map_err(RouterError::Internal)
-}
-
-/// Clear the entire heap centroid cache on the graph's vector target.
-#[update]
-async fn clear_vector_centroid_cache(
-    graph_name: String,
-) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
-    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
-    let target = resolve_vector_graph_target(&graph_name)?;
-    crate::vector_sync::forward_admin_vector_centroid_cache_clear(target)
-        .await
-        .map_err(RouterError::Internal)
-}
-
 // --- Manual rebuild control (ADR 0031 Slice 10) ---
 
-/// Begin a shadow-version rebuild on the activated vector target.
+/// Begin a shadow-version rebuild on the activated vector target. `fine_nlist = Some(f)` requests
+/// a two-level (`levels = 2`) rebuild with `nlist * f` packed leaves; `None` keeps the flat
+/// lifecycle. `code_tier = Some(true)` requests the 1-bit RaBitQ first-stage code tier for the
+/// shadow generation (Slice 6 / ADR 0078). Pass-through only this slice: the maintenance policy
+/// path always sends `None`.
 #[update]
 async fn start_vector_rebuild(
     graph_name: String,
     index_id: u32,
     nlist: u32,
     sample_limit: u32,
+    fine_nlist: Option<u32>,
+    code_tier: Option<bool>,
 ) -> Result<(), RouterError> {
     crate::rbac::authorize_vector_maintenance(&msg_caller())?;
     let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
-    crate::vector_sync::forward_admin_start_vector_rebuild(target, index_id, nlist, sample_limit)
-        .await
-        .map_err(RouterError::Internal)
+    crate::vector_sync::forward_admin_start_vector_rebuild(
+        target,
+        index_id,
+        nlist,
+        sample_limit,
+        fine_nlist,
+        code_tier,
+    )
+    .await
+    .map_err(RouterError::Internal)
 }
 
 /// Drive one bounded rebuild step on the activated vector target.

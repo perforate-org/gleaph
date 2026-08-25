@@ -6,7 +6,7 @@ use crate::facade::stable::{
     OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG, VECTOR_GC_CURSOR, VECTOR_SHARD_WATERMARKS,
 };
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
-use crate::records::ShardWatermarks;
+use crate::records::{ShardWatermarks, VectorRebuildStateRecord};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachPhase, ShardId};
@@ -2087,6 +2087,9 @@ fn drive_steps(index_id: u32) -> gleaph_graph_kernel::vector_index::VectorRebuil
         match status.phase {
             VectorRebuildPhase::Sampling
             | VectorRebuildPhase::Training
+            // Two-level training pipeline phases advance the same way (Slice 5).
+            | VectorRebuildPhase::TrainCoarse
+            | VectorRebuildPhase::TrainFine { .. }
             | VectorRebuildPhase::Building => continue,
             _ => return status,
         }
@@ -2101,7 +2104,11 @@ fn drive_into_building(index_id: u32) -> gleaph_graph_kernel::vector_index::Vect
     for _ in 0..100_000 {
         let status = admin_vector_rebuild_step(router(), index_id, 100).expect("step");
         match status.phase {
-            VectorRebuildPhase::Sampling | VectorRebuildPhase::Training => continue,
+            VectorRebuildPhase::Sampling
+            | VectorRebuildPhase::Training
+            // Two-level training pipeline phases precede Building too (Slice 5).
+            | VectorRebuildPhase::TrainCoarse
+            | VectorRebuildPhase::TrainFine { .. } => continue,
             VectorRebuildPhase::Building => return status,
             other => panic!("expected Building, reached {other:?}"),
         }
@@ -2291,12 +2298,12 @@ fn rebuild_start_rejects_invalid_params() {
 }
 
 #[test]
-fn rebuild_start_rejects_oversized_combined_state() {
+fn rebuild_start_rejects_geometry_exceeding_pool_region() {
     fresh_store();
-    // A large-dim index whose combined state `nlist * (pool_stride + centroid_stride) + overhead`
-    // (native-width candidate-pool floor + trained f32 centroids + encoding overhead) exceeds the
-    // combined rebuild-state envelope even though `nlist <= MAX_NLIST`, because the strides scale
-    // with dims (ADR 0031 Slice 8, P2/P3).
+    // A large-dim index whose minimum viable pool region footprint — `nlist` candidate rows
+    // (pad-stride + aux) plus `nlist` trained f32 centroids — exceeds the dedicated pool-region
+    // budget even though `nlist <= MAX_NLIST`, because both arrays scale with dims (ADR 0031
+    // Slice 8 P2; storage relocated to the raw region per the ADR 0033 implementation).
     let big_dims: u16 = 2100; // stride = 8400 bytes (F32)
     let stride = big_dims as usize * 4;
     let op = VectorEmbeddingSyncOp {
@@ -2311,15 +2318,223 @@ fn rebuild_start_rejects_oversized_combined_state() {
         remove: false,
     };
     vector_upsert(shard_canister(), &op).expect("seed large-dim upsert");
+    let min_rows = 2u64 * super::MAX_NLIST as u64;
     assert!(
-        2 * super::MAX_NLIST as u64 * stride as u64 + super::MAX_REBUILD_STATE_OVERHEAD_BYTES
-            > super::MAX_REBUILD_STATE_BYTES,
-        "fixture must exceed the combined-state cap"
+        min_rows.saturating_mul(stride as u64) > rebuild_pool::REGION_BYTES,
+        "fixture must exceed the pool-region budget"
+    );
+    assert!(
+        rebuild_pool::pool_capacity_for(stride as u32, super::MAX_NLIST, stride as u32, false)
+            .is_none(),
+        "fixture geometry cannot host the pool"
     );
     assert_eq!(
         admin_start_vector_rebuild(router(), INDEX_ID, super::MAX_NLIST, super::MAX_NLIST)
             .unwrap_err(),
         VectorCanisterError::InvalidRebuildParams
+    );
+}
+
+// --- ADR 0033 implementation: durable rebuild-pool region ---
+
+use crate::facade::stable::VECTOR_REBUILD_STATE;
+use crate::facade::stable::memory::rebuild_pool_memory;
+use crate::facade::stable::rebuild_pool;
+use ic_stable_structures::Memory as _;
+
+/// Reads the live pool header plus every accumulated candidate row byte, so two runs can prove
+/// they resume from an exactly identical durable starting point.
+fn pool_image() -> Vec<u8> {
+    let mem = rebuild_pool_memory();
+    let mut header = [0u8; rebuild_pool::POOL_HEADER_SIZE as usize];
+    mem.read(0, &mut header);
+    // F32 d4 fixture geometry: pad stride 16 + 8 aux bytes per row.
+    let pool_len = u64::from_le_bytes(header[12..20].try_into().expect("pool_len"));
+    let mut image = header.to_vec();
+    let rows_bytes = pool_len * (16 + 8);
+    let mut rows = vec![0u8; rows_bytes as usize];
+    mem.read(rebuild_pool::POOL_HEADER_SIZE, &mut rows);
+    image.extend_from_slice(&rows);
+    image
+}
+
+#[test]
+fn rebuild_step_fails_closed_on_corrupt_pool_header() {
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    // One step exhausts the range and reaches `Training` with the frozen pool in the region.
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("sampling step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    assert_eq!(status.candidates_collected, 4);
+
+    // Corrupt the bound pad-stride field so resume validation must reject before any mutation.
+    let mem = rebuild_pool_memory();
+    mem.write(8, &999u32.to_le_bytes());
+    assert_eq!(
+        admin_vector_rebuild_step(router(), INDEX_ID, 100).unwrap_err(),
+        VectorCanisterError::RebuildPoolInvalid
+    );
+    // The failed attempt left the durable lifecycle record untouched.
+    let status = admin_vector_rebuild_status(router(), INDEX_ID).expect("status");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    assert_eq!(status.training_iteration, 0);
+    assert_eq!(status.candidates_collected, 4);
+
+    // Restore the field, then corrupt the magic bytes instead: same fail-closed outcome.
+    mem.write(8, &16u32.to_le_bytes());
+    mem.write(0, b"XXX");
+    assert_eq!(
+        admin_vector_rebuild_step(router(), INDEX_ID, 100).unwrap_err(),
+        VectorCanisterError::RebuildPoolInvalid
+    );
+    let status = admin_vector_rebuild_status(router(), INDEX_ID).expect("status");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+
+    // A fresh start rebinds the region (overwriting the corrupt bytes) and proceeds.
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort clears corrupt state");
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("restart");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("step after restart");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+}
+
+#[test]
+fn aborting_and_cleaning_release_the_pool_region() {
+    // Cleaning path: the pool survives publish (dead state) and is released when teardown
+    // completes.
+    fresh_store();
+    seed_distinct(6);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_steps(INDEX_ID);
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    assert_eq!(
+        rebuild_pool::bound_index(),
+        Some(INDEX_ID),
+        "the pool binding outlives publish until Cleaning completes"
+    );
+    drive_cleanup(INDEX_ID);
+    assert!(
+        rebuild_pool::bound_index().is_none(),
+        "Cleaning completion releases the pool"
+    );
+
+    // Aborting path: entering `Aborting` from `Building` releases the pool immediately.
+    fresh_store();
+    seed_distinct(6);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    drive_into_building(INDEX_ID);
+    assert_eq!(rebuild_pool::bound_index(), Some(INDEX_ID));
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");
+    assert!(
+        rebuild_pool::bound_index().is_none(),
+        "abort entry releases the pool"
+    );
+
+    // Straight-to-Idle aborts release too, and a released region validates as absent.
+    fresh_store();
+    seed_distinct(6);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    admin_abort_vector_rebuild(router(), INDEX_ID).expect("early abort");
+    assert!(rebuild_pool::bound_index().is_none());
+}
+
+#[test]
+fn training_resume_from_durable_intermediate_state_is_deterministic() {
+    /// Drives the rebuild from the current durable state to published centroids.
+    fn finish_to_centroids() -> Vec<Vec<u8>> {
+        loop {
+            let status = admin_vector_rebuild_step(router(), INDEX_ID, 1).expect("stepped");
+            match status.phase {
+                VectorRebuildPhase::Sampling
+                | VectorRebuildPhase::Training
+                | VectorRebuildPhase::Building => {}
+                VectorRebuildPhase::ReadyToPublish => break,
+                other => panic!("unexpected phase {other:?}"),
+            }
+        }
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        IVF_CENTROIDS.with_borrow(|m| {
+            (0..3)
+                .map(|p| {
+                    m.get(&PartitionKey::new(INDEX_ID, TARGET_V, p))
+                        .expect("centroid")
+                })
+                .collect()
+        })
+    }
+
+    fresh_store();
+    // A linear ramp is the k-means worst case for convergence, so Training runs several bounded
+    // iterations before an intermediate durable state can be rewound to.
+    seed_distinct(16);
+    admin_start_vector_rebuild(router(), INDEX_ID, 3, 100).expect("start");
+    // Enter Training and advance at least one bounded iteration so the centroid work area is
+    // populated in the snapshot.
+    loop {
+        let status = admin_vector_rebuild_step(router(), INDEX_ID, 1).expect("stepped");
+        match status.phase {
+            VectorRebuildPhase::Sampling => {}
+            VectorRebuildPhase::Training if status.training_iteration >= 1 => break,
+            VectorRebuildPhase::Training => {}
+            other => panic!("expected Training, reached {other:?}"),
+        }
+    }
+    let before = admin_vector_rebuild_status(router(), INDEX_ID).expect("status");
+    assert_eq!(before.phase, VectorRebuildPhase::Training);
+
+    // Snapshot the exact durable starting point: lifecycle scalars + pool-region image.
+    let snapshot_record = VectorRebuildStateRecord::Training {
+        target_index_version: before.target_index_version,
+        nlist: before.nlist,
+        sample_limit: 100,
+        iteration: before.training_iteration,
+        pool_len: before.candidates_collected,
+        levels: crate::records::LEVELS_FLAT,
+        nlist_fine: 1,
+    };
+    let snapshot_pool = pool_image();
+
+    let centroids_first = finish_to_centroids();
+
+    // Rewind to the exact durable starting point and resume: same starting point must yield the
+    // same result (training determinism parity).
+    use ic_stable_structures::storable::Storable as _;
+    VECTOR_REBUILD_STATE.with_borrow_mut(|m| {
+        m.insert(
+            INDEX_ID,
+            crate::records::RawRebuildState(snapshot_record.clone().into_bytes()),
+        )
+    });
+    let mem = rebuild_pool_memory();
+    mem.write(0, &snapshot_pool);
+
+    let after_restore = admin_vector_rebuild_status(router(), INDEX_ID).expect("status");
+    assert_eq!(
+        after_restore, before,
+        "restore reproduces the same starting scalars"
+    );
+
+    let centroids_second = finish_to_centroids();
+    assert_eq!(
+        centroids_first, centroids_second,
+        "resuming from the byte-identical durable intermediate state yields identical centroids"
+    );
+}
+
+#[test]
+fn sampling_dedup_excludes_duplicates_within_one_step() {
+    fresh_store();
+    // Five live subjects but only three distinct stored forms: both duplicates are sampled in the
+    // SAME step, so their region slots are unwritten while dedup runs.
+    for (v, value) in [(1u32, 0.0f32), (2, 10.0), (3, 5.0), (4, 0.0), (5, 10.0)] {
+        vector_upsert(shard_canister(), &upsert_vec(v, 1, value)).expect("seed");
+    }
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("sampling step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    assert_eq!(
+        status.candidates_collected, 3,
+        "same-step duplicates must not enter the candidate pool"
     );
 }
 
@@ -3520,8 +3735,62 @@ fn trigger_rejects_non_router_and_unknown_index() {
 
 // --- ADR 0031 Slice 9: heap centroid cache ---
 
+use std::sync::Arc;
+
+use super::centroid_cache::{lookup, warm_all, warm_index};
+
+/// Seeds a ready `nlist`-partition centroid set + matching def directly (no rows/pages): enough
+/// state for the cache warm paths, which read only defs, centroid metadata, and `IVF_CENTROIDS`.
+fn seed_ready_centroids_only(index_id: u32, nlist: u32, dims: u16) {
+    use crate::facade::stable::IVF_CENTROID_META;
+    use crate::records::{IvfCentroidMeta, VectorIndexDef};
+    use gleaph_graph_kernel::vector_index::VectorIndexKind;
+
+    let value = vec![0.25f32; dims as usize];
+    IVF_CENTROIDS.with_borrow_mut(|m| {
+        for p in 0..nlist {
+            m.insert(
+                PartitionKey::new(index_id, INITIAL_INDEX_VERSION, p),
+                super::search::encode_f32(&value),
+            );
+        }
+    });
+    IVF_CENTROID_META.with_borrow_mut(|meta| {
+        meta.insert(
+            index_id,
+            IvfCentroidMeta {
+                centroid_ready: true,
+                trained_index_version: INITIAL_INDEX_VERSION,
+            },
+        )
+    });
+    definition_store::insert(
+        index_id,
+        VectorIndexDef {
+            kind: VectorIndexKind::IvfFlat,
+            encoding: VectorEncoding::F32,
+            dims,
+            metric: VectorMetric::L2Squared,
+            nlist,
+            active_index_version: INITIAL_INDEX_VERSION,
+            stride_bytes: u32::from(dims) * 4,
+            pad_stride_bytes: u32::from(dims) * 4,
+            meta_stride_bytes: 4,
+            run_capacity: 1,
+            max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
+            slots_per_page: 1,
+            levels: crate::records::LEVELS_FLAT,
+            nlist_fine: 1,
+            code_tier: false,
+            code_stride_bytes: 0,
+            rotation_seed: 0,
+        },
+    )
+    .expect("seed def");
+}
+
 #[test]
-fn centroid_cache_warmup_then_status_reports_one_entry() {
+fn centroid_cache_lookup_shares_one_allocation_across_calls() {
     fresh_store();
     seed_ivf_for_test(
         INDEX_ID,
@@ -3530,14 +3799,142 @@ fn centroid_cache_warmup_then_status_reports_one_entry() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    let before = admin_vector_centroid_cache_status(router()).expect("status");
-    assert_eq!(before.entries, 0);
-    assert_eq!(before.bytes, 0);
-    assert_eq!(before.max_bytes, 8 * 1024 * 1024);
+    warm_index(INDEX_ID);
+    let first = lookup(INDEX_ID, INITIAL_INDEX_VERSION, 2, DIMS).expect("warmed");
+    let second = lookup(INDEX_ID, INITIAL_INDEX_VERSION, 2, DIMS).expect("warmed");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "lookup must hand out the same allocation (an Arc handle clone), not copied payloads"
+    );
+    assert!(
+        lookup(INDEX_ID, INITIAL_INDEX_VERSION + 1, 2, DIMS).is_none(),
+        "a different generation must miss even while an entry is resident"
+    );
+}
 
-    let after = admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
-    assert_eq!(after.entries, 1);
-    assert!(after.bytes > 0, "a warmed nlist=2 set occupies heap bytes");
+#[test]
+fn warm_all_restores_ready_indexes_and_evicts_over_budget() {
+    fresh_store();
+    // Two ~4.2 MiB sets cannot share the 8 MiB cap; a third small ready set must survive alongside
+    // the newest large one.
+    seed_ready_centroids_only(1, 1024, 1024);
+    seed_ready_centroids_only(2, 1024, 1024);
+    seed_ivf_for_test(
+        3,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+
+    // The single oversized-but-under-cap set is resident alone...
+    let solo = warm_index(1);
+    assert_eq!(solo.entries, 1);
+
+    // ...and warming every ready index evicts the lowest-id large set to fit the budget.
+    warm_all();
+    let status = admin_vector_centroid_cache_status(router()).expect("status");
+    assert_eq!(status.max_bytes, 8 * 1024 * 1024);
+    assert_eq!(
+        status.entries, 2,
+        "the newest large set and the small set are resident; the lowest-id set was evicted"
+    );
+    assert!(lookup(1, INITIAL_INDEX_VERSION, 1024, 1024).is_none());
+    assert!(lookup(2, INITIAL_INDEX_VERSION, 1024, 1024).is_some());
+    assert!(lookup(3, INITIAL_INDEX_VERSION, 2, DIMS).is_some());
+    assert!(status.bytes <= status.max_bytes);
+}
+
+#[test]
+fn warm_index_skips_unknown_and_degenerate_without_error() {
+    fresh_store();
+    assert_eq!(warm_index(INDEX_ID).entries, 0, "unknown index stays cold");
+    seed_distinct(4); // degenerate nlist = 1
+    assert_eq!(
+        warm_index(INDEX_ID).entries,
+        0,
+        "a degenerate index has no centroid set to cache"
+    );
+}
+
+#[test]
+fn upsert_populates_active_generation_into_cache() {
+    fresh_store();
+    seed_distinct(6);
+    // Publish one generation so steady-state upserts take the nlist > 1 path.
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    assert_eq!(
+        drive_steps(INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
+    assert_eq!(
+        admin_vector_centroid_cache_status(router())
+            .expect("status")
+            .entries,
+        0,
+        "publish invalidated the rebuild window; nothing is warm yet"
+    );
+
+    // The first post-publish upsert reads the active generation through the cache and leaves it
+    // resident (the update commits the heap write).
+    vector_upsert(shard_canister(), &upsert_op(9, 100, 0xAA)).expect("upsert");
+    let status = admin_vector_centroid_cache_status(router()).expect("status");
+    assert_eq!(
+        status.entries, 1,
+        "update-path centroid assignment populated the cache"
+    );
+    assert!(
+        lookup(INDEX_ID, TARGET_V, 2, DIMS).is_some(),
+        "the cached entry is the newly active generation"
+    );
+}
+
+#[test]
+fn shadow_rebuild_reads_leave_the_cache_cold() {
+    fresh_store();
+    seed_distinct(6);
+    // First publish so the second rebuild runs against a partitioned active generation.
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    assert_eq!(
+        drive_steps(INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
+
+    // Second rebuild: Building assigns rows against the SHADOW generation's centroids. Those reads
+    // target a non-active version, so the version-scope rule must keep them out of the cache.
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("rebuild 2");
+    assert_eq!(
+        drive_into_building(INDEX_ID).phase,
+        VectorRebuildPhase::Building
+    );
+    assert!(
+        lookup(INDEX_ID, TARGET_V + 1, 2, DIMS).is_none(),
+        "shadow-generation centroids must not be cached"
+    );
+    assert_eq!(
+        drive_steps(INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    assert_eq!(
+        admin_vector_centroid_cache_status(router())
+            .expect("status")
+            .entries,
+        0,
+        "no shadow/old-generation read may pollute the cache"
+    );
+
+    // Publish still invalidates (defensively): the cache ends the flow empty.
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish 2");
+    assert_eq!(
+        admin_vector_centroid_cache_status(router())
+            .expect("status")
+            .entries,
+        0
+    );
 }
 
 #[test]
@@ -3552,65 +3949,12 @@ fn centroid_cache_search_parity_cold_vs_warm() {
     );
     let cold =
         vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY)).expect("cold scan");
-    admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
+    warm_index(INDEX_ID);
     let warm =
         vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY)).expect("warm scan");
     let cold_hits: Vec<_> = cold.hits.iter().map(|h| (h.subject, h.distance)).collect();
     let warm_hits: Vec<_> = warm.hits.iter().map(|h| (h.subject, h.distance)).collect();
     assert_eq!(cold_hits, warm_hits, "warm cache yields identical results");
-}
-
-#[test]
-fn centroid_cache_clear_empties() {
-    fresh_store();
-    seed_ivf_for_test(
-        INDEX_ID,
-        VectorEncoding::F32,
-        DIMS,
-        &two_clusters(),
-        &clustered_vectors(),
-    );
-    admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
-    let cleared = admin_vector_centroid_cache_clear(router()).expect("clear");
-    assert_eq!(cleared.entries, 0);
-    assert_eq!(cleared.bytes, 0);
-}
-
-#[test]
-fn centroid_cache_warmup_skips_degenerate_index() {
-    fresh_store();
-    seed_distinct(4); // degenerate nlist = 1
-    let status = admin_vector_centroid_cache_warmup(router(), INDEX_ID).expect("warmup");
-    assert_eq!(
-        status.entries, 0,
-        "a degenerate index has no centroid set to cache"
-    );
-}
-
-#[test]
-fn centroid_cache_warmup_unknown_index_errors() {
-    fresh_store();
-    assert_eq!(
-        admin_vector_centroid_cache_warmup(router(), 999).unwrap_err(),
-        VectorCanisterError::UnknownIndex
-    );
-}
-
-#[test]
-fn centroid_cache_endpoints_reject_non_router() {
-    fresh_store();
-    assert_eq!(
-        admin_vector_centroid_cache_warmup(shard_canister(), INDEX_ID).unwrap_err(),
-        VectorCanisterError::Unauthorized
-    );
-    assert_eq!(
-        admin_vector_centroid_cache_clear(shard_canister()).unwrap_err(),
-        VectorCanisterError::Unauthorized
-    );
-    assert_eq!(
-        admin_vector_centroid_cache_status(shard_canister()).unwrap_err(),
-        VectorCanisterError::Unauthorized
-    );
 }
 
 #[test]
@@ -3625,12 +3969,7 @@ fn centroid_cache_publish_invalidates_warmed_entry() {
     );
     admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
     drive_cleanup(INDEX_ID);
-    assert_eq!(
-        admin_vector_centroid_cache_warmup(router(), INDEX_ID)
-            .expect("warmup")
-            .entries,
-        1
-    );
+    assert_eq!(warm_index(INDEX_ID).entries, 1);
     // A second rebuild + publish flips the active generation and must drop the warmed entry.
     admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start 2");
     assert_eq!(
@@ -3644,6 +3983,15 @@ fn centroid_cache_publish_invalidates_warmed_entry() {
             .entries,
         0,
         "publishing a new generation invalidates the warmed centroid entry"
+    );
+}
+
+#[test]
+fn centroid_cache_status_endpoint_rejects_non_router() {
+    fresh_store();
+    assert_eq!(
+        admin_vector_centroid_cache_status(shard_canister()).unwrap_err(),
+        VectorCanisterError::Unauthorized
     );
 }
 
@@ -4145,11 +4493,9 @@ fn candidate_search_rejects_duplicate_subjects() {
 /// I8 scalar-quantization tests (B1+A1: per-row scale, F32 wire query; `VectorEncoding::I8`).
 mod i8_tests {
     use super::*;
+    use crate::facade::stable::rebuild_pool;
     use crate::facade::stable::{PAGE_STORE, definition_store};
-    use crate::facade::store::{
-        MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES,
-        MAX_REBUILD_TRAINING_DISTANCE_OPS,
-    };
+    use crate::facade::store::MAX_REBUILD_TRAINING_DISTANCE_OPS;
     use crate::records::SlotRef;
 
     /// A distinct index id so an `I8` def is created without colliding with the F32 `INDEX_ID` fixtures.
@@ -4421,17 +4767,27 @@ mod i8_tests {
         let pool_stride = 1536u64;
         let centroid_stride = u64::from(dims) * 4;
         let nlist = 700u32;
-        // The previous budget charged both pool and centroids at f32 width and rejected this nlist;
-        // the split budget charges the pool at native width and accepts it.
+        // The region budget charges candidate rows at their native width (+ aux) and centroids at
+        // f32 width inside `rebuild_pool::REGION_BYTES`; charging the pool at f32 width instead
+        // would exceed that same budget and reject this nlist.
         assert!(
-            2 * u64::from(nlist) * centroid_stride + MAX_REBUILD_STATE_OVERHEAD_BYTES
-                > MAX_REBUILD_STATE_BYTES,
-            "fixture must be rejected by the all-f32 budget"
+            2 * u64::from(nlist) * centroid_stride > rebuild_pool::REGION_BYTES,
+            "fixture must be rejected by an all-f32 pool charge"
         );
+        let capacity = rebuild_pool::pool_capacity_for(
+            pool_stride as u32,
+            nlist,
+            centroid_stride as u32,
+            false,
+        )
+        .expect("fixture must satisfy the split row/centroid budget");
         assert!(
-            u64::from(nlist) * (pool_stride + centroid_stride) + MAX_REBUILD_STATE_OVERHEAD_BYTES
-                <= MAX_REBUILD_STATE_BYTES,
-            "fixture must satisfy the split pool/centroid budget"
+            u64::from(nlist) <= capacity
+                && rebuild_pool::POOL_HEADER_SIZE
+                    + u64::from(nlist) * (pool_stride + 8)
+                    + u64::from(nlist) * centroid_stride
+                    <= rebuild_pool::REGION_BYTES,
+            "fixture must fit the pool-region budget with room for >= nlist candidates"
         );
         assert!(
             u64::from(nlist) * u64::from(nlist) * u64::from(dims)
@@ -4749,3 +5105,432 @@ mod i8_tests {
         assert_eq!(before, after_cleanup, "I8 search survives cleanup");
     }
 }
+
+/// Two-level (`levels = 2`) hierarchy coverage (Slice 5). The flat lifecycle above is untouched by
+/// every change these tests pin; each test drives the public facade only.
+mod two_level_tests {
+    use super::*;
+    use crate::facade::stable::{IVF_CENTROID_META, subject_store};
+    use crate::records::{IvfCentroidMeta, LEVELS_TWO, PartitionKey, SubjectKey};
+    use gleaph_graph_kernel::vector_index::{VectorIndexKind, VectorRebuildPhase};
+
+    // Re-exported from `search` via the store module for centroid byte fixtures.
+    fn encode_f32(vector: &[f32]) -> Vec<u8> {
+        super::search::encode_f32(vector)
+    }
+
+    /// Coarse count / branching factor of the deterministic fixture.
+    const C: u32 = 2;
+    const F: u32 = 2;
+    const SAMPLE_LIMIT: u32 = 100;
+
+    /// Starts a two-level rebuild of the degenerate fixture at `(nlist, nlist_fine) = (C, F)`.
+    fn start_two_level() {
+        admin_start_vector_rebuild_with_fine(router(), INDEX_ID, C, SAMPLE_LIMIT, Some(F), None)
+            .expect("two-level start");
+    }
+
+    /// Seeds two well-separated 4-dim clusters (4 distinct vectors each): cluster `c` sits around
+    /// `12.0 * c` with a tiny per-vertex offset so every stored row is byte-distinct.
+    fn seed_two_clusters() {
+        for c in 0..2u32 {
+            for j in 0..4u32 {
+                let base = 12.0f32 * c as f32 + 0.01 * j as f32;
+                let vals = [base, base, base, base];
+                vector_upsert(
+                    shard_canister(),
+                    &upsert_vec_from(c * 4 + j + 1, 1, &vals, VectorMetric::L2Squared),
+                )
+                .expect("seed upsert");
+            }
+        }
+    }
+
+    /// Reads the published shape off the durable definition.
+    fn def_shape() -> (u8, u32, u32) {
+        let def = definition_store::get(INDEX_ID)
+            .expect("definition readable")
+            .expect("definition present");
+        (def.levels, def.nlist, def.nlist_fine)
+    }
+
+    fn active_version() -> u64 {
+        definition_store::get(INDEX_ID)
+            .expect("definition readable")
+            .expect("definition present")
+            .active_index_version
+    }
+
+    /// Snapshot of one generation's centroid bytes at both levels, in key order — the
+    /// deterministic-identity fingerprint of a completed training pipeline.
+    fn centroid_fingerprint(version: u64) -> Vec<Option<Vec<u8>>> {
+        IVF_CENTROIDS.with_borrow(|m| {
+            (0..C)
+                .map(|p| m.get(&PartitionKey::coarse(INDEX_ID, version, p)))
+                .chain((0..C * F).map(|p| m.get(&PartitionKey::new(INDEX_ID, version, p))))
+                .collect()
+        })
+    }
+
+    /// Vertex-id hits of an eps-bounded search.
+    fn hit_ids(req: &VectorSearchRequest, eps: f32) -> Vec<u32> {
+        vector_search_tuned(req, tuned(eps))
+            .expect("search")
+            .hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    /// Contract ①: the full two-level lifecycle is **deterministically identical** across two
+    /// independent runs (byte-identical trained centroids at both levels), and the published
+    /// full-leaf scan equals the pre-rebuild exact ground truth.
+    #[test]
+    fn two_level_lifecycle_is_deterministic_and_matches_exact_ground_truth() {
+        // Run 1: start -> publish -> search -> clean.
+        fresh_store();
+        seed_two_clusters();
+        // Ground truth: exact scan on the degenerate generation before any rebuild.
+        let query = vec_bytes_from(&[6.0, 6.0, 6.0, 6.0]);
+        let ground_truth = vector_search(&VectorSearchRequest {
+            index_id: INDEX_ID,
+            query: query.clone(),
+            encoding: VectorEncoding::F32,
+            dims: DIMS,
+            metric: VectorMetric::L2Squared,
+            top_k: 8,
+            candidate_subjects: None,
+        })
+        .expect("ground truth");
+        start_two_level();
+        assert_eq!(
+            drive_steps(INDEX_ID).phase,
+            VectorRebuildPhase::ReadyToPublish
+        );
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        assert_eq!(def_shape(), (LEVELS_TWO, C, F), "published shape");
+        let target = active_version();
+        let run1 = centroid_fingerprint(target);
+        assert_eq!(run1.len(), (C + C * F) as usize);
+        assert!(
+            run1.iter().all(|slot| slot.is_some()),
+            "every coarse and leaf centroid written"
+        );
+        // Full-leaf scan (eps INF) must equal the exact pre-rebuild result exactly.
+        let full_leaf = vector_search_tuned(
+            &search_metric_from(&[6.0, 6.0, 6.0, 6.0], 8, VectorMetric::L2Squared),
+            tuned(f32::INFINITY),
+        )
+        .expect("full-leaf scan");
+        assert_eq!(
+            full_leaf.hits, ground_truth.hits,
+            "full-leaf scan reproduces the flat ground truth exactly"
+        );
+        drive_cleanup(INDEX_ID);
+
+        // Run 2: identical inputs from a fresh store must produce identical bytes.
+        fresh_store();
+        seed_two_clusters();
+        start_two_level();
+        assert_eq!(
+            drive_steps(INDEX_ID).phase,
+            VectorRebuildPhase::ReadyToPublish
+        );
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        let target2 = active_version();
+        assert_eq!(target, target2, "same active version in both runs");
+        assert_eq!(
+            centroid_fingerprint(target2),
+            run1,
+            "training is byte-for-byte deterministic"
+        );
+    }
+
+    /// Minimal F32 d4 two-level def used by the pure-rule fixture below.
+    fn fixture_def() -> crate::records::VectorIndexDef {
+        crate::records::VectorIndexDef {
+            kind: VectorIndexKind::IvfFlat,
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            nlist: 2,
+            active_index_version: 2,
+            stride_bytes: 16,
+            pad_stride_bytes: 16,
+            meta_stride_bytes: 4,
+            run_capacity: 1,
+            max_page_bytes: 64 * 1024,
+            slots_per_page: 64,
+            levels: LEVELS_TWO,
+            nlist_fine: 2,
+            code_tier: false,
+            code_stride_bytes: 0,
+            rotation_seed: 0,
+        }
+    }
+
+    /// Contract ②: the empty/insufficient subtree rules are pure and deterministic — coarse
+    /// replication for an empty subtree and nearest-to-member-mean fill with lowest-id
+    /// tie-breaks otherwise.
+    #[test]
+    fn subtree_rules_are_deterministic_with_lowest_id_tiebreaks() {
+        use super::super::rebuild::{complete_subtree_leaf_centroids, member_mean_bytes};
+        let coarse_centroid = encode_f32(&[7.0; 4]);
+
+        // Empty subtree (`member_mean` is None): every leaf replicates the coarse centroid.
+        let empty = complete_subtree_leaf_centroids(Vec::new(), None, &coarse_centroid, 4);
+        assert_eq!(empty, vec![coarse_centroid.clone(); 4], "empty replication");
+
+        // Insufficient subtree: one trained centroid fills every missing slot deterministically.
+        let members = vec![crate::records::RebuildCandidate {
+            stored: encode_f32(&[0.5; 4]),
+            aux: [0; 8],
+        }];
+        let mean = member_mean_bytes(&fixture_def(), &members).expect("mean exists");
+        let trained = vec![encode_f32(&[1.0; 4])];
+        let filled =
+            complete_subtree_leaf_centroids(trained.clone(), Some(&mean), &coarse_centroid, 3);
+        assert_eq!(filled.len(), 3);
+        assert_eq!(filled[0], trained[0], "trained slot kept");
+        assert_eq!(filled[1], trained[0], "fill copies the nearest centroid");
+        assert_eq!(filled[2], trained[0]);
+
+        // Exact tie: centroids symmetric around the member mean are equidistant, so BOTH fills
+        // must resolve to the same source — the lowest-id slot.
+        let mid_mean = encode_f32(&[128.0; 4]);
+        let tied = vec![encode_f32(&[129.0; 4]), encode_f32(&[127.0; 4])];
+        let filled_tied =
+            complete_subtree_leaf_centroids(tied, Some(&mid_mean), &coarse_centroid, 4);
+        assert_eq!(filled_tied.len(), 4);
+        assert_eq!(
+            filled_tied[2], filled_tied[3],
+            "tie-break is deterministic across fill order"
+        );
+        assert_eq!(
+            filled_tied[2],
+            encode_f32(&[129.0; 4]),
+            "equidistant tie resolves to the lowest id"
+        );
+
+        // Nearest selection without ties picks the genuinely closer centroid.
+        let near = vec![encode_f32(&[127.9; 4]), encode_f32(&[130.0; 4])];
+        let filled_near =
+            complete_subtree_leaf_centroids(near, Some(&mid_mean), &coarse_centroid, 4);
+        assert_eq!(filled_near[2], encode_f32(&[127.9; 4]));
+    }
+
+    /// Contract ③: within one subtree, duplicated leaf centroids collapse rows onto the lowest
+    /// duplicate id (the best-leaf rule shared by Building and mutation assignment).
+    #[test]
+    fn building_leaf_assignment_prefers_lowest_duplicate_leaf() {
+        // Seed a published two-level generation directly: 2 coarses x 2 leaves; leaves 2 and 3
+        // (subtree 1) share ONE centroid, so any row assigned to subtree 1 must land on leaf 2.
+        fresh_store();
+        let active = 5u64;
+        IVF_CENTROIDS.with_borrow_mut(|m| {
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 0),
+                encode_f32(&[0.0, 0.0, 0.0, 0.0]),
+            );
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 1),
+                encode_f32(&[20.0, 20.0, 20.0, 20.0]),
+            );
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 2),
+                encode_f32(&[10.0, 10.0, 10.0, 10.0]),
+            );
+            // Duplicate of leaf 2: same centroid, higher id.
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 3),
+                encode_f32(&[10.0, 10.0, 10.0, 10.0]),
+            );
+            m.insert(
+                PartitionKey::coarse(INDEX_ID, active, 0),
+                encode_f32(&[5.0, 5.0, 5.0, 5.0]),
+            );
+            m.insert(
+                PartitionKey::coarse(INDEX_ID, active, 1),
+                encode_f32(&[15.0, 15.0, 15.0, 15.0]),
+            );
+        });
+        IVF_CENTROID_META.with_borrow_mut(|meta| {
+            meta.insert(
+                INDEX_ID,
+                IvfCentroidMeta {
+                    centroid_ready: true,
+                    trained_index_version: active,
+                },
+            )
+        });
+        let mut def = fixture_def();
+        def.active_index_version = active;
+        definition_store::insert(INDEX_ID, def).expect("seed def");
+
+        // A row near [11,11,11,11]: nearest coarse is 1 (its children live at leaves 2..3); both
+        // leaves are equidistant duplicates, so the row must land on leaf 2.
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(99, 1, &[11.0, 11.0, 11.0, 11.0], VectorMetric::L2Squared),
+        )
+        .expect("upsert");
+        let entry = subject_store::get(&SubjectKey::new(INDEX_ID, subject(99)))
+            .expect("subject readable")
+            .expect("subject entry present");
+        let slot = entry.current_slot_for(active).expect("live slot");
+        assert_eq!(
+            slot.partition_id, 2,
+            "duplicate leaves collapse to the lowest id"
+        );
+
+        // And the partitioned scan reaches the collapsed leaf (eps 0 selects it).
+        let hits = hit_ids(
+            &search_metric_from(&[11.0, 11.0, 11.0, 11.0], 4, VectorMetric::L2Squared),
+            0.0,
+        );
+        assert_eq!(hits, vec![99]);
+    }
+
+    /// Whether `version` holds no centroid keys at `level_coarse` (or leaf) and no leaf heads.
+    fn generation_is_gone(version: u64, level_coarse: bool) -> bool {
+        let centroids_empty = IVF_CENTROIDS.with_borrow(|m| {
+            (0..C).all(|p| {
+                m.get(&if level_coarse {
+                    PartitionKey::coarse(INDEX_ID, version, p)
+                } else {
+                    PartitionKey::new(INDEX_ID, version, p)
+                })
+                .is_none()
+            })
+        });
+        let heads_empty = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
+            (0..C * F).all(|p| {
+                heads
+                    .get(&PartitionKey::new(INDEX_ID, version, p))
+                    .expect("head get")
+                    .is_none()
+            })
+        });
+        centroids_empty && heads_empty
+    }
+
+    /// Contract ④: cleanup drops the OLD generation's keys at BOTH levels while the new
+    /// generation keeps coarse + leaf keys; aborting a two-level rebuild clears the shadow at
+    /// both levels too.
+    #[test]
+    fn teardown_clears_both_levels_of_the_dead_generation() {
+        fresh_store();
+        seed_two_clusters();
+        let old_version = active_version();
+        start_two_level();
+        assert_eq!(
+            drive_steps(INDEX_ID).phase,
+            VectorRebuildPhase::ReadyToPublish
+        );
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        drive_cleanup(INDEX_ID);
+
+        // The old generation lost everything at both levels...
+        assert!(generation_is_gone(old_version, true), "old coarse dropped");
+        assert!(generation_is_gone(old_version, false), "old leaves dropped");
+        // ...while the published generation stays searchable at both levels.
+        let new_version = active_version();
+        assert!(!generation_is_gone(new_version, true), "new coarse kept");
+        assert!(!generation_is_gone(new_version, false), "new leaves kept");
+
+        // Abort path: start another two-level rebuild, drive into Building (both levels of the
+        // shadow exist by then), abort, clean — the shadow disappears entirely.
+        start_two_level();
+        let shadow = new_version + 1;
+        loop {
+            let status = admin_vector_rebuild_step(router(), INDEX_ID, 100).expect("step");
+            if status.phase == VectorRebuildPhase::Building {
+                break;
+            }
+            assert_ne!(status.phase, VectorRebuildPhase::Failed, "rebuild failed");
+        }
+        admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");
+        drive_cleanup(INDEX_ID);
+        assert!(generation_is_gone(shadow, true), "shadow coarse dropped");
+        assert!(generation_is_gone(shadow, false), "shadow leaves dropped");
+        // The active generation survived untouched.
+        assert_eq!(active_version(), new_version);
+    }
+
+    /// Contract ⑤: only the level-0 coarse set becomes cache-resident; fine child sets are always
+    /// stable reads.
+    #[test]
+    fn cache_holds_coarse_set_only() {
+        use crate::facade::store::centroid_cache;
+        fresh_store();
+        seed_two_clusters();
+        start_two_level();
+        assert_eq!(
+            drive_steps(INDEX_ID).phase,
+            VectorRebuildPhase::ReadyToPublish
+        );
+        admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+        // An update-path assignment populates the cache through read_active.
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(88, 1, &[12.5, 12.5, 12.5, 12.5], VectorMetric::L2Squared),
+        )
+        .expect("post-publish upsert");
+        let def = definition_store::get(INDEX_ID)
+            .expect("def")
+            .expect("def present");
+        assert!(def.is_two_level());
+        let resident =
+            centroid_cache::lookup(INDEX_ID, def.active_index_version, def.nlist, def.dims);
+        assert!(resident.is_some(), "coarse set cached");
+        assert_eq!(
+            resident.expect("set").len() as u32,
+            def.nlist,
+            "cached set is the coarse set"
+        );
+        // No entry can exist for a leaf-count lookup: fine sets are never cached.
+        assert!(
+            centroid_cache::lookup(
+                INDEX_ID,
+                def.active_index_version,
+                def.nlist * def.nlist_fine,
+                def.dims,
+            )
+            .is_none(),
+            "fine set never cached"
+        );
+    }
+
+    /// Contract ⑥: MAX_LEAVES and shape feasibility fail closed at start; the flat entry point is
+    /// unchanged.
+    #[test]
+    fn max_leaves_and_shape_feasibility_fail_closed() {
+        fresh_store();
+        // Create the physical definition (lazy, as in production) so shape checks are reachable.
+        vector_upsert(shard_canister(), &upsert_vec(1, 1, 1.0)).expect("def-creating upsert");
+        // Leaves beyond MAX_LEAVES are rejected outright.
+        assert_eq!(
+            admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 1024, 2000, Some(65), None)
+                .unwrap_err(),
+            VectorCanisterError::InvalidRebuildParams,
+            "1024 * 65 > MAX_LEAVES"
+        );
+        // A single-child hierarchy is not a meaningful shape.
+        assert_eq!(
+            admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 2, 100, Some(1), None)
+                .unwrap_err(),
+            VectorCanisterError::InvalidRebuildParams
+        );
+        // The boundary value itself passes validation and starts (then aborts immediately).
+        admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 1024, 1025, Some(64), None)
+            .expect("exactly MAX_LEAVES admits");
+        admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");
+        // Flat behavior unchanged: the plain signature still starts a flat rebuild.
+        admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("flat start unchanged");
+        admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");
+    }
+}
+
+mod code_tier_tests;

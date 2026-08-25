@@ -169,3 +169,51 @@ fn successful_reset_clears_coupled_state_and_preserves_independent_lifecycle_sta
         Some(cursor_before)
     );
 }
+
+#[test]
+fn coordinated_reset_releases_the_rebuild_pool_region() {
+    use crate::facade::stable::rebuild_pool;
+    use crate::facade::store::{admin_start_vector_rebuild, admin_vector_rebuild_step};
+    use gleaph_graph_kernel::vector_index::VectorRebuildPhase;
+
+    fixture();
+    // Three distinct live vectors so the first sampling step fills the pool and reaches Training.
+    for (vertex_id, value) in [(1u32, 0.0f32), (2, 1.0), (3, 2.0)] {
+        vector_upsert(
+            shard(),
+            &VectorEmbeddingSyncOp {
+                index_id: INDEX_ID,
+                embedding_name_id: 0,
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id,
+                },
+                mutation_id: u64::from(vertex_id),
+                encoding: VectorEncoding::F32,
+                dims: 4,
+                metric: VectorMetric::L2Squared,
+                bytes: (0..4).flat_map(|_| value.to_le_bytes()).collect(),
+                remove: false,
+            },
+        )
+        .expect("seed rebuild fixture");
+    }
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 10).expect("start rebuild");
+    let status = admin_vector_rebuild_step(router(), INDEX_ID, 10).expect("sampling step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    assert_eq!(
+        rebuild_pool::bound_index(),
+        Some(INDEX_ID),
+        "an in-flight rebuild binds the pool region"
+    );
+
+    let incarnation = definition_store::incarnation_for_test_or_bench().expect("incarnation");
+    let subject_incarnation =
+        subject_store::incarnation_for_test_or_bench().expect("subject incarnation");
+    reset_definition_dependent_state(incarnation, subject_incarnation).expect("coordinated reset");
+
+    assert!(
+        rebuild_pool::bound_index().is_none(),
+        "the coordinated definition-domain reset must release the pool region"
+    );
+}

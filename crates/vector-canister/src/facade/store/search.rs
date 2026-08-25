@@ -20,6 +20,7 @@
 //!
 //! [`FixedSubjectMapEntry`]: crate::records::FixedSubjectMapEntry
 
+use crate::code_tier::{CODE_AUX_BYTES, QueryCode};
 use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::{PageScratch, RowInfo};
 use crate::facade::stable::subject_store;
@@ -304,16 +305,13 @@ fn score_sorted_rows(
                 end += 1;
             }
             if page_loaded {
-                let row_count = scratch.row_count();
                 for (_, subject, slot) in &rows[i..end] {
-                    // Defensive parity with `read_row_bytes`: a slot at/after `row_count` is
-                    // uninitialized; a tombstoned row is not the live slot.
-                    if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                    // Single-decode parity with `read_row_bytes`: `live_row_info` rejects an
+                    // uninitialized slot (at/after `row_count`) and a tombstoned row; the packed
+                    // vertex id must match the subject (the shard is known from the allowlist).
+                    let Some(info) = scratch.live_row_info(slot.slot) else {
                         continue;
-                    }
-                    // Positional + payload validation: the row's packed vertex id must match the
-                    // subject (the shard is known from the allowlist).
-                    let info = scratch.row_info(slot.slot);
+                    };
                     let VectorSubject::Vertex {
                         vertex_id: subject_vertex,
                         ..
@@ -365,6 +363,11 @@ fn score_sorted_rows(
 /// active and shadow, publish cleans the old version), so the scored rows are exactly the live rows.
 /// Shared by the partitioned scan (ε₂-selected partitions) and the exact fallback (`0..nlist`). The
 /// early-exit threshold is order-independent, so the walk order does not change the result.
+///
+/// `query_code` selects the two-tier precision path (Slice 6 / ADR 0078): when the generation
+/// carries code segments, each page is scored in two stages ([`scan_partitions_code_tier`]); the
+/// per-row body below stays the exact tier-off behavior.
+#[allow(clippy::too_many_arguments)]
 fn scan_partitions(
     index_id: u32,
     active_index_version: u64,
@@ -376,48 +379,354 @@ fn scan_partitions(
     suffix_norm: &[f32],
     max_norm: f32,
     top_k: u32,
+    query_code: Option<&QueryCode>,
+) -> VectorSearchResult {
+    let Some(query_code) = query_code else {
+        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut scratch = PageScratch::new();
+        PAGE_STORE.with_borrow(|store| {
+            for partition_id in partitions {
+                store.visit_partition_pages(
+                    index_id,
+                    active_index_version,
+                    partition_id,
+                    &mut scratch,
+                    |_slot, info, bytes| {
+                        // The L2 early-exit threshold is the current k-th best, applied only once the
+                        // heap is full (a partial max before then would wrongly skip top-k candidates).
+                        let threshold = if heap.len() as u32 == top_k {
+                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                        } else {
+                            f32::INFINITY
+                        };
+                        let subject = VectorSubject::Vertex {
+                            shard_id: ShardId::new(info.shard_id),
+                            vertex_id: info.vertex_id,
+                        };
+                        let scale = row_scale(encoding, info);
+                        let Some(distance) = score_row(
+                            metric,
+                            encoding,
+                            bytes,
+                            scale,
+                            query,
+                            q_norm,
+                            suffix_norm,
+                            max_norm,
+                            threshold,
+                        ) else {
+                            return;
+                        };
+                        push_bounded(&mut heap, top_k, Candidate { distance, subject });
+                    },
+                );
+            }
+        });
+        return finalize(heap);
+    };
+    scan_partitions_code_tier(
+        index_id,
+        active_index_version,
+        partitions,
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+        top_k,
+        query_code,
+    )
+}
+
+/// Shortlist capacity of the two-tier first stage (Slice 6 contract): `C = clamp(8k, 128..=1024)`.
+fn shortlist_capacity(top_k: u32) -> usize {
+    (top_k.saturating_mul(8)).clamp(128, 1024) as usize
+}
+
+/// Monotonicity of the shortlist capacity in `top_k` (contract item ④'s pure core).
+#[cfg(test)]
+#[test]
+fn shortlist_capacity_is_monotone_and_clamped() {
+    assert_eq!(shortlist_capacity(1), 128);
+    assert_eq!(shortlist_capacity(16), 128);
+    assert_eq!(shortlist_capacity(17), 136);
+    assert_eq!(shortlist_capacity(100), 800);
+    assert_eq!(shortlist_capacity(128), 1024);
+    assert_eq!(shortlist_capacity(u32::MAX), 1024);
+    let ks = [1u32, 2, 5, 10, 33, 64, 200, 1000];
+    let caps: Vec<usize> = ks.iter().map(|k| shortlist_capacity(*k)).collect();
+    let mut sorted = caps.clone();
+    sorted.sort_unstable();
+    assert_eq!(caps, sorted, "capacity never decreases as k grows");
+}
+
+/// One Stage A entry: a live row's estimated squared distance plus everything Stage B needs to
+/// rescore it from the already-loaded scratch (its slot) and to apply the contract tie-break
+/// ("estimate ties resolve to the lowest subject"). Ordered for a **worst-evicting** max-heap:
+/// "greater" means worse — a larger estimate, or an equally-estimated but larger subject.
+/// One Stage A entry: a live row's estimated squared distance, its exact distance lower bound,
+/// and everything Stage B needs to rescore it from the already-loaded scratch (its slot). Ordered
+/// for a worst-evicting max-heap: "greater" means worse — a larger estimate, or an
+/// equally-estimated but larger subject (the contract's "estimate ties resolve to the lowest
+/// subject").
+struct EstimateCandidate {
+    estimate: f32,
+    lower_bound: f32,
+    subject: VectorSubject,
+    slot: u32,
+}
+
+impl Ord for EstimateCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.estimate
+            .total_cmp(&other.estimate)
+            .then_with(|| self.subject.cmp(&other.subject))
+    }
+}
+
+impl PartialOrd for EstimateCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for EstimateCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for EstimateCandidate {}
+
+/// Two-tier precision scan (Slice 6 / ADR 0078). Per loaded page:
+///
+/// - **Stage A** scores every live row's code segment with the RaBitQ estimator
+///   ([`QueryCode::estimate`]) and keeps the top-`C` shortlist (`C = clamp(8k, 128..=1024)`; ties
+///   resolve to the lowest subject).
+/// - **Stage B** walks the shortlist in `(estimate asc, subject asc)` order and rescors each row
+///   **exactly** from the same loaded scratch — zero stable re-reads — into the global bounded
+///   top-k with the existing exact tie-break. Two prunings skip Stage B work without ever
+///   changing an emitted result:
+///     * the exact early-exit threshold (the current k-th best exact distance), identical in
+///       kind to the tier-off scan;
+///     * the exact sketch lower bound (Cauchy–Schwarz residual bound over `x̄ = φ_x·x̂ + r_x`):
+///       when it strictly exceeds that threshold, the true distance provably cannot enter the
+///       top-k either (see the module doc in `code_tier.rs`; the bound only ever skips rescoring,
+///       never produces or reorders hits).
+///
+/// The final output is the exact top-k over the union of shortlists — approximate over the whole
+/// index by construction (recall is measured in tests/benches), exact within what it emits.
+///
+/// A page whose header carries no code table despite a tier-on generation (only possible as
+/// corruption or a torn mixed-generation state) degrades to scoring all its live rows exactly:
+/// correctness first, speed second.
+#[allow(clippy::too_many_arguments)]
+fn scan_partitions_code_tier(
+    index_id: u32,
+    active_index_version: u64,
+    partitions: impl Iterator<Item = u32>,
+    query: &[f32],
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+    q_norm: f32,
+    suffix_norm: &[f32],
+    max_norm: f32,
+    top_k: u32,
+    query_code: &QueryCode,
+) -> VectorSearchResult {
+    scan_partitions_code_tier_with_cap(
+        index_id,
+        active_index_version,
+        partitions,
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+        top_k,
+        query_code,
+        shortlist_capacity(top_k),
+    )
+}
+
+/// [`scan_partitions_code_tier`] with the shortlist capacity injected (test seam for the
+/// monotonicity contract: raising `C` may only improve the candidate envelope).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn scan_partitions_code_tier_with_cap(
+    index_id: u32,
+    active_index_version: u64,
+    partitions: impl Iterator<Item = u32>,
+    query: &[f32],
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+    q_norm: f32,
+    suffix_norm: &[f32],
+    max_norm: f32,
+    top_k: u32,
+    query_code: &QueryCode,
+    shortlist_cap: usize,
 ) -> VectorSearchResult {
     let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+    // Reused Stage A buffer; cleared per page.
+    let mut shortlist: Vec<EstimateCandidate> = Vec::with_capacity(shortlist_cap);
     let mut scratch = PageScratch::new();
     PAGE_STORE.with_borrow(|store| {
         for partition_id in partitions {
-            store.visit_partition_pages(
+            store.visit_partition_pages_grouped(
                 index_id,
                 active_index_version,
                 partition_id,
                 &mut scratch,
-                |_slot, info, bytes| {
-                    // The L2 early-exit threshold is the current k-th best, applied only once the
-                    // heap is full (a partial max before then would wrongly skip top-k candidates).
-                    let threshold = if heap.len() as u32 == top_k {
-                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                    } else {
-                        f32::INFINITY
-                    };
-                    let subject = VectorSubject::Vertex {
-                        shard_id: ShardId::new(info.shard_id),
-                        vertex_id: info.vertex_id,
-                    };
-                    let scale = row_scale(encoding, info);
-                    let Some(distance) = score_row(
-                        metric,
-                        encoding,
-                        bytes,
-                        scale,
-                        query,
-                        q_norm,
-                        suffix_norm,
-                        max_norm,
-                        threshold,
-                    ) else {
+                |page_id, scratch| {
+                    if !scratch.has_code_table() {
+                        score_whole_page_exact(
+                            scratch,
+                            page_id,
+                            partition_id,
+                            active_index_version,
+                            query,
+                            metric,
+                            encoding,
+                            q_norm,
+                            suffix_norm,
+                            max_norm,
+                            top_k,
+                            &mut heap,
+                        );
                         return;
-                    };
-                    push_bounded(&mut heap, top_k, Candidate { distance, subject });
+                    }
+                    // ---- Stage A: top-C estimates on this page (worst-evicting bounded heap) ----
+                    let mut stage_a: BinaryHeap<EstimateCandidate> =
+                        BinaryHeap::with_capacity(shortlist_cap);
+                    for slot in 0..scratch.row_count() {
+                        let Some(info) = scratch.live_row_info(slot) else {
+                            continue;
+                        };
+                        let segment = scratch.code_slice(slot);
+                        if segment.len() < CODE_AUX_BYTES {
+                            continue;
+                        }
+                        stage_a.push({
+                            let scored = query_code.score_row(segment);
+                            EstimateCandidate {
+                                estimate: scored.distance,
+                                lower_bound: scored.lower_bound,
+                                subject: VectorSubject::Vertex {
+                                    shard_id: ShardId::new(info.shard_id),
+                                    vertex_id: info.vertex_id,
+                                },
+                                slot,
+                            }
+                        });
+                        if stage_a.len() > shortlist_cap {
+                            stage_a.pop(); // evicts the worst estimate (ties: largest subject)
+                        }
+                    }
+                    // Deterministic Stage B order: `into_sorted_vec` yields ascending `Ord`, i.e.
+                    // best (smallest) estimate first, lowest subject on ties.
+                    shortlist = stage_a.into_sorted_vec();
+                    // ---- Stage B: same-page exact rerank ----
+                    #[cfg(test)]
+                    for entry in &shortlist {
+                        let _ = &entry;
+                    }
+                    for entry in &shortlist {
+                        let threshold = if heap.len() as u32 == top_k {
+                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                        } else {
+                            f32::INFINITY
+                        };
+                        // Exact lower-bound pruning: even the most favorable consistent cosine
+                        // (full Cauchy–Schwarz residual slack) cannot strictly beat the current
+                        // k-th best exact hit.
+                        if threshold != f32::INFINITY && entry.lower_bound > threshold {
+                            continue;
+                        }
+                        let bytes = scratch.vec_slice(entry.slot);
+                        let scale = row_scale(
+                            encoding,
+                            &scratch
+                                .live_row_info(entry.slot)
+                                .expect("shortlist row stays live within one page"),
+                        );
+                        let Some(distance) = score_row(
+                            metric,
+                            encoding,
+                            bytes,
+                            scale,
+                            query,
+                            q_norm,
+                            suffix_norm,
+                            max_norm,
+                            threshold,
+                        ) else {
+                            continue;
+                        };
+                        push_bounded(
+                            &mut heap,
+                            top_k,
+                            Candidate {
+                                distance,
+                                subject: entry.subject,
+                            },
+                        );
+                    }
                 },
             );
         }
     });
     finalize(heap)
+}
+
+/// Exact fallback scorer used when a page unexpectedly lacks its code table: scores every live row
+/// exactly (tier-off semantics), preserving result correctness at the cost of the skipped
+/// first-stage acceleration.
+#[allow(clippy::too_many_arguments)]
+fn score_whole_page_exact(
+    scratch: &PageScratch,
+    _page_id: u64,
+    _partition_id: u32,
+    _active_index_version: u64,
+    query: &[f32],
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+    q_norm: f32,
+    suffix_norm: &[f32],
+    max_norm: f32,
+    top_k: u32,
+    heap: &mut BinaryHeap<Candidate>,
+) {
+    for slot in 0..scratch.row_count() {
+        let Some(info) = scratch.live_row_info(slot) else {
+            continue;
+        };
+        let threshold = if heap.len() as u32 == top_k {
+            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+        } else {
+            f32::INFINITY
+        };
+        let subject = VectorSubject::Vertex {
+            shard_id: ShardId::new(info.shard_id),
+            vertex_id: info.vertex_id,
+        };
+        let scale = row_scale(encoding, &info);
+        let Some(distance) = score_row(
+            metric,
+            encoding,
+            scratch.vec_slice(slot),
+            scale,
+            query,
+            q_norm,
+            suffix_norm,
+            max_norm,
+            threshold,
+        ) else {
+            continue;
+        };
+        push_bounded(heap, top_k, Candidate { distance, subject });
+    }
 }
 
 /// Total live rows in the active version across `0..nlist` partitions (sum of `PartitionHead.live_len`).
@@ -523,20 +832,83 @@ pub(super) fn read_centroids_at(
     Some(centroids)
 }
 
-/// Reads centroids `0..nlist` for `(index_id, active_version)`, returning `None` unless exactly
-/// `nlist` centroids of `dims` components are present (a partial/stale centroid set is not ready).
+/// Reads the **level-0 coarse** centroid set `0..nlist` of a two-level generation (Slice 5),
+/// returning `None` unless exactly `nlist` complete centroids are present. The heap centroid
+/// cache serves this set (and only this set — fine child sets are never cached, extending the
+/// existing version-scope rule: a Training resume can still overwrite any shadow generation's
+/// fine sets).
+pub(super) fn read_coarse_centroids_at(
+    index_id: u32,
+    version: u64,
+    nlist: u32,
+    dims: u16,
+) -> Option<Vec<Vec<f32>>> {
+    let mut centroids = Vec::with_capacity(nlist as usize);
+    IVF_CENTROIDS.with_borrow(|m| {
+        for p in 0..nlist {
+            let bytes = m.get(&PartitionKey::coarse(index_id, version, p))?;
+            let centroid = decode_f32(&bytes);
+            if centroid.len() != dims as usize {
+                return None;
+            }
+            centroids.push(centroid);
+        }
+        Some(())
+    })?;
+    Some(centroids)
+}
+
+/// Reads one coarse subtree's contiguous child leaf range `[c·f, (c+1)·f)` (Slice 5), returning
+/// `None` unless all `f` leaves are present and complete. Fine sets are **always** read straight
+/// from stable memory — they are outside the heap centroid cache by design.
+pub(super) fn read_leaf_children_at(
+    index_id: u32,
+    version: u64,
+    coarse: u32,
+    nlist_fine: u32,
+    dims: u16,
+) -> Option<Vec<Vec<f32>>> {
+    let base = coarse.checked_mul(nlist_fine)?;
+    let mut children = Vec::with_capacity(nlist_fine as usize);
+    IVF_CENTROIDS.with_borrow(|m| {
+        for rel in 0..nlist_fine {
+            let bytes = m.get(&PartitionKey::new(index_id, version, base + rel))?;
+            let centroid = decode_f32(&bytes);
+            if centroid.len() != dims as usize {
+                return None;
+            }
+            children.push(centroid);
+        }
+        Some(())
+    })?;
+    Some(children)
+}
+
+/// Reads the centroid set the partition-page scan scores against, at the definition's **active**
+/// generation: the leaf set for a flat index, the level-0 **coarse** set for a two-level index
+/// (Slice 5). Both are cached under the same `(index_id -> {version, nlist, dims})` key with
+/// `nlist` carrying the cached set's count. Returns `None` when no complete set exists.
 ///
-/// Consults the heap centroid cache first (ADR 0031 Slice 9): a warmed entry returns immediately,
-/// skipping the `IVF_CENTROIDS` stable read + `f32` decode. A miss falls back to the stable read for
-/// this call only and does **not** populate the cache (a `#[query]`'s heap writes do not commit on
-/// IC; warmup is an explicit `#[update]`).
-fn read_centroids(def: &VectorIndexDef, index_id: u32) -> Option<Vec<Vec<f32>>> {
-    if let Some(centroids) =
+/// Consults the heap centroid cache first (ADR 0031 Slice 9): a warmed entry returns immediately as
+/// a shared handle, skipping the `IVF_CENTROIDS` stable read + `f32` decode and copying no payload
+/// bytes. A miss falls back to a one-call stable read for this call and does **not** populate the
+/// cache (a `#[query]`'s heap writes do not commit on IC; population belongs to update paths).
+fn read_centroids(
+    def: &VectorIndexDef,
+    index_id: u32,
+) -> Option<super::centroid_cache::CentroidSet> {
+    if let Some(set) =
         super::centroid_cache::lookup(index_id, def.active_index_version, def.nlist, def.dims)
     {
-        return Some(centroids);
+        return Some(set);
     }
-    read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims)
+    Some(super::centroid_cache::CentroidSet::new(
+        if def.is_two_level() {
+            read_coarse_centroids_at(index_id, def.active_index_version, def.nlist, def.dims)?
+        } else {
+            read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims)?
+        },
+    ))
 }
 
 /// Nearest-centroid partition id for an encoded vector (ADR 0031 Slice 6/7). Ties break to the
@@ -612,6 +984,53 @@ fn select_partitions(
     scored.retain(|(d, _)| *d <= threshold);
     scored.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Two-level ε₂ selection (Slice 5): stage (a) selects coarse subtrees against the cached level-0
+/// set with the same `(1 + eps_query) * dist(q, c_best)` rule as [`select_partitions`]; stage (b)
+/// reads each selected subtree's contiguous child range `[c·f, (c+1)·f)` from stable memory and
+/// ε₂-selects leaves within it with the **same** rule and the same single `eps_query` value
+/// (per-level eps is a deferred follow-up). Returns globally ascending leaf ids so the page walk
+/// order is deterministic.
+///
+/// A missing/incomplete child range cannot be scored, so it widens to the full subtree rather
+/// than silently narrowing the result — the fail-open direction that keeps the scan an exact
+/// top-k over everything it visits.
+fn select_partitions_two_level(
+    def: &VectorIndexDef,
+    index_id: u32,
+    coarse_set: &[Vec<f32>],
+    query_bytes: &[u8],
+    metric: VectorMetric,
+    dims: usize,
+    eps_query: f32,
+) -> Vec<u32> {
+    let mut leaves: Vec<u32> = Vec::new();
+    for coarse in select_partitions(coarse_set, query_bytes, metric, dims, eps_query) {
+        match read_leaf_children_at(
+            index_id,
+            def.active_index_version,
+            coarse,
+            def.nlist_fine,
+            def.dims,
+        ) {
+            Some(children) => {
+                let base = coarse * def.nlist_fine;
+                leaves.extend(
+                    select_partitions(&children, query_bytes, metric, dims, eps_query)
+                        .into_iter()
+                        .map(|rel| base + rel),
+                );
+            }
+            None => {
+                // Fail open: scan the whole subtree when its child set is unreadable.
+                leaves.extend(def.subtree_range(coarse));
+            }
+        }
+    }
+    leaves.sort_unstable();
+    leaves.dedup();
+    leaves
 }
 
 /// Exact top-k vector search over the `ivf_flat` index (ADR 0031 Slice 5/6).
@@ -695,19 +1114,31 @@ fn search_impl(
     } else {
         1.0
     };
+    // Two-tier precision (Slice 6 / ADR 0078): one seeded rotation + binarization per search. For
+    // cosine the rotated query is unit-normalized so the estimated L2² ranks consistently with the
+    // exact cosine scores Stage B produces over unit rows.
+    let query_code = def.has_code_tier().then(|| {
+        let prepared_query: Vec<f32> = if req.metric == VectorMetric::Cosine {
+            query.iter().map(|x| x / q_norm).collect()
+        } else {
+            query.clone()
+        };
+        QueryCode::prepare(&def, &prepared_query)
+    });
 
     // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
     // over current live vector slots. The receiving boundary validates count, vertex-only
     // subjects, and duplicates independently of the Router.
     if let Some(candidates) = &req.candidate_subjects {
         // For a large allowlist relative to the live rows, scan-with-membership (page scan +
-        // in-memory candidate set) is cheaper than a per-candidate subject-map resolve.
-        let live = active_live_count(req.index_id, def.active_index_version, def.nlist);
+        // in-memory candidate set) is cheaper than a per-candidate subject-map resolve. Heads and
+        // pages are leaf-keyed in both shapes, so the walk covers the full leaf count.
+        let live = active_live_count(req.index_id, def.active_index_version, def.leaf_count());
         if candidates.len() as u64 * 2 >= live {
             return Ok(candidate_scan_with_membership(
                 req.index_id,
                 def.active_index_version,
-                def.nlist,
+                def.leaf_count(),
                 &query,
                 def.metric,
                 def.encoding,
@@ -749,18 +1180,20 @@ fn search_impl(
     };
 
     // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
-    // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
+    // partition-page scan. A stale/incomplete centroid set falls back to exact (no error); for a
+    // two-level generation the exact fallback walks every leaf.
     if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
         Ok(exact_subject_scan(
             req,
             def.active_index_version,
-            def.nlist,
+            def.leaf_count(),
             &query,
             def.metric,
             def.encoding,
             q_norm,
             &suffix_norm,
             max_norm,
+            query_code.as_ref(),
         ))
     } else {
         Ok(partition_page_scan(
@@ -771,6 +1204,7 @@ fn search_impl(
             q_norm,
             &suffix_norm,
             max_norm,
+            query_code.as_ref(),
         ))
     }
 }
@@ -873,7 +1307,9 @@ pub(super) fn candidate_subject_scan(
 /// row is the subject's current live slot). Walking all partitions covers the degenerate `nlist = 1`
 /// case (all rows in partition 0) and a trained-then-cleared index (`nlist > 1`, centroids missing)
 /// whose rows are spread across `0..nlist`. The deterministic top-k and shadow/current-slot handling
-/// are unchanged.
+/// are unchanged. A tier-on generation routes through the same two-stage code-tier body the
+/// partitioned scan uses (Slice 6 contract).
+#[allow(clippy::too_many_arguments)]
 fn exact_subject_scan(
     req: &VectorSearchRequest,
     active_index_version: u64,
@@ -884,6 +1320,7 @@ fn exact_subject_scan(
     q_norm: f32,
     suffix_norm: &[f32],
     max_norm: f32,
+    query_code: Option<&QueryCode>,
 ) -> VectorSearchResult {
     scan_partitions(
         req.index_id,
@@ -896,12 +1333,15 @@ fn exact_subject_scan(
         suffix_norm,
         max_norm,
         req.top_k,
+        query_code,
     )
 }
 
 /// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
 /// chains in full, scoring every non-tombstoned row directly (no subject-map access; the write
-/// path guarantees a non-tombstoned row is the subject's current live slot).
+/// path guarantees a non-tombstoned row is the subject's current live slot). A two-level
+/// (`levels = 2`) generation selects in two stages (coarse then leaf children, same `eps_query`)
+/// and scans the selected leaves; the exact-scan fallback walks every leaf.
 fn partition_page_scan(
     req: &VectorSearchRequest,
     def: &VectorIndexDef,
@@ -910,6 +1350,7 @@ fn partition_page_scan(
     q_norm: f32,
     suffix_norm: &[f32],
     max_norm: f32,
+    query_code: Option<&QueryCode>,
 ) -> VectorSearchResult {
     // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
     // if it somehow vanished between the gate and here.
@@ -917,23 +1358,36 @@ fn partition_page_scan(
         return exact_subject_scan(
             req,
             def.active_index_version,
-            def.nlist,
+            def.leaf_count(),
             query,
             def.metric,
             def.encoding,
             q_norm,
             suffix_norm,
             max_norm,
+            query_code,
         );
     };
     let active = def.active_index_version;
-    let selected = select_partitions(
-        &centroids,
-        &req.query,
-        def.metric,
-        def.dims as usize,
-        tuning.eps_query,
-    );
+    let selected = if def.is_two_level() {
+        select_partitions_two_level(
+            def,
+            req.index_id,
+            &centroids,
+            &req.query,
+            def.metric,
+            def.dims as usize,
+            tuning.eps_query,
+        )
+    } else {
+        select_partitions(
+            &centroids,
+            &req.query,
+            def.metric,
+            def.dims as usize,
+            tuning.eps_query,
+        )
+    };
     scan_partitions(
         req.index_id,
         active,
@@ -945,6 +1399,7 @@ fn partition_page_scan(
         suffix_norm,
         max_norm,
         req.top_k,
+        query_code,
     )
 }
 

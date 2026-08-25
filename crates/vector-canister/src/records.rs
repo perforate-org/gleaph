@@ -22,8 +22,19 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 const SUBJECT_TAG_VERTEX: u8 = 0;
-const VECTOR_INDEX_DEF_BYTES: usize = 41;
-const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-01";
+const VECTOR_INDEX_DEF_BYTES: usize = 59;
+const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-03";
+
+/// `VectorIndexDef` shape tags (`levels` field). `levels = 1` is the flat behavior and the default
+/// for lazily created defs; `levels = 2` activates the coarse/leaf hierarchy (ADR 0064 §9).
+pub(crate) const LEVELS_FLAT: u8 = 1;
+pub(crate) const LEVELS_TWO: u8 = 2;
+
+/// `PartitionKey` level tag occupying the key's dedicated byte. Coarse keys (tag `0`) sort before
+/// all leaf keys (tag `1`) within one `(index_id, index_version)` prefix, so a teardown can
+/// range-delete both levels with a single `(index_id, version)` prefix scan.
+const PARTITION_LEVEL_COARSE: u8 = 0;
+const PARTITION_LEVEL_LEAF: u8 = 1;
 
 /// `(index_id, subject)` key for `VECTOR_SUBJECT_TO_ID`.
 ///
@@ -105,35 +116,60 @@ impl StableHashKey for SubjectKey {
     }
 }
 
-/// `(index_id, index_version, partition_id)` key for `VECTOR_PARTITION_HEADS` and `IVF_CENTROIDS`.
+/// `(index_id, index_version, level, partition_id)` key for `VECTOR_PARTITION_HEADS` and
+/// `IVF_CENTROIDS`.
+///
+/// The `level` byte splits the key space of one index generation into coarse (`0`) and leaf (`1`)
+/// ranges. Heads and pages exist for **leaves only**; coarse keys hold the level-0 centroid set of
+/// a two-level index. Leaf `partition_id` packs the hierarchy path as `coarse_id * nlist_fine +
+/// fine_id`, so a subtree is the contiguous id range `[c * f, (c + 1) * f)`.
+///
+/// The 17-byte layout (level byte between version and partition id) is a breaking change over the
+/// retired 16-byte layout; reinstall required.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionKey {
     pub index_id: u32,
     pub index_version: u64,
+    /// Level tag: [`PARTITION_LEVEL_COARSE`] or [`PARTITION_LEVEL_LEAF`].
+    pub level: u8,
     pub partition_id: u32,
 }
 
 impl PartitionKey {
+    /// Leaf partition key — heads, pages, and flat/two-level leaf centroids. This is the historical
+    /// `PartitionKey::new` shape, so every leaf-addressed call site is source-compatible.
     pub const fn new(index_id: u32, index_version: u64, partition_id: u32) -> Self {
         Self {
             index_id,
             index_version,
+            level: PARTITION_LEVEL_LEAF,
             partition_id,
         }
     }
 
-    fn to_array(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
+    /// Coarse (level-0) centroid key of a two-level index generation.
+    pub const fn coarse(index_id: u32, index_version: u64, partition_id: u32) -> Self {
+        Self {
+            index_id,
+            index_version,
+            level: PARTITION_LEVEL_COARSE,
+            partition_id,
+        }
+    }
+
+    fn to_array(self) -> [u8; 17] {
+        let mut out = [0u8; 17];
         out[0..4].copy_from_slice(&self.index_id.to_be_bytes());
         out[4..12].copy_from_slice(&self.index_version.to_be_bytes());
-        out[12..16].copy_from_slice(&self.partition_id.to_be_bytes());
+        out[12] = self.level;
+        out[13..17].copy_from_slice(&self.partition_id.to_be_bytes());
         out
     }
 }
 
 impl Storable for PartitionKey {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 16,
+        max_size: 17,
         is_fixed_size: true,
     };
 
@@ -146,23 +182,24 @@ impl Storable for PartitionKey {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let mut raw = [0u8; 16];
+        let mut raw = [0u8; 17];
         raw.copy_from_slice(bytes.as_ref());
         Self {
             index_id: u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]),
             index_version: u64::from_be_bytes([
                 raw[4], raw[5], raw[6], raw[7], raw[8], raw[9], raw[10], raw[11],
             ]),
-            partition_id: u32::from_be_bytes([raw[12], raw[13], raw[14], raw[15]]),
+            level: raw[12],
+            partition_id: u32::from_be_bytes([raw[13], raw[14], raw[15], raw[16]]),
         }
     }
 }
 
 impl StableHashKey for PartitionKey {
-    const KEY_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTKEY-0";
-    const KEY_ROUTING_ID: [u8; 16] = *b"GLEAPH-PARTRTE-0";
+    const KEY_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTKEY-1";
+    const KEY_ROUTING_ID: [u8; 16] = *b"GLEAPH-PARTRTE-1";
     type HashBytes<'a>
-        = [u8; 16]
+        = [u8; 17]
     where
         Self: 'a;
 
@@ -243,6 +280,8 @@ pub struct VectorIndexDef {
     pub encoding: VectorEncoding,
     pub dims: u16,
     pub metric: VectorMetric,
+    /// Coarse partition count (level-0 centroid count). For a flat index (`levels = 1`) this is
+    /// also the leaf count.
     pub nlist: u32,
     pub active_index_version: u64,
     /// Logical stored width per component: `component_bytes × dims` (the wire `bytes` length).
@@ -255,6 +294,83 @@ pub struct VectorIndexDef {
     pub run_capacity: u32,
     pub max_page_bytes: u32,
     pub slots_per_page: u32,
+    /// Hierarchy depth of the active generation: `1` = flat, `2` = coarse/leaf.
+    pub levels: u8,
+    /// Branching factor of the level-1 subtrees (`1` for flat). Leaves per coarse subtree form the
+    /// contiguous id range `[c * nlist_fine, (c + 1) * nlist_fine)`.
+    pub nlist_fine: u32,
+    /// Two-tier precision code tier of the **active** generation (Slice 6): `false` = rows carry
+    /// no code segment and search is exact; `true` = rows carry a 1-bit RaBitQ code segment used
+    /// to accelerate the first-stage scan (the advertised result quality stays the original
+    /// tier). Chosen at rebuild start; the public `VectorEncoding` never changes.
+    pub code_tier: bool,
+    /// Frozen per-row code-segment width of the active generation (`0` when
+    /// [`Self::code_tier`] is off; otherwise `[code_aux 8B][codes ceil(P/64)*8B]` with
+    /// `P = next_pow2(dims)` — see [`Self::canonical_code_stride_bytes`]). Frozen so stored pages
+    /// stay decodable even if a future encoder changes the derivation.
+    pub code_stride_bytes: u32,
+    /// Rotation seed frozen at definition creation. The same seeded rotation (randomized
+    /// Walsh–Hadamard + seeded sign flips over the zero-padded `P` domain) is applied at data
+    /// write time and query time, so codes and queries always live in the same rotated space.
+    pub rotation_seed: u64,
+}
+
+impl VectorIndexDef {
+    /// Zero-padded rotation domain for `dims`: the randomized Walsh–Hadamard transform needs a
+    /// power-of-two length. Distances are preserved exactly by zero-padding (the padded domain's
+    /// orthogonal transform leaves `‖x − y‖` invariant), and every coordinate — real or padded —
+    /// participates in the code.
+    pub(crate) fn code_padded_dims(dims: u16) -> u32 {
+        (dims as u32).max(1).next_power_of_two()
+    }
+
+    /// Canonical v1 (1-bit RaBitQ) per-row code-segment width for `dims`:
+    /// `[code_aux 8B][codes ceil(P/64)*8B]` over the power-of-two rotation domain
+    /// (`P = next_pow2(dims)`), e.g. d1536 → P=2048 → 264 B, d768 → P=1024 → 136 B.
+    pub(crate) fn canonical_code_stride_bytes(dims: u16) -> u32 {
+        let words = Self::code_padded_dims(dims).div_ceil(64);
+        8 + words * 8
+    }
+
+    /// Deterministic rotation seed derived from the index id (splitmix64 finalizer). Frozen into
+    /// the def at creation so data writes and queries always share one rotated space without
+    /// depending on any randomness source at runtime.
+    pub(crate) fn rotation_seed_for(index_id: u32) -> u64 {
+        let mut z = (index_id as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Whether scanned rows of this generation carry a code segment.
+    pub fn has_code_tier(&self) -> bool {
+        self.code_tier
+    }
+    /// Whether the active generation uses the two-level (coarse/leaf) hierarchy.
+    pub fn is_two_level(&self) -> bool {
+        self.levels == LEVELS_TWO
+    }
+
+    /// Total leaf partition count: `nlist * nlist_fine`. Heads and pages are indexed by leaf ids
+    /// `0..leaf_count()` in both shapes.
+    pub fn leaf_count(&self) -> u32 {
+        self.nlist.saturating_mul(if self.nlist_fine == 0 {
+            1
+        } else {
+            self.nlist_fine
+        })
+    }
+
+    /// The exclusive leaf-id end of coarse subtree `c`: `[c * f, (c + 1) * f)`.
+    pub fn subtree_range(&self, coarse: u32) -> std::ops::Range<u32> {
+        let f = if self.nlist_fine == 0 {
+            1
+        } else {
+            self.nlist_fine
+        };
+        let start = coarse.saturating_mul(f);
+        start..start.saturating_add(f)
+    }
 }
 
 impl Storable for VectorIndexDef {
@@ -277,6 +393,15 @@ impl Storable for VectorIndexDef {
         out[29..33].copy_from_slice(&self.run_capacity.to_le_bytes());
         out[33..37].copy_from_slice(&self.max_page_bytes.to_le_bytes());
         out[37..41].copy_from_slice(&self.slots_per_page.to_le_bytes());
+        // Slice 5 (levels=2): shape fields extend the retired 41-byte layout to 46 bytes.
+        out[41] = self.levels;
+        out[42..46].copy_from_slice(&self.nlist_fine.to_le_bytes());
+        // Slice 6 (two-tier precision): `code_tier` (1 B) + frozen code width (4 B LE) + the
+        // rotation seed (8 B LE) extend the layout to 59 bytes. The storage id bumped to
+        // GLEAPH-VECDEF-03; reinstall required.
+        out[46] = self.code_tier as u8;
+        out[47..51].copy_from_slice(&self.code_stride_bytes.to_le_bytes());
+        out[51..59].copy_from_slice(&self.rotation_seed.to_le_bytes());
         Cow::Owned(out.to_vec())
     }
 
@@ -291,10 +416,11 @@ impl Storable for VectorIndexDef {
             VECTOR_INDEX_DEF_BYTES,
             "VectorIndexDef expects exactly {VECTOR_INDEX_DEF_BYTES} bytes"
         );
+        let dims = u16::from_le_bytes(b[2..4].try_into().expect("dims"));
         Self {
             kind: VectorIndexKind::from_u8(b[0]).expect("valid kind"),
             encoding: VectorEncoding::from_u8(b[1]).expect("valid encoding"),
-            dims: u16::from_le_bytes(b[2..4].try_into().expect("dims")),
+            dims,
             metric: VectorMetric::from_u8(b[4]).expect("valid metric"),
             nlist: u32::from_le_bytes(b[5..9].try_into().expect("nlist")),
             active_index_version: u64::from_le_bytes(b[9..17].try_into().expect("version")),
@@ -304,6 +430,34 @@ impl Storable for VectorIndexDef {
             run_capacity: u32::from_le_bytes(b[29..33].try_into().expect("run")),
             max_page_bytes: u32::from_le_bytes(b[33..37].try_into().expect("max_page")),
             slots_per_page: u32::from_le_bytes(b[37..41].try_into().expect("slots")),
+            levels: {
+                let level = b[41];
+                assert!(
+                    level == LEVELS_FLAT || level == LEVELS_TWO,
+                    "unknown def levels tag {level}"
+                );
+                level
+            },
+            nlist_fine: u32::from_le_bytes(b[42..46].try_into().expect("nlist_fine")),
+            code_tier: {
+                let flag = b[46];
+                assert!(flag <= 1, "unknown def code_tier tag {flag}");
+                flag == 1
+            },
+            code_stride_bytes: {
+                // Fail-closed consistency: the frozen width must match the v1 derivation exactly
+                // (canonical when the tier is on, zero when it is off). A future encoder changes
+                // the derivation together with this validation, never silently.
+                let canonical = Self::canonical_code_stride_bytes(dims);
+                let stride = u32::from_le_bytes(b[47..51].try_into().expect("code_stride"));
+                assert_eq!(
+                    stride,
+                    if b[46] == 1 { canonical } else { 0 },
+                    "def code_stride_bytes disagrees with the v1 derivation"
+                );
+                stride
+            },
+            rotation_seed: u64::from_le_bytes(b[51..59].try_into().expect("rotation_seed")),
         }
     }
 }
@@ -607,9 +761,14 @@ impl StableMapValue for PartitionHead {
 /// One frozen rebuild candidate: a live row's native stored bytes plus its row-meta aux (the `I8`
 /// scale; zero for `F32`). The pool snapshots Sampling-time values and stays immutable into
 /// `Training` even though dual-write mutations keep mutating live rows mid-rebuild.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, CandidType, Serialize, Deserialize)]
+///
+/// This is a transient heap value and the fixed-width row format of the durable rebuild-pool
+/// region (`facade/stable/rebuild_pool.rs`); it is **not** part of any Candid state — the durable
+/// lifecycle record carries only a `pool_len` scalar.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RebuildCandidate {
-    /// The row's stored vector bytes (`stride_bytes` wide), verbatim from the page store.
+    /// The row's stored vector bytes (pad-stride wide, trailing pad zeroed), verbatim from the
+    /// page store.
     pub stored: Vec<u8>,
     /// The row's page-store aux (the `I8` quantization scale; zero for `F32`).
     pub aux: [u8; 8],
@@ -618,14 +777,27 @@ pub struct RebuildCandidate {
 /// Durable per-index rebuild lifecycle (`VECTOR_REBUILD_STATE`, ADR 0031 Slice 7/8).
 ///
 /// Every long-running phase carries a resume cursor (subject keys / page keys as `Storable` bytes)
-/// so each `*_step` honors the bounded-execution contract. `Sampling.candidates` accumulates a
-/// bounded distinct candidate pool of native stored rows ([`RebuildCandidate`]), then `Training`
-/// refines `nlist` canonical-f32 centroids from it with deterministic k-means-lite before they are
-/// written to `IVF_CENTROIDS` on the transition to `Building` (ADR 0031 Slice 8). The combined
-/// durable `Training` value (`candidates + centroids`) is bounded by `MAX_REBUILD_STATE_BYTES`; the
-/// candidate pool is sized to reserve room for the centroids and encoding overhead inside that
-/// envelope. `Cleaning`/`Aborting` carry the `nlist` they must tear down because `publish`
-/// overwrites `def.nlist`.
+/// so each `*_step` honors the bounded-execution contract. `Sampling` accumulates a bounded
+/// distinct candidate pool of native stored rows ([`RebuildCandidate`]) in the dedicated raw
+/// rebuild-pool region (`VECTOR_REBUILD_POOL`, MemoryId 18; ADR 0033 implementation) — this record
+/// carries only the `pool_len` scalar — then `Training` refines `nlist` canonical-f32 centroids
+/// from that pool with deterministic k-means-lite before they are written to `IVF_CENTROIDS` on
+/// the transition to `Building` (ADR 0031 Slice 8). The pool rows and the `Training` centroid work
+/// area never enter this Candid value; every step reads only the rows it needs from the pool
+/// region. `Cleaning`/`Aborting` carry the `nlist` they must tear down because `publish`
+/// overwrites `def.nlist`; their key teardown is a `(index_id, version)` prefix range deletion, so
+/// they need no shape fields.
+///
+/// **Two-level shape (Slice 5).** The flat lifecycle is unchanged: `Sampling → Training →
+/// Building`. When a rebuild starts with `fine_nlist = Some(f)` the target generation has
+/// `levels = 2` and training splits into `TrainCoarse` (k-means over the whole pool at the coarse
+/// count `nlist`, one iteration per step exactly like flat `Training`) followed by `TrainFine` —
+/// one bounded k-means-lite iteration per step over the current subtree's members, advancing
+/// `coarse_cursor` after each subtree converges and its leaf centroids are written. All phase
+/// variants that decide or publish the target shape carry `levels` + `nlist_fine`; the variants
+/// that write or publish shadow **pages** (`Building`/`ReadyToPublish`) additionally carry
+/// `code_tier`, because the code tier changes the shadow generation's row geometry while the
+/// training phases touch only original-tier pool rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VectorRebuildStateRecord {
     #[default]
@@ -636,29 +808,72 @@ pub enum VectorRebuildStateRecord {
         sample_limit: u32,
         cursor: Option<SubjectScanCursor>,
         subjects_scanned: u64,
-        candidates: Vec<RebuildCandidate>,
+        /// Distinct candidates accumulated in the durable pool region so far.
+        pool_len: u32,
+        levels: u8,
+        nlist_fine: u32,
     },
     Training {
         target_index_version: u64,
         nlist: u32,
         sample_limit: u32,
         iteration: u32,
-        candidates: Vec<RebuildCandidate>,
-        centroids: Vec<Vec<u8>>,
+        /// Frozen candidate count inherited from `Sampling` (validated against the pool region
+        /// header on resume).
+        pool_len: u32,
+        levels: u8,
+        nlist_fine: u32,
+    },
+    /// Two-level only: k-means over the whole candidate pool at the coarse count (`nlist`),
+    /// identical convergence rule and one-iteration-per-step budget as flat `Training`.
+    TrainCoarse {
+        target_index_version: u64,
+        nlist: u32,
+        nlist_fine: u32,
+        sample_limit: u32,
+        iteration: u32,
+        pool_len: u32,
+    },
+    /// Two-level only: per-subtree fine k-means jobs in coarse-id order. Each step performs at
+    /// most one k-means-lite iteration over the current subtree's members; on convergence the
+    /// subtree's `nlist_fine` leaf centroids are written to `IVF_CENTROIDS` and `coarse_cursor`
+    /// advances.
+    TrainFine {
+        target_index_version: u64,
+        nlist: u32,
+        nlist_fine: u32,
+        sample_limit: u32,
+        /// Next coarse subtree id to train (`0..nlist`).
+        coarse_cursor: u32,
+        /// Iteration counter within the current subtree's job.
+        iteration: u32,
+        pool_len: u32,
     },
     Building {
         target_index_version: u64,
         nlist: u32,
         cursor: Option<SubjectScanCursor>,
         subjects_processed: u64,
+        levels: u8,
+        nlist_fine: u32,
+        /// Code tier of the shadow generation being built (Slice 6): shadow page appends and the
+        /// publish flip derive their row geometry from this flag.
+        code_tier: bool,
     },
     ReadyToPublish {
         target_index_version: u64,
         nlist: u32,
+        levels: u8,
+        nlist_fine: u32,
+        /// Code tier to flip into the definition on publish (Slice 6).
+        code_tier: bool,
     },
     Cleaning {
         old_version: u64,
         old_nlist: u32,
+        /// Shape of the OLD generation being torn down (`levels`/`nlist_fine` as of publish).
+        old_levels: u8,
+        old_nlist_fine: u32,
         target_index_version: u64,
         subject_cursor: Option<SubjectScanCursor>,
         page_cursor: Option<Vec<u8>>,
@@ -666,6 +881,9 @@ pub enum VectorRebuildStateRecord {
     Aborting {
         target_index_version: u64,
         target_nlist: u32,
+        /// Shape of the shadow generation being torn down.
+        target_levels: u8,
+        target_nlist_fine: u32,
         subject_cursor: Option<SubjectScanCursor>,
         page_cursor: Option<Vec<u8>>,
     },
@@ -806,10 +1024,9 @@ impl From<ScanError> for SubjectScanCursorError {
 /// A pre-encoded [`VectorRebuildStateRecord`] stored verbatim in `VECTOR_REBUILD_STATE`.
 ///
 /// The bytes are exactly `VectorRebuildStateRecord::into_bytes()` (Candid), so the on-disk format is
-/// identical to storing the record directly. The wrapper lets the rebuild step's fail-closed
-/// encoded-size guard and the persist share a single Candid encode: the step encodes once, checks the
-/// length, and stores these bytes without re-encoding (ADR 0031 Slice 7/8). `rebuild_state_of` decodes
-/// them back into a [`VectorRebuildStateRecord`].
+/// identical to storing the record directly. The wrapper lets the step persist share a single
+/// Candid encode with the store call (ADR 0031 Slice 7/8). `rebuild_state_of` decodes them back
+/// into a [`VectorRebuildStateRecord`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRebuildState(pub Vec<u8>);
 
@@ -899,6 +1116,55 @@ impl Storable for VectorSlabCompactionState {
     }
 }
 
+/// Shared definition fixtures for test modules across the crate (math units, store tests, bench
+/// seeding). Production construction paths stay in `mutation.rs`; this module only assembles
+/// in-memory defs and never touches stable state.
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A minimal valid `ivf_flat` def with the code tier **on** at the canonical v1 shape:
+    /// `code_stride_bytes = 8 + ceil(P/64)*8` for `P = next_pow2(dims)` and the deterministic
+    /// `rotation_seed_for(index_id)` seed. Geometry fields (`slots_per_page`) reflect the tier-on
+    /// page capacity so fixtures that exercise page layout stay consistent with the real
+    /// derivation.
+    pub(crate) fn tier_def(dims: u16, encoding: VectorEncoding) -> VectorIndexDef {
+        let stride_bytes = match encoding {
+            VectorEncoding::F32 => u32::from(dims) * 4,
+            VectorEncoding::I8 => u32::from(dims),
+        };
+        let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
+        let code_stride_bytes = VectorIndexDef::canonical_code_stride_bytes(dims);
+        let slots_per_page = ic_stable_vector_page_store::layout::PageLayout::max_capacity_for(
+            64 * 1024,
+            pad_stride_bytes,
+            4,
+            1,
+            code_stride_bytes,
+        )
+        .expect("tier fixture fits a page");
+        VectorIndexDef {
+            kind: VectorIndexKind::IvfFlat,
+            encoding,
+            dims,
+            metric: VectorMetric::L2Squared,
+            nlist: 1,
+            active_index_version: 1,
+            stride_bytes,
+            pad_stride_bytes,
+            meta_stride_bytes: 4,
+            run_capacity: 1,
+            max_page_bytes: 64 * 1024,
+            slots_per_page,
+            levels: LEVELS_FLAT,
+            nlist_fine: 1,
+            code_tier: true,
+            code_stride_bytes,
+            rotation_seed: VectorIndexDef::rotation_seed_for(1),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,21 +1248,121 @@ mod tests {
             run_capacity: 0x1e1d_1c1b,
             max_page_bytes: 0x2221_201f,
             slots_per_page: 0x2625_2423,
+            levels: LEVELS_TWO,
+            nlist_fine: 0x2a29_2827,
+            code_tier: true,
+            code_stride_bytes: VectorIndexDef::canonical_code_stride_bytes(0x0201),
+            rotation_seed: 0x3231_2f2e_2d2c_2b2a,
         };
-        let expected = [
+        // The retired 46-byte prefix is unchanged; `code_tier` (1 B) + `code_stride_bytes` (4 B
+        // LE) + `rotation_seed` (8 B LE) extend the layout to 59 bytes under GLEAPH-VECDEF-03.
+        let mut expected = vec![
             0x00, 0x01, 0x01, 0x02, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
             0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
             0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
         ];
+        expected.push(LEVELS_TWO);
+        expected.extend_from_slice(&0x2a29_2827u32.to_le_bytes());
+        expected.push(1);
+        expected
+            .extend_from_slice(&VectorIndexDef::canonical_code_stride_bytes(0x0201).to_le_bytes());
+        expected.extend_from_slice(&0x3231_2f2e_2d2c_2b2au64.to_le_bytes());
 
         assert_eq!(
             VectorIndexDef::BOUND.max_size(),
             VECTOR_INDEX_DEF_BYTES as u32
         );
         assert!(VectorIndexDef::BOUND.is_fixed_size());
-        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-01");
-        assert_eq!(def.to_bytes().as_ref(), expected);
+        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-03");
+        assert_eq!(def.to_bytes().as_ref(), expected.as_slice());
         assert_eq!(VectorIndexDef::from_bytes(Cow::Borrowed(&expected)), def);
+    }
+
+    #[test]
+    fn canonical_code_stride_matches_v1_shape() {
+        // The WHT rotation needs a power-of-two domain, so `P = next_pow2(dims)`.
+        // d1536: P = 2048, 32 words -> aux 8 + 256 = 264. d768 -> P = 1024 -> 136.
+        // A non-power-of-two dims pads up: d17 -> P = 32, one word -> 16. d1 -> one word -> 16.
+        assert_eq!(
+            VectorIndexDef::canonical_code_stride_bytes(1536),
+            8 + 32 * 8
+        );
+        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(768), 8 + 16 * 8);
+        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(17), 8 + 8);
+        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(1), 8 + 8);
+    }
+
+    #[test]
+    fn partition_key_level_layout_and_order() {
+        let leaf = PartitionKey::new(0x0102_0304, 0x0506_0708_090a_0b0c, 0x0d0e_0f10);
+        assert_eq!(leaf.level, PARTITION_LEVEL_LEAF);
+        let coarse = PartitionKey::coarse(leaf.index_id, leaf.index_version, leaf.partition_id);
+        assert_eq!(coarse.level, PARTITION_LEVEL_COARSE);
+
+        let expected = [
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+            0x05,
+            0x06,
+            0x07,
+            0x08,
+            0x09,
+            0x0a,
+            0x0b,
+            0x0c,
+            PARTITION_LEVEL_LEAF,
+            0x0d,
+            0x0e,
+            0x0f,
+            0x10,
+        ];
+        assert_eq!(PartitionKey::BOUND.max_size(), 17);
+        assert!(PartitionKey::BOUND.is_fixed_size());
+        assert_eq!(PartitionKey::KEY_STORAGE_ID, *b"GLEAPH-PARTKEY-1");
+        assert_eq!(PartitionKey::KEY_ROUTING_ID, *b"GLEAPH-PARTRTE-1");
+        assert_eq!(leaf.to_array(), expected);
+        assert_eq!(PartitionKey::from_bytes(Cow::Borrowed(&expected)), leaf);
+
+        // Coarse keys sort before all leaf keys of the same generation; both share the
+        // `(index_id, version)` prefix a teardown range-deletes.
+        assert!(coarse.to_array() < leaf.to_array());
+        let next_version_leaf = PartitionKey::new(leaf.index_id, leaf.index_version + 1, 0);
+        assert!(leaf.to_array() < next_version_leaf.to_array());
+
+        assert!(def_is_two_level_shape());
+    }
+
+    fn def_is_two_level_shape() -> bool {
+        let def = VectorIndexDef {
+            kind: VectorIndexKind::IvfFlat,
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            nlist: 16,
+            active_index_version: 2,
+            stride_bytes: 16,
+            pad_stride_bytes: 16,
+            meta_stride_bytes: 4,
+            run_capacity: 1,
+            max_page_bytes: 64 * 1024,
+            slots_per_page: 1024,
+            levels: LEVELS_TWO,
+            nlist_fine: 16,
+            code_tier: false,
+            code_stride_bytes: 0,
+            rotation_seed: 0,
+        };
+        let flat = VectorIndexDef {
+            levels: LEVELS_FLAT,
+            nlist_fine: 1,
+            ..def
+        };
+        assert_eq!(flat.leaf_count(), 16);
+        assert_eq!(def.leaf_count(), 256);
+        assert_eq!(def.subtree_range(3), 48..64);
+        def.is_two_level() && !flat.is_two_level()
     }
 
     #[test]
@@ -1110,51 +1476,57 @@ mod tests {
                     target_index_version: 2,
                 })),
                 subjects_scanned: 17,
-                candidates: vec![
-                    RebuildCandidate {
-                        stored: vec![0u8; 16],
-                        aux: [0u8; 8],
-                    },
-                    RebuildCandidate {
-                        stored: vec![1u8; 16],
-                        aux: [7u8; 8],
-                    },
-                ],
+                pool_len: 2,
+                levels: LEVELS_FLAT,
+                nlist_fine: 1,
             },
             VectorRebuildStateRecord::Training {
                 target_index_version: 2,
-                nlist: 2,
+                nlist: 8,
                 sample_limit: 1024,
                 iteration: 3,
-                candidates: vec![
-                    RebuildCandidate {
-                        stored: vec![0u8; 16],
-                        aux: [0u8; 8],
-                    },
-                    RebuildCandidate {
-                        stored: vec![1u8; 16],
-                        aux: [7u8; 8],
-                    },
-                    RebuildCandidate {
-                        stored: vec![2u8; 16],
-                        aux: [9u8; 8],
-                    },
-                ],
-                centroids: vec![vec![0u8; 16], vec![1u8; 16]],
+                pool_len: 5,
+                levels: LEVELS_FLAT,
+                nlist_fine: 1,
+            },
+            VectorRebuildStateRecord::TrainCoarse {
+                target_index_version: 2,
+                nlist: 8,
+                nlist_fine: 4,
+                sample_limit: 1024,
+                iteration: 1,
+                pool_len: 5,
+            },
+            VectorRebuildStateRecord::TrainFine {
+                target_index_version: 2,
+                nlist: 8,
+                nlist_fine: 4,
+                sample_limit: 1024,
+                coarse_cursor: 3,
+                iteration: 2,
+                pool_len: 5,
             },
             VectorRebuildStateRecord::Building {
                 target_index_version: 2,
                 nlist: 8,
                 cursor: None,
                 subjects_processed: 42,
+                levels: LEVELS_TWO,
+                nlist_fine: 4,
+                code_tier: true,
             },
             VectorRebuildStateRecord::ReadyToPublish {
                 target_index_version: 2,
                 nlist: 8,
+                levels: LEVELS_TWO,
+                nlist_fine: 4,
+                code_tier: true,
             },
             VectorRebuildStateRecord::Cleaning {
                 old_version: 1,
                 old_nlist: 1,
+                old_levels: LEVELS_FLAT,
+                old_nlist_fine: 1,
                 target_index_version: 2,
                 subject_cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Cleaning {
                     index_id: 1,
@@ -1165,6 +1537,8 @@ mod tests {
             VectorRebuildStateRecord::Aborting {
                 target_index_version: 2,
                 target_nlist: 8,
+                target_levels: LEVELS_TWO,
+                target_nlist_fine: 4,
                 subject_cursor: None,
                 page_cursor: Some(vec![7]),
             },

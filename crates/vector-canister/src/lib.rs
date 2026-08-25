@@ -10,6 +10,7 @@
 //! Admin APIs are router-only (`guard_router_canister`). Mutation updates authorize the caller
 //! against the shard catalog inside the store and return [`VectorCanisterError`] over the wire.
 
+mod code_tier;
 mod facade;
 mod records;
 
@@ -134,10 +135,21 @@ fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorC
 }
 
 /// Begins a production shadow-version rebuild for an `nlist > 1` index (ADR 0031 Slice 7). O(1);
-/// the Router drives the subsequent bounded steps. Router-guarded like the other admin endpoints.
+/// the Router drives the subsequent bounded steps. `fine_nlist = Some(f)` (with `f >= 2`) starts
+/// a two-level (`levels = 2`) rebuild whose target generation holds `nlist * f` packed leaves;
+/// `None` keeps the unchanged flat lifecycle. `code_tier = Some(true)` builds the shadow
+/// generation with the 1-bit RaBitQ first-stage code tier (Slice 6 / ADR 0078) — the public
+/// encoding and advertised result quality are unchanged. Router-guarded like the other admin
+/// endpoints.
 #[update(guard = "guard_router_canister")]
-fn admin_start_vector_rebuild(index_id: u32, nlist: u32, sample_limit: u32) -> Result<(), String> {
-    canister::admin_start_vector_rebuild(index_id, nlist, sample_limit)
+fn admin_start_vector_rebuild(
+    index_id: u32,
+    nlist: u32,
+    sample_limit: u32,
+    fine_nlist: Option<u32>,
+    code_tier: Option<bool>,
+) -> Result<(), String> {
+    canister::admin_start_vector_rebuild(index_id, nlist, sample_limit, fine_nlist, code_tier)
 }
 
 /// Starts a rebuild only if partition health crosses the supplied policy (ADR 0031 Slice 9). The
@@ -220,22 +232,10 @@ fn admin_vector_partition_health_step(
     canister::admin_vector_partition_health_step(index_id, cursor, max_pages)
 }
 
-/// Warms the heap centroid cache for an index from its active centroid set (ADR 0031 Slice 9). An
-/// `#[update]` because a `#[query]` cannot persist heap writes on IC. Only ready `nlist > 1` indexes
-/// are cached; degenerate/untrained indexes instead drop any stale entry. Returns cache status.
-#[update(guard = "guard_router_canister")]
-fn admin_vector_centroid_cache_warmup(index_id: u32) -> Result<VectorCentroidCacheStatus, String> {
-    canister::admin_vector_centroid_cache_warmup(index_id)
-}
-
-/// Clears the entire heap centroid cache (ADR 0031 Slice 9). Router-guarded `#[update]`.
-#[update(guard = "guard_router_canister")]
-fn admin_vector_centroid_cache_clear() -> Result<VectorCentroidCacheStatus, String> {
-    canister::admin_vector_centroid_cache_clear()
-}
-
-/// Reports heap centroid cache status (entries/bytes/cap) (ADR 0031 Slice 9). Per-query hit/miss is
-/// not tracked (queries cannot commit counters on IC). Router-guarded `#[query]`.
+/// Reports heap centroid cache status (entries/bytes/cap) (ADR 0031 Slice 9). The cache itself is
+/// warmed automatically after post-upgrade store reopen and populated lazily by update-path
+/// centroid reads; per-query hit/miss is not tracked (queries cannot commit counters on IC).
+/// Router-guarded `#[query]`.
 #[query(guard = "guard_router_canister")]
 fn admin_vector_centroid_cache_status() -> Result<VectorCentroidCacheStatus, String> {
     canister::admin_vector_centroid_cache_status()

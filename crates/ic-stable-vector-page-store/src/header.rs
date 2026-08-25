@@ -22,8 +22,15 @@ pub const MAX_META_STRIDE: u32 = 12;
 
 /// On-disk size of [`SlabHeader`] (`3 + 1 + 8 + 4 + 16`).
 pub const SLAB_HEADER_SIZE: usize = 32;
-/// On-disk size of [`PageHeader`] (`3 + 1 + 6 × 4`).
-pub const PAGE_HEADER_SIZE: usize = 28;
+/// On-disk size of [`PageHeader`] (`3 + 1 + 7 × 4`). The retired 28-byte layout (six `u32`
+/// fields) predates the per-page `code_stride` segment and is rejected fail-closed on reopen
+/// (reinstall required).
+pub const PAGE_HEADER_SIZE: usize = 32;
+
+/// Smallest allowed per-row code-segment width: off (`no code table`) or an 8-byte-aligned
+/// `[code_aux 8B][codes …]` pair (`RaBitQ v1`: aux 8 B + whole 64-bit words).
+pub const MIN_CODE_STRIDE: u32 = 0;
+const CODE_STRIDE_ALIGN: u32 = 8;
 
 /// Fail-closed header validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +57,8 @@ pub enum HeaderError {
     ZeroCapacity,
     /// `run_capacity` is zero or exceeds [`MAX_RUNS`].
     InvalidRunCapacity(u32),
+    /// Invalid `code_stride`: not off (`0`) and not a multiple of 8.
+    InvalidCodeStride(u32),
     /// `run_count` exceeds `run_capacity`.
     RunCountExceedsCapacity {
         /// Stored run count.
@@ -139,15 +148,34 @@ pub struct PageHeader {
     pub run_capacity: u32,
     /// Number of runs currently recorded.
     pub run_count: u32,
+    /// Per-row code-segment width (the two-tier precision code tier; Slice 6). `0` = the page has
+    /// no code table; otherwise an 8-byte-aligned `[code_aux 8B][codes …]` entry per row. The
+    /// header keeps pages **self-describing**: a rebuild can switch the tier on for the next
+    /// generation, so teardown-residual pages of other generations may legitimately carry a
+    /// different `code_stride` than the current definition.
+    pub code_stride: u32,
 }
 
 impl PageHeader {
-    /// Constructs a header and validates it; fails closed on any invalid geometry.
+    /// Constructs a header and validates it; fails closed on any invalid geometry. The page has
+    /// no code segment (`code_stride = 0`). Tier-on geometry goes through
+    /// [`Self::with_code_stride`].
     pub fn new(
         capacity: u32,
         row_stride: u32,
         meta_stride: u32,
         run_capacity: u32,
+    ) -> Result<Self, HeaderError> {
+        Self::with_code_stride(capacity, row_stride, meta_stride, run_capacity, 0)
+    }
+
+    /// Constructs a header with an explicit per-row code-segment width and validates it.
+    pub fn with_code_stride(
+        capacity: u32,
+        row_stride: u32,
+        meta_stride: u32,
+        run_capacity: u32,
+        code_stride: u32,
     ) -> Result<Self, HeaderError> {
         let header = Self {
             capacity,
@@ -155,6 +183,7 @@ impl PageHeader {
             meta_stride,
             run_capacity,
             run_count: 0,
+            code_stride,
         };
         header.validate()?;
         Ok(header)
@@ -187,6 +216,10 @@ impl PageHeader {
         if self.run_capacity == 0 || self.run_capacity > MAX_RUNS {
             return Err(HeaderError::InvalidRunCapacity(self.run_capacity));
         }
+        if self.code_stride != MIN_CODE_STRIDE && !self.code_stride.is_multiple_of(CODE_STRIDE_ALIGN)
+        {
+            return Err(HeaderError::InvalidCodeStride(self.code_stride));
+        }
         if self.run_count > self.run_capacity {
             return Err(HeaderError::RunCountExceedsCapacity {
                 run_count: self.run_count,
@@ -209,6 +242,9 @@ impl PageHeader {
         out[12..16].copy_from_slice(&self.meta_stride.to_le_bytes());
         out[16..20].copy_from_slice(&self.run_capacity.to_le_bytes());
         out[20..24].copy_from_slice(&self.run_count.to_le_bytes());
+        // Slice 6 (two-tier precision): `code_stride` extends the retired 28-byte layout; the
+        // retired form is rejected fail-closed on decode (its trailing bytes cannot validate).
+        out[24..28].copy_from_slice(&self.code_stride.to_le_bytes());
         out
     }
 
@@ -239,6 +275,7 @@ impl PageHeader {
             meta_stride: read_u32(12..16),
             run_capacity: read_u32(16..20),
             run_count: read_u32(20..24),
+            code_stride: read_u32(24..28),
         };
         header.validate()?;
         Ok(header)
@@ -296,6 +333,23 @@ mod tests {
         let decoded = PageHeader::from_bytes(&original.to_bytes()).expect("decode valid header");
         assert_eq!(decoded, original);
         assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn page_header_code_stride_roundtrips_and_validates() {
+        // Tier-off pages encode code_stride = 0 and stay byte-stable in the first 28 bytes.
+        let off = header();
+        assert_eq!(off.code_stride, 0);
+        // Tier-on pages carry the per-row `[code_aux 8B][codes …]` width (8-byte aligned).
+        let on = PageHeader::with_code_stride(1024, 6144, 4, 8, 8 + 24 * 8).expect("valid header");
+        assert_eq!(
+            PageHeader::from_bytes(&on.to_bytes()).expect("decode"),
+            on
+        );
+        assert_eq!(
+            PageHeader::with_code_stride(1024, 6144, 4, 8, 7).expect_err("unaligned code stride"),
+            HeaderError::InvalidCodeStride(7)
+        );
     }
 
     #[test]

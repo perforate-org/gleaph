@@ -6,7 +6,10 @@
 //! A remove for an absent subject writes a deleted subject clock. See ADR 0031 Slice 2.
 
 use super::rebuild::rebuild_state_of;
-use super::search::{assign_partition, normalize_f32, read_centroids_at};
+use super::search::{
+    assign_partition, normalize_f32, read_centroids_at, read_coarse_centroids_at,
+    read_leaf_children_at,
+};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, INITIAL_INDEX_VERSION,
     VectorSyncBatchOutcomeOperationError,
@@ -22,8 +25,8 @@ use crate::facade::stable::{
 #[cfg(test)]
 use crate::records::PartitionKey;
 use crate::records::{
-    DeletedSubjectKey, FixedSubjectMapEntry, IvfCentroidMeta, SlotRef, SubjectKey, VectorIndexDef,
-    VectorRebuildStateRecord,
+    DeletedSubjectKey, FixedSubjectMapEntry, IvfCentroidMeta, LEVELS_FLAT, LEVELS_TWO, SlotRef,
+    SubjectKey, VectorIndexDef, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -126,8 +129,17 @@ enum RebuildMutationMode {
     /// live subject (ADR 0031 Slice 8).
     ActiveOnly,
     /// `Building`/`ReadyToPublish`: mirror the live effect into both the active and the shadow
-    /// (`target`) version so the shadow stays publish-complete.
-    DualWrite { target: u64, target_nlist: u32 },
+    /// (`target`) version so the shadow stays publish-complete. The shadow shape travels with the
+    /// mode so a two-level dual-write assigns through the coarse/leaf hierarchy and a code-tier
+    /// dual-write appends shadow rows with the shadow generation's page geometry (Slice 6).
+    DualWrite {
+        target: u64,
+        target_nlist: u32,
+        target_nlist_fine: u32,
+        /// Code tier of the shadow generation being dual-written into (Slice 6): selects the
+        /// shadow row geometry via [`shape_def_for`].
+        target_code_tier: bool,
+    },
     /// Post-publish `Cleaning`: the active version is already `target`; operate active-only via
     /// `current_slot_for(active)`. State-changing mutations collapse the touched subject
     /// (`slot = target, shadow = None`); pure idempotent no-ops are left to cleanup.
@@ -188,23 +200,36 @@ fn typed_batch_outcome_for_error(
 
 /// Resolves the per-op rebuild mutation mode from the durable rebuild state.
 fn rebuild_mutation_mode(index_id: u32) -> RebuildMutationMode {
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _mode_scope = bench_scope("sync_rebuild_mode");
     match rebuild_state_of(index_id) {
         VectorRebuildStateRecord::Building {
             target_index_version,
             nlist,
+            nlist_fine,
+            code_tier,
             ..
         }
         | VectorRebuildStateRecord::ReadyToPublish {
             target_index_version,
             nlist,
+            nlist_fine,
+            code_tier,
+            ..
         } => RebuildMutationMode::DualWrite {
             target: target_index_version,
             target_nlist: nlist,
+            target_nlist_fine: nlist_fine,
+            target_code_tier: code_tier,
         },
         VectorRebuildStateRecord::Cleaning { .. } => RebuildMutationMode::Cleaning,
         VectorRebuildStateRecord::Idle
         | VectorRebuildStateRecord::Sampling { .. }
         | VectorRebuildStateRecord::Training { .. }
+        // The two-level training pipeline writes no shadow version yet, same as flat `Training`
+        // (Slice 5): mutations stay active-only until `Building`.
+        | VectorRebuildStateRecord::TrainCoarse { .. }
+        | VectorRebuildStateRecord::TrainFine { .. }
         | VectorRebuildStateRecord::Aborting { .. }
         | VectorRebuildStateRecord::Failed { .. } => RebuildMutationMode::ActiveOnly,
     }
@@ -219,15 +244,54 @@ fn slots_per_page_for(
     pad_stride_bytes: u32,
     meta_stride_bytes: u32,
     run_capacity: u32,
+    code_stride_bytes: u32,
 ) -> Result<u32, VectorCanisterError> {
     let capacity = PageLayout::max_capacity_for(
         max_page_bytes as usize,
         pad_stride_bytes,
         meta_stride_bytes,
         run_capacity,
+        code_stride_bytes,
     )
     .ok_or(VectorCanisterError::InvalidPageCapacity)?;
     Ok(capacity)
+}
+
+/// Single derivation of a generation's def shape (Slice 6 SSOT, ADR 0078): every path that writes
+/// or publishes a non-active generation — dual-write upserts, the `Building` batch append, and the
+/// publish flip — takes its shadow geometry from this pure function. The code tier changes only
+/// the per-row code width and the page capacity it implies (`slots_per_page` is recomputed from
+/// `max_page_bytes`); strides and the rotation seed are inherited unchanged from the base def.
+///
+/// Pure arithmetic on the def's frozen fields (no stable access), so calling it per dual-write op
+/// costs a handful of flops against a stable-backed row write. Fails closed when a tier-on shape
+/// cannot fit even one row per page.
+pub(crate) fn shape_def_for(
+    base: &VectorIndexDef,
+    levels: u8,
+    nlist_fine: u32,
+    code_tier: bool,
+) -> Result<VectorIndexDef, VectorCanisterError> {
+    let code_stride_bytes = if code_tier {
+        VectorIndexDef::canonical_code_stride_bytes(base.dims)
+    } else {
+        0
+    };
+    let slots_per_page = slots_per_page_for(
+        base.max_page_bytes,
+        base.pad_stride_bytes,
+        base.meta_stride_bytes,
+        base.run_capacity,
+        code_stride_bytes,
+    )?;
+    Ok(VectorIndexDef {
+        levels,
+        nlist_fine,
+        code_tier,
+        code_stride_bytes,
+        slots_per_page,
+        ..*base
+    })
 }
 
 /// Run-table width for a def: `min(owned_shards, MAX_RUNS)`, floored at 1. Owned shards come from the
@@ -328,7 +392,7 @@ fn ensure_def_for_outcome(
     }
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _create_scope = bench_scope("sync_def_create");
-    let def = lazy_definition_for_outcome(encoding, dims, metric)?;
+    let def = lazy_definition_for_outcome(index_id, encoding, dims, metric)?;
     definition_store::insert(index_id, def)
         .map(|_| ())
         .map_err(|error| match error {
@@ -348,6 +412,7 @@ fn ensure_def_for_outcome(
 /// row; the write path reuses the same constructor so width and page-capacity rules stay one
 /// source of truth.
 fn lazy_definition_for_outcome(
+    index_id: u32,
     encoding: VectorEncoding,
     dims: u16,
     metric: VectorMetric,
@@ -367,6 +432,7 @@ fn lazy_definition_for_outcome(
         pad_stride_bytes,
         meta_stride_bytes,
         run_capacity,
+        0,
     )
     .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
     Ok(VectorIndexDef {
@@ -382,6 +448,12 @@ fn lazy_definition_for_outcome(
         run_capacity,
         max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
         slots_per_page,
+        // Lazy defs are flat by default; only an explicit rebuild start activates `levels = 2`.
+        levels: LEVELS_FLAT,
+        nlist_fine: 1,
+        code_tier: false,
+        code_stride_bytes: 0,
+        rotation_seed: VectorIndexDef::rotation_seed_for(index_id),
     })
 }
 
@@ -451,7 +523,7 @@ pub(crate) fn preflight_vector_sync_batch(
         {
             *def
         } else {
-            let def = lazy_definition_for_outcome(op.encoding, op.dims, op.metric)?;
+            let def = lazy_definition_for_outcome(op.index_id, op.encoding, op.dims, op.metric)?;
             planned_defs.push((op.index_id, def));
             def
         };
@@ -554,9 +626,13 @@ fn preflight_subject_state(
 /// The definition admission happens after caller validation and before the legacy row path.  A
 /// successful admission is visible to that legacy path as an existing definition, so this
 /// method never maps CHM/page-store errors to `TablePressure`.
-pub(crate) fn vector_sync_batch_outcome_apply_one(
+///
+/// `shadow` is the caller-owned chunk-local shadow-centroid hoist (see
+/// [`ShadowCentroidHoist`]); single-operation callers pass a fresh default value.
+fn vector_sync_batch_outcome_apply_one(
     caller: Principal,
     op: &VectorEmbeddingSyncOp,
+    shadow: &mut ShadowCentroidHoist,
 ) -> Result<(), VectorSyncBatchOutcomeOperationError> {
     assert_caller_owns_subject(caller, op.subject.shard_id())
         .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
@@ -610,7 +686,7 @@ pub(crate) fn vector_sync_batch_outcome_apply_one(
             _ => VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable,
         })?;
     }
-    vector_upsert_after_definition_admission(op, def, reserved_new_subject)
+    vector_upsert_after_definition_admission(op, def, reserved_new_subject, shadow)
         .map_err(VectorSyncBatchOutcomeOperationError::Fatal)
 }
 
@@ -735,22 +811,148 @@ fn insert_subject_entry_for_typed_batch(
 /// otherwise the nearest active centroid (ADR 0031 Slice 6/7). A missing/incomplete active
 /// centroid set falls back to partition `0` (the same fail-soft the search path uses). This is
 /// what makes a published `nlist > 1` index mutable.
+///
+/// Two-level generations (Slice 5) assign in two stages: nearest coarse via the cached level-0
+/// set, then the best leaf within that coarse's contiguous child range read straight from stable
+/// memory (fine sets are never cached). A missing child range clamps to the subtree's lowest leaf
+/// so the row stays reachable inside the right subtree; the flat path is unchanged.
+///
+/// Reads the active generation's level-0/full set through the heap centroid cache: a resident
+/// entry is served by shared handle (no payload copy), and a cold read populates the cache — this
+/// runs on `#[update]` paths, so the population commits.
 fn active_partition(def: &VectorIndexDef, index_id: u32, bytes: &[u8]) -> u32 {
     if def.nlist <= 1 {
         return DEGENERATE_PARTITION_ID;
     }
-    match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
-        Some(centroids) => assign_partition(&centroids, bytes),
+    match super::centroid_cache::read_active(index_id, def) {
+        Some(centroids) => {
+            if def.is_two_level() {
+                let coarse = assign_partition(&centroids, bytes);
+                match read_leaf_children_at(
+                    index_id,
+                    def.active_index_version,
+                    coarse,
+                    def.nlist_fine,
+                    def.dims,
+                ) {
+                    Some(children) => coarse * def.nlist_fine + assign_partition(&children, bytes),
+                    // Fail-soft: clamp into the right subtree's first leaf.
+                    None => coarse * def.nlist_fine,
+                }
+            } else {
+                assign_partition(&centroids, bytes)
+            }
+        }
         None => DEGENERATE_PARTITION_ID,
     }
 }
 
-/// Partition for an append into the rebuild's **shadow** (`target`) version: nearest target
-/// centroid (the shadow always has `nlist > 1` ready centroids by construction).
-fn shadow_partition(index_id: u32, target: u64, target_nlist: u32, dims: u16, bytes: &[u8]) -> u32 {
-    match read_centroids_at(index_id, target, target_nlist, dims) {
-        Some(centroids) => assign_partition(&centroids, bytes),
-        None => DEGENERATE_PARTITION_ID,
+/// Chunk-local hoist of the dual-write shadow-centroid read: one O(`nlist`) stable read + decode
+/// per `(index_id, target)` per sync-batch chunk (≤ 32 ops) instead of one per row. Deliberately
+/// **not** a message-crossing cache: the heap centroid cache stays reserved for reads at the
+/// definition's *active* generation because a Training resume/retry can overwrite shadow
+/// centroids while they are being written. Within a single chunk no rebuild/training step can
+/// interleave (the canister is single-threaded and this call path never advances the rebuild),
+/// so a chunk-local copy cannot go stale.
+#[derive(Default)]
+struct ShadowCentroidHoist {
+    /// Index id of the cached centroid set (`None` = nothing cached yet).
+    index_id: Option<u32>,
+    /// Shadow target version of the cached centroid set.
+    target: Option<u64>,
+    /// Fine branching factor of the cached shadow generation (`1` = flat; a two-level generation
+    /// caches its **coarse** set and reads child ranges per assignment).
+    target_nlist_fine: u32,
+    /// Decoded shadow-version centroid set (the full set when flat, the coarse set when
+    /// two-level), or `None` when the set is missing/incomplete (the same fail-soft
+    /// `read_centroids_at` outcome the per-row read produced).
+    centroids: Option<Vec<Vec<f32>>>,
+    /// Cached `(base, target, fine, tier) -> shaped` shadow definition (Slice 6 SSOT): one
+    /// [`shape_def_for`] derivation per `(index_id, target)` chunk instead of one per row. The
+    /// base def is compared by value (`Copy`), so any definition change invalidates the entry.
+    shadow_def: Option<(VectorIndexDef, u64, u32, bool, VectorIndexDef)>,
+}
+
+impl ShadowCentroidHoist {
+    /// Derives (or replays from the chunk cache) the shadow generation's def for a dual-write
+    /// append. Same pure derivation as [`shape_def_for`], hoisted to the chunk level because the
+    /// page-capacity search inside it is far too expensive to repeat per row on the hot upsert
+    /// path.
+    fn shadow_shape(
+        &mut self,
+        base: &VectorIndexDef,
+        target: u64,
+        target_nlist_fine: u32,
+        target_code_tier: bool,
+    ) -> Result<VectorIndexDef, VectorCanisterError> {
+        if let Some((cached_base, t, f, tier, shaped)) = &self.shadow_def
+            && *cached_base == *base
+            && *t == target
+            && *f == target_nlist_fine
+            && *tier == target_code_tier
+        {
+            return Ok(*shaped);
+        }
+        let shaped = shape_def_for(
+            base,
+            if target_nlist_fine > 1 {
+                LEVELS_TWO
+            } else {
+                LEVELS_FLAT
+            },
+            target_nlist_fine,
+            target_code_tier,
+        )?;
+        self.shadow_def = Some((*base, target, target_nlist_fine, target_code_tier, shaped));
+        Ok(shaped)
+    }
+
+    /// Partition for an append into the rebuild's **shadow** (`target`) version: nearest target
+    /// centroid (the shadow always has ready centroids by construction), hoisted to one stable
+    /// read per `(index_id, target)`; degenerate partition `0` when the set is missing/incomplete.
+    ///
+    /// A two-level shadow assigns in two stages (Slice 5): nearest coarse from the cached level-0
+    /// set, then the best leaf within that coarse's contiguous child range read straight from
+    /// stable memory per call. A missing child range clamps to the subtree's lowest leaf.
+    fn shadow_partition(
+        &mut self,
+        index_id: u32,
+        target: u64,
+        target_nlist: u32,
+        target_nlist_fine: u32,
+        dims: u16,
+        bytes: &[u8],
+    ) -> u32 {
+        if self.index_id != Some(index_id)
+            || self.target != Some(target)
+            || self.target_nlist_fine != target_nlist_fine
+        {
+            self.centroids = if target_nlist_fine > 1 {
+                read_coarse_centroids_at(index_id, target, target_nlist, dims)
+            } else {
+                read_centroids_at(index_id, target, target_nlist, dims)
+            };
+            self.index_id = Some(index_id);
+            self.target = Some(target);
+            self.target_nlist_fine = target_nlist_fine;
+        }
+        match &self.centroids {
+            Some(centroids) => {
+                if target_nlist_fine > 1 {
+                    let coarse = assign_partition(centroids, bytes);
+                    match read_leaf_children_at(index_id, target, coarse, target_nlist_fine, dims) {
+                        Some(children) => {
+                            coarse * target_nlist_fine + assign_partition(&children, bytes)
+                        }
+                        // Fail-soft: clamp into the right subtree's first leaf.
+                        None => coarse * target_nlist_fine,
+                    }
+                } else {
+                    assign_partition(centroids, bytes)
+                }
+            }
+            None => DEGENERATE_PARTITION_ID,
+        }
     }
 }
 
@@ -784,14 +986,22 @@ pub(crate) fn vector_upsert(
         let _def_scope = bench_scope("sync_def_ensure");
         ensure_def_for_upsert(op.index_id, op.encoding, op.dims, op.metric)?
     };
-    vector_upsert_after_definition_admission(op, def, false)
+    // Single-operation path: a fresh chunk-local hoist behaves exactly like the former per-row
+    // shadow-centroid read.
+    let mut shadow = ShadowCentroidHoist::default();
+    vector_upsert_after_definition_admission(op, def, false, &mut shadow)
 }
 
 /// Executes an upsert after the caller and definition admission checks completed.
+///
+/// `shadow` is the caller-owned chunk-local shadow-centroid hoist (see
+/// [`ShadowCentroidHoist`]): during dual-write it keeps one decoded shadow centroid set per
+/// `(index_id, target)` instead of re-reading stable memory per row.
 fn vector_upsert_after_definition_admission(
     op: &VectorEmbeddingSyncOp,
     def: VectorIndexDef,
     reserved_new_subject: bool,
+    shadow: &mut ShadowCentroidHoist,
 ) -> Result<(), VectorCanisterError> {
     if op.encoding != def.encoding || op.dims != def.dims {
         return Err(VectorCanisterError::DimensionMismatch);
@@ -813,8 +1023,12 @@ fn vector_upsert_after_definition_admission(
 
     let Some(entry) = existing else {
         // New subject: allocate a fresh VectorId and create a live slot.
-        insert_new_subject(op, &def, mode, key, false)?;
-        return Ok(());
+        let inserted = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _new_scope = bench_scope("sync_insert_new");
+            insert_new_subject(op, &def, mode, key, false, shadow)
+        };
+        return inserted;
     };
 
     if reserved_new_subject
@@ -822,8 +1036,12 @@ fn vector_upsert_after_definition_admission(
         && entry.slot.is_none()
         && entry.stamp == op.mutation_id
     {
-        insert_new_subject(op, &def, mode, key, true)?;
-        return Ok(());
+        let inserted = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _new_scope = bench_scope("sync_insert_new");
+            insert_new_subject(op, &def, mode, key, true, shadow)
+        };
+        return inserted;
     }
 
     match op.mutation_id.cmp(&entry.stamp) {
@@ -835,7 +1053,11 @@ fn vector_upsert_after_definition_admission(
             // failed shadow append or a failed subject-map commit both leave the old slot live,
             // because the old slot is only tombstoned after the commit succeeds
             // (GAP-2026-08-07-001).
-            let active_partition = active_partition(&def, op.index_id, &op.bytes);
+            let active_partition = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _partition_scope = bench_scope("sync_active_partition");
+                active_partition(&def, op.index_id, &op.bytes)
+            };
             let new_slot = append_slot(
                 op.index_id,
                 active,
@@ -848,10 +1070,30 @@ fn vector_upsert_after_definition_admission(
                 RebuildMutationMode::DualWrite {
                     target,
                     target_nlist,
+                    target_nlist_fine,
+                    target_code_tier,
                 } => {
-                    let partition =
-                        shadow_partition(op.index_id, target, target_nlist, def.dims, &op.bytes);
-                    match append_slot(op.index_id, target, partition, &def, op.subject, &op.bytes) {
+                    let partition = shadow.shadow_partition(
+                        op.index_id,
+                        target,
+                        target_nlist,
+                        target_nlist_fine,
+                        def.dims,
+                        &op.bytes,
+                    );
+                    // Shadow rows carry the SHADOW generation's geometry (Slice 6): a code-tier
+                    // rebuild's pages have their own capacity and code segments. Derived via the
+                    // chunk-local hoist so the derivation cost is amortized across the batch.
+                    let shadow_def =
+                        shadow.shadow_shape(&def, target, target_nlist_fine, target_code_tier)?;
+                    match append_slot(
+                        op.index_id,
+                        target,
+                        partition,
+                        &shadow_def,
+                        op.subject,
+                        &op.bytes,
+                    ) {
                         Ok(shadow) => Some(shadow),
                         Err(err) => {
                             tombstone_slot(op.index_id, new_slot);
@@ -939,9 +1181,14 @@ fn insert_new_subject(
     mode: RebuildMutationMode,
     key: SubjectKey,
     reserved: bool,
+    shadow: &mut ShadowCentroidHoist,
 ) -> Result<(), VectorCanisterError> {
     let active = def.active_index_version;
-    let active_partition = active_partition(def, op.index_id, &op.bytes);
+    let active_partition = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _partition_scope = bench_scope("sync_active_partition");
+        active_partition(def, op.index_id, &op.bytes)
+    };
     let slot = append_slot(
         op.index_id,
         active,
@@ -959,10 +1206,29 @@ fn insert_new_subject(
         RebuildMutationMode::DualWrite {
             target,
             target_nlist,
+            target_nlist_fine,
+            target_code_tier,
         } => {
-            let partition =
-                shadow_partition(op.index_id, target, target_nlist, def.dims, &op.bytes);
-            match append_slot(op.index_id, target, partition, def, op.subject, &op.bytes) {
+            let partition = shadow.shadow_partition(
+                op.index_id,
+                target,
+                target_nlist,
+                target_nlist_fine,
+                def.dims,
+                &op.bytes,
+            );
+            // Shadow rows carry the SHADOW generation's geometry (Slice 6, same as the
+            // stamp-advance dual-write above); hoisted through the chunk cache.
+            let shadow_def =
+                shadow.shadow_shape(def, target, target_nlist_fine, target_code_tier)?;
+            match append_slot(
+                op.index_id,
+                target,
+                partition,
+                &shadow_def,
+                op.subject,
+                &op.bytes,
+            ) {
                 Ok(shadow) => Some(shadow),
                 Err(err) => {
                     tombstone_slot(op.index_id, slot);
@@ -1140,6 +1406,10 @@ pub(crate) fn vector_sync_batch_outcome_chunk(
     }
 
     let mut applied = 0usize;
+    // Chunk-local shadow-centroid hoist: one O(`nlist`) stable read per dual-write
+    // `(index_id, target)` within this bounded chunk instead of one per row. It never outlives
+    // this message.
+    let mut shadow_hoist = ShadowCentroidHoist::default();
     let mut run_rows: Vec<(VectorSubject, &[u8], [u8; 8])> = Vec::new();
     let mut run_ops: Vec<&VectorEmbeddingSyncOp> = Vec::new();
     let mut run_keys: Vec<SubjectKey> = Vec::new();
@@ -1226,7 +1496,7 @@ pub(crate) fn vector_sync_batch_outcome_chunk(
                     return typed_batch_outcome_for_error(applied + index, error);
                 }
             }
-            match vector_sync_batch_outcome_apply_one(caller, operation) {
+            match vector_sync_batch_outcome_apply_one(caller, operation, &mut shadow_hoist) {
                 Ok(()) => applied += 1,
                 Err(error) => return typed_batch_outcome_for_error(applied, error),
             }
@@ -1291,7 +1561,7 @@ pub(crate) fn vector_sync_batch_outcome_chunk(
                     return typed_batch_outcome_for_error(applied + index, error);
                 }
             }
-            match vector_sync_batch_outcome_apply_one(caller, operation) {
+            match vector_sync_batch_outcome_apply_one(caller, operation, &mut shadow_hoist) {
                 Ok(()) => applied += 1,
                 Err(error) => return typed_batch_outcome_for_error(applied, error),
             }
@@ -1315,7 +1585,7 @@ pub(crate) fn vector_sync_batch_outcome_chunk(
                     return typed_batch_outcome_for_error(applied + index, error);
                 }
             }
-            match vector_sync_batch_outcome_apply_one(caller, operation) {
+            match vector_sync_batch_outcome_apply_one(caller, operation, &mut shadow_hoist) {
                 Ok(()) => applied += 1,
                 Err(error) => return typed_batch_outcome_for_error(applied, error),
             }
@@ -1363,7 +1633,7 @@ pub(crate) fn vector_sync_batch_outcome_chunk(
                         return typed_batch_outcome_for_error(applied + index, error);
                     }
                 }
-                match vector_sync_batch_outcome_apply_one(caller, operation) {
+                match vector_sync_batch_outcome_apply_one(caller, operation, &mut shadow_hoist) {
                     Ok(()) => applied += 1,
                     Err(error) => return typed_batch_outcome_for_error(applied, error),
                 }
@@ -1421,6 +1691,7 @@ pub(crate) fn create_index_for_test(
         pad_stride_bytes,
         meta_stride_bytes,
         run_capacity,
+        0,
     )?;
     let def = VectorIndexDef {
         kind: VectorIndexKind::IvfFlat,
@@ -1435,6 +1706,11 @@ pub(crate) fn create_index_for_test(
         run_capacity,
         max_page_bytes,
         slots_per_page,
+        levels: LEVELS_FLAT,
+        nlist_fine: 1,
+        code_tier: false,
+        code_stride_bytes: 0,
+        rotation_seed: VectorIndexDef::rotation_seed_for(index_id),
     };
     definition_store::insert(index_id, def)
         .map(|_| ())

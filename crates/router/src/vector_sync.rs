@@ -694,7 +694,13 @@ forward_vector!(
     forward_admin_start_vector_rebuild,
     "admin_start_vector_rebuild",
     unbounded_wait,
-    (index_id: u32, nlist: u32, sample_limit: u32),
+    (
+        index_id: u32,
+        nlist: u32,
+        sample_limit: u32,
+        fine_nlist: Option<u32>,
+        code_tier: Option<bool>
+    ),
     ()
 );
 forward_vector!(
@@ -724,20 +730,6 @@ forward_vector!(
     unbounded_wait,
     (index_id: u32, max_work: u32),
     VectorRebuildStatus
-);
-forward_vector!(
-    forward_admin_vector_centroid_cache_warmup,
-    "admin_vector_centroid_cache_warmup",
-    unbounded_wait,
-    (index_id: u32),
-    VectorCentroidCacheStatus
-);
-forward_vector!(
-    forward_admin_vector_centroid_cache_clear,
-    "admin_vector_centroid_cache_clear",
-    unbounded_wait,
-    (),
-    VectorCentroidCacheStatus
 );
 forward_vector!(
     forward_admin_vector_maintenance_step,
