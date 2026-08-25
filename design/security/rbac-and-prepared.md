@@ -86,7 +86,7 @@ Attribution contract (fail closed where the plan cannot name a resource):
 | Labeled vertex scan | `MATCH` on the label; full property map adds `READ`; explicit projections add `READ_PROPERTY` per key; empty hydration list adds nothing beyond `MATCH` |
 | Traversal hop | `TRAVERSE` rows from pattern direction × schema directedness: declared directed labels probe one directional row per orientation (undirected patterns need both); undirected or undeclared labels take the unoriented row — mirroring GRANT lowering |
 | Edge-inline property bytes | covered by the edge label's traversal row (no edge-property resource exists in Phase 1) |
-| Element-id reads (`ELEMENT_ID(v)`) on a vertex binding | covered by the variable's `MATCH` row — element ids are intrinsic identity metadata of covered elements, not separately grantable properties. On an EDGE binding they are tenancy-only in Phase 1 (no edge-property resource), so ops projecting `ELEMENT_ID(e)` stay owner-only until an edge-read rule lands |
+| Element-id reads (`ELEMENT_ID(v)`) on a vertex binding | covered by the variable's `MATCH` row — element ids are intrinsic identity metadata of covered elements, not separately grantable properties. On an EDGE binding they are tenancy-only in Phase 1 (no edge-property resource), so ops projecting `ELEMENT_ID(e)` stay owner-only until an edge-read rule lands ([Element-id projection guidance](#element-id-projection-guidance)) |
 | Filter / projection / aggregation expressions | property reads attributed through variable→label facts; ambiguous or unresolvable attribution degrades to tenancy-only |
 | Unlabeled scans, `NOT`/wildcard label expressions, `DETACH DELETE`, unresolvable open-schema names | tenancy-only: owners/admins proceed; Phase 1 grants enumerate labels, so wildcard reads are not expressible as grants |
 | Mutations | `CREATE` for inserted elements; `UPDATE` for `SET`/`REMOVE`; `DELETE` for deletes, attributed via bound-variable labels |
@@ -114,6 +114,35 @@ recomputed**: dead-id demands can never be covered again (no future grant can ma
 dropped id), so they fail closed uniformly — the query stays denied until its prepared
 query is re-registered against current catalogs. This staleness is a documented property,
 not a gap; re-registration replaces the whole record.
+
+### Element-id projection guidance
+
+**Status: Implemented (2026-08-25).** `ELEMENT_ID` behaves differently on a **vertex** binding
+than on an **edge** binding, for two independent reasons that must stay separate:
+
+1. **Stability — a design decision, independent of authorization.** A vertex element id is a
+   stable, round-trippable client reference ([ADR 0005](../adr/0005-vertex-identity.md)
+   §“Client wire”), and its read attributes through variable→label facts exactly like other
+   value reads — pinned by the contract tests `labeled_scan_projection_contract` and
+   `filter_and_project_reads_are_attributed_through_label_facts`
+   (`crates/router/src/authz.rs`), never by an unattributed fallback when the label is known.
+   An edge element id, by contrast, is a **query-time physical handle** `(shard, owner vertex
+   row, edge slot)` (ADR 0005 §“Global edge identity”;
+   [ADR 0052](../adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) §8 “Edge identity
+   and compaction”): compaction or slot reuse can invalidate a previously returned value, so it
+   cannot serve as a persistent reference regardless of any future authorization change.
+2. **Current authorization state — to be repaired in follow-up work.** Phase 1 has no
+   edge-property resource, so an edge element-id read is tenancy-only (the attribution table’s
+   element-id row above records the same boundary): prepared ops projecting `ELEMENT_ID(e)`
+   currently execute only for owner/admin until an edge-read rule lands. This is a Phase 1
+   limitation, not part of the stability decision in (1).
+
+The CLI surfaces both facts at authoring time: `gleaph prepared plan` / `apply` / `run` print a
+stderr warning when an operation projects `ELEMENT_ID` on a MATCH-bound edge variable
+(detector over the parsed operation source in `crates/cli/src/prepared.rs`; the printed text is
+sanitized and names only the operation and variables). The knowledge demo’s `citation-reach`
+intentionally keeps its edge projection — the browser page renders the relationship trail from
+the returned edge identities.
 
 ### Conditional policy pushdown ([ADR 0075], Phase 2a — implemented)
 

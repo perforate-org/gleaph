@@ -80,6 +80,12 @@ done
 > grant resource), and `shortest-path` hits an unrelated planner/index-client issue
 > under active sibling development. Full matrix and separating experiment:
 > GAP-2026-08-24-008 (`design/implementation-gaps.md`) and artifacts §13–14.
+>
+> **Update (2026-08-25):** `gleaph prepared plan` / `apply` / `run` now print a stderr
+> warning when an op projects ELEMENT_ID on an edge variable ("edge element ids are not
+> stable identifiers and may change over time"). The tenancy-only edge-id read itself is
+> slated for repair in follow-up work — rationale and boundary in
+> `design/security/rbac-and-prepared.md`, *Element-id projection guidance*.
 
 ### Browser host
 
@@ -135,7 +141,10 @@ non-owner shows `not authorized`).
    Documents owned by members of Team "Platform". `$query` is the encoded F32 vector produced by
    the embedding generator (in-page via the shared module).
 4. **Citation reach** (`citation-reach.gql`) — Documents reachable through `CITES` up to depth 3,
-   returning edge identities.
+   returning edge identities. The CLI prints a warning when registering or running this op
+   because it projects `ELEMENT_ID` on an edge variable: edge element ids are not stable
+   identifiers and may change over time, so treat the returned ids as a display trail, not as
+   stored references.
 
 ## Environment wiring reference (`pnpm write-env`)
 

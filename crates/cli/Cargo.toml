@@ -20,6 +20,9 @@ gleaph-account.workspace = true
 gleaph-bulk-load-api.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true, features = ["gleaph", "serde"] }
+# `for_each_immediate_child_expr` — the canonical Expr child traversal — powers the
+# prepared-source element-id projection detector below.
+gleaph-gql-planner.workspace = true
 # Numeric vocabulary must match the rest of the cli graph (prepared-runtime enables
 # gleaph-gql f128/f256), so the shared wire enum compiles its matching variant arms.
 gleaph-gql-ic-wire = { workspace = true, features = ["f256", "nightly-f128"] }

@@ -95,6 +95,10 @@ ever becomes a real requirement. Deterministic seed vectors live in
    structure + vector + access in one query.
 4. **Citation reach** — Documents reachable from a source Document through `CITES` up to depth N,
    with the relationship trail returned as edge identities (the `topic-path` prototype).
+   Deliberate exception to the element-id projection guidance: the page renders the trail from
+   the returned ids, so this op keeps its edge `ELEMENT_ID` projection even though the CLI
+   warns that edge element ids are not stable identifiers and may change over time
+   (`design/security/rbac-and-prepared.md`, *Element-id projection guidance*).
 
 ### Parameter surface (implemented state)
 

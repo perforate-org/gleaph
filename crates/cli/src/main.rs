@@ -1111,6 +1111,14 @@ fn execute_prepared(
             let params = prepared::parse_run_params(&args.param)?;
             let read_mode = prepared::parse_read_mode(&args.read_mode)?;
             let params_blob = prepared::encode_run_params(params)?;
+            // Authoring-time guidance from the locally prepared source, when this machine
+            // holds one (`prepared status` owns local-vs-stored drift). Best-effort: a
+            // missing or unreadable file simply prints nothing.
+            let dir =
+                config::resolved_dir(args.remote.dir.dir.as_deref(), loaded, DirKey::Prepared);
+            if let Ok(source) = std::fs::read_to_string(dir.join(format!("{}.gql", args.name))) {
+                prepared::warn_if_projects_edge_element_ids(&args.name, &source);
+            }
             let remote = required_remote(
                 args.remote.canister.as_deref(),
                 args.remote.network.as_deref(),

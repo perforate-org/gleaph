@@ -12,8 +12,16 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use gleaph_gql::ast::{
+    CompositeQueryExpr, Expr, ExprKind, GqlProgram, GraphPattern, GroupByClause, InsertElement,
+    InsertStatement, LimitClause, LinearQueryStatement, OffsetClause, OrderByClause,
+    PathPatternExpr, PathPrimary, PathTerm, ProcedureBindingInitializer, PropertySetting,
+    ResultStatement, ReturnBody, SelectBody, SelectQuerySpecification, SelectSource,
+    SelectStatement, SetItem, SetStatement, SimpleQueryStatement, Statement,
+};
 use gleaph_gql_ic_wire::{GqlWireRows, GqlWireValue};
 use gleaph_gql_params::{GqlParams, GqlValue, encode_gql_params, gql_param_value};
+use gleaph_gql_planner::for_each_immediate_child_expr;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, MutationToken, ReadMode};
 use gleaph_prepared_api::{
@@ -391,7 +399,9 @@ pub fn new(
 
 /// Validate and print the local prepared directory without any remote call.
 pub fn plan(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedError> {
-    discover(root)
+    let artifacts = discover(root)?;
+    warn_artifacts(&artifacts);
+    Ok(artifacts)
 }
 
 /// Per-operation comparison of the local directory against Router storage.
@@ -472,7 +482,11 @@ pub fn apply<T: PreparedTransport>(
     transport: &mut T,
 ) -> Result<PreparedApplyOutcome, PreparedError> {
     let artifacts = match fs::symlink_metadata(root) {
-        Ok(metadata) if metadata.is_dir() => discover(root)?,
+        Ok(metadata) if metadata.is_dir() => {
+            let discovered = discover(root)?;
+            warn_artifacts(&discovered);
+            discovered
+        }
         Ok(_) => {
             return Err(PreparedError::Directory {
                 path: root.display().to_string(),
@@ -782,6 +796,393 @@ fn cell_string(value: &GqlWireValue) -> Result<String, PreparedError> {
 pub fn render_json(result: &GqlQueryResult) -> Result<String, PreparedError> {
     serde_json::to_string_pretty(result)
         .map_err(|error| PreparedError::Message(format!("serialize result: {error}")))
+}
+
+// ──── edge element-id projection guidance (plan / apply / run) ────
+
+/// Emit the edge element-id projection warning for every local artifact to stderr.
+///
+/// Guidance only: it never changes the command outcome, and stdout stays untouched so
+/// machine-readable output is unaffected.
+fn warn_artifacts(artifacts: &[PreparedOperationArtifact]) {
+    for artifact in artifacts {
+        warn_if_projects_edge_element_ids(&artifact.name, &artifact.source);
+    }
+}
+
+/// Print the element-id projection warning for one operation source, when its projections
+/// include `ELEMENT_ID(<edge variable>)` over a MATCH-bound edge variable.
+///
+/// Shared by `plan` / `apply` (which own discovered artifacts) and by `run`'s caller (which
+/// resolves the prepared directory and supplies the locally authored source). Best-effort:
+/// an unparseable source is silent here because `discover` and the Router already reject it.
+pub fn warn_if_projects_edge_element_ids(op: &str, source: &str) {
+    let vars = projected_edge_element_ids(source);
+    if !vars.is_empty() {
+        eprint!("{}", edge_element_id_warning(op, &vars));
+    }
+}
+
+/// The warning block for one offending operation: one head line (singular or plural edge
+/// variables), then two indented guidance lines. Kept free of storage-internal detail —
+/// this text is user-facing on stderr.
+fn edge_element_id_warning(op: &str, vars: &BTreeSet<String>) -> String {
+    let head = match vars.len() {
+        1 => format!(
+            "warning: '{op}' projects ELEMENT_ID on edge variable '{}'.",
+            vars.iter().next().expect("non-empty")
+        ),
+        _ => format!(
+            "warning: '{op}' projects ELEMENT_ID on edge variables: {}.",
+            vars.iter().cloned().collect::<Vec<_>>().join(", ")
+        ),
+    };
+    format!(
+        "{head}\n  Edge element ids are not stable identifiers and may change over time.\n  \
+         Prefer returning endpoint properties or hop counts instead.\n"
+    )
+}
+
+/// Edge variables whose value the source projects via `ELEMENT_ID(...)`: the intersection of
+/// MATCH-bound edge variables with ELEMENT_ID arguments anywhere in the program. Empty when
+/// the source cannot be parsed (validation owns that failure).
+fn projected_edge_element_ids(source: &str) -> BTreeSet<String> {
+    let Ok(parsed) = parse_prepared_source(source) else {
+        return BTreeSet::new();
+    };
+    let mut scan = ProjectionScan::default();
+    scan_program(&mut scan, &parsed.program);
+    scan.edge_vars
+        .intersection(&scan.element_id_args)
+        .cloned()
+        .collect()
+}
+
+/// Variables seen while walking one operation's AST: those bound at MATCH-pattern edge
+/// positions, and those whose value any `ELEMENT_ID(...)` call projects. Both sets are
+/// collected program-wide before intersecting; a variable reference is scope-checked by
+/// validation, so a name in both sets is always a real edge-id projection.
+#[derive(Default)]
+struct ProjectionScan {
+    edge_vars: BTreeSet<String>,
+    element_id_args: BTreeSet<String>,
+}
+
+fn scan_program(scan: &mut ProjectionScan, program: &GqlProgram) {
+    if let Some(body) = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|tx| tx.body.as_ref())
+    {
+        for statement in body.iter_statements() {
+            scan_statement(scan, statement);
+        }
+    }
+}
+
+fn scan_statement(scan: &mut ProjectionScan, statement: &Statement) {
+    match statement {
+        Statement::Query(query) => scan_composite(scan, query),
+        Statement::Insert(insert) => scan_insert(scan, insert),
+        Statement::Set(set) => scan_set(scan, set),
+        Statement::Delete(delete) => delete.items.iter().for_each(|e| scan_expr(scan, e)),
+        // REMOVE names existing properties/labels; DDL and session commands carry no
+        // element-id reads or pattern bindings.
+        Statement::Remove(_)
+        | Statement::CreateSchema(_)
+        | Statement::DropSchema(_)
+        | Statement::CreateGraph(_)
+        | Statement::DropGraph(_)
+        | Statement::CreateGraphType(_)
+        | Statement::DropGraphType(_)
+        | Statement::Session(_) => {}
+    }
+}
+
+fn scan_composite(scan: &mut ProjectionScan, query: &CompositeQueryExpr) {
+    scan_linear(scan, &query.left);
+    for (_, linear) in &query.rest {
+        scan_linear(scan, linear);
+    }
+}
+
+fn scan_linear(scan: &mut ProjectionScan, linear: &LinearQueryStatement) {
+    for binding in &linear.prefix_bindings {
+        match &binding.initializer {
+            ProcedureBindingInitializer::Query(query) => scan_composite(scan, query),
+            ProcedureBindingInitializer::Expr(expr) => scan_expr(scan, expr),
+            ProcedureBindingInitializer::Object(_) => {}
+        }
+    }
+    for part in &linear.parts {
+        scan_simple_part(scan, part);
+    }
+    match &linear.result {
+        Some(ResultStatement::Return(returned)) => scan_return_body(scan, &returned.body),
+        Some(ResultStatement::Select(selected)) => scan_select(scan, selected),
+        Some(ResultStatement::Finish) | None => {}
+    }
+}
+
+fn scan_simple_part(scan: &mut ProjectionScan, part: &SimpleQueryStatement) {
+    match part {
+        SimpleQueryStatement::Match(matched) => scan_graph_pattern(scan, &matched.pattern),
+        SimpleQueryStatement::Filter(filtered) => scan_expr(scan, &filtered.condition),
+        SimpleQueryStatement::Let(let_stmt) => let_stmt
+            .bindings
+            .iter()
+            .for_each(|b| scan_expr(scan, &b.value)),
+        SimpleQueryStatement::For(for_stmt) => scan_expr(scan, &for_stmt.list),
+        SimpleQueryStatement::Search(search) => {
+            scan_expr(scan, search.provider.query());
+            scan_expr(scan, search.provider.limit());
+            if let Some(filter) = search.provider.filter() {
+                scan_expr(scan, filter);
+            }
+        }
+        // Authorization statements are control-plane rows; they project nothing.
+        SimpleQueryStatement::Grant(_) | SimpleQueryStatement::Revoke(_) => {}
+        SimpleQueryStatement::OrderBy(order) => order
+            .items
+            .iter()
+            .for_each(|item| scan_expr(scan, &item.expr)),
+        SimpleQueryStatement::Limit(limit) => scan_expr(scan, &limit.count),
+        SimpleQueryStatement::Offset(offset) => scan_expr(scan, &offset.count),
+        SimpleQueryStatement::CallProcedure(call) => {
+            call.args.iter().for_each(|arg| scan_expr(scan, arg))
+        }
+        SimpleQueryStatement::InlineProcedureCall(inline) => scan_composite(scan, &inline.body),
+        SimpleQueryStatement::Focused { body, .. } => {
+            if let Some(body) = body {
+                scan_simple_part(scan, body);
+            }
+        }
+        SimpleQueryStatement::Insert(insert) => scan_insert(scan, insert),
+        SimpleQueryStatement::Set(set) => scan_set(scan, set),
+        SimpleQueryStatement::Remove(_) => {}
+        SimpleQueryStatement::Delete(delete) => {
+            delete.items.iter().for_each(|e| scan_expr(scan, e))
+        }
+    }
+}
+
+fn scan_insert(scan: &mut ProjectionScan, insert: &InsertStatement) {
+    for pattern in &insert.patterns {
+        for element in &pattern.elements {
+            let properties = match element {
+                InsertElement::Node(node) => &node.properties,
+                InsertElement::Edge(edge) => &edge.properties,
+            };
+            properties
+                .iter()
+                .for_each(|setting| scan_expr(scan, &setting.value));
+        }
+    }
+}
+
+fn scan_set(scan: &mut ProjectionScan, set: &SetStatement) {
+    for item in &set.items {
+        match item {
+            SetItem::Property { value, .. } | SetItem::AllProperties { value, .. } => {
+                scan_expr(scan, value)
+            }
+            SetItem::Label { .. } => {}
+        }
+    }
+}
+
+fn scan_graph_pattern(scan: &mut ProjectionScan, pattern: &GraphPattern) {
+    for path in &pattern.paths {
+        path.extensions
+            .iter()
+            .for_each(|extension| scan_expr(scan, &extension.expr));
+        scan_path_expr(scan, &path.expr);
+    }
+    if let Some(where_clause) = &pattern.where_clause {
+        scan_expr(scan, where_clause);
+    }
+}
+
+fn scan_path_expr(scan: &mut ProjectionScan, expr: &PathPatternExpr) {
+    match expr {
+        PathPatternExpr::Term(term) => scan_path_term(scan, term),
+        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
+            terms.iter().for_each(|term| scan_path_term(scan, term))
+        }
+    }
+}
+
+fn scan_path_term(scan: &mut ProjectionScan, term: &PathTerm) {
+    term.factors
+        .iter()
+        .for_each(|factor| scan_path_primary(scan, &factor.primary));
+}
+
+fn scan_path_primary(scan: &mut ProjectionScan, primary: &PathPrimary) {
+    match primary {
+        PathPrimary::Node(node) => {
+            scan_element_pattern(
+                scan,
+                node.properties.as_slice(),
+                node.where_clause.as_deref(),
+            );
+        }
+        PathPrimary::Edge(edge) => {
+            // The MATCH-pattern edge position: this binding names an edge element id.
+            scan_element_pattern(
+                scan,
+                edge.properties.as_slice(),
+                edge.where_clause.as_deref(),
+            );
+            if let Some(variable) = &edge.variable {
+                scan.edge_vars.insert(variable.clone());
+            }
+        }
+        PathPrimary::Parenthesized {
+            expr, where_clause, ..
+        } => {
+            scan_path_expr(scan, expr);
+            if let Some(where_clause) = where_clause {
+                scan_expr(scan, where_clause);
+            }
+        }
+        PathPrimary::Simplified(_) => {}
+    }
+}
+
+/// Shared node/edge-pattern walk: inline property values and inline WHERE conditions.
+fn scan_element_pattern(
+    scan: &mut ProjectionScan,
+    properties: &[PropertySetting],
+    where_clause: Option<&Expr>,
+) {
+    properties
+        .iter()
+        .for_each(|setting| scan_expr(scan, &setting.value));
+    if let Some(where_clause) = where_clause {
+        scan_expr(scan, where_clause);
+    }
+}
+
+fn scan_return_body(scan: &mut ProjectionScan, body: &ReturnBody) {
+    match body {
+        ReturnBody::Star => {}
+        ReturnBody::Items {
+            items,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } => {
+            items.iter().for_each(|item| scan_expr(scan, &item.expr));
+            scan_query_tail(
+                scan,
+                group_by.as_ref(),
+                having.as_ref(),
+                order_by.as_ref(),
+                limit.as_ref(),
+                offset.as_ref(),
+            );
+        }
+    }
+}
+
+fn scan_select(scan: &mut ProjectionScan, selected: &SelectStatement) {
+    match &selected.source {
+        Some(SelectSource::GraphMatchList(matches)) => matches.iter().for_each(|m| {
+            scan_graph_pattern(scan, &m.match_statement.pattern);
+        }),
+        Some(SelectSource::QuerySpecification(spec)) => match spec {
+            SelectQuerySpecification::Nested(query) => scan_composite(scan, query),
+            SelectQuerySpecification::GraphNested { query, .. } => scan_composite(scan, query),
+        },
+        None => {}
+    }
+    match &selected.body {
+        SelectBody::Star {
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } => scan_query_tail(
+            scan,
+            group_by.as_ref(),
+            having.as_ref(),
+            order_by.as_ref(),
+            limit.as_ref(),
+            offset.as_ref(),
+        ),
+        SelectBody::Items {
+            items,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } => {
+            items.iter().for_each(|item| scan_expr(scan, &item.expr));
+            scan_query_tail(
+                scan,
+                group_by.as_ref(),
+                having.as_ref(),
+                order_by.as_ref(),
+                limit.as_ref(),
+                offset.as_ref(),
+            );
+        }
+    }
+}
+
+fn scan_query_tail(
+    scan: &mut ProjectionScan,
+    group_by: Option<&GroupByClause>,
+    having: Option<&Expr>,
+    order_by: Option<&OrderByClause>,
+    limit: Option<&LimitClause>,
+    offset: Option<&OffsetClause>,
+) {
+    if let Some(group_by) = group_by {
+        group_by.items.iter().for_each(|e| scan_expr(scan, e));
+    }
+    if let Some(having) = having {
+        scan_expr(scan, having);
+    }
+    if let Some(order_by) = order_by {
+        order_by
+            .items
+            .iter()
+            .for_each(|item| scan_expr(scan, &item.expr));
+    }
+    if let Some(limit) = limit {
+        scan_expr(scan, &limit.count);
+    }
+    if let Some(offset) = offset {
+        scan_expr(scan, &offset.count);
+    }
+}
+
+fn scan_expr(scan: &mut ProjectionScan, expr: &Expr) {
+    match &expr.kind {
+        ExprKind::ElementId(argument) => {
+            let mut inner = argument;
+            while let ExprKind::Paren(parenthesized) = &inner.kind {
+                inner = parenthesized;
+            }
+            if let ExprKind::Variable(variable) = &inner.kind {
+                scan.element_id_args.insert(variable.clone());
+            }
+        }
+        // Subqueries carry their own patterns and bindings; the canonical child walker
+        // stops at their boundary, so descend explicitly.
+        ExprKind::ExistsSubquery(query) | ExprKind::ValueSubquery(query) => {
+            scan_composite(scan, query)
+        }
+        ExprKind::ExistsPattern(pattern) => scan_graph_pattern(scan, pattern),
+        _ => {}
+    }
+    for_each_immediate_child_expr(expr, |child| scan_expr(scan, child));
 }
 
 /// True when the stored record drifts from the local artifact's authored contract.
@@ -1560,5 +1961,40 @@ mod tests {
             render_rows_table(&empty_rows).expect("empty table"),
             String::new()
         );
+    }
+
+    // ──── edge element-id projection guidance ────
+
+    #[test]
+    fn edge_element_id_projection_warns_with_op_and_variable_names() {
+        // The citation-reach demo shape: a MATCH-bound edge variable projected alongside a
+        // vertex projection; only the edge variable is reported.
+        let source = "MATCH (src:Document)-[e:CITES]->{1,3}(dst:Document)\n\
+                      RETURN ELEMENT_ID(dst) AS document_id, ELEMENT_ID(e) AS cite_edge_id";
+        let vars = projected_edge_element_ids(source);
+        assert_eq!(vars, BTreeSet::from(["e".to_owned()]));
+        let text = edge_element_id_warning("citation-reach", &vars);
+        // The op name and the offending variable are reported as quoted identifiers.
+        assert!(text.contains("'citation-reach'"), "{text}");
+        assert!(text.contains("'e'"), "{text}");
+        // The vertex variable stays unreported even though ELEMENT_ID(dst) is present.
+        assert!(!text.contains("'dst'"), "{text}");
+    }
+
+    #[test]
+    fn edge_variable_bound_but_only_vertex_projected_warns_nothing() {
+        // The variable-length-reach demo shape: an edge variable is bound by the pattern,
+        // but the projections name vertices only — no warning may fire for `e`.
+        let source = "MATCH (a:Concept)<-[e:RELATED_TO]-{1,3}(b:Concept)\n\
+                      RETURN DISTINCT b.name AS concept, ELEMENT_ID(b) AS concept_id";
+        assert!(projected_edge_element_ids(source).is_empty());
+    }
+
+    #[test]
+    fn source_without_element_id_warns_nothing() {
+        let source = "MATCH (t:Team {name: 'Platform'})<-[:BELONGS_TO]-(p:Person)\n\
+                      WHERE t.name IS NOT NULL\n\
+                      RETURN p.name AS member ORDER BY member LIMIT 10";
+        assert!(projected_edge_element_ids(source).is_empty());
     }
 }
