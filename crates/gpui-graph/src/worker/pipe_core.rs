@@ -20,6 +20,7 @@
 //!   handler is registered; sends made before readiness are queued and
 //!   replayed in posting order ([`ReplayQueue`]).
 
+#[cfg(any(target_family = "wasm", test))]
 use std::collections::VecDeque;
 
 use crate::frame_source::WireFormatError;
@@ -68,12 +69,18 @@ pub trait PayloadCodec<NK, EK, N, E> {
 /// The main thread may start sending before the worker finished initializing
 /// its wasm module; messages posted in that window must not be lost, and their
 /// FIFO order must survive the readiness transition.
+///
+/// Compiled for the wasm glue that consumes it and for the native unit tests
+/// that pin its ordering contract; pure-native builds have no sender to
+/// replay.
+#[cfg(any(target_family = "wasm", test))]
 #[derive(Debug, Default)]
 pub struct ReplayQueue {
     ready: bool,
     pending: VecDeque<Vec<u8>>,
 }
 
+#[cfg(any(target_family = "wasm", test))]
 impl ReplayQueue {
     /// A queue that replays everything pushed before [`Self::set_ready`].
     pub fn new() -> Self {
