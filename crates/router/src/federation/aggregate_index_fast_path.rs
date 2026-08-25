@@ -122,6 +122,7 @@ pub fn gql_query_result_from_label_live_count(
             rows_blob: None,
             phase: None,
             token: None,
+            truncated: None,
         });
     }
     let mut row = BTreeMap::new();
@@ -141,6 +142,7 @@ pub fn gql_query_result_from_label_live_count(
         rows_blob: Some(rows_blob),
         phase: None,
         token: None,
+        truncated: None,
     })
 }
 
@@ -256,6 +258,7 @@ pub fn gql_query_result_from_posting_counts(
         rows_blob,
         phase: None,
         token: None,
+        truncated: None,
     })
 }
 
