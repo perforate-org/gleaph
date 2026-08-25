@@ -47,6 +47,26 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-08-25-004 — Committed HEAD fails `gleaph-router` lib-test standalone: `GqlQueryResult.truncated` constructor updates left uncommitted
+
+- **Status:** Open — same failure mode as GAP-2026-08-24-007; owner is the ADR 0078 search
+  stream (owning pane not identifiable at recording time; flagged to the operator 2026-08-25)
+- **Owner:** `crates/graph-kernel/src/plan_exec.rs` (`truncated` field added by `49f10d461`)
+  vs `crates/router/src/federation/aggregate_index_fast_path.rs` (constructor call sites still
+  uncommitted, working-tree `M`)
+- **Observed behavior:** An isolated worktree at `d31909605` — and equally at current HEAD
+  `a9f42a77b`, whose delta is lhm-only — fails `cargo test -p gleaph-router --lib` with
+  `E0063: missing field 'truncated' in initializer of GqlQueryResult`
+  (`aggregate_index_fast_path.rs:120/139/254`). The main tree compiles only while the owning
+  stream's uncommitted WIP stays present, so the breakage is invisible locally.
+- **Expected or needed behavior:** Kernel-side field additions and their constructor-site
+  updates land in the same commit (GAP-2026-08-24-007 precedent).
+- **Evidence:** isolated-worktree build log; `git log -S "truncated" -- crates/graph-kernel/src/plan_exec.rs`
+  → `49f10d461`; `git status` shows the router file modified-uncommitted.
+- **Impact:** Bisect false positives across this range; fresh clones/worktrees cannot run
+  router tests at these commits.
+- **Detection:** w1:pM during ADR 0081 Slice A verification (2026-08-25).
+
 ### GAP-2026-08-25-003 — Cross-shard global order for ordered-delivery and plain ORDER BY results (merge-aware union deferred)
 
 - **Status:** Open — non-blocking follow-up recorded while landing ADR 0081 Slice A
