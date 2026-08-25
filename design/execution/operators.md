@@ -17,7 +17,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | PlanOp | Status | Notes |
 |--------|--------|-------|
 | `NodeScan` | Exec | Label/property projection |
-| `IndexScan` | Exec | May be skipped via router seed |
+| `IndexScan` | Exec | May be skipped via router seed; carries `ordered_by_sort` delivery intent (ADR 0081 Slice A) — when set, rows arrive in ascending encoded-key order of that property and the executor may elide `Sort` or early-exit `TopK` (see Output) |
 | `EdgeIndexScan` | Exec | Often paired with `EdgeBindEndpoints` |
 | `EdgeBindEndpoints` | Exec | Binds near/far from edge record |
 | `ConditionalIndexScan` | Exec | Param-dependent index vs fallback scan |
@@ -61,7 +61,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | PlanOp | Status | Notes |
 |--------|--------|-------|
 | `Project` | Exec | DISTINCT, column list |
-| `Sort` / `Limit` / `TopK` | Exec | TopK fusion in planner |
+| `Sort` / `Limit` / `TopK` | Exec | TopK fusion in planner; over intent-verified ascending input (ADR 0081 Slice A) TopK stops consuming at the first strictly greater key past its boundary survivor — ties continue until the group closes, `OFFSET` skips inside the delivered stream, residual filters stay valid, and any ordering violation fails safe into a full sort. Router-seeded executions skip the annotated scan op, so the gate fails closed there |
 | `Aggregate` | Exec | Implicit `RETURN SUM(...)` etc.; horizontal aggregate over var-length **edge groups** per input row (see [group-variables.md](./group-variables.md)) |
 | `Materialize` | Exec | |
 | `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT), `OTHERWISE` fallback |

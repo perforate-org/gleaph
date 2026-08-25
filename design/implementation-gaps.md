@@ -1841,7 +1841,7 @@ duplicate its state machine or ownership rules.
 | P2       | Extend edge-index anchors to accept `ScanValue::TextPrefix` prefix intervals (symmetric with the vertex STARTS WITH anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-010 (edge symmetric extension landed 2026-08-24) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 | P3       | Cache resolved `GraphTypePropertySchema` beside the definition heap cache (steady-state O(1) catalog resolve; candidate from the 2026-08-25 canbench attribution review) | Open — GAP-2026-08-25-002 (catalog owner decision)                                           |
-| P2       | ADR 0081 index-ordered ORDER BY delivery: Slice A (single-key ASC, equality/IN/range/prefix anchors, wire intent + executor tie-boundary TopK) landed; Slice B DESC and merge-aware cross-shard union deferred | Slice A closed 2026-08-25; cross-shard union tracked as GAP-2026-08-25-003                                    |
+| P2       | ADR 0081 index-ordered ORDER BY delivery: Slice A (single-key ASC, equality/IN/range/prefix anchors, wire intent + executor tie-boundary TopK) landed; Slice B DESC and merge-aware cross-shard union deferred | Resolved 2026-08-25 — Slice A fix `7a7484eaf` + hardening `bench`/tests (cross-shard union tracked as GAP-2026-08-25-003)                                    |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
 the ordered scan primitive already exists through `StableBTreeMap::range()`; the remaining work is
