@@ -126,3 +126,23 @@ against the previous four-page block measured Linear get 17.82M instructions (-3
 61.96M (-40.61%), remove 20.77M (-33.08%), and maintenance 11.25M (+7.03%); BTree totals were
 unchanged. The resulting numbers were written by the required unfiltered `canbench --persist` run
 to the checked-in benchmark artifact.
+
+## Verification
+
+The LHM unit suite covers exact fingerprint rejection, inline overflow round-trip, split-debt
+persistence and budget reporting, physical scan reopen/reset behavior, and scrub coverage. Vector
+unit tests cover both owner lifecycles, rebuild/scan consumers, typed unavailable handling, and
+coupled reset fixtures. The LHM benchmark compares Linear Hash Map and `StableBTreeMap` with the
+same 4,096-entry `u64 -> u64` fixture for get, insert, and remove, plus one split-debt maintenance
+case. Setup is isolated from measured memory and the persisted benchmark artifact is updated only
+by an intentional unfiltered `canbench --persist` run.
+
+Additionally, the crate carries a permanent Lean 4 verification project at
+`crates/ic-stable-linear-hash-map/formal/` (Lean core only, independent of Cargo; run
+`lake build` there). Verified so far: the routing mathematics — bucket routing extent,
+split stability under both geometry transitions, geometry-step validity, threshold
+bounds — the control-region validity of `create`, and (stage 3a) the insert-update
+path's preservation of the abstract state invariant via the transfer principle, with
+no unproven placeholders. Its SCOPE.md tracks the staged roadmap (remaining: logical
+map ops for place/remove/clear/reset composition, split preservation, epoch fencing)
+and REPORT.md records findings.
