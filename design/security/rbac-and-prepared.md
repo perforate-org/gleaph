@@ -12,10 +12,9 @@
 > JIT metadata elevation is **implemented** (below): the ADR 0028 superuser bypass is
 > deleted and cross-tenant metadata reads require time-boxed, approval-backed elevation.
 
-> **ReBAC (proposed, not implemented):** [ADR 0082](../adr/0082-rebac-bounded-exists-traversal.md)
+> **ReBAC (implemented, 2026-08-26):** [ADR 0082](../adr/0082-rebac-bounded-exists-traversal.md)
 > extends the conditional-policy DSL with a bounded 1–2 hop `EXISTS` traversal clause
-> lowered to a new shard-executed semi-join `PlanOp`. It is a design contract only; the
-> grammar, encoding, and lowering described there are not yet landed. Organization
+> lowered to a new shard-executed semi-join `PlanOp::SemiApply` (below). Organization
 > permissions are graph-local relationships; the account-canister `Role` enum
 > ([ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md)) is a
 > separate domain and is out of scope.
@@ -100,7 +99,7 @@ Attribution contract (fail closed where the plan cannot name a resource):
 | Labeled vertex scan | `MATCH` on the label; full property map adds `READ`; explicit projections add `READ_PROPERTY` per key; empty hydration list adds nothing beyond `MATCH` |
 | Traversal hop | `TRAVERSE` rows from pattern direction × schema directedness: declared directed labels probe one directional row per orientation (undirected patterns need both); undirected or undeclared labels take the unoriented row — mirroring GRANT lowering |
 | Edge-inline property bytes | covered by the edge label's traversal row (no edge-property resource exists in Phase 1) |
-| Element-id reads (`ELEMENT_ID(v)`) on a vertex binding | covered by the variable's `MATCH` row — element ids are intrinsic identity metadata of covered elements, not separately grantable properties. On an EDGE binding they are tenancy-only in Phase 1 (no edge-property resource), so ops projecting `ELEMENT_ID(e)` stay owner-only until an edge-read rule lands ([Element-id projection guidance](#element-id-projection-guidance)) |
+| Element-id reads (`ELEMENT_ID(v)` / `ELEMENT_ID(e)`) on any binding | attributed through the variable's label facts: a vertex binding rides its `MATCH` row, an edge binding rides its `TRAVERSE` row — element ids are intrinsic identity metadata of covered elements, never separately grantable resources ([Element-id projection guidance](#element-id-projection-guidance)). Returned EDGE element ids remain query-time physical handles `(shard, owner vertex row, edge slot)`, not persistent references: compaction can invalidate them |
 | Filter / projection / aggregation expressions | property reads attributed through variable→label facts; ambiguous or unresolvable attribution degrades to tenancy-only |
 | Unlabeled scans, `NOT`/wildcard label expressions, `DETACH DELETE`, unresolvable open-schema names | tenancy-only: owners/admins proceed; Phase 1 grants enumerate labels, so wildcard reads are not expressible as grants |
 | Mutations | `CREATE` for inserted elements; `UPDATE` for `SET`/`REMOVE`; `DELETE` for deletes, attributed via bound-variable labels |
@@ -131,8 +130,10 @@ not a gap; re-registration replaces the whole record.
 
 ### Element-id projection guidance
 
-**Status: Implemented (2026-08-25).** `ELEMENT_ID` behaves differently on a **vertex** binding
-than on an **edge** binding, for two independent reasons that must stay separate:
+**Status: Implemented (2026-08-25); authorization symmetry across bindings pinned by
+plan 0306 (2026-08-26).** `ELEMENT_ID` differs between a **vertex** and an **edge**
+binding only in handle stability; its authorization treatment is symmetric. Two
+historically conflated concerns, kept separate:
 
 1. **Stability — a design decision, independent of authorization.** A vertex element id is a
    stable, round-trippable client reference ([ADR 0005](../adr/0005-vertex-identity.md)
@@ -145,18 +146,22 @@ than on an **edge** binding, for two independent reasons that must stay separate
    [ADR 0052](../adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) §8 “Edge identity
    and compaction”): compaction or slot reuse can invalidate a previously returned value, so it
    cannot serve as a persistent reference regardless of any future authorization change.
-2. **Current authorization state — to be repaired in follow-up work.** Phase 1 has no
-   edge-property resource, so an edge element-id read is tenancy-only (the attribution table’s
-   element-id row above records the same boundary): prepared ops projecting `ELEMENT_ID(e)`
-   currently execute only for owner/admin until an edge-read rule lands. This is a Phase 1
-   limitation, not part of the stability decision in (1).
+2. **Status update (plan 0306, 2026-08-26).** Requirement extraction on the current tree
+   attributes `ELEMENT_ID(e)` through the edge label fact and demands nothing beyond the
+   covered `TRAVERSE` row — symmetric with vertex element-id reads (contract test
+   `edge_element_id_projection_demands_stay_attributed` in `crates/router/src/gql_grants.rs`;
+   probe artifact `design/investigations/artifacts/0306-edge-element-id-demand-probe.txt`).
+   The historical non-owner DENY of the knowledge demo's `citation-reach` was the GAP-008
+   root cause (missing property-level READ rows for projected keys), not edge element-id
+   semantics. No edge-property grant resource is required for element-id reads.
 
-The CLI surfaces both facts at authoring time: `gleaph prepared plan` / `apply` / `run` print a
-stderr warning when an operation projects `ELEMENT_ID` on a MATCH-bound edge variable
-(detector over the parsed operation source in `crates/cli/src/prepared.rs`; the printed text is
-sanitized and names only the operation and variables). The knowledge demo’s `citation-reach`
-intentionally keeps its edge projection — the browser page renders the relationship trail from
-the returned edge identities.
+The CLI surfaces the stability fact (1) at authoring time: `gleaph prepared plan` / `apply` /
+`run` print a stderr warning when an operation projects `ELEMENT_ID` on a MATCH-bound edge
+variable (detector over the parsed operation source in `crates/cli/src/prepared.rs`; the
+printed text is sanitized and names only the operation and variables). The warning is a
+stability notice about the returned physical handles, not an authorization statement. The
+knowledge demo's `citation-reach` intentionally keeps its edge projection — the browser page
+renders the relationship trail from the returned edge identities.
 
 ### Conditional policy pushdown ([ADR 0075], Phase 2a — implemented)
 
@@ -218,6 +223,45 @@ re-resolves constants deterministically.
 
 Introspection prints the stored condition inline (`list_graph_grants.predicate`) with
 catalog-resolved property names ([ADR 0075] §1).
+
+### ReBAC bounded EXISTS traversal ([ADR 0082] — implemented)
+
+**Source:** `crates/gql/src/parser/statement.rs` (chain grammar),
+`crates/router/src/policy_pushdown.rs` (lowering + reverse seeding), `crates/auth`
+(`CompiledPredicate` V2 + `PredicateChain`), `crates/graph/src/plan/query/executor/ops.rs`
+(`execute_semi_apply`).
+
+A conditional grant row may carry a bounded traversal clause alongside (or instead of) its
+property conjuncts: `EXISTS { (d)-[:GRANTED_TO]->(a:Acct) WHERE a.principal_id = MSG_CALLER() }`
+— 1–2 hops, vertex → vertex, each hop enumerating one concrete edge label, one direction
+spelling (`->`, `<-`, `-`), and one concrete destination label; the terminal `WHERE` reuses
+the exact [ADR 0075] comparison DSL against the terminal variable and is required. The row is
+visible iff at least one matching chain exists from the selector vertex.
+
+- **Semi-join semantics:** the chain never duplicates rows, never projects chain values, and
+  never turns a missing match into an error. Each probe is bounded at one proof row
+  (first-match short-circuit); the executor keeps the input row iff the probe yields ≥ 1.
+- **The relationship is the gate.** Chain traversals and terminal reads are authorization
+  machinery: they add no requirement rows (the walker stays blind to `PlanOp::SemiApply`)
+  and are never constrained by label policies on chain-internal vertices. Enforcement
+  strictly precedes lowering.
+- **Lowering:** labeled-scan binding sites emit `PlanOp::SemiApply` after the scan — an
+  optional source-conjunct gate plus per-hop expansions carrying `IsLabeled` facts and the
+  terminal filters. Plain rows keep the exact [ADR 0075] OR-filter treatment; multi-row
+  groups gate every probe by its own source conjuncts inside a `UNION ALL` sub-plan so
+  union-over-rows stays exact. Expansion-destination sites defer chain rows (fail-closed).
+- **Reverse-index-driven terminal equality** ([ADR 0082] §7): when exactly one row covers
+  the label, its terminal predicate is a single `MSG_CALLER()` equality over an actively
+  indexed terminal property, the anchor joins against a destination-driven probe — index
+  seed, reversed expansions along ADR 0026 reverse adjacency, distinct source
+  materialization — with results identical to forward filtering.
+- **Stable encoding:** `CompiledPredicate` V2 leads with a version discriminator (V1 bytes
+  reject; fresh state, no shims) and trails an optional `PredicateChain` (hop count ≤ 2,
+  terminal conjuncts ≤ 8). Chain ids ride the same vocabulary-drop cascade as grant
+  resources: dropped ids never reallocate, so stale chains fail closed while sibling
+  graphs' identical numeric ids survive.
+- **Fingerprints include chain bytes**, so lowered plans never reuse across rows or callers
+  differing in chain shape or resolved terminal constants.
 
 ### Authorization-aware vector search ([ADR 0078], Phase 2 — implemented)
 

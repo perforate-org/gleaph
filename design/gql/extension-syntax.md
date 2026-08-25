@@ -5,7 +5,7 @@ Anchor timestamp: 2026-08-23 12:26:48 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred; the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar (generic parsing behind the `gleaph` feature), slice 2b plan-time privilege enforcement, and the slice 3 `EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded gates are implemented.** The ISO/GQL-core `IN` predicate parses across dialects (cypher-dialect acceptance landed 2026-08-24) and non-negated scannable `IN` lists anchor index scans as unions of point probes — see [plan-format.md](plan-format.md) § `ScanValue` bounds; the ADR 0075 conditional policy selector surface (`FOR … WHERE …`, AND-only DSL with `MSG_CALLER()`) is implemented per the section below.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred; the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar (generic parsing behind the `gleaph` feature), slice 2b plan-time privilege enforcement, and the slice 3 `EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded gates are implemented.** The ISO/GQL-core `IN` predicate parses across dialects (cypher-dialect acceptance landed 2026-08-24) and non-negated scannable `IN` lists anchor index scans as unions of point probes — see [plan-format.md](plan-format.md) § `ScanValue` bounds; the ADR 0075 conditional policy selector surface (`FOR … WHERE …`, AND-only DSL with `MSG_CALLER()`) is implemented per the section below, extended by the ADR 0082 bounded `EXISTS` traversal clause inside conditional policies.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -820,20 +820,33 @@ REVOKE EXECUTE ON PREPARED QUERY <query-name> FROM <subject>;
   principal can never hold a stored grant (ADR 0074 invariant 2); `PUBLIC` is the virtual
   subject for unauthenticated callers.
 
-### Conditional policy selectors ([ADR 0075] §3, implemented)
+### Conditional policy selectors ([ADR 0075] §3, extended by [ADR 0082] §2 — implemented)
 
 A graph grant may carry one conditional selector: `FOR (p:Post) WHERE …` narrows what that
 row grants. The predicate DSL is deliberately minimal and deterministic:
 
 - **AND-only** ([ADR 0075] §2): comparisons joined by `AND`. `OR`, `NOT`, `XOR`,
-  arithmetic, `EXISTS`, and property-to-property comparisons each fail with their own
-  distinct parse error; conjunction depth is capped at 8.
+  arithmetic, `PROPERTY_EXISTS`, `EXISTS { subquery }`, and property-to-property
+  comparisons each fail with their own distinct parse error; conjunction depth is capped
+  at 8.
 - Each comparison is `<selector-variable>.<property> <op> <literal | MSG_CALLER()>` with
   the standard six comparison operators. `MSG_CALLER()` is accepted case-insensitively,
   takes no arguments, and never carries `DISTINCT`.
+- **Bounded EXISTS chains** ([ADR 0082] §2, implemented): one `EXISTS { <pattern> }` clause
+  may be AND-composed with (or fully replace) the property conjuncts. The pattern must be a
+  plain 1–2 hop vertex chain starting at the selector variable —
+  `(d)-[:GRANTED_TO]->(a:Acct)` or `(d)-[:SHARED_TO]->(g:Group)<-[:MEMBER_OF]-(a:Acct)` —
+  where every hop enumerates one concrete edge label, one direction spelling (`->`, `<-`,
+  `-`; compound directional modifiers are outside the grammar), and one concrete labeled
+  destination with a fresh variable. The pattern-level `WHERE` is terminal-only and reuses
+  the comparison DSL against the terminal variable; intermediate vertices carry a label
+  only. Unlabeled/wildcard destinations, quantifiers, edge variables or properties,
+  duplicate variables, second chains, and 3+ hops each reject with distinct errors.
 - Catalog-checked at GRANT time: the selector label must match the granted vertex label,
-  every comparison property must exist, and literal kinds must be compatible with the
-  property's declared scalar type (undeclared properties stay open-world). `MSG_CALLER()`
+  every comparison property must exist, literal kinds must be compatible with the
+  property's declared scalar type (undeclared properties stay open-world), every chain edge
+  and destination label must exist, and direction spellings follow ADR 0074 §2 directedness
+  (directional spellings over UNDIRECTED or undeclared labels fail closed). `MSG_CALLER()`
   requires a character-string-typed (or undeclared) property; string literals are bounded
   at 15 bytes by the stable row encoding.
 - Phase-2a scope: conditions bind **vertex labels** under the `MATCH`/`READ` privileges.
@@ -844,8 +857,9 @@ row grants. The predicate DSL is deliberately minimal and deterministic:
   canonical key — its condition text is validated syntax, not key material.
 
 Evaluation semantics live in `design/security/rbac-and-prepared.md` (§ Conditional policy
-pushdown): per-row AND composition, union across applicable rows, Router-side
-`MSG_CALLER()` constant substitution into ordinary plan machinery.
+pushdown, § ReBAC bounded EXISTS traversal): per-row AND composition, union across
+applicable rows, Router-side `MSG_CALLER()` constant substitution into ordinary plan
+machinery, and the shard-executed semi-join probe for the traversal clause.
 
 ### Prepared-query publication gates (ADR 0074 §1b)
 

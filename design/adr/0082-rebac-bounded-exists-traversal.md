@@ -1,8 +1,8 @@
 # 0082. ReBAC conditional policies: bounded EXISTS traversal on grant rows
 
 Date: 2026-08-25
-Status: proposed
-Last revised: 2026-08-25
+Status: implemented
+Last revised: 2026-08-26
 
 ## Context
 
@@ -84,8 +84,13 @@ and removed by the same `REVOKE`.
 GrantRow = { subject, graph, privileges…, predicate?: CompiledPredicate, expires_at? }
 CompiledPredicate = { label, conjuncts: [Comparison; 1..=8], chain?: Chain }
 Chain = Hop | Hop Hop                       // 1–2 hops, vertex → vertex
-Hop = { edge_label, direction, dest_label, dest_conjuncts?: [Comparison; 1..=8] }
+Hop = { edge_label, direction, dest_label }
+TerminalConjuncts = [Comparison; 1..=8]     // evaluated on the last hop's destination
 ```
+
+As implemented (2026-08-26): a pure-EXISTS condition carries zero source `conjuncts`
+(the flagship grammar form below); the terminal conjunct group is **required** rather
+than optional, so every chain names its gate.
 
 The clause is a **semi-join filter**: a row is visible iff at least one matching
 chain exists. It never duplicates rows, never projects values, and never turns a

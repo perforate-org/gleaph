@@ -1792,11 +1792,12 @@ mod tests {
             format!("{:?}", predicates[0]).contains("visibility"),
             "outer filter must cover only plain rows"
         );
-        // Probe: gated by the chain row's own source conjunct inside the sub-plan.
+        // Probe: gated by the chain row's own source conjunct inside the sub-plan
+        // (gate + expansion + one-row bound).
         let PlanOp::SemiApply { sub_plan, .. } = &plan.ops[2] else {
             panic!("expected SemiApply, got {:?}", plan.ops[2]);
         };
-        assert_eq!(sub_plan.len(), 4);
+        assert_eq!(sub_plan.len(), 3);
         assert!(
             matches!(&sub_plan[0], PlanOp::PropertyFilter { .. }),
             "source gate rides inside the probe"
