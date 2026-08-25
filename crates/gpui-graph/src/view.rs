@@ -630,13 +630,19 @@ where
         match self.frame_source {
             FrameSource::InProcess => self.build_in_process_frame(cx),
             FrameSource::Worker => {
-                let state = self.worker_frame_state();
-                self.last_snapshot_viewport = Some(state.viewport);
-                let channel = self
-                    .worker_channel
-                    .as_mut()
-                    .expect("FrameSource::Worker selected but no worker channel is connected");
-                channel.post(ToWorker::FrameState(Box::new(state)));
+                // A degenerate canvas has nothing to show and would make the
+                // worker build an empty frame; keep the previous delivery
+                // until the window settles (observed as a one-empty-frame
+                // startup artifact in the browser run).
+                if size.x > 0.0 && size.y > 0.0 {
+                    let state = self.worker_frame_state();
+                    self.last_snapshot_viewport = Some(state.viewport);
+                    let channel = self
+                        .worker_channel
+                        .as_mut()
+                        .expect("FrameSource::Worker selected but no worker channel is connected");
+                    channel.post(ToWorker::FrameState(Box::new(state)));
+                }
                 self.interaction_transformed_frame()
             }
         }
@@ -4389,6 +4395,34 @@ mod tests {
                 vs.set_frame_source(FrameSource::Worker);
                 vs.build_frame(Vec2::new(800.0, 600.0), cx)
             });
+        });
+    }
+
+    #[gpui::test]
+    fn worker_mode_skips_snapshots_while_the_canvas_is_degenerate(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+            });
+
+            // A zero-sized canvas (before the window settles) must not spend
+            // a worker round trip on an empty frame.
+            view.update(cx, |vs, cx| vs.build_frame(Vec2::ZERO, cx));
+            assert!(
+                requests.borrow().is_empty(),
+                "a degenerate canvas posts no snapshot"
+            );
+
+            // Once the canvas settles, snapshots flow again.
+            view.update(cx, |vs, cx| vs.build_frame(Vec2::new(800.0, 600.0), cx));
+            assert_eq!(requests.borrow().len(), 1);
         });
     }
 
