@@ -319,6 +319,28 @@ async fn execute_optional_match(
     Ok(out)
 }
 
+/// Correlated semi-join execution ([ADR 0082] §6): probe the bounded chain once per
+/// input row with that row's bindings visible (correlation on `source`), and keep the
+/// input row iff ≥ 1 chain match exists. Survivors are emitted unchanged — never
+/// duplicated per extra match, never null-padded, never extended with chain bindings.
+///
+/// The chain executes shard-locally through ordinary plan machinery exactly like
+/// [`execute_optional_match`]; it inherits the same shard-local traversal boundary.
+async fn execute_semi_apply(
+    ctx: &ExecuteCtx<'_>,
+    rows: Vec<PlanRow>,
+    sub_plan: &[PlanOp],
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let matches = execute_ops_from(ctx, sub_plan, vec![row.clone()]).await?;
+        if !matches.is_empty() {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
 fn inline_seed_row(row: &PlanRow, scope: &InlineProcedureScope) -> Result<PlanRow, PlanQueryError> {
     match scope {
         InlineProcedureScope::ImplicitAll => Ok(row.clone()),
@@ -960,6 +982,9 @@ pub(crate) fn execute_ops_from<'a>(
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(ctx, rows, sub_plan, &written).await?
+                }
+                PlanOp::SemiApply { sub_plan, .. } => {
+                    execute_semi_apply(ctx, rows, sub_plan).await?
                 }
                 PlanOp::Search {
                     binding,
@@ -2477,5 +2502,222 @@ mod tests {
                 "expected UnsupportedOp({expected_name}), got {err:?}"
             );
         }
+    }
+
+    // ──── SemiApply execution matrix ([ADR 0082] §6) ────
+
+    use gleaph_gql_planner::plan::SemiHop;
+
+    /// Terminal conjunct `<variable>.principal_id = 'caller-x'`.
+    fn principal_eq(variable: &str) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(prop(variable, "principal_id")),
+            op: gleaph_gql::ast::CmpOp::Eq,
+            right: Box::new(Expr::new(ExprKind::Literal(Value::Text(
+                "caller-x".to_owned(),
+            )))),
+        })
+    }
+
+    fn is_labeled(variable: &str, label: &str) -> Expr {
+        Expr::new(ExprKind::IsLabeled {
+            expr: Box::new(var(variable)),
+            label: gleaph_gql::types::LabelExpr::Name(label.into()),
+            negated: false,
+        })
+    }
+
+    /// One-hop chain `(d)-[:GRANTED_TO]->(a:Account)` carrying the terminal conjuncts.
+    fn grant_chain_hop(dst_filter: Vec<Expr>) -> Vec<PlanOp> {
+        vec![PlanOp::ExpandFilter {
+            src: "d".into(),
+            edge: "__chain_e1".into(),
+            dst: "a".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("GRANTED_TO".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            dst_filter,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        }]
+    }
+
+    fn semi_apply_doc_plan(sub_plan: Vec<PlanOp>) -> gleaph_gql_planner::PhysicalPlan {
+        let hops = vec![SemiHop {
+            edge_label: "GRANTED_TO".into(),
+            direction: EdgeDirection::PointingRight,
+            dst_variable: "a".into(),
+            dst_label: "Account".into(),
+        }];
+        plan(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("SemiDoc".into()),
+                property_projection: None,
+            },
+            PlanOp::SemiApply {
+                source: "d".into(),
+                hops,
+                terminal_predicates: vec![],
+                sub_plan,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("d", "name"), "doc")],
+                distinct: false,
+            },
+        ])
+    }
+
+    /// Fixture names → returned vertex ids: `d1` matches through `ax1`; `d2` has no
+    /// GRANTED_TO edge; `d3` matches through two accounts (`ax2`, `ax3`); `d4`'s only
+    /// grant points at an account failing the terminal predicate.
+    fn semi_fixture(store: &GraphStore) -> (VertexId, VertexId, VertexId, VertexId) {
+        let doc = |name: &str| {
+            store
+                .insert_vertex_named(["SemiDoc"], [("name", Value::Text(name.to_owned()))])
+                .expect("insert doc")
+        };
+        let d1 = doc("d1");
+        let d2 = doc("d2");
+        let d3 = doc("d3");
+        let d4 = doc("d4");
+        let account = |principal: &str| {
+            store
+                .insert_vertex_named(
+                    ["Account"],
+                    [("principal_id", Value::Text(principal.to_owned()))],
+                )
+                .expect("insert account")
+        };
+        let ax1 = account("caller-x");
+        let ax2 = account("caller-x");
+        let ax3 = account("caller-x");
+        let other = account("other");
+        let edge = |src, dst| {
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Some("GRANTED_TO"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert granted_to edge")
+        };
+        edge(d1, ax1);
+        edge(d3, ax2);
+        edge(d3, ax3);
+        edge(d4, other);
+        (d1, d2, d3, d4)
+    }
+
+    fn semi_doc_names(result: &crate::plan::query::executor::PlanQueryResult) -> Vec<String> {
+        result
+            .rows
+            .iter()
+            .map(|row| match row.get("doc") {
+                Some(Value::Text(name)) => name.clone(),
+                other => panic!("unexpected binding {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn semi_apply_keeps_matching_rows_and_drops_non_matches_silently() {
+        let store = GraphStore::new();
+        let (_d1, _d2, _d3, _d4) = semi_fixture(&store);
+        let sub_plan = grant_chain_hop(vec![is_labeled("a", "Account"), principal_eq("a")]);
+        let result = store
+            .execute_plan_query(
+                &semi_apply_doc_plan(sub_plan),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("execute semi apply");
+        assert_eq!(
+            semi_doc_names(&result),
+            ["d1", "d3"],
+            "matching rows survive; non-matches are absent, never errors"
+        );
+
+        // Wrong-implementation probe: without the SemiApply the scan yields every row.
+        let unfiltered = store
+            .execute_plan_query(
+                &plan(vec![
+                    PlanOp::NodeScan {
+                        variable: "d".into(),
+                        label: Some("SemiDoc".into()),
+                        property_projection: None,
+                    },
+                    PlanOp::Project {
+                        columns: vec![project(prop("d", "name"), "doc")],
+                        distinct: false,
+                    },
+                ]),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("plain scan");
+        assert_eq!(unfiltered.rows.len(), 4);
+    }
+
+    #[test]
+    fn semi_apply_multi_match_never_duplicates_the_input_row() {
+        let store = GraphStore::new();
+        let (_d1, _d2, _d3, _d4) = semi_fixture(&store);
+        let sub_plan = grant_chain_hop(vec![principal_eq("a")]);
+        let result = store
+            .execute_plan_query(
+                &semi_apply_doc_plan(sub_plan),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("execute semi apply");
+        assert_eq!(
+            semi_doc_names(&result),
+            ["d1", "d3"],
+            "two granting accounts on d3 must still yield one row"
+        );
+        // No chain bindings ever surface on output rows ([ADR 0082] §5).
+        for row in &result.rows {
+            assert!(row.get("a").is_none(), "chain binding leaked: {row:?}");
+            assert!(row.get("__chain_e1").is_none());
+        }
+    }
+
+    #[test]
+    fn semi_apply_bounded_first_match_probe_preserves_results() {
+        // Short-circuit shape: the Router bounds each probe at one proof row. Results
+        // must be identical to the unbounded probe, including when an earlier candidate
+        // fails the terminal predicate but a later one matches.
+        let store = GraphStore::new();
+        let (_d1, _d2, _d3, _d4) = semi_fixture(&store);
+        let mut bounded = grant_chain_hop(vec![principal_eq("a")]);
+        bounded.push(PlanOp::Limit {
+            count: Some(Expr::int(1)),
+            offset: None,
+        });
+        let unbounded = grant_chain_hop(vec![principal_eq("a")]);
+        let run = |sub_plan: Vec<PlanOp>| {
+            let result = store
+                .execute_plan_query(
+                    &semi_apply_doc_plan(sub_plan),
+                    &params(),
+                    GqlExecutionContext::default(),
+                )
+                .expect("bounded probe");
+            semi_doc_names(&result)
+        };
+        assert_eq!(run(bounded), ["d1", "d3"]);
+        assert_eq!(run(unbounded), ["d1", "d3"]);
     }
 }
