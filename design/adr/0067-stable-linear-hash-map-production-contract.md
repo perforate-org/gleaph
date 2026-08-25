@@ -141,8 +141,9 @@ Additionally, the crate carries a permanent Lean 4 verification project at
 `crates/ic-stable-linear-hash-map/formal/` (Lean core only, independent of Cargo; run
 `lake build` there). Verified so far: the routing mathematics — bucket routing extent,
 split stability under both geometry transitions, geometry-step validity, threshold
-bounds — the control-region validity of `create`, and (stage 3a) the insert-update
-path's preservation of the abstract state invariant via the transfer principle, with
-no unproven placeholders. Its SCOPE.md tracks the staged roadmap (remaining: logical
-map ops for place/remove/clear/reset composition, split preservation, epoch fencing)
-and REPORT.md records findings.
+bounds — the control-region validity of `create`, and the full stage-3 logical map
+layer: a general transfer principle for the abstract state invariant with preservation
+proofs for insert-update (`setValue`), insert-place (`placeAt`), remove (`clearSlot`),
+clear and reset, plus top-level `opInsert` / `opRemove` preservation contracts, all
+with no unproven placeholders. Its SCOPE.md tracks the staged roadmap (remaining:
+split preservation, epoch fencing) and REPORT.md records findings.
