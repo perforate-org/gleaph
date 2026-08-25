@@ -56,8 +56,12 @@ cost bounded on the Internet Computer.
    rebuild-as-compaction; an **opt-in, Router-driven bounded maintenance driver** (plan 0278) may
    additionally relocate whole live pages into a dense prefix through each page's single
    `VectorPageMeta.slab_offset` indirection and rewind `occupied_tail` once at finalize.
-4. **Stored precision = search precision.** The encoding is the data; non-`F32` indexes are
-   approximate by contract, documented per definition.
+4. **Original tier defines quality (revised by ADR 0079).** The stored encoding (`F32` | `I8`) is
+   the data and the only source of exact scores, idempotency comparison, and rebuild
+   carry-forward; a generation may additionally carry a compressed code tier whose sketches
+   accelerate only the first-stage scan — every emitted hit is exactly rescored over original
+   bytes from the same loaded page, and advertised result quality stays the original tier.
+   Non-`F32` indexes remain approximate by contract, documented per definition.
 
 ## Ownership model
 
@@ -358,11 +362,17 @@ pub struct PageHeader {
     pub meta_stride: u32,      // 4 + aux_bytes  (4 | 8 | 12)
     pub run_capacity: u32,
     pub run_count: u32,
+    pub code_stride: u32,      // Slice 6 (ADR 0079): per-row code segment width; 0 = tier off
 }
 ```
 
 Reopen validation is fail-closed: magic/version must match, `meta_stride ∈ {4,8,12}`, and the page
-span must be overflow-safe.
+span must be overflow-safe. `code_stride` widens the header to 32 bytes (offset `24..28`; magic and
+version unchanged — reinstall required after the layout replacement), must be `0` or a multiple of 8,
+and makes the header **self-describing** so mixed generations coexist: strict header-definition
+agreement applies only to active-generation pages (`PageKey.index_version ==
+def.active_index_version`); teardown-resident old/shadow pages get self-consistency checks only, and
+compaction spans derive from each page's own header rather than the definition.
 
 ### Row meta
 
@@ -396,6 +406,7 @@ The vector canister uses `ic-stable-variable-memory-manager` with per-region buc
 | `VECTOR_PAGE_META`          | 16 pages  |
 | centroids / heads / defs    | 8 pages   |
 | rebuild / maintenance state | 4–8 pages |
+| `VECTOR_REBUILD_POOL`       | grown to the bounded pool geometry on rebuild start (≤ 128 pages) |
 
 ## Encodings
 
@@ -432,10 +443,50 @@ pub struct EncodingRecord {
   per-row `rv = 1/√popcnt(v)`); `Signs` → `1 − 2H/d` (`H = Σ popcnt(q⊕v)`, cosine ≡ Hamming order,
   no sqrt). The convention is a per-model property; the convention/kernel plumbing ships with the
   future `Binary` encoding slice.
-- **Stored precision = search precision** (accepted and documented): an `int8`/`binary` index's
-  "exact rerank" is exact over the stored encoding, not full precision. Quantized indexes use
-  **quantized centroids** with SPANN's representative-point replacement (k-means means of binary
-  vectors are not binary).
+- **Stored precision = search precision (revised by ADR 0079, Slice 6, 2026-08-24)**: the
+  original tier (`F32` | `I8`) defines the advertised result quality and stays the only source
+  of exact scores, idempotency comparison, and rebuild carry-forward. A generation may
+  additionally carry a **code tier** — a compressed first-stage sketch used to accelerate the
+  scan while every emitted hit is exactly rescored over the original bytes (see
+  [Two-tier precision code tier](#two-tier-precision-code-tier-implemented-in-slice-6-2026-08-24)).
+  An `int8`/`binary` index's "exact rerank" remains exact over the stored encoding; quantized
+  indexes use quantized centroids with SPANN's representative-point replacement.
+
+### Two-tier precision code tier (**implemented in Slice 6, 2026-08-24**; ADR 0079)
+
+A rebuild started with `admin_start_vector_rebuild(code_tier = Some(true))` publishes a
+generation whose rows carry, behind the original bytes on the same page, a per-row code segment:
+
+```text
+[code_aux 8B = ‖x‖² f32 | φ_x f32][codes ceil(P/64)·8B],   P = next_pow2(dims)
+```
+
+- **Sketch**: sign bits of the randomized Walsh–Hadamard rotation of the row — zero-pad `dims`
+  to `P`, apply seeded per-coordinate sign flips (splitmix64 stream keyed by the def-frozen
+  `rotation_seed`, one pure integer mix per coordinate), unnormalized WHT butterfly, then a
+  single `1/√P` scaling. `O(P log P)` per row at write; the identical rotation + binarization is
+  applied once per query.
+- **First-stage estimator** (per row: one XNOR+popcount word pass plus a few flops):
+  `dist² ≈ ‖q‖² + ‖x‖² − 2‖q‖‖x‖·clamp(s/(φ_q·φ_x), −1, 1)` with `s = (2·pc − P)/P`,
+  `φ = ⟨sign(x̃)/√P, x̂⟩` stored in code aux. The bit-op kernel
+  (`popcount_xnor_words`) lives in the physical page-store crate beside the other scoring
+  kernels; the estimator math stays in the vector canister (`code_tier.rs`).
+- **Search path**: Stage A keeps the top-`C` shortlist per loaded page
+  (`C = clamp(8k, 128..=1024)`, estimate ties resolve to the lowest subject); Stage B rescors
+  shortlist rows exactly from the same scratch (zero stable re-reads) into the unchanged bounded
+  top-k. Rows skip Stage B only when their provable Cauchy–Schwarz lower bound already exceeds
+  the current k-th best exact distance — the bound never changes an emitted result. Output is
+  the exact top-k over the shortlist union; recall beyond the envelope is measured in tests and
+  benches rather than guaranteed (1.00 @k10 measured on clustered d4/d96 fixtures).
+- **Layout & lifecycle**: `PageHeader` grew a self-describing `code_stride` (28 → 32 B;
+  VSL/VPG magic and format version unchanged — reinstall required); reopen strictness applies
+  to active-generation pages only, teardown-resident pages are self-consistency checked, and
+  compaction spans derive from page headers so mixed geometries coexist. The def schema grew to
+  59 B under `GLEAPH-VECDEF-03` (`code_tier` + frozen `code_stride_bytes` +
+  `rotation_seed`). Shadow geometry derives from one pure function (`shape_def_for`) shared by
+  dual-write upserts, the Building batch, and the publish flip; the rebuild-pool header (format
+  version 3) carries the shadow `code_tier` flag from start to `Building`. Filtered allowlist
+  scans stay exact; flat/two-level hierarchies both accept the tier.
 
 ### Aux interpretation (RowAux)
 
@@ -491,34 +542,59 @@ select partition p iff dist(q, c_p) <= (1 + eps_query) * dist(q, c_best)
 `eps_query` is a per-definition setting. The selected partitions are scanned **in full** (no mid-scan
 truncation; `VectorSearchResult` carries no partial marker).
 
-### Hierarchical partition structure (level-generic, designed from the start)
+### Hierarchical partition structure (**implemented in Slice 5, 2026-08-24**; flat remains the default)
 
-The partition structure is **level-generic**: a definition carries `levels`, `nlist[level]`, and
-`eps_query[level]`, and a leaf `partition_id` packs its path (`coarse_id × nlist_2 + fine_id`).
-Centroids are tagged by level; each level's centroids are trained over its parent's members only
-(per-subtree bounded training jobs). Search iterates levels: score the query against the selected
-parents' children and recurse to the leaves.
+The partition structure is level-generic and **implemented**: `VectorIndexDef` carries `levels: u8`
+and `nlist_fine: u32` (fixed-width 46-byte record, schema `GLEAPH-VECDEF-02`; the flat default is
+`levels = 1, nlist_fine = 1`, so the leaf count is the invariant `nlist × nlist_fine`). Centroid
+keys carry an explicit **level tag**: `PartitionKey::coarse(index, version, c)` names the level-0
+coarse centroid `c`, and leaf keys pack their path as `partition_id = coarse_id × nlist_fine +
+fine_id` (17-byte key, schema `GLEAPH-PARTKEY-1`). Heads and pages exist **for leaves only**; a
+two-level generation stores its coarse set inside `IVF_CENTROIDS` under the coarse-tagged keys.
 
 - **Flat is the degenerate case (`levels = 1`)** — one level of `nlist` centroids, no fine training,
-  single-stage selection, behaviorally identical to the non-hierarchical design. The same code path
-  serves both, so designing the hierarchy from the start does **not** force a 2-level deployment.
-- **Why from the start**: the 8 MiB training envelope is a _per-training-job_ bound, so the
-  encoding-dependent `nlist` ceiling at `d = 1536` (≈677 for F32) applies **per level**, not
-  globally. A hierarchy restores trainable centroid counts and avoids the flat candidate-pool
-  degeneration (pool ≈ `nlist` → k-means degrades to sampled centroids) at the design target.
-  Retrofitting level semantics later would touch partition keys, centroid metadata, the rebuild state
-  machine, the search path, and the definition config at once.
-- **Deployment stays measured**: `levels = 1` (flat behavior) is the default until the scan-cost
-  measurement at the target scale justifies `levels = 2` (e.g., 64×64). The L1 centroid table is
-  the Router's future routing index for partition-based multi-canister dispatch.
+  single-stage selection. Every flat code path, wire shape, and byte layout is unchanged by the
+  hierarchy; `levels = 2` activates only when a rebuild starts with
+  `admin_start_vector_rebuild(fine_nlist = Some(f))`, `f >= 2`.
+- **Training (`TrainCoarse` → `TrainFine`)**: a two-level rebuild first runs k-means-lite over the
+  whole pool at the coarse count (identical convergence rule and one-iteration-per-step budget as
+  flat `Training`), then one bounded per-subtree job per coarse id in ascending order (each also one
+  k-means-lite iteration per step over that subtree's members). Subtree membership is persisted as a
+  per-row coarse-id array in the rebuild-pool region (layout version 2) so resume is exact.
+  **Empty/insufficient subtree rules** (deterministic, lowest-id tie-breaks): a coarse with zero
+  members replicates its coarse centroid into every fine slot; a subtree with `0 < m < f` members
+  runs k-means on those `m` seeds and fills each unfilled slot (ascending) with a copy of the
+  trained centroid nearest to the subtree's member mean.
+- **Search iterates levels**: score the query against the cached level-0 coarse set, ε₂-select
+  subtrees, read each selected subtree's contiguous child range `[c·f, (c+1)·f)` straight from
+  stable memory (fine sets are **never cached** — an extension of the active-version cache scope),
+  ε₂-select leaves within it with the same rule, then scan the selected leaves in full. The same
+  single `eps_query` value applies at both stages; per-level eps is a deferred follow-up. The
+  untrained/exact-scan fallback walks all leaves.
+- **Bounds stay per level**: `MAX_NLIST` applies to the coarse count and to each subtree's fan-in,
+  and the total leaf count is capped by `MAX_LEAVES = 65,536` at start time (u32 partition-id
+  packing plus per-generation head capacity). The rebuild-pool region charges both levels at the
+  shared work-centroid count `max(coarse, f)`.
+- **Deployment stays measured**: `levels = 1` (flat behavior) remains the shipped default and the
+  Router policy passes `fine_nlist = None`; enabling `levels = 2` (e.g., 64×64) follows the
+  scan-cost measurement at the target scale.
 
 ### Search path
 
-1. Heap centroid cache (query path is read-only; a miss reads stable for that call only).
-2. Query × nlist centroids (SIMD; `nlist <= MAX_NLIST`).
-3. ε₂ partition selection.
+1. Heap centroid cache (query path is read-only; a miss reads stable for that call only). A
+   two-level generation caches its **level-0 coarse set only**; fine child sets are always
+   stable-read per use.
+2. Query × centroids of the active generation's scoring set (SIMD; `nlist <= MAX_NLIST` per level):
+   the leaf set for flat, the coarse set for `levels = 2`.
+3. ε₂ partition selection. Two-level (`levels = 2`): ε₂-select coarse subtrees, then read each
+   selected subtree's contiguous leaf range `[c·f, (c+1)·f)` and ε₂-select within it with the same
+   single `eps_query`, returning globally ascending leaf ids; an unreadable child range widens to
+   the full subtree (fail-open) and the untrained fallback walks all leaves.
 4. Per selected partition: read extents as contiguous spans → tombstone skip (bit 31) → positional
-   validation against the subject map → (opt-in) row-level bound pruning → SIMD.
+   validation against the subject map → (opt-in) row-level bound pruning → SIMD. When the scanned
+   generation carries the code tier (ADR 0079), this step instead runs Stage A (per-row XNOR+popcount
+   estimate, per-page top-`C` shortlist) and Stage B (exact same-scratch rerank with lower-bound
+   pruning); centroid selection and filtered allowlist scans are unchanged.
 5. Deterministic top-k heap ordered by `(score, subject)`.
 6. Filtered search (ADR 0034): the candidate allowlist from the Property Index is unchanged. For a
    **large** allowlist (≥ ~half the live rows) the vector canister scans the active rows page-batched
@@ -564,6 +640,23 @@ Rebuild reads the vector canister's own rows (self-rebuild); the graph is never 
 the pair; an `I8` row is never expanded to f32). f32 exists transiently inside centroid
 seeding/training, and the trained centroids are canonical f32 end to end.
 
+The frozen candidate pool and the Training centroid work area live in a dedicated **single-tenant
+raw region** (`VECTOR_REBUILD_POOL`, MemoryId 18; ADR 0033 implementation), not in the lifecycle
+record: `[96 B header][capacity × (pad-stride row + aux)][nlist × f32 centroids]` under a magic +
+version + binding + lengths header. The durable `VectorRebuildStateRecord` is scalars-only
+(`pool_len`, cursors, counters), so no step decodes or re-encodes pool bytes through Candid —
+Sampling appends rows to the region, dedup streams the durable rows through a transient hash map
+with exact byte verification (no whole-pool clone), and Training reads rows individually. Every
+step validates the region header fail-closed against the definition geometry and the durable
+scalars before mutating (`RebuildPoolInvalid`). Admission is bounded by the physical region budget
+(8 MiB) plus the per-iteration distance-op budget; the former Candid-envelope constraint is gone.
+Because the region holds one pool, a second index's `admin_start_vector_rebuild` is rejected with
+`RebuildAlreadyActive` while another index binds it — cross-index rebuilds serialize at admission,
+per-index semantics unchanged. The binding is released when the lifecycle leaves
+`Sampling`/`Training` for good: abort entry, teardown completion to `Idle`, the `Failed`
+transition, and the coordinated definition-domain reset. This is a fresh layout cutover (format
+version 1, breaking): reinstall required, no migration or compatibility reader.
+
 During `Building`, if the kth subject-store link fails after a partition batch append, the linked
 prefix is preserved while the current row and every unlinked suffix row are tombstoned; the original
 error is returned. Retrying from the preserved `Building` cursor skips subjects in the linked prefix
@@ -580,9 +673,11 @@ stride (`align16(component_bytes × dims)`),
 | Store                         | Growth                            | Bound / lever                                              |
 | ----------------------------- | --------------------------------- | ---------------------------------------------------------- |
 | `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy |
+| `VECTOR_ROW_SLAB` (code tier, ADR 0079) | `+ N × c` per tier-on generation | `c = 8 + ceil(P/64)·8` with `P = next_pow2(dims)` (d1536 → P=2048 → **264 B/row**, +4.3% vs F32; d768 → 136 B); page capacity shrinks under the fixed byte budget (`slots_per_page` rederived by `shape_def_for`) |
 | `VECTOR_SUBJECT_TO_ID`        | `G × ~60B × η` while deleted clocks are retained | Every fully attached catalog lane uses `min(graph_watermark, router_watermark)` after frontier publication, including markerless Graph-only lanes; no finite-time or global bound is claimed |
 | `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy; opt-in bounded slab compaction reclaims drained spans (plan 0278) |
 | `VECTOR_PAGE_META` / heads    | O(N / slots per page), O(nlist)   | negligible                                                 |
+| `VECTOR_REBUILD_POOL`         | fixed ≤ 8 MiB while a rebuild is in flight | single-tenant region budget + per-iteration op budget cap the pool; released at teardown (ADR 0033 implementation) |
 | centroids / defs / watermarks | O(nlist × d), O(#defs), O(shards) | negligible                                                 |
 | graph                         | 0 embedding bytes                 | outbox carries remove metadata only                        |
 
@@ -630,15 +725,17 @@ Prepared now:
 | 2     | ε₂ query-aware pruning                                                             | Slice 11+ candidate                                                                                             |
 | 3     | balance-aware training (SPANN HBC objective, λ penalty); k-means++ init (optional) | Slice 11+ candidate                                                                                             |
 | 4     | dimension-blocked early exit (HARMONY-style)                                       | Slice 11+ candidate                                                                                             |
-| 5     | two-level hierarchy (e.g., 64×64)                                                  | **designed level-generic from the start** (`levels = 1` = flat behavior); 2-level deployment measured           |
+| 5     | two-level hierarchy (e.g., 64×64)                                                  | **implemented (Slice 5, 2026-08-24)**: `levels = 2` trains via `TrainCoarse` → `TrainFine`, searches in two ε₂ stages, and activates only on an explicit `fine_nlist` rebuild; flat (`levels = 1`) stays the deployed default |
+| —     | two-tier precision code tier (RaBitQ first stage + same-page exact rerank)         | **implemented (Slice 6, 2026-08-24; ADR 0079)**: opt-in per generation via `admin_start_vector_rebuild(code_tier = Some(true))`; flat and two-level both accept it; tier off stays the default |
 | 6     | closure replication (coarse-level, opt-in)                                         | Slice 11+ candidate                                                                                             |
 | —     | `ivf_pq`, global HNSW                                                              | **deferred** (PQ recall; HNSW: random reads, unbounded instruction budget, delete repair, cross-canister edges) |
 
-At `d = 1536` a single training job is bounded by the 8 MiB envelope, which charges the sampled
-pool at its native stored row width and the centroids at f32 width: an F32 job is bounded to ≈677
-centroids, while an I8 job's state ceiling rises above `MAX_NLIST` and the per-iteration
-distance-op budget binds first. With the level-generic structure this becomes a **per-level**
-bound. A raw candidate region remains the documented fallback if per-job pools still bind.
+At `d = 1536` a single training job is bounded by the 8 MiB rebuild-pool region, which charges the
+sampled pool at its native stored row width and the centroids at f32 width (plus a per-row coarse-id
+array for two-level rebuilds): an F32 job is bounded to ≈677 centroids, while an I8 job's state
+ceiling rises above `MAX_NLIST` and the per-iteration distance-op budget binds first. With the
+two-level structure the work-area budgets are evaluated at `max(coarse, f)`, so both levels share
+one bound. A raw candidate region remains the documented fallback if per-job pools still bind.
 
 ## Research grounding
 
@@ -664,14 +761,16 @@ amend the planned vector boundary above.
 
 ## Open items
 
-1. **Per-level `nlist` under the 8 MiB envelope**: the level-generic structure makes the
+1. **Per-level `nlist` under the pool-region budget**: the two-level structure makes the
    encoding-dependent per-training-job ceiling (≈677 for F32 at `d = 1536`; higher for I8, where the
-   per-iteration op budget binds before the envelope) a per-level bound; a hierarchy restores
+   per-iteration op budget binds before the region) a per-level bound; a hierarchy restores
    trainable counts at `d = 1536`. A raw candidate region remains the documented fallback if per-job
    pools still bind.
-2. **Hierarchy deployment timing** (**Slice 6 decision: ship `levels = 1` / flat, defer `levels = 2`**):
-   the flat `ivf_flat` model stays the deployed form; enabling `levels = 2` (e.g. 64×64) follows the
-   scan-cost measurement at the target scale. Slice 6 measured ~164K instructions per scanned row at
+2. **Hierarchy deployment timing** (**Slice 5 implemented `levels = 2` mechanics; flat remains the deployed default**):
+   the flat `ivf_flat` model stays the shipped form — a two-level rebuild starts only with an
+   explicit `fine_nlist` and the Router policy passes `None`. Enabling `levels = 2` (e.g. 64×64) at
+   scale follows the scan-cost measurement at the target scale, plus the deferred per-level
+   `eps_query`. Slice 6 measured ~164K instructions per scanned row at
    `d = 1536` (`bench_ivf_d1536_*`), which makes a flat single-partition scan at the 10⁸ target
    (~148K rows/partition at `nlist ≈ 677`) an infeasible ~24B instructions — a concrete, measured
    argument for the two-level hierarchy at scale, not just a structural one.

@@ -1,7 +1,7 @@
 # Stable-memory inventory
 
 Last updated: 2026-08-22
-Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, ADR 0059 canonical-export scopes at 51, and the exact derived-index pending floor at 52, with reserved holes 35, 44–45, and 47–50 = 53 numbered regions, 0–52; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058/0059 schema-migration ledger at MemoryId 50 + ADR 0059 index-catalog epoch at MemoryId 51 + ADR 0059 physical-index allocator cell at MemoryId 20 + ADR 0065 vector-index allocator cell at MemoryId 52 + Router direct-ingestion outbox at MemoryId 53 = 54 regions, 0–53; graph-index: ADR 0059 physical-index build states (MemoryId 7) + touched subjects (MemoryId 8) = 9 regions, 0–8; vector-canister: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state + ADR 0064 per-shard watermarks, GC cursor, and deleted-subjects list + plan 0278 slab-compaction driver state reusing the retired reverse-map slot at MemoryId 11 = 17 allocated regions across 18 numbered slots, 0–17 (hole 8); provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8), internal storage-id counter (MemoryId 12) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 13 regions, 0–12)
+Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, ADR 0059 canonical-export scopes at 51, and the exact derived-index pending floor at 52, with reserved holes 35, 44–45, and 47–50 = 53 numbered regions, 0–52; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058/0059 schema-migration ledger at MemoryId 50 + ADR 0059 index-catalog epoch at MemoryId 51 + ADR 0059 physical-index allocator cell at MemoryId 20 + ADR 0065 vector-index allocator cell at MemoryId 52 + Router direct-ingestion outbox at MemoryId 53 = 54 regions, 0–53; graph-index: ADR 0059 physical-index build states (MemoryId 7) + touched subjects (MemoryId 8) = 9 regions, 0–8; vector-canister: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state + ADR 0064 per-shard watermarks, GC cursor, and deleted-subjects list + plan 0278 slab-compaction driver state reusing the retired reverse-map slot at MemoryId 11 + the ADR-0033-implementation rebuild pool region at MemoryId 18 = 18 allocated regions across 19 numbered slots, 0–18 (hole 8); provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8), internal storage-id counter (MemoryId 12) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 13 regions, 0–12)
 Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
 Plan 0171 update (2026-07-24 23:03:51 UTC +0000): the implemented mate owner is explicitly
@@ -401,7 +401,7 @@ maintenance scan state added in Slice 10; per-shard watermark and tombstone-rete
 added in ADR 0064 §5. **18 numbered slots (MemoryIds 0–17), 17 allocated; MemoryId 8 is an
 unallocated hole, and MemoryId 11 holds the plan 0278 slab-compaction driver state (reused from
 the retired `VECTOR_ID_TO_SUBJECT` reverse map so MemoryIds 9/10/12–14 stayed stable).** The vector canister is the sole durable owner of active Vector rows. Only physical
-IVF projections (MemoryIds 5, 6, 9, 10, and 12) rebuild from active Vector rows through the live
+IVF projections (MemoryIds 5, 6, 9, 10, 12, and 18) rebuild from active Vector rows through the live
 `admin_start_vector_rebuild` entry point. `VECTOR_SUBJECT_TO_ID` (7) and `VECTOR_ROW_SLAB` (13) name
 the symbolic `client_reingestion` recovery contract, not a live API: loss of their durable rows requires
 clients to re-ingest active vectors. Code source of truth for runtime `MemoryId` constants:
@@ -424,16 +424,45 @@ positionally against `VECTOR_SUBJECT_TO_ID` (MemoryId 7); rows carry neither `ve
 Slice 7 adds `VECTOR_REBUILD_STATE` (MemoryId 12): a `index_id → VectorRebuildStateRecord` holding
 the per-index bounded shadow-version rebuild lifecycle (`Idle`/`Sampling`/`Training`/`Building`/
 `ReadyToPublish`/`Cleaning`/`Aborting`/`Failed`), each long-running phase carrying a resume cursor so
-admin steps stay bounded. The `Sampling` and `Training` variants additionally carry the bounded
-distinct candidate pool (Slice 8 k-means-lite training); it stays inside this MemoryId 12 record and is
-not split into a separate region (ADR 0033). The value is persisted as `RawRebuildState` — the verbatim
-`VectorRebuildStateRecord` Candid bytes (on-disk format unchanged) — so the per-step fail-closed
-encoded-size guard and the persist share a single Candid encode instead of encoding twice. It is derived (reconstructible by re-running a rebuild from the active
-version) through the live
+admin steps stay bounded. The value is persisted as `RawRebuildState` — the verbatim
+`VectorRebuildStateRecord` Candid bytes — so the persist and the step share a single Candid encode.
+It is derived (reconstructible by re-running a rebuild from the active version) through the live
 `admin_start_vector_rebuild` entry point. Slice 7 also extends the
 `VECTOR_SUBJECT_TO_ID` value (`SubjectMapEntry`) with a second `shadow_slot: Option<SlotRef>`
 (serde-default, no repack) so an atomic publish stays metadata-only; search resolves the live slot
 via `current_slot_for(active_index_version)`.
+
+The ADR 0033 implementation moves the bounded distinct candidate pool (Slice 8 k-means-lite
+training) and the Training centroid work area out of the MemoryId 12 record into the dedicated raw
+region `VECTOR_REBUILD_POOL` (MemoryId 18) described below, leaving that record scalars-only
+(`pool_len`, cursors, counters). This reverses this inventory's earlier note that the pool "stays
+inside the MemoryId 12 record": post-Slice-3 measurement showed the per-step whole-record Candid
+decode plus whole-state re-encode at ~71% of full-rebuild instructions, which no in-record layout
+or heap memoization addresses as directly. The change is part of the Phase-0 working-notes slice;
+fresh install required, no migration or compatibility reader.
+
+`VECTOR_REBUILD_POOL` (MemoryId 18, ADR 0033 implementation; layout **version 3** since Slice 6) is
+a **single-tenant** raw region owned by
+`crates/vector-canister/src/facade/stable/rebuild_pool.rs`:
+`[header 96 B][candidate slots: capacity × (pad_stride + aux)][centroid area: work_centroids × dims×4][coarse-id array: capacity × 4 B, two-level only]`
+under a minimal header carrying magic `VRP`, format version 3, the binding
+`(index_id, pad_stride, work_centroids, centroid_stride)` plus the two-level and code-tier flags
+(Slice 5 / Slice 6 respectively), and the lengths
+(`pool_len`, `pool_capacity`, `centroid_count`, `assigned_len`). Every phase step re-validates the
+header fail-closed against the definition geometry and the durable lifecycle scalars
+(`RebuildPoolInvalid`) before any mutation; Sampling appends rows in bulk, dedup streams the durable
+rows through a transient hash→indices map with exact byte verification (no whole-pool clone), and
+Training reads rows individually. A two-level rebuild additionally persists each pool row's assigned
+coarse subtree id in the coarse-id array (`assigned_len` must cover the whole pool before fine
+training streams it), so a resumed `TrainFine` job reproduces its exact membership; flat rebuilds
+keep the array unreserved and their capacities byte-identical to the pre-Slice-5 layout. Admission
+is bounded by the physical region budget (`8 MiB`) plus the unchanged per-iteration op budget — the
+retired Candid-envelope constraint (`MAX_REBUILD_STATE_BYTES`) is deleted. Because the region holds
+one rebuild's pool, a second index cannot start a rebuild while another binds it
+(`RebuildAlreadyActive`). The binding is released (header zeroed) when the lifecycle leaves
+`Sampling`/`Training` for good: abort entry, teardown completion to `Idle`, the `Failed`
+transition, and the coordinated definition-domain reset. Like the lifecycle record it is derived,
+reconstructed by re-running a rebuild from the active version.
 
 ADR 0064 §7 replaces the ADR 0032 structure-of-arrays page store with the **two-table** page format from
 `ic-stable-vector-page-store`: `[PageHeader][run_table × run_capacity][row_meta × capacity][vector_bytes ×
@@ -456,7 +485,14 @@ reader; `VECTOR_SUBJECT_TO_ID` stays the freshness source of truth, and the `VEC
 plan 0278 for the slab-compaction driver state; no production reader
 after ADR 0064 §7 positional validation). `VECTOR_PARTITION_HEADS`
 (MemoryId 9) remains the per-partition allocator/counter owner and is deliberately outside the composite
-store.
+store. Since Slice 5, heads, page metas, and pages exist **for leaf partitions only**: one head per
+leaf id `0..leaf_count` (`nlist × nlist_fine`; flat keeps `nlist_fine = 1`). A two-level generation
+stores its extra level inside `IVF_CENTROIDS` (MemoryId 6) under level-tagged keys — the 17-byte
+`PartitionKey` gained a coarse/leaf tag byte (schema `GLEAPH-PARTKEY-1`) — so no new region and no
+MemoryId repack are needed; teardown deletes both levels' keys with one `(index_id, version)`
+prefix range deletion. The definition record itself grew to 46 bytes (schema `GLEAPH-VECDEF-02`,
+adding `levels`/`nlist_fine`); fresh install required for both schema changes, with no migration or
+compatibility reader.
 
 A derived, router-guarded admin query (`get_vector_slab_stats`) reports slab-space observability
 over these two regions: whole-slab physical facts (size, `occupied_tail`, global referenced bytes,
@@ -508,14 +544,15 @@ and is cleared with the fixture-only definition-domain reset.
 | 10       | `VECTOR_PAGE_META`                     | `PAGE_STORE`               | `init_page_store`             | derived     | page-directory metadata (slab offset + capacity/row/live/tombstone counts + meta/run geometry) for the two-table slab page store (**ADR 0064 §7**)                                                                                                                                                                                                                                                                                                                                                  | `admin_start_vector_rebuild`                                                               |
 | 11       | `VECTOR_SLAB_COMPACTION_STATE`         | `VECTOR_SLAB_COMPACTION_STATE` | `init_slab_compaction_state` | maintenance | one global `VectorSlabCompactionState` (`Idle` \| `Compacting { write_cursor, range_end, scan_cursor, pages_moved }`) for the opt-in bounded slab dead-space compaction driver (**plan 0278**); reuses the retired `VECTOR_ID_TO_SUBJECT` reverse-map slot (no production reader after ADR 0064 §7) so MemoryIds 9/10/12–14 stay stable. Operational bookkeeping, not query truth; persists across upgrade so an interrupted driver resumes fail-closed | —                                                                                          |
 | 12       | `VECTOR_REBUILD_STATE`                 | `VECTOR_REBUILD_STATE`     | `init_rebuild_state`          | derived     | bounded shadow-version rebuild lifecycle (**Slice 7**)                                                                                                                                                                                                                                                                                                                                                                                                                                              | `admin_start_vector_rebuild`                                                               |
-| 13       | `VECTOR_ROW_SLAB`                      | `PAGE_STORE`               | `init_page_store`             | derived     | raw two-table vector row slab (run table + packed `VertexPayload` + pad-stride rows) with `VSL`/version-1 header (**ADR 0064 §7**); companion to `VECTOR_PAGE_META`, opened as one composite store; total durable-row loss requires client re-ingestion                                                                                                                                                                                                                                             | `client_reingestion` (symbolic recovery contract, not an API)                             |
+| 13       | `VECTOR_ROW_SLAB`                      | `PAGE_STORE`               | `init_page_store`             | derived     | raw two-table vector row slab (run table + packed `VertexPayload` + pad-stride rows, plus a per-generation trailing code-segment table when the generation's `code_tier` is on: `PageHeader.code_stride` at offset `24..28`, 28→32 B header; **ADR 0079** / Slice 6) with `VSL`/version-1 header (**ADR 0064 §7**); companion to `VECTOR_PAGE_META`, opened as one composite store; total durable-row loss requires client re-ingestion                                                                                                                                                                                                                                             | `client_reingestion` (symbolic recovery contract, not an API)                             |
 | 14       | `VECTOR_MAINTENANCE_STATE`             | `VECTOR_MAINTENANCE_STATE` | `init_maintenance_state`      | maintenance | `index_id → VectorMaintenanceState` page-health scan progress cursor + merged counters (`Failed` carries a bounded message) for Router-forwarded maintenance orchestration (**Slice 10**); operational bookkeeping discarded/restarted, not reconstructed; persists across upgrade, cleared only on init/reset                                                                                                                                                                                      | —                                                                                          |
 | 15       | `VECTOR_SHARD_WATERMARKS`              | `VECTOR_SHARD_WATERMARKS`  | `init_shard_watermarks`       | maintenance | `shard_id → ShardWatermarks { graph_watermark, router_watermark }` (**ADR 0064 §5**): the attached Graph shard advances `graph_watermark` for a contiguous applied prefix; the Router-only frontier endpoint advances `router_watermark` monotonically for an exact fully attached shard after lane validation, including a markerless Graph-only lane. The same no-await update runs one bounded GC step, whose cutoff is always `min(graph_watermark, router_watermark)`. This is operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path | —                                                                                          |
 | 16       | `VECTOR_GC_CURSOR`                     | `VECTOR_GC_CURSOR`         | `init_gc_cursor`              | maintenance | `Option<DeletedSubjectKey>` (**ADR 0064 §5**): persisted cursor for bounded tombstone-retention steps. The catalog-driven frontier may advance the cutoff for any fully attached lane; an empty marker snapshot retires no Router rows, but the monotonic Vector watermark still permits the bounded GC step. This is operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path                                                                                                                                                                                                            | —                                                                                          |
 | 17       | `VECTOR_DELETED_SUBJECTS`              | `VECTOR_DELETED_SUBJECTS`  | `init_deleted_subjects`       | maintenance | `(shard, tombstone stamp, subject) -> ()` maintenance list for bounded tombstone-retention steps; subject-map slot order is unstable under removal (**ADR 0064 §5**). Eligibility is `stamp <= min(graph_watermark, router_watermark)` for every fully attached lane, including markerless Graph-only lanes. Operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path                                                                                                                                                                         | —                                                                                          |
+| 18       | `VECTOR_REBUILD_POOL`                  | — (raw region)             | — (`rebuild_pool::begin`)     | derived     | single-tenant raw rebuild-pool region (**ADR 0033 implementation**): frozen Sampling/Training candidate rows (pad-stride stored bytes + aux), the Training centroid work area, and — two-level rebuilds only (Slice 5) — the per-row coarse-id array behind a minimal `VRP`/**version-3** header (binding + `pool_len`/`pool_capacity`/`centroid_count`/`assigned_len` + Slice 6 `code_tier` flag byte carrying the shadow generation's tier from start to `Building`, **ADR 0079**); fail-closed resume validation against the lifecycle scalars; released at abort entry, teardown completion, `Failed`, and coordinated reset. Fresh layout cutover (format version 3, breaking over earlier headers): no migration or compatibility reader | `admin_start_vector_rebuild`                                                               |
 
 The fixture-only Vector definition-domain reset, compiled under `cfg(test)` /
-`cfg(feature = "canbench")`, resets MemoryIds 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, and 17 together after
+`cfg(feature = "canbench")`, resets MemoryIds 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 17, and 18 together after
 preflighting the expected MemoryId 4 incarnation and acquiring every coupled region handle. It also
 drops the heap centroid cache. MemoryIds 0–3 and 15–16 are not definition-derived: router authority,
 graph ownership, shard attachments, watermarks, and the tombstone-retention cursor therefore survive. Production

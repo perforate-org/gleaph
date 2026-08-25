@@ -247,14 +247,17 @@ sample_limit)` that, when health crosses a `VectorMaintenancePolicy` (split `rec
 > trusted admin input (proving its completeness would need an unbounded scan). A generation guard rejects
 > page health attested against a different generation (`StaleMaintenanceHealth`), and `target_nlist =
 None` defaults to `def.nlist` only when `>= 2`. (3) A
-> transient **heap** centroid cache (`admin_vector_centroid_cache_warmup` / `_clear` / `_status`,
-> reporting `VectorCentroidCacheStatus { entries, bytes, max_bytes }`): the partition-page `#[query]`
-> search reads decoded centroids from the heap when warmed (skipping the `IVF_CENTROIDS` stable read +
-> `f32` decode) and otherwise reads stable for that call only. Because IC `#[query]` execution is
-> non-committing, the cache is **read-only** on the query path; population/eviction happen only on
-> `#[update]` warmup/clear and a publish-time invalidation (the active generation changing). All new
-> admin endpoints stay on the vector canister behind `guard_router_canister`; Router forwarding landed
-> in Slice 10 (below).
+> transient **heap** centroid cache (`admin_vector_centroid_cache_status`, reporting
+> `VectorCentroidCacheStatus { entries, bytes, max_bytes }`; no operator warm/clear surface): entries
+> hold decoded centroid sets behind `Arc` shared handles, so serving a hit copies no payload bytes.
+> The partition-page `#[query]` search reads centroids from the heap when warmed (skipping the
+> `IVF_CENTROIDS` stable read + `f32` decode) and otherwise reads stable for that call only. Because
+> IC `#[query]` execution is non-committing, the cache is **read-only** on the query path;
+> population happens on committed paths — an automatic post-upgrade `warm_all()` sweep and lazy
+> update-path reads of the active generation — with a publish-time invalidation (the active
+> generation changing); reads at non-active versions bypass the cache. All new admin endpoints stay
+> on the vector canister behind `guard_router_canister`; Router forwarding landed in Slice 10
+> (below).
 >
 > **Slice 10 (implemented): Router policy with vector-owned maintenance execution.** Slice 10 adds
 > Router-forwarded maintenance ergonomics and a Router-owned maintenance policy catalog, and it does
@@ -730,14 +733,20 @@ attested_page_health, policy, target_nlist, sample_limit)` (Router-guarded `#[up
    `StaleMaintenanceHealth`). `target_nlist = None` defaults to `def.nlist` only when `>= 2`
    (degenerate `nlist = 1` requires an explicit `target_nlist`, since rebuild requires `nlist >= 2`).
 3. **Heap centroid cache.** A transient `thread_local` cache keyed by `(index_id ->
-{version, nlist, dims})` memoizes the decoded centroid set so the partition-page `#[query]` search
-   skips the `IVF_CENTROIDS` stable read + `f32` decode. Because IC `#[query]` execution is
-   non-committing, the query path is **read-only**: a warmed entry is used, and a miss reads stable for
-   that call only without populating the cache. Population/eviction are `#[update]`-only —
-   `admin_vector_centroid_cache_warmup(index_id)` (caches a ready `nlist > 1` set; drops any stale
-   entry for degenerate/untrained indexes), `admin_vector_centroid_cache_clear()`, and a publish-time
-   `invalidate(index_id)` when the active generation changes; the cache is byte-bounded and dropped on
-   init/upgrade. `admin_vector_centroid_cache_status()` reports `VectorCentroidCacheStatus { entries,
+{version, nlist, dims})` keeps the decoded centroid set resident so partition-page `#[query]` search
+   skips the `IVF_CENTROIDS` stable read + `f32` decode, and `nlist > 1` upserts skip it on every
+   assignment. Because IC `#[query]` execution is non-committing, the query path is **read-only**: a
+   warmed entry is used, and a miss reads stable for that call only without populating the cache.
+   Each entry stores its decoded set behind an `Arc` shared handle: `lookup` hands out clones of the
+   handle (a pointer bump), so serving a hit copies no centroid bytes. Population happens only where
+   heap writes commit: `warm_all()` after the post-upgrade store reopen (warms every index whose
+   centroid metadata marks a ready set, bounded by the byte cap), and lazily on update-path reads of
+   the **active generation** (`read_active`). Version scope: reads at any other version — e.g. the
+   Training/Building shadow target that a resume/retry can overwrite — bypass the cache via direct
+   stable reads, so no stale entry survives a centroid rewrite; a publish-time `invalidate(index_id)`
+   additionally frees the heap when the active generation changes. The cache is byte-bounded
+   (lowest-`index_id`-first eviction) and dropped on init/upgrade. There is no operator warm/clear
+   surface: `admin_vector_centroid_cache_status()` reports `VectorCentroidCacheStatus { entries,
 bytes, max_bytes }` — per-query hit/miss is intentionally **not** tracked (a query cannot commit
    counters on IC).
 4. All new admin endpoints stay on the vector canister behind `guard_router_canister`, driven directly
@@ -747,9 +756,11 @@ bytes, max_bytes }` — per-query hit/miss is intentionally **not** tracked (a q
 Slice 9 test coverage proves the bounded page-meta scan's additive merge / version scoping / cursor
 scope-check, the recommendation thresholds (split bands, inclusive crossing, independent gating,
 `u128` non-overflow), the trigger's generation guard and `nlist` resolution, and the centroid cache's
-cold-vs-warm search parity, publish invalidation, and router-guard — at the store layer (unit) and end
-to end via PocketIC (`sender = router`). Canbench adds the page-meta health scan (clean and
-tombstone-heavy), cold-vs-warm partition-page search, and centroid-cache warmup cost.
+shared-handle lookup (allocation identity), auto-warm sweep + cap eviction, active-generation
+population via upsert, shadow-generation bypass, cold-vs-warm search parity, publish invalidation,
+and status router-guard — at the store layer (unit) and end to end via PocketIC (`sender = router`).
+Canbench adds the page-meta health scan (clean and tombstone-heavy), cold-vs-warm partition-page
+search, and centroid-cache warmup cost.
 
 ### 7.4 Slice 10 maintenance-orchestration boundary (implemented)
 
@@ -944,8 +955,10 @@ future ADR proves that physical index selection must be user-visible.
 14. **[done, slice 9]** Add bounded page-meta tombstone health
     (`admin_vector_partition_health_step`), a pure recommendation + Router-guarded rebuild trigger
     (`recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended`, no autonomous
-    timer), and a heap centroid cache with explicit query read-only cache-miss behavior
-    (`admin_vector_centroid_cache_warmup` / `_clear` / `_status`). No new stable region.
+    timer), and a heap centroid cache with explicit query read-only cache-miss behavior. No new stable
+    region. (Later made resident-by-default: `Arc`-shared payloads, post-upgrade auto-warm, lazy
+    update-path population of the active generation with non-active-version bypass, and removal of
+    the operator `warmup`/`clear` endpoints — only `_status` remains.)
 15. **[done, slice 10]** Add Router-forwarded maintenance ergonomics and a Router-owned
     graph/index-scoped maintenance policy catalog (`ROUTER_VECTOR_MAINTENANCE_POLICIES`, MemoryId 44),
     while keeping maintenance execution state in the vector-index canister (`VECTOR_MAINTENANCE_STATE`,

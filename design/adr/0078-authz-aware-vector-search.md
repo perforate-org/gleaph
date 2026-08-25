@@ -1,7 +1,7 @@
 # 0078. Authorization-aware vector search: oversampled visibility filtering with iterative deepening
 
 Date: 2026-08-24
-Status: accepted
+Status: implemented
 Last revised: 2026-08-24
 
 ## Context

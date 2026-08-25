@@ -63,6 +63,11 @@ re-derive it. Therefore the stored encoding is the search precision: non-`F32` i
 approximate by contract, documented per definition. Quantized indexes use quantized centroids with
 SPANN's representative-point replacement.
 
+> **Revised (Slice 6, 2026-08-24):** this principle is superseded by the two-tier precision
+> contract of [ADR 0079] — the original tier still defines advertised quality, but a generation may
+> carry a compressed code tier that accelerates only the first-stage scan while every emitted hit
+> is exactly rescored over original bytes. See `design/index/vector-index.md` §Design principles #4.
+
 ### 4. Label sets on definitions; two-layer presence
 
 `VectorIndexDefRecord` gains `labels: Vec<LabelId>`, creation-fixed (change = drop + recreate). The
@@ -240,6 +245,11 @@ per-row scale). Aux defaults: `F32` 0 bytes (sub-square + early exit, or normali
 popcount scoring) is future work and ships its own convention/kernel slice — the unconstructible
 `BinaryConvention`/`BinaryPopcnt` stack was removed in a dead-state sweep rather than kept unreachable.
 
+> **Revised (Slice 6, 2026-08-24):** [ADR 0079] adds an index-internal **code tier** beside these
+> encodings (1-bit RaBitQ sketch over a seeded randomized WHT rotation; per-row
+> `[code_aux 8B][codes]` segment on the same page). It changes no public encoding and no wire shape;
+> PQ remains a future A/B candidate. See `design/index/vector-index.md` §Two-tier precision code tier.
+
 ### 9. Search algorithm (ivf_flat kind; SPANN blueprint; ε₂; sub-square + early exit)
 
 `ivf_flat` is the kind (category); SPANN is the blueprint (a high-performance instance of the same
@@ -248,9 +258,11 @@ dist(q, c_best)`). `L2` scoring defaults to sub-square SIMD with dimension-block
 (prewarm the k-th best, then stop each row's SIMD once its partial distance exceeds the threshold);
 `dot + norms` remains an opt-in alternative. The search contract (subject revalidation, no mid-scan
 truncation, deterministic top-k, ADR 0034 allowlist) is unchanged. The partition structure is
-**level-generic from the start** (flat is the degenerate `levels = 1` case; a leaf `partition_id`
-packs its path; per-level `nlist`/`eps_query`; per-subtree training jobs), so the 8 MiB envelope
-becomes a per-training-job bound — see `design/index/vector-index.md`.
+**level-generic and implemented (Slice 5)**: flat is the degenerate `levels = 1` case; a leaf
+`partition_id` packs its path (`coarse × nlist_fine + fine`); a two-level rebuild trains
+`TrainCoarse` over the whole pool then per-subtree `TrainFine` jobs, and search ε₂-selects in two
+stages under the same single `eps_query`. Training work areas are bounded per level by the
+rebuild-pool region budget — see `design/index/vector-index.md`.
 
 ### 10. Compaction = rebuild; plus an opt-in bounded slab reclaim
 
@@ -305,8 +317,8 @@ constraints — naming is revisited after the implementation proves distinctive 
 - Per-training-job `nlist` bound at `d = 1536` under the 8 MiB envelope, which charges the sampled
   pool at native stored-row width and the centroids at f32 width (≈677 per F32 job; an I8 job's
   state ceiling rises above `MAX_NLIST`, where the per-iteration op budget binds first); the
-  level-generic structure makes it a per-level bound, restoring trainable counts (raw candidate
-  region remains the documented fallback).
+  level-generic structure makes it a per-level bound, restoring trainable counts (the raw candidate
+  region is implemented as `VECTOR_REBUILD_POOL`, MemoryId 18 — see ADR 0033's implementation note).
 - Label loss removes embeddings (IC deviation from the industry "data outlives labels" model).
 - Crate split adds a workspace/CI dependency edge; the boundary API must be designed carefully.
 
@@ -349,8 +361,13 @@ including `markerless_frontier_catalog` total 52,080,138 and scope 52,079,143 in
 including `markerless_frontier_catalog` total 52,080,138 and scope 52,079,143 instructions. The
    targeted affected-crate format check passes; the workspace-wide format check is blocked by
    unrelated dirty paths and never passed. A future boundary split requires a separate ADR.
-6. **[planned]** Measure (canbench): scoring formulations, page scan cost at `d = 1536`, per-level
-   `nlist` envelope; decide hierarchy deployment (`levels = 2`) and raw candidate region.
+6. **[partial]** Measure (canbench): scoring formulations, page scan cost at `d = 1536`, per-level
+   `nlist` envelope. Hierarchy deployment is **implemented (`levels = 2`)**: `admin_start_vector_rebuild`
+   takes `fine_nlist`, training splits into `TrainCoarse`/`TrainFine` over the dedicated
+   rebuild-pool region (`VECTOR_REBUILD_POOL`, MemoryId 18, layout v2 with the per-row coarse-id
+   array), and search ε₂-selects in two stages under one shared `eps_query`; measured on clustered
+   d768 I8 at `c = f = 16`, the two-level pipeline costs ~1.79B instructions against ~4.10B for a
+   flat rebuild at the same 256-leaf count. Per-level eps configuration remains future work.
 
 ## Required design updates
 
@@ -366,3 +383,8 @@ including `markerless_frontier_catalog` total 52,080,138 and scope 52,079,143 in
 - [ADR 0031](0031-vertex-embedding-store-and-derived-vector-index.md)
 - [ADR 0032](0032-vector-index-slab-page-store.md)
 - [ADR 0033](0033-vector-rebuild-state-read-memoization.md)
+
+## Revised by
+
+- [ADR 0079](0079-two-tier-precision-vector-encoding.md) — two-tier precision encoding (§3 principle,
+  §7 page geometry `code_stride`, §8 code tier vs PQ).

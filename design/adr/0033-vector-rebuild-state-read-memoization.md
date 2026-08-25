@@ -1,8 +1,34 @@
 # 0033. Vector rebuild candidate pool storage and rebuild-state read cost
 
 Date: 2026-06-25
-Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
-Last revised: 2026-08-07 23:39:30 UTC +0000
+Status: **Implemented (2026-08-24, refined Alternative C) — umbrella redesign: [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
+Last revised: 2026-08-24 03:56:12 UTC +0000
+
+> **Implementation note (2026-08-24).** The decision below rejected a dedicated pool region
+> (Alternative C) in favor of heap memoization (D), based on a probe against the pre-Slice-3 build.
+> Phase 0 of the vector-canister working notes later directed implementing the region instead:
+> post-Slice-3 measurement showed `rebuild_read_state` at ~71% of full-rebuild instructions
+> (545M/768M for `bench_rebuild_full_d128_nlist16`) — dominated by decoding the whole Candid record
+> per step **and** re-encoding it on every persist — and memoization had never landed. The
+> implementation is a refined C:
+>
+> - New single-tenant raw region `VECTOR_REBUILD_POOL` (MemoryId 18), owned by
+>   `vector-canister/src/facade/stable/rebuild_pool.rs`, behind a minimal `VRP`/version-1 header
+>   (magic + version + binding + lengths). It holds the frozen Sampling/Training candidate rows
+>   (pad-stride stored bytes + aux) and the Training centroid work area inside an 8 MiB budget.
+> - `VectorRebuildStateRecord` is scalars-only (`pool_len`, cursors, counters); the artificial
+>   Candid-envelope constraint `MAX_REBUILD_STATE_BYTES` is deleted — admission now fails closed on
+>   the physical region budget plus the unchanged per-iteration op budget.
+> - Every phase step validates the header fail-closed against the definition geometry and the
+>   durable scalars before any mutation (`RebuildPoolInvalid`); Sampling dedup streams the durable
+>   rows through a transient hash→indices map with exact byte verification (no whole-pool clone);
+>   Training reads rows individually from the region.
+> - The region is released when the lifecycle leaves `Sampling`/`Training` for good (abort entry,
+>   teardown completion, `Failed`, coordinated definition-domain reset). Because it holds one
+>   rebuild's pool, a second index cannot start a rebuild while another binds the region
+>   (`RebuildAlreadyActive`).
+>
+> The decision text below is retained as decision history; ADR 0064 remains the umbrella redesign.
 
 > **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
 > replaces the vector-index design; the rebuild-state investigation below is retained as decision
