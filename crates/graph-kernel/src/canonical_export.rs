@@ -129,6 +129,13 @@ pub enum CanonicalExportTarget {
         property_id: PropertyId,
         direction: EdgeIndexDirection,
     },
+    /// Raw-text vertex projection for `CREATE TEXT INDEX` backfill (ADR 0059 §Text build
+    /// kind). Pages carry raw UTF-8 values instead of sortable index keys so the text
+    /// canister can analyze them.
+    Text {
+        label_id: u16,
+        property_id: PropertyId,
+    },
 }
 
 /// Locates one nested record leaf inside stored vertex records (ADR 0073 §3).
@@ -283,6 +290,16 @@ pub enum CanonicalIndexableFact {
         property_id: PropertyId,
         encoded_value: Vec<u8>,
     },
+    /// Raw-text vertex fact for `CREATE TEXT INDEX` backfill (ADR 0059 §Text build kind).
+    ///
+    /// Carries the raw UTF-8 property value instead of a sortable index key so the text
+    /// canister can analyze it. The distinction is type-level: no page can be decoded
+    /// under the wrong projection because consumers match this variant explicitly.
+    VertexText {
+        vertex_id: u32,
+        property_id: PropertyId,
+        raw_value: String,
+    },
 }
 
 /// Result of one bounded canonical export page.
@@ -420,6 +437,14 @@ mod tests {
                 None,
             ),
             (
+                "text vertex",
+                CanonicalExportTarget::Text {
+                    label_id: 4,
+                    property_id: PropertyId::from_raw(6),
+                },
+                None,
+            ),
+            (
                 "sidecar edge",
                 CanonicalExportTarget::Edge {
                     label_id: EdgeLabelId::from_raw(3),
@@ -500,6 +525,7 @@ mod tests {
             .map(|fact| match fact {
                 CanonicalIndexableFact::Edge { encoded_value, .. }
                 | CanonicalIndexableFact::Vertex { encoded_value, .. } => encoded_value.len(),
+                CanonicalIndexableFact::VertexText { raw_value, .. } => raw_value.len(),
             })
             .sum::<usize>();
         assert_eq!(encoded_values, MAX_CANONICAL_EXPORT_PAGE_BYTES);

@@ -12,6 +12,7 @@ use crate::{
     edge_inline_property_scalar_codec::decode_edge_inline_property_scalar, facade::GraphStore,
     index::lookup::PropertyIndexLookup, property::sortable_index_key,
 };
+use gleaph_gql::Value;
 use gleaph_graph_kernel::{
     canonical_export::{
         CanonicalExportAdmission, CanonicalExportError, CanonicalExportPage, CanonicalExportPhase,
@@ -28,6 +29,7 @@ use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 const CURSOR_TARGET_VERTEX: u8 = 0;
 const CURSOR_TARGET_EDGE: u8 = 1;
+const CURSOR_TARGET_TEXT: u8 = 2;
 const CURSOR_POSITION_VERTEX: u8 = 0;
 const CURSOR_POSITION_EDGE_SIDECAR: u8 = 1;
 const CURSOR_POSITION_EDGE_INLINE: u8 = 2;
@@ -452,11 +454,19 @@ pub fn export_page(
             },
             None,
         ) => export_vertex_page(&request, *label_id, *property_id, record_source.as_ref()),
+        (
+            CanonicalExportTarget::Text {
+                label_id,
+                property_id,
+            },
+            None,
+        ) => export_text_page(&request, *label_id, *property_id),
         (CanonicalExportTarget::Edge { .. }, None) => export_edge_sidecar_page(&request),
         (CanonicalExportTarget::Edge { .. }, Some(inline)) => {
             export_edge_inline_page(&request, inline)
         }
         (CanonicalExportTarget::Vertex { .. }, Some(_)) => Err(CanonicalExportError::InvalidScope),
+        (CanonicalExportTarget::Text { .. }, Some(_)) => Err(CanonicalExportError::InvalidScope),
     }
 }
 
@@ -539,6 +549,21 @@ fn validate_scope(scope: &CanonicalExportScope) -> Result<(), CanonicalExportErr
             }
         }
         (CanonicalExportTarget::Vertex { .. }, Some(_)) => Err(CanonicalExportError::InvalidScope),
+        // Raw-text scopes freeze like any other target: exactly one label and one text
+        // property, never an inline projection (ADR 0059 §Text build kind).
+        (
+            CanonicalExportTarget::Text {
+                label_id,
+                property_id,
+            },
+            None,
+        ) => {
+            if *label_id == 0 {
+                return Err(CanonicalExportError::InvalidScope);
+            }
+            ensure_property_id(*property_id)
+        }
+        (CanonicalExportTarget::Text { .. }, Some(_)) => Err(CanonicalExportError::InvalidScope),
         (
             CanonicalExportTarget::Edge {
                 label_id,
@@ -637,6 +662,18 @@ fn validate_target(target: &CanonicalExportTarget) -> Result<(), CanonicalExport
             }
             ensure_property_id(*property_id)?;
             Ok(())
+        }
+        // Raw-text requests carry the same label/property identity rules as the other
+        // targets; the raw projection itself is chosen by the scope's target variant
+        // (ADR 0059 §Text build kind).
+        CanonicalExportTarget::Text {
+            label_id,
+            property_id,
+        } => {
+            if *label_id == 0 {
+                return Err(CanonicalExportError::InvalidRequest);
+            }
+            ensure_property_id(*property_id)
         }
     }
 }
@@ -737,6 +774,76 @@ fn export_vertex_page(
     })
 }
 
+/// Emits one raw-text vertex page for a Text build-kind scope (ADR 0059 §Text build kind).
+///
+/// Reuses the [`export_vertex_page`] paging skeleton: bounded `scan_vertex_properties_batch`
+/// in deterministic storage order, and an opaque cursor emitted BEFORE the candidate that
+/// overflows the byte budget. The budget counts RAW UTF-8 bytes of the raw value — not
+/// sortable-key bytes, which do not exist here: matching facts carry [`CanonicalIndexableFact::VertexText`]
+/// values verbatim with no index-key projection. Only vertices whose label AND property match
+/// are emitted; stored values that are not `Value::Text` have no raw UTF-8 form and are skipped
+/// like other non-indexable values.
+fn export_text_page(
+    request: &CanonicalExportRequest,
+    label_id: u16,
+    property_id: PropertyId,
+) -> Result<CanonicalExportPage, CanonicalExportError> {
+    let after = decode_cursor(request.cursor.as_deref(), request, CursorKind::Vertex)?;
+    let rows = GraphStore::new()
+        .scan_vertex_properties_batch(after.vertex_key_bytes(), request.limit)
+        .map_err(|_| CanonicalExportError::Storage)?;
+    let mut facts = Vec::new();
+    let mut budget = PageByteBudget::default();
+    let mut previous = after.vertex_key();
+    for (key, value) in rows.iter() {
+        let vertex_id = key.vertex_id();
+        let has_label = GraphStore::new()
+            .vertex(vertex_id)
+            .map(|vertex| {
+                GraphStore::new().vertex_has_label(
+                    vertex_id,
+                    vertex,
+                    gleaph_graph_kernel::entry::VertexLabelId::from_raw(label_id),
+                )
+            })
+            .unwrap_or(false);
+        if key.property_id() != property_id || !has_label {
+            previous = Some(*key);
+            continue;
+        }
+        let Value::Text(raw_value) = value else {
+            previous = Some(*key);
+            continue;
+        };
+        if !budget.try_accept(raw_value.as_bytes())? {
+            return Ok(CanonicalExportPage {
+                facts,
+                next: cursor_before_vertex_candidate(request, previous),
+                done: false,
+            });
+        }
+        facts.push(CanonicalIndexableFact::VertexText {
+            vertex_id: u32::from(key.vertex_id()),
+            property_id,
+            raw_value: raw_value.clone(),
+        });
+        previous = Some(*key);
+    }
+    if rows.len() < request.limit as usize {
+        return Ok(CanonicalExportPage {
+            facts,
+            next: None,
+            done: true,
+        });
+    }
+    let last = rows.last().expect("a full page contains one row").0;
+    Ok(CanonicalExportPage {
+        facts,
+        next: Some(encode_cursor(request, CursorPosition::Vertex { key: last })),
+        done: false,
+    })
+}
+
 fn export_edge_sidecar_page(
     request: &CanonicalExportRequest,
 ) -> Result<CanonicalExportPage, CanonicalExportError> {
@@ -750,7 +857,7 @@ fn export_edge_sidecar_page(
             property_id,
             direction,
         } => (label_id, property_id, direction),
-        CanonicalExportTarget::Vertex { .. } => {
+        CanonicalExportTarget::Vertex { .. } | CanonicalExportTarget::Text { .. } => {
             return Err(CanonicalExportError::InvalidRequest);
         }
     };
@@ -814,7 +921,7 @@ fn export_edge_inline_page(
             property_id,
             direction,
         } => (label_id, property_id, direction),
-        CanonicalExportTarget::Vertex { .. } => {
+        CanonicalExportTarget::Vertex { .. } | CanonicalExportTarget::Text { .. } => {
             return Err(CanonicalExportError::InvalidRequest);
         }
     };
@@ -1104,6 +1211,14 @@ fn encode_target(out: &mut Vec<u8>, target: &CanonicalExportTarget) {
             out.extend_from_slice(&property_id.raw().to_le_bytes());
             out.push(*direction as u8);
         }
+        CanonicalExportTarget::Text {
+            label_id,
+            property_id,
+        } => {
+            out.push(CURSOR_TARGET_TEXT);
+            out.extend_from_slice(&label_id.to_le_bytes());
+            out.extend_from_slice(&property_id.raw().to_le_bytes());
+        }
     }
 }
 
@@ -1209,6 +1324,10 @@ fn decode_target(
             property_id: PropertyId::from_raw(reader.u32()?),
             direction: decode_direction(reader.byte()?)?,
         }),
+        CURSOR_TARGET_TEXT => Ok(CanonicalExportTarget::Text {
+            label_id: reader.u16()?,
+            property_id: PropertyId::from_raw(reader.u32()?),
+        }),
         _ => Err(CanonicalExportError::CursorMalformed),
     }
 }
@@ -1296,7 +1415,7 @@ impl<'a> CursorReader<'a> {
 fn direction_from_target(request: &CanonicalExportRequest) -> Option<EdgeIndexDirection> {
     match request.target {
         CanonicalExportTarget::Edge { direction, .. } => Some(direction),
-        CanonicalExportTarget::Vertex { .. } => None,
+        CanonicalExportTarget::Vertex { .. } | CanonicalExportTarget::Text { .. } => None,
     }
 }
 
@@ -1411,6 +1530,237 @@ mod tests {
             );
         }
         facts
+    }
+
+    fn text_target() -> CanonicalExportTarget {
+        CanonicalExportTarget::Text {
+            label_id: 7,
+            property_id: PropertyId::from_raw(11),
+        }
+    }
+
+    #[test]
+    fn text_requests_validate_under_shared_identity_rules() {
+        assert_eq!(validate_request(&request(text_target())), Ok(()));
+        assert_eq!(
+            validate_request(&request(CanonicalExportTarget::Text {
+                label_id: 0,
+                property_id: PropertyId::from_raw(11),
+            })),
+            Err(CanonicalExportError::InvalidRequest)
+        );
+        assert_eq!(
+            // Zero property ids surface through the shared `ensure_property_id` guard, the
+            // same `InvalidScope` mapping every target gets inside request validation.
+            validate_request(&request(CanonicalExportTarget::Text {
+                label_id: 7,
+                property_id: PropertyId::from_raw(0),
+            })),
+            Err(CanonicalExportError::InvalidScope)
+        );
+    }
+
+    #[test]
+    fn text_scopes_freeze_with_full_identity_and_without_inline() {
+        assert_eq!(validate_scope(&scope(text_target())), Ok(()));
+        assert_eq!(
+            validate_scope(&scope(CanonicalExportTarget::Text {
+                label_id: 0,
+                property_id: PropertyId::from_raw(11),
+            })),
+            Err(CanonicalExportError::InvalidScope)
+        );
+        assert_eq!(
+            validate_scope(&scope(CanonicalExportTarget::Text {
+                label_id: 7,
+                property_id: PropertyId::from_raw(0),
+            })),
+            Err(CanonicalExportError::InvalidScope)
+        );
+        let mut with_inline = scope(text_target());
+        with_inline.inline = Some(CanonicalInlineProjection {
+            source_property_id: PropertyId::from_raw(11),
+            byte_offset: 0,
+            source_profile: EdgeInlinePropertyProfile {
+                byte_width: 4,
+                encoding: EdgeInlinePropertyEncoding::F32,
+            },
+            value_profile: EdgeInlinePropertyProfile {
+                byte_width: 4,
+                encoding: EdgeInlinePropertyEncoding::F32,
+            },
+        });
+        assert_eq!(
+            validate_scope(&with_inline),
+            Err(CanonicalExportError::InvalidScope),
+            "a text scope never carries an inline projection"
+        );
+    }
+
+    #[test]
+    fn text_cursor_target_roundtrips_losslessly() {
+        let target = text_target();
+        let mut out = Vec::new();
+        encode_target(&mut out, &target);
+        let mut reader = CursorReader::new(&out);
+        assert_eq!(
+            decode_target(&mut reader).expect("decode text cursor target"),
+            target
+        );
+    }
+
+    #[test]
+    fn text_targets_carry_no_edge_direction() {
+        assert_eq!(direction_from_target(&request(text_target())), None);
+    }
+
+    /// Full drain over a mixed fixture: every vertex whose label AND property match emits
+    /// exactly one VertexText fact carrying the raw value, in deterministic key order;
+    /// a non-matching label, a non-matching property, and a non-text stored value are all
+    /// excluded.
+    #[test]
+    fn text_export_drain_emits_matching_vertices_once_in_deterministic_order() {
+        let store = GraphStore::new();
+        let label = crate::test_labels::vertex_label_id_for_name("text_export_label");
+        let other_label = crate::test_labels::vertex_label_id_for_name("text_export_other_label");
+        let property = crate::test_labels::property_id_for_name("text_export_value");
+        let unrelated = crate::test_labels::property_id_for_name("text_export_unrelated");
+
+        let first = store.insert_vertex().expect("first vertex");
+        let second = store.insert_vertex().expect("second vertex");
+        let third = store.insert_vertex().expect("third vertex");
+        let fourth = store.insert_vertex().expect("fourth vertex");
+        for vertex in [first, second, third] {
+            store
+                .add_vertex_label(vertex, store.vertex(vertex).expect("row"), label)
+                .expect("target label");
+        }
+        store
+            .add_vertex_label(fourth, store.vertex(fourth).expect("row"), other_label)
+            .expect("other label");
+        store
+            .set_vertex_property(first, property, Value::Text("alpha".to_owned()))
+            .expect("first raw value");
+        store
+            .set_vertex_property(second, property, Value::Text("beta".to_owned()))
+            .expect("second raw value");
+        store
+            .set_vertex_property(third, unrelated, Value::Text("gamma".to_owned()))
+            .expect("non-matching property");
+        store
+            .set_vertex_property(third, property, Value::Int64(7))
+            .expect("non-text value at the target property");
+        store
+            .set_vertex_property(fourth, property, Value::Text("delta".to_owned()))
+            .expect("non-matching label value");
+
+        let physical = PhysicalIndexId::new(900_030).unwrap();
+        let target = CanonicalExportTarget::Text {
+            label_id: label.raw(),
+            property_id: property,
+        };
+        register_scope(physical, scope(target.clone())).expect("register");
+        let mut request = request_with(target.clone(), physical);
+        request.limit = 1_000;
+
+        let page = export_page(request).expect("single-page text export");
+        assert!(page.done, "the fixture fits one page");
+        assert_eq!(page.next, None, "the terminal page carries no cursor");
+        assert_eq!(
+            page.facts,
+            vec![
+                CanonicalIndexableFact::VertexText {
+                    vertex_id: u32::from(first),
+                    property_id: property,
+                    raw_value: "alpha".to_owned(),
+                },
+                CanonicalIndexableFact::VertexText {
+                    vertex_id: u32::from(second),
+                    property_id: property,
+                    raw_value: "beta".to_owned(),
+                },
+            ],
+            "only matching label AND property AND text values emit, in key order"
+        );
+        remove_scope(physical, &scope(target)).expect("cleanup");
+    }
+
+    /// Raw UTF-8 bytes drive the page budget: equal-length documents split exactly at the
+    /// budget boundary and the opaque cursor resumes without loss or duplication.
+    #[test]
+    fn text_export_budget_overflow_splits_pages_without_loss_or_duplicate() {
+        let store = GraphStore::new();
+        let label = crate::test_labels::vertex_label_id_for_name("text_export_budget_label");
+        let property = crate::test_labels::property_id_for_name("text_export_budget_value");
+        let unit = MAX_CANONICAL_EXPORT_PAGE_BYTES / 387;
+        let document = "x".repeat(unit);
+
+        for _ in 0..388 {
+            let vertex = store.insert_vertex().expect("vertex");
+            store
+                .add_vertex_label(vertex, store.vertex(vertex).expect("row"), label)
+                .expect("vertex label");
+            store
+                .set_vertex_property(vertex, property, Value::Text(document.clone()))
+                .expect("large target document");
+        }
+
+        let physical = PhysicalIndexId::new(900_031).unwrap();
+        let target = CanonicalExportTarget::Text {
+            label_id: label.raw(),
+            property_id: property,
+        };
+        register_scope(physical, scope(target.clone())).expect("register");
+        let mut request = request_with(target.clone(), physical);
+        // The limit must not be the splitter: the RAW-byte budget decides the page break.
+        request.limit = 1_000;
+
+        let first = export_page(request.clone()).expect("first budget-bounded page");
+        assert_eq!(
+            first.facts.len(),
+            387,
+            "raw-value bytes fill exactly 387 documents per page"
+        );
+        assert!(!first.done);
+        let mut emitted: Vec<(u32, String)> = first
+            .facts
+            .iter()
+            .map(|fact| match fact {
+                CanonicalIndexableFact::VertexText {
+                    vertex_id,
+                    raw_value,
+                    ..
+                } => (*vertex_id, raw_value.clone()),
+                _ => panic!("a text page only carries VertexText facts"),
+            })
+            .collect();
+        request.cursor = first.next;
+
+        let second = export_page(request).expect("resumed budget-bounded page");
+        assert_eq!(second.facts.len(), 1);
+        assert!(second.done, "the resumed page is terminal");
+        emitted.extend(second.facts.iter().map(|fact| match fact {
+            CanonicalIndexableFact::VertexText {
+                vertex_id,
+                raw_value,
+                ..
+            } => (*vertex_id, raw_value.clone()),
+            _ => panic!("a text page only carries VertexText facts"),
+        }));
+
+        assert_eq!(
+            emitted.iter().filter(|(_, raw)| raw == &document).count(),
+            388,
+            "every emitted fact carries the raw value verbatim"
+        );
+        emitted.sort_unstable();
+        emitted.dedup();
+        assert_eq!(
+            emitted.len(),
+            388,
+            "no loss and no duplication across the cursor boundary"
+        );
+        remove_scope(physical, &scope(target)).expect("cleanup");
     }
 
     #[test]
