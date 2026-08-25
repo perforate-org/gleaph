@@ -12,6 +12,14 @@
 > JIT metadata elevation is **implemented** (below): the ADR 0028 superuser bypass is
 > deleted and cross-tenant metadata reads require time-boxed, approval-backed elevation.
 
+> **ReBAC (proposed, not implemented):** [ADR 0082](../adr/0082-rebac-bounded-exists-traversal.md)
+> extends the conditional-policy DSL with a bounded 1–2 hop `EXISTS` traversal clause
+> lowered to a new shard-executed semi-join `PlanOp`. It is a design contract only; the
+> grammar, encoding, and lowering described there are not yet landed. Organization
+> permissions are graph-local relationships; the account-canister `Role` enum
+> ([ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md)) is a
+> separate domain and is out of scope.
+
 ## Purpose
 
 Document Gleaph’s **in-canister access model** and how Prepared Queries fit the threat model.
