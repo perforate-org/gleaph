@@ -197,6 +197,16 @@ fn estimate_op_cost(op: &PlanOp, input_rows: f64, stats: Option<&dyn GraphStats>
             )
         }
 
+        PlanOp::SemiApply { sub_plan, .. } => {
+            let sub_cost = estimate_cost(sub_plan, stats);
+            // Semi-apply probes the bounded chain once per input row and keeps the
+            // survivors unchanged (semi-join), so output rows equal surviving inputs.
+            (
+                sub_cost + input_rows * stats::COST_EXPAND_MULTIPLIER * 0.1,
+                input_rows,
+            )
+        }
+
         PlanOp::IndexIntersection { scans, .. } => {
             let selectivity: f64 = scans
                 .iter()

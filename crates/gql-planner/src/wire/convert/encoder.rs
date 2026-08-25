@@ -371,6 +371,25 @@ impl Encoder {
             PlanOp::OptionalMatch { sub_plan } => PlanOpWire::OptionalMatch {
                 sub_plan: self.encode_ops(sub_plan)?,
             },
+            PlanOp::SemiApply {
+                source,
+                hops,
+                terminal_predicates,
+                sub_plan,
+            } => PlanOpWire::SemiApply {
+                source: source.to_string(),
+                hops: hops
+                    .iter()
+                    .map(|hop| SemiHopWire {
+                        edge_label: hop.edge_label.to_string(),
+                        direction: hop.direction,
+                        dst_variable: hop.dst_variable.to_string(),
+                        dst_label: hop.dst_label.to_string(),
+                    })
+                    .collect(),
+                terminal_predicates: self.intern_exprs(terminal_predicates)?,
+                sub_plan: self.encode_ops(sub_plan)?,
+            },
             PlanOp::IndexIntersection {
                 variable,
                 scans,

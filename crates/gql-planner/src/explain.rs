@@ -649,6 +649,34 @@ fn format_op(op: &PlanOp) -> String {
             format!("OptionalMatch [{}]", sub_ops.join(" -> "))
         }
 
+        PlanOp::SemiApply {
+            source,
+            hops,
+            terminal_predicates,
+            sub_plan,
+        } => {
+            let chain: String = hops
+                .iter()
+                .map(|hop| {
+                    format!(
+                        "-[:{} {:?}]->({}:{})",
+                        hop.edge_label, hop.direction, hop.dst_variable, hop.dst_label
+                    )
+                })
+                .collect();
+            let conds: Vec<String> = terminal_predicates.iter().map(format_expr).collect();
+            let sub_ops: Vec<String> = sub_plan.iter().map(format_op).collect();
+            let where_text = if conds.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", conds.join(" AND "))
+            };
+            format!(
+                "SemiApply((:{source}){chain}{where_text}) [{}]",
+                sub_ops.join(" -> ")
+            )
+        }
+
         PlanOp::IndexIntersection {
             variable,
             scans,

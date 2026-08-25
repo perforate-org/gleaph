@@ -53,6 +53,13 @@ fn check_op(op: &PlanOp) -> Option<&'static str> {
                 first_unsupported_in_ops(sub_plan)
             }
         }
+        PlanOp::SemiApply { sub_plan, .. } => {
+            if subplan_may_return_projected(sub_plan) {
+                Some("SemiApply.projected_subplan")
+            } else {
+                first_unsupported_in_ops(sub_plan)
+            }
+        }
         PlanOp::SetOperation { right, .. } => first_executor_unsupported_op(right),
         PlanOp::Search { .. } => Some("Search"),
         PlanOp::SetProperties { .. } => None,
@@ -412,6 +419,81 @@ mod tests {
         ];
         let plan = PhysicalPlan {
             ops: vec![PlanOp::OptionalMatch { sub_plan }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+            ..Default::default()
+        };
+        assert_eq!(first_executor_unsupported_op(&plan), None);
+    }
+
+    #[test]
+    fn semi_apply_materialized_subplan_supported() {
+        use crate::plan::{ProjectColumn, SemiHop, Str};
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql::types::EdgeDirection;
+        // A projected sub-plan is rejected for SemiApply exactly like OptionalMatch:
+        // semi rows are the unchanged inputs, so a projecting chain is a shape error.
+        let projected_sub = vec![PlanOp::Project {
+            columns: vec![ProjectColumn {
+                expr: Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(1))),
+                alias: Some("x".into()),
+            }],
+            distinct: false,
+        }];
+        let plan = PhysicalPlan {
+            ops: vec![PlanOp::SemiApply {
+                source: Str::from("d"),
+                hops: vec![SemiHop {
+                    edge_label: "GRANTED_TO".into(),
+                    direction: EdgeDirection::PointingRight,
+                    dst_variable: Str::from("a"),
+                    dst_label: "Account".into(),
+                }],
+                terminal_predicates: Vec::new(),
+                sub_plan: projected_sub,
+            }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+            ..Default::default()
+        };
+        assert_eq!(
+            first_executor_unsupported_op(&plan),
+            Some("SemiApply.projected_subplan")
+        );
+
+        // An ordinary expansion chain (no trailing projection) is supported.
+        let plan = PhysicalPlan {
+            ops: vec![PlanOp::SemiApply {
+                source: Str::from("d"),
+                hops: vec![SemiHop {
+                    edge_label: "GRANTED_TO".into(),
+                    direction: EdgeDirection::PointingRight,
+                    dst_variable: Str::from("a"),
+                    dst_label: "Account".into(),
+                }],
+                terminal_predicates: Vec::new(),
+                sub_plan: vec![PlanOp::ExpandFilter {
+                    src: Str::from("d"),
+                    edge: Str::from("e1"),
+                    dst: Str::from("a"),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some("GRANTED_TO".into()),
+                    label_expr: None,
+                    var_len: None,
+                    indexed_edge_equality: None,
+                    edge_inline_property_predicate: None,
+                    edge_inline_vector_predicate: None,
+                    dst_filter: Vec::new(),
+                    edge_property_projection: None,
+                    dst_property_projection: None,
+                    hop_aux_binding: None,
+                    emit_edge_binding: false,
+                    near_group_var: None,
+                    far_group_var: None,
+                    path_var: None,
+                    emit_path_binding: false,
+                }],
+            }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
             ..Default::default()

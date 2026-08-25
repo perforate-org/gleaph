@@ -203,6 +203,14 @@ impl RequirementSet {
             .map(|d| (d.unattributed, d.conjunctive.len(), d.alternatives.len()))
     }
 
+    /// Test-only clones of one graph's conjunctive rows, for exact-multiset contract
+    /// locks (plan 0306); [`Privilege`] already implements `PartialEq`, so equality
+    /// needs no parallel summary vocabulary.
+    #[cfg(test)]
+    pub(crate) fn test_graph_rows(&self, graph_raw: u32) -> Option<Vec<Privilege>> {
+        self.graphs.get(&graph_raw).map(|d| d.conjunctive.clone())
+    }
+
     fn require(&mut self, graph: GraphId, privilege: Privilege) {
         self.demands(graph).conjunctive.push(privilege);
     }
@@ -943,6 +951,12 @@ fn walk_op(
         PlanOp::SetOperation { right, .. } => walk_ops(&right.ops, scope, reqs, catalog),
 
         PlanOp::OptionalMatch { sub_plan } => walk_ops(sub_plan, scope, reqs, catalog),
+
+        // [ADR 0082] §5 invariants 1–2: the chain is policy machinery lowered strictly
+        // after enforcement (gql.rs ordering), so its internal traversals and terminal
+        // reads add no requirements and project nothing. The walker stays blind to it —
+        // "the relationship is the gate", not the caller's own privilege set.
+        PlanOp::SemiApply { .. } => {}
 
         PlanOp::IndexIntersection {
             variable,
@@ -2580,5 +2594,46 @@ mod tests {
             &GrantTable::default(),
             &[GRAPH_RAW]
         ));
+    }
+
+    /// ADR 0082 §5 invariant 1: a SemiApply chain is policy machinery — its internal
+    /// traversals and terminal property reads add no requirement, so a plan's demand
+    /// set is identical with and without the op.
+    #[test]
+    fn semi_apply_chain_adds_no_requirements() {
+        use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+        use gleaph_gql_planner::plan::SemiHop;
+
+        let terminal = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::new(ExprKind::Variable("a".to_owned()))),
+                property: "age".to_owned(),
+            })),
+            op: CmpOp::Eq,
+            right: Box::new(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(3)))),
+        });
+        let base_scan = scan("d", Some("Person"), &[]);
+        let with_chain = vec![
+            base_scan.clone(),
+            PlanOp::SemiApply {
+                source: "d".into(),
+                hops: vec![SemiHop {
+                    edge_label: EdgeLabelRef::new("KNOWS"),
+                    direction: EdgeDirection::PointingRight,
+                    dst_variable: "a".into(),
+                    dst_label: NodeLabelRef::new("Employee"),
+                }],
+                terminal_predicates: vec![terminal],
+                sub_plan: vec![expand(EdgeDirection::PointingRight, Some("KNOWS"))],
+            },
+        ];
+
+        // The wrong-implementation probe shape: if the walker ever walked the chain,
+        // it would demand KNOWS traversal plus Employee reads and this equality fails.
+        assert_eq!(
+            extract_ops(with_chain),
+            extract_ops(vec![base_scan]),
+            "policy-internal chain must stay invisible to requirement extraction"
+        );
     }
 }

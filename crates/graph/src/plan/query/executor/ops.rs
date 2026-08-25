@@ -260,7 +260,10 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
         | PlanOp::RemoveProperties { .. }
         | PlanOp::DeleteVertex { .. }
         | PlanOp::DetachDeleteVertex { .. }
-        | PlanOp::DeleteEdge { .. } => {}
+        | PlanOp::DeleteEdge { .. }
+        // SemiApply emits its input rows unchanged: chain bindings are existential
+        // probes that never surface as row writes ([ADR 0082] §6).
+        | PlanOp::SemiApply { .. } => {}
         PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
             for col in columns {
                 if let Some(alias) = &col.alias {

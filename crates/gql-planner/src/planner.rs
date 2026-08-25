@@ -570,6 +570,7 @@ fn collect_use_graph_pushdown(ops: &[PlanOp], out: &mut Vec<UseGraphPushdownInfo
             }
             PlanOp::SetOperation { right, .. } => collect_use_graph_pushdown(&right.ops, out),
             PlanOp::OptionalMatch { sub_plan } => collect_use_graph_pushdown(sub_plan, out),
+            PlanOp::SemiApply { sub_plan, .. } => collect_use_graph_pushdown(sub_plan, out),
             _ => {}
         }
     }
@@ -715,6 +716,7 @@ fn remote_use_graph_op_name(op: &PlanOp) -> &'static str {
         PlanOp::Limit { .. } => "LIMIT",
         PlanOp::SetOperation { .. } => "SET OPERATION",
         PlanOp::OptionalMatch { .. } => "OPTIONAL MATCH",
+        PlanOp::SemiApply { .. } => "SEMI APPLY",
         PlanOp::IndexIntersection { .. } => "INDEX INTERSECTION",
         PlanOp::WorstCaseOptimalJoin { .. } => "WORST-CASE OPTIMAL JOIN",
         PlanOp::TopK { .. } => "TOPK",

@@ -357,6 +357,7 @@ fn ops_contain_search(ops: &[PlanOp]) -> bool {
         }
         PlanOp::SetOperation { right, .. } => ops_contain_search(&right.ops),
         PlanOp::OptionalMatch { sub_plan } => ops_contain_search(sub_plan),
+        PlanOp::SemiApply { sub_plan, .. } => ops_contain_search(sub_plan),
         PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_search(&sub_plan.ops),
         PlanOp::UseGraph {
             sub_plan: Some(sp), ..
@@ -635,6 +636,26 @@ pub enum PlanOp {
         sub_plan: Vec<PlanOp>,
     },
 
+    /// Correlated semi-join filter ([ADR 0082] §6). For each input row the sub-plan
+    /// runs once with that row's bindings visible (correlation on `source`); the
+    /// input row is kept iff the sub-plan yields ≥ 1 match and is emitted unchanged —
+    /// never duplicated, never null-padded, never extended with chain bindings.
+    ///
+    /// The declarative chain (`hops` + `terminal_predicates`) is the shape the lowerer
+    /// compiled; `sub_plan` is its executable lowering built from the same chain by a
+    /// single construction site. Providers are neutral here: authorization semantics
+    /// stay in the embedding system.
+    SemiApply {
+        /// Variable already bound on every input row where the chain starts.
+        source: Str,
+        /// Chain shape: 1..=2 hops; the last hop's destination is the terminal.
+        hops: Vec<SemiHop>,
+        /// AND-composed conjuncts evaluated on the terminal destination vertex.
+        terminal_predicates: Vec<Expr>,
+        /// The operators forming the per-row existential sub-plan.
+        sub_plan: Vec<PlanOp>,
+    },
+
     /// Intersect multiple index scans on the same variable.
     IndexIntersection {
         variable: Str,
@@ -788,6 +809,7 @@ fn ops_contain_dml(ops: &[PlanOp]) -> bool {
             }
             PlanOp::SetOperation { right, .. } => ops_contain_dml(&right.ops),
             PlanOp::OptionalMatch { sub_plan } => ops_contain_dml(sub_plan),
+            PlanOp::SemiApply { sub_plan, .. } => ops_contain_dml(sub_plan),
             PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_dml(&sub_plan.ops),
             PlanOp::UseGraph {
                 sub_plan: Some(sp), ..
@@ -893,6 +915,23 @@ fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
                 collect_label_uses_in_ops(&right.ops, uses);
             }
             PlanOp::OptionalMatch { sub_plan } => collect_label_uses_in_ops(sub_plan, uses),
+            PlanOp::SemiApply {
+                hops,
+                terminal_predicates,
+                sub_plan,
+                ..
+            } => {
+                // The declarative chain is the shape contract; the executable lowering
+                // repeats it (single construction site). Both register identically.
+                for hop in hops {
+                    uses.add_edge(&hop.edge_label, LabelUseIntent::ReadExisting);
+                    uses.add_node(&hop.dst_label, LabelUseIntent::ReadExisting);
+                }
+                for pred in terminal_predicates {
+                    collect_label_uses_in_expr(pred, uses);
+                }
+                collect_label_uses_in_ops(sub_plan, uses);
+            }
             PlanOp::InlineProcedureCall { sub_plan, .. } => {
                 collect_label_uses_in_ops(&sub_plan.ops, uses);
             }
@@ -1077,6 +1116,16 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
                 collect_property_uses_in_ops(&right.ops, uses);
             }
             PlanOp::OptionalMatch { sub_plan } => collect_property_uses_in_ops(sub_plan, uses),
+            PlanOp::SemiApply {
+                terminal_predicates,
+                sub_plan,
+                ..
+            } => {
+                for pred in terminal_predicates {
+                    collect_read_properties_from_expr(pred, uses);
+                }
+                collect_property_uses_in_ops(sub_plan, uses);
+            }
             PlanOp::InlineProcedureCall { sub_plan, .. } => {
                 collect_property_uses_in_ops(&sub_plan.ops, uses);
             }
@@ -1483,6 +1532,20 @@ pub struct WcojEdge {
     pub dst_filter: Vec<Expr>,
     /// When set, executor binds hop auxiliary bytes under this name (same as [`PlanOp::Expand::hop_aux_binding`]).
     pub hop_aux_binding: Option<Str>,
+}
+
+/// One bounded traversal hop of [`PlanOp::SemiApply`] ([ADR 0082] §2): expand along
+/// one concrete edge label in one direction to vertices of one concrete label.
+#[derive(Clone, Debug)]
+pub struct SemiHop {
+    /// Edge label the hop traverses (wildcard labels are not grantable).
+    pub edge_label: EdgeLabelRef,
+    /// Direction the hop follows (ADR 0074 §2 directedness rules apply at grant time).
+    pub direction: EdgeDirection,
+    /// Variable bound to the reached vertex inside [`PlanOp::SemiApply::sub_plan`].
+    pub dst_variable: Str,
+    /// Concrete destination label (unlabeled mid/dest vertices are not grantable).
+    pub dst_label: NodeLabelRef,
 }
 
 /// Information about the chosen scan anchor.

@@ -184,6 +184,15 @@ pub enum PlanOpWire {
         #[rkyv(omit_bounds)]
         sub_plan: Vec<PlanOpWire>,
     },
+    SemiApply {
+        source: String,
+        #[rkyv(omit_bounds)]
+        hops: Vec<SemiHopWire>,
+        /// Interned terminal conjunct expressions.
+        terminal_predicates: Vec<u32>,
+        #[rkyv(omit_bounds)]
+        sub_plan: Vec<PlanOpWire>,
+    },
     IndexIntersection {
         variable: String,
         scans: Vec<IndexScanSpecWire>,
@@ -296,6 +305,15 @@ pub enum ScanValueWire {
 pub struct EdgeInlinePropertyPredicateWire {
     pub op: u8,
     pub value: ScanValueWire,
+}
+
+/// Wire form of one [`gleaph_gql_planner::plan::SemiHop`] ([ADR 0082] §2).
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct SemiHopWire {
+    pub edge_label: String,
+    pub direction: EdgeDirection,
+    pub dst_variable: String,
+    pub dst_label: String,
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

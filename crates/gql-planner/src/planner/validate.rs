@@ -120,6 +120,12 @@ fn first_unfused_gleaph_vector_expr_in_op(op: &PlanOp) -> Option<String> {
             }),
         PlanOp::SetOperation { right, .. } => first_unfused_gleaph_vector_expr_in_ops(&right.ops),
         PlanOp::OptionalMatch { sub_plan } => first_unfused_gleaph_vector_expr_in_ops(sub_plan),
+        PlanOp::SemiApply {
+            terminal_predicates,
+            sub_plan,
+            ..
+        } => first_unfused_gleaph_vector_expr_in_exprs(terminal_predicates)
+            .or_else(|| first_unfused_gleaph_vector_expr_in_ops(sub_plan)),
         PlanOp::IndexIntersection { .. } => None,
         PlanOp::WorstCaseOptimalJoin { edges, .. } => edges
             .iter()

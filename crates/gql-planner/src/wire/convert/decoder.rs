@@ -2,8 +2,8 @@ use gleaph_gql::ast::{Expr, OrderByClause};
 use gleaph_gql::types::LabelExpr;
 
 use crate::plan::{
-    AggregateSpec, InlineProcedureScope, PlanOp, ProjectColumn, PropertyAssignment, SetPlanItem,
-    Str, WcojEdge,
+    AggregateSpec, EdgeLabelRef, InlineProcedureScope, NodeLabelRef, PlanOp, ProjectColumn,
+    PropertyAssignment, SemiHop, SetPlanItem, Str, WcojEdge,
 };
 use gleaph_gql::ast::LetBinding;
 use gleaph_gql::token::Span;
@@ -395,6 +395,28 @@ impl<'a> Decoder<'a> {
                 right: Box::new(physical_plan_from_wire(right)?),
             },
             PlanOpWire::OptionalMatch { sub_plan } => PlanOp::OptionalMatch {
+                sub_plan: self.decode_ops(sub_plan)?,
+            },
+            PlanOpWire::SemiApply {
+                source,
+                hops,
+                terminal_predicates,
+                sub_plan,
+            } => PlanOp::SemiApply {
+                source: rc_str(source),
+                hops: hops
+                    .iter()
+                    .map(|hop| SemiHop {
+                        edge_label: EdgeLabelRef::from(hop.edge_label.as_str()),
+                        direction: hop.direction,
+                        dst_variable: rc_str(&hop.dst_variable),
+                        dst_label: NodeLabelRef::from(hop.dst_label.as_str()),
+                    })
+                    .collect(),
+                terminal_predicates: terminal_predicates
+                    .iter()
+                    .map(|id| self.expr(*id))
+                    .collect::<Result<_, _>>()?,
                 sub_plan: self.decode_ops(sub_plan)?,
             },
             PlanOpWire::IndexIntersection {

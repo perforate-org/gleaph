@@ -100,6 +100,13 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
             }
         }
         PlanOp::OptionalMatch { sub_plan } => out.extend(variables_read_by_ops(sub_plan)),
+        PlanOp::SemiApply {
+            source, sub_plan, ..
+        } => {
+            // Correlation point: the input row's source binding feeds the probe.
+            out.insert(source.to_string());
+            out.extend(variables_read_by_ops(sub_plan));
+        }
         PlanOp::SetOperation { right, .. } => out.extend(variables_read_by_ops(&right.ops)),
         PlanOp::For { list, .. } => collect_expr_vars(list, out),
         PlanOp::Search {

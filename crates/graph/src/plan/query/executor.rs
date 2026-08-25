@@ -786,6 +786,7 @@ pub(crate) fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::Limit { .. } => "Limit",
         PlanOp::SetOperation { .. } => "SetOperation",
         PlanOp::OptionalMatch { .. } => "OptionalMatch",
+        PlanOp::SemiApply { .. } => "SemiApply",
         PlanOp::IndexIntersection { .. } => "IndexIntersection",
         PlanOp::WorstCaseOptimalJoin { .. } => "WorstCaseOptimalJoin",
         PlanOp::TopK { .. } => "TopK",

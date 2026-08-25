@@ -177,6 +177,12 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
         PlanOp::OptionalMatch { sub_plan } => {
             register_subplan_bindings(sub_plan, layout);
         }
+        PlanOp::SemiApply { source, .. } => {
+            // Semi-apply emits input rows unchanged, so chain bindings never surface
+            // in row layout. The source variable is already registered by its
+            // producing operator; re-registering is idempotent insurance.
+            layout.insert_name(source.clone());
+        }
         PlanOp::HashJoin {
             left,
             right,
