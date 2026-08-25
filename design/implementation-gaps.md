@@ -1789,6 +1789,7 @@ duplicate its state machine or ownership rules.
 | P1       | Endpoint property projection on `EdgeBindEndpoints` replaces the vertex binding, so trailing `IsLabeled` filters drop every row of anchored edge scans with property-level projections | Resolved — GAP-2026-08-24-004 (planner entity-use veto; whole-variable projections were unaffected) |
 | P2       | Extend edge-index anchors to accept `ScanValue::TextPrefix` prefix intervals (symmetric with the vertex STARTS WITH anchor landed 2026-08-24) | Resolved — GAP-2026-08-24-010 (edge symmetric extension landed 2026-08-24) |
 | P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
+| P3       | Cache resolved `GraphTypePropertySchema` beside the definition heap cache (steady-state O(1) catalog resolve; candidate from the 2026-08-25 canbench attribution review) | Open — GAP-2026-08-25-002 (catalog owner decision)                                           |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
 the ordered scan primitive already exists through `StableBTreeMap::range()`; the remaining work is
@@ -2133,6 +2134,38 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   tests are updated to the enforced contract. Decision needed from the gql owner.
 - **Next decision:** fix tokenization vs. restrict the name charset; either way the same
   commit updates both failing tests.
+
+### GAP-2026-08-25-002 — Catalog steady-state schema resolve rebuilds the full property schema on every call (heap-cache candidate)
+
+- **Status:** Open — P3 optimization candidate recorded 2026-08-25 from the canbench
+  re-baseline attribution review; catalog owner decision pending (not a defect: current
+  behavior is correct, only redundant work)
+- **Owner:** `crates/graph-catalog` (`GraphCatalog::try_property_schema_for_graph_id`,
+  `lib.rs` ~L306) + callers that resolve per planning/validation
+  (`router/src/facade/stable/graph_type_catalog.rs:352`)
+- **Observed behavior:** Every call takes the `binding_cache` hit path but then performs
+  `definition.clone()` plus `GraphTypePropertySchema::try_from_definition(&def)` — a full
+  schema rebuild — before returning. Introduced by `8709ffe8c` (2026-07-30 heap-cache
+  refactor); definitions themselves grew under `5396d15f3` (2026-07-29 inline edge
+  properties). Net effect: `bench_catalog_resolve_inline_medium` roughly doubled against its
+  stale artifact, 120,465 → 229,580 IC (+90.6%, absorbed into re-baseline `53e01eb26`).
+- **Evidence:**
+  - Profile ruled out experimentally: HEAD code with the pre-`d9a4f4b3e` codegen settings
+    (`lto="off"`, `codegen-units=16`) in an isolated worktree measures 250.92K IC — +9.3%
+    over the landed fat-LTO 229.58K. Fat LTO improves this bench; neither lto/cgu nor any
+    2026-08-24/25 index slice contributes to the delta.
+  - Artifact history: the prior value 120,465 IC was recorded at `72516cf84` (2026-06-19)
+    and was never refreshed through the 07-29 → 08-03 graph-catalog evolution window
+    (`5396d15f3`, `8709ffe8c`, `cee561df3`, `a7a361c66`).
+  - Measurement hygiene for reproduction: isolated worktree checkout of HEAD; single-bench
+    pattern run (`canbench resolve_inline` from `crates/graph-catalog`); no contact with
+    other panes' uncommitted trees or shared-target contention.
+- **Expected or needed behavior:** Cache the resolved `GraphTypePropertySchema` beside the
+  definition/binding caches so steady-state resolves are O(1) map hits; invalidate on the
+  same boundaries that evict the definition caches (`OR REPLACE`, migration apply,
+  upgrade rebuild via `rebuild_caches_after_upgrade`).
+- **Impact:** Steady-state read-path cost proportional to definition size paid on every
+  planning/validation resolve; grows as graph types get richer (records, inline edges).
 
 ## Review cadence
 
