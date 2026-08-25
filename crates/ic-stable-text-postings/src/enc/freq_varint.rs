@@ -2,7 +2,8 @@
 //! counterpart of [`super::VarintReader`], byte layout sized by the slice-6 storage-parity
 //! accounting and promoted to a production query-executor mechanism: the text index's
 //! search path reads these lists through [`crate::topk`], with every score contribution
-//! (weight plus tf-derived part) supplied by callers at query time.
+//! supplied by callers at query time (plan 0295: as a tf→part lookup table, so the driver
+//! computes contributions inline from [`super::PostingReader::tf`]).
 //!
 //! **Boundary.** Physical facts only: term frequencies are opaque integers; no scoring
 //! formula and no analyzer lives in this crate.
@@ -13,11 +14,17 @@
 //! count:        u32 LE   // number of docids
 //! per posting:  docid delta as LEB128 u32 (first posting: absolute docid)
 //!               tf as one raw u8  // encoder caps values > 255 at 255
+//! skip trailer: see [`super::skip`] (freq mode: entries add the block posting count)
 //! ```
+//!
+//! The skip trailer's freq-mode entries carry each block's posting count so a jump can
+//! restore both the absolute position and the delta base with tf alignment intact.
 //!
 //! Corruption policy (crate-wide rule): buffers are produced only by [`encode_freq_varint`];
 //! truncated or malformed input panics with a `corrupt postings:` message at the first
-//! offending read. `advance(target)` is a linear walk like the plain varint codec.
+//! offending read.
+
+use super::skip::{FREQ_ENTRY_BYTES, SkipBuilder, SkipIndex};
 
 /// Encodes strictly increasing, non-empty docids with aligned per-doc term frequencies.
 ///
@@ -32,12 +39,15 @@ pub fn encode_freq_varint(docs: &[u32], tfs: &[u32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(docs.len() * 6 + 4);
     out.extend_from_slice(&(docs.len() as u32).to_le_bytes());
     let mut prev: u32 = 0;
+    let mut skips = SkipBuilder::new();
     for (i, &doc) in docs.iter().enumerate() {
+        skips.posting(i as u32, out.len(), doc);
         let delta = if i == 0 { doc } else { doc - prev };
         super::varint::write_u32(&mut out, delta);
         out.push(tfs[i].min(u32::from(u8::MAX)) as u8);
         prev = doc;
     }
+    skips.finish(&mut out, true);
     out
 }
 
@@ -51,14 +61,17 @@ pub struct FreqVarintReader<'a> {
     count: u32,
     /// Bytes consumed from the interleaved stream (after the header).
     byte_pos: usize,
+    /// Absolute end of the interleaved payload (the skip trailer starts here).
+    payload_end: usize,
     pos: u32,
     /// Last decoded absolute docid (accumulated), valid once pos >= 1.
     prev: u32,
     current: Option<(u32, u32)>,
+    skip: SkipIndex,
 }
 
 impl<'a> FreqVarintReader<'a> {
-    /// Parses the header; payload decoding is lazy.
+    /// Parses the header and skip trailer; payload decoding is lazy.
     ///
     /// # Panics
     /// Panics when the header itself is truncated.
@@ -67,13 +80,17 @@ impl<'a> FreqVarintReader<'a> {
             panic!("corrupt postings: freq varint header truncated");
         }
         let count = u32::from_le_bytes(data[..4].try_into().expect("fixed-size header"));
+        let (skip, payload_end) =
+            SkipIndex::parse(data, count, FREQ_ENTRY_BYTES, true, "freq varint");
         Self {
             data,
             count,
             byte_pos: 4,
+            payload_end,
             pos: 0,
             prev: 0,
             current: None,
+            skip,
         }
     }
 
@@ -90,6 +107,9 @@ impl<'a> FreqVarintReader<'a> {
         let Some(&tf_byte) = self.data.get(self.byte_pos) else {
             panic!("corrupt postings: freq varint tf byte missing");
         };
+        if self.byte_pos >= self.payload_end {
+            panic!("corrupt postings: freq varint tf byte missing");
+        }
         self.byte_pos += 1;
         self.prev = value;
         (value, u32::from(tf_byte))
@@ -99,6 +119,9 @@ impl<'a> FreqVarintReader<'a> {
         let mut result: u32 = 0;
         let mut shift: u32 = 0;
         loop {
+            if self.byte_pos >= self.payload_end {
+                panic!("corrupt postings: freq varint stream truncated");
+            }
             let Some(&byte) = self.data.get(self.byte_pos) else {
                 panic!("corrupt postings: freq varint stream truncated");
             };
@@ -120,6 +143,20 @@ impl<'a> FreqVarintReader<'a> {
     fn fill_current(&mut self) {
         if self.current.is_none() && self.pos < self.count {
             self.current = Some(self.decode_step());
+        }
+    }
+
+    fn jump_toward(&mut self, target: u32) {
+        if self.skip.is_empty() {
+            return;
+        }
+        if let Some((offset, pos_before, prev)) =
+            self.skip.jump_landing(self.data, target, self.byte_pos)
+        {
+            self.byte_pos = offset;
+            self.pos = pos_before;
+            self.prev = prev;
+            self.current = None;
         }
     }
 
@@ -155,6 +192,11 @@ impl<'a> super::PostingReader for FreqVarintReader<'a> {
     }
 
     fn advance(&mut self, target: u32) -> Option<u32> {
+        match self.peek() {
+            None => return None,
+            Some(v) if v >= target => return Some(v),
+            Some(_) => self.jump_toward(target),
+        }
         loop {
             match self.peek() {
                 None => return None,
@@ -164,6 +206,21 @@ impl<'a> super::PostingReader for FreqVarintReader<'a> {
                 }
             }
         }
+    }
+
+    fn tf(&mut self) -> Option<u32> {
+        self.freq()
+    }
+
+    /// Native fused step: the cached `(docid, tf)` pair is consumed in one move — the
+    /// next posting decodes lazily on the caller's following `peek`, so a full traversal
+    /// pays exactly one decode per posting across `next_step` + frontier refreshes.
+    fn next_step(&mut self) -> Option<(u32, u32)> {
+        self.fill_current();
+        let step = self.current?;
+        self.current = None;
+        self.pos += 1;
+        Some(step)
     }
 }
 
@@ -311,5 +368,92 @@ mod tests {
         assert!(result.is_err(), "non-increasing input must be rejected");
         let result = std::panic::catch_unwind(|| encode_freq_varint(&[5, 9], &[1]));
         assert!(result.is_err(), "misaligned tfs must be rejected");
+    }
+
+    /// Jumps across level-0 blocks and the level-1 stride must restore both the absolute
+    /// position and the interleaved tf stream: every landing reports exactly the oracle
+    /// docid and its stored tf.
+    #[test]
+    fn advance_with_jumps_preserves_tf_alignment_across_skip_levels() {
+        let docs: Vec<u32> = (0..4500u32).collect();
+        let tfs: Vec<u32> = docs.iter().map(|d| (d % 251) + 1).collect();
+        let bytes = encode_freq_varint(&docs, &tfs);
+        let mut reader = FreqVarintReader::new(&bytes);
+        // Forward-only walk: block edges (level 0), a stride edge (level 1), a
+        // misaligned landing inside a later block, and past-end exhaustion.
+        for target in [0u32, 127, 128, 4094, 4096, 4200, 4499, 5000] {
+            let idx = docs.partition_point(|&d| d < target);
+            let want = docs.get(idx).copied();
+            assert_eq!(reader.advance(target), want, "advance({target})");
+            if want.is_some() {
+                assert_eq!(reader.pos(), idx as u32, "pos after advance({target})");
+                assert_eq!(
+                    reader.freq(),
+                    Some(tfs[idx]),
+                    "tf aligned after jump to {target}"
+                );
+                assert_eq!(reader.next(), want, "next consumes the landing posting");
+            } else {
+                assert!(reader.freq().is_none(), "exhausted landing has no tf");
+            }
+        }
+        assert!(reader.advance(0).is_none(), "exhaustion is sticky");
+    }
+
+    /// A populated trailer must not perturb sequential round trips.
+    #[test]
+    fn sequential_round_trip_unchanged_when_skip_trailer_populated() {
+        let docs: Vec<u32> = (0..900u32).collect();
+        let tfs: Vec<u32> = docs.iter().map(|d| (d % 200) + 3).collect();
+        let bytes = encode_freq_varint(&docs, &tfs);
+        let mut reader = FreqVarintReader::new(&bytes);
+        for (i, &doc) in docs.iter().enumerate() {
+            assert_eq!(reader.peek(), Some(doc), "{i}");
+            assert_eq!(reader.freq(), Some(tfs[i]), "{i} tf");
+            assert_eq!(reader.next(), Some(doc), "{i} next");
+        }
+        assert!(reader.next().is_none());
+    }
+
+    /// The fused step must equal the `(next, tf)` pair exactly — including across
+    /// advance jumps (tf alignment restored from the skip trailer) — and leave the
+    /// cursor in the same state as `next`.
+    #[test]
+    fn fused_next_step_matches_next_tf_pair_across_jumps() {
+        let docs: Vec<u32> = (0..4500u32).map(|i| i * 2 + 1).collect();
+        let tfs: Vec<u32> = docs.iter().map(|d| (d % 251) + 1).collect();
+        let bytes = encode_freq_varint(&docs, &tfs);
+        let mut reader = FreqVarintReader::new(&bytes);
+        let mut idx = 0usize;
+        for target in [0u32, 127, 128, 4094, 4096, 4200, 8999, 10_000] {
+            while idx < docs.len() && docs[idx] < target {
+                // Drain through the fused primitive itself.
+                let want = (docs[idx], tfs[idx]);
+                assert_eq!(
+                    reader.next_step(),
+                    Some(want),
+                    "fused step at {} before {target}",
+                    docs[idx]
+                );
+                idx += 1;
+            }
+            assert_eq!(
+                reader.advance(target),
+                docs.get(idx).copied(),
+                "advance({target})"
+            );
+            if let Some(&doc) = docs.get(idx) {
+                assert_eq!(reader.next_step(), Some((doc, tfs[idx])), "step at {doc}");
+                idx += 1;
+                // Mixed mode: plain next() after a fused step stays aligned.
+                if let Some(&doc) = docs.get(idx) {
+                    assert_eq!(reader.peek(), Some(doc));
+                    assert_eq!(reader.freq(), Some(tfs[idx]));
+                    assert_eq!(reader.next(), Some(doc));
+                    idx += 1;
+                }
+            }
+        }
+        assert!(reader.next_step().is_none(), "exhaustion is sticky");
     }
 }

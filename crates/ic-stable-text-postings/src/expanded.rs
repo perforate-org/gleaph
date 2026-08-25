@@ -384,12 +384,18 @@ mod tests {
 
         // Parity invariant: totals recomputed two ways agree. Analytic widths from the
         // delta sequence must reproduce both encoder-output sums exactly. Set mode uses
-        // the real encoder output, which includes a 4-byte count header per list; freq
-        // mode follows the brief's bare interleaved layout (delta varint + tf byte, no
-        // header) — the 4·units byte difference is part of each mode's definition.
+        // the real encoder output, which includes a 4-byte count header per list plus
+        // the bi-level skip trailer (plan 0295: 8-byte plain entries per 128-posting
+        // block and per 32-block stride, plus the trailing count word); freq mode
+        // follows the brief's bare interleaved layout (delta varint + tf byte, no
+        // header) — the byte difference is part of each mode's definition.
         let analytic_set: usize = inverted
             .iter()
             .map(|list| {
+                let blocks = list.docids.len().div_ceil(
+                    usize::try_from(crate::blockmax::LOGICAL_BLOCK_SIZE).expect("small constant"),
+                );
+                let strides = blocks.div_ceil(32);
                 4 // varint count header
                     + list
                         .docids
@@ -400,6 +406,8 @@ mod tests {
                             leb128_len(delta)
                         })
                         .sum::<usize>()
+                    + (blocks + strides) * 8 // skip entries, both levels
+                    + 4 // trailing level-0 block-count word
             })
             .sum();
         assert_eq!(
@@ -433,9 +441,12 @@ mod tests {
         );
 
         assert!(total_set > 0);
-        assert!(
-            total_freq >= total_set,
-            "tf bytes only ever add to the total"
-        );
+        // Plan 0295: set mode now also carries the bi-level skip trailer per list,
+        // while the freq-mode writer keeps the bare interleaved layout — so neither
+        // total dominates the other any more (many small lists make set packaging
+        // relatively heavier). The durable property both modes must keep: each stays
+        // far under the FTS5 database image.
+        assert!(total_set < FTS5_IMAGE_BYTES);
+        assert!(total_freq < FTS5_IMAGE_BYTES);
     }
 }

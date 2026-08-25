@@ -201,6 +201,34 @@ fn verify_queries(fx: &'static ArmFixture) {
     distinct.sort_unstable();
     distinct.dedup();
     assert_eq!(distinct.len(), TOP_K, "ranked rows must be distinct docs");
+
+    // Scored top-100 (plan 0296 fair-pair matrix): warm AND verify the exact statement
+    // the scored bench measures — 100 ranked rows, distinct docs, finite bm25 scores.
+    let dense = fx.probes[0].as_str();
+    let scored_rows: Vec<(i64, f64)> = with_query(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT rowid, bm25(docs) FROM docs WHERE docs MATCH ?1 ORDER BY rank LIMIT 100",
+        )?;
+        stmt.query_all(params![dense], |row| {
+            Ok((row.get::<i64>(0)?, row.get::<f64>(1)?))
+        })
+    });
+    assert_eq!(
+        scored_rows.len(),
+        100,
+        "scored dense probe must return exactly 100 ranked rows"
+    );
+    let mut distinct_ids = scored_rows
+        .iter()
+        .map(|&(rowid, _)| rowid)
+        .collect::<Vec<_>>();
+    distinct_ids.sort_unstable();
+    distinct_ids.dedup();
+    assert_eq!(distinct_ids.len(), 100, "scored rows must be distinct docs");
+    assert!(
+        scored_rows.iter().all(|&(_, score)| score.is_finite()),
+        "bm25 scores must be finite"
+    );
 }
 
 /// Setup shared by both query benches: DB ready, fully ingested, verified, warm.
@@ -293,6 +321,31 @@ fn bench_fts5_query_rank_m3_top10() -> canbench_rs::BenchResult {
             let mut stmt =
                 conn.prepare("SELECT rowid FROM docs WHERE docs MATCH ?1 ORDER BY rank LIMIT 10")?;
             stmt.query_all(params![m3], |row| row.get::<i64>(0))
+        });
+        black_box(hits);
+    })
+}
+
+/// Scored half of the D1 fair-pair matrix (plan 0296): the SAME dense probe term as
+/// [`bench_fts5_query_term_top100`] and corpus config, but through FTS5's ranking
+/// machinery — `bm25(docs)` projected explicitly, `ORDER BY rank`, LIMIT 100. Workload
+/// counterpart of the custom arm's tf-scored whole-path query bench; its unscored rowid
+/// sibling above completes the 2×2 matrix on this side.
+///
+/// Setup verifies the exact statement first (100 ranked rows, distinct docs, finite
+/// scores — see `verify_queries`) and warms it through the same cached connection.
+#[bench(raw)]
+fn bench_fts5_query_term_rank_top100_scored() -> canbench_rs::BenchResult {
+    let fx = black_box(setup_query_arm());
+    let dense = black_box(fx.probes[0].as_str());
+    canbench_rs::bench_fn(|| {
+        let hits: Vec<(i64, f64)> = with_query(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT rowid, bm25(docs) FROM docs WHERE docs MATCH ?1 ORDER BY rank LIMIT 100",
+            )?;
+            stmt.query_all(params![dense], |row| {
+                Ok((row.get::<i64>(0)?, row.get::<f64>(1)?))
+            })
         });
         black_box(hits);
     })

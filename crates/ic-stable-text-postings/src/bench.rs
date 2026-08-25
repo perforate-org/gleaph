@@ -54,26 +54,31 @@ const DICT_HITS: usize = 256;
 const DICT_MISSES: usize = 256;
 
 /// Fixed-point scale for the fixture's synthetic per-posting score parts (see
-/// [`part_of`]); caller-owned scoring math lives above the crate — this exists only so
-/// the scored bench has plausible integer parts to sum.
+/// [`scored_part_of`]); caller-owned scoring math lives above the crate — this exists only
+/// so the scored bench has plausible integer parts to sum.
 const PART_SCALE: u64 = 4096;
 
-/// Fixture-side fixed-point stand-in for BM25-style tf normalization, documented here
-/// because the part vectors are fixture output:
+/// Damping constant of the fixture's synthetic scored-part model below.
+const TF_DAMP: u32 = 8;
+
+/// Fixture-side fixed-point stand-in for tf-damped scoring, redefined in plan 0295 slice
+/// 11b when query-side score inputs became a pure tf→part lookup table (the driver now
+/// reads tfs straight off the codec, so per-document lengths are no longer expressible):
 ///
 /// ```text
-/// part(freq, doc_len) = PART_SCALE * freq / (freq + doc_len)
+/// scored_part(tf) = PART_SCALE * tf / (tf + TF_DAMP)
 /// ```
 ///
-/// Monotone in the in-document frequency, damped by document length, computed exactly
-/// in u64 and stored as u32 — no floats anywhere in crate code. The scored bench sums
-/// these parts verbatim; the crate itself owns no scoring formula.
-fn part_of(freq: u32, doc_len: u32) -> u32 {
-    (PART_SCALE * u64::from(freq) / (u64::from(freq) + u64::from(doc_len))) as u32
+/// Monotone in the stored term frequency, computed exactly in u64 and stored as u32 —
+/// no floats anywhere in crate code. The scored bench sums these parts verbatim through
+/// its lookup table; the crate itself owns no scoring formula.
+fn scored_part_of(tf: u32) -> u32 {
+    (PART_SCALE * u64::from(tf) / (u64::from(tf) + u64::from(TF_DAMP))) as u32
 }
 
-/// Shared empty parts slice for the constant-weight benches.
-const NO_PARTS: &[u32] = &[];
+/// All-zero part table shared by the constant-weight benches (contribution = weight,
+/// since tf-less codecs report one occurrence per posting and the table maps it to 0).
+const ZERO_PARTS: crate::topk::TfPartTable = [0u8 as u32; 256];
 
 /// xorshift64 for fixed probe/target patterns (fixture-side only).
 fn next_rand(state: &mut u64) -> u64 {
@@ -112,18 +117,16 @@ struct Fixture {
     scaled_b: Vec<u32>,
     scaled_c: Vec<u32>,
     scaled_d: Vec<u32>,
-    /// Caller-supplied score parts aligned to posting positions (fixture-side
-    /// [`part_of`] output) for the scored bench, plus their block-max tables.
-    parts_b: Vec<u32>,
-    parts_c: Vec<u32>,
-    parts_d: Vec<u32>,
-    scaled_parts_b: Vec<u32>,
-    scaled_parts_c: Vec<u32>,
-    scaled_parts_d: Vec<u32>,
+    /// Caller-built tf→part table for the scored bench (fixture-side
+    /// [`scored_part_of`] output), plus its per-list block-max tables.
+    scored_lut: Box<crate::topk::TfPartTable>,
+    scaled_scored_b: Vec<u32>,
+    scaled_scored_c: Vec<u32>,
+    scaled_scored_d: Vec<u32>,
     /// Sorted deduplicated union of the four lists (merge oracle).
     merge_oracle: Vec<u32>,
     /// Brute-force top-10 truth for the {B, C, D} disjunctive query under constant
-    /// weights and under the part model.
+    /// weights and under the scored part model.
     topk_truth: Vec<Hit>,
     parts_truth: Vec<Hit>,
     /// Fixed ascending advance-target pattern mixing before-first / mid-gap / exact-hit /
@@ -149,9 +152,7 @@ fn build_fixture() -> Fixture {
     });
     let mut lists: [Vec<u32>; 4] = Default::default();
     let mut tfs: [Vec<u32>; 4] = Default::default();
-    let mut parts: [Vec<u32>; 4] = Default::default();
     for (docid, doc) in corpus.docs.iter().enumerate() {
-        let doc_len = doc.len() as u32;
         let mut counts = [0u32; 4];
         for token in doc {
             for (slot, rank) in RANKS.iter().enumerate() {
@@ -164,16 +165,13 @@ fn build_fixture() -> Fixture {
             if counts[slot] > 0 {
                 lists[slot].push(docid as u32);
                 tfs[slot].push(counts[slot]);
-                parts[slot].push(part_of(counts[slot], doc_len));
             }
         }
     }
     drop(corpus);
     let [plain_a, plain_b, plain_c, plain_d] = lists;
     let [tf_a, tf_b, tf_c, tf_d] = tfs;
-    let [parts_a, parts_b, parts_c, parts_d] = parts;
     drop(tf_a);
-    drop(parts_a);
 
     // Document-frequency spread guards: the benchmark contracts depend on these bands.
     assert!(
@@ -212,11 +210,23 @@ fn build_fixture() -> Fixture {
     let scaled_b = scale_docid_space(&plain_b, &tf_b, WEIGHT_B);
     let scaled_c = scale_docid_space(&plain_c, &tf_c, WEIGHT_C);
     let scaled_d = scale_docid_space(&plain_d, &tf_d, WEIGHT_D);
-    let scaled_parts_b = scale_docid_space(&plain_b, &parts_b, 1);
-    let scaled_parts_c = scale_docid_space(&plain_c, &parts_c, 1);
-    let scaled_parts_d = scale_docid_space(&plain_d, &parts_d, 1);
 
-    // Consistency gate: each parts block-max table recomputed a second way — direct
+    // Scored arm: the tf→part table and its per-list block-max tables (weight 1).
+    let scored_lut: Box<crate::topk::TfPartTable> =
+        Box::new(std::array::from_fn(|tf| scored_part_of(tf as u32)));
+    let scored_of: Vec<Vec<u32>> = [(&tf_b), (&tf_c), (&tf_d)]
+        .iter()
+        .map(|tfs| {
+            tfs.iter()
+                .map(|&tf| scored_lut[tf.min(255) as usize])
+                .collect()
+        })
+        .collect();
+    let scaled_scored_b = scale_docid_space(&plain_b, &scored_of[0], 1);
+    let scaled_scored_c = scale_docid_space(&plain_c, &scored_of[1], 1);
+    let scaled_scored_d = scale_docid_space(&plain_d, &scored_of[2], 1);
+
+    // Consistency gate: each scored block-max table recomputed a second way — direct
     // per-block docid windows via binary search — must agree with the incremental fill.
     fn assert_parts_tables_agree(list: &[u32], parts: &[u32], table: &[u32]) {
         let mut direct = vec![0u32; table.len()];
@@ -229,9 +239,9 @@ fn build_fixture() -> Fixture {
         }
         assert_eq!(direct, table, "parts block-max tables must agree two ways");
     }
-    assert_parts_tables_agree(&plain_b, &parts_b, &scaled_parts_b);
-    assert_parts_tables_agree(&plain_c, &parts_c, &scaled_parts_c);
-    assert_parts_tables_agree(&plain_d, &parts_d, &scaled_parts_d);
+    assert_parts_tables_agree(&plain_b, &scored_of[0], &scaled_scored_b);
+    assert_parts_tables_agree(&plain_c, &scored_of[1], &scaled_scored_c);
+    assert_parts_tables_agree(&plain_d, &scored_of[2], &scaled_scored_d);
 
     let enc = EncodedLists {
         a_varint: encode_varint(&plain_a),
@@ -270,7 +280,8 @@ fn build_fixture() -> Fixture {
         &plain_b,
         &plain_c,
         &plain_d,
-        [&parts_b, &parts_c, &parts_d],
+        [&tf_b, &tf_c, &tf_d],
+        &scored_lut,
         TOP_K,
     );
     let advance_targets = build_advance_targets(&plain_a);
@@ -299,12 +310,10 @@ fn build_fixture() -> Fixture {
         scaled_b,
         scaled_c,
         scaled_d,
-        parts_b,
-        parts_c,
-        parts_d,
-        scaled_parts_b,
-        scaled_parts_c,
-        scaled_parts_d,
+        scored_lut,
+        scaled_scored_b,
+        scaled_scored_c,
+        scaled_scored_d,
         merge_oracle,
         topk_truth,
         parts_truth,
@@ -392,14 +401,15 @@ fn brute_force_topk(b: &[u32], c: &[u32], d: &[u32], weights: &[u32; 3], k: usiz
     hits
 }
 
-/// Brute-force disjunctive top-k oracle for the part model: pointer-merge the plain
-/// lists, summing each matching list's caller-supplied part at the candidate position,
+/// Brute-force disjunctive top-k oracle for the scored model: pointer-merge the plain
+/// lists, summing each matching list's tf→part lookup entry at the candidate's stored tf,
 /// then take the k best hits by (score desc, docid asc).
 fn brute_force_topk_parts(
     b: &[u32],
     c: &[u32],
     d: &[u32],
-    parts: [&[u32]; 3],
+    tfs: [&[u32]; 3],
+    lut: &crate::topk::TfPartTable,
     k: usize,
 ) -> Vec<Hit> {
     let mut hits: Vec<Hit> = Vec::new();
@@ -413,15 +423,15 @@ fn brute_force_topk_parts(
         let candidate = nexts[0].min(nexts[1]).min(nexts[2]);
         let mut score = 0;
         if nexts[0] == candidate {
-            score += parts[0][ib];
+            score += lut[tfs[0][ib].min(255) as usize];
             ib += 1;
         }
         if nexts[1] == candidate {
-            score += parts[1][ic];
+            score += lut[tfs[1][ic].min(255) as usize];
             ic += 1;
         }
         if nexts[2] == candidate {
-            score += parts[2][id];
+            score += lut[tfs[2][id].min(255) as usize];
             id += 1;
         }
         match hits.binary_search_by(|h| h.docid.cmp(&candidate)) {
@@ -526,17 +536,17 @@ fn verify_merge() {
 /// order). Generic over the reader codec so the frame-encoded, varint, and scored
 /// freq-varint arms share one driver implementation: identical workload, only the
 /// encoding and the caller-supplied contribution/bound model differ.
-fn run_topk_over<R: PostingReader>(
+fn run_topk_over<'a, R: PostingReader>(
     readers: [R; 3],
     weights: [u32; 3],
-    parts: [&[u32]; 3],
-    bounds: [&[u32]; 3],
+    luts: [&'a crate::topk::TfPartTable; 3],
+    bounds: [&'a [u32]; 3],
 ) -> Vec<Hit> {
     let [reader_b, reader_c, reader_d] = readers;
     let mut lists = [
-        QueryList::new(reader_b, weights[0], bounds[0], parts[0]),
-        QueryList::new(reader_c, weights[1], bounds[1], parts[1]),
-        QueryList::new(reader_d, weights[2], bounds[2], parts[2]),
+        QueryList::new(reader_b, weights[0], bounds[0], luts[0]),
+        QueryList::new(reader_c, weights[1], bounds[1], luts[1]),
+        QueryList::new(reader_d, weights[2], bounds[2], luts[2]),
     ];
     topk_disjunctive(&mut lists, TOP_K)
 }
@@ -553,7 +563,7 @@ fn run_topk(f: &Fixture) -> Vec<Hit> {
             ForReader::new(&f.enc.d_for),
         ],
         BM_WEIGHTS,
-        [NO_PARTS, NO_PARTS, NO_PARTS],
+        [&ZERO_PARTS, &ZERO_PARTS, &ZERO_PARTS],
         [&f.scaled_b[..], &f.scaled_c[..], &f.scaled_d[..]],
     )
 }
@@ -566,16 +576,17 @@ fn run_topk_varint(f: &Fixture) -> Vec<Hit> {
             VarintReader::new(&f.enc.d_varint),
         ],
         BM_WEIGHTS,
-        [NO_PARTS, NO_PARTS, NO_PARTS],
+        [&ZERO_PARTS, &ZERO_PARTS, &ZERO_PARTS],
         [&f.scaled_b[..], &f.scaled_c[..], &f.scaled_d[..]],
     )
 }
 
-/// Scored arm: tf-carrying freq-varint readers whose postings are scored purely from the
-/// fixture's per-posting parts (zero constant weight; contributions are parts only).
-/// Block bounds are the parts' own block-max tables so pruning bounds exactly what the
-/// driver sums.
+/// Scored arm: tf-carrying freq-varint readers whose postings are scored purely through
+/// the fixture's tf→part lookup table (zero constant weight; contributions are table
+/// entries). Block bounds are the scored parts' own block-max tables so pruning bounds
+/// exactly what the driver sums.
 fn run_topk_bm25(f: &Fixture) -> Vec<Hit> {
+    let lut = &*f.scored_lut;
     run_topk_over(
         [
             FreqVarintReader::new(&f.enc.b_freq),
@@ -583,11 +594,11 @@ fn run_topk_bm25(f: &Fixture) -> Vec<Hit> {
             FreqVarintReader::new(&f.enc.d_freq),
         ],
         [0, 0, 0],
-        [&f.parts_b[..], &f.parts_c[..], &f.parts_d[..]],
+        [lut, lut, lut],
         [
-            &f.scaled_parts_b[..],
-            &f.scaled_parts_c[..],
-            &f.scaled_parts_d[..],
+            &f.scaled_scored_b[..],
+            &f.scaled_scored_c[..],
+            &f.scaled_scored_d[..],
         ],
     )
 }
@@ -891,14 +902,15 @@ fn bench_topk_bmw_m3_top10_varint() -> canbench_rs::BenchResult {
 }
 
 /// D1 follow-up: tf-carrying scored variant of the m3 top-10. Same probe lists
-/// ({53, 83, 1000}), same ported allocation-free driver; the query-side readers switch to
+/// ({53, 83, 1000}), same ported allocation-free driver; the query-side readers use
 /// [`FreqVarintReader`] over the slice-6 interleaved (delta-docid varint + u8 tf) layout,
-/// and each posting contributes the fixture's caller-supplied integer score part
-/// (`part_of(tf, doc_len) = 4096 * tf / (tf + doc_len)` — see the fixture docs). The
-/// crate owns no scoring math: parts are inputs summed verbatim at candidates, and the
-/// block-max bounds cap part sums per docid-block.
+/// and each posting contributes the fixture's tf→part lookup entry
+/// (`scored_part(tf) = 4096 * tf / (tf + 8)` — see the fixture docs; plan 0295 slice 11b
+/// restricted score inputs to pure tf lookups). The crate owns no scoring math: parts are
+/// inputs summed verbatim at candidates, and the block-max bounds cap part sums per
+/// docid-block.
 ///
-/// Setup asserts the result against a brute-force part-model oracle once before
+/// Setup asserts the result against a brute-force scored-model oracle once before
 /// measuring.
 ///
 /// **Predeclared threshold:** informational only — compare against the constant-weight

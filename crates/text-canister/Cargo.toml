@@ -13,14 +13,23 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+canbench = ["dep:canbench-rs"]
 
 [dependencies]
 candid.workspace = true
+canbench-rs = { workspace = true, optional = true }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
+ic-stable-linear-hash-map.workspace = true
 ic-stable-memory-backend.workspace = true
 ic-stable-structures.workspace = true
 ic-stable-text-postings = { path = "../ic-stable-text-postings" }
+ic-stable-vec-deque.workspace = true
 serde.workspace = true
+# Backfill pull worker (ADR 0059 §Text build kind): canonical export wire types.
+gleaph-graph-kernel.workspace = true
+# Slice 0295/structures-swap: 128-bit dictionary digests (xxh3_128). Disclosed dep
+# addition scoped to this crate per plan 0295.
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1"

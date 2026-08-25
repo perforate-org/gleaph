@@ -2,14 +2,14 @@ benches:
   bench_query_term_top100:
     total:
       calls: 1
-      instructions: 4164605
+      instructions: 4002333
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_query_term_top100_unscored:
     total:
       calls: 1
-      instructions: 216418
+      instructions: 205808
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

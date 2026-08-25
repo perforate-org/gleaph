@@ -9,10 +9,16 @@
 //! segments.
 //!
 //! Each [`QueryList`] pairs a reader (any [`PostingReader`] codec) with the score each of
-//! its postings contributes — a constant caller-supplied weight plus optional per-posting
-//! caller-supplied `score_parts` — and weight-scaled per-block upper bounds. **Boundary.**
-//! This module owns no scoring math and no analyzer: contributions are summed verbatim,
-//! integers only, no floats; ranking formulas and tokenization belong to layers above.
+//! its postings contributes — a constant caller-supplied weight plus a caller-built
+//! tf→part lookup table ([`TfPartTable`], 256 entries; stored tfs are capped at 255) the
+//! driver applies inline at every candidate — and weight-scaled per-block upper bounds.
+//! **Boundary.** This module owns no scoring math and no analyzer: contributions are
+//! summed verbatim, integers only, no floats; ranking formulas, tokenization, and the
+//! part-table contents belong to layers above (plan 0295: positional score-part vectors
+//! were replaced by this table so candidates are scored lazily from the codec's tf).
+//! Per-candidate economics (plan 0296): each consumed posting costs exactly ONE fused
+//! [`PostingReader::next_step`] dispatch plus a cached frontier read — the former
+//! peek/freq/next triple crossed the reader boundary three times per candidate.
 //!
 //! Allocation discipline: the main loop performs zero allocations. Frontier/order caches
 //! and the bounded heap are sized once up front; ordering is maintained by stable
@@ -29,28 +35,32 @@ use std::collections::BinaryHeap;
 use crate::blockmax::LOGICAL_BLOCK_SIZE;
 use crate::enc::PostingReader;
 
+/// Caller-built tf→part lookup table: contribution part for a posting whose stored term
+/// frequency is the index. Codecs without stored frequencies report tf 1, so constant-
+/// weight callers pass an all-zero table. Indexes above 255 are unreachable (encoders
+/// cap tfs at 255).
+pub type TfPartTable = [u32; 256];
+
 /// One disjunctive query list: a reader over the query postings (codec chosen by the
-/// caller), a constant contribution added for every posting match, optional per-posting
-/// `score_parts` aligned to posting positions (caller-owned scoring output), and
-/// weight-scaled per-block upper bounds (caller-supplied, aligned to
-/// [`LOGICAL_BLOCK_SIZE`]).
+/// caller), a constant contribution added for every posting match, the caller-built
+/// tf→part table applied inline at each candidate, and weight-scaled per-block upper
+/// bounds (caller-supplied, aligned to [`LOGICAL_BLOCK_SIZE`]).
 pub struct QueryList<'a, R> {
     reader: R,
     weight: u32,
     block_bounds: &'a [u32],
-    score_parts: &'a [u32],
+    tf_parts: &'a TfPartTable,
 }
 
 impl<'a, R: PostingReader> QueryList<'a, R> {
     /// Pairs `reader` with its caller-supplied constant `weight`, per-block upper
-    /// bounds, and per-posting score parts. `score_parts` must align to posting
-    /// positions by contract; shorter slices contribute 0 past their end.
-    pub fn new(reader: R, weight: u32, block_bounds: &'a [u32], score_parts: &'a [u32]) -> Self {
+    /// bounds, and the caller-built tf→part table.
+    pub fn new(reader: R, weight: u32, block_bounds: &'a [u32], tf_parts: &'a TfPartTable) -> Self {
         Self {
             reader,
             weight,
             block_bounds,
-            score_parts,
+            tf_parts,
         }
     }
 
@@ -64,14 +74,15 @@ impl<'a, R: PostingReader> QueryList<'a, R> {
         self.block_bounds[(docid / LOGICAL_BLOCK_SIZE) as usize]
     }
 
-    /// Consumes the frontier posting and returns its total contribution: the list's
-    /// constant weight plus its caller-supplied part at this position (0 when the list
-    /// carries no parts). Parts align to posting positions by contract.
-    fn take_contribution(&mut self) -> u32 {
-        let pos = self.reader.pos() as usize;
-        let part = self.score_parts.get(pos).copied().unwrap_or(0);
-        self.reader.next();
-        self.weight + part
+    /// Consumes the frontier posting through ONE fused codec step and returns its total
+    /// contribution — the list's constant weight plus the caller's table entry at the
+    /// posting's tf — together with the refreshed cached frontier. The refresh reads the
+    /// codec's lazy cursor (no second decode), so a full traversal decodes each posting
+    /// exactly once.
+    fn take_step(&mut self) -> (u32, Option<u32>) {
+        let (_, tf) = self.reader.next_step().expect("frontier live at call");
+        let part = self.tf_parts[tf.min(255) as usize];
+        (self.weight + part, self.reader.peek())
     }
 
     /// Advances to the first posting at or beyond the skip target.
@@ -216,13 +227,15 @@ pub fn topk_disjunctive<R: PostingReader>(lists: &mut [QueryList<'_, R>], k: usi
         }
 
         // Evaluate the smallest frontier docid: the contiguous prefix of cursors sitting
-        // on it contributes their postings' scores.
+        // on it contributes their postings' scores. Each cursor is consumed through one
+        // fused (docid, tf) codec step — no separate peek/freq/next dispatches.
         let candidate = frontiers[0].expect("live");
         let mut score = 0u32;
         let mut matched = 0usize;
         while matched < frontiers.len() && frontiers[matched] == Some(candidate) {
-            score += lists[order[matched]].take_contribution();
-            frontiers[matched] = lists[order[matched]].frontier();
+            let (contribution, next) = lists[order[matched]].take_step();
+            score += contribution;
+            frontiers[matched] = next;
             matched += 1;
         }
         // Consumed cursors moved strictly past `candidate`, but they may land on either
@@ -256,7 +269,7 @@ pub fn topk_disjunctive<R: PostingReader>(lists: &mut [QueryList<'_, R>], k: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enc::{VarintReader, encode_varint};
+    use crate::enc::{FreqVarintReader, encode_freq_varint};
 
     /// Brute-force oracle over (docid, part) lists: sum parts at common docs, order by
     /// (score desc, docid asc), truncate to k.
@@ -294,20 +307,18 @@ mod tests {
         hits
     }
 
-    /// Drives the operator over varint-encoded docid streams. Each entry is a
-    /// `(docid, part)` posting list plus its constant weight; block bounds are derived
-    /// honestly as the max contribution (weight + part) per docid-block.
+    /// Drives the operator over freq-varint-encoded docid streams. Each entry is a
+    /// `(docid, tf)` posting list plus its constant weight; block bounds are derived
+    /// honestly as the max contribution (weight + tf) per docid-block, and the shared
+    /// identity part table maps every tf to itself (contribution = weight + tf).
     fn run(lists: &[(&[(u32, u32)], u32)], k: usize) -> Vec<Hit> {
         let encoded: Vec<Vec<u8>> = lists
             .iter()
             .map(|(postings, _)| {
                 let docs: Vec<u32> = postings.iter().map(|p| p.0).collect();
-                encode_varint(&docs)
+                let tfs: Vec<u32> = postings.iter().map(|p| p.1).collect();
+                encode_freq_varint(&docs, &tfs)
             })
-            .collect();
-        let parts_vecs: Vec<Vec<u32>> = lists
-            .iter()
-            .map(|(postings, _)| postings.iter().map(|p| p.1).collect())
             .collect();
         let n_blocks = lists
             .iter()
@@ -319,22 +330,23 @@ mod tests {
             .iter()
             .map(|(postings, weight)| {
                 let mut bounds = vec![0u32; n_blocks];
-                for &(docid, part) in postings.iter() {
+                for &(docid, tf) in postings.iter() {
                     let entry = &mut bounds[(docid / LOGICAL_BLOCK_SIZE) as usize];
-                    *entry = (*entry).max(weight + part);
+                    *entry = (*entry).max(weight + tf);
                 }
                 bounds
             })
             .collect();
+        let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));
 
-        let mut qlists: Vec<QueryList<'_, VarintReader<'_>>> = Vec::with_capacity(lists.len());
+        let mut qlists: Vec<QueryList<'_, FreqVarintReader<'_>>> = Vec::with_capacity(lists.len());
         for i in 0..lists.len() {
             let (_, weight) = lists[i];
             qlists.push(QueryList::new(
-                VarintReader::new(&encoded[i]),
+                FreqVarintReader::new(&encoded[i]),
                 weight,
                 &all_bounds[i],
-                &parts_vecs[i],
+                &identity_parts,
             ));
         }
 

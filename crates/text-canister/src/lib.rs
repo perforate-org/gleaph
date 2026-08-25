@@ -20,20 +20,30 @@
 //! whole call before any mutation. Router fan-out wiring is a later slice: DML/read
 //! endpoints are intentionally unguarded at this stage.
 
+#![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
+
 pub mod analyzer;
+mod backfill;
 mod guards;
 mod init;
 mod state;
+
+#[cfg(feature = "canbench")]
+mod bench;
 
 use candid::CandidType;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 
 pub use analyzer::ANALYZER_ID;
+pub use backfill::{
+    RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
+    TextBackfillSealProof, TextBackfillStatus,
+};
+pub use init::TextCanisterInitArgs;
 /// v0 identity-scorer constant weight (see `state` module docs); part of the observable
 /// search contract until catalog-driven scoring lands.
 pub use state::WEIGHT_BASE;
-pub use init::TextCanisterInitArgs;
 
 /// One document to index. Keys are caller-owned u64 identities (vertex ids once the
 /// Router wires DML); re-ingesting a key updates it (delete + insert semantics).
@@ -99,9 +109,22 @@ pub struct TextIndexStats {
     pub next_docid: u32,
 }
 
+/// Init accepts the candid-encoded [`TextCanisterInitArgs`]; EMPTY argument bytes (as
+/// sent by bare wasm installs such as canbench) fall back to defaults instead of
+/// trapping, leaving the deny-all controller sentinel.
 #[init]
-fn init(args: TextCanisterInitArgs) {
-    state::with_stores(|stores| stores.set_controller(args.controller));
+fn init() {
+    let raw = ic_cdk::api::msg_arg_data();
+    let args: Option<TextCanisterInitArgs> = if raw.is_empty() {
+        None
+    } else {
+        Some(
+            candid::decode_args::<(TextCanisterInitArgs,)>(&raw)
+                .expect("decode init args")
+                .0,
+        )
+    };
+    state::with_stores(|stores| stores.set_controller(args.and_then(|a| a.controller)));
 }
 
 /// Upgrade reopen: rebinds the store through the same validated open path as first use;
@@ -156,6 +179,55 @@ fn admin_merge_step(budget: u32) -> Result<MergeStepReport, String> {
 #[query]
 fn get_stats() -> TextIndexStats {
     state::with_stores(|stores| stores.get_stats())
+}
+
+// -- Text backfill pull worker (ADR 0059 §Text build kind) ---------------------------------
+
+/// Controller-guarded registration of one immutable text backfill identity. Fail-closed
+/// validation precedes any effect; an exact replay returns the durable status, a
+/// conflicting identity is rejected without touching the registered build.
+#[update(guard = "guards::guard_controller")]
+fn admin_register_text_backfill(
+    registration: RegisterTextBackfillRequest,
+) -> Result<TextBackfillStatus, String> {
+    backfill::with_cells(|cells| backfill::register_text_backfill(cells, registration))
+}
+
+/// Controller-guarded bounded pull step: up to `min(budget, MAX_INDEX_BUILD_ADVANCE_PAGES)`
+/// iterations of prepare → fetch one raw-text canonical export page from the home Graph
+/// shard → analyze + ingest + cursor advance. No stable mutation happens before a fully
+/// decoded successful reply; repeat until [`TextBackfillStatus::done`].
+#[update(guard = "guards::guard_controller")]
+async fn admin_advance_text_backfill(
+    control: TextBackfillControl,
+    budget: u32,
+) -> Result<TextBackfillStatus, String> {
+    backfill::advance_text_backfill_with(control, budget, backfill::fetch_index_export_page).await
+}
+
+/// Controller-guarded seal fence: captures the Router proof epoch after the base scan
+/// converged. An identical proof replays exactly; anything else fails closed.
+#[update(guard = "guards::guard_controller")]
+fn admin_seal_text_backfill(
+    control: TextBackfillControl,
+    proof: TextBackfillSealProof,
+) -> Result<TextBackfillStatus, String> {
+    backfill::with_cells(|cells| backfill::seal_text_backfill(cells, &control, &proof))
+}
+
+/// Controller-guarded terminal abort: clears the resumable pull state; ingested documents
+/// remain replay-safe. Idempotent; the aborted identity is never reusable.
+#[update(guard = "guards::guard_controller")]
+fn admin_abort_text_backfill(control: TextBackfillControl) -> Result<TextBackfillStatus, String> {
+    backfill::with_cells(|cells| backfill::abort_text_backfill(cells, &control))
+}
+
+/// Read-only status for the Router convergence poll (`None` before any registration).
+#[query]
+fn get_text_backfill_status() -> Result<Option<TextBackfillStatus>, String> {
+    Ok(backfill::with_cells(|cells| {
+        backfill::text_backfill_status(cells)
+    }))
 }
 
 ic_cdk::export_candid!();

@@ -23,6 +23,7 @@ mod elias_fano;
 mod frame;
 mod freq_varint;
 mod partitioned_ef;
+mod skip;
 mod varint;
 
 pub use elias_fano::{EfReader, encode_elias_fano};
@@ -52,6 +53,23 @@ pub trait PostingReader {
     /// First unconsumed docid >= `target`, consuming everything skipped; `None` when no
     /// remaining docid satisfies the bound.
     fn advance(&mut self, target: u32) -> Option<u32>;
+    /// Term frequency carried by the next unconsumed posting, aligned with [`Self::peek`]
+    /// (score it before consuming). Codecs that store no frequencies report exactly one
+    /// occurrence per posting; `None` once exhausted.
+    fn tf(&mut self) -> Option<u32> {
+        self.peek().map(|_| 1)
+    }
+    /// Fused hot-loop step — consumes and returns `(docid, tf)` in ONE dispatch instead
+    /// of the [`Self::next`] + [`Self::tf`] pair. Semantics are exactly the composition:
+    /// tf-less codecs report one occurrence per posting; exhaustion is sticky. The
+    /// default composes those two methods; codecs override it where a native fused decode
+    /// avoids redundant cursor work (`FreqVarintReader`) or a wasted lookahead decode for
+    /// a constant answer (`VarintReader`). Skipping stays on [`Self::advance`]; this is
+    /// the posting-list driver's only per-candidate primitive.
+    fn next_step(&mut self) -> Option<(u32, u32)> {
+        let docid = self.next()?;
+        Some((docid, self.tf().unwrap_or(1)))
+    }
 }
 
 /// Reader over an unencoded strictly increasing slice — the oracle for tests and the
@@ -163,6 +181,26 @@ impl<'a> PostingReader for AnyPostingReader<'a> {
             Self::For(r) => r.advance(target),
             Self::Ef(r) => r.advance(target),
             Self::Pef(r) => r.advance(target),
+        }
+    }
+
+    fn tf(&mut self) -> Option<u32> {
+        match self {
+            Self::Plain(r) => r.tf(),
+            Self::Varint(r) => r.tf(),
+            Self::For(r) => r.tf(),
+            Self::Ef(r) => r.tf(),
+            Self::Pef(r) => r.tf(),
+        }
+    }
+
+    fn next_step(&mut self) -> Option<(u32, u32)> {
+        match self {
+            Self::Plain(r) => r.next_step(),
+            Self::Varint(r) => r.next_step(),
+            Self::For(r) => r.next_step(),
+            Self::Ef(r) => r.next_step(),
+            Self::Pef(r) => r.next_step(),
         }
     }
 }

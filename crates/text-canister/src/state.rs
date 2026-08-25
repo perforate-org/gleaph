@@ -1,4 +1,5 @@
-//! Stable state and operations for the Text Index canister (ADR 0077 engine, plan 0294).
+//! Stable state and operations for the Text Index canister (ADR 0077 engine, plan 0294;
+//! hot-path structures swapped per plan 0295 `structures-swap`).
 //!
 //! ## Region map
 //!
@@ -9,19 +10,33 @@
 //! |---|---|---|
 //! | 0 | `Cell<TextMeta>` | magic/layout version, analyzer id, monotonic counters |
 //! | 1 | `BTreeMap<u64, SegmentRow>` | segment registry (v0: one active segment row) |
-//! | 2 | `BTreeMap<String, TermEntry>` | active-segment term dictionary (unit → term_id/df) |
-//! | 3 | `BTreeMap<u32, Vec<u8>>` | active-segment postings (term_id → freq-varint blob) |
-//! | 4 | `BTreeMap<u32, Vec<u8>>` | active-segment block-max tables (term_id → LE u32) |
-//! | 5 | `BTreeMap<u32, u64>` | docid → doc key (hit projection) |
-//! | 6 | `BTreeMap<u64, u32>` | doc key → docid (delete/update addressing) |
-//! | 7 | `BTreeMap<u16, Tombstone>` | tombstone bitset containers (64 Ki docs each) |
+//! | 2 | linear-hash-map `u128 → u32` | active-segment dictionary probes: dual xxh3_128 digests of the term → term_id (ADR 0067 V1 contract) |
+//! | 3 | dense vector of [`arena::BlobRef`] | active-segment postings by term_id (freq-varint blob in the shared arena) |
+//! | 4 | dense vector of [`arena::BlobRef`] | active-segment block-max tables by term_id (LE u32s in the shared arena) |
+//! | 5 | dense vector of [`DocKeySlot`] | docid → doc key (hit projection; docids are sequential) |
+//! | 6 | linear-hash-map `u64 → u32` | doc key → docid (delete/update addressing) |
+//! | 7 | dense vector of `Tombstone` | tombstone bitset containers by ordinal (64 Ki docs each) |
 //! | 8 | `Cell<TextStats>` | global stats record |
-//! | 9 | `BTreeMap<u64, PendingOp>` | durable pending ops log (FIFO by op seq) |
-//! | 10 | `Cell<Option<String>>` | resumable merge cursor (last reclaimed unit) |
+//! | 9 | stable `VecDeque` of [`arena::BlobRef`] | durable pending ops FIFO (op payloads live in the shared arena) |
+//! | 10 | `Cell<Option<u32>>` | resumable merge cursor (last processed term_id) |
 //! | 11 | `Cell<Principal>` | controller principal for admin guards |
+//! | 12 | dense vector of [`arena::BlobChunk`] | shared variable-byte arena addressed by blob refs |
+//! | 13 | dense vector of `TermEntrySlot` | term_id → canonical term string (arena ref) + live df |
+//! | 14 | `Cell<Option<backfill::BackfillRegistration>>` | text backfill build identity + lifecycle phase (`crate::backfill`) |
+//! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
 //!
-//! Per-segment posting/dict stores materialize lazily on flush: the maps above bind their
-//! regions at first open but stay empty until the first applied delta.
+//! Per-segment posting/dict stores materialize lazily on flush: the structures above bind
+//! their regions at first open but stay empty until the first applied delta.
+//!
+//! ## Dictionary identity and collisions
+//!
+//! A term is identified by its verified probe, never by a digest alone: lookups accept a
+//! probe hit only when the candidate's canonical string (read from the dense entry array)
+//! equals the probe term, so cross-term digest collisions degrade to a miss, never a
+//! false accept. Insertion places a new term at its first *absent* probe digest; if both
+//! probe digests are occupied by other terms the operation fails closed. With 128-bit
+//! xxh3 digests this is cryptographically unreachable for adversarially bounded inputs,
+//! but the branch is defined and tested (`dictionary_verification_rejects_forced_digest_collisions`).
 //!
 //! ## v0 simplifications (documented per plan 0294)
 //!
@@ -35,6 +50,11 @@
 //! - **Tombstone reclaim clears bits only at merge-pass completion.** Stale bits over
 //!   already-reclaimed postings are inert until the pass ends; this keeps mid-pass reads
 //!   sound without per-doc reference counting.
+//! - **Arena runs orphaned on size-class changes are inert.** Same-chunk-count blob
+//!   rewrites happen in place ([`arena::BlobArena::write_over`]); growth/shrink relocates
+//!   the run and leaves the old chunks as inert bytes until a compaction slice lands.
+//!   Linear-hash-map split debt is serviced with bounded budgets at the end of every
+//!   `flush_step` ([ADR 0067](../../design/adr/0067-stable-linear-hash-map-production-contract.md)).
 //!
 //! ## Scoring policy (v0 placeholder)
 //!
@@ -44,25 +64,43 @@
 //! max tf) are scaled by the constant weight at query time to satisfy the driver's
 //! contribution-bound contract. Deterministic tie-break (score desc, docid asc) comes from
 //! the promoted driver.
+//!
+//! ## Determinism
+//!
+//! No hash-order iteration anywhere: semantic orders are explicitly chosen — FIFO for the
+//! pending log, ascending term_id for merge passes, arrival order (with lexicographic
+//! order within one document) for term-id assignment, docid ascending for tie-breaks.
+//! Linear-hash-map routing affects physical placement only, never observable order.
+
+mod arena;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ops::Bound;
 
 use candid::{CandidType, Decode, Encode, Principal};
+use ic_stable_linear_hash_map::StableLinearHashMap;
 use ic_stable_memory_backend::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::storable::{Bound as SBound, Storable};
+use ic_stable_structures::vec::Vec as StableVec;
 use ic_stable_structures::{BTreeMap, Cell};
 use ic_stable_text_postings::blockmax::LOGICAL_BLOCK_SIZE;
 use ic_stable_text_postings::enc::{FreqVarintReader, PostingReader, encode_freq_varint};
-use ic_stable_text_postings::topk::{QueryList, topk_disjunctive};
+use ic_stable_text_postings::topk::{QueryList, TfPartTable, topk_disjunctive};
+use ic_stable_vec_deque::VecDeque as StableVecDeque;
 use serde::{Deserialize, Serialize};
+use xxhash_rust::xxh3::{xxh3_128, xxh3_128_with_seed};
 
 use crate::analyzer::analyze;
 use crate::{FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
 
+use arena::{BlobArena, BlobRef};
+
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+/// Dictionary probes: digest → term_id (region 2).
+type DictMap<M> = StableLinearHashMap<u128, u32, M>;
+/// Reverse doc addressing: key → docid (region 6).
+type KeyDocMap<M> = StableLinearHashMap<u64, u32, M>;
 
 // -- Guard rails: bounded loop budgets per call (fail-closed preflight checks). ----------
 
@@ -86,8 +124,20 @@ pub(crate) const MAX_MERGE_TERMS_PER_STEP: u32 = 1_024;
 /// Constant weight every matched query list contributes (identity scorer; see module docs).
 pub const WEIGHT_BASE: u32 = 1;
 
+/// Probe digests per dictionary term (primary + alternate domain).
+const DICT_PROBES: usize = 2;
+/// Alternate xxh3 seed for the second probe domain.
+const DICT_PROBE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+/// Split-debt service budgets applied to both linear hash maps after each flush step
+/// (crate-default magnitudes; see ADR 0067 admission/maintenance contract).
+const SPLIT_DEBT_ENTRY_BUDGET: u64 = 1024;
+const SPLIT_DEBT_BYTE_BUDGET: u64 = 16 * 1024 * 1024;
+
 const MAGIC: u64 = u64::from_le_bytes(*b"GLEAPHTX");
-const LAYOUT_VERSION: u32 = 1;
+/// Layout 4 (plan 0297 backfill-pull): adds the ADR 0059 §Text build kind durable regions
+/// 14/15 (backfill registration cell + resumable cursor cell). Layouts 1–3 fail loudly at
+/// open; fresh state is required (pre-production rule).
+const LAYOUT_VERSION: u32 = 4;
 /// The single active segment of v0 (`SegmentRow` holder; see module docs).
 const ACTIVE_SEGMENT_ID: u64 = 0;
 const TOMBSTONE_CONTAINER_BITS: usize = 65_536;
@@ -112,8 +162,12 @@ const TEXT_STATS: MemoryId = MemoryId::new(8);
 const TEXT_PENDING_OPS: MemoryId = MemoryId::new(9);
 const TEXT_MERGE_CURSOR: MemoryId = MemoryId::new(10);
 const TEXT_CONTROLLER: MemoryId = MemoryId::new(11);
+const TEXT_BLOB_ARENA: MemoryId = MemoryId::new(12);
+const TEXT_TERM_ENTRIES: MemoryId = MemoryId::new(13);
 
-fn region(id: MemoryId) -> Memory {
+/// Binds one production region through the single `MemoryManager`; exposed so the
+/// sibling [`crate::backfill`] module can bind its own cells on dedicated MemoryIds.
+pub(crate) fn region(id: MemoryId) -> Memory {
     MEMORY_MANAGER.with(|manager| manager.borrow().get(id))
 }
 
@@ -132,10 +186,12 @@ pub(crate) struct TextMemories<M: ic_stable_structures::Memory> {
     pending: M,
     merge_cursor: M,
     controller: M,
+    arena: M,
+    term_entries: M,
 }
 
 impl TextMemories<Memory> {
-    /// Binds all twelve production regions through the single `MemoryManager`.
+    /// Binds all fourteen production regions through the single `MemoryManager`.
     pub(crate) fn production() -> Self {
         Self {
             meta: region(TEXT_META),
@@ -150,6 +206,8 @@ impl TextMemories<Memory> {
             pending: region(TEXT_PENDING_OPS),
             merge_cursor: region(TEXT_MERGE_CURSOR),
             controller: region(TEXT_CONTROLLER),
+            arena: region(TEXT_BLOB_ARENA),
+            term_entries: region(TEXT_TERM_ENTRIES),
         }
     }
 }
@@ -165,7 +223,6 @@ struct TextMeta {
     analyzer_id: u32,
     next_docid: u32,
     next_term_id: u32,
-    next_op_seq: u64,
 }
 
 impl Default for TextMeta {
@@ -176,7 +233,6 @@ impl Default for TextMeta {
             analyzer_id: crate::analyzer::ANALYZER_ID,
             next_docid: 0,
             next_term_id: 0,
-            next_op_seq: 0,
         }
     }
 }
@@ -220,56 +276,117 @@ impl Storable for SegmentRow {
     }
 }
 
-/// Dictionary value: dense term id plus live document frequency (df tracks postings after
-/// tombstone reclamation).
-#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// Dictionary value (heap-side view): live document frequency plus the arena locator of
+/// the canonical term string (df tracks postings after tombstone reclamation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TermEntry {
-    term_id: u32,
+    str_ref: BlobRef,
     df: u32,
 }
 
-impl Storable for TermEntry {
-    const BOUND: SBound = SBound::Unbounded;
+/// Fixed-size stable carrier for [`TermEntry`] (20 bytes: 16-byte blob ref + LE u32 df).
+#[derive(Clone, Copy)]
+struct TermEntrySlot([u8; 20]);
+
+impl From<TermEntry> for TermEntrySlot {
+    fn from(e: TermEntry) -> Self {
+        let mut out = [0u8; 20];
+        out[0..16].copy_from_slice(&arena::BlobRefSlot::from(e.str_ref).0);
+        out[16..20].copy_from_slice(&e.df.to_le_bytes());
+        Self(out)
+    }
+}
+
+impl From<TermEntrySlot> for TermEntry {
+    fn from(slot: TermEntrySlot) -> Self {
+        Self {
+            str_ref: arena::BlobRefSlot(slot.0[0..16].try_into().expect("fixed width")).into(),
+            df: u32::from_le_bytes(slot.0[16..20].try_into().expect("fixed width")),
+        }
+    }
+}
+
+impl Storable for TermEntrySlot {
+    const BOUND: SBound = SBound::Bounded {
+        max_size: 20,
+        is_fixed_size: true,
+    };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode TermEntry"))
+        Cow::Borrowed(&self.0)
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode TermEntry")
+        self.0.to_vec()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), TermEntry).expect("decode TermEntry")
+        Self(bytes.as_ref().try_into().expect("corrupt term entry width"))
+    }
+}
+
+impl TermEntry {
+    /// Absent marker: analyzed units are never empty, so an empty string ref cannot be
+    /// live.
+    fn is_absent(self) -> bool {
+        self.str_ref.is_empty()
+    }
+}
+
+/// Dense doc-key slot (region 5): present flag + key, packed into 9 fixed bytes. Docids
+/// are sequential, so the vector index *is* the docid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DocKeySlot {
+    present: bool,
+    key: u64,
+}
+
+impl DocKeySlot {
+    fn live(key: u64) -> Self {
+        Self { present: true, key }
+    }
+}
+
+impl Storable for DocKeySlot {
+    const BOUND: SBound = SBound::Bounded {
+        max_size: 9,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut out = [0u8; 9];
+        out[0] = u8::from(self.present);
+        out[1..9].copy_from_slice(&self.key.to_le_bytes());
+        Cow::Owned(out.to_vec())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let b: [u8; 9] = bytes
+            .as_ref()
+            .try_into()
+            .expect("corrupt doc key slot width");
+        Self {
+            present: b[0] != 0,
+            key: u64::from_le_bytes(b[1..9].try_into().expect("fixed width")),
+        }
     }
 }
 
 /// Durable pending op. Units are carried verbatim so `admin_flush` applies exactly what
-/// was ingested (the analyzer runs once, at enqueue time).
+/// was ingested (the analyzer runs once, at enqueue time). Encoded candid bytes live in
+/// the shared blob arena; the FIFO deque holds only the locator.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum PendingOp {
     Upsert { key: u64, units: Vec<String> },
     Delete { key: u64 },
 }
 
-impl Storable for PendingOp {
-    const BOUND: SBound = SBound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode PendingOp"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode PendingOp")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), PendingOp).expect("decode PendingOp")
-    }
-}
-
 /// One tombstone bitset container covering 64 Ki consecutive docids (container key =
-/// `docid >> 16`, bit index = `docid & 0xFFFF`).
+/// `docid >> 16`, bit index = `docid & 0xFFFF`). Stored densely by container ordinal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Tombstone([u8; TOMBSTONE_CONTAINER_BYTES]);
 
@@ -349,50 +466,241 @@ impl Storable for TextStats {
 pub struct TextStores<M: ic_stable_structures::Memory> {
     meta: Cell<TextMeta, M>,
     segments: BTreeMap<u64, SegmentRow, M>,
-    dict: BTreeMap<String, TermEntry, M>,
-    postings: BTreeMap<u32, Vec<u8>, M>,
-    block_max: BTreeMap<u32, Vec<u8>, M>,
-    key_by_docid: BTreeMap<u32, u64, M>,
-    docid_by_key: BTreeMap<u64, u32, M>,
-    tombstones: BTreeMap<u16, Tombstone, M>,
+    dict: DictMap<M>,
+    term_entries: StableVec<TermEntrySlot, M>,
+    postings: StableVec<arena::BlobRefSlot, M>,
+    block_max: StableVec<arena::BlobRefSlot, M>,
+    key_by_docid: StableVec<DocKeySlot, M>,
+    docid_by_key: KeyDocMap<M>,
+    tombstones: StableVec<Tombstone, M>,
     stats: Cell<TextStats, M>,
-    pending: BTreeMap<u64, PendingOp, M>,
-    merge_cursor: Cell<Option<String>, M>,
+    pending: StableVecDeque<arena::BlobRefSlot, M>,
+    merge_cursor: Cell<Option<u32>, M>,
     controller: Cell<Principal, M>,
+    arena: BlobArena<M>,
+}
+
+/// Computes the probe digests of one term (dual-domain xxh3_128 over UTF-8 bytes).
+fn dict_digests(term: &str) -> [u128; DICT_PROBES] {
+    let bytes = term.as_bytes();
+    [xxh3_128(bytes), xxh3_128_with_seed(bytes, DICT_PROBE_SEED)]
 }
 
 impl<M: ic_stable_structures::Memory> TextStores<M> {
-    /// Opens every region load-or-create and validates the layout header. Foreign or
-    /// incompatible bytes fail closed (assert), matching pre-production simplicity:
-    /// layout changes require fresh state, not migrations.
+    /// Opens every region load-or-create and validates the layout header FIRST: foreign
+    /// or incompatible meta bytes fail closed (assert) before any structure binds its
+    /// region, matching pre-production simplicity — layout changes require fresh state,
+    /// not migrations.
     pub fn init(memories: TextMemories<M>) -> Self {
+        let meta = Cell::init(memories.meta, TextMeta::default());
+        let header = meta.get();
+        assert!(
+            header.magic == MAGIC && header.layout_version == LAYOUT_VERSION,
+            "incompatible text index layout: magic {:#x} version {}",
+            header.magic,
+            header.layout_version
+        );
+
         let mut stores = Self {
-            meta: Cell::init(memories.meta, TextMeta::default()),
+            meta,
             segments: BTreeMap::init(memories.segments),
-            dict: BTreeMap::init(memories.dict),
-            postings: BTreeMap::init(memories.postings),
-            block_max: BTreeMap::init(memories.block_max),
-            key_by_docid: BTreeMap::init(memories.key_by_docid),
-            docid_by_key: BTreeMap::init(memories.docid_by_key),
-            tombstones: BTreeMap::init(memories.tombstones),
+            dict: StableLinearHashMap::init(memories.dict).expect("bind dictionary map"),
+            term_entries: StableVec::init(memories.term_entries),
+            postings: StableVec::init(memories.postings),
+            block_max: StableVec::init(memories.block_max),
+            key_by_docid: StableVec::init(memories.key_by_docid),
+            docid_by_key: StableLinearHashMap::init(memories.docid_by_key)
+                .expect("bind doc key map"),
+            tombstones: StableVec::init(memories.tombstones),
             stats: Cell::init(memories.stats, TextStats::default()),
-            pending: BTreeMap::init(memories.pending),
+            pending: StableVecDeque::init(memories.pending).expect("bind pending log"),
             merge_cursor: Cell::init(memories.merge_cursor, None),
             controller: Cell::init(memories.controller, Principal::anonymous()),
+            arena: BlobArena::init(memories.arena),
         };
-        let meta = stores.meta.get();
-        assert!(
-            meta.magic == MAGIC && meta.layout_version == LAYOUT_VERSION,
-            "incompatible text index layout: magic {:#x} version {}",
-            meta.magic,
-            meta.layout_version
-        );
         if stores.segments.is_empty() {
             stores
                 .segments
                 .insert(ACTIVE_SEGMENT_ID, SegmentRow { active: true });
         }
         stores
+    }
+
+    // -- Dictionary: verified digest probes over the linear hash map ---------------------
+
+    /// Resolves a term to its verified entry: every probe hit whose stored canonical
+    /// string differs from the probe term is treated as a digest collision (absent).
+    fn dict_lookup_digests(
+        &self,
+        term: &str,
+        digests: &[u128; DICT_PROBES],
+    ) -> Option<(u32, TermEntry)> {
+        for &digest in digests {
+            if let Some(term_id) = self.dict_get(digest) {
+                let entry = self.term_entry(term_id);
+                if self.arena.read(entry.str_ref) == term.as_bytes() {
+                    return Some((term_id, entry));
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns the verified term id for `unit`, interning it (fresh dense id + canonical
+    /// string in the arena + probe placement) when absent. Fails closed when every probe
+    /// digest is occupied by another term (see module docs).
+    fn dict_intern_digests(&mut self, unit: &str, digests: &[u128; DICT_PROBES]) -> u32 {
+        if let Some((term_id, _)) = self.dict_lookup_digests(unit, digests) {
+            return term_id;
+        }
+        let mut meta = self.meta.get().clone();
+        let term_id = meta.next_term_id;
+        meta.next_term_id = term_id.checked_add(1).expect("term id space exhausted");
+        self.meta.set(meta);
+
+        let str_ref = self.arena.put(unit.as_bytes());
+        self.term_entries
+            .push(&TermEntrySlot::from(TermEntry { str_ref, df: 0 }));
+
+        for &digest in digests {
+            if self.dict_get(digest).is_none() {
+                let previous = self
+                    .dict
+                    .insert(digest, term_id)
+                    .expect("dictionary map writable");
+                assert!(previous.is_none(), "probe digest was just verified absent");
+                return term_id;
+            }
+        }
+        panic!("dictionary probe space exhausted for {unit:?}: both digests collide");
+    }
+
+    /// Removes a term's entry and probe keys once its df reaches zero.
+    fn dict_remove_digests(&mut self, unit: &str, digests: &[u128; DICT_PROBES]) {
+        let Some((term_id, _)) = self.dict_lookup_digests(unit, digests) else {
+            return;
+        };
+        for &digest in digests {
+            if let Some(occupant) = self.dict_get(digest)
+                && occupant == term_id
+            {
+                self.dict
+                    .remove(&digest)
+                    .expect("dictionary map writable")
+                    .expect("verified occupant was just read");
+            }
+        }
+        self.clear_term_entry(term_id);
+    }
+
+    fn dict_get(&self, digest: u128) -> Option<u32> {
+        self.dict.get(&digest).expect("dictionary map readable")
+    }
+
+    fn term_entry(&self, term_id: u32) -> TermEntry {
+        self.term_entries
+            .get(u64::from(term_id))
+            .map(TermEntry::from)
+            .filter(|entry| !entry.is_absent())
+            .unwrap_or_else(|| panic!("term entry {term_id} absent"))
+    }
+
+    fn set_term_entry(&mut self, term_id: u32, entry: TermEntry) {
+        self.term_entries
+            .set(u64::from(term_id), &TermEntrySlot::from(entry));
+    }
+
+    fn clear_term_entry(&mut self, term_id: u32) {
+        self.set_term_entry(
+            term_id,
+            TermEntry {
+                str_ref: BlobRef::EMPTY,
+                df: 0,
+            },
+        );
+    }
+
+    // -- Blob-backed regions --------------------------------------------------------------
+
+    fn blob_at(refs: &StableVec<arena::BlobRefSlot, M>, index: u32) -> BlobRef {
+        refs.get(u64::from(index))
+            .map(|slot| slot.into())
+            .unwrap_or_default()
+    }
+
+    fn set_blob(refs: &mut StableVec<arena::BlobRefSlot, M>, index: u32, r: BlobRef) {
+        debug_assert!(
+            !r.is_empty(),
+            "detach refs with BlobRef::EMPTY via set_blob"
+        );
+        if u64::from(index) == refs.len() {
+            refs.push(&arena::BlobRefSlot::from(r));
+        } else {
+            refs.set(u64::from(index), &arena::BlobRefSlot::from(r));
+        }
+    }
+
+    fn detach_blob(refs: &mut StableVec<arena::BlobRefSlot, M>, index: u32) {
+        if u64::from(index) < refs.len() {
+            refs.set(u64::from(index), &arena::BlobRefSlot::from(BlobRef::EMPTY));
+        }
+    }
+
+    /// Verified dictionary probe (canonical-string-checked). Absent/colliding terms miss.
+    pub(crate) fn dict_term_id(&self, unit: &str) -> Option<u32> {
+        self.dict_lookup_digests(unit, &dict_digests(unit))
+            .map(|(term_id, _)| term_id)
+    }
+
+    /// Postings blob for one term id (None when the term has no stored list).
+    pub(crate) fn postings_blob(&self, term_id: u32) -> Option<Vec<u8>> {
+        let r = Self::blob_at(&self.postings, term_id);
+        (!r.is_empty()).then(|| self.arena.read(r))
+    }
+
+    /// Dense-array index for one docid. Docids are allocated 1-based
+    /// (`meta.next_docid` counts docs ever ingested), so slot `d - 1` is the docid's
+    /// dense position.
+    fn doc_key_index(docid: u32) -> u64 {
+        debug_assert!(docid >= 1, "docid 0 is never allocated");
+        u64::from(docid) - 1
+    }
+
+    /// Live doc key for one docid (None for deleted/never-assigned docids).
+    pub(crate) fn key_of_docid(&self, docid: u32) -> Option<u64> {
+        if docid == 0 {
+            return None;
+        }
+        self.key_by_docid
+            .get(Self::doc_key_index(docid))
+            .filter(|slot| slot.present)
+            .map(|slot| slot.key)
+    }
+
+    /// Docid currently addressed by `key` (None when unknown/deleted). Test
+    /// introspection only; production addressing goes through [`Self::key_of_docid`].
+    #[cfg(test)]
+    pub(crate) fn docid_of_key(&self, key: u64) -> Option<u32> {
+        self.docid_by_key.get(&key).expect("doc key map readable")
+    }
+
+    fn set_key_of_docid(&mut self, docid: u32, key: u64) {
+        let slot = DocKeySlot::live(key);
+        let index = Self::doc_key_index(docid);
+        if index == self.key_by_docid.len() {
+            self.key_by_docid.push(&slot);
+        } else {
+            self.key_by_docid.set(index, &slot);
+        }
+    }
+
+    fn clear_key_of_docid(&mut self, docid: u32) {
+        if docid >= 1 {
+            let index = Self::doc_key_index(docid);
+            if index < self.key_by_docid.len() {
+                self.key_by_docid.set(index, &DocKeySlot::default());
+            }
+        }
     }
 
     // -- DML: durable pending appends (no searchable state changes here) ------------------
@@ -450,30 +758,35 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         Ok(())
     }
 
+    /// Appends one op payload to the shared arena and its locator to the FIFO deque.
     fn append_pending(&mut self, op: PendingOp) {
-        let mut meta = self.meta.get().clone();
-        let seq = meta.next_op_seq;
-        meta.next_op_seq = seq.checked_add(1).expect("op sequence exhausted");
-        self.meta.set(meta);
-        self.pending.insert(seq, op);
+        let bytes = Encode!(&op).expect("encode PendingOp");
+        let r = self.arena.put(&bytes);
+        self.pending
+            .push_back(&arena::BlobRefSlot::from(r))
+            .expect("pending log grow");
     }
 
     // -- Flush: apply a bounded FIFO prefix of the pending log ----------------------------
 
     /// Applies up to `max_ops` pending ops in FIFO order. Repeat until
-    /// [`FlushReport::done`]; application order is fully determined by op sequence.
+    /// [`FlushReport::done`]; application order is fully determined by enqueue order.
     pub fn flush_step(&mut self, max_ops: u64) -> FlushReport {
         let mut drained = 0u64;
         while drained < max_ops {
-            let Some((_seq, op)) = self.pending.pop_first() else {
+            let Some(locator) = self.pending.pop_front() else {
                 break;
             };
-            match op {
+            let bytes = self.arena.read(locator.into());
+            match Decode!(bytes.as_slice(), PendingOp).expect("decode PendingOp") {
                 PendingOp::Upsert { key, units } => self.apply_upsert(key, &units),
                 PendingOp::Delete { key } => self.apply_delete(key),
             }
             drained += 1;
         }
+        // Both linear hash maps may carry split debt from this batch's insertions; serve
+        // it under bounded budgets (ADR 0067). `Pending` simply defers to the next call.
+        self.service_split_debt();
         let remaining_ops = self.pending.len();
         FlushReport {
             drained_ops: drained,
@@ -482,11 +795,29 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         }
     }
 
+    fn service_split_debt(&self) {
+        let errors = [
+            self.dict
+                .maintenance_step(SPLIT_DEBT_ENTRY_BUDGET, SPLIT_DEBT_BYTE_BUDGET)
+                .err(),
+            self.docid_by_key
+                .maintenance_step(SPLIT_DEBT_ENTRY_BUDGET, SPLIT_DEBT_BYTE_BUDGET)
+                .err(),
+        ];
+        if let Some(error) = errors.into_iter().flatten().next() {
+            panic!("linear hash map maintenance failed: {error}");
+        }
+    }
+
     /// Applies one upsert: update = delete + insert (the prior incarnation's docid is
     /// tombstoned first), then a fresh docid receives the new units.
     fn apply_upsert(&mut self, key: u64, units: &[String]) {
-        if let Some(old_docid) = self.docid_by_key.remove(&key) {
-            self.key_by_docid.remove(&old_docid);
+        if let Some(old_docid) = self
+            .docid_by_key
+            .remove(&key)
+            .expect("doc key map writable")
+        {
+            self.clear_key_of_docid(old_docid);
             self.mark_tombstoned(old_docid);
         }
 
@@ -509,28 +840,18 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
             .map(|(unit, count)| (unit.to_string(), count))
             .collect();
         for (unit, tf) in &counted {
-            let term_entry = match self.dict.get(unit) {
-                Some(entry) => entry,
-                None => {
-                    let mut meta = self.meta.get().clone();
-                    let term_id = meta.next_term_id;
-                    meta.next_term_id = term_id.checked_add(1).expect("term id space exhausted");
-                    self.meta.set(meta);
-                    TermEntry { term_id, df: 0 }
-                }
-            };
-            self.append_posting(term_entry.term_id, docid, *tf);
-            self.dict.insert(
-                unit.clone(),
-                TermEntry {
-                    term_id: term_entry.term_id,
-                    df: term_entry.df + 1,
-                },
-            );
+            let digests = dict_digests(unit);
+            let term_id = self.dict_intern_digests(unit, &digests);
+            let mut entry = self.term_entry(term_id);
+            entry.df += 1;
+            self.set_term_entry(term_id, entry);
+            self.append_posting(term_id, docid, *tf);
         }
 
-        self.key_by_docid.insert(docid, key);
-        self.docid_by_key.insert(key, docid);
+        self.set_key_of_docid(docid, key);
+        self.docid_by_key
+            .insert(key, docid)
+            .expect("doc key map writable");
         let mut stats = *self.stats.get();
         stats.ndocs += 1;
         stats.total_units += units.len() as u64;
@@ -540,17 +861,25 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     /// Applies one delete: unknown keys are no-ops; known keys tombstone their docid and
     /// drop the key mappings (physical reclaim defers to `merge_step`).
     fn apply_delete(&mut self, key: u64) {
-        if let Some(docid) = self.docid_by_key.remove(&key) {
-            self.key_by_docid.remove(&docid);
+        if let Some(docid) = self
+            .docid_by_key
+            .remove(&key)
+            .expect("doc key map writable")
+        {
+            self.clear_key_of_docid(docid);
             self.mark_tombstoned(docid);
         }
     }
 
     fn mark_tombstoned(&mut self, docid: u32) {
-        let container_key = (docid >> 16) as u16;
-        let mut container = self.tombstones.get(&container_key).unwrap_or_default();
+        let ordinal = u64::from(docid >> 16);
+        let mut container = self.tombstones.get(ordinal).unwrap_or_default();
         container.set(docid);
-        self.tombstones.insert(container_key, container);
+        if ordinal == self.tombstones.len() {
+            self.tombstones.push(&container);
+        } else {
+            self.tombstones.set(ordinal, &container);
+        }
         let mut stats = *self.stats.get();
         stats.ndocs -= 1;
         stats.tombstoned_docs += 1;
@@ -563,7 +892,7 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     fn append_posting(&mut self, term_id: u32, docid: u32, tf: u32) {
         let mut docs: Vec<u32> = Vec::new();
         let mut tfs: Vec<u32> = Vec::new();
-        if let Some(blob) = self.postings.get(&term_id) {
+        if let Some(blob) = self.postings_blob(term_id) {
             let mut reader = FreqVarintReader::new(&blob);
             while reader.peek().is_some() {
                 let list_tf = reader.freq().expect("interleaved tf aligns with postings");
@@ -577,8 +906,10 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         );
         docs.push(docid);
         tfs.push(tf.min(u32::from(u8::MAX)));
-        self.postings
-            .insert(term_id, encode_freq_varint(&docs, &tfs));
+        let encoded = encode_freq_varint(&docs, &tfs);
+        let old = Self::blob_at(&self.postings, term_id);
+        let fresh = self.arena.write_over(old, &encoded);
+        Self::set_blob(&mut self.postings, term_id, fresh);
         self.rebuild_block_max(term_id, &docs, &tfs);
     }
 
@@ -600,21 +931,23 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         for bound in bounds {
             bytes.extend_from_slice(&bound.to_le_bytes());
         }
-        self.block_max.insert(term_id, bytes);
+        let old = Self::blob_at(&self.block_max, term_id);
+        let fresh = self.arena.write_over(old, &bytes);
+        Self::set_blob(&mut self.block_max, term_id, fresh);
     }
 
     fn load_bounds(&self, term_id: u32) -> Vec<u32> {
-        self.block_max
-            .get(&term_id)
-            .map(|bytes| {
-                bytes
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|chunk| u32::from_le_bytes(*chunk))
-                    .collect()
-            })
-            .unwrap_or_default()
+        let r = Self::blob_at(&self.block_max, term_id);
+        if r.is_empty() {
+            return Vec::new();
+        }
+        self.arena
+            .read(r)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_le_bytes(*chunk))
+            .collect()
     }
 
     // -- Search ---------------------------------------------------------------------------
@@ -625,6 +958,13 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     /// matched term contributes once). Unflushed terms simply miss the dictionary, which
     /// is the documented under-posted-until-flush lag, and tombstoned docids never reach
     /// the driver because posting readers filter them.
+    ///
+    /// Scoring is lazy (plan 0295): the driver reads each candidate's tf straight off
+    /// the codec and applies the caller-built tf→part table inline — no eager decode of
+    /// full lists before ranking. Identity part model: `part(tf) = tf`, so a hit's score
+    /// is `Σ (WEIGHT_BASE + tf)` over its matched terms. Block-max bounds stay stored as
+    /// physical max-tf and scale by the constant weight at query time, keeping them
+    /// sound upper bounds of `WEIGHT_BASE + table[tf]` per docid block.
     pub fn search(&self, query: &str, k: u32) -> Result<Vec<TextHit>, String> {
         if query.len() > MAX_QUERY_BYTES {
             return Err(format!(
@@ -637,36 +977,26 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
             return Ok(Vec::new());
         }
 
-        // Materialize per-term buffers (cloned blob, decoded bounds, live parts) so the
-        // readers below borrow locals instead of `&self`.
-        let alive = |docid: u32| !self.is_tombstoned(docid);
+        // Caller-built scoring data: identity tf→part table (contribution part = tf)
+        // plus the tombstone filter. Both are O(1) to construct per query. The filter
+        // memoizes the last container internally (postings ascend within a list), so
+        // filtering costs one stable read per container change plus one dense-bit
+        // classification per posting — and hands [`LiveReader`] the dead-run hints that
+        // turn contiguous tombstoned spans into single codec jumps.
+        let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));
+        let tombs = TombFilter::new(&self.tombstones);
         let mut seen = std::collections::BTreeSet::new();
-        let mut buffers: Vec<(Vec<u8>, Vec<u32>, Vec<u32>)> = Vec::new();
+        let mut buffers: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
         for term in analyze(query) {
             if !seen.insert(term.clone()) {
                 continue;
             }
-            let Some(TermEntry { term_id, .. }) = self.dict.get(&term) else {
+            let Some(term_id) = self.dict_term_id(&term) else {
                 continue;
             };
-            let Some(blob) = self.postings.get(&term_id) else {
+            let Some(blob) = self.postings_blob(term_id) else {
                 continue;
             };
-            // Live-only parts walk: identical filter/order to the driver's consumption,
-            // so parts indexes align with visible posting positions.
-            let mut probe = FreqVarintReader::new(&blob);
-            let mut parts = Vec::new();
-            while let Some(docid) = probe.peek() {
-                let tf = probe.freq().expect("interleaved tf");
-                let consumed = probe.next().expect("just peeked");
-                debug_assert_eq!(docid, consumed);
-                if alive(docid) {
-                    parts.push(tf);
-                }
-            }
-            if parts.is_empty() {
-                continue;
-            }
             // Driver contract: per-block bounds cap the TOTAL contribution (weight +
             // part), so the stored max-tf table scales by the constant weight here.
             let bounds: Vec<u32> = self
@@ -674,7 +1004,7 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
                 .iter()
                 .map(|bound| bound + WEIGHT_BASE)
                 .collect();
-            buffers.push((blob, bounds, parts));
+            buffers.push((blob, bounds));
         }
         if buffers.is_empty() {
             return Ok(Vec::new());
@@ -682,82 +1012,115 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
 
         let mut lists: Vec<QueryList<'_, LiveReader<FreqVarintReader<'_>>>> =
             Vec::with_capacity(buffers.len());
-        for (blob, bounds, parts) in &buffers {
+        for (blob, bounds) in &buffers {
             lists.push(QueryList::new(
                 LiveReader {
                     inner: FreqVarintReader::new(blob),
-                    alive: &alive,
+                    tombs: &tombs,
                     visible_pos: 0,
+                    frontier_live: false,
                 },
                 WEIGHT_BASE,
                 bounds,
-                parts,
+                &identity_parts,
             ));
         }
         Ok(topk_disjunctive(&mut lists, k as usize)
             .into_iter()
             .map(|hit| TextHit {
-                key: self
-                    .key_by_docid
-                    .get(&hit.docid)
-                    .expect("live docid has key"),
+                key: self.key_of_docid(hit.docid).expect("live docid has key"),
                 docid: hit.docid,
                 score: hit.score,
             })
             .collect())
     }
 
-    fn is_tombstoned(&self, docid: u32) -> bool {
+    /// Unscored live-docid window over one term's postings — the read path of the plan
+    /// 0296 fair-pair matrix's custom unscored bench (never part of the Candid surface):
+    /// production dictionary probe and postings fetch, fused codec stepping, tombstone
+    /// filtering through the same memoized containers as [`Self::search`] (including
+    /// bulk dead-range jumps), but NO tf→part lookup and no ranking driver. Returns
+    /// `(docid, key)` pairs in ascending docid order, truncated to `limit`.
+    #[cfg(any(test, feature = "canbench"))]
+    pub(crate) fn first_live_docids(&self, term: &str, limit: u32) -> Vec<(u32, u64)> {
+        let Some(term_id) = self.dict_term_id(term) else {
+            return Vec::new();
+        };
+        let Some(blob) = self.postings_blob(term_id) else {
+            return Vec::new();
+        };
+        let tombs = TombFilter::new(&self.tombstones);
+        let mut reader = LiveReader {
+            inner: FreqVarintReader::new(&blob),
+            tombs: &tombs,
+            visible_pos: 0,
+            frontier_live: false,
+        };
+        let mut out = Vec::new();
+        while out.len() < limit as usize {
+            let Some((docid, _tf)) = reader.next_step() else {
+                break;
+            };
+            out.push((docid, self.key_of_docid(docid).expect("live docid has key")));
+        }
+        out
+    }
+
+    /// Tombstone state of one docid (bench oracle uses the same filter as search).
+    pub(crate) fn is_tombstoned(&self, docid: u32) -> bool {
         self.tombstones
-            .get(&((docid >> 16) as u16))
+            .get(u64::from(docid >> 16))
             .is_some_and(|container| container.get(docid))
     }
 
     // -- Merge: bounded, resumable tombstone reclaim ----------------------------------------
 
     /// Reclaims up to `min(budget, MAX_MERGE_TERMS_PER_STEP)` terms' tombstoned postings,
-    /// resuming from the merge-cursor cell. Tombstone containers clear only when the pass
-    /// completes ([`MergeStepReport::done`]); stale bits over reclaimed postings are inert.
+    /// resuming from the merge-cursor cell. Terms are visited in ascending dense term_id
+    /// order (explicit, deterministic); tombstone containers clear only when the pass
+    /// completes ([`MergeStepReport::done`]); stale bits over reclaimed postings are
+    /// inert.
     pub fn merge_step(&mut self, budget: u32) -> MergeStepReport {
         let budget = budget.min(MAX_MERGE_TERMS_PER_STEP);
         let mut processed = 0u64;
         let mut reclaimed_units = 0u64;
         let mut done = false;
         while processed < u64::from(budget) {
-            let resume = self.merge_cursor.get();
-            // Peek the next term beyond the resume point without holding borrows across
-            // mutation; iteration order is UTF-8 byte order (deterministic).
-            let next: Option<(String, u32, u32)> = match resume.as_deref() {
-                Some(last_unit) => self
-                    .dict
-                    .range((Bound::Excluded(last_unit.to_string()), Bound::Unbounded))
-                    .next()
-                    .map(|entry| (entry.key().clone(), entry.value().term_id, entry.value().df)),
-                None => self
-                    .dict
-                    .iter()
-                    .next()
-                    .map(|entry| (entry.key().clone(), entry.value().term_id, entry.value().df)),
-            };
-            let Some((unit, term_id, _df)) = next else {
+            let start = self.merge_cursor.get().map_or(0, |last| last + 1);
+            // Next live term strictly beyond the resume point, in dense id order
+            // (term ids are dense: `next_term_id` equals the entry-array length).
+            let next = (start..self.meta.get().next_term_id)
+                .map(|term_id| {
+                    let entry = self
+                        .term_entries
+                        .get(u64::from(term_id))
+                        .map(TermEntry::from);
+                    (term_id, entry)
+                })
+                .find(|(_, entry)| entry.is_some_and(|e| !e.is_absent()))
+                .map(|(term_id, entry)| (term_id, entry.expect("matched live above")));
+            let Some((term_id, entry)) = next else {
                 self.finish_merge_pass();
                 done = true;
                 break;
             };
+            let unit = String::from_utf8(self.arena.read(entry.str_ref))
+                .expect("canonical term strings are valid UTF-8");
 
             if let Some(dropped) = self.reclaim_term(term_id)
                 && dropped > 0
             {
                 let remaining_df = self.live_posting_len(term_id);
                 if remaining_df == 0 {
-                    self.postings.remove(&term_id);
-                    self.block_max.remove(&term_id);
-                    self.dict.remove(&unit);
+                    Self::detach_blob(&mut self.postings, term_id);
+                    Self::detach_blob(&mut self.block_max, term_id);
+                    let digests = dict_digests(&unit);
+                    self.dict_remove_digests(&unit, &digests);
                 } else {
-                    self.dict.insert(
-                        unit.clone(),
+                    self.set_term_entry(
+                        term_id,
                         TermEntry {
-                            term_id,
+                            str_ref: entry.str_ref,
                             df: remaining_df,
                         },
                     );
@@ -767,7 +1130,7 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
                 self.stats.set(stats);
                 reclaimed_units += dropped;
             }
-            self.merge_cursor.set(Some(unit));
+            self.merge_cursor.set(Some(term_id));
             processed += 1;
         }
         MergeStepReport {
@@ -778,9 +1141,9 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     }
 
     /// Drops a term's tombstoned postings, returning the number of dropped units
-    /// (`None` when the term has no stored postings).
+    /// (empty when the term has no stored postings).
     fn reclaim_term(&mut self, term_id: u32) -> Option<u64> {
-        let blob = self.postings.get(&term_id)?;
+        let blob = self.postings_blob(term_id)?;
         let mut reader = FreqVarintReader::new(&blob);
         let mut docs = Vec::new();
         let mut tfs = Vec::new();
@@ -800,19 +1163,20 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
             return Some(0);
         }
         if docs.is_empty() {
-            self.postings.remove(&term_id);
-            self.block_max.remove(&term_id);
+            Self::detach_blob(&mut self.postings, term_id);
+            Self::detach_blob(&mut self.block_max, term_id);
         } else {
-            self.postings
-                .insert(term_id, encode_freq_varint(&docs, &tfs));
+            let encoded = encode_freq_varint(&docs, &tfs);
+            let old = Self::blob_at(&self.postings, term_id);
+            let fresh = self.arena.write_over(old, &encoded);
+            Self::set_blob(&mut self.postings, term_id, fresh);
             self.rebuild_block_max(term_id, &docs, &tfs);
         }
         Some(dropped)
     }
 
     fn live_posting_len(&self, term_id: u32) -> u32 {
-        self.postings
-            .get(&term_id)
+        self.postings_blob(term_id)
             .map(|blob| FreqVarintReader::new(&blob).len())
             .unwrap_or(0)
     }
@@ -820,7 +1184,7 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     /// Ends a completed merge pass: stale tombstone bits become inert garbage until this
     /// unconditional clear, then the cursor resets for the next pass.
     fn finish_merge_pass(&mut self) {
-        while self.tombstones.pop_first().is_some() {}
+        while self.tombstones.pop().is_some() {}
         self.merge_cursor.set(None);
         let mut stats = *self.stats.get();
         stats.tombstoned_docs = 0;
@@ -858,25 +1222,159 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     }
 }
 
+/// Tombstone visibility verdict for one candidate docid.
+enum Visibility {
+    /// Live: the posting reaches the driver.
+    Alive,
+    /// Tombstoned. Every docid strictly between this candidate and `next_alive` is
+    /// tombstoned too, so the whole span can be skipped without decoding any of it.
+    /// `None`: every remaining docid of the final container is dead (nothing live can
+    /// follow within docid space).
+    Dead { next_alive: Option<u32> },
+}
+
+/// Filter view [`LiveReader`] consults while positioning: one call answers the alive
+/// test AND yields the bulk dead-range hint, replacing per-posting closure bit tests.
+trait TombstoneView {
+    /// Classifies one candidate docid.
+    fn classify(&self, docid: u32) -> Visibility;
+}
+
+/// [`TombstoneView`] over the dense container store. Containers are 8 KiB stable slots;
+/// they are memoized per query because postings ascend within a list — one stable read
+/// per container change instead of ~df reads. A store with NO containers has no
+/// tombstoned docids by construction, so classification short-circuits on a flag
+/// checked once per candidate instead of entering the memo machinery.
+struct TombFilter<'a, M: ic_stable_structures::Memory> {
+    containers: &'a StableVec<Tombstone, M>,
+    /// `containers.len() > 0`, resolved once per query.
+    any: bool,
+    cache: RefCell<(u64, Option<Tombstone>)>,
+}
+
+impl<'a, M: ic_stable_structures::Memory> TombFilter<'a, M> {
+    fn new(containers: &'a StableVec<Tombstone, M>) -> Self {
+        Self {
+            containers,
+            any: !containers.is_empty(),
+            cache: RefCell::new((u64::MAX, None)),
+        }
+    }
+
+    fn container(&self, ordinal: u64) -> Option<Tombstone> {
+        let mut cached = self.cache.borrow_mut();
+        if cached.0 != ordinal {
+            cached.1 = self.containers.get(ordinal);
+            cached.0 = ordinal;
+        }
+        cached.1.clone()
+    }
+}
+
+impl<M: ic_stable_structures::Memory> TombstoneView for TombFilter<'_, M> {
+    fn classify(&self, docid: u32) -> Visibility {
+        if !self.any {
+            return Visibility::Alive;
+        }
+        let ordinal = u64::from(docid >> 16);
+        let Some(container) = self.container(ordinal) else {
+            return Visibility::Alive; // no container ⇒ nothing tombstoned in range
+        };
+        if !container.get(docid) {
+            return Visibility::Alive;
+        }
+        Visibility::Dead {
+            next_alive: first_clear_bit(&container.0, docid & 0xFFFF)
+                .map(|bit| ((ordinal << 16) as u32) + bit),
+        }
+    }
+}
+
+/// Index of the first clear bit strictly after `bit`; `None` when every later bit of
+/// `bits` is set (all remaining docids of the container are tombstoned). Byte-wise scan:
+/// it runs once per dead run, and bulk-jumped runs cost no per-posting visits at all.
+///
+/// # Panics
+/// Panics (debug) when `bit` itself is clear — callers invoke this only on proven-dead
+/// docids.
+fn first_clear_bit(bits: &[u8], bit: u32) -> Option<u32> {
+    debug_assert!(
+        bits[(bit / 8) as usize] & (1 << (bit % 8)) != 0,
+        "dead-range hint requested for a live docid"
+    );
+    let total_bits = (bits.len() * 8) as u32;
+    let mut candidate = bit + 1;
+    while candidate < total_bits {
+        let byte = bits[(candidate / 8) as usize];
+        let mask = u8::MAX << (candidate % 8); // candidate ..= end of its byte
+        if byte & mask != mask {
+            for offset in 0..8 - candidate % 8 {
+                let q = candidate + offset;
+                if bits[(q / 8) as usize] & (1 << (q % 8)) == 0 {
+                    return Some(q);
+                }
+            }
+            unreachable!("mask proved a clear bit inside this byte");
+        }
+        candidate |= 7; // hop to the next byte boundary
+        candidate += 1;
+    }
+    None
+}
+
 /// Posting-reader wrapper that hides tombstoned docids from the promoted driver.
 ///
 /// `pos()` reports *visible* positions only, keeping [`QueryList`]'s per-position
-/// `score_parts` aligned; stored block-max bounds remain valid upper bounds because
+/// score table aligned; stored block-max bounds remain valid upper bounds because
 /// filtering can only lower per-block maxima.
+///
+/// Positioning economics (plan 0296): each posting's visibility is classified exactly
+/// once — `frontier_live` memoizes the verdict across the driver's peek-then-step
+/// pattern instead of re-testing per accessor — and contiguous tombstoned runs reaching
+/// past the current logical block jump through the codec's bi-level skip trailer via
+/// `advance(next_live_hint)` rather than decoding dead postings. The exposed sequence
+/// is exactly the alive subsequence, so filtering equivalence holds by construction.
 struct LiveReader<'a, R: ic_stable_text_postings::enc::PostingReader> {
     inner: R,
-    alive: &'a dyn Fn(u32) -> bool,
+    tombs: &'a dyn TombstoneView,
     visible_pos: u32,
+    /// True while `inner`'s frontier is already verified live (or exhausted): all
+    /// tombstone work is skipped until the inner cursor moves again.
+    frontier_live: bool,
 }
 
 impl<'a, R: ic_stable_text_postings::enc::PostingReader> LiveReader<'a, R> {
+    /// Positions `inner` at the next live posting (or exhaustion), cheaply when the
+    /// cached verdict still holds.
     fn skip_dead(&mut self) {
-        while let Some(docid) = self.inner.peek() {
-            if (self.alive)(docid) {
-                break;
-            }
-            self.inner.next();
+        if self.frontier_live {
+            return;
         }
+        while let Some(docid) = self.inner.peek() {
+            match self.tombs.classify(docid) {
+                Visibility::Alive => break,
+                Visibility::Dead { next_alive } => {
+                    #[cfg(test)]
+                    driver_counters::filter_test();
+                    match next_alive {
+                        // Dead run reaches into a later logical block: jump there via
+                        // the skip trailer instead of decoding dead postings one by one.
+                        Some(hint) if hint.saturating_sub(docid) > LOGICAL_BLOCK_SIZE => {
+                            self.inner.advance(hint);
+                            #[cfg(test)]
+                            driver_counters::block_jump();
+                        }
+                        // Short run: linear consumption beats skip-trailer search.
+                        _ => {
+                            self.inner.next();
+                            #[cfg(test)]
+                            driver_counters::dead_linear_step();
+                        }
+                    }
+                }
+            }
+        }
+        self.frontier_live = true;
     }
 }
 
@@ -901,14 +1399,95 @@ impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::en
         let value = self.inner.next();
         if value.is_some() {
             self.visible_pos += 1;
+            self.frontier_live = false;
         }
         value
     }
 
     fn advance(&mut self, target: u32) -> Option<u32> {
         self.inner.advance(target);
+        self.frontier_live = false;
         self.skip_dead();
-        self.peek()
+        self.inner.peek()
+    }
+
+    /// Forwards the inner codec's stored tf for the (already tombstone-filtered)
+    /// frontier so lazy scoring sees real frequencies, not the tf-less default.
+    fn tf(&mut self) -> Option<u32> {
+        self.skip_dead();
+        if self.inner.peek().is_some() {
+            self.inner.tf()
+        } else {
+            None
+        }
+    }
+
+    /// Fused visible step: one inner dispatch consumes the verified-live frontier
+    /// posting with its tf; the verdict cache resets so the next positioning re-filters
+    /// from wherever the cursor lands.
+    fn next_step(&mut self) -> Option<(u32, u32)> {
+        self.skip_dead();
+        let step = self.inner.next_step()?;
+        self.visible_pos += 1;
+        self.frontier_live = false;
+        #[cfg(test)]
+        driver_counters::visible_step();
+        Some(step)
+    }
+}
+
+/// Slice-12 decomposition counters (`cfg(test)` only): hot-path events of the
+/// tombstone-filtered driver. The decomposition test resets them around a search and
+/// reports postings visited / filter tests / jumps to price the filtered-vs-bare gap.
+#[cfg(test)]
+mod driver_counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        static VISIBLE_STEPS: Cell<u64> = const { Cell::new(0) };
+        static DEAD_LINEAR_STEPS: Cell<u64> = const { Cell::new(0) };
+        static FILTER_TESTS: Cell<u64> = const { Cell::new(0) };
+        static BLOCK_JUMPS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn reset() {
+        VISIBLE_STEPS.with(|c| c.set(0));
+        DEAD_LINEAR_STEPS.with(|c| c.set(0));
+        FILTER_TESTS.with(|c| c.set(0));
+        BLOCK_JUMPS.with(|c| c.set(0));
+    }
+
+    pub(super) fn visible_step() {
+        VISIBLE_STEPS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn dead_linear_step() {
+        DEAD_LINEAR_STEPS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn filter_test() {
+        FILTER_TESTS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn block_jump() {
+        BLOCK_JUMPS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// One hot-path event report (see module docs).
+    pub(super) struct Snapshot {
+        pub(super) visible_steps: u64,
+        pub(super) dead_linear_steps: u64,
+        pub(super) filter_tests: u64,
+        pub(super) block_jumps: u64,
+    }
+
+    pub(super) fn snapshot() -> Snapshot {
+        Snapshot {
+            visible_steps: VISIBLE_STEPS.with(Cell::get),
+            dead_linear_steps: DEAD_LINEAR_STEPS.with(Cell::get),
+            filter_tests: FILTER_TESTS.with(Cell::get),
+            block_jumps: BLOCK_JUMPS.with(Cell::get),
+        }
     }
 }
 
@@ -926,6 +1505,28 @@ pub(crate) fn with_stores<R>(f: impl FnOnce(&mut TextStores<Memory>) -> R) -> R 
         let stores = slot.get_or_insert_with(|| TextStores::init(TextMemories::production()));
         f(stores)
     })
+}
+
+/// Fourteen fresh, independent in-memory regions for sibling-module tests (the struct
+/// fields are private to this module, so construction is offered here instead).
+#[cfg(test)]
+pub(crate) fn fresh_vector_memories() -> TextMemories<ic_stable_structures::VectorMemory> {
+    TextMemories {
+        meta: Default::default(),
+        segments: Default::default(),
+        dict: Default::default(),
+        postings: Default::default(),
+        block_max: Default::default(),
+        key_by_docid: Default::default(),
+        docid_by_key: Default::default(),
+        tombstones: Default::default(),
+        stats: Default::default(),
+        pending: Default::default(),
+        merge_cursor: Default::default(),
+        controller: Default::default(),
+        arena: Default::default(),
+        term_entries: Default::default(),
+    }
 }
 
 #[cfg(test)]
