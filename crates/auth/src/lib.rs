@@ -830,8 +830,9 @@ fn decode_prefix_bytes(payload: &[u8; 16]) -> String {
         .expect("corrupt grant row: non-utf8 policy literal")
 }
 
-/// A compiled conditional-policy predicate ([ADR 0075] §1–§2): a bounded AND-only
-/// conjunction of catalog-checked comparisons over one vertex label.
+/// A compiled conditional-policy predicate ([ADR 0075] §1–§2, extended by
+/// [ADR 0082] §1–§4): a bounded AND-only conjunction of catalog-checked comparisons
+/// over one vertex label, plus an optional bounded EXISTS-traversal chain.
 ///
 /// This is the canonical storage form attached to a grant row. Compilation from syntax,
 /// catalog validation, and lowering into plan machinery all happen in the embedding
@@ -846,39 +847,215 @@ pub struct CompiledPredicate {
     /// Vertex label id the comparisons evaluate against (graph-scoped, monotonic).
     pub label: u32,
     pub conjuncts: Vec<PredicateComparison>,
+    /// Optional bounded traversal clause ([ADR 0082] §1): the row is visible iff at
+    /// least one matching chain exists from the selector vertex.
+    pub chain: Option<PredicateChain>,
 }
 
 /// Maximum AND-conjuncts per policy predicate ([ADR 0075] §2 determinism bound).
 pub const MAX_PREDICATE_CONJUNCTS: usize = 8;
 
-impl CompiledPredicate {
-    pub(crate) fn encode(&self) -> Vec<u8> {
+/// Fixed chain-depth bound of a conditional-policy traversal clause ([ADR 0082] §2):
+/// exactly the demonstrated direct-grant and org-membership patterns. Not a
+/// configurable knob.
+pub const MAX_CHAIN_HOPS: usize = 2;
+
+/// Direction of one chain hop ([ADR 0082] §2), following the ADR 0074 §2 directedness
+/// rules at GRANT-time validation: an undirected spelling over a directed label means
+/// both orientations must be probed; directional spellings over undirected labels are
+/// rejected by the compiler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub enum PredicateHopDirection {
+    /// `-[:E]->`
+    Outgoing,
+    /// `<-[:E]-`
+    Incoming,
+    /// `-[:E]-` (undirected)
+    Both,
+}
+
+impl PredicateHopDirection {
+    fn discriminant(self) -> u8 {
+        match self {
+            Self::Outgoing => 0,
+            Self::Incoming => 1,
+            Self::Both => 2,
+        }
+    }
+
+    fn from_discriminant(tag: u8) -> Self {
+        match tag {
+            0 => Self::Outgoing,
+            1 => Self::Incoming,
+            2 => Self::Both,
+            other => panic!("corrupt grant row: unknown chain hop direction {other}"),
+        }
+    }
+}
+
+/// One bounded traversal hop ([ADR 0082] §2): expand along one concrete edge label in
+/// one direction to vertices of one concrete destination label. Wildcard labels are
+/// not representable — the clause enumerates every resource it reads.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub struct PredicateChainHop {
+    /// Traversed edge label id (graph-scoped, monotonic).
+    pub edge_label: u32,
+    pub direction: PredicateHopDirection,
+    /// Reached vertex label id (graph-scoped, monotonic).
+    pub dest_label: u32,
+}
+
+/// The bounded EXISTS clause ([ADR 0082] §1): 1..=[`MAX_CHAIN_HOPS`] hops from the
+/// selector vertex, with 1..=[`MAX_PREDICATE_CONJUNCTS`] AND-comparisons evaluated on
+/// the terminal destination vertex.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
+pub struct PredicateChain {
+    pub hops: Vec<PredicateChainHop>,
+    pub terminal_conjuncts: Vec<PredicateComparison>,
+}
+
+impl PredicateChain {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Bounds live at the single serialization point ([ADR 0082] §4 determinism):
+        // hop depth and terminal conjunction caps are encoding-level facts.
         assert!(
-            !self.conjuncts.is_empty(),
-            "stored predicates have at least one conjunct"
+            (1..=MAX_CHAIN_HOPS).contains(&self.hops.len()),
+            "policy chain exceeds the hop bound"
         );
         assert!(
-            self.conjuncts.len() <= MAX_PREDICATE_CONJUNCTS,
-            "policy conjunction exceeds the depth cap"
+            !self.terminal_conjuncts.is_empty(),
+            "stored chains hold at least one terminal conjunct"
+        );
+        assert!(
+            self.terminal_conjuncts.len() <= MAX_PREDICATE_CONJUNCTS,
+            "policy chain terminal conjunction exceeds the depth cap"
         );
         let mut v = Vec::new();
-        v.extend_from_slice(&self.label.to_le_bytes());
-        v.push(self.conjuncts.len() as u8);
-        for conjunct in &self.conjuncts {
+        v.push(self.hops.len() as u8);
+        for hop in &self.hops {
+            v.extend_from_slice(&hop.edge_label.to_le_bytes());
+            v.push(hop.direction.discriminant());
+            v.extend_from_slice(&hop.dest_label.to_le_bytes());
+        }
+        v.push(self.terminal_conjuncts.len() as u8);
+        for conjunct in &self.terminal_conjuncts {
             v.extend_from_slice(&conjunct.to_bytes());
         }
         v
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Self {
-        assert!(bytes.len() >= 5, "corrupt grant row: truncated predicate");
-        let label = u32::from_le_bytes(bytes[0..4].try_into().expect("label payload"));
-        let count = bytes[4] as usize;
+    /// Decodes a chain block from `bytes`, returning the decoded chain and the number
+    /// of bytes consumed.
+    #[allow(clippy::type_complexity)]
+    fn decode(bytes: &[u8]) -> (Self, usize) {
         assert!(
-            (1..=MAX_PREDICATE_CONJUNCTS).contains(&count),
+            !bytes.is_empty(),
+            "corrupt grant row: truncated chain header"
+        );
+        let hop_count = bytes[0] as usize;
+        assert!(
+            (1..=MAX_CHAIN_HOPS).contains(&hop_count),
+            "corrupt grant row: chain hop count {hop_count}"
+        );
+        let mut at = 1usize;
+        let mut hops = Vec::with_capacity(hop_count);
+        for _ in 0..hop_count {
+            assert!(
+                bytes.len() >= at + 9,
+                "corrupt grant row: truncated chain hop"
+            );
+            hops.push(PredicateChainHop {
+                edge_label: u32::from_le_bytes(
+                    bytes[at..at + 4].try_into().expect("edge label payload"),
+                ),
+                direction: PredicateHopDirection::from_discriminant(bytes[at + 4]),
+                dest_label: u32::from_le_bytes(
+                    bytes[at + 5..at + 9]
+                        .try_into()
+                        .expect("dest label payload"),
+                ),
+            });
+            at += 9;
+        }
+        assert!(
+            bytes.len() > at,
+            "corrupt grant row: truncated chain conjunct count"
+        );
+        let terminal_count = bytes[at] as usize;
+        at += 1;
+        assert!(
+            (1..=MAX_PREDICATE_CONJUNCTS).contains(&terminal_count),
+            "corrupt grant row: chain terminal conjunct count {terminal_count}"
+        );
+        let mut terminal_conjuncts = Vec::with_capacity(terminal_count);
+        for _ in 0..terminal_count {
+            // Comparisons are self-delimiting via their value-kind byte, exactly like
+            // source-side conjuncts.
+            let width = match bytes.get(at + 5) {
+                Some(0) => 6,
+                Some(1) => 23,
+                _ => panic!("corrupt grant row: malformed comparison value header"),
+            };
+            terminal_conjuncts.push(PredicateComparison::decode(&bytes[at..at + width]));
+            at += width;
+        }
+        (
+            Self {
+                hops,
+                terminal_conjuncts,
+            },
+            at,
+        )
+    }
+}
+
+impl CompiledPredicate {
+    /// V2 encoding discriminator ([ADR 0082] §4): the version byte leads the payload so
+    /// pre-chain V1 bytes are rejected at decode instead of misread. Pre-production
+    /// destructive evolution — fresh state required, no decode shims.
+    const ENCODING_VERSION: u8 = 2;
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        assert!(
+            self.conjuncts.len() <= MAX_PREDICATE_CONJUNCTS,
+            "policy conjunction exceeds the depth cap"
+        );
+        // Without a chain the row IS its conjunction, so it cannot be empty; with a
+        // chain, a pure-EXISTS condition carries zero source conjuncts ([ADR 0082] §2).
+        assert!(
+            self.chain.is_some() || !self.conjuncts.is_empty(),
+            "stored predicates have at least one conjunct"
+        );
+        let mut v = Vec::new();
+        v.push(Self::ENCODING_VERSION);
+        v.extend_from_slice(&self.label.to_le_bytes());
+        v.push(self.conjuncts.len() as u8);
+        for conjunct in &self.conjuncts {
+            v.extend_from_slice(&conjunct.to_bytes());
+        }
+        if let Some(chain) = &self.chain {
+            v.push(1);
+            v.extend_from_slice(&chain.to_bytes());
+        } else {
+            v.push(0);
+        }
+        v
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= 6, "corrupt grant row: truncated predicate");
+        assert!(
+            bytes[0] == Self::ENCODING_VERSION,
+            "corrupt grant row: unknown predicate encoding version {}",
+            bytes[0]
+        );
+        let label = u32::from_le_bytes(bytes[1..5].try_into().expect("label payload"));
+        let count = bytes[5] as usize;
+        assert!(
+            count <= MAX_PREDICATE_CONJUNCTS,
             "corrupt grant row: predicate conjunct count {count}"
         );
-        let mut at = 5usize;
+        let mut at = 6usize;
         let mut conjuncts = Vec::with_capacity(count);
         for _ in 0..count {
             // Comparisons are self-delimiting via their value-kind byte: literal forms
@@ -892,37 +1069,125 @@ impl CompiledPredicate {
             conjuncts.push(PredicateComparison::decode(&bytes[at..at + width]));
             at += width;
         }
+        let chain = match bytes.get(at) {
+            Some(0) => {
+                at += 1;
+                // Without a chain the conjunction is the whole condition, so an empty
+                // one is corrupt state ([ADR 0075] §1).
+                assert!(
+                    !conjuncts.is_empty(),
+                    "corrupt grant row: predicate conjunct count 0"
+                );
+                None
+            }
+            Some(1) => {
+                at += 1;
+                let (chain, consumed) = PredicateChain::decode(&bytes[at..]);
+                at += consumed;
+                Some(chain)
+            }
+            other => panic!(
+                "corrupt grant row: unknown chain presence flag {:?}",
+                other.copied()
+            ),
+        };
         assert!(
             at == bytes.len(),
             "corrupt grant row: trailing predicate bytes"
         );
-        Self { label, conjuncts }
+        Self {
+            label,
+            conjuncts,
+            chain,
+        }
     }
 
     /// Canonical inline text ([ADR 0075] §1: introspection prints the condition on the
-    /// grant). Property names resolve through catalogs at print time; this form prints
-    /// monotonic ids so introspection stays truthful when names change.
-    pub fn display_conditions(&self, property_name: impl Fn(u32) -> Option<String>) -> String {
-        use std::fmt::Write as _;
+    /// grant; [ADR 0082] §3 extends it with the chain inline). Names resolve through
+    /// catalogs at print time; this form prints monotonic ids so introspection stays
+    /// truthful when names change.
+    pub fn display_conditions(&self, names: &dyn PredicateNames) -> String {
         let mut out = String::from("WHERE ");
         for (index, conjunct) in self.conjuncts.iter().enumerate() {
             if index > 0 {
                 out.push_str(" AND ");
             }
-            let name = property_name(conjunct.property)
-                .unwrap_or_else(|| format!("<property {}>", conjunct.property));
-            let op = match conjunct.op {
-                PredicateOp::Eq => "=",
-                PredicateOp::Ne => "<>",
-                PredicateOp::Lt => "<",
-                PredicateOp::Le => "<=",
-                PredicateOp::Gt => ">",
-                PredicateOp::Ge => ">=",
-            };
-            let _ = write!(out, "{name} {op} {}", display_value(&conjunct.value));
+            out.push_str(&display_comparison(conjunct, |id| names.property_name(id)));
+        }
+        if let Some(chain) = &self.chain {
+            out.push_str(" AND EXISTS { ");
+            out.push_str(&display_chain(self.label, chain, names));
+            out.push_str(" }");
         }
         out
     }
+}
+
+/// Catalog name resolution for conditional-policy introspection ([ADR 0075] §1,
+/// extended by [ADR 0082] §3): every referenced id resolves at print time, and
+/// unresolvable ids print as `<kind id>` so the text never lies after renames.
+pub trait PredicateNames {
+    fn property_name(&self, id: u32) -> Option<String>;
+    fn edge_label_name(&self, id: u32) -> Option<String>;
+    fn vertex_label_name(&self, id: u32) -> Option<String>;
+}
+
+/// Renders one comparison with a resolved property name.
+fn display_comparison(
+    conjunct: &PredicateComparison,
+    name: impl Fn(u32) -> Option<String>,
+) -> String {
+    let op = match conjunct.op {
+        PredicateOp::Eq => "=",
+        PredicateOp::Ne => "<>",
+        PredicateOp::Lt => "<",
+        PredicateOp::Le => "<=",
+        PredicateOp::Gt => ">",
+        PredicateOp::Ge => ">=",
+    };
+    let name =
+        name(conjunct.property).unwrap_or_else(|| format!("<property {}>", conjunct.property));
+    format!("{name} {op} {}", display_value(&conjunct.value))
+}
+
+/// Renders one chain as its bounded pattern plus the terminal WHERE group
+/// ([ADR 0082] §2 grammar shape).
+fn display_chain(
+    selector_label: u32,
+    chain: &PredicateChain,
+    names: &dyn PredicateNames,
+) -> String {
+    use std::fmt::Write as _;
+    let label_text = |label: u32| {
+        names
+            .vertex_label_name(label)
+            .unwrap_or_else(|| format!("<label {label}>"))
+    };
+    let mut pattern = format!("(:{})", label_text(selector_label));
+    for hop in &chain.hops {
+        let edge = names
+            .edge_label_name(hop.edge_label)
+            .unwrap_or_else(|| format!("<edge {}>", hop.edge_label));
+        let arrow = match hop.direction {
+            PredicateHopDirection::Outgoing => "->",
+            PredicateHopDirection::Incoming => "<-",
+            PredicateHopDirection::Both => "-",
+        };
+        let _ = write!(
+            pattern,
+            "-[:{edge}]{arrow}(:{})",
+            label_text(hop.dest_label)
+        );
+    }
+    let mut out = pattern;
+    out.push_str(" WHERE ");
+    for (index, conjunct) in chain.terminal_conjuncts.iter().enumerate() {
+        if index > 0 {
+            out.push_str(" AND ");
+        }
+        out.push_str(&display_comparison(conjunct, |id| names.property_name(id)));
+    }
+    out
 }
 
 fn display_value(value: &PredicateValue) -> String {
@@ -1737,6 +2002,7 @@ mod tests {
                         )),
                     },
                 ],
+                chain: None,
             })
         };
         let rows = vec![
@@ -1778,6 +2044,7 @@ mod tests {
                 op: PredicateOp::Eq,
                 value: PredicateValue::MsgCaller,
             }],
+            chain: None,
         });
         grants
             .grant(
@@ -1821,11 +2088,195 @@ mod tests {
         }
     }
 
+    /// One source-side comparison: `prop = MSG_CALLER()`.
+    fn caller_comparison(property: u32) -> PredicateComparison {
+        PredicateComparison {
+            property,
+            op: PredicateOp::Eq,
+            value: PredicateValue::MsgCaller,
+        }
+    }
+
+    /// The ADR 0082 §2 direct-grant chain shape: `(d)-[:GRANTED_TO]->(a:Account)`
+    /// with one terminal equality.
+    fn direct_grant_chain() -> PredicateChain {
+        PredicateChain {
+            hops: vec![PredicateChainHop {
+                edge_label: 40,
+                direction: PredicateHopDirection::Outgoing,
+                dest_label: 5,
+            }],
+            terminal_conjuncts: vec![caller_comparison(60)],
+        }
+    }
+
+    #[test]
+    fn v2_predicate_with_chain_round_trips() {
+        let predicate = CompiledPredicate {
+            label: 9,
+            conjuncts: vec![caller_comparison(30)],
+            chain: Some(direct_grant_chain()),
+        };
+        let decoded = CompiledPredicate::decode(&predicate.encode());
+        assert_eq!(decoded, predicate);
+    }
+
+    #[test]
+    fn v2_two_hop_chain_round_trips() {
+        // Org-membership pattern: (p)-[:SHARED_TO]->(g:Group)<-[:MEMBER_OF]-(:Account)
+        // with two terminal conjuncts.
+        let predicate = CompiledPredicate {
+            label: 11,
+            conjuncts: Vec::new(),
+            chain: Some(PredicateChain {
+                hops: vec![
+                    PredicateChainHop {
+                        edge_label: 41,
+                        direction: PredicateHopDirection::Outgoing,
+                        dest_label: 6,
+                    },
+                    PredicateChainHop {
+                        edge_label: 42,
+                        direction: PredicateHopDirection::Incoming,
+                        dest_label: 5,
+                    },
+                ],
+                terminal_conjuncts: vec![
+                    caller_comparison(61),
+                    PredicateComparison {
+                        property: 62,
+                        op: PredicateOp::Lt,
+                        value: PredicateValue::Literal(PredicateLiteral::Int(10)),
+                    },
+                ],
+            }),
+        };
+        let decoded = CompiledPredicate::decode(&predicate.encode());
+        assert_eq!(decoded, predicate);
+
+        // The undirected spelling survives as its own direction.
+        let mut undirected = predicate.clone();
+        undirected.chain.as_mut().expect("chain").hops[1].direction = PredicateHopDirection::Both;
+        assert_eq!(CompiledPredicate::decode(&undirected.encode()), undirected);
+    }
+
+    #[test]
+    fn v1_bytes_without_version_discriminator_are_rejected() {
+        // The pre-chain V1 layout led with the label directly; its first byte here is
+        // deliberately != ENCODING_VERSION, so old bytes fail closed at decode.
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(&9u32.to_le_bytes());
+        v1.push(1); // conjunct count
+        v1.extend_from_slice(&caller_comparison(30).to_bytes());
+        let result = std::panic::catch_unwind(move || CompiledPredicate::decode(&v1));
+        assert!(
+            result.is_err(),
+            "V1 bytes must be rejected, not interpreted"
+        );
+    }
+
+    #[test]
+    fn v2_malformed_chain_fields_are_rejected() {
+        let base = || {
+            CompiledPredicate {
+                label: 9,
+                conjuncts: vec![caller_comparison(30)],
+                chain: Some(direct_grant_chain()),
+            }
+            .encode()
+        };
+
+        // Unknown version byte.
+        let mut bad_version = base();
+        bad_version[0] = 3;
+        assert!(std::panic::catch_unwind(move || CompiledPredicate::decode(&bad_version)).is_err());
+
+        // Chain presence flag set but no chain payload follows.
+        let mut truncated_chain = base();
+        truncated_chain.truncate(truncated_chain.len() - direct_grant_chain().to_bytes().len());
+        truncated_chain.push(1);
+        assert!(
+            std::panic::catch_unwind(move || CompiledPredicate::decode(&truncated_chain)).is_err()
+        );
+
+        // Hop count over the fixed bound (3 hops). The chain payload's hop-count byte
+        // sits exactly `chain_len` bytes before the end of the encoding.
+        let chain_len = direct_grant_chain().to_bytes().len();
+        let mut too_many_hops = base();
+        let hop_count_at = too_many_hops.len() - chain_len;
+        too_many_hops[hop_count_at] = MAX_CHAIN_HOPS as u8 + 1;
+        assert!(
+            std::panic::catch_unwind(move || CompiledPredicate::decode(&too_many_hops)).is_err()
+        );
+
+        // Unknown direction discriminant on the first hop (edge label u32, then the
+        // direction byte).
+        let mut bad_direction = base();
+        bad_direction[hop_count_at + 5] = 9;
+        assert!(
+            std::panic::catch_unwind(move || CompiledPredicate::decode(&bad_direction)).is_err()
+        );
+
+        // Zero terminal conjuncts is not representable.
+        let mut no_terminal = base();
+        let terminal_count_at = hop_count_at + 1 + 9;
+        no_terminal[terminal_count_at] = 0;
+        assert!(std::panic::catch_unwind(move || CompiledPredicate::decode(&no_terminal)).is_err());
+
+        // Terminal conjunct count over the depth cap.
+        let mut over_cap_terminal = base();
+        over_cap_terminal[terminal_count_at] = MAX_PREDICATE_CONJUNCTS as u8 + 1;
+        assert!(
+            std::panic::catch_unwind(move || CompiledPredicate::decode(&over_cap_terminal))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn v2_empty_conjunction_is_only_valid_with_a_chain() {
+        // Pure-EXISTS condition ([ADR 0082] §2 flagship form): zero source conjuncts
+        // with a chain round-trips.
+        let pure_exists = CompiledPredicate {
+            label: 9,
+            conjuncts: Vec::new(),
+            chain: Some(direct_grant_chain()),
+        };
+        assert_eq!(
+            CompiledPredicate::decode(&pure_exists.encode()),
+            pure_exists
+        );
+
+        // Without a chain, zero conjuncts is corrupt state.
+        let mut chainless = pure_exists.encode();
+        chainless.truncate(chainless.len() - direct_grant_chain().to_bytes().len());
+        chainless.push(0);
+        assert!(std::panic::catch_unwind(move || CompiledPredicate::decode(&chainless)).is_err());
+    }
+
+    #[test]
+    fn chain_encoding_rejects_oversized_hop_and_conjunct_counts() {
+        let mut chain = direct_grant_chain();
+        chain.hops = vec![
+            PredicateChainHop {
+                edge_label: 40,
+                direction: PredicateHopDirection::Outgoing,
+                dest_label: 5,
+            };
+            MAX_CHAIN_HOPS + 1
+        ];
+        assert!(std::panic::catch_unwind(move || chain.to_bytes()).is_err());
+
+        let mut chain = direct_grant_chain();
+        chain.terminal_conjuncts = vec![caller_comparison(60); MAX_PREDICATE_CONJUNCTS + 1];
+        assert!(std::panic::catch_unwind(move || chain.to_bytes()).is_err());
+    }
+
     #[test]
     fn compiled_predicate_encoding_rejects_empty_and_oversized_conjunctions() {
         let empty = CompiledPredicate {
             label: 1,
             conjuncts: Vec::new(),
+            chain: None,
         };
         assert!(std::panic::catch_unwind(|| empty.encode()).is_err());
 
@@ -1839,6 +2290,7 @@ mod tests {
                 };
                 MAX_PREDICATE_CONJUNCTS + 1
             ],
+            chain: None,
         };
         assert!(std::panic::catch_unwind(|| over_cap.encode()).is_err());
     }

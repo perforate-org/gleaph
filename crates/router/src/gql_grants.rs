@@ -606,6 +606,9 @@ fn compile_condition(
     Ok(Rc::new(CompiledPredicate {
         label: *label_raw,
         conjuncts,
+        // The bounded EXISTS chain compiles in the ReBAC slice; property-only
+        // conditions carry no chain.
+        chain: None,
     }))
 }
 
@@ -926,6 +929,36 @@ fn evidence_view(evidence: &Option<gleaph_auth::ElevationEvidence>) -> Option<Gr
     })
 }
 
+/// Catalog-backed name resolution for conditional-policy introspection text
+/// ([ADR 0075] §1, extended by [ADR 0082] §3). Unresolvable monotonic ids print as
+/// `<kind id>` inside [`gleaph_auth::PredicateNames`] so the text never lies.
+struct GrantPredicateNames<'a> {
+    store: &'a RouterStore,
+    graph_id: GraphId,
+}
+
+impl gleaph_auth::PredicateNames for GrantPredicateNames<'_> {
+    fn property_name(&self, id: u32) -> Option<String> {
+        self.store
+            .reverse_property_name(self.graph_id, PropertyId::from_raw(id))
+            .ok()
+    }
+
+    fn edge_label_name(&self, id: u32) -> Option<String> {
+        let label_u16 = u16::try_from(id).ok()?;
+        self.store
+            .reverse_edge_label_name(self.graph_id, EdgeLabelId::from_raw(label_u16))
+            .ok()
+    }
+
+    fn vertex_label_name(&self, id: u32) -> Option<String> {
+        let label_u16 = u16::try_from(id).ok()?;
+        self.store
+            .reverse_vertex_label_name(self.graph_id, VertexLabelId::from_raw(label_u16))
+            .ok()
+    }
+}
+
 /// Listing of one graph's stored grant rows (ADR 0074 §5 observability), including the
 /// graph-scoped metadata elevation rows ([ADR 0080] §4).
 ///
@@ -1000,10 +1033,9 @@ pub(crate) fn list_graph_grants(
                 // catalogs; unresolved ids print as `<property N>` so introspection stays
                 // truthful after renames.
                 let predicate = row.predicate.as_ref().map(|compiled| {
-                    compiled.display_conditions(|property_id| {
-                        store
-                            .reverse_property_name(graph_id, PropertyId::from_raw(property_id))
-                            .ok()
+                    compiled.display_conditions(&GrantPredicateNames {
+                        store: &store,
+                        graph_id,
                     })
                 });
                 summaries.push(GraphGrantSummary {
