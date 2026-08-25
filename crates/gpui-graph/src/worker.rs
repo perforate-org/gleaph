@@ -295,6 +295,10 @@ where
                 }
                 SceneMutation::SetPosition { node, position } => {
                     self.scene.set_position(node, position);
+                    // An explicit move is user intent: pin so the next
+                    // ForceAtlas2 step keeps the node where it was placed,
+                    // mirroring the main-thread drag path.
+                    self.scene.pin(node);
                 }
             }
         }
@@ -630,6 +634,20 @@ mod tests {
         // One cycle consumes everything: nothing is pending, nothing builds.
         assert!(backend.is_idle());
         assert!(backend.step().is_none());
+    }
+
+    #[test]
+    fn an_explicit_move_pins_the_replica_node() {
+        let mut backend = TestBackend::new(test_scene());
+        let a = backend.scene().node_id(&"a").unwrap();
+        assert!(!backend.scene().is_pinned(a));
+
+        // A drag crossing the wire is user intent: the replica must hold the
+        // node where it was placed instead of letting ForceAtlas2 pull it
+        // back toward its force equilibrium on the next step.
+        backend.receive(set_position(a, 500.0, 400.0));
+        let _ = backend.step(); // applies the queued move (and pins it)
+        assert!(backend.scene().is_pinned(a));
     }
 
     #[test]

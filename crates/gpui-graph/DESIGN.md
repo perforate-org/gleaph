@@ -1500,7 +1500,19 @@ Startup ordering note (observed in the browser run): the view can post its
 first snapshot before the canvas has a settled size, so the worker may answer
 with one empty frame before a later snapshot carries the real viewport.
 Delivery self-heals on the next cycle; accepted as within the same one-round-
-trip staleness budget the interaction transform already tolerates.
+trip staleness budget the interaction transform already tolerates. Two
+refinements landed with the drag path: degenerate (zero-sized) canvases no
+longer post snapshots at all, and drags reconcile.
+
+Drag reconciliation (Worker mode): `handle_mouse_move` posts the authoritative
+`SetPosition` through the channel and records the world target in
+`pending_moves`; every painted frame projects those targets through the
+current viewport onto its own geometry, so the dragged node follows the cursor
+at input rate instead of one round trip later. An entry retires when a
+delivery converges with it (the replica applied and rebuilt the move) or when
+its node leaves the delivered set. The replica side pins explicitly moved
+nodes (`scene.pin`) so ForceAtlas2 cannot pull a dropped node back toward its
+force equilibrium — matching the main-thread drag semantics.
 
 ## 18.3 Edge curves
 

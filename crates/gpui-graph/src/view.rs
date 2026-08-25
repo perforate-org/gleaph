@@ -14,6 +14,7 @@ use gpui::{
     IntoElement, ParentElement, PathBuilder, PathStyle, ScrollDelta, StyleRefinement, Styled,
     Window, canvas, div, point, px, quad, size,
 };
+use std::collections::HashMap;
 use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
 #[cfg(test)]
@@ -27,7 +28,7 @@ use crate::layout::LayoutBudget;
 use crate::scene::GraphScene;
 use crate::style::{ArrowShape, GraphStyle};
 use crate::viewport::{Viewport, WorldBounds};
-use crate::worker::{ToWorker, WorkerChannel};
+use crate::worker::{SceneMutation, ToWorker, WorkerChannel};
 
 /// A resolver that returns the label text for a node, or `None` for no label.
 type NodeLabelResolver<N> = Rc<dyn Fn(NodeId, &N) -> Option<String>>;
@@ -79,6 +80,11 @@ where
     node_overlay: NodeOverlayResolver,
     edge_overlay: EdgeOverlayResolver,
     dragging: Option<NodeId>,
+    /// World-space drag targets whose authoritative move is in flight to the
+    /// worker replica (Worker mode only). Painted frames are patched to these
+    /// positions until a delivery converges with them, so drags follow the
+    /// cursor immediately instead of one round trip later.
+    pending_moves: HashMap<NodeId, Vec2>,
     panning: bool,
     last_mouse: Vec2,
     /// When interaction-time LOD is enabled, the time of the last pan or zoom
@@ -260,6 +266,7 @@ where
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
             edge_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
             dragging: None,
+            pending_moves: HashMap::new(),
             panning: false,
             last_mouse: Vec2::ZERO,
             interaction_active_since: None,
@@ -334,6 +341,9 @@ where
             self.worker_channel = None;
             self.delivered_frame_viewport = None;
             self.last_snapshot_viewport = None;
+            // Overrides only make sense against worker deliveries; the
+            // InProcess scene is its own authority.
+            self.pending_moves.clear();
         }
     }
 
@@ -592,6 +602,7 @@ where
             node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
             edge_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
             dragging: None,
+            pending_moves: HashMap::new(),
             panning: false,
             last_mouse: Vec2::ZERO,
             interaction_active_since: None,
@@ -643,8 +654,41 @@ where
                         .expect("FrameSource::Worker selected but no worker channel is connected");
                     channel.post(ToWorker::FrameState(Box::new(state)));
                 }
-                self.interaction_transformed_frame()
+                let mut frame = self.interaction_transformed_frame();
+                self.apply_pending_moves(&mut frame);
+                frame
             }
+        }
+    }
+
+    /// Patch a worker frame with in-flight drag targets (Worker mode).
+    ///
+    /// A drag must follow the cursor at input rate, but the painted geometry
+    /// comes from the replica one round trip away. Each pending world target
+    /// is projected through the current viewport onto the displayed frame; an
+    /// entry clears when a delivery converges with it (the replica applied
+    /// the move) or when its node leaves the delivered set.
+    fn apply_pending_moves(&mut self, frame: &mut crate::paint::PaintFrame) {
+        if self.pending_moves.is_empty() {
+            return;
+        }
+        const CONVERGED_SQUARED: f32 = 0.25; // within half a pixel
+        let mut settled = Vec::new();
+        for (node, world) in &self.pending_moves {
+            let target = self.viewport.world_to_screen(*world);
+            match frame.nodes.iter_mut().find(|n| n.id == *node) {
+                Some(slot) => {
+                    if slot.position.distance_squared(target) <= CONVERGED_SQUARED {
+                        settled.push(*node);
+                    } else {
+                        slot.position = target;
+                    }
+                }
+                None => settled.push(*node),
+            }
+        }
+        for node in settled {
+            self.pending_moves.remove(&node);
         }
     }
 
@@ -1975,6 +2019,19 @@ where
                 scene.pin(node);
                 cx.notify();
             });
+            // Worker mode: the painted geometry comes from the replica, so
+            // the move must cross the wire — and the painted frame is patched
+            // to follow the cursor immediately (ADR 0076 §Decision 4 trade:
+            // local echo now, authoritative rebuild reconciles async).
+            if self.frame_source == FrameSource::Worker {
+                if let Some(channel) = self.worker_channel.as_mut() {
+                    channel.post(ToWorker::Mutation(SceneMutation::SetPosition {
+                        node,
+                        position: world,
+                    }));
+                }
+                self.pending_moves.insert(node, world);
+            }
             cx.emit(GraphEvent::NodeMoved {
                 node,
                 position: world,
@@ -2502,7 +2559,7 @@ mod tests {
     use crate::layout::FixedLayout;
     use crate::patch::GraphBatch;
     use crate::scene::GraphScene;
-    use crate::worker::{FromWorker, ToWorker, WorkerBackend};
+    use crate::worker::{FrameState, FromWorker, ToWorker, WorkerBackend};
     use gpui::{
         AppContext, Entity, Modifiers, MouseButton as GpuiMouseButton, ScrollDelta,
         ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext, point, px,
@@ -4423,6 +4480,171 @@ mod tests {
             // Once the canvas settles, snapshots flow again.
             view.update(cx, |vs, cx| vs.build_frame(Vec2::new(800.0, 600.0), cx));
             assert_eq!(requests.borrow().len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn worker_drag_posts_set_position_and_follows_the_cursor(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+            let canvas_size = Vec2::new(800.0, 600.0);
+
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+            });
+
+            // Deliver one real frame so hit testing has geometry.
+            let mut viewport = Viewport::new();
+            viewport.set_size(canvas_size);
+            let grab_screen = viewport.world_to_screen(Vec2::new(-10.0, 0.0));
+            let mut backend =
+                WorkerBackend::<&'static str, &'static str, (), ()>::new(worker_test_scene());
+            backend.receive(TestRequest::FrameState(Box::new(FrameState {
+                viewport: viewport.clone(),
+                style: GraphStyle::default(),
+                selection: Selection::new(),
+                hover: Hover::default(),
+            })));
+            let FromWorker::Frame(wire) = backend.step().expect("snapshot builds");
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(wire, cx));
+            // Identify node "a"'s painted id from the delivered geometry...
+            let grabbed_node = view.update(cx, |vs, cx| {
+                let frame = vs.build_frame(canvas_size, cx);
+                frame
+                    .nodes
+                    .iter()
+                    .find(|n| n.position.distance_squared(grab_screen) <= 0.25)
+                    .map(|n| n.id)
+                    .expect("node a projects on screen")
+            });
+
+            // Grab it there, then drag.
+            let drop_world = Vec2::new(120.0, -40.0);
+            let drop_screen = viewport.world_to_screen(drop_world);
+            view.update(cx, |vs, cx| vs.handle_mouse_down(grab_screen, 1, cx));
+            let posts_before = requests.borrow().len();
+            view.update(cx, |vs, cx| vs.handle_mouse_move(drop_screen, cx));
+
+            // The move crossed the wire as a library-owned SetPosition.
+            let posted = requests.borrow();
+            assert_eq!(posted.len(), posts_before + 1);
+            match posted.last().expect("the move was posted") {
+                TestRequest::Mutation(SceneMutation::SetPosition { node, position }) => {
+                    assert_eq!(
+                        node, &grabbed_node,
+                        "the dragged node is the one that moved"
+                    );
+                    assert_eq!(position, &drop_world, "world target matches the cursor");
+                }
+                other => panic!("expected SetPosition, got {other:?}"),
+            }
+            drop(posted);
+
+            // And the displayed frame follows the cursor immediately (local
+            // echo), even though no rebuilt frame has arrived yet.
+            let painted = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            assert!(
+                painted
+                    .nodes
+                    .iter()
+                    .any(|n| n.position.distance_squared(drop_screen) <= 0.25),
+                "the dragged node must render at the cursor"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn stale_deliveries_cannot_yank_a_drag_until_the_replica_converges(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene = cx.new(|_| worker_test_scene());
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            let requests = Rc::new(RefCell::new(Vec::<TestRequest>::new()));
+            let canvas_size = Vec2::new(800.0, 600.0);
+            let mut viewport = Viewport::new();
+            viewport.set_size(canvas_size);
+
+            view.update(cx, |vs, _cx| {
+                vs.set_frame_source(FrameSource::Worker);
+                vs.connect_worker_channel(Box::new(CaptureChannel {
+                    requests: Rc::clone(&requests),
+                }));
+            });
+
+            // Initial delivery so the node has on-screen geometry to grab.
+            let build_wire = |moved: bool| {
+                let mut backend =
+                    WorkerBackend::<&'static str, &'static str, (), ()>::new(worker_test_scene());
+                if moved {
+                    // The authoritative move the drag posted (world space).
+                    backend.receive(ToWorker::Mutation(SceneMutation::SetPosition {
+                        node: backend.scene().node_id(&"a").unwrap(),
+                        position: Vec2::new(120.0, -40.0),
+                    }));
+                }
+                backend.receive(TestRequest::FrameState(Box::new(FrameState {
+                    viewport: viewport.clone(),
+                    style: GraphStyle::default(),
+                    selection: Selection::new(),
+                    hover: Hover::default(),
+                })));
+                match backend.step().expect("snapshot builds") {
+                    FromWorker::Frame(wire) => wire,
+                    _ => unreachable!("FromWorker has a single variant"),
+                }
+            };
+
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(build_wire(false), cx));
+            // Settle prepaint once (assigns the canvas to the view's camera)
+            // exactly as the live render loop would.
+            view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+
+            // Drag "a" to the drop point; the painted frame echoes it.
+            let grab_screen = viewport.world_to_screen(Vec2::new(-10.0, 0.0));
+            let drop_world = Vec2::new(120.0, -40.0);
+            let drop_screen = viewport.world_to_screen(drop_world);
+            view.update(cx, |vs, cx| vs.handle_mouse_down(grab_screen, 1, cx));
+            view.update(cx, |vs, cx| vs.handle_mouse_move(drop_screen, cx));
+            let echoed = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            assert!(
+                echoed
+                    .nodes
+                    .iter()
+                    .any(|n| n.position.distance_squared(drop_screen) <= 0.25),
+                "the echo must follow the cursor"
+            );
+
+            // A stale frame built before the move arrives: the echo must not
+            // yank the node back.
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(build_wire(false), cx));
+            let still_echoed = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            assert!(
+                still_echoed
+                    .nodes
+                    .iter()
+                    .any(|n| n.position.distance_squared(drop_screen) <= 0.25),
+                "a pre-move delivery must be overridden until convergence"
+            );
+
+            // The replica applies the move and rebuilds: this delivery
+            // converges, the override retires, and later frames speak for
+            // themselves.
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(build_wire(true), cx));
+            view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx)); // converges here
+            view.update(cx, |vs, cx| vs.deliver_worker_frame(build_wire(false), cx));
+            let after_retire = view.update(cx, |vs, cx| vs.build_frame(canvas_size, cx));
+            let old_pos = viewport.world_to_screen(Vec2::new(-10.0, 0.0));
+            assert!(
+                after_retire
+                    .nodes
+                    .iter()
+                    .any(|n| n.position.distance_squared(old_pos) <= 0.25),
+                "once converged the override must retire (host may move nodes back)"
+            );
         });
     }
 

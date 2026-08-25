@@ -109,6 +109,7 @@ called from — not what the wiring looks like.
   build it explicitly, as `build.sh` does.
 - Keep `main.rs` out of this directory itself — cargo would auto-discover
   `examples/web/main.rs` as an example target of `gpui-graph`.
-- Drag edits are not mirrored to the worker replica in this example
-  (`SceneMutation::SetPosition` exists and crosses the library envelope;
-  hosts that want live drags send it through `PipeHandle`).
+- Drags reconcile in Worker mode: the view posts `SetPosition` through the
+  channel and paints the dragged node at the cursor until the replica's
+  rebuilt frame converges (the replica pins explicitly moved nodes, so
+  ForceAtlas2 holds them where dropped).
