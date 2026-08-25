@@ -1,6 +1,7 @@
-# Verification Report — ic-stable-linear-hash-map, Stage A (routing + control invariants)
+# Verification Report — ic-stable-linear-hash-map, Stage A + Stage 3
 
 Anchor timestamp: 2026-08-24 16:33:21 UTC +0000
+(stage 3 addendum anchored 2026-08-25 03:17:05 UTC +0000)
 Target revision: git `0da342d62b2a3c3b293fa7ff5ed21b9f577dd23d`
 (`crates/ic-stable-linear-hash-map/` clean at this revision)
 Mode: audit of an existing implementation, run as a permanent fixture (see SCOPE.md)
@@ -26,8 +27,9 @@ to Cargo.
 ## Scope
 
 Stage A of the staged roadmap in SCOPE.md: routing mathematics and control-region
-invariants (properties P1–P5). Stages 3–5 (logical map spec, split preservation,
-epoch fencing) are planned follow-up work and are not claimed here.
+invariants (properties P1–P5), plus — since the 2026-08-25 addendum below — stage 3,
+the abstract logical map layer (`Lhm/Abs/`). Stages 4–5 (split preservation, epoch
+fencing) remain planned follow-up work and are not claimed here.
 
 ## Method
 
@@ -55,6 +57,36 @@ Notable strengthening discovered during proof work: P1 holds **unconditionally**
 required to identify `2^level + cursor` with the persisted `physical_buckets`, which
 is exactly what `ValidControl` provides.
 
+## Stage 3 addendum — logical map layer (anchored 2026-08-25 03:17:05 UTC +0000)
+
+Stage 3 verifies the abstract logical map (`Lhm/Abs/`) on top of Stage A. All
+headlines below depend only on `propext` / `Quot.sound`; a `#print axioms` block in
+the root module re-checks this on every build.
+
+| Result | Lean theorem | Content |
+|---|---|---|
+| Transfer core | `inv_transfer_core` | `Inv` inherits across any state update sharing hashes/geometry/incarnation, with direct new-state counter equations and placement/uniqueness facts relative to the old state |
+| Occupancy-preserving case | `inv_transfer` | specialization deriving counter transport from pointwise occupancy agreement; used by the insert-update path |
+| Insert-update preservation | `inv_setValue` | overwriting an existing same-key slot preserves `Inv` |
+| Insert-place preservation | `inv_place` | placing a fresh entry into a free slot of a candidate bucket preserves `Inv`, given global key absence from both candidate blocks |
+| Remove preservation | `inv_clearSlot` | clearing a genuinely occupied slot preserves `Inv` (no candidate facts needed) |
+| Clear / reset preservation | `inv_cleared`, `inv_reset` (+ helper `inv_set_incarnation`) | clear/reset restore a pristine, `Inv`-satisfying surface |
+| Top-level contracts | `opInsert_preserves`, `opRemove_preserves` (+ result-state lemmas, `chooseFreeSlot_spec`) | full semantic insert/remove preserve `Inv` in every outcome branch |
+
+Modeling decisions recorded during stage 3:
+
+- **Cleared state is a full logical wipe.** The earlier draft kept stale entries
+  beyond the initial extent in `clearedState`. That is unprovable as an `Inv`
+  instance (stale slots violate `placed`) and unnecessary: no modeled operation can
+  observe those slots, because reads stop at the published extent and growth republishes
+  only fully rewritten blocks (REPORT.md finding 4). `clearedState` therefore maps
+  every flattened slot to `none`, and finding 4's byte-level write-before-publish
+  ordering stays a stage-5 obligation.
+- **Axiom hygiene fix.** `cand_lt_pb` originally depended on `Classical.choice` via a
+  single `omega` call juggling two routing-if atoms. Splitting the conjunction into
+  two independent `omega` closers removed the dependency; every stage-3 headline now
+  rests on `propext` / `Quot.sound` only.
+
 ## Assumption list (see SCOPE.md for full statements)
 
 - A1 hash opacity — rapidhash is uninterpreted; P1–P5 hold for arbitrary hashes. No
@@ -71,7 +103,7 @@ No new axioms were introduced. All headline theorems depend only on Lean's stand
 
 ## `sorry` list
 
-None. Stage A proofs are complete.
+None. Stage A and stage 3 proofs are complete.
 
 ## Findings
 
@@ -122,7 +154,11 @@ control-region contract enforced at open are internally consistent, and the rout
 extent guarantee holds for arbitrary hash values under the documented invariant. The
 audit produced no correctness defect in the verified scope; findings 1–2 are cheap
 hygiene improvements (both applied post-audit, see above), and findings 3–5 define
-the proof obligations that stages 3–5 must formalize next.
+the proof obligations that later stages must formalize.
 
-Per SCOPE.md, next stages: logical map specification (stage 3), split preservation
-(stage 4), epoch fencing / failure atomicity (stage 5).
+The stage-3 addendum extends this to the abstract logical map: insert (update, place,
+refusal), remove, clear, and reset all preserve `Inv`, with the two-choice search
+shown complete under it. Remaining stages per SCOPE.md: split preservation
+(stage 4) — which also subsumes finding 5's termination obligation — and epoch
+fencing / failure atomicity (stage 5), which should encode finding 4's
+write-before-publish ordering explicitly.

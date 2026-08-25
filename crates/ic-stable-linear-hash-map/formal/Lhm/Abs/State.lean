@@ -108,6 +108,6 @@ theorem cand_lt_pb {st : MapState K V} (inv : Inv st) (k : K) :
   obtain ⟨_, _, _, hpb, _, _, _, _, _, _⟩ := inv
   have h := route_lt_base_plus_cursor (st.hash1 k) st.level st.splitCursor
   have h' := route_lt_base_plus_cursor (st.hash2 k) st.level st.splitCursor
-  omega
+  exact ⟨by omega, by omega⟩
 
 end Lhm.Abs

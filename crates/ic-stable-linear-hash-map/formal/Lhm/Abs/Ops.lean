@@ -68,11 +68,15 @@ def clearSlot (st : MapState K V) (b j : Nat) : MapState K V :=
 /-! ## Clear / reset -/
 
 /-- Final logical effect of `clear` (map.rs L751-L801): initial geometry, zeroed
-counters, incarnation preserved. Buckets beyond the initial extent keep stale bytes
-that no published control can reach (see REPORT.md finding 4). -/
+counters, incarnation preserved. At this logical layer every flattened slot reads
+`none`: bytes beyond the initial extent are not physically zeroed (map.rs L766-L784,
+REPORT.md finding 4), but they can never surface under a published control — a later
+`apply_split` writes complete block images before publishing the grown geometry
+(map.rs L1662-L1677). That write-before-publish ordering is the stage-5 obligation;
+the logical model therefore need not carry unreachable stale slots. -/
 def clearedState (st : MapState K V) : MapState K V :=
   { st with
-    buckets := fun b j => if b < 2 ^ InitialLevel then none else st.buckets b j
+    buckets := fun _ _ => none
     physicalBuckets := 2 ^ InitialLevel
     len := 0
     overflowEntries := 0

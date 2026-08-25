@@ -43,8 +43,8 @@ which makes automated extraction high-effort and low-coverage for this target.
 5. **Epoch fencing** — even/odd mutation epoch protocol; failure atomicity claims in
    ADR 0067 ("a prewrite error leaves logical bytes and the even epoch unchanged").
 
-Stages 1–2 are **in scope now** (see Status). Stages 3–5 are planned follow-up work;
-they are listed here so the roadmap survives agent handoffs.
+Stages 1–2 and 3 are **in scope now** (see Status). Stages 4–5 are planned follow-up
+work; they are listed here so the roadmap survives agent handoffs.
 
 ## Properties verified (stage 1–2 contract)
 
@@ -100,9 +100,12 @@ they are listed here so the roadmap survives agent handoffs.
 |---|---|---|
 | 1–2 | Routing math + control invariants (P1–P5) | Verified, no `sorry` |
 | 3a | Transfer principle + `setValue` (insert-update) preservation; occupancy-level `hisSome` abstraction (`Lhm/Abs/`) | Verified, no `sorry` |
-| 3b | `placeAt` / `clearSlot` / cleared-state preservation via the same transfer template | In progress — pointwise/delta lemmas in `Lhm/Abs/Place.lean`, `Deltas.lean`; theorem assembly pending |
+| 3b | `placeAt` / `clearSlot` preservation via counter deltas and the generalized transfer core (`inv_transfer_core`) in `Lhm/Abs/Place.lean`, `Deltas.lean`, `Preserve.lean` | Verified, no `sorry` |
+| 3c | Cleared-state preservation (`inv_cleared`, `inv_reset`, `Lhm/Abs/Cleared.lean`). Modeling decision: at the logical layer `clearedState` wipes every flattened slot; physical stale bytes beyond the initial extent (REPORT.md finding 4) are unreachable under any published control because a later `apply_split` writes complete block images before publishing growth — that write-before-publish ordering remains the stage-5 obligation | Verified, no `sorry` |
+| 3d | Top-level operation contracts: `opInsert_preserves` / `opRemove_preserves` plus result-state computation lemmas and the free-slot choice fact (`Lhm/Abs/OpPreserve.lean`) | Verified, no `sorry` |
 | 4 | Split preservation | Planned |
 | 5 | Epoch fencing / failure atomicity | Planned |
 
-Stage-3a files: `Lhm/Abs/Base.lean`, `State.lean`, `Transfer.lean`,
-`Preserve.lean`, `Place.lean`.
+Stage-3 files: `Lhm/Abs/Base.lean`, `State.lean`, `Ops.lean`, `Search.lean`,
+`Transfer.lean`, `Deltas.lean`, `Preserve.lean`, `Place.lean`, `Cleared.lean`,
+`OpPreserve.lean`.
