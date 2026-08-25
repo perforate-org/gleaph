@@ -86,6 +86,16 @@ done
 > stable identifiers and may change over time"). The tenancy-only edge-id read itself is
 > slated for repair in follow-up work — rationale and boundary in
 > `design/security/rbac-and-prepared.md`, *Element-id projection guidance*.
+>
+> **Update (2026-08-26, plan 0306 diagnosis):** the deny half of the 2026-08-24 matrix was
+> a misattribution — there is nothing tenancy-only about edge `ELEMENT_ID(e)`. After
+> `apply-public-grants.sh`, all four scenarios execute as dev except `shortest-path`
+> (planner/index-client issue, unchanged): requirement extraction attributes the edge
+> element-id projection through the CITES traversal row like any other read (GAP-2026-08-24-008
+> residual follow-up (a); contract test
+> `edge_element_id_projection_demands_stay_attributed`). What remains true of the warning:
+> citation-reach's returned edge ids are unstable physical handles — the CLI stderr warning
+> (commit 06261095f) covers exactly that stability fact.
 
 ### Browser host
 

@@ -1327,6 +1327,107 @@ mod publication_tests {
     use candid::Principal;
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 
+    /// Plan 0306 / closes GAP-2026-08-24-008 residual follow-up (a): an ELEMENT_ID
+    /// projection on a MATCH-bound edge variable demands nothing beyond the traversal row
+    /// its label facts already cover — symmetric with vertex element-id reads; pinned
+    /// against regression to an unattributed fallback.
+    #[test]
+    fn edge_element_id_projection_demands_stay_attributed() {
+        let owner = Principal::from_slice(&[7; 29]);
+        let registrar = Principal::from_slice(&[255; 29]); // has MANAGE_CATALOG via grant_admins
+        let graph = owned_graph(owner, "diag_cite");
+        let store = crate::facade::store::RouterStore::new();
+        store
+            .admin_intern_vertex_label(registrar, "diag_cite", "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_edge_label(registrar, "diag_cite", "CITES")
+            .expect("intern CITES");
+        store
+            .admin_intern_properties(registrar, "diag_cite", &["title".to_owned()])
+            .expect("intern properties");
+
+        // Byte-identical to demo/knowledge/prepared/citation-reach.gql modulo whitespace.
+        let source = "MATCH (src:Document {title: 'Introduction to graph databases'})\
+                      -[e:CITES]->{1,3}(dst:Document) \
+                      RETURN ELEMENT_ID(dst) AS document_id, dst.title AS title, \
+                      ELEMENT_ID(e) AS cite_edge_id";
+        let (cache, bound_graph) =
+            crate::prepared::build_prepared_cache(source, owner, Some(graph))
+                .expect("plan citation-reach shape");
+        assert_eq!(bound_graph, graph);
+        let reqs = crate::authz::extract_live(&store, &cache.plan, bound_graph);
+        let (unattributed, conj, alts) = reqs
+            .test_demand_summary(graph.raw())
+            .expect("graph demands present");
+        assert!(
+            !unattributed,
+            "ELEMENT_ID(e) must attribute through the edge label facts, not fall back"
+        );
+        assert_eq!(conj, 5, "Match + Read + Traverse + ReadProperty×2");
+        assert_eq!(alts, 0);
+
+        // Exact demand-row multiset. The two duplicate ReadProperty rows are the point:
+        // src and dst both attribute their `title` read through the Document label fact,
+        // while ELEMENT_ID(dst)/ELEMENT_ID(e) add no row at all.
+        let g = graph.raw();
+        // Catalog ids are u16 in the Router catalogs and widen to the grant-row u32.
+        let doc = u32::from(
+            store
+                .lookup_vertex_label_id(graph, "Document")
+                .expect("Document id")
+                .raw(),
+        );
+        let cites = u32::from(
+            store
+                .lookup_edge_label_id(graph, "CITES")
+                .expect("CITES id")
+                .raw(),
+        );
+        let title = store
+            .lookup_property_id(graph, "title")
+            .expect("title id")
+            .raw();
+        let row = |operation, resource| {
+            Privilege::Graph(GraphPrivilege {
+                graph: g,
+                operation,
+                resource,
+            })
+        };
+        let expected = vec![
+            row(GraphOperation::Match, GraphResource::VertexLabel(doc)),
+            row(GraphOperation::Read, GraphResource::VertexLabel(doc)),
+            row(
+                GraphOperation::Traverse(None),
+                GraphResource::EdgeLabel(cites),
+            ),
+            row(
+                GraphOperation::ReadProperty,
+                GraphResource::VertexProperty {
+                    label: doc,
+                    property: title,
+                },
+            ),
+            row(
+                GraphOperation::ReadProperty,
+                GraphResource::VertexProperty {
+                    label: doc,
+                    property: title,
+                },
+            ),
+        ];
+        let mut actual = reqs.test_graph_rows(g).expect("graph demands present");
+        for expected_row in expected {
+            let pos = actual
+                .iter()
+                .position(|r| *r == expected_row)
+                .unwrap_or_else(|| panic!("missing demand row {expected_row:?}"));
+            actual.remove(pos);
+        }
+        assert!(actual.is_empty(), "unexpected extra demand rows {actual:?}");
+    }
+
     /// Plan 0303 / GAP-2026-08-24-008 contract lock: the element-id-bearing demo
     /// projection extracts exactly the per-key property-read rows that a brace-form
     /// `GRANT READ … { … }` covers — no unattributed demand, so a non-owner holding the

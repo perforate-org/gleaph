@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-25
-Anchor timestamp: 2026-08-25 03:07:00 UTC +0000
+Last updated: 2026-08-26
+Anchor timestamp: 2026-08-25 22:49:39 UTC +0000
 
 ## Status
 
@@ -117,11 +117,16 @@ defect from being rediscovered without its prior reasoning.
   `scripts/register-probe.sh`, `scripts/direct-grant-probe.sh`,
   `scripts/apply-public-grants.sh`; contract-locking test
   `element_id_projection_demands_are_coverable_property_reads`.
-- **Impact:** resolved for vertex scenarios. Two residual follow-ups: (a) citation-reach
-  projects ELEMENT_ID(e) on an EDGE binding - edge element reads are tenancy-only in
-  Phase 1 (no edge-property grant resource), so that op stays owner-only pending an ADR
-  0074 edge-read rule; (b) shortest-path currently hits IndexScan(no index client) under
-  active sibling index/planner development (observation, not diagnosed here).
+- **Impact:** resolved for vertex scenarios. Two residual follow-ups: (a) RESOLVED by the
+  plan 0306 diagnosis (2026-08-26) — this follow-up's original framing was a
+  misattribution: requirement extraction on the current tree shows an edge `ELEMENT_ID(e)`
+  projection adds no demand beyond the traversal row its label fact already covers, so
+  citation-reach executes for PUBLIC once the brace-form property READ rows exist (contract
+  test `edge_element_id_projection_demands_stay_attributed`; probe artifact
+  `design/investigations/artifacts/0306-edge-element-id-demand-probe.txt`; no edge-property
+  grant resource needed for element-id reads); (b) OPEN — shortest-path currently hits
+  IndexScan(no index client) under active sibling index/planner development (observation,
+  not diagnosed here).
 - **Fix direction:** none required in the walker. Demo-side resolution landed via
   apply-public-grants.sh. Optional future enhancement: let READ without a property list
   expand to all catalogued properties of the label.
@@ -232,6 +237,15 @@ defect from being rediscovered without its prior reasoning.
   `prepared::publication_statement` with parser-acceptance unit tests.
 - **Owner:** `crates/gql` authorization-statement lexer/parser (`parse_grant_statement` →
   `expect_ident`; hyphen lexes as minus, not part of an unquoted identifier)
+- **Merged from the removed duplicate entry (plan 0306 sync, 2026-08-26):** underscore names
+  (`cli_run_tag`) fail CLI-side kebab-case validation instead, so no publishable spelling
+  exists for them today; `prepare` registration and CLI name validation both accept hyphenated
+  names while the grant statement rejects them, and parser tests assert `find-users` parses —
+  a conflict with the runtime lexer behavior to reconcile before fixing. Resolution options
+  recorded there: accept ADR 0061 prepared-name syntax for the PREPARED QUERY target (hyphenated
+  or quoted identifiers), or restrict prepared names to one grammar shared by both sides; a
+  lexer extension needs an ADR 0074 §5 amendment note. No correctness gap; default-deny stays
+  intact.
 
 ### GAP-2026-08-24-007 — Committed HEAD does not build `gleaph-router`: `auth::require_admin` callers landed before their auth definitions
 
@@ -297,31 +311,6 @@ defect from being rediscovered without its prior reasoning.
   outlives the CLI (setsid + optional supervisor), (c) then revisit whether lazy issuance
   plus provisioned topology completes without catalog-upload plumbing (ADR 0036 has no CLI
   upload surface today).
-
-### GAP-2026-08-24-005 — ADR 0074 grant statements cannot address hyphenated prepared-query names
-
-- **Status:** Open — blocks `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC` for every
-  hyphenated prepared operation (ADR 0061 names are `[a-z][a-z0-9-]*`, so most real names,
-  e.g. the knowledge demo's `variable-length-reach`, are affected)
-- **Owner:** `crates/gql` authorization-statement lexer/parser (`parse_grant_statement` →
-  `expect_ident`; hyphen lexes as minus, not part of an unquoted identifier)
-- **Observed behavior:** Router rejects
-  `GRANT EXECUTE ON PREPARED QUERY cli-run-tag TO PUBLIC` with
-  `InvalidArgument("parse error: expected 'TO', got '-'")`; registration of the same name via
-  `prepare` succeeds, and CLI-side name validation accepts it. Underscore names (`cli_run_tag`)
-  fail CLI-side kebab-case validation instead — no publishable spelling exists.
-- **Expected or needed behavior:** Either the statement grammar accepts ADR 0061 prepared-name
-  syntax (hyphenated idents or quoted identifiers) for the PREPARED QUERY target, or prepared
-  names are restricted to one grammar that both sides share.
-- **Evidence:** PocketIC run in plan 0295 slice (Router wasm from this tree);
-  `crates/gql/src/parser/statement.rs` `parse_grant_statement`; parser tests assert
-  `find-users` parses, which conflicts with the runtime lexer behavior observed on the same
-  tree — reconcile before fixing.
-- **Impact:** Demo/explorer publication of hyphenated operations is blocked (workaround:
-  register hyphen-free names). No correctness gap; default-deny stays intact.
-- **Next decision:** Grammar-side fix (lexer exception for grant-target context vs quoted
-  identifier support) versus naming-contract change; needs an ADR 0074 §5 amendment note if the
-  lexer is extended.
 
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 

@@ -1,0 +1,89 @@
+Plan 0306 — edge element-id demand probe transcript
+UTC document anchor: 2026-08-25/26 UTC
+
+Provenance: the diagnostic probe ran in a detached-HEAD worktree at 22da6770a because
+the main tree's gleaph-router lib-test target was broken by unrelated untracked WIP
+(crates/router/src/facade/stable/text_index_catalog.rs, E0600). The probe test has since
+been promoted to the hard-failing contract lock
+`edge_element_id_projection_demands_stay_attributed` (crates/router/src/gql_grants.rs);
+this file preserves the diagnostic output that motivated the promotion.
+
+Command: cargo test -p gleaph-router --lib citation_reach_edge_element_id_demand_probe -- --nocapture
+Exit: 0 (1 passed; 980 filtered out)
+
+Fixture: owner [7;29], registrar [255;29], graph "diag_cite", vocabulary
+Document / CITES / title; source byte-identical to
+demo/knowledge/prepared/citation-reach.gql modulo whitespace.
+
+Captured output (verbatim):
+
+DIAG RequirementSet for citation-reach:
+RequirementSet {
+    graphs: {
+        1: GraphDemands {
+            conjunctive: [
+                Graph(
+                    GraphPrivilege {
+                        graph: 1,
+                        operation: Match,
+                        resource: VertexLabel(
+                            1,
+                        ),
+                    },
+                ),
+                Graph(
+                    GraphPrivilege {
+                        graph: 1,
+                        operation: Read,
+                        resource: VertexLabel(
+                            1,
+                        ),
+                    },
+                ),
+                Graph(
+                    GraphPrivilege {
+                        graph: 1,
+                        operation: Traverse(
+                            None,
+                        ),
+                        resource: EdgeLabel(
+                            1,
+                        ),
+                    },
+                ),
+                Graph(
+                    GraphPrivilege {
+                        graph: 1,
+                        operation: ReadProperty,
+                        resource: VertexProperty {
+                            label: 1,
+                            property: 1,
+                        },
+                    },
+                ),
+                Graph(
+                    GraphPrivilege {
+                        graph: 1,
+                        operation: ReadProperty,
+                        resource: VertexProperty {
+                            label: 1,
+                            property: 1,
+                        },
+                    },
+                ),
+            ],
+            alternatives: [],
+            unattributed: false,
+        },
+    },
+    root_unattributed: false,
+}
+DIAG summary: unattributed=false conjunctive=5 alternatives=0
+
+Interpretation: `ELEMENT_ID(e)` on the MATCH-bound edge variable contributes zero authz
+demand — the row multiset is exactly Match(VertexLabel Document), Read(VertexLabel
+Document), Traverse(None, EdgeLabel CITES), ReadProperty(Document.title) x2 (src and dst
+both attribute through label facts). This disproves the "edge element-id reads are
+tenancy-only in Phase 1" framing recorded as GAP-2026-08-24-008 residual follow-up (a);
+the historical non-owner DENY of citation-reach came from missing property-level READ
+rows, supplied by the brace-form grants in demo/knowledge/scripts/bootstrap.sh.
