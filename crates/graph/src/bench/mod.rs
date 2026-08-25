@@ -9,6 +9,7 @@ mod index_export;
 mod index_pending_floor;
 #[cfg(feature = "canbench_large")]
 mod large;
+mod order_by_delivery;
 mod ordered_batch;
 mod plan_batch;
 mod stable_layout;

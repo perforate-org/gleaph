@@ -2051,6 +2051,60 @@ benches:
         instructions: 97824
         heap_increase: 0
         stable_memory_increase: 0
+  bench_graph_order_by_index_ordered_topk_residual_filter:
+    total:
+      calls: 1
+      instructions: 17849175
+      heap_increase: 1
+      stable_memory_increase: 0
+    scopes:
+      order_by_index_ordered_topk:
+        calls: 1
+        instructions: 17847833
+        heap_increase: 1
+        stable_memory_increase: 0
+      plan_op_project:
+        calls: 1
+        instructions: 204709
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan_query_execute_ops:
+        calls: 1
+        instructions: 17808371
+        heap_increase: 1
+        stable_memory_increase: 0
+      plan_query_materialize_value_rows:
+        calls: 1
+        instructions: 15751
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_graph_order_by_sort_remaining_topk_residual_filter:
+    total:
+      calls: 1
+      instructions: 99925794
+      heap_increase: 2
+      stable_memory_increase: 0
+    scopes:
+      order_by_sort_remaining_topk:
+        calls: 1
+        instructions: 99924509
+        heap_increase: 2
+        stable_memory_increase: 0
+      plan_op_project:
+        calls: 1
+        instructions: 205846
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan_query_execute_ops:
+        calls: 1
+        instructions: 99884835
+        heap_increase: 2
+        stable_memory_increase: 0
+      plan_query_materialize_value_rows:
+        calls: 1
+        instructions: 16107
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_graph_profile_setup_50kscan:
     total:
       calls: 1

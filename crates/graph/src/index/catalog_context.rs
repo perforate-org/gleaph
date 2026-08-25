@@ -492,7 +492,7 @@ pub(crate) fn active_indexed_edge_label_registrations() -> Vec<(u16, EdgeIndexDi
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "canbench"))]
 pub(crate) fn enter_vertex_indexed(property_ids: &[PropertyId]) -> CatalogGuard {
     enter(IndexedPropertyCatalog {
         vertex_indexes: property_ids
