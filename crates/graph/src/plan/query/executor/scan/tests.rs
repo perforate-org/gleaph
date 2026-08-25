@@ -4945,3 +4945,119 @@ fn topk_ordered_does_not_stop_inside_a_tie_group() {
         "expected incomparable tie-group continuation, got {err:?}"
     );
 }
+
+/// Residual filter + TopK early exit must deliver exactly the first `k` rows of the
+/// fully sorted survivor stream — including duplicate keys and a tie group that
+/// straddles the truncation boundary.
+#[test]
+fn ordered_delivery_topk_residual_filter_equals_full_sort_prefix() {
+    let input_limited = "MATCH (v:OrdDel) WHERE v.score >= 0 AND v.flag = 0 RETURN v.score AS score \
+         ORDER BY score LIMIT 3";
+    let input_unlimited = "MATCH (v:OrdDel) WHERE v.score >= 0 AND v.flag = 0 RETURN v.score AS score \
+         ORDER BY score";
+    let plan = plan_query_with_table_stats(input_limited, &ordered_delivery_stats());
+    assert_eq!(
+        scan_intent_of(&plan),
+        Some("score".to_string()),
+        "residual PropertyFilter must not block eligibility: {plan:?}"
+    );
+    let unlimited = plan_query_with_table_stats(input_unlimited, &ordered_delivery_stats());
+    assert_eq!(scan_intent_of(&unlimited), Some("score".to_string()));
+
+    // Survivors of `flag = 0` carry duplicated keys, and LIMIT 3 cuts inside the
+    // `20` tie group (survivor stream: 10, 20, 20, 30, 30, 50, 50).
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let rows: &[(i64, i64)] = &[
+        (10, 0),
+        (10, 1),
+        (20, 0),
+        (20, 0),
+        (20, 1),
+        (30, 0),
+        (30, 0),
+        (40, 1),
+        (50, 0),
+        (50, 0),
+    ];
+    let mut hits: Vec<(Vec<u8>, PostingHit)> = Vec::new();
+    for (score, flag) in rows.iter().copied() {
+        let vid = store
+            .insert_vertex_named(
+                ["OrdDel"],
+                [("score", Value::Int64(score)), ("flag", Value::Int64(flag))],
+            )
+            .expect("insert vertex");
+        let key = value_to_index_key_bytes(&Value::Int64(score))
+            .unwrap()
+            .expect("encodable score");
+        hits.push((
+            key,
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: u32::try_from(u64::from(vid)).expect("vertex id"),
+            },
+        ));
+    }
+    hits.sort_by(|left, right| left.0.cmp(&right.0));
+    let index = MockPropertyIndex::default();
+    *index.range_hits.borrow_mut() = hits.into_iter().map(|(_, hit)| hit).collect();
+
+    let run = |plan: &PhysicalPlan| {
+        let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+            crate::test_labels::property_id_for_name("score"),
+        ]);
+        pollster::block_on(execute_plan_query(
+            &store,
+            plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execution")
+    };
+    let scores = |result: &PlanQueryResult| -> Vec<i64> {
+        result
+            .rows
+            .iter()
+            .map(|row| match row.get("score") {
+                Some(Value::Int64(v)) => *v,
+                other => panic!("expected int score binding, got {other:?}"),
+            })
+            .collect()
+    };
+
+    let delivered = scores(&run(&plan));
+    assert_eq!(
+        delivered,
+        vec![10, 20, 20],
+        "early exit must reproduce the sorted prefix through the tie group at the cut"
+    );
+
+    // Prefix property: the no-limit ordered delivery streams every survivor in scan
+    // order; its first three rows must equal the limited run exactly.
+    let full_stream = scores(&run(&unlimited));
+    assert_eq!(
+        full_stream,
+        vec![10, 20, 20, 30, 30, 50, 50],
+        "no-limit delivery must stream all survivors in encoded-key order"
+    );
+    assert_eq!(&full_stream[..3], &delivered[..],);
+
+    // Same top-k multiset as the intent-stripped fallback (full sort inside TopK).
+    let mut stripped = plan.clone();
+    if let Some(PlanOp::IndexScan {
+        ordered_by_sort, ..
+    }) = stripped.ops.first_mut()
+    {
+        *ordered_by_sort = None;
+    }
+    let mut fallback = scores(&run(&stripped));
+    let mut reference = delivered.clone();
+    fallback.sort_unstable();
+    reference.sort_unstable();
+    assert_eq!(
+        fallback, reference,
+        "fallback full sort must select the same top-k multiset"
+    );
+}

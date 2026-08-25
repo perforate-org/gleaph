@@ -181,3 +181,71 @@ fn explain_shows_no_order_marker_for_ineligible_scan() {
         "DESC must not claim ordered delivery: {explained}"
     );
 }
+
+// ─── Robustness: parameter/range anchors and subplan boundaries ─────────────────
+
+#[test]
+fn parameter_bound_range_anchor_records_intent() {
+    let input = "MATCH (v:User) WHERE v.p >= $min RETURN v.p AS p ORDER BY p LIMIT 3";
+    let plan = plan_with_stats(input, &indexed_stats());
+    assert_eq!(
+        scan_intent(&plan),
+        Some(Some("p".to_string())),
+        "a parameterized range anchor is still an eligible leading scan: {plan:?}"
+    );
+    assert!(!has_unconditional_sort(&plan));
+}
+
+#[test]
+fn parameter_bound_equality_anchor_records_intent() {
+    let input = "MATCH (v:User) WHERE v.p = $id RETURN v.p AS p ORDER BY p LIMIT 3";
+    let plan = plan_with_stats(input, &indexed_stats());
+    assert_eq!(scan_intent(&plan), Some(Some("p".to_string())));
+    assert!(!has_unconditional_sort(&plan));
+}
+
+fn plan_has_no_ordered_intent(plan: &PhysicalPlan) -> bool {
+    fn walk(ops: &[PlanOp]) -> bool {
+        ops.iter().all(|op| match op {
+            PlanOp::IndexScan {
+                ordered_by_sort, ..
+            } => ordered_by_sort.is_none(),
+            PlanOp::UseGraph {
+                sub_plan: Some(inner),
+                ..
+            } => walk(inner),
+            // Subplans that can host their own pipelines.
+            PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops),
+            PlanOp::HashJoin { left, right, .. } => walk(left) && walk(right),
+            _ => true,
+        })
+    }
+    walk(&plan.ops)
+}
+
+#[test]
+fn use_graph_subplan_does_not_fire_eligibility() {
+    let input = "USE otherGraph MATCH (v:User) WHERE v.p >= 1 RETURN v.p AS p ORDER BY p LIMIT 3";
+    let plan = plan_with_stats(input, &indexed_stats());
+    assert!(
+        matches!(plan.ops.first(), Some(PlanOp::UseGraph { .. })),
+        "focused statement must lead with UseGraph: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_no_ordered_intent(&plan),
+        "eligibility must not reach across the UseGraph subplan boundary: {plan:?}"
+    );
+}
+
+#[test]
+fn optional_match_between_scan_and_boundary_blocks_eligibility() {
+    let input = "MATCH (v:User) WHERE v.p >= $min OPTIONAL MATCH (v)-[e]->(w) \
+                 RETURN v.p AS p ORDER BY p LIMIT 3";
+    let plan = plan_with_stats(input, &indexed_stats());
+    assert_ne!(
+        scan_intent(&plan),
+        Some(Some("p".to_string())),
+        "OptionalMatch between scan and boundary must veto eligibility: {plan:?}"
+    );
+}
