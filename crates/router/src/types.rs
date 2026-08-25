@@ -1789,11 +1789,13 @@ pub struct VectorIndexActivationStatus {
     pub blocked_reason: Option<String>,
 }
 
-/// Wire view of a stored TEXT index status (plan 0297). `Registered` = declared without a
-/// provisioned canister (dev mode); `Ready` = provisioned text canister attached.
+/// Wire view of a stored TEXT index status (plan 0297). `Registered` = declared without
+/// backfill convergence; `Backfilling` = migration-driven backfill in flight;
+/// `Ready` = converged and sealed — the ONLY planner/query-visible state.
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextIndexStatusView {
     Registered,
+    Backfilling,
     Ready,
 }
 

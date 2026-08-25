@@ -2,6 +2,7 @@
 
 mod driver;
 mod index;
+mod text_backfill;
 mod vector;
 
 pub(crate) use driver::real_index_migration_driver;

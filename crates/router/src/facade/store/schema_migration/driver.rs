@@ -18,10 +18,15 @@ use gleaph_graph_kernel::canonical_export::{
 };
 use gleaph_graph_kernel::index::{
     IndexBuildCleanupStatus, IndexBuildControlRequest, IndexBuildError, IndexBuildSealRequest,
-    IndexBuildSealStatus, IndexBuildSealTarget, IndexBuildStatus, PhysicalIndexId,
-    RegisterIndexBuildRequest,
+    IndexBuildSealStatus, IndexBuildSealTarget, IndexBuildStatus, IndexBuildTarget,
+    MAX_INDEX_BUILD_ADVANCE_PAGES, PhysicalIndexId, RegisterIndexBuildRequest,
 };
 use gleaph_migration_api::MigrationFailureCode;
+
+use super::text_backfill::{
+    IcTextBackfillClient, RegisterTextBackfillRequest, TextBackfillClient, TextBackfillControl,
+    TextBackfillPhase, TextBackfillSealProof, classify_text_backfill_call,
+};
 
 use super::index::{
     IndexMigrationDriveError, IndexMigrationDriver, IndexMigrationExportScope,
@@ -176,17 +181,21 @@ pub(crate) struct IcIndexBuildClient;
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct IcGraphScopeClient;
 
-/// Real driver composition: one graph-index client and one Graph export-scope client.
-pub(crate) struct RealIndexMigrationDriver<IB, GS> {
+/// Real driver composition: one graph-index client, one Graph export-scope client, and one
+/// text-canister backfill client (ADR 0059 §Text build kind).
+pub(crate) struct RealIndexMigrationDriver<IB, GS, TB> {
     index_build: IB,
     graph_scope: GS,
+    #[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
+    text_backfill: TB,
 }
 
-impl<IB: IndexBuildClient, GS: GraphScopeClient> RealIndexMigrationDriver<IB, GS> {
-    pub(crate) fn new(index_build: IB, graph_scope: GS) -> Self {
+impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB, GS, TB> {
+    pub(crate) fn new(index_build: IB, graph_scope: GS, text_backfill: TB) -> Self {
         Self {
             index_build,
             graph_scope,
+            text_backfill,
         }
     }
 
@@ -445,8 +454,243 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient> RealIndexMigrationDriver<IB, GS
     }
 }
 
-impl<IB: IndexBuildClient, GS: GraphScopeClient> IndexMigrationDriver
-    for RealIndexMigrationDriver<IB, GS>
+// -- Text backfill lane (ADR 0059 §Text build kind) -----------------------------------------
+
+/// Bounded pull budget per text backfill Build step, mirroring the graph-index worker bound
+/// (the text canister clamps to the same kernel constant internally).
+#[allow(
+    dead_code,
+    reason = "text lane consumed by ledger routing when text lifecycle rows land"
+)]
+pub(crate) const MAX_TEXT_BACKFILL_ADVANCE_BUDGET: u32 = MAX_INDEX_BUILD_ADVANCE_PAGES;
+
+/// One bounded text backfill owner operation. The envelope carries the FULL text identity —
+/// including the `TextIndexId` that the property-posting envelope has no slot for — so every
+/// downstream call still derives exactly from the immutable request.
+#[allow(
+    dead_code,
+    reason = "text lane awaits ledger routing (plan 0297 backfill-pull)"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextBackfillStepRequest {
+    pub migration_id: String,
+    pub lifecycle_catalog_epoch: u64,
+    /// Registered text-canister principal for this definition (Router TEXT catalog row).
+    pub text_canister: Principal,
+    /// Home Graph shard that owns the canonical export scope (v0: single home shard).
+    pub home_graph_canister: Principal,
+    pub registration: RegisterTextBackfillRequest,
+    /// Frozen Graph export scopes in shard order (Text targets; shared freeze path).
+    pub export_scopes: Vec<IndexMigrationExportScope>,
+    pub action: IndexMigrationStepAction,
+}
+
+#[allow(
+    dead_code,
+    reason = "text lane awaits ledger routing (plan 0297 backfill-pull)"
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TextBackfillStepResult {
+    Registered,
+    BuildProgress { done: bool, ingested_docs: u64 },
+    SealProgress { converged: bool },
+    CleanupProgress { done: bool },
+}
+
+/// Response echoes the immutable request identity so stale and cross-target replies fail closed.
+#[allow(
+    dead_code,
+    reason = "text lane awaits ledger routing (plan 0297 backfill-pull)"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextBackfillStepResponse {
+    pub migration_id: String,
+    pub lifecycle_catalog_epoch: u64,
+    pub registration: RegisterTextBackfillRequest,
+    pub result: TextBackfillStepResult,
+}
+
+impl<TB: TextBackfillClient, GS: GraphScopeClient, IB> RealIndexMigrationDriver<IB, GS, TB> {
+    #[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
+    fn text_control(&self, request: &TextBackfillStepRequest) -> TextBackfillControl {
+        TextBackfillControl {
+            text_index_id: request.registration.text_index_id,
+            catalog_epoch: request.registration.catalog_epoch,
+        }
+    }
+
+    /// Register/Build/Seal/Cleanup dispatch for one text backfill step. Graph-index is never
+    /// called on this lane; the Graph export-scope lifecycle and its watermark capture are the
+    /// SHARED code paths.
+    #[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
+    pub(crate) async fn drive_text_backfill(
+        &self,
+        request: TextBackfillStepRequest,
+    ) -> Result<TextBackfillStepResponse, IndexMigrationDriveError> {
+        let result = match request.action {
+            IndexMigrationStepAction::Register => self.drive_text_register(&request).await?,
+            IndexMigrationStepAction::Build => self.drive_text_build(&request).await?,
+            IndexMigrationStepAction::Seal => self.drive_text_seal(&request).await?,
+            IndexMigrationStepAction::Cleanup => self.drive_text_cleanup(&request).await?,
+        };
+        Ok(TextBackfillStepResponse {
+            migration_id: request.migration_id,
+            lifecycle_catalog_epoch: request.lifecycle_catalog_epoch,
+            registration: request.registration,
+            result,
+        })
+    }
+
+    /// Register: fail-closed local epoch identity check BEFORE any remote effect, then the
+    /// text-canister registration, then freezing every Graph Text scope (shared path).
+    async fn drive_text_register(
+        &self,
+        request: &TextBackfillStepRequest,
+    ) -> Result<TextBackfillStepResult, IndexMigrationDriveError> {
+        if request.registration.catalog_epoch != request.lifecycle_catalog_epoch {
+            // A stale prepared epoch would register a namespace Router can no longer seal;
+            // reject before any remote call (fail closed).
+            return Err(IndexMigrationDriveError::Terminal(
+                MigrationFailureCode::StaleOrMismatchedResponse,
+            ));
+        }
+        self.text_backfill
+            .register_text_backfill(request.text_canister, request.registration.clone())
+            .await
+            .map_err(classify_text_backfill_call)?;
+        for scope in &request.export_scopes {
+            self.graph_scope
+                .register_scope(
+                    scope.graph_canister,
+                    request.registration.physical_index_id,
+                    scope.scope.clone(),
+                )
+                .await
+                .map_err(classify_graph_scope_call)?;
+        }
+        Ok(TextBackfillStepResult::Registered)
+    }
+
+    /// Build: one bounded text-canister pull step. The text canister fetches Graph pages itself;
+    /// Router only drives the bounded advance.
+    async fn drive_text_build(
+        &self,
+        request: &TextBackfillStepRequest,
+    ) -> Result<TextBackfillStepResult, IndexMigrationDriveError> {
+        let status = self
+            .text_backfill
+            .advance_text_backfill(
+                request.text_canister,
+                self.text_control(request),
+                MAX_TEXT_BACKFILL_ADVANCE_BUDGET,
+            )
+            .await
+            .map_err(classify_text_backfill_call)?;
+        Ok(TextBackfillStepResult::BuildProgress {
+            done: status.done,
+            ingested_docs: status.ingested_docs,
+        })
+    }
+
+    /// Seal: freeze the home scope at the fresh lifecycle epoch capturing its admission
+    /// watermark, then converge ONLY when BOTH gates hold — the text-canister base scan is
+    /// done AND the captured Graph watermark is fully flushed. Readiness itself stays a
+    /// Router catalog transition (`complete_text_backfill`) performed by the ledger consumer.
+    async fn drive_text_seal(
+        &self,
+        request: &TextBackfillStepRequest,
+    ) -> Result<TextBackfillStepResult, IndexMigrationDriveError> {
+        let mut flushed = true;
+        for scope in &request.export_scopes {
+            let status = self
+                .graph_scope
+                .seal_scope(
+                    scope.graph_canister,
+                    request.registration.physical_index_id,
+                    frozen_text_scope(scope, request),
+                    request.lifecycle_catalog_epoch,
+                )
+                .await
+                .map_err(classify_graph_scope_call)?;
+            flushed &= status.drained_through >= status.admitted_through;
+        }
+        // Poll the text canister BEFORE sealing it: its seal rejects an unconverged scan, so
+        // polling keeps that expected state off the wire entirely.
+        let Some(status) = self
+            .text_backfill
+            .text_backfill_status(request.text_canister)
+            .await
+            .map_err(classify_text_backfill_call)?
+        else {
+            return Err(IndexMigrationDriveError::Terminal(
+                MigrationFailureCode::TargetRejected,
+            ));
+        };
+        let scan_done = matches!(status.phase, TextBackfillPhase::Building) && status.done;
+        let mut converged = false;
+        if scan_done && flushed {
+            self.text_backfill
+                .seal_text_backfill(
+                    request.text_canister,
+                    self.text_control(request),
+                    TextBackfillSealProof {
+                        seal_catalog_epoch: request.lifecycle_catalog_epoch,
+                    },
+                )
+                .await
+                .map_err(classify_text_backfill_call)?;
+            converged = true;
+        }
+        Ok(TextBackfillStepResult::SealProgress { converged })
+    }
+
+    /// Cleanup: abort the text backfill first (idempotent), then abort and remove every Graph
+    /// scope under the frozen registration identity. Missing scopes count as cleaned so a
+    /// crash between any two steps resumes idempotently.
+    async fn drive_text_cleanup(
+        &self,
+        request: &TextBackfillStepRequest,
+    ) -> Result<TextBackfillStepResult, IndexMigrationDriveError> {
+        self.text_backfill
+            .abort_text_backfill(request.text_canister, self.text_control(request))
+            .await
+            .map_err(classify_text_backfill_call)?;
+        for scope in &request.export_scopes {
+            let result = self
+                .graph_scope
+                .abort_scope(
+                    scope.graph_canister,
+                    request.registration.physical_index_id,
+                    frozen_text_scope(scope, request),
+                )
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(GraphScopeCallError::Typed(CanonicalExportError::ScopeNotFound)) => {}
+                Err(error) => return Err(classify_graph_scope_call(error)),
+            }
+        }
+        for scope in &request.export_scopes {
+            let result = self
+                .graph_scope
+                .remove_scope(
+                    scope.graph_canister,
+                    request.registration.physical_index_id,
+                    frozen_text_scope(scope, request),
+                )
+                .await;
+            match result {
+                Ok(()) => {}
+                Err(GraphScopeCallError::Typed(CanonicalExportError::ScopeNotFound)) => {}
+                Err(error) => return Err(classify_graph_scope_call(error)),
+            }
+        }
+        Ok(TextBackfillStepResult::CleanupProgress { done: true })
+    }
+}
+
+impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> IndexMigrationDriver
+    for RealIndexMigrationDriver<IB, GS, TB>
 {
     fn drive(
         &self,
@@ -455,6 +699,15 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient> IndexMigrationDriver
         Box<dyn Future<Output = Result<IndexMigrationStepResponse, IndexMigrationDriveError>> + '_>,
     > {
         Box::pin(async move {
+            // Text builds never enter through the property-posting envelope: their lane is
+            // [`RealIndexMigrationDriver::drive_text_backfill`] with its own identity-carrying
+            // request. A Text target here means the caller routed the wrong kind; fail closed
+            // before any remote effect (ADR 0059 §Text build kind).
+            if matches!(request.registration.target, IndexBuildTarget::Text { .. }) {
+                return Err(IndexMigrationDriveError::Terminal(
+                    MigrationFailureCode::TargetRejected,
+                ));
+            }
             match request.action {
                 IndexMigrationStepAction::Register => self.drive_register(request).await,
                 IndexMigrationStepAction::Build => self.drive_build(request).await,
@@ -467,8 +720,8 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient> IndexMigrationDriver
 
 /// Production driver instance wired into the control plane.
 pub(crate) fn real_index_migration_driver()
--> RealIndexMigrationDriver<IcIndexBuildClient, IcGraphScopeClient> {
-    RealIndexMigrationDriver::new(IcIndexBuildClient, IcGraphScopeClient)
+-> RealIndexMigrationDriver<IcIndexBuildClient, IcGraphScopeClient, IcTextBackfillClient> {
+    RealIndexMigrationDriver::new(IcIndexBuildClient, IcGraphScopeClient, IcTextBackfillClient)
 }
 
 /// The Graph export scope freezes `catalog_epoch` at registration. Sealing, aborting, and removing
@@ -478,6 +731,17 @@ pub(crate) fn real_index_migration_driver()
 fn frozen_scope(
     scope: &IndexMigrationExportScope,
     request: &IndexMigrationStepRequest,
+) -> CanonicalExportScope {
+    let mut frozen = scope.scope.clone();
+    frozen.catalog_epoch = request.registration.catalog_epoch;
+    frozen
+}
+
+/// Text-lane variant of [`frozen_scope`]: same rule over the text envelope's registration epoch.
+#[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
+fn frozen_text_scope(
+    scope: &IndexMigrationExportScope,
+    request: &TextBackfillStepRequest,
 ) -> CanonicalExportScope {
     let mut frozen = scope.scope.clone();
     frozen.catalog_epoch = request.registration.catalog_epoch;
@@ -1846,7 +2110,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Register);
 
         let response = drive(&driver, request.clone()).expect("register");
@@ -1904,7 +2172,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let register = step_request(IndexMigrationStepAction::Register);
         drive(&driver, register.clone()).expect("register first");
 
@@ -1947,7 +2219,11 @@ mod tests {
         let (index_fake, graph_fake, _, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         drive(&driver, step_request(IndexMigrationStepAction::Register)).expect("register");
         index_fake.fail_next(IndexCallKind::Advance, IndexBuildCallError::Transport);
 
@@ -1962,7 +2238,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Seal);
         let pid = request.registration.physical_index_id;
         graph_fake.seed_scope(
@@ -2101,7 +2381,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Seal);
         let pid = request.registration.physical_index_id;
         graph_fake.seed_scope(
@@ -2156,7 +2440,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Seal);
         let pid = request.registration.physical_index_id;
         // Seed both scopes under the UNFROZEN lifecycle epoch: the driver's frozen identity
@@ -2196,7 +2484,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, ledger) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Seal);
         let pid = request.registration.physical_index_id;
         // Both scopes were activated by the trapped drive: frozen registration identity, lifecycle
@@ -2284,7 +2576,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Cleanup);
         let pid = request.registration.physical_index_id;
         graph_fake.seed_scope(
@@ -2361,7 +2657,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Cleanup);
         let pid = request.registration.physical_index_id;
         // Shard 0 holds more entries than the per-drive drain cap: the drive returns done:false
@@ -2442,7 +2742,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
         let request = step_request(IndexMigrationStepAction::Cleanup);
         let pid = request.registration.physical_index_id;
         graph_fake.seed_scope(
@@ -2576,7 +2880,11 @@ mod tests {
         let (index_fake, graph_fake, timeline, _) = new_harness();
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
 
         let fresh = futures::executor::block_on(apply_index_migration(
             &store,
@@ -2719,7 +3027,11 @@ mod tests {
         graph_fake.seed_shard(graph_0(), 0);
         graph_fake.seed_shard(graph_1(), 1);
         graph_fake.set_fail_seal(graph_1());
-        let driver = RealIndexMigrationDriver::new(index_fake.clone(), graph_fake.clone());
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
 
         futures::executor::block_on(apply_index_migration(&store, admin, args.clone(), &driver))
             .expect("fresh");
@@ -2808,5 +3120,466 @@ mod tests {
         let index_name_id =
             lookup_index_name_id(graph_id, "fail_age").expect("index name retained");
         assert!(indexed_catalog::get_named_index(graph_id, index_name_id).is_none());
+    }
+
+    // -- Text backfill lane (ADR 0059 §Text build kind) -------------------------------------
+
+    use crate::facade::store::schema_migration::text_backfill::{
+        TextBackfillCallError, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
+        TextBackfillStatus,
+    };
+    use gleaph_graph_kernel::federation::TextIndexId;
+
+    const TEXT_INDEX_RAW: u32 = 77;
+    const TEXT_EPOCH: u64 = 7;
+
+    /// Graph-index stand-in that panics on ANY call: the text lane must never touch
+    /// graph-index, so one unexpected call fails the test loudly.
+    struct PanicIndexBuildClient;
+
+    impl IndexBuildClient for PanicIndexBuildClient {
+        fn register_index_build(
+            &self,
+            _: Principal,
+            _: RegisterIndexBuildRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<IndexBuildStatus, IndexBuildCallError>> + '_>>
+        {
+            panic!("the text lane must not call graph-index");
+        }
+
+        fn advance_index_build(
+            &self,
+            _: Principal,
+            _: IndexBuildControlRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<IndexBuildStatus, IndexBuildCallError>> + '_>>
+        {
+            panic!("the text lane must not call graph-index");
+        }
+
+        fn seal_index_build(
+            &self,
+            _: Principal,
+            _: IndexBuildSealRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<IndexBuildSealStatus, IndexBuildCallError>> + '_>>
+        {
+            panic!("the text lane must not call graph-index");
+        }
+
+        fn abort_index_build(
+            &self,
+            _: Principal,
+            _: IndexBuildControlRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<IndexBuildCleanupStatus, IndexBuildCallError>> + '_>>
+        {
+            panic!("the text lane must not call graph-index");
+        }
+
+        fn index_build_status(
+            &self,
+            _: Principal,
+            _: PhysicalIndexId,
+        ) -> Pin<Box<dyn Future<Output = Result<IndexBuildStatus, IndexBuildCallError>> + '_>>
+        {
+            panic!("the text lane must not call graph-index");
+        }
+    }
+
+    /// Records every text-canister call and replays a configurable Building/Sealing status.
+    struct FakeTextBackfillClient {
+        calls: RefCell<Vec<&'static str>>,
+        scan_done: bool,
+        sealed_epoch: std::cell::Cell<Option<u64>>,
+    }
+
+    impl Default for FakeTextBackfillClient {
+        fn default() -> Self {
+            Self::new(false)
+        }
+    }
+
+    impl FakeTextBackfillClient {
+        fn new(scan_done: bool) -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                scan_done,
+                sealed_epoch: std::cell::Cell::new(None),
+            }
+        }
+
+        fn status(&self) -> TextBackfillStatus {
+            TextBackfillStatus {
+                registration: text_registration(TEXT_EPOCH),
+                phase: match self.sealed_epoch.get() {
+                    Some(epoch) => TextBackfillPhase::Sealing {
+                        seal_catalog_epoch: epoch,
+                    },
+                    None => TextBackfillPhase::Building,
+                },
+                next_page_sequence: if self.scan_done { 2 } else { 1 },
+                cursor: None,
+                done: self.scan_done,
+                ingested_docs: if self.scan_done { 3 } else { 1 },
+            }
+        }
+    }
+
+    impl TextBackfillClient for FakeTextBackfillClient {
+        fn register_text_backfill(
+            &self,
+            _: Principal,
+            _: crate::facade::store::schema_migration::text_backfill::RegisterTextBackfillRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<TextBackfillStatus, TextBackfillCallError>> + '_>>
+        {
+            self.calls.borrow_mut().push("register");
+            Box::pin(std::future::ready(Ok(self.status())))
+        }
+
+        fn advance_text_backfill(
+            &self,
+            _: Principal,
+            _: TextBackfillControl,
+            budget: u32,
+        ) -> Pin<Box<dyn Future<Output = Result<TextBackfillStatus, TextBackfillCallError>> + '_>>
+        {
+            self.calls.borrow_mut().push("advance");
+            assert_eq!(
+                budget, MAX_TEXT_BACKFILL_ADVANCE_BUDGET,
+                "build steps carry the bounded page budget"
+            );
+            Box::pin(std::future::ready(Ok(self.status())))
+        }
+
+        fn seal_text_backfill(
+            &self,
+            _: Principal,
+            _: TextBackfillControl,
+            proof: crate::facade::store::schema_migration::text_backfill::TextBackfillSealProof,
+        ) -> Pin<Box<dyn Future<Output = Result<TextBackfillStatus, TextBackfillCallError>> + '_>>
+        {
+            self.calls.borrow_mut().push("seal");
+            assert_eq!(proof.seal_catalog_epoch, TEXT_EPOCH + 1);
+            self.sealed_epoch.set(Some(proof.seal_catalog_epoch));
+            Box::pin(std::future::ready(Ok(self.status())))
+        }
+
+        fn abort_text_backfill(
+            &self,
+            _: Principal,
+            _: TextBackfillControl,
+        ) -> Pin<Box<dyn Future<Output = Result<TextBackfillStatus, TextBackfillCallError>> + '_>>
+        {
+            self.calls.borrow_mut().push("abort");
+            Box::pin(std::future::ready(Ok(self.status())))
+        }
+
+        fn text_backfill_status(
+            &self,
+            _: Principal,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<TextBackfillStatus>, TextBackfillCallError>> + '_,
+            >,
+        > {
+            self.calls.borrow_mut().push("status");
+            Box::pin(std::future::ready(Ok(Some(self.status()))))
+        }
+    }
+
+    /// Minimal Graph scope fake for the text lane: records calls and replays one configured
+    /// seal watermark pair. Property-lane-only calls panic.
+    struct RecordingGraphScope {
+        calls: RefCell<Vec<&'static str>>,
+        seal_admitted_through: u64,
+        seal_drained_through: u64,
+    }
+
+    impl RecordingGraphScope {
+        fn flushed() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                seal_admitted_through: 5,
+                seal_drained_through: 5,
+            }
+        }
+
+        fn behind() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                seal_admitted_through: 5,
+                seal_drained_through: 3,
+            }
+        }
+    }
+
+    impl GraphScopeClient for RecordingGraphScope {
+        fn register_scope(
+            &self,
+            _: Principal,
+            _: PhysicalIndexId,
+            _: CanonicalExportScope,
+        ) -> Pin<Box<dyn Future<Output = Result<(), GraphScopeCallError>> + '_>> {
+            self.calls.borrow_mut().push("register_scope");
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn seal_scope(
+            &self,
+            _: Principal,
+            physical_index_id: PhysicalIndexId,
+            expected_scope: CanonicalExportScope,
+            new_epoch: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<CanonicalExportStatus, GraphScopeCallError>> + '_>>
+        {
+            self.calls.borrow_mut().push("seal_scope");
+            Box::pin(std::future::ready(Ok(CanonicalExportStatus {
+                physical_index_id,
+                scope: expected_scope,
+                phase: CanonicalExportPhase::Sealing,
+                epoch: new_epoch,
+                admitted_through: self.seal_admitted_through,
+                drained_through: self.seal_drained_through,
+            })))
+        }
+
+        fn activate_scope(
+            &self,
+            _: Principal,
+            _: PhysicalIndexId,
+            _: IndexBuildSealStatus,
+        ) -> Pin<Box<dyn Future<Output = Result<CanonicalExportStatus, GraphScopeCallError>> + '_>>
+        {
+            panic!("the text lane never publishes posting scopes");
+        }
+
+        fn abort_scope(
+            &self,
+            _: Principal,
+            physical_index_id: PhysicalIndexId,
+            expected_scope: CanonicalExportScope,
+        ) -> Pin<Box<dyn Future<Output = Result<CanonicalExportStatus, GraphScopeCallError>> + '_>>
+        {
+            self.calls.borrow_mut().push("abort_scope");
+            Box::pin(std::future::ready(Ok(CanonicalExportStatus {
+                physical_index_id,
+                scope: expected_scope,
+                phase: CanonicalExportPhase::Aborting,
+                epoch: 0,
+                admitted_through: 0,
+                drained_through: 0,
+            })))
+        }
+
+        fn remove_scope(
+            &self,
+            _: Principal,
+            _: PhysicalIndexId,
+            _: CanonicalExportScope,
+        ) -> Pin<Box<dyn Future<Output = Result<(), GraphScopeCallError>> + '_>> {
+            self.calls.borrow_mut().push("remove_scope");
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn drain_outbox(
+            &self,
+            _: Principal,
+            _: IndexBuildOutboxDrainRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<IndexBuildOutboxDrainProgress, GraphScopeCallError>>
+                    + '_,
+            >,
+        > {
+            panic!("the text lane has no build-DML outbox entries of its own");
+        }
+    }
+
+    fn text_registration(
+        epoch: u64,
+    ) -> crate::facade::store::schema_migration::text_backfill::RegisterTextBackfillRequest {
+        crate::facade::store::schema_migration::text_backfill::RegisterTextBackfillRequest {
+            text_index_id: TextIndexId::new(TEXT_INDEX_RAW),
+            graph_canister: graph_0(),
+            graph_id: GraphId::from_raw(1),
+            index_name_id: IndexNameId::from_raw(9),
+            physical_index_id: PhysicalIndexId::new(4242).expect("physical id"),
+            catalog_epoch: epoch,
+            scope: TextBackfillScope {
+                label_id: 7,
+                property_id: PropertyId::from_raw(11),
+                analyzer_id: 1,
+            },
+        }
+    }
+
+    fn text_export_scope(canister: Principal, epoch: u64) -> IndexMigrationExportScope {
+        IndexMigrationExportScope {
+            shard_id: 0,
+            graph_canister: canister,
+            scope: CanonicalExportScope {
+                graph_id: GraphId::from_raw(1),
+                index_name_id: IndexNameId::from_raw(9),
+                catalog_epoch: epoch,
+                target: CanonicalExportTarget::Text {
+                    label_id: 7,
+                    property_id: PropertyId::from_raw(11),
+                },
+                inline: None,
+            },
+        }
+    }
+
+    fn text_request(action: IndexMigrationStepAction) -> TextBackfillStepRequest {
+        // Registration epoch 7; Seal/Cleanup carry the fresh lifecycle epoch 8.
+        let lifecycle_catalog_epoch = if matches!(
+            action,
+            IndexMigrationStepAction::Seal | IndexMigrationStepAction::Cleanup
+        ) {
+            TEXT_EPOCH + 1
+        } else {
+            TEXT_EPOCH
+        };
+        TextBackfillStepRequest {
+            migration_id: "000042_text_index".into(),
+            lifecycle_catalog_epoch,
+            text_canister: Principal::from_slice(&[77]),
+            home_graph_canister: graph_0(),
+            registration: text_registration(TEXT_EPOCH),
+            export_scopes: vec![text_export_scope(graph_0(), lifecycle_catalog_epoch)],
+            action,
+        }
+    }
+
+    /// The text kind registers through the text client and freezes the shared Graph export
+    /// scope, and NEVER touches graph-index.
+    #[test]
+    fn text_kind_dispatches_to_the_text_client_and_never_to_graph_index() {
+        let graph = RecordingGraphScope::flushed();
+        let driver = RealIndexMigrationDriver::new(
+            PanicIndexBuildClient,
+            graph,
+            FakeTextBackfillClient::new(false),
+        );
+        let request = text_request(IndexMigrationStepAction::Register);
+        let response = futures::executor::block_on(driver.drive_text_backfill(request.clone()))
+            .expect("text register drive");
+        assert_eq!(response.result, TextBackfillStepResult::Registered);
+        assert_eq!(response.registration, request.registration);
+    }
+
+    /// Build steps pull through the text client under the bounded budget and report the
+    /// scan state verbatim.
+    #[test]
+    fn text_build_steps_advance_through_the_text_client_under_the_shared_budget() {
+        let driver = RealIndexMigrationDriver::new(
+            PanicIndexBuildClient,
+            RecordingGraphScope::flushed(),
+            FakeTextBackfillClient::new(false),
+        );
+        let response = futures::executor::block_on(
+            driver.drive_text_backfill(text_request(IndexMigrationStepAction::Build)),
+        )
+        .expect("text build drive");
+        assert_eq!(
+            response.result,
+            TextBackfillStepResult::BuildProgress {
+                done: false,
+                ingested_docs: 1,
+            }
+        );
+    }
+
+    /// Convergence requires BOTH gates: the text-canister base scan is done AND the captured
+    /// Graph watermark is fully flushed. Either gate alone leaves the seal unconverged and
+    /// never dispatches the remote seal.
+    #[test]
+    fn text_seal_convergence_requires_done_scan_and_flushed_watermark() {
+        let cases = [
+            ("flushed-scan-incomplete", false, true, false),
+            ("scan-done-watermark-behind", true, false, false),
+            ("both-gates-open", true, true, true),
+        ];
+        for (label, scan_done, watermark_flushed, expect_converged) in cases {
+            let graph = if watermark_flushed {
+                RecordingGraphScope::flushed()
+            } else {
+                RecordingGraphScope::behind()
+            };
+            let text = FakeTextBackfillClient::new(scan_done);
+            let driver = RealIndexMigrationDriver::new(PanicIndexBuildClient, graph, text);
+            let response = futures::executor::block_on(
+                driver.drive_text_backfill(text_request(IndexMigrationStepAction::Seal)),
+            )
+            .expect("text seal drive");
+            assert_eq!(label, label);
+            match response.result {
+                TextBackfillStepResult::SealProgress { converged } => {
+                    assert_eq!(converged, expect_converged, "{label}");
+                }
+                other => panic!("{label}: unexpected seal result {other:?}"),
+            }
+            let text_calls = driver.text_backfill_calls();
+            assert!(
+                text_calls.contains(&"status"),
+                "{label}: the done-poll must precede any seal"
+            );
+            assert_eq!(
+                text_calls.contains(&"seal"),
+                expect_converged,
+                "{label}: the remote seal fires only when both gates open"
+            );
+        }
+    }
+
+    /// A stale prepared epoch fails closed BEFORE any remote effect on either side.
+    #[test]
+    fn stale_epoch_registration_fails_closed_before_any_remote_effect() {
+        let mut request = text_request(IndexMigrationStepAction::Register);
+        // Simulate Router-side drift: the lifecycle epoch advanced past the prepared one.
+        request.lifecycle_catalog_epoch = TEXT_EPOCH + 1;
+        let graph = RecordingGraphScope::flushed();
+        let text = FakeTextBackfillClient::new(false);
+        let driver = RealIndexMigrationDriver::new(PanicIndexBuildClient, graph, text);
+        let error = futures::executor::block_on(driver.drive_text_backfill(request))
+            .expect_err("stale epoch must fail closed");
+        assert_eq!(
+            error,
+            IndexMigrationDriveError::Terminal(MigrationFailureCode::StaleOrMismatchedResponse)
+        );
+        assert!(driver.text_backfill_calls().is_empty());
+        assert!(driver.graph_scope_calls().is_empty());
+    }
+
+    /// The shared property-posting entry rejects Text targets fail-closed: text builds enter
+    /// only through [`RealIndexMigrationDriver::drive_text_backfill`].
+    #[test]
+    fn property_driver_entry_rejects_text_targets_before_any_effect() {
+        let mut request = step_request(IndexMigrationStepAction::Register);
+        request.registration.target = IndexBuildTarget::Text {
+            label_id: 3,
+            property_id: PropertyId::from_raw(9),
+            analyzer_id: 1,
+        };
+        let driver = RealIndexMigrationDriver::new(
+            PanicIndexBuildClient,
+            RecordingGraphScope::flushed(),
+            FakeTextBackfillClient::new(false),
+        );
+        let error = futures::executor::block_on(IndexMigrationDriver::drive(&driver, request))
+            .expect_err("text targets must not flow through the property envelope");
+        assert_eq!(
+            error,
+            IndexMigrationDriveError::Terminal(MigrationFailureCode::TargetRejected)
+        );
+    }
+
+    impl RealIndexMigrationDriver<PanicIndexBuildClient, RecordingGraphScope, FakeTextBackfillClient> {
+        /// Test introspection over the recorded downstream call order.
+        fn text_backfill_calls(&self) -> Vec<&'static str> {
+            self.text_backfill.calls.borrow().clone()
+        }
+
+        fn graph_scope_calls(&self) -> Vec<&'static str> {
+            self.graph_scope.calls.borrow().clone()
+        }
     }
 }

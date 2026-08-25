@@ -10,11 +10,14 @@
 //!
 //! ## Status model (fail-closed)
 //!
-//! The stored status is static: `Registered` (definition only, no canister yet — dev mode)
-//! or `Ready` (provisioned canister attached). There is deliberately no intermediate
-//! "provisioning" state: the admission flow awaits Provision's issuance response before its
-//! single durable registration write, so a definition is never observable half-provisioned.
-//! Backfill/DML readiness gates land in later slices and will layer on top of `Ready`.
+//! The stored status follows the backfill lifecycle: `Registered` (declared, no canister;
+//! not planner-visible), `Backfilling` (provisioned; migration-driven backfill in flight;
+//! NOT planner-visible), and `Ready` (backfill converged and sealed — the ONLY
+//! planner/query-visible state, see [`planning_visible_text_indexes`]). A provisioned
+//! definition is born `Backfilling` so an empty-but-visible index can never serve
+//! false-negative reads (ADR 0059 §Text build kind readiness gate); the single exact
+//! transition is [`complete_text_backfill`], which rejects every other state without
+//! mutating the row.
 
 use std::borrow::Cow;
 use std::ops::Bound;
@@ -42,11 +45,13 @@ impl TextIndexKey {
     }
 }
 
-/// Lifecycle of a TEXT index definition. `Registered` = declared without a provisioned
-/// canister (dev mode); `Ready` = a provisioned text canister is attached.
+/// Lifecycle of a TEXT index definition. `Registered` = declared, backfill not started;
+/// `Backfilling` = migration-driven backfill in flight; `Ready` = converged + sealed and
+/// the only planner/query-visible state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) enum TextIndexStatus {
     Registered,
+    Backfilling,
     Ready,
 }
 
@@ -244,12 +249,75 @@ pub(crate) fn register_text_index(
     Ok(true)
 }
 
+/// A provisioned definition is born `Backfilling`: it stays planner-INVISIBLE until its
+/// backfill converges ([`complete_text_backfill`]), closing the false-negative window an
+/// empty-but-visible index would open (ADR 0059 §Text build kind readiness gate).
 fn resolve_status(has_target: bool) -> TextIndexStatus {
     if has_target {
-        TextIndexStatus::Ready
+        TextIndexStatus::Backfilling
     } else {
         TextIndexStatus::Registered
     }
+}
+
+/// Completes the backfill lifecycle `Backfilling → Ready` once the Router convergence
+/// proof holds (text-canister scan done AND the Graph flushed watermark). This is the
+/// only transition that makes a definition planner/query-visible. Any other current
+/// state rejects without mutating the row.
+#[allow(
+    dead_code,
+    reason = "consumed by the ledger consumer when text lifecycle rows land (plan 0297)"
+)]
+pub(crate) fn complete_text_backfill(
+    graph_id: GraphId,
+    text_index_id: u32,
+) -> Result<TextIndexDefRecord, RouterError> {
+    transition_text_backfill_status(graph_id, text_index_id, |status| match status {
+        TextIndexStatus::Backfilling => Some(TextIndexStatus::Ready),
+        _ => None,
+    })
+}
+
+/// Applies the single exact status move selected by `step`; `None` means the current
+/// state forbids the transition and the row is left untouched (fail closed).
+#[allow(dead_code, reason = "consumed with complete_text_backfill (plan 0297)")]
+fn transition_text_backfill_status(
+    graph_id: GraphId,
+    text_index_id: u32,
+    step: impl FnOnce(TextIndexStatus) -> Option<TextIndexStatus>,
+) -> Result<TextIndexDefRecord, RouterError> {
+    let key = TextIndexKey::new(graph_id, text_index_id);
+    let existing = ROUTER_TEXT_INDEXES
+        .with_borrow(|map| map.get(&key))
+        .ok_or_else(|| RouterError::NotFound(format!("text index {text_index_id}")))?;
+    let next = step(existing.status).ok_or_else(|| {
+        RouterError::InvalidState(format!(
+            "text index {text_index_id} status {:?} rejects the backfill transition",
+            existing.status
+        ))
+    })?;
+    let updated = TextIndexDefRecord {
+        status: next,
+        ..existing.clone()
+    };
+    ROUTER_TEXT_INDEXES.with_borrow_mut(|map| {
+        map.insert(key, updated.clone());
+    });
+    Ok(updated)
+}
+
+/// Planner/query projection: ONLY `Ready` definitions with an attached canister are
+/// visible to query planning; `Registered` and `Backfilling` rows stay invisible exactly
+/// like non-Active property indexes (ADR 0059 §Text build kind readiness gate).
+#[allow(
+    dead_code,
+    reason = "text planner projection wiring lands with plan 0297"
+)]
+pub(crate) fn planning_visible_text_indexes(graph_id: GraphId) -> Vec<TextIndexDefRecord> {
+    list_text_indexes(graph_id)
+        .into_iter()
+        .filter(|def| def.status == TextIndexStatus::Ready && def.target.is_some())
+        .collect()
 }
 
 pub(crate) fn get_text_index(graph_id: GraphId, text_index_id: u32) -> Option<TextIndexDefRecord> {
@@ -288,6 +356,7 @@ pub(crate) fn text_index_info(def: &TextIndexDefRecord) -> crate::types::TextInd
         canister: def.target,
         status: match def.status {
             TextIndexStatus::Registered => crate::types::TextIndexStatusView::Registered,
+            TextIndexStatus::Backfilling => crate::types::TextIndexStatusView::Backfilling,
             TextIndexStatus::Ready => crate::types::TextIndexStatusView::Ready,
         },
     }
@@ -360,13 +429,15 @@ mod tests {
     }
 
     #[test]
-    fn registration_without_target_is_registered_with_target_is_ready() {
+    fn registration_without_target_is_registered_and_provisioned_starts_backfilling() {
         let graph = GraphId::from_raw(930_001);
         assert!(register(graph, 1, 1, 10, None));
         let def = get_text_index(graph, 1).expect("def");
         assert_eq!(def.status, TextIndexStatus::Registered);
         assert_eq!(def.analyzer_id, 1);
 
+        // A provisioned definition is born Backfilling: invisible until its backfill
+        // converges (ADR 0059 §Text build kind readiness gate).
         assert!(register(
             graph,
             2,
@@ -375,7 +446,75 @@ mod tests {
             Some(Principal::management_canister())
         ));
         let def = get_text_index(graph, 2).expect("def");
-        assert_eq!(def.status, TextIndexStatus::Ready);
+        assert_eq!(def.status, TextIndexStatus::Backfilling);
+    }
+
+    #[test]
+    fn backfill_transitions_are_exact_and_fail_closed_elsewhere() {
+        let graph = GraphId::from_raw(930_005);
+        register(graph, 1, 1, 10, Some(Principal::management_canister()));
+        assert_eq!(
+            get_text_index(graph, 1).expect("row").status,
+            TextIndexStatus::Backfilling,
+            "provisioned rows are born backfilling"
+        );
+
+        // Registered rows (no canister) reject completion outright.
+        register(graph, 3, 3, 30, None);
+        assert!(matches!(
+            complete_text_backfill(graph, 3),
+            Err(RouterError::InvalidState(_))
+        ));
+
+        // Backfilling -> Ready, then terminal.
+        let ready = complete_text_backfill(graph, 1).expect("complete");
+        assert_eq!(ready.status, TextIndexStatus::Ready);
+        assert!(matches!(
+            complete_text_backfill(graph, 1),
+            Err(RouterError::InvalidState(_))
+        ));
+        assert_eq!(
+            get_text_index(graph, 1).expect("row survives").status,
+            TextIndexStatus::Ready
+        );
+
+        // Unknown ids fail closed without inventing rows.
+        assert!(matches!(
+            complete_text_backfill(graph, 99),
+            Err(RouterError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn planning_projection_exposes_only_ready_definitions() {
+        let graph = GraphId::from_raw(930_006);
+        assert!(planning_visible_text_indexes(graph).is_empty());
+
+        // Registered without canister: declared but never visible.
+        register(graph, 1, 1, 10, None);
+        assert!(planning_visible_text_indexes(graph).is_empty());
+
+        // Provisioned rows are born Backfilling: still invisible.
+        let ready_id = test_index_name_id(graph, 2);
+        assert!(
+            register_text_index(
+                graph,
+                2,
+                ready_id,
+                VertexLabelId::from_raw(1),
+                PropertyId::from_raw(11),
+                1,
+                Some(Principal::management_canister()),
+                false
+            )
+            .expect("provisioned registration")
+        );
+        assert!(planning_visible_text_indexes(graph).is_empty());
+        complete_text_backfill(graph, 2).expect("complete");
+        assert_eq!(planning_visible_text_indexes(graph).len(), 1);
+
+        // A second graph's definitions do not leak across the boundary.
+        assert!(planning_visible_text_indexes(GraphId::from_raw(930_007)).is_empty());
     }
 
     #[test]
