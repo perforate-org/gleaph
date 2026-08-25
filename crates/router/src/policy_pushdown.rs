@@ -35,12 +35,15 @@ use std::rc::Rc;
 use candid::Principal;
 
 use gleaph_auth::{
-    CompiledPredicate, GrantSubject, PredicateLiteral, PredicateOp, PredicateValue, Privilege,
+    CompiledPredicate, GrantSubject, PredicateChain, PredicateChainHop, PredicateHopDirection,
+    PredicateLiteral, PredicateOp, PredicateValue, Privilege,
 };
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
-use gleaph_gql::types::LabelExpr;
-use gleaph_gql_planner::plan::{NodeLabelRef, PhysicalPlan, PlanOp, ScanValue, Str};
-use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql_planner::plan::{
+    EdgeLabelRef, NodeLabelRef, PhysicalPlan, PlanOp, ScanValue, SemiHop, Str,
+};
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 
 use crate::facade::auth;
 use crate::facade::store::RouterStore;
@@ -61,6 +64,41 @@ pub(crate) struct ResolvedComparison {
     pub(crate) value: gleaph_gql::Value,
 }
 
+/// One resolved chain hop ([ADR 0082] §5): catalog names re-resolved, destination
+/// variables freshly synthesized for the lowered probe.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedHop {
+    pub(crate) edge_label_id: u32,
+    pub(crate) edge_label_name: String,
+    pub(crate) direction: PredicateHopDirection,
+    pub(crate) dst_variable: String,
+    pub(crate) dst_label_id: u32,
+    pub(crate) dst_label_name: String,
+}
+
+/// One row's resolved EXISTS clause: the bounded hop chain plus terminal comparisons.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedChain {
+    pub(crate) hops: Vec<ResolvedHop>,
+    pub(crate) terminal: Vec<ResolvedComparison>,
+}
+
+impl ResolvedChain {
+    /// Whether the terminal group is exactly one `property = MSG_CALLER()` equality —
+    /// the reverse-seed precondition of [ADR 0082] §7. The resolved caller constant is
+    /// the only `Extension` value the resolver produces.
+    pub(crate) fn single_caller_equality(&self) -> Option<(&ResolvedComparison, &ResolvedHop)> {
+        let [terminal] = self.terminal.as_slice() else {
+            return None;
+        };
+        if terminal.op != PredicateOp::Eq {
+            return None;
+        }
+        let last_hop = self.hops.last()?;
+        matches!(terminal.value, gleaph_gql::Value::Extension(_)).then_some((terminal, last_hop))
+    }
+}
+
 /// One label's applicable policy: every applicable grant row contributes its own
 /// AND-conjunction ([ADR 0075] §2), and the label's visible set is the **union** over
 /// rows ([ADR 0074] alternatives semantics: grants are additive, each narrowed by its
@@ -79,6 +117,8 @@ pub(crate) struct ResolvedConjunction {
     /// Stable row identity feeding the cache fingerprint (subject kind + principal).
     subject_tag: u8,
     comparisons: Vec<ResolvedComparison>,
+    /// The row's resolved EXISTS clause ([ADR 0082] §5), if compiled.
+    pub(crate) chain: Option<ResolvedChain>,
 }
 
 /// Applicable policy groups for one execution plus the exact fingerprint of the
@@ -160,6 +200,7 @@ pub(crate) fn effective_policies(
         let mut conjunction = ResolvedConjunction {
             subject_tag,
             comparisons: Vec::new(),
+            chain: None,
         };
         for conjunct in &predicate.conjuncts {
             let property_name =
@@ -170,6 +211,9 @@ pub(crate) fn effective_policies(
                 op: conjunct.op,
                 value: resolve_constant(caller, conjunct.value.clone())?,
             });
+        }
+        if let Some(chain) = &predicate.chain {
+            conjunction.chain = Some(resolve_chain(store, graph, caller, chain)?);
         }
         group.rows.push(conjunction);
     }
@@ -192,6 +236,58 @@ fn subject_applies(subject: &GrantSubject, caller: &Principal) -> bool {
         GrantSubject::Public => true,
         GrantSubject::Principal(p) => p == caller,
     }
+}
+
+/// Resolves one compiled chain against the catalogs ([ADR 0082] §5): edge/vertex label
+/// ids re-resolve to names, destination probe variables are freshly synthesized, and
+/// terminal comparisons resolve exactly like source-side ones. Unresolvable monotonic
+/// ids fail closed — the drop sweep removes such rows with their vocabulary.
+fn resolve_chain(
+    store: &RouterStore,
+    graph: GraphId,
+    caller: &Principal,
+    chain: &PredicateChain,
+) -> Result<ResolvedChain, RouterError> {
+    let mut hops = Vec::with_capacity(chain.hops.len());
+    for (index, hop) in chain.hops.iter().enumerate() {
+        let edge_label_name =
+            store.reverse_edge_label_name(graph, EdgeLabelId::from_raw(edge_label_u16(hop)?))?;
+        let dst_label_name = store.reverse_vertex_label_name(
+            graph,
+            VertexLabelId::from_raw(label_u16(
+                hop.dest_label,
+                "chain destination vertex label id exceeds catalog space",
+            )?),
+        )?;
+        hops.push(ResolvedHop {
+            edge_label_id: hop.edge_label,
+            edge_label_name,
+            direction: hop.direction,
+            dst_variable: format!("__chain_v{}", index + 1),
+            dst_label_id: hop.dest_label,
+            dst_label_name,
+        });
+    }
+    let mut terminal = Vec::with_capacity(chain.terminal_conjuncts.len());
+    for conjunct in &chain.terminal_conjuncts {
+        let property_name =
+            store.reverse_property_name(graph, PropertyId::from_raw(conjunct.property))?;
+        terminal.push(ResolvedComparison {
+            property_id: conjunct.property,
+            property_name,
+            op: conjunct.op,
+            value: resolve_constant(caller, conjunct.value.clone())?,
+        });
+    }
+    Ok(ResolvedChain { hops, terminal })
+}
+
+fn edge_label_u16(hop: &PredicateChainHop) -> Result<u16, RouterError> {
+    label_u16(hop.edge_label, "chain edge label id exceeds catalog space")
+}
+
+fn label_u16(id: u32, message: &str) -> Result<u16, RouterError> {
+    u16::try_from(id).map_err(|_| RouterError::Internal(message.into()))
 }
 
 /// Append one row's identity to the exact fingerprint: subject kind, principal bytes,
@@ -240,6 +336,57 @@ fn encode_fingerprint_row(
                 out.push(4);
                 out.extend_from_slice(&(s.len() as u8).to_le_bytes());
                 out.extend_from_slice(s.as_bytes());
+            }
+        }
+    }
+    // The chain bytes join the exact fingerprint ([ADR 0082] §8): rows differing only
+    // in their chains (or a chain's terminal constants) never share a cache entry.
+    // MSG_CALLER stays unresolved here; the trailing caller bytes pin it per execution.
+    match &predicate.chain {
+        None => out.push(0),
+        Some(chain) => {
+            out.push(1);
+            out.push(chain.hops.len() as u8);
+            for hop in &chain.hops {
+                out.extend_from_slice(&hop.edge_label.to_le_bytes());
+                out.push(match hop.direction {
+                    PredicateHopDirection::Outgoing => 0,
+                    PredicateHopDirection::Incoming => 1,
+                    PredicateHopDirection::Both => 2,
+                });
+                out.extend_from_slice(&hop.dest_label.to_le_bytes());
+            }
+            out.push(chain.terminal_conjuncts.len() as u8);
+            for conjunct in &chain.terminal_conjuncts {
+                out.extend_from_slice(&conjunct.property.to_le_bytes());
+                out.push(match conjunct.op {
+                    PredicateOp::Eq => 0,
+                    PredicateOp::Ne => 1,
+                    PredicateOp::Lt => 2,
+                    PredicateOp::Le => 3,
+                    PredicateOp::Gt => 4,
+                    PredicateOp::Ge => 5,
+                });
+                match &conjunct.value {
+                    PredicateValue::MsgCaller => out.push(0),
+                    PredicateValue::Literal(PredicateLiteral::Bool(b)) => {
+                        out.push(1);
+                        out.push(u8::from(*b));
+                    }
+                    PredicateValue::Literal(PredicateLiteral::Int(i)) => {
+                        out.push(2);
+                        out.extend_from_slice(&i.to_le_bytes());
+                    }
+                    PredicateValue::Literal(PredicateLiteral::Float(f)) => {
+                        out.push(3);
+                        out.extend_from_slice(&f.to_le_bytes());
+                    }
+                    PredicateValue::Literal(PredicateLiteral::String(s)) => {
+                        out.push(4);
+                        out.extend_from_slice(&(s.len() as u8).to_le_bytes());
+                        out.extend_from_slice(s.as_bytes());
+                    }
+                }
             }
         }
     }
@@ -344,6 +491,10 @@ fn lower_ops_slice(
             );
             offset += 1;
         }
+        for semi in decision.semi_applies {
+            ops.insert(index + offset, semi);
+            offset += 1;
+        }
         index += offset;
     }
 }
@@ -358,6 +509,8 @@ struct SiteDecision {
     filters: Vec<Expr>,
     /// Union predicates appended into this `ExpandFilter`'s `dst_filter`.
     dst_injections: Vec<Expr>,
+    /// Correlated semi-join probes ([ADR 0082] §6) inserted after this position.
+    semi_applies: Vec<PlanOp>,
 }
 
 fn decide_site(
@@ -371,6 +524,7 @@ fn decide_site(
         replacement: None,
         filters: Vec::new(),
         dst_injections: Vec::new(),
+        semi_applies: Vec::new(),
     };
     match op {
         // Definite labeled vertex scan: the label's policy filter, index-seed eligible.
@@ -382,35 +536,137 @@ fn decide_site(
             let Some(group) = find_group(policies, label_ref) else {
                 return none();
             };
+            // Property-only groups lower exactly as [ADR 0075] §5. When any applicable
+            // row carries an EXISTS chain, the group lowers into per-row probes
+            // ([ADR 0082] §6): plain rows keep their OR-conjunction, each chain row
+            // becomes a correlated semi-join gated by its own source conjuncts.
+            if !group.rows.iter().any(|row| row.chain.is_some()) {
+                return node_scan_property_only(op, group, is_root, ctx, variable);
+            }
             let seed = if is_root {
                 indexed_equality(ctx, group)
             } else {
                 None
             };
+
+            // [ADR 0082] §7 reverse-index-driven terminal equality: with exactly one
+            // applicable row whose terminal predicate is a single MSG_CALLER()
+            // equality over an actively indexed terminal property, the chain drives
+            // from the destination side through an inner join on the source variable.
+            // Results are identical to forward residual filtering; a high-fan-out
+            // membership list never scans per source.
+            if is_root
+                && group.rows.len() == 1
+                && let Some(row) = group.rows.first()
+                && let Some(chain) = &row.chain
+                && let Some((terminal_cmp, last_hop)) = chain.single_caller_equality()
+                && reverse_seed_indexed(ctx, last_hop, terminal_cmp)
+            {
+                let mut right =
+                    reverse_probe_ops(variable.as_ref(), group.label_name.as_str(), chain);
+                right.push(PlanOp::Materialize {
+                    columns: vec![gleaph_gql_planner::plan::ProjectColumn {
+                        expr: Expr::new(ExprKind::Variable(variable.as_ref().to_owned())),
+                        alias: Some(variable.clone()),
+                    }],
+                    distinct: true,
+                });
+                return SiteDecision {
+                    hydrate: group_property_names(group),
+                    replacement: Some(PlanOp::HashJoin {
+                        left: vec![op.clone()],
+                        right,
+                        join_keys: vec![variable.clone()],
+                    }),
+                    // Source-side conjuncts compose as residual filters over the joined
+                    // rows, exactly like the seeded forward path ([ADR 0082] §7).
+                    filters: conjunction_filters(variable, &row.comparisons),
+                    dst_injections: Vec::new(),
+                    semi_applies: Vec::new(),
+                };
+            }
+
             let replacement = seed.as_ref().map(|(seed_cmp, _)| PlanOp::IndexScan {
                 variable: variable.clone(),
                 property: seed_cmp.property_name.clone().into(),
                 value: ScanValue::Literal(seed_cmp.value.clone()),
                 cmp: CmpOp::Eq,
                 property_projection: site_projection(op),
-                // Policy-lowered equality scans never claim ADR 0081 ordered delivery;
-                // the planner records that intent only after its own eligibility proof.
                 ordered_by_sort: None,
             });
-            // The seeded row's remaining conjuncts stay as residual filters; when
-            // several rows cover the label (or no seed applied) the full union filter
-            // runs instead — both shapes evaluate identically over bound rows.
-            let filters = match (seed.as_ref(), group.rows.as_slice()) {
-                (Some((_, residual)), [row]) if row.comparisons.len() > residual.len() => {
-                    conjunction_filters(variable, residual)
+
+            // Single-row groups keep the [ADR 0075] source treatment outside the probe;
+            // multi-row groups gate every probe by its own conjuncts so the union of
+            // rows stays exact.
+            let single_row = group.rows.len() == 1;
+            let mut filters = Vec::new();
+            if let (Some((_, residual)), [row]) = (seed.as_ref(), group.rows.as_slice()) {
+                if row.comparisons.len() > residual.len() {
+                    filters.extend(conjunction_filters(variable, residual));
                 }
-                _ => vec![label_filter(variable, group)],
+            } else if single_row {
+                let [row] = group.rows.as_slice() else {
+                    unreachable!("single_row implies one row");
+                };
+                filters.extend(conjunction_filters(variable, &row.comparisons));
+            } else {
+                let plain: Vec<&ResolvedComparison> = group
+                    .rows
+                    .iter()
+                    .filter(|row| row.chain.is_none())
+                    .flat_map(|row| row.comparisons.iter())
+                    .collect();
+                if !plain.is_empty() {
+                    // Plain rows form their own OR-alternative; chain rows contribute
+                    // only through their probes below.
+                    filters.push(or_filter(variable, &plain));
+                }
+            }
+
+            let semi_applies = if single_row {
+                let [row] = group.rows.as_slice() else {
+                    unreachable!("single_row implies one row");
+                };
+                match &row.chain {
+                    Some(chain) => vec![build_semi_apply(
+                        variable.as_ref(),
+                        chain,
+                        /*source_gate=*/ None,
+                    )],
+                    None => Vec::new(),
+                }
+            } else {
+                // Multi-row: one SemiApply whose sub-plan is the UNION of per-row
+                // probes (OR over rows). Declarative hop metadata stays empty — the
+                // executable union is authoritative when several chains compose.
+                let probes: Vec<Vec<PlanOp>> = group
+                    .rows
+                    .iter()
+                    .filter_map(|row| {
+                        let chain = row.chain.as_ref()?;
+                        let (_, _, ops) =
+                            semi_apply_parts(variable.as_ref(), chain, Some(&row.comparisons));
+                        Some(ops)
+                    })
+                    .collect();
+                if probes.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![PlanOp::SemiApply {
+                        source: variable.clone(),
+                        hops: Vec::new(),
+                        terminal_predicates: Vec::new(),
+                        sub_plan: unioned_probes(probes).expect("probes are non-empty"),
+                    }]
+                }
             };
+
             SiteDecision {
                 hydrate: group_property_names(group),
                 replacement,
                 filters,
                 dst_injections: Vec::new(),
+                semi_applies,
             }
         }
         PlanOp::ExpandFilter {
@@ -423,9 +679,14 @@ fn decide_site(
             // (`IsLabeled(p, Post)`), which the wire's label-resolution collection
             // registers. Inject plain conjuncts per matching group directly there —
             // no separate op, and the label name is guaranteed resolvable because the
-            // planner proved it from the pattern.
+            // planner proved it from the pattern. Groups holding chain rows defer at
+            // expansion sites ([ADR 0082]: probes bind at labeled-scan anchors in R1;
+            // injecting a chain row's bare conjunction alone would over-grant).
             let mut dst_injections = Vec::new();
             for group in &policies.groups {
+                if group.rows.iter().any(|row| row.chain.is_some()) {
+                    continue;
+                }
                 if dst_has_decidable_fact(dst_filter, dst, &group.label_name) {
                     dst_injections.push(label_filter(dst, group));
                 }
@@ -434,10 +695,11 @@ fn decide_site(
                 return none();
             }
             SiteDecision {
-                hydrate: group_property_names_all(policies),
+                hydrate: group_property_names_all_plain(policies),
                 replacement: None,
                 filters: Vec::new(),
                 dst_injections,
+                semi_applies: Vec::new(),
             }
         }
         // Variable-length quantifiers bind group lists; shortest paths bind path
@@ -445,6 +707,43 @@ fn decide_site(
         // scans and edge endpoints expose no decidable label fact to attach to. These
         // defer their policy treatment (module docs, [ADR 0075] §7 lineage).
         _ => none(),
+    }
+}
+
+/// The pre-chain [ADR 0075] §5 lowering of a labeled scan whose rows carry no EXISTS
+/// clause. Extracted verbatim so the property-only contract stays byte-identical.
+fn node_scan_property_only(
+    op: &PlanOp,
+    group: &ResolvedPolicyGroup,
+    is_root: bool,
+    ctx: &LoweringContext<'_>,
+    variable: &str,
+) -> SiteDecision {
+    let seed = if is_root {
+        indexed_equality(ctx, group)
+    } else {
+        None
+    };
+    let replacement = seed.as_ref().map(|(seed_cmp, _)| PlanOp::IndexScan {
+        variable: variable.into(),
+        property: seed_cmp.property_name.clone().into(),
+        value: ScanValue::Literal(seed_cmp.value.clone()),
+        cmp: CmpOp::Eq,
+        property_projection: site_projection(op),
+        ordered_by_sort: None,
+    });
+    let filters = match (seed.as_ref(), group.rows.as_slice()) {
+        (Some((_, residual)), [row]) if row.comparisons.len() > residual.len() => {
+            conjunction_filters(variable, residual)
+        }
+        _ => vec![label_filter(variable, group)],
+    };
+    SiteDecision {
+        hydrate: group_property_names(group),
+        replacement,
+        filters,
+        dst_injections: Vec::new(),
+        semi_applies: Vec::new(),
     }
 }
 
@@ -509,7 +808,10 @@ fn site_projection(op: &PlanOp) -> Option<Rc<[Str]>> {
 
 /// Recurses into the nested sub-plan operands of composite operators. `USE GRAPH`
 /// segments are skipped: another graph's catalogs own its names, and this slice scopes
-/// policies to the root graph.
+/// policies to the root graph. `SemiApply` sub-plans are also skipped: they are
+/// Router-built policy machinery whose internals are already fully lowered, and the
+/// relationship is the gate — label policies on chain-internal vertices must never
+/// re-enter ([ADR 0082] §5 invariant 2).
 fn recurse_nested_subplans(
     op: &mut PlanOp,
     policies: &ResolvedPolicies,
@@ -525,6 +827,7 @@ fn recurse_nested_subplans(
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
             lower_ops_slice(ctx, &mut sub_plan.ops, policies, false)
         }
+        PlanOp::SemiApply { .. } => {}
         _ => {}
     }
 }
@@ -551,12 +854,25 @@ fn group_property_names(group: &ResolvedPolicyGroup) -> Vec<String> {
         .collect()
 }
 
-fn group_property_names_all(policies: &ResolvedPolicies) -> Vec<String> {
+/// Hydration names for property-only groups only ([ADR 0082]: chain rows hydrate
+/// inside their probes and never at expansion sites).
+fn group_property_names_all_plain(policies: &ResolvedPolicies) -> Vec<String> {
     policies
         .groups
         .iter()
+        .filter(|group| !group.rows.iter().any(|row| row.chain.is_some()))
         .flat_map(group_property_names)
         .collect()
+}
+
+/// OR over a flat list of comparisons on one variable — the plain-row alternative of a
+/// mixed group ([ADR 0074] alternatives semantics).
+fn or_filter(variable: &str, comparisons: &[&ResolvedComparison]) -> Expr {
+    comparisons
+        .iter()
+        .map(|comparison| comparison_expr(variable, comparison))
+        .reduce(|left, right| Expr::new(ExprKind::Or(Box::new(left), Box::new(right))))
+        .expect("plain alternative holds at least one comparison")
 }
 
 /// Equality comparisons whose property has an active vertex physical index — the seed
@@ -586,6 +902,217 @@ fn indexed_equality(
     let mut residual = row.comparisons.clone();
     let seed = residual.remove(seed_at);
     Some((seed, residual))
+}
+
+/// Whether the terminal equality of a reverse-seed candidate is backed by an active
+/// physical vertex index on the terminal label ([ADR 0082] §7 precondition).
+fn reverse_seed_indexed(
+    ctx: &LoweringContext<'_>,
+    last_hop: &ResolvedHop,
+    terminal_cmp: &ResolvedComparison,
+) -> bool {
+    use crate::facade::stable::indexed_catalog::active_vertex_physical_index;
+    let Ok(label_u16) = u16::try_from(last_hop.dst_label_id) else {
+        return false;
+    };
+    active_vertex_physical_index(
+        ctx.graph,
+        Some(VertexLabelId::from_raw(label_u16)),
+        PropertyId::from_raw(terminal_cmp.property_id),
+    )
+    .is_ok()
+}
+
+/// Builds the destination-driven probe ([ADR 0082] §7): the index resolves the
+/// caller's terminal vertices first, then reverse-expands each hop (flipped
+/// direction over the same edge label) to derive candidate source vertices.
+fn reverse_probe_ops(source: &str, source_label: &str, chain: &ResolvedChain) -> Vec<PlanOp> {
+    use gleaph_gql_planner::plan::ProjectColumn;
+
+    let last_hop = chain.hops.last().expect("chains hold at least one hop");
+    let mut ops = vec![PlanOp::IndexScan {
+        variable: Str::from(last_hop.dst_variable.as_str()),
+        property: chain.terminal[0].property_name.clone().into(),
+        value: ScanValue::Literal(chain.terminal[0].value.clone()),
+        cmp: CmpOp::Eq,
+        property_projection: None,
+        ordered_by_sort: None,
+    }];
+    let mut current = last_hop.dst_variable.as_str().to_owned();
+    for (index, hop) in chain.hops.iter().enumerate().rev() {
+        let (target_var, target_label) = if index == 0 {
+            (source.to_owned(), source_label.to_owned())
+        } else {
+            let previous = &chain.hops[index - 1];
+            (
+                previous.dst_variable.clone(),
+                previous.dst_label_name.clone(),
+            )
+        };
+        // Reverse expansion: an outgoing original hop is probed through incoming edges
+        // and vice versa; undirected hops stay undirected ([ADR 0026] reverse adjacency).
+        ops.push(PlanOp::ExpandFilter {
+            src: Str::from(current.as_str()),
+            edge: Str::from(format!("__chain_r{}", index + 1)),
+            dst: Str::from(target_var.as_str()),
+            direction: match hop.direction {
+                PredicateHopDirection::Outgoing => EdgeDirection::PointingLeft,
+                PredicateHopDirection::Incoming => EdgeDirection::PointingRight,
+                PredicateHopDirection::Both => EdgeDirection::Undirected,
+            },
+            label: Some(EdgeLabelRef::from(hop.edge_label_name.as_str())),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            dst_filter: vec![is_labeled_expr(&target_var, &target_label)],
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        });
+        current = target_var;
+    }
+    ops.push(PlanOp::Materialize {
+        columns: vec![ProjectColumn {
+            expr: Expr::new(ExprKind::Variable(current)),
+            alias: Some(Str::from(source)),
+        }],
+        distinct: true,
+    });
+    ops
+}
+
+/// Builds the correlated semi-join op for one chain-bearing row ([ADR 0082] §6): the
+/// declarative chain plus its executable probe, bounded at one proof row.
+fn build_semi_apply(
+    source: &str,
+    chain: &ResolvedChain,
+    source_gate: Option<&[ResolvedComparison]>,
+) -> PlanOp {
+    let (hops, terminal_predicates, sub_plan) = semi_apply_parts(source, chain, source_gate);
+    PlanOp::SemiApply {
+        source: Str::from(source),
+        hops,
+        terminal_predicates,
+        sub_plan,
+    }
+}
+
+/// Assembles one row's existential probe: an optional source-conjunct gate, the hop
+/// expansions with label facts and terminal filters, and a trailing one-row bound so
+/// each probe stops at the first match (the executor keeps the input row iff the
+/// sub-plan yields ≥ 1 row). Returns the hop metadata, terminal expressions, and the
+/// executable ops.
+fn semi_apply_parts(
+    source: &str,
+    chain: &ResolvedChain,
+    source_gate: Option<&[ResolvedComparison]>,
+) -> (Vec<SemiHop>, Vec<Expr>, Vec<PlanOp>) {
+    let mut sub_plan = Vec::new();
+    if let Some(gate) = source_gate {
+        sub_plan.push(PlanOp::PropertyFilter {
+            predicates: conjunction_filters(source, gate),
+            stage: 0,
+        });
+    }
+    let hops_count = chain.hops.len();
+    let mut hops_meta = Vec::with_capacity(hops_count);
+    let mut current = source.to_owned();
+    for (index, hop) in chain.hops.iter().enumerate() {
+        let is_terminal = index + 1 == hops_count;
+        let mut dst_filter = vec![is_labeled_expr(&hop.dst_variable, &hop.dst_label_name)];
+        if is_terminal {
+            dst_filter.extend(
+                chain
+                    .terminal
+                    .iter()
+                    .map(|comparison| comparison_expr(&hop.dst_variable, comparison)),
+            );
+        }
+        sub_plan.push(PlanOp::ExpandFilter {
+            src: Str::from(current.as_str()),
+            edge: Str::from(format!("__chain_e{}", index + 1)),
+            dst: Str::from(hop.dst_variable.as_str()),
+            direction: match hop.direction {
+                PredicateHopDirection::Outgoing => EdgeDirection::PointingRight,
+                PredicateHopDirection::Incoming => EdgeDirection::PointingLeft,
+                PredicateHopDirection::Both => EdgeDirection::Undirected,
+            },
+            label: Some(EdgeLabelRef::from(hop.edge_label_name.as_str())),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            dst_filter,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        });
+        hops_meta.push(SemiHop {
+            edge_label: EdgeLabelRef::from(hop.edge_label_name.as_str()),
+            direction: match hop.direction {
+                PredicateHopDirection::Outgoing => EdgeDirection::PointingRight,
+                PredicateHopDirection::Incoming => EdgeDirection::PointingLeft,
+                PredicateHopDirection::Both => EdgeDirection::Undirected,
+            },
+            dst_variable: Str::from(hop.dst_variable.as_str()),
+            dst_label: NodeLabelRef::from(hop.dst_label_name.as_str()),
+        });
+        current = hop.dst_variable.clone();
+    }
+    let terminal_variable = chain
+        .hops
+        .last()
+        .map(|hop| hop.dst_variable.as_str())
+        .unwrap_or(source);
+    let terminal_predicates: Vec<Expr> = chain
+        .terminal
+        .iter()
+        .map(|comparison| comparison_expr(terminal_variable, comparison))
+        .collect();
+    // Bound the existential proof at one row ([ADR 0082] §5 first-match semantics).
+    sub_plan.push(PlanOp::Limit {
+        count: Some(Expr::int(1)),
+        offset: None,
+    });
+    (hops_meta, terminal_predicates, sub_plan)
+}
+
+/// Combines per-row probes into one unioned sub-plan (OR over rows). A single probe
+/// needs no set operation; k probes nest `UNION ALL` right plans.
+fn unioned_probes(mut probes: Vec<Vec<PlanOp>>) -> Option<Vec<PlanOp>> {
+    let mut acc = probes.pop()?;
+    while let Some(prefix) = probes.pop() {
+        let mut combined = prefix;
+        combined.push(PlanOp::SetOperation {
+            op: gleaph_gql::ast::SetOp::UnionAll,
+            right: Box::new(PhysicalPlan::from_ops(acc)),
+        });
+        acc = combined;
+    }
+    Some(acc)
+}
+
+/// One positive `IsLabeled(var, label)` fact — the planner-provable destination label
+/// constraint inside a lowered probe.
+fn is_labeled_expr(variable: &str, label: &str) -> Expr {
+    Expr::new(ExprKind::IsLabeled {
+        expr: Box::new(Expr::new(ExprKind::Variable(variable.to_owned()))),
+        label: LabelExpr::Name(label.into()),
+        negated: false,
+    })
 }
 
 /// One label's complete policy predicate over a bound variable: the union (OR) of every
@@ -928,6 +1455,7 @@ mod tests {
             label_name: "Post".to_owned(),
             rows: vec![ResolvedConjunction {
                 subject_tag: 0,
+                chain: None,
                 comparisons: vec![ResolvedComparison {
                     property_id: 30,
                     property_name: "visibility".to_owned(),
@@ -994,6 +1522,7 @@ mod tests {
                 label_name: "Post".to_owned(),
                 rows: vec![ResolvedConjunction {
                     subject_tag: 0,
+                    chain: None,
                     comparisons: vec![ResolvedComparison {
                         property_id: 30,
                         property_name: "visibility".to_owned(),
@@ -1063,6 +1592,346 @@ mod tests {
             resolved.is_empty(),
             "replacing the conditional row leaves no policy"
         );
+        clear_grants(graph);
+    }
+
+    // ──── ADR 0082 §6 chain lowering matrix ────
+
+    use gleaph_auth::{PredicateChain, PredicateChainHop};
+
+    /// Fixture with the direct-grant vocabulary: Post/Acct vertex labels, the DIRECTED
+    /// `GRANTED_TO` edge label, and `[visibility, owner, principal_id]` properties.
+    fn chain_fixture() -> (GraphId, u32, u32, u32, Vec<u32>) {
+        let admin = principal(u8::MAX);
+        crate::facade::auth::grant_admins(&[admin]);
+        let store = RouterStore::new();
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    canister_id: Principal::management_canister(),
+                    owner: principal(9),
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+                "chain-unit",
+            )
+            .expect("fixture graph");
+        let graph =
+            crate::facade::stable::graph_catalog::lookup_graph_id("chain-unit").expect("graph");
+        let post = store
+            .admin_intern_vertex_label(admin, "chain-unit", "Post")
+            .expect("intern Post");
+        let acct = store
+            .admin_intern_vertex_label(admin, "chain-unit", "Acct")
+            .expect("intern Acct");
+        let edge = store
+            .admin_intern_edge_label(admin, "chain-unit", "GRANTED_TO")
+            .expect("intern GRANTED_TO");
+        let props = store
+            .admin_intern_properties(
+                admin,
+                "chain-unit",
+                &[
+                    "visibility".to_owned(),
+                    "owner".to_owned(),
+                    "principal_id".to_owned(),
+                ],
+            )
+            .expect("intern properties");
+        (
+            graph,
+            u32::from(post.raw()),
+            u32::from(acct.raw()),
+            u32::from(edge.raw()),
+            props.iter().map(|p| p.raw()).collect(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn grant_chain_row(
+        subject: GrantSubject,
+        graph: u32,
+        label_id: u32,
+        conjuncts: Vec<PredicateComparison>,
+        chain: Option<PredicateChain>,
+    ) {
+        let predicate = Rc::new(CompiledPredicate {
+            label: label_id,
+            conjuncts,
+            chain,
+        });
+        crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
+            grants
+                .grant(
+                    subject,
+                    &Privilege::Graph(gleaph_auth::GraphPrivilege {
+                        graph,
+                        operation: gleaph_auth::GraphOperation::Read,
+                        resource: gleaph_auth::GraphResource::VertexLabel(1),
+                    }),
+                    None,
+                    Some(predicate),
+                )
+                .expect("non-anonymous grant fixture");
+        });
+    }
+
+    fn caller_equality(property: u32) -> PredicateComparison {
+        comparison(property, PredicateOp::Eq, PredicateValue::MsgCaller)
+    }
+
+    fn direct_grant_chain(acct: u32, edge: u32, terminal_property: u32) -> PredicateChain {
+        PredicateChain {
+            hops: vec![PredicateChainHop {
+                edge_label: edge,
+                direction: gleaph_auth::PredicateHopDirection::Outgoing,
+                dest_label: acct,
+            }],
+            terminal_conjuncts: vec![caller_equality(terminal_property)],
+        }
+    }
+
+    fn post_scan() -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
+            variable: "p".into(),
+            label: Some(NodeLabelRef::from("Post")),
+            property_projection: None,
+        }])
+    }
+
+    #[test]
+    fn pure_exists_row_lowers_to_one_bounded_semi_apply_probe() {
+        let (graph, post, acct, edge, props) = chain_fixture();
+        grant_chain_row(
+            GrantSubject::Public,
+            graph.raw(),
+            post,
+            vec![],
+            Some(direct_grant_chain(acct, edge, props[2])),
+        );
+
+        let resolved =
+            effective_policies(&RouterStore::new(), &principal(1), graph).expect("resolves");
+        let store = RouterStore::new();
+        let ctx = LoweringContext::new(&store, graph);
+        let mut plan = post_scan();
+        lower_into_plan(&ctx, &mut plan, &resolved);
+
+        assert_eq!(plan.ops.len(), 2, "scan + semi-apply, no outer filter");
+        let PlanOp::SemiApply {
+            source,
+            hops,
+            terminal_predicates,
+            sub_plan,
+        } = &plan.ops[1]
+        else {
+            panic!("expected SemiApply after the scan, got {:?}", plan.ops[1]);
+        };
+        assert_eq!(source.as_ref(), "p");
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].edge_label.as_ref(), "GRANTED_TO");
+        assert_eq!(hops[0].dst_label.as_ref(), "Acct");
+        assert_eq!(terminal_predicates.len(), 1);
+        // Probe: expansion with label fact + terminal equality, bounded at one row.
+        assert_eq!(sub_plan.len(), 2);
+        let PlanOp::ExpandFilter { dst_filter, .. } = &sub_plan[0] else {
+            panic!("expected ExpandFilter probe, got {:?}", sub_plan[0]);
+        };
+        assert_eq!(dst_filter.len(), 2, "IsLabeled fact + terminal equality");
+        assert!(
+            matches!(&sub_plan[1], PlanOp::Limit { .. }),
+            "first-match bound: {:?}",
+            sub_plan[1]
+        );
+        clear_grants(graph);
+    }
+
+    #[test]
+    fn plain_and_chain_rows_compose_without_over_granting() {
+        // PUBLIC narrows to public posts; the member additionally holds own posts whose
+        // granted account matches. The plain OR must not leak past the member's probe.
+        let (graph, post, acct, edge, props) = chain_fixture();
+        grant_chain_row(
+            GrantSubject::Public,
+            graph.raw(),
+            post,
+            vec![comparison(
+                props[0],
+                PredicateOp::Eq,
+                PredicateValue::Literal(PredicateLiteral::String("public".into())),
+            )],
+            None,
+        );
+        grant_chain_row(
+            GrantSubject::Principal(principal(1)),
+            graph.raw(),
+            post,
+            vec![caller_equality(props[1])],
+            Some(direct_grant_chain(acct, edge, props[2])),
+        );
+
+        let resolved =
+            effective_policies(&RouterStore::new(), &principal(1), graph).expect("resolves");
+        let store = RouterStore::new();
+        let ctx = LoweringContext::new(&store, graph);
+        let mut plan = post_scan();
+        lower_into_plan(&ctx, &mut plan, &resolved);
+
+        assert_eq!(plan.ops.len(), 3);
+        // Outer filter: the PLAIN row's conjunction only.
+        let PlanOp::PropertyFilter { predicates, .. } = &plan.ops[1] else {
+            panic!("expected plain filter, got {:?}", plan.ops[1]);
+        };
+        assert!(
+            format!("{:?}", predicates[0]).contains("visibility"),
+            "outer filter must cover only plain rows"
+        );
+        // Probe: gated by the chain row's own source conjunct inside the sub-plan.
+        let PlanOp::SemiApply { sub_plan, .. } = &plan.ops[2] else {
+            panic!("expected SemiApply, got {:?}", plan.ops[2]);
+        };
+        assert_eq!(sub_plan.len(), 4);
+        assert!(
+            matches!(&sub_plan[0], PlanOp::PropertyFilter { .. }),
+            "source gate rides inside the probe"
+        );
+        clear_grants(graph);
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_rows_that_differ_only_in_chain_bytes() {
+        let (graph, post, acct, edge, props) = chain_fixture();
+        let subject = GrantSubject::Public;
+        let with_chain = CompiledPredicate {
+            label: post,
+            conjuncts: Vec::new(),
+            chain: Some(direct_grant_chain(acct, edge, props[2])),
+        };
+        let other_dest = CompiledPredicate {
+            label: post,
+            conjuncts: Vec::new(),
+            chain: Some(direct_grant_chain(acct + 100, edge, props[2])),
+        };
+        let encode = |predicate: &CompiledPredicate| {
+            let mut out = Vec::new();
+            encode_fingerprint_row(&mut out, &subject, predicate);
+            out.extend_from_slice(principal(1).as_slice());
+            out
+        };
+        assert_ne!(
+            encode(&with_chain),
+            encode(&other_dest),
+            "chains differing in destination labels never share a cache entry"
+        );
+
+        // A chain-less row with identical source bytes also differs once a chain exists.
+        let chainless = CompiledPredicate {
+            label: post,
+            conjuncts: vec![],
+            chain: None,
+        };
+        assert_ne!(encode(&with_chain), encode(&chainless));
+        clear_grants(graph);
+    }
+
+    #[test]
+    fn reverse_seeding_drives_from_the_destination_side_under_preconditions() {
+        let (graph, post, acct, edge, props) = chain_fixture();
+        grant_chain_row(
+            GrantSubject::Public,
+            graph.raw(),
+            post,
+            vec![],
+            Some(direct_grant_chain(acct, edge, props[2])),
+        );
+        // Precondition: an active physical index on the terminal property.
+        crate::facade::stable::indexed_catalog::create_named_index(
+            graph,
+            gleaph_graph_kernel::entry::IndexNameId::from_raw(1),
+            crate::planner_stats::IndexCatalogEntry {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                vertex_label: Some("Acct".into()),
+                edge_label: None,
+                property: "principal_id".into(),
+                edge_direction: None,
+            },
+            PropertyId::from_raw(props[2]),
+            u16::try_from(acct).expect("label fits"),
+            None,
+            false,
+        )
+        .expect("activate terminal index");
+
+        let resolved =
+            effective_policies(&RouterStore::new(), &principal(1), graph).expect("resolves");
+        let store = RouterStore::new();
+        let ctx = LoweringContext::new(&store, graph);
+        let mut plan = post_scan();
+        lower_into_plan(&ctx, &mut plan, &resolved);
+
+        // The anchor scan is preserved as the join's left input; the right side drives
+        // from the terminal index and reverse-expands to candidate sources.
+        assert_eq!(plan.ops.len(), 1);
+        let PlanOp::HashJoin {
+            left,
+            right,
+            join_keys,
+        } = &plan.ops[0]
+        else {
+            panic!("expected reverse-seeded HashJoin, got {:?}", plan.ops[0]);
+        };
+        assert_eq!(join_keys.len(), 1);
+        assert_eq!(join_keys[0].as_ref(), "p");
+        assert!(matches!(left[0], PlanOp::NodeScan { .. }));
+        assert!(
+            matches!(&right[0], PlanOp::IndexScan { property, value: ScanValue::Literal(_), cmp: CmpOp::Eq, .. } if property.as_ref() == "principal_id"),
+            "terminal equality seeds the index: {:?}",
+            right[0]
+        );
+        // One reversed expansion back to the source variable, then distinct sources.
+        let expansions = right
+            .iter()
+            .filter(|op| matches!(op, PlanOp::ExpandFilter { .. }))
+            .count();
+        assert_eq!(expansions, 1);
+        let last = right.last().expect("materialize tail");
+        let PlanOp::Materialize { distinct, .. } = last else {
+            panic!("expected distinct materialize tail, got {last:?}");
+        };
+        assert!(
+            *distinct,
+            "multi-match sources must not duplicate join rows"
+        );
+        clear_grants(graph);
+    }
+
+    #[test]
+    fn reverse_seeding_falls_back_to_forward_probes_without_an_index() {
+        let (graph, post, acct, edge, props) = chain_fixture();
+        grant_chain_row(
+            GrantSubject::Public,
+            graph.raw(),
+            post,
+            vec![],
+            Some(direct_grant_chain(acct, edge, props[2])),
+        );
+        // No index on the terminal property: forward residual filtering.
+
+        let resolved =
+            effective_policies(&RouterStore::new(), &principal(1), graph).expect("resolves");
+        let store = RouterStore::new();
+        let ctx = LoweringContext::new(&store, graph);
+        let mut plan = post_scan();
+        lower_into_plan(&ctx, &mut plan, &resolved);
+
+        assert_eq!(plan.ops.len(), 2);
+        assert!(matches!(&plan.ops[1], PlanOp::SemiApply { .. }));
         clear_grants(graph);
     }
 }
