@@ -1151,7 +1151,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     }
 
     fn scrub_control(&self, snapshot: ScrubSnapshot) -> ControlRegion {
-        let level = (u64::BITS - 1 - snapshot.physical_buckets.leading_zeros()) as u8;
+        let (level, split_cursor) = control::derive_geometry(snapshot.physical_buckets);
         ControlRegion {
             len: snapshot.len,
             physical_buckets: snapshot.physical_buckets,
@@ -1160,7 +1160,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             split_debt: snapshot.split_debt,
             overflow_entries: snapshot.overflow_entries,
             level,
-            split_cursor: snapshot.physical_buckets - (1u64 << level),
+            split_cursor,
             hash_seed: snapshot.hash_seed,
         }
     }

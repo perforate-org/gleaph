@@ -38,13 +38,27 @@ pub(crate) fn read_for_open<M: Memory>(
     Ok(decode(&bytes, hash_seed))
 }
 
+/// Single source of truth for `(level, split_cursor)` derived from
+/// `physical_buckets`: every reader of persisted control bytes must route
+/// through this helper so routing geometry cannot drift between call sites.
+///
+/// `physical_buckets == 0` is unreachable behind any handle opened through
+/// open-time control validation; it degrades to the empty geometry `(0, 0)`
+/// instead of trapping or wrapping.
+pub(crate) fn derive_geometry(physical_buckets: u64) -> (u8, u64) {
+    if physical_buckets == 0 {
+        return (0, 0);
+    }
+    // `physical_buckets >= 1` puts `level` in `0..=63`, so the shift cannot
+    // trap, and `1 << level <= physical_buckets`, so the subtraction cannot
+    // underflow.
+    let level = (u64::BITS - 1 - physical_buckets.leading_zeros()) as u8;
+    (level, physical_buckets - (1u64 << level))
+}
+
 fn decode(bytes: &[u8; CONTROL_BYTES as usize], hash_seed: u64) -> ControlRegion {
     let physical_buckets = u64_at(bytes, PHYSICAL_BUCKETS_OFFSET);
-    let level = if physical_buckets == 0 {
-        0
-    } else {
-        (u64::BITS - 1 - physical_buckets.leading_zeros()) as u8
-    };
+    let (level, split_cursor) = derive_geometry(physical_buckets);
     ControlRegion {
         len: u64_at(bytes, LEN_OFFSET),
         physical_buckets,
@@ -53,8 +67,7 @@ fn decode(bytes: &[u8; CONTROL_BYTES as usize], hash_seed: u64) -> ControlRegion
         split_debt: u64_at(bytes, SPLIT_DEBT_OFFSET),
         overflow_entries: u64_at(bytes, OVERFLOW_ENTRIES_OFFSET),
         level,
-        split_cursor: physical_buckets
-            .saturating_sub(1u64.checked_shl(u32::from(level)).unwrap_or(0)),
+        split_cursor,
         hash_seed,
     }
 }
@@ -89,11 +102,13 @@ pub(crate) fn read_hot_with_epoch<M: Memory>(
     memory.read(offset + PHYSICAL_BUCKETS_OFFSET, &mut bytes);
     let physical_buckets = u64::from_le_bytes(bytes[..8].try_into().expect("fixed control field"));
     let epoch = u64::from_le_bytes(bytes[8..].try_into().expect("fixed control field"));
-    let level = (u64::BITS - 1 - physical_buckets.leading_zeros()) as u8;
+    // Open-time control validation makes `physical_buckets == 0` unreachable
+    // here; `derive_geometry` still fails closed on it instead of trapping.
+    let (level, split_cursor) = derive_geometry(physical_buckets);
     (
         HotControl {
             level,
-            split_cursor: physical_buckets - (1u64 << level),
+            split_cursor,
             hash_seed,
         },
         epoch,
@@ -136,4 +151,25 @@ pub(crate) fn publish_split<M: Memory>(
     suffix[..8].copy_from_slice(&split_debt.to_le_bytes());
     suffix[8..].copy_from_slice(&overflow_entries.to_le_bytes());
     memory.write(offset + SPLIT_DEBT_OFFSET, &suffix);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_geometry_yields_level_and_residual_cursor() {
+        assert_eq!(derive_geometry(0), (0, 0));
+        for buckets in 1u64..=4096 {
+            let (level, split_cursor) = derive_geometry(buckets);
+            assert_eq!(
+                u64::from(level),
+                63 - u64::from(buckets.leading_zeros()),
+                "pb {buckets}"
+            );
+            assert_eq!(split_cursor, buckets - (1u64 << level), "pb {buckets}");
+            assert!(split_cursor < (1u64 << level), "pb {buckets}");
+        }
+        assert_eq!(derive_geometry(u64::MAX), (63, (1u64 << 63) - 1));
+    }
 }
