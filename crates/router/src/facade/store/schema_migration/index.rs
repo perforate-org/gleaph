@@ -977,6 +977,12 @@ fn canonical_export_target(
             property_id: *property_id,
             direction: *direction,
         }),
+        // Text builds never flow through the property-posting migration driver; the driver's
+        // text lane dispatches them to the text canister backfill endpoints instead
+        // (ADR 0059 §Text build kind). Fail closed before any remote effect.
+        IndexBuildTarget::Text { .. } => Err(RouterError::NotImplemented(
+            "text index backfill does not flow through the property migration export path".into(),
+        )),
     }
 }
 
@@ -1602,6 +1608,17 @@ mod tests {
                 record_source: None,
             }
         );
+    }
+
+    #[test]
+    fn text_export_targets_are_rejected_before_any_effect() {
+        let error = canonical_export_target(&IndexBuildTarget::Text {
+            label_id: 3,
+            property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(9),
+            analyzer_id: 1,
+        })
+        .expect_err("text builds do not flow through the property export path");
+        assert!(matches!(error, RouterError::NotImplemented(_)));
     }
 
     #[test]

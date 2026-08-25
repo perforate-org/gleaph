@@ -91,6 +91,17 @@ fn canonical_target(target: &IndexBuildTarget) -> CanonicalExportTarget {
             property_id: *property_id,
             direction: *direction,
         },
+        // Pure projection only. Text registrations are rejected before any page flows:
+        // subject checks reject their DML, and Graph scope validation rejects a Text target
+        // so `export_page` can never run for one (ADR 0059 §Text build kind).
+        IndexBuildTarget::Text {
+            label_id,
+            property_id,
+            ..
+        } => CanonicalExportTarget::Text {
+            label_id: *label_id,
+            property_id: *property_id,
+        },
     }
 }
 
@@ -298,6 +309,9 @@ impl IndexStore {
                 property_id,
                 ..
             } => *label_id == 0 || property_id.raw() == 0,
+            // Text builds are analyzed and ingested by the text canister, never by the
+            // posting store; admission rejects them here (ADR 0059 §Text build kind).
+            IndexBuildTarget::Text { .. } => true,
         };
         if request.graph_id.is_reserved() || request.index_name_id.is_reserved() || invalid_target {
             return Err(IndexError::InvalidIndexBuildScope);
@@ -767,6 +781,7 @@ impl IndexStore {
 #[cfg(test)]
 mod tests {
     use candid::Principal;
+    use gleaph_graph_kernel::canonical_export::CanonicalExportTarget;
     use gleaph_graph_kernel::canonical_export::CanonicalIndexableFact;
     use gleaph_graph_kernel::canonical_export::CanonicalRecordSource;
     use gleaph_graph_kernel::entry::{
@@ -1645,6 +1660,68 @@ mod tests {
             Err(IndexError::UnknownIndexBuild)
         );
         assert!(INDEX_BUILD_STATES.with_borrow(|states| states.get(&edge_physical).is_none()));
+    }
+
+    #[test]
+    fn register_rejects_text_targets_and_the_export_projection_keeps_label_and_property() {
+        let (store, router, _, _) = setup();
+        let text_physical = physical(1_025);
+        let mut text = vertex_registration(text_physical, vec![0]);
+        text.target = IndexBuildTarget::Text {
+            label_id: VERTEX_LABEL_ID,
+            property_id: PROPERTY_ID,
+            analyzer_id: 1,
+        };
+        assert_eq!(
+            store.register_index_build(router, &text),
+            Err(IndexError::InvalidIndexBuildScope)
+        );
+        assert_eq!(
+            store.index_build_status(router, text_physical),
+            Err(IndexError::UnknownIndexBuild)
+        );
+        assert!(INDEX_BUILD_STATES.with_borrow(|states| states.get(&text_physical).is_none()));
+
+        // Pure projection: the export scope echoes the label and property without the
+        // analyzer id (ADR 0059 §Text build kind).
+        assert_eq!(
+            canonical_target(&text.target),
+            CanonicalExportTarget::Text {
+                label_id: VERTEX_LABEL_ID,
+                property_id: PROPERTY_ID,
+            }
+        );
+    }
+
+    #[test]
+    fn text_targets_fail_closed_against_every_subject_kind() {
+        let target = IndexBuildTarget::Text {
+            label_id: VERTEX_LABEL_ID,
+            property_id: PROPERTY_ID,
+            analyzer_id: 1,
+        };
+        assert_eq!(
+            ensure_subject_matches_target(
+                &target,
+                IndexBuildSubject::Vertex {
+                    shard_id: 0,
+                    vertex_id: 1,
+                }
+            ),
+            Err(IndexError::InvalidIndexBuildTarget)
+        );
+        assert_eq!(
+            ensure_subject_matches_target(
+                &target,
+                IndexBuildSubject::Edge {
+                    shard_id: 0,
+                    owner_vertex_id: 1,
+                    label_id: VERTEX_LABEL_ID,
+                    slot_index: 0,
+                }
+            ),
+            Err(IndexError::InvalidIndexBuildTarget)
+        );
     }
 
     #[test]

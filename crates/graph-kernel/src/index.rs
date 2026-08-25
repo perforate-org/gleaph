@@ -309,13 +309,26 @@ pub enum IndexBuildTarget {
         property_id: crate::entry::PropertyId,
         direction: EdgeIndexDirection,
     },
+    /// Raw-text backfill target for `CREATE TEXT INDEX` (ADR 0059 §Text build kind). Graph
+    /// exports raw vertex text values; the text canister analyzes and ingests them. Never a
+    /// posting build: graph-index rejects this target, and the Router driver dispatches text
+    /// builds to the text canister's backfill endpoints.
+    Text {
+        label_id: u16,
+        property_id: crate::entry::PropertyId,
+        /// Creation-fixed analyzer pipeline id pinned by the Router TEXT definition catalog
+        /// (v0 production analyzer = 1, ADR 0077).
+        analyzer_id: u32,
+    },
 }
 
 impl IndexBuildTarget {
     #[inline]
     pub const fn property_id(&self) -> crate::entry::PropertyId {
         match self {
-            Self::Vertex { property_id, .. } | Self::Edge { property_id, .. } => *property_id,
+            Self::Vertex { property_id, .. }
+            | Self::Edge { property_id, .. }
+            | Self::Text { property_id, .. } => *property_id,
         }
     }
 }
@@ -1207,6 +1220,21 @@ mod tests {
             Decode!(&encoded, TypedShardVector).expect("decode typed shard vector"),
             request
         );
+    }
+
+    #[test]
+    fn text_build_target_candid_roundtrip_and_property_accessor() {
+        let target = IndexBuildTarget::Text {
+            label_id: 4,
+            property_id: crate::entry::PropertyId::from_raw(9),
+            analyzer_id: 1,
+        };
+        let encoded = Encode!(&target).expect("encode text build target");
+        assert_eq!(
+            Decode!(&encoded, IndexBuildTarget).expect("decode text build target"),
+            target
+        );
+        assert_eq!(target.property_id(), crate::entry::PropertyId::from_raw(9));
     }
 
     #[test]
