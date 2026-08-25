@@ -21,14 +21,16 @@
 use candid::Principal;
 use gleaph_auth::{
     AdminCaps, CompiledPredicate, Direction, GrantSubject, GraphOperation, GraphPrivilege,
-    GraphResource, MAX_PREDICATE_CONJUNCTS, MetadataScope, PredicateComparison, PredicateLiteral,
-    PredicateOp, PredicateValue, Privilege,
+    GraphResource, MAX_PREDICATE_CONJUNCTS, MetadataScope, PredicateChain, PredicateChainHop,
+    PredicateComparison, PredicateHopDirection, PredicateLiteral, PredicateOp, PredicateValue,
+    Privilege,
 };
 use gleaph_gql::ast::{
-    CompositeQueryExpr, GrantCondition, GrantConditionSelector, GrantDirection, GrantMetadataScope,
-    GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget,
-    GrantValueExpr, LinearQueryStatement, ProcedureBindingInitializer, RevokeStatement,
-    SimpleQueryStatement, Statement, StatementBlock, ValueType,
+    CompositeQueryExpr, GrantChain, GrantChainDirection, GrantComparison, GrantCondition,
+    GrantConditionSelector, GrantDirection, GrantMetadataScope, GrantPrivilege,
+    GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget, GrantValueExpr,
+    LinearQueryStatement, ProcedureBindingInitializer, RevokeStatement, SimpleQueryStatement,
+    Statement, StatementBlock, ValueType,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 use std::rc::Rc;
@@ -515,7 +517,7 @@ fn compile_condition(
 ) -> Result<Rc<CompiledPredicate>, RouterError> {
     // Phase-2a lowering binds conditions to vertex scans; edge-form selectors are a
     // recognized-but-deferred surface with their own distinct error.
-    let GrantConditionSelector::Vertex { variable: _, label } = &condition.selector else {
+    let GrantConditionSelector::Vertex { variable, label } = &condition.selector else {
         return Err(RouterError::InvalidArgument(
             "conditional policies bind vertex labels in this phase; \
              FOR ()-[e:Label]-() selectors are not supported yet"
@@ -569,14 +571,40 @@ fn compile_condition(
             .unwrap_or_default();
 
     let conjunct_count = condition.predicate.conjuncts.len();
-    if conjunct_count == 0 || conjunct_count > MAX_PREDICATE_CONJUNCTS {
+    if conjunct_count > MAX_PREDICATE_CONJUNCTS
+        || (conjunct_count == 0 && condition.chain.is_none())
+    {
         return Err(RouterError::InvalidArgument(format!(
-            "conditional policy conjunction must hold 1..={MAX_PREDICATE_CONJUNCTS} comparisons"
+            "conditional policy conjunction must hold 1..={MAX_PREDICATE_CONJUNCTS} comparisons \
+             (a pure-EXISTS condition carries the chain instead)"
         )));
     }
 
-    let mut conjuncts = Vec::with_capacity(conjunct_count);
-    for comparison in &condition.predicate.conjuncts {
+    let conjuncts =
+        resolve_policy_comparisons(store, graph_id, &condition.predicate.conjuncts, &declared)?;
+    let chain = match &condition.chain {
+        None => None,
+        Some(chain) => Some(compile_chain(store, graph_id, chain.as_ref(), variable)?),
+    };
+    Ok(Rc::new(CompiledPredicate {
+        label: *label_raw,
+        conjuncts,
+        chain,
+    }))
+}
+
+/// Resolves one AND-group of parsed comparisons against the catalogs: property ids
+/// resolve, literal kinds stay compatible with declared scalar types (open world when
+/// undeclared), and `MSG_CALLER()` is stored unresolved ([ADR 0075] §2). Shared by the
+/// source group and each chain's terminal group.
+fn resolve_policy_comparisons(
+    store: &RouterStore,
+    graph_id: GraphId,
+    comparisons: &[GrantComparison],
+    declared: &std::collections::BTreeMap<String, ValueType>,
+) -> Result<Vec<PredicateComparison>, RouterError> {
+    let mut out = Vec::with_capacity(comparisons.len());
+    for comparison in comparisons {
         let property_id = store
             .lookup_property_id(graph_id, &comparison.property)?
             .raw();
@@ -597,19 +625,114 @@ fn compile_condition(
                 value
             }
         };
-        conjuncts.push(PredicateComparison {
+        out.push(PredicateComparison {
             property: property_id,
             op: predicate_op(comparison.op),
             value,
         });
     }
-    Ok(Rc::new(CompiledPredicate {
-        label: *label_raw,
-        conjuncts,
-        // The bounded EXISTS chain compiles in the ReBAC slice; property-only
-        // conditions carry no chain.
-        chain: None,
-    }))
+    Ok(out)
+}
+
+/// Compiles one parsed bounded EXISTS chain ([ADR 0082] §3): every hop resolves its
+/// edge/destination labels against the graph catalogs, direction spellings follow the
+/// ADR 0074 §2 directedness rules (directional spellings over UNDIRECTED or undeclared
+/// labels fail closed), and terminal conjuncts reuse the comparison resolution against
+/// the terminal label's declared types. Failures happen strictly before any write.
+fn compile_chain(
+    store: &RouterStore,
+    graph_id: GraphId,
+    chain: &GrantChain,
+    selector_variable: &str,
+) -> Result<PredicateChain, RouterError> {
+    use gleaph_gql::type_check::PropertySchema as _;
+
+    if chain.source_variable != selector_variable {
+        return Err(RouterError::Internal(
+            "EXISTS chain source must be the conditional selector variable".into(),
+        ));
+    }
+
+    let mut hops = Vec::with_capacity(chain.hops.len());
+    for hop in &chain.hops {
+        let edge_id = store.lookup_edge_label_id(graph_id, &hop.edge_label)?;
+        let undirected = try_property_schema_for_graph_id(graph_id)?
+            .and_then(|schema| schema.edge_is_undirected(&hop.edge_label));
+        let direction = match hop.direction {
+            GrantChainDirection::Undirected => PredicateHopDirection::Both,
+            spelled @ (GrantChainDirection::Right | GrantChainDirection::Left) => {
+                match undirected {
+                    Some(true) => {
+                        return Err(RouterError::InvalidArgument(format!(
+                            "chain edge label '{}' is declared UNDIRECTED; directional hop \
+                             spellings are invalid",
+                            hop.edge_label
+                        )));
+                    }
+                    None => {
+                        return Err(RouterError::InvalidArgument(format!(
+                            "directedness of the chain edge label '{}' is not declared by the \
+                             graph schema",
+                            hop.edge_label
+                        )));
+                    }
+                    _ => {}
+                }
+                match spelled {
+                    GrantChainDirection::Right => PredicateHopDirection::Outgoing,
+                    GrantChainDirection::Left => PredicateHopDirection::Incoming,
+                    GrantChainDirection::Undirected => unreachable!("matched above"),
+                }
+            }
+        };
+        let dest_id = store.lookup_vertex_label_id(graph_id, &hop.label)?;
+        hops.push(PredicateChainHop {
+            edge_label: u32::from(edge_id.raw()),
+            direction,
+            dest_label: u32::from(dest_id.raw()),
+        });
+    }
+
+    // Terminal conjuncts are catalog-checked against the terminal label exactly like
+    // source-side conjuncts ([ADR 0082] §3).
+    let terminal_count = chain.terminal_conjuncts.len();
+    if terminal_count == 0 || terminal_count > MAX_PREDICATE_CONJUNCTS {
+        return Err(RouterError::InvalidArgument(format!(
+            "the chain's terminal WHERE clause must hold 1..={MAX_PREDICATE_CONJUNCTS} comparisons"
+        )));
+    }
+    let terminal_label = hops
+        .last()
+        .map(|hop| hop.dest_label)
+        .expect("chains hold at least one hop");
+    let terminal_label_name = store.reverse_vertex_label_name(
+        graph_id,
+        gleaph_graph_kernel::entry::VertexLabelId::from_raw(
+            u16::try_from(terminal_label).map_err(|_| {
+                RouterError::Internal("terminal vertex label id exceeds catalog space".into())
+            })?,
+        ),
+    )?;
+    let declared_terminal: std::collections::BTreeMap<String, ValueType> =
+        try_property_schema_for_graph_id(graph_id)?
+            .map(|schema| {
+                schema
+                    .node_property_types(std::slice::from_ref(&terminal_label_name))
+                    .into_iter()
+                    .map(|(name, value_type, _required)| (name, value_type))
+                    .collect()
+            })
+            .unwrap_or_default();
+    let terminal_conjuncts = resolve_policy_comparisons(
+        store,
+        graph_id,
+        &chain.terminal_conjuncts,
+        &declared_terminal,
+    )?;
+    Ok(PredicateChain {
+        hops,
+        terminal_conjuncts,
+    })
 }
 
 /// The resolved resource a conditional selector compiles against; always the statement's
@@ -1730,6 +1853,110 @@ mod conditional_policy_tests {
         )
         .expect("exact-key revoke");
         assert!(auth::grant_rows().is_empty());
+    }
+
+    /// Binds a typed schema declaring the direct-grant chain vocabulary: `Pub` and
+    /// `Acct` vertices plus the DIRECTED `GRANTED_TO` edge, so directedness resolves.
+    fn bind_chain_schema(graph_name: &str) {
+        let ddl = format!(
+            "CREATE GRAPH TYPE chain_type {{ NODE Pub {{ visibility STRING }}, \
+             NODE Acct {{ principal_id STRING }}, \
+             DIRECTED EDGE GrantedTo LABEL GRANTED_TO CONNECTING (Pub -> Acct), \
+             UNDIRECTED EDGE Friend LABEL FRIEND CONNECTING (Acct ~ Acct) }} \
+             NEXT CREATE GRAPH {graph_name} TYPED chain_type"
+        );
+        let program = gleaph_gql::parser::parse(&ddl).expect("parse schema ddl");
+        let tx = program.transaction_activity.expect("tx");
+        crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(
+            tx.body.as_ref().expect("block"),
+            &ddl,
+        )
+        .expect("bind typed schema");
+    }
+
+    #[test]
+    fn conditional_grant_compiles_the_bounded_chain_against_the_catalogs() {
+        let owner = principal(31);
+        owned_graph(owner, "policy_chain");
+        bind_chain_schema("policy_chain");
+
+        execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_chain NODES Pub \
+             FOR (p:Pub) WHERE EXISTS { (p)-[:GRANTED_TO]->(a:Acct) \
+             WHERE a.principal_id = MSG_CALLER() } TO PUBLIC",
+        )
+        .expect("chain grant compiles");
+
+        // The compiled predicate carries the resolved chain ids ([ADR 0082] §3).
+        let stored = stored_predicates();
+        assert_eq!(stored.len(), 1);
+        let predicate = stored[0].1.as_ref();
+        assert_eq!(predicate.conjuncts.len(), 0, "pure-EXISTS condition");
+        let chain = predicate.chain.as_ref().expect("compiled chain");
+        assert_eq!(chain.hops.len(), 1);
+        assert_eq!(
+            chain.hops[0].direction,
+            gleaph_auth::PredicateHopDirection::Outgoing
+        );
+        assert_eq!(chain.terminal_conjuncts.len(), 1);
+        assert_eq!(chain.terminal_conjuncts[0].value, PredicateValue::MsgCaller);
+
+        // Introspection prints the chain inline with catalog-resolved names.
+        let summaries = graph_rows("policy_chain", owner);
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries[1].predicate.as_deref(),
+            Some(
+                "WHERE EXISTS { (:Pub)-[:GRANTED_TO]->(:Acct) WHERE principal_id = MSG_CALLER() }"
+            )
+        );
+
+        // REVOKE removes rule and chain together (one row, one lifecycle).
+        execute_as(
+            owner,
+            "REVOKE READ ON GRAPH policy_chain NODES Pub FROM PUBLIC",
+        )
+        .expect("revoke");
+        assert!(stored_predicates().is_empty());
+    }
+
+    #[test]
+    fn chain_hops_validate_directedness_labels_and_properties() {
+        let owner = principal(32);
+        owned_graph(owner, "policy_chain_bad");
+        bind_chain_schema("policy_chain_bad");
+
+        // Directional spelling over an UNDIRECTED label fails closed.
+        let err = execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_chain_bad NODES Acct \
+             FOR (a:Acct) WHERE EXISTS { (a)-[:FRIEND]->(b:Acct) \
+             WHERE b.principal_id = MSG_CALLER() } TO PUBLIC",
+        )
+        .expect_err("directional hop over undirected label must reject");
+        assert!(format!("{err}").contains("UNDIRECTED"), "got {err:?}");
+
+        // Unknown edge label rejects before any write.
+        let err = execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_chain_bad NODES Pub \
+             FOR (p:Pub) WHERE EXISTS { (p)-[:NO_SUCH]->(a:Acct) \
+             WHERE a.principal_id = MSG_CALLER() } TO PUBLIC",
+        )
+        .expect_err("unknown edge label");
+        assert!(matches!(err, RouterError::NotFound(_)), "got {err:?}");
+
+        // Unknown terminal property rejects before any write.
+        let err = execute_as(
+            owner,
+            "GRANT READ ON GRAPH policy_chain_bad NODES Pub \
+             FOR (p:Pub) WHERE EXISTS { (p)-[:GRANTED_TO]->(a:Acct) \
+             WHERE a.nosuch = MSG_CALLER() } TO PUBLIC",
+        )
+        .expect_err("unknown terminal property");
+        assert!(matches!(err, RouterError::NotFound(_)), "got {err:?}");
+        assert!(stored_predicates().is_empty(), "no partial write");
     }
 }
 

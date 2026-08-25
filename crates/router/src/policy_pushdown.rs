@@ -801,6 +801,8 @@ mod tests {
         let predicate = Rc::new(CompiledPredicate {
             label: label_id,
             conjuncts,
+            // Property-only fixtures carry no EXISTS chain.
+            chain: None,
         });
         crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| {
             grants
