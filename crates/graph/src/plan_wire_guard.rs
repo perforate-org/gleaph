@@ -187,6 +187,7 @@ mod tests {
                     )),
                     cmp: gleaph_gql::ast::CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 },
                 PlanOp::Project {
                     columns: vec![gleaph_gql_planner::plan::ProjectColumn {

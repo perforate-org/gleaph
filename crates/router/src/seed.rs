@@ -1795,6 +1795,7 @@ mod tests {
             value: ScanValue::Literal(value),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }])
     }
 
@@ -1875,6 +1876,7 @@ mod tests {
             value: ScanValue::Parameter(Rc::from("$x")),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }]);
         let probe = SeedProbe::from_plans(std::slice::from_ref(&plan), &params, &store, graph_id)
             .expect("probe")
@@ -1963,6 +1965,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Text("US".into())),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::Project {
                 columns: vec![],
@@ -2026,6 +2029,7 @@ mod tests {
             ]),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }]);
         let mut params = BTreeMap::new();
         params.insert("$rest".to_string(), Value::Text("EU".into()));
@@ -2079,6 +2083,7 @@ mod tests {
             value: ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Text("Str".into())))),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }]);
 
         let set = SeedAnchorSet::from_plans(
@@ -2120,6 +2125,7 @@ mod tests {
                 value: ScanValue::TextPrefix(Box::new(ScanValue::Parameter(Rc::from("$pre")))),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::PropertyFilter {
                 predicates: vec![Expr::var("n")],
@@ -2155,6 +2161,7 @@ mod tests {
             value: ScanValue::TextPrefix(Box::new(ScanValue::Literal(Value::Null))),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }]);
 
         let set = SeedAnchorSet::from_plans(
@@ -2210,6 +2217,7 @@ mod tests {
                 value: ScanValue::InList(vec![ScanValue::Literal(Value::Text("US".into()))]),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::PropertyFilter {
                 predicates: vec![Expr::var("n")],
@@ -2273,6 +2281,7 @@ mod tests {
                     value: ScanValue::Literal(Value::Text("post-demo".into())),
                     cmp: CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 }],
                 right: vec![PlanOp::IndexScan {
                     variable: Rc::from("b"),
@@ -2280,6 +2289,7 @@ mod tests {
                     value: ScanValue::Literal(Value::Text("topic-gql".into())),
                     cmp: CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 }],
             },
             PlanOp::Project {
@@ -2742,6 +2752,7 @@ mod tests {
             value: ScanValue::Literal(Value::Int64(18)),
             cmp: CmpOp::Ge,
             property_projection: None,
+            ordered_by_sort: None,
         }]);
         let anchor = IndexAnchor::from_plans(
             std::slice::from_ref(&plan),

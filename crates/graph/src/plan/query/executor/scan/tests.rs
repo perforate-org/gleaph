@@ -67,6 +67,7 @@ fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
         value: ScanValue::Literal(Value::Int64(5)),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -123,6 +124,7 @@ fn inlist_scan_fixture(
             value: ScanValue::InList(elements),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("n", "uid"), "uid")],
@@ -167,13 +169,14 @@ fn executes_inlist_index_scan_as_union_of_point_probes() {
     ))
     .expect("execute in-list index scan");
 
-    assert_eq!(text_column(&result, "uid"), vec!["bob", "alice"]);
-    // Exactly one equality probe per element, in list order.
+    assert_eq!(text_column(&result, "uid"), vec!["alice", "bob"]);
+    // Exactly one equality probe per element, concatenated in encoded payload
+    // byte order (ADR 0081 §4), not in list order.
     let calls = index.equal_calls.borrow();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].0, pid);
-    assert_eq!(calls[0].1, bob_bytes);
-    assert_eq!(calls[1].1, alice_bytes);
+    assert_eq!(calls[0].1, alice_bytes);
+    assert_eq!(calls[1].1, bob_bytes);
 }
 
 #[test]
@@ -281,6 +284,7 @@ fn executes_equality_index_scan_with_sortable_key() {
         value: ScanValue::Literal(Value::Int64(5)),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -327,6 +331,7 @@ fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
             value: ScanValue::Literal(Value::Int64(5)),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -383,6 +388,7 @@ fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
             value: ScanValue::Literal(Value::Decimal(bound)),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -438,6 +444,7 @@ fn equality_index_scan_final_filter_drops_inexact_float_decimal_candidate() {
             value: ScanValue::Literal(Value::Decimal(bound)),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -486,6 +493,7 @@ fn equality_index_scan_matches_list_valued_posting() {
             value: ScanValue::Literal(bound.clone()),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -547,6 +555,7 @@ fn equality_index_scan_matches_record_valued_posting_independent_of_field_order(
             value: ScanValue::Literal(bound.clone()),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -604,6 +613,7 @@ fn equality_index_scan_final_filter_drops_inexact_nested_numeric_candidate() {
             value: ScanValue::Literal(bound.clone()),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -658,6 +668,7 @@ fn executes_range_index_scan_with_lookup_range() {
         value: ScanValue::Literal(Value::Int64(5)),
         cmp: CmpOp::Ge,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -707,6 +718,7 @@ fn executes_text_range_index_scan_with_domain_clamped_between() {
         value: ScanValue::Literal(Value::Text("b".into())),
         cmp: CmpOp::Ge,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -747,6 +759,7 @@ fn prefix_scan_fixture(pattern: ScanValue) -> (MockPropertyIndex, PhysicalPlan, 
             value: pattern,
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("n", "name"), "name")],
@@ -1073,7 +1086,8 @@ fn executes_cypher_startswith_pushdown_boundary_row_sets() {
         );
 
         // Honest index simulation: serve exactly the postings inside the encoded
-        // prefix interval of this case's pattern value.
+        // prefix interval of this case's pattern value. The real posting walk is
+        // ascending, so the simulated hits are inserted in encoded-key order.
         let pattern_value = match &bound {
             SV::Parameter(_) => param_value.clone(),
             other => crate::plan::query::executor::scan::index::resolve_scan_bound_value(
@@ -1085,16 +1099,24 @@ fn executes_cypher_startswith_pushdown_boundary_row_sets() {
         let (low, high) = gleaph_gql::value_index_key::text_prefix_range_bounds(&pattern_value)
             .expect("text pattern interval");
         let index = MockPropertyIndex::default();
+        let mut interval_hits: Vec<(Vec<u8>, PostingHit)> = Vec::new();
         for (name, _) in seeded {
             let key = value_to_index_key_bytes(&Value::Text(name.into()))
                 .unwrap()
                 .unwrap();
             if low.as_slice() <= key.as_slice() && key.as_slice() < high.as_slice() {
-                index.range_hits.borrow_mut().push(PostingHit {
-                    shard_id: ShardId::new(0),
-                    vertex_id: ids[name],
-                });
+                interval_hits.push((
+                    key.clone(),
+                    PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: ids[name],
+                    },
+                ));
             }
+        }
+        interval_hits.sort_by(|left, right| left.0.cmp(&right.0));
+        for (_, hit) in interval_hits {
+            index.range_hits.borrow_mut().push(hit);
         }
 
         let mut parameters = params();
@@ -1209,6 +1231,7 @@ fn executes_datetime_range_index_scan_with_subtype_pinned_between() {
         value: ScanValue::Literal(Value::DateTime(100, 0)),
         cmp: CmpOp::Lt,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -2266,6 +2289,7 @@ fn range_index_scan_returns_no_rows_for_empty_clamped_interval() {
         value: ScanValue::Literal(Value::DateTime(i64::MAX, u32::MAX)),
         cmp: CmpOp::Gt,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -2316,6 +2340,7 @@ fn range_index_scan_falls_back_to_filter_path_for_unsupported_domains() {
             value: ScanValue::Literal(bound.clone()),
             cmp: CmpOp::Ge,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -2381,6 +2406,7 @@ fn range_index_scan_falls_back_to_filter_path_for_list_domain() {
             value: ScanValue::Literal(bound.clone()),
             cmp: CmpOp::Ge,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -2459,6 +2485,7 @@ fn range_index_scan_falls_back_to_filter_path_for_record_domain() {
             value: ScanValue::Literal(bound.clone()),
             cmp: CmpOp::Lt,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::PropertyFilter {
             predicates: vec![Expr::new(ExprKind::Compare {
@@ -2514,6 +2541,7 @@ fn range_index_scan_does_not_push_down_extension_domain() {
         value: ScanValue::Literal(orderable_ext(7)),
         cmp: CmpOp::Ge,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -2562,6 +2590,7 @@ fn executes_orderable_extension_equality_index_scan() {
         value: ScanValue::Literal(value.clone()),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -2603,6 +2632,7 @@ fn index_scan_rejects_unsupported_parameter_value() {
         value: ScanValue::Parameter("tags".into()),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let err = pollster::block_on(execute_plan_query(
@@ -2631,6 +2661,7 @@ fn index_scan_rejects_oversized_index_key_before_index_call() {
         value: ScanValue::Literal(oversized),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let err = pollster::block_on(execute_plan_query(
@@ -2660,6 +2691,7 @@ fn range_index_scan_rejects_oversized_bound_before_index_call() {
         value: ScanValue::Literal(oversized),
         cmp: CmpOp::Ge,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let err = pollster::block_on(execute_plan_query(
@@ -2694,6 +2726,7 @@ fn index_scan_rejects_non_orderable_extension_parameter_value() {
         value: ScanValue::Parameter("principal".into()),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let err = pollster::block_on(execute_plan_query(
@@ -2724,6 +2757,7 @@ fn range_index_scan_rejects_unsupported_nested_parameter_value() {
         value: ScanValue::Parameter("tags".into()),
         cmp: CmpOp::Ge,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let err = pollster::block_on(execute_plan_query(
@@ -2754,6 +2788,7 @@ fn index_scan_rejects_non_finite_float_parameter_value() {
         value: ScanValue::Parameter("score".into()),
         cmp: CmpOp::Eq,
         property_projection: None,
+        ordered_by_sort: None,
     }]);
 
     let err = pollster::block_on(execute_plan_query(
@@ -4238,6 +4273,7 @@ fn seeded_skip_leading_labeled_node_scan_and_index_scan_use_seed_only() {
             value: ScanValue::Literal(Value::Text("US".into())),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::Project {
             columns: vec![project(var("n"), "n")],
@@ -4323,6 +4359,7 @@ fn seeded_skip_leading_index_scan_uses_seed_only() {
             value: ScanValue::Literal(Value::Int64(5)),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::Project {
             columns: vec![project(var("n"), "n")],
@@ -4523,4 +4560,388 @@ fn parsed_edge_range_path_level_where_binds_projected_rows() {
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("range path-level WHERE must execute after pushdown ordering fix");
     assert_eq!(result.rows.len(), 2, "weights 7 and 9 each bind one row");
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ADR 0081 Slice A: index-ordered ORDER BY delivery
+// ════════════════════════════════════════════════════════════════════════════════
+
+use super::super::context::QueryExprEvaluator;
+
+fn ordered_delivery_stats() -> gleaph_gql_planner::stats::TableStats {
+    let mut stats = gleaph_gql_planner::stats::TableStats::default();
+    stats.label_cardinality.insert("OrdDel".to_string(), 100);
+    stats.range_indexed_vertex_properties.insert("score".into());
+    stats
+}
+
+/// Seed vertices with `score` = 10..=50 and a mock index serving the `score >= min`
+/// interval hits in ascending encoded-key order (the real posting-walk contract).
+fn ordered_delivery_fixture(min_score: i64) -> (GraphStore, MockPropertyIndex) {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let mut hits: Vec<(Vec<u8>, PostingHit)> = Vec::new();
+    for score in [10i64, 20, 30, 40, 50] {
+        let vid = store
+            .insert_vertex_named(["OrdDel"], [("score", Value::Int64(score))])
+            .expect("insert vertex");
+        if score >= min_score {
+            let key = value_to_index_key_bytes(&Value::Int64(score))
+                .unwrap()
+                .expect("encodable score");
+            hits.push((
+                key,
+                PostingHit {
+                    shard_id: ShardId::new(0),
+                    vertex_id: u32::try_from(u64::from(vid)).expect("vertex id"),
+                },
+            ));
+        }
+    }
+    hits.sort_by(|left, right| left.0.cmp(&right.0));
+    let index = MockPropertyIndex::default();
+    *index.range_hits.borrow_mut() = hits.into_iter().map(|(_, hit)| hit).collect();
+    (store, index)
+}
+
+/// E2E: the task's canonical shape. The planner elides nothing here because LIMIT is
+/// present, so TopK carries the ordering; execution must return globally ascending
+/// scores truncated to the limit, deterministically across runs.
+#[test]
+fn ordered_delivery_range_limit_rows_ascending_and_deterministic() {
+    let input =
+        "MATCH (v:OrdDel) WHERE v.score >= 20 RETURN v.score AS score ORDER BY score LIMIT 2";
+    let plan = plan_query_with_table_stats(input, &ordered_delivery_stats());
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                ordered_by_sort: Some(_),
+                ..
+            })
+        ),
+        "eligible plan must carry intent: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        "Sort+Limit must fuse into TopK: {:?}",
+        plan.ops
+    );
+
+    let (_store, index) = ordered_delivery_fixture(20);
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("score"),
+    ]);
+    let first = pollster::block_on(execute_plan_query(
+        &_store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("ordered delivery execution");
+    let second = pollster::block_on(execute_plan_query(
+        &_store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("ordered delivery rerun");
+
+    let expected: Vec<Value> = [Value::Int64(20), Value::Int64(30)].to_vec();
+    assert_eq!(
+        first
+            .rows
+            .iter()
+            .map(|row| row.get("score").cloned().expect("score"))
+            .collect::<Vec<_>>(),
+        expected,
+        "rows must be globally ascending and truncated to the limit"
+    );
+    assert_eq!(
+        first.rows, second.rows,
+        "tie-free output must be deterministic"
+    );
+}
+
+/// Without a limit the eligible Sort is elided entirely; rows stream out in scan order.
+#[test]
+fn ordered_delivery_without_limit_elides_sort_and_streams_scan_order() {
+    let input = "MATCH (v:OrdDel) WHERE v.score >= 30 RETURN v.score AS score ORDER BY score";
+    let plan = plan_query_with_table_stats(input, &ordered_delivery_stats());
+    assert_eq!(
+        scan_intent_of(&plan),
+        Some("score".to_string()),
+        "intent must be recorded"
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })),
+        "Sort must be elided for the no-limit shape: {:?}",
+        plan.ops
+    );
+
+    let (_store, index) = ordered_delivery_fixture(30);
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("score"),
+    ]);
+    let result = pollster::block_on(execute_plan_query(
+        &_store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("ordered delivery execution");
+    assert_eq!(
+        result
+            .rows
+            .iter()
+            .map(|row| row.get("score").cloned().expect("score"))
+            .collect::<Vec<_>>(),
+        vec![Value::Int64(30), Value::Int64(40), Value::Int64(50)]
+    );
+}
+
+fn scan_intent_of(plan: &PhysicalPlan) -> Option<String> {
+    match plan.ops.first() {
+        Some(PlanOp::IndexScan {
+            ordered_by_sort: Some(prop),
+            ..
+        }) => Some(prop.to_string()),
+        _ => None,
+    }
+}
+
+/// Red proof: disabling eligibility (planning without index statistics) yields the same
+/// ROW SET through the residual NodeScan + full-sort path. Order equality is only
+/// claimed for the tie-free deterministic runs above, not across access paths.
+#[test]
+fn ordered_delivery_row_set_matches_residual_path() {
+    let input = "MATCH (v:OrdDel) WHERE v.score >= 20 RETURN v.score AS score ORDER BY score";
+    let eligible = plan_query_with_table_stats(input, &ordered_delivery_stats());
+    let residual =
+        plan_query_with_table_stats(input, &gleaph_gql_planner::stats::TableStats::default());
+
+    let (store, index) = ordered_delivery_fixture(20);
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("score"),
+    ]);
+    let run = |plan: &PhysicalPlan| {
+        pollster::block_on(execute_plan_query(
+            &store,
+            plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execution")
+    };
+    let mut delivered = run(&eligible)
+        .rows
+        .iter()
+        .map(|row| row.get("score").cloned().expect("score"))
+        .collect::<Vec<_>>();
+    let mut residual_rows = run(&residual)
+        .rows
+        .iter()
+        .map(|row| row.get("score").cloned().expect("score"))
+        .collect::<Vec<_>>();
+    delivered.sort_by_key(|value| match value {
+        Value::Int64(v) => *v,
+        other => panic!("expected int score, got {other:?}"),
+    });
+    residual_rows.sort_by_key(|value| match value {
+        Value::Int64(v) => *v,
+        other => panic!("expected int score, got {other:?}"),
+    });
+    assert_eq!(delivered, residual_rows, "row sets must be identical");
+}
+
+/// Gate routing: with the intent present execution takes the ordered path; stripping
+/// the intent from the same plan falls back to the full sort and returns identical rows.
+#[test]
+fn topk_gate_routes_between_ordered_and_fallback_paths() {
+    use gleaph_gql_planner::ordered_delivery::mark_leading_index_scan_ordered;
+
+    let input =
+        "MATCH (v:OrdDel) WHERE v.score >= 10 RETURN v.score AS score ORDER BY score LIMIT 3";
+    let mut plan = plan_query_with_table_stats(input, &ordered_delivery_stats());
+    // Rebuild the leading op without intent, execute both variants.
+    let mut stripped = plan.clone();
+    if let Some(PlanOp::IndexScan {
+        ordered_by_sort, ..
+    }) = stripped.ops.first_mut()
+    {
+        *ordered_by_sort = None;
+    }
+    mark_leading_index_scan_ordered(&mut plan.ops, "score".into());
+
+    let (_store, index) = ordered_delivery_fixture(10);
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("score"),
+    ]);
+    for plan_variant in [&plan, &stripped] {
+        let result = pollster::block_on(execute_plan_query(
+            &_store,
+            plan_variant,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("topk execution");
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|row| row.get("score").cloned().expect("score"))
+                .collect::<Vec<_>>(),
+            vec![Value::Int64(10), Value::Int64(20), Value::Int64(30)]
+        );
+    }
+}
+
+// ─── Tie-group boundary rule over verified-ascending input ─────────────────────
+
+fn keyed_row(key: i64) -> PlanRow {
+    let mut row = PlanRow::new();
+    row.insert("k".to_string(), PlanBinding::Value(Value::Int64(key)));
+    row
+}
+
+fn key_of(row: &PlanRow) -> i64 {
+    match row.get("k") {
+        Some(PlanBinding::Value(Value::Int64(v))) => *v,
+        other => panic!("expected int key binding, got {other:?}"),
+    }
+}
+
+static TOPK_EVAL_STORE: std::sync::OnceLock<GraphStore> = std::sync::OnceLock::new();
+
+fn ordered_topk_evaluator(parameters: &BTreeMap<String, Value>) -> QueryExprEvaluator<'_> {
+    QueryExprEvaluator {
+        store: TOPK_EVAL_STORE.get_or_init(GraphStore::new),
+        parameters,
+        aggregate_specs: None,
+        caller: None,
+        resolved_labels: None,
+        resolved_properties: None,
+        element_id_key: gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+    }
+}
+
+fn literal(value: i64) -> Expr {
+    Expr::new(ExprKind::Literal(Value::Int64(value)))
+}
+
+#[test]
+fn topk_ordered_stops_at_first_strictly_greater_after_survivors() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    // Survivors [1,2,3]; the tail holds strictly greater keys only — consumption must
+    // stop at 7 and never need to look at it or beyond.
+    let rows: Vec<PlanRow> = [1, 2, 3, 7, 8, 9].iter().copied().map(keyed_row).collect();
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let result =
+        super::super::topk_ordered_input(&evaluator, rows, &ob, 3, 0).expect("topk ordered");
+    assert_eq!(result.iter().map(key_of).collect::<Vec<_>>(), vec![1, 2, 3]);
+}
+
+#[test]
+fn topk_ordered_keeps_consuming_through_closing_tie_group() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    // Boundary survivor key is 1 with k=2; equal keys keep flowing until the strict
+    // boundary (the 2), so the group is closed before consumption stops.
+    let rows: Vec<PlanRow> = [1, 1, 1, 1, 2, 9].iter().copied().map(keyed_row).collect();
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let result =
+        super::super::topk_ordered_input(&evaluator, rows, &ob, 2, 0).expect("topk ordered");
+    assert_eq!(result.iter().map(key_of).collect::<Vec<_>>(), vec![1, 1]);
+}
+
+#[test]
+fn topk_ordered_offset_skips_within_merged_stream() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    let rows: Vec<PlanRow> = [1, 2, 3, 4, 5].iter().copied().map(keyed_row).collect();
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let result =
+        super::super::topk_ordered_input(&evaluator, rows, &ob, 1, 2).expect("topk ordered");
+    assert_eq!(result.iter().map(key_of).collect::<Vec<_>>(), vec![3]);
+}
+
+#[test]
+fn topk_ordered_limit_above_row_count_returns_all_and_empty_input_yields_empty() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let rows: Vec<PlanRow> = [1, 2].iter().copied().map(keyed_row).collect();
+    let result =
+        super::super::topk_ordered_input(&evaluator, rows, &ob, 5, 0).expect("topk ordered");
+    assert_eq!(result.len(), 2);
+
+    let empty = super::super::topk_ordered_input(&evaluator, Vec::new(), &ob, 5, 0)
+        .expect("topk ordered empty");
+    assert!(empty.is_empty(), "empty index must bind no rows");
+}
+
+#[test]
+fn topk_ordered_falls_back_to_full_sort_if_order_contract_violated() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    // A contract violation (descending pair) must fail safe into correct output.
+    let rows: Vec<PlanRow> = [3, 1, 2].iter().copied().map(keyed_row).collect();
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let result =
+        super::super::topk_ordered_input(&evaluator, rows, &ob, 2, 0).expect("fallback sort");
+    assert_eq!(result.iter().map(key_of).collect::<Vec<_>>(), vec![1, 2]);
+}
+
+/// The strict-boundary stop is observable: rows past the first strictly-greater key
+/// are never evaluated, so a row whose key cannot participate in the ordering must
+/// not fail execution once the boundary has closed.
+#[test]
+fn topk_ordered_never_consumes_rows_past_the_strict_boundary() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let mut rows: Vec<PlanRow> = [1, 2].iter().copied().map(keyed_row).collect();
+    // Strictly greater survivor (closes the stream), then an incomparable poison key.
+    rows.push(keyed_row(5));
+    let mut poison = PlanRow::new();
+    poison.insert(
+        "k".to_string(),
+        PlanBinding::Value(Value::Text("poison".into())),
+    );
+    rows.push(poison);
+
+    let result =
+        super::super::topk_ordered_input(&evaluator, rows, &ob, 2, 0).expect("stop at boundary");
+    assert_eq!(result.iter().map(key_of).collect::<Vec<_>>(), vec![1, 2]);
+}
+
+/// Equal keys must NOT trigger the stop: consumption continues through the closing
+/// tie group, which is observable because the poison row right after the group is
+/// reached and fails the ordering comparison.
+#[test]
+fn topk_ordered_does_not_stop_inside_a_tie_group() {
+    let parameters = params();
+    let evaluator = ordered_topk_evaluator(&parameters);
+    let ob = order_by(vec![sort_item(var("k"), None, None)]);
+    let mut rows: Vec<PlanRow> = vec![keyed_row(1)];
+    let mut poison = PlanRow::new();
+    poison.insert(
+        "k".to_string(),
+        PlanBinding::Value(Value::Text("poison".into())),
+    );
+    rows.push(poison);
+
+    let err = super::super::topk_ordered_input(&evaluator, rows, &ob, 1, 0)
+        .expect_err("tie group must keep consuming into the incomparable row");
+    assert!(
+        matches!(err, PlanQueryError::IncomparableSortValues { .. }),
+        "expected incomparable tie-group continuation, got {err:?}"
+    );
 }

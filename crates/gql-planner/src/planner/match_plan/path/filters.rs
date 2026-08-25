@@ -764,6 +764,7 @@ pub(super) fn emit_scan_for_node(
             value: spec.value,
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         });
         return;
     }
@@ -785,6 +786,7 @@ pub(super) fn emit_scan_for_node(
                     value,
                     cmp: CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 });
                 return;
             }
@@ -808,6 +810,7 @@ pub(super) fn emit_scan_for_node(
                     value: ScanValue::TextPrefix(Box::new(pattern)),
                     cmp: CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 });
                 return;
             }
@@ -842,6 +845,7 @@ pub(super) fn emit_scan_for_node(
                     value: scan_value,
                     cmp: CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 });
                 return;
             }
@@ -856,6 +860,7 @@ pub(super) fn emit_scan_for_node(
                     value: value.clone(),
                     cmp: *cmp,
                     property_projection: None,
+                    ordered_by_sort: None,
                 });
                 return;
             }
@@ -866,6 +871,7 @@ pub(super) fn emit_scan_for_node(
                     value: ScanValue::TextPrefix(Box::new(pattern.clone())),
                     cmp: CmpOp::Eq,
                     property_projection: None,
+                    ordered_by_sort: None,
                 });
                 return;
             }

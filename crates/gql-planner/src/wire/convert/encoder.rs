@@ -69,12 +69,14 @@ impl Encoder {
                 value,
                 cmp,
                 property_projection,
+                ordered_by_sort,
             } => PlanOpWire::IndexScan {
                 variable: variable.to_string(),
                 property: property.to_string(),
                 value: encode_scan_value(value)?,
                 cmp: *cmp,
                 property_projection: opt_str_slice(property_projection),
+                ordered_by_sort: ordered_by_sort.as_ref().map(|p| p.to_string()),
             },
             PlanOp::EdgeIndexScan {
                 variable,

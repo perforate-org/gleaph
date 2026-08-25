@@ -10,6 +10,7 @@ mod scan;
 mod set_operation;
 mod wcoj;
 
+pub(crate) use super::sort_keys::compare_sort_keys;
 pub use bindings::EdgeBinding;
 pub(crate) use eval::{
     binding_to_value, eval_sort_expr, project_row, try_read_inline_edge_property,
@@ -32,7 +33,7 @@ pub(crate) fn param_map_key(name: &str) -> &str {
 pub(crate) use expand::edge_binding_for_expand;
 
 use super::error::PlanQueryError;
-use super::sort_keys::compare_sort_keys;
+use super::sort_keys::compare_sort_values;
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
@@ -419,6 +420,93 @@ pub(crate) fn sort_rows(
     });
 
     Ok(keyed_rows.into_iter().map(|(_, row)| row).collect())
+}
+
+/// TopK over input verified ascending by its single sort key (ADR 0081 §3).
+///
+/// Survivors are the first `offset + k` rows of the ascending stream, and consumption
+/// stops at the first tuple whose key is **strictly greater** than the boundary
+/// survivor's key: equal keys keep being examined until their tie group closes, because
+/// GQL leaves which tied rows survive unspecified while output must stay deterministic.
+/// Residual filters between the ordered scan and this site only thin an ascending
+/// stream, so the boundary rule remains valid with filters present. Keys are evaluated
+/// lazily so the strict-greater stop skips evaluating the whole tail.
+pub(crate) fn topk_ordered_input(
+    evaluator: &QueryExprEvaluator<'_>,
+    rows: Vec<PlanRow>,
+    order_by: &OrderByClause,
+    k: usize,
+    offset: usize,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let cap = offset.saturating_add(k);
+    if cap == 0 || k == 0 {
+        return Ok(Vec::new());
+    }
+    let [item] = order_by.items.as_slice() else {
+        return Err(PlanQueryError::UnsupportedOp(
+            "TopK(ordered input requires exactly one sort item)",
+        ));
+    };
+
+    let mut survivors: Vec<(Value, PlanRow)> = Vec::with_capacity(cap.min(rows.len()));
+    let mut boundary: Option<Value> = None;
+    // Monotonicity guard: the delivered-order contract says every accepted key sorts
+    // at or after its predecessor. The first violation fails safe into a full sort
+    // over everything seen instead of trusting a possibly unsorted prefix.
+    let mut prev_accepted: Option<Value> = None;
+    let mut unordered_tail: Vec<PlanRow> = Vec::new();
+
+    for row in rows {
+        if !unordered_tail.is_empty() {
+            unordered_tail.push(row);
+            continue;
+        }
+        let key = eval_sort_expr(evaluator, &row, &item.expr)?;
+        if let Some(prev) = &prev_accepted
+            && compare_sort_values(&key, prev, item.direction, item.null_order)?
+                == std::cmp::Ordering::Less
+        {
+            unordered_tail.push(row);
+            continue;
+        }
+        prev_accepted = Some(key.clone());
+        let Some(boundary_key) = &boundary else {
+            survivors.push((key, row));
+            if survivors.len() == cap {
+                // Monotone input: the last accepted row carries the largest key.
+                boundary = survivors.last().map(|(key, _)| key.clone());
+            }
+            continue;
+        };
+        match compare_sort_values(&key, boundary_key, item.direction, item.null_order)? {
+            // Strictly greater than the boundary survivor: the tie group has closed
+            // and every later row can only be larger, so stop consuming.
+            std::cmp::Ordering::Greater => break,
+            // Still inside the closing tie group; the earliest tied survivors stand
+            // (deterministic under GQL's unspecified tie resolution).
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Less => {
+                // Unreachable under the monotonicity guard above; kept fail-safe.
+                unordered_tail.push(row);
+            }
+        }
+    }
+
+    if unordered_tail.is_empty() {
+        Ok(survivors
+            .into_iter()
+            .map(|(_, row)| row)
+            .skip(offset)
+            .collect())
+    } else {
+        let mut all: Vec<PlanRow> = survivors.into_iter().map(|(_, row)| row).collect();
+        all.extend(unordered_tail);
+        Ok(sort_rows(evaluator, all, order_by)?
+            .into_iter()
+            .skip(offset)
+            .take(k)
+            .collect())
+    }
 }
 
 pub(crate) fn insertion_order_after_expand(

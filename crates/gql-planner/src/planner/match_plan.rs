@@ -537,9 +537,10 @@ pub(super) fn plan_simple_statement(
             Ok(())
         }
         SimpleQueryStatement::OrderBy(o) => {
-            ops.push(PlanOp::Sort {
-                order_by: o.clone(),
-            });
+            // Standalone ORDER BY (e.g. `WITH ... ORDER BY`): a following LIMIT statement
+            // truncates the ordered stream directly, so no Sort is needed when the
+            // pipeline prefix already delivers the ordering.
+            crate::ordered_delivery::emit_sort_or_mark_ordered_delivery(ops, o.clone(), false);
             Ok(())
         }
         SimpleQueryStatement::Limit(l) => {

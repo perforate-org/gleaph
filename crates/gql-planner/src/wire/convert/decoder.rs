@@ -82,12 +82,14 @@ impl<'a> Decoder<'a> {
                 value,
                 cmp,
                 property_projection,
+                ordered_by_sort,
             } => PlanOp::IndexScan {
                 variable: rc_str(variable),
                 property: rc_str(property),
                 value: decode_scan_value(value)?,
                 cmp: *cmp,
                 property_projection: decode_str_slice(property_projection),
+                ordered_by_sort: opt_rc_str(ordered_by_sort),
             },
             PlanOpWire::EdgeIndexScan {
                 variable,

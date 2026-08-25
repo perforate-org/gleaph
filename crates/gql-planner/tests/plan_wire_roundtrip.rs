@@ -43,6 +43,7 @@ fn inlist_scan_value_roundtrips() {
             ]),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }],
         ..Default::default()
     };
@@ -65,6 +66,39 @@ fn inlist_scan_value_roundtrips() {
             ScanValue::Parameter("$rest".into()),
         ]
     );
+}
+
+#[test]
+fn ordered_by_sort_intent_roundtrips() {
+    // ADR 0081: the ordered-delivery intent on a vertex scan op survives the GPL
+    // bundle without bumping the pre-stability wire version.
+    use gleaph_gql::ast::CmpOp;
+    use gleaph_gql_planner::plan::ScanValue;
+
+    let plan = gleaph_gql_planner::PhysicalPlan {
+        ops: vec![PlanOp::IndexScan {
+            variable: "v".into(),
+            property: "p".into(),
+            value: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+            cmp: CmpOp::Ge,
+            property_projection: None,
+            ordered_by_sort: Some("p".into()),
+        }],
+        ..Default::default()
+    };
+    let blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+    assert_eq!(blob[3], PLAN_WIRE_VERSION);
+    let (_, decoded) = decode_plan_bundle(&blob).expect("decode");
+    let Some(PlanOp::IndexScan {
+        property,
+        ordered_by_sort,
+        ..
+    }) = decoded[0].ops.first()
+    else {
+        panic!("expected IndexScan after decode");
+    };
+    assert_eq!(property.as_ref(), "p");
+    assert_eq!(ordered_by_sort.as_deref(), Some("p"));
 }
 
 #[test]

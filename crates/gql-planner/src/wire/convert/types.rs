@@ -27,6 +27,9 @@ pub enum PlanOpWire {
         value: ScanValueWire,
         cmp: CmpOp,
         property_projection: Option<Vec<String>>,
+        /// ADR 0081 ordered-delivery intent (ascending encoded-key delivery of this
+        /// property); `None` keeps the unordered contract.
+        ordered_by_sort: Option<String>,
     },
     EdgeIndexScan {
         variable: String,

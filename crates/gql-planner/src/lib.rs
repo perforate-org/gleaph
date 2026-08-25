@@ -26,6 +26,7 @@ pub mod explain;
 mod expr_alias;
 pub mod expr_children;
 pub mod join_order;
+pub mod ordered_delivery;
 pub mod output_schema;
 pub mod path_extensions;
 pub mod plan;

@@ -130,7 +130,17 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
             };
 
             if let Some(ob) = order_by {
-                ops.push(PlanOp::Sort { order_by: ob });
+                // Aggregate paths sort aggregate/result rows rather than graph bindings,
+                // so the ADR 0081 delivery proof does not apply and the Sort is kept.
+                if is_aggregate {
+                    ops.push(PlanOp::Sort { order_by: ob });
+                } else {
+                    crate::ordered_delivery::emit_sort_or_mark_ordered_delivery(
+                        ops,
+                        ob,
+                        limit.is_some() || offset.is_some(),
+                    );
+                }
             }
 
             if limit.is_some() || offset.is_some() {
@@ -216,11 +226,13 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
 
     // Expand SELECT aliases into ORDER BY sort keys on graph bindings, except for
     // aggregation paths where sorting runs on aggregate/result rows.
+    let mut sort_on_graph_bindings = items.is_some() && group_by.is_none();
     let order_by = if let Some(items) = items {
         let aliases = return_aliases(items);
         let is_aggregate =
             group_by.is_some() || items.iter().any(|item| expr_contains_aggregate(&item.expr));
         if is_aggregate {
+            sort_on_graph_bindings = false;
             order_by.clone()
         } else {
             order_by
@@ -232,7 +244,15 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
     };
 
     if let Some(ob) = order_by {
-        ops.push(PlanOp::Sort { order_by: ob });
+        if sort_on_graph_bindings {
+            crate::ordered_delivery::emit_sort_or_mark_ordered_delivery(
+                ops,
+                ob,
+                limit.is_some() || offset.is_some(),
+            );
+        } else {
+            ops.push(PlanOp::Sort { order_by: ob });
+        }
     }
 
     if limit.is_some() || offset.is_some() {

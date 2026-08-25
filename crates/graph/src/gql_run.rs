@@ -2830,6 +2830,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Int64(5)),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {

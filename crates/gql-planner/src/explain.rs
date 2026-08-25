@@ -259,14 +259,20 @@ fn format_op(op: &PlanOp) -> String {
             value,
             cmp,
             property_projection,
+            ordered_by_sort,
         } => {
+            let ordered = match ordered_by_sort {
+                Some(prop) => format!(" [ordered asc by {}]", prop),
+                None => String::new(),
+            };
             format!(
-                "IndexScan({}, {} {} {}){}",
+                "IndexScan({}, {} {} {}){}{}",
                 variable,
                 property,
                 format_cmp(cmp),
                 format_scan_value(value),
-                format_property_projection(property_projection.as_deref())
+                format_property_projection(property_projection.as_deref()),
+                ordered
             )
         }
 

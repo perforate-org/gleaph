@@ -762,6 +762,7 @@ mod tests {
             value: ScanValue::Literal(Value::Text("US".into())),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         }];
         ops.extend(grouped_count_tail("country", None));
         let plan = PhysicalPlan::from_ops(ops);
@@ -849,6 +850,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Text("US".into())),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
         ];
         ops.extend(grouped_count_tail("country", None));
@@ -887,6 +889,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Text("US".into())),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::PropertyFilter {
                 predicates: vec![Expr::new(ExprKind::IsLabeled {

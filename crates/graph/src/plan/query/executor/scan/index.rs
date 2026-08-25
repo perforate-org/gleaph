@@ -155,10 +155,20 @@ pub(crate) async fn execute_index_scan(
         let hits = if probe_keys.len() > 1 {
             // Union of point probes, deduplicated on (shard, vertex): a vertex
             // whose property equals two list elements must bind exactly one row.
+            // Blocks are concatenated in encoded payload byte order (ADR 0081
+            // §4): encoded byte order equals domain order by construction, so an
+            // ordered-delivery consumer sees globally ascending keys. Null bounds
+            // contribute no block because no posting can equal them.
+            let mut ordered_blocks: Vec<&Vec<u8>> = probe_keys.iter().flatten().collect();
+            ordered_blocks.sort_unstable();
+            ordered_blocks.dedup();
             let mut seen = std::collections::BTreeSet::<(u32, u32)>::new();
             let mut merged = Vec::new();
-            for bytes in probe_keys.into_iter().flatten() {
-                for hit in ix.lookup_equal(physical_index_id, pid, bytes).await? {
+            for bytes in ordered_blocks {
+                for hit in ix
+                    .lookup_equal(physical_index_id, pid, bytes.clone())
+                    .await?
+                {
                     if seen.insert((hit.shard_id.raw(), hit.vertex_id)) {
                         merged.push(hit);
                     }

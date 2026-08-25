@@ -385,12 +385,19 @@ pub enum PlanOp {
     },
 
     /// Equality or range scan on an indexed vertex property.
+    ///
+    /// `ordered_by_sort` records ADR 0081 ordered-delivery intent: when set, the scan's
+    /// bound rows arrive in ascending encoded-key order of that property, so downstream
+    /// `Sort` may be elided and `TopK` may stop at its tie-group boundary. The planner
+    /// sets it only after proving the full eligibility contract in
+    /// [`crate::ordered_delivery`]; every other producer must leave it `None`.
     IndexScan {
         variable: Str,
         property: Str,
         value: ScanValue,
         cmp: CmpOp,
         property_projection: Option<Rc<[Str]>>,
+        ordered_by_sort: Option<Str>,
     },
 
     /// Ordered scan on an indexed edge property (`Eq` equality or a one-sided range bound).

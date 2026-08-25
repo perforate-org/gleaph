@@ -31,7 +31,7 @@ use super::wcoj::execute_wcoj;
 use super::{
     PlanBinding, binding_to_value, dedup_rows, ensure_simple_expand, ensure_var_len_expand,
     insertion_order_after_expand, insertion_order_sort, limit_value, plan_op_name,
-    previous_op_binds_edge, project_row, row_matches_all, sort_rows,
+    previous_op_binds_edge, project_row, row_matches_all, sort_rows, topk_ordered_input,
 };
 
 /// Validate and build the invocation-local lookup for a Router-resolved non-leading `SEARCH`.
@@ -528,6 +528,7 @@ pub(crate) fn execute_ops_from<'a>(
                     value,
                     cmp,
                     property_projection: _,
+                    ordered_by_sort: _,
                 } => {
                     execute_index_scan(ctx, rows, variable.as_ref(), property.as_ref(), value, *cmp)
                         .await?
@@ -899,11 +900,23 @@ pub(crate) fn execute_ops_from<'a>(
                         None => 0,
                     };
                     let k = limit_value(&evaluator.eval_expr(&PlanRow::new(), k)?)?;
-                    sort_rows(&evaluator, rows, order_by)?
-                        .into_iter()
-                        .skip(offset)
-                        .take(k)
-                        .collect()
+                    // ADR 0081 §3: when the pipeline prefix delivers rows ascending by
+                    // this TopK's single key, stop consuming at the tie-group boundary
+                    // past the survivors instead of materializing a full sort.
+                    if gleaph_gql_planner::ordered_delivery::index_ordered_delivery_active(
+                        &ops[..op_idx],
+                        order_by,
+                    )
+                    .is_some()
+                    {
+                        topk_ordered_input(&evaluator, rows, order_by, k, offset)?
+                    } else {
+                        sort_rows(&evaluator, rows, order_by)?
+                            .into_iter()
+                            .skip(offset)
+                            .take(k)
+                            .collect()
+                    }
                 }
                 PlanOp::Materialize { columns, distinct } => {
                     let mut materialized = rows

@@ -8483,6 +8483,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Text("US".into())),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::Project {
                 columns: vec![],
@@ -8532,6 +8533,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Text("alice".into())),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::InsertVertex {
                 variable: Some(Rc::from("n")),
@@ -9070,6 +9072,7 @@ mod tests {
                 value: ScanValue::Literal(Value::Text("alice".into())),
                 cmp: CmpOp::Eq,
                 property_projection: None,
+                ordered_by_sort: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {

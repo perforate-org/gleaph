@@ -393,6 +393,9 @@ fn decide_site(
                 value: ScanValue::Literal(seed_cmp.value.clone()),
                 cmp: CmpOp::Eq,
                 property_projection: site_projection(op),
+                // Policy-lowered equality scans never claim ADR 0081 ordered delivery;
+                // the planner records that intent only after its own eligibility proof.
+                ordered_by_sort: None,
             });
             // The seeded row's remaining conjuncts stay as residual filters; when
             // several rows cover the label (or no seed applied) the full union filter
