@@ -2,8 +2,8 @@
 
 Date: 2026-08-03
 Status: accepted
-Last revised: 2026-08-20
-Anchor timestamp: 2026-08-22 18:49:58 UTC +0000
+Last revised: 2026-08-26
+Anchor timestamp: 2026-08-26 05:31:43 UTC +0000
 Implementation status: Partially implemented. The versioned artifact/wire, Router durable
 lifecycle and migration ledger, Active-only planner gate, Graph canonical export scope,
 graph-index build worker/state, and the production Router cross-canister driver with seal/drain
@@ -11,7 +11,9 @@ composition are implemented. Graph label gain/loss admission now uses the same e
 label-scoped Building/Sealing fence as property DML, with six focused Graph regressions (including
 the public mutation-id-0 wrapper boundary). Focused
 PocketIC E2E and upgrade validation are not yet run and pre-release artifacts/ledgers are not yet
-regenerated.
+regenerated. The Text build kind extension for `CREATE TEXT INDEX` backfill (§Text build kind,
+2026-08-26) is **designed but not implemented**; its landing is tracked by plan 0297
+(`backfill-pull`) and the kernel target-variant slice.
 
 ## Context
 
@@ -67,6 +69,8 @@ This ADR defines the first migration-driven `CREATE INDEX` only. Rebuild, replac
 existing logical index, and drop/recreate workflows require a later ADR; they are not represented
 by an extra state or a second active generation here. A logical index/name/property conflict with
 an existing catalog entry is a `Preparing` preflight rejection before effects.
+[The 2026-08-26 Text build kind amendment below](#text-build-kind-amended-2026-08-26) extends this
+lifecycle to `CREATE TEXT INDEX` backfill; everything else in this scope statement is unchanged.
 
 ### Migration target and execution identity
 
@@ -244,6 +248,74 @@ is `O(N + T + U)` for `PhysicalIndexId` postings, touched subjects, and durable 
 `O(S)` lifecycle/cursor metadata for durable progress per target Graph shard. This first-create path
 has no replacement namespace to retain.
 
+### Text build kind (amended 2026-08-26)
+
+Status: **Planned — not yet implemented.** This section is the design contract for extending the
+lifecycle above to `CREATE TEXT INDEX` backfill (ADR 0077 engine, `crates/text-canister`). It
+exists because a text index targets canonical vertex property values that **Graph owns**, so —
+unlike `CREATE VECTOR INDEX`, which starts empty because Graph is not the embedding byte source
+(ADR 0065) — text backfill over pre-existing data is mandatory. The target engine lives in a
+separate canister, so the Vertex/Edge pull path cannot be reused verbatim. This amendment adds a
+third build kind to the same lifecycle instead of defining a parallel protocol.
+
+**Target identity.** `IndexBuildTarget::Text { label_id, property_id, analyzer_id }` in
+graph-kernel, with the parallel `CanonicalExportTarget::Text`. Exactly one vertex label and one
+text property per statement, creation-fixed like the other kinds. The durable namespace identity
+is the monotonic, never-reused `TextIndexId` (Router region 57), playing the role
+`PhysicalIndexId` plays for posting builds; stale registrations are rejected fail-closed by
+catalog epoch plus scope binding, mirroring graph-index build-state validation.
+
+**Raw-text export projection.** The existing canonical export emits `encoded_value` as the
+sortable index key, which is lossy for analysis input. A new explicit fact variant
+
+```
+CanonicalIndexableFact::VertexText { vertex_id, property_id, raw_value }
+```
+
+carries raw UTF-8 values. The variant distinction is type-level so no page can be decoded under
+the wrong projection; page byte budgets count raw bytes; cursor and scope machinery are unchanged,
+and the cursor version stays 1 because decode depends on the request's target variant, which both
+sides already hold. The single Graph canonical export API remains the only scan service; no second
+export endpoint is introduced.
+
+**text-canister pull worker.** The text canister mirrors the graph-index worker shape:
+
+| Endpoint | Contract |
+|---|---|
+| `admin_register_text_backfill(registration)` | Controller-guarded; stores build identity (graph, TextIndexId, catalog epoch, scope binding) and validates epoch/scope fail-closed before any effect. |
+| `admin_advance_text_backfill(budget)` | Bounded pull step: prepare (durable next cursor/page-seq) → fetch one export page (raw projection) → analyze + ingest atomically. No stable mutation before decoded success; instruction reserve guard identical in shape to `MAX_INDEX_BUILD_ADVANCE_PAGES`. |
+| `admin_seal_text_backfill(proof)` | Applies the Router seal proof captured at `admitted_through`; flips readiness only after convergence. |
+| `admin_abort_text_backfill` | Resumable cleanup of backfill state; ingest data remains replay-safe. |
+
+Durable state is one registration cell plus one resumable cursor cell (new MemoryId in the
+text-canister layout; fresh-state rule applies per pre-production policy). Replay safety comes
+from doc-key identity: repeated pages re-ingest idempotently through the existing `docid_by_key`
+dedupe.
+
+**Router driver composition.** The driver state machine, migration ledger, catalog-epoch fence,
+and migration record are unchanged. The kind branch in `step_request` resolves the registered
+text-canister principal for the definition (issuance-driven provisioning already assigns it, plan
+0297 slice `provision-types`) and dispatches Register/Build/Seal/Cleanup client calls to the text
+endpoints above. Export-scope freezing, watermark capture, outbox-drain bounds, and the
+convergence poll (`done && drained >= admitted_through`) are shared code paths.
+
+**Fence and DML journaling.** Graph's catalog-context gains a text membership channel carrying
+the Building/Sealing phase for the indexed `(label, property)`. Label gain/loss transitions and
+property mutations touching that `(label, property)` during Building/Sealing append text-lane
+envelopes to the existing mutation outbox under their `mutation_id`. Seal drains that lane into
+the text-canister pending FIFO until the recorded watermark proves convergence. After `Active`,
+ongoing DML flows through the normal pending-flush path (plan 0297 slice `dml-pending-flush`).
+This is one invariant — no missed updates between scan and steady state — expressed as two
+phase-specific transports with the same watermark discipline as property builds.
+
+**Readiness and planner gate.** The text catalog row lifecycle extends `Registered`/`Ready` with
+explicit backfill phase states (breaking pre-release change; fresh state). Query exposure stays
+Ready-gated: non-Ready definitions are invisible to planning exactly like non-Active property
+indexes.
+
+Non-goals carried unchanged: edge-property text indexes, rebuild/replacement workflows, and
+analyzer-surface changes remain future work.
+
 ### Alternatives considered
 
 | Alternative                                                 | Decision and reason                                                                                                                                                                                                                                                                                                        |
@@ -252,6 +324,9 @@ has no replacement namespace to retain.
 | Router-driven use of the existing backfill flow             | Rejected. Router currently orchestrates Router→Graph cursor work and Graph→index posting calls; adding that scheduling path to this migration would add orchestration hops without the generation, touched-set, and Active lifecycle. The rejection is about coordination cost, not Router reading Graph storage directly. |
 | A new Graph delta log for the build                         | Rejected. It duplicates the existing durable outbox/repair ordering, retention, upgrade, and replay machinery. The `PhysicalIndexId` touched set plus existing outbox is the smaller owner-aligned extension.                                                                                                              |
 | Independent shadow index generation and atomic catalog swap | Rejected for this first create. A paired active/pending catalog or second subsystem would double lifecycle and stable-storage ownership; the unpublished `PhysicalIndexId` namespace in the existing graph-index canister provides isolation without a replacement framework.                                              |
+| Router-driven push batches into `ingest_text`               | Rejected for the Text kind. It violates this ADR's pull invariant (the index-owning canister pulls Graph pages itself; Router never relays pages), moves durable pull state and instruction pressure into the Router, and duplicates convergence logic the driver already owns.                                           |
+| A standalone generic backfill-service canister              | Rejected. A new execution domain to avoid one enum variant and one worker mirror; index engines own their ingestion, and a shared service weakens that ownership while adding a deployment surface.                                                                                                                        |
+| Sortable-key export plus a separate raw-value fetch         | Rejected. Two value projections for one target invite mixed decoding, and a sortable key cannot rehydrate analyzer input; the explicit raw-text fact keeps one page contract.                                                                                                                                              |
 
 ### Breaking compatibility boundary
 
@@ -260,7 +335,11 @@ manifest, checksum, wire, and stable shapes in place for the rollout; developmen
 discarded. There is no legacy decoder, dual shape, optional-field widening, or version bump solely
 for compatibility, and no old shard registry, implicit immediate activation, or fallback from a
 failed build to the current `CREATE INDEX` catalog-registration path. Existing pre-release
-artifacts and ledgers must be regenerated or reset under that rollout. Existing non-migration
+artifacts and ledgers must be regenerated or reset under that rollout. The Text build kind
+extension changes the Candid wire shapes in place (`IndexBuildTarget`,
+`CanonicalExportTarget`/`CanonicalIndexableFact`, the new text backfill endpoints) and adds a
+text-canister stable region; under pre-release rules this requires fresh installs of affected
+canisters and regenerated artifacts, with no legacy decoder or optional-field widening. Existing non-migration
 `CREATE INDEX` behavior remains governed by ADR 0009 until a separate change deliberately amends
 it; it is not a compatibility implementation of this migration protocol.
 
@@ -301,7 +380,9 @@ The breaking v1 artifact/record replacement, Router lifecycle/epoch fields, grap
 Active-only planner projection, bounded cleanup state, and the real Router driver with
 seal/drain composition are present. The rollout still requires focused upgrade/PocketIC validation
 and regenerated pre-release artifacts/ledgers before advertising production `CREATE INDEX` migration
-backfill. No compatibility decoder is part of the work.
+backfill. No compatibility decoder is part of the work. The Text build kind (§Text build kind) is
+designed but not started; its landing slices are the kernel target-variant work and plan 0297
+`backfill-pull`, each with focused unit plus PocketIC coverage before any status flip.
 
 ## Design documentation impact
 
@@ -309,6 +390,9 @@ ADR 0058 remains the v1 schema-migration contract and now points here for migrat
 backfill. ADRs 0009 and 0023 retain their historical index/catalog and repair decisions; their
 revision notes point here only for the new migration lifecycle. The property-index and derived-state
 documents point to this ADR as the single source of truth for activation gating. The
+[text index design](../index/text-index.md) references this ADR's Text build kind for its
+backfill lifecycle row; the implementation-gap ledger and capacity-planning TEXT rows update when
+the kind lands. The
 implementation-gap ledger retains the open P0 backfill and activation gaps and links this ADR.
 
 ## References
@@ -317,5 +401,8 @@ implementation-gap ledger retains the open P0 backfill and activation gaps and l
 - [ADR 0023 — Federated index/store consistency](0023-federated-index-consistency-upgrade-compaction.md)
 - [ADR 0029 — Shard-local atomicity and cross-canister consistency](0029-shard-local-atomicity-and-cross-canister-consistency.md)
 - [ADR 0058 — Versioned additive schema migrations](0058-versioned-additive-schema-migrations.md)
+- [ADR 0065 — CREATE VECTOR INDEX DDL](0065-create-vector-index-ddl.md)
+- [ADR 0077 — Text index engine](0077-text-index-engine.md)
 - [Property index design](../index/property-index.md)
+- [Text index design](../index/text-index.md)
 - [Derived-state query semantics](../index/derived-state-query-semantics.md)

@@ -406,8 +406,8 @@ index equivalent units; `cache_size=-2048`). Corpus identical to the custom arm'
 | Workload | FTS5-on-VFS | Custom kernels | Winner |
 |---|---|---|---|
 | Ingest M=2000 docs | 244.27 M instr (~122 k/doc) | **188.80 M** instr (`bench_build_segment_m2000`, ~94 k/doc) | custom ≈23% cheaper¹ |
-| m3 OR top-10 by rank | 34.84 M instr | **15.78 M** varint + ported driver (tf-scored: 17.25 M; frame history: 74.23 M) | custom ~2.2× cheaper² |
-| Term lookup top-100 rowids | **261.08 K** instr (whole path) | components only (dict probe ~28 k/probe + walk) | unsettled³ |
+| m3 OR top-10 by rank | 34.84 M instr | **17.29 M** varint + ported driver + lazy tf scoring (history: 15.78 M pre-LUT model, 74.23 M original frame) | custom ~2× cheaper² |
+| Term lookup top-100 rowids / ranked top-100 | unscored **261.08 K**; scored (bm25 rank) **34.38 M** — `bench_fts5_query_term_rank_top100_scored` | unscored **205.81 K** (`_unscored`); scored **4.00 M** (`bench_query_term_top100`) — plan 0295/0296, see ⁵ | custom leads both pairs (~1.3× unscored, ~8.6× scored)⁵ |
 | Storage @ M=2000 | 376,832 B logical DB image | **141,355 B** set-mode / 193,109 B freq-mode (incl. dict 42,107 B + block-max 12,856 B; [artifact](artifacts/2026-08-24-storage-parity.txt)) | custom 2.0–2.7× smaller⁴ |
 
 ¹ FTS5 ingest includes its internal tokenization; the custom bench starts from unit-id streams
@@ -434,8 +434,31 @@ no-go (rayon/memmap2/epserde dependency tree), verbatim reuse would additionally
 ordered-map fix upstream-side (`query_freqs()` iterates a `HashMap` — non-deterministic term
 order under replicated execution) — our reference port sidesteps both by keeping integer scores
 and crate-local state only.
-³ Not directly comparable yet; the custom dictionary probe cost suggests a flat-blob+skip
-dictionary (FTS5 `%_idx` style) plus read caching as the closing lever.
+³ Superseded by measurement ⁵ (plan 0295 closed the "components only" gap with a real
+whole-path bench; the flat-blob dictionary lever it suggested is now moot — the linear-hash-map
+probe measures ~17 k per verified probe).
+⁵ **Measured term-top-100 addendum (plan 0295 `query-path-and-bench` + plan 0296 driver
+economics, 2026-08-24 UTC).** `text-canister::bench_query_term_top100` runs ONE full `search()` —
+production analyzer → dictionary hash probe → postings arena fetch → DAAT/block-max driver
+(inline bi-level skips, lazy tf→part scoring) → hit projection — gated against a brute-force
+scorer before measuring. First cut scored **5.96 M** vs the FTS5 arm's unscored 261.08 K
+(~23×; decomposition: bare driver ≈ 2.64 M / filtered ≈ 5.7 M dominant — per-posting driver
+economics, not storage or dictionary, whose verified probe measures ~17 K). **Plan 0296 closed
+the gap with a fused `(docid, tf)` stepping primitive and bulk dead-range skipping over the dense
+tombstone bitsets (one classify per touched posting, block-granular jumps via the skip trailer;
+gap 1.54 M / 6,670 touched = ~230 instr/touched-posting):**
+
+| Term top-100 | unscored | scored |
+|---|---|---|
+| Custom kernels | **205.81 K** | **4.00 M** (-33% vs first cut) |
+| FTS5-on-VFS | 261.08 K | **34.38 M** (`bench_fts5_query_term_rank_top100_scored`) |
+
+Custom leads both like-for-like pairs (~1.3× unscored, ~8.6× scored). Residual notes: corpus is
+M=10 000 with dense df = 9 512 (5× the FTS5 figure's corpus); m3 ranked workload settled at
+17.29 M after the same fused stepping (+ scoring-model shape accounts for its distance from the
+15.78 M constant-weight history).
+
+
 ⁴ Set mode is the current docid-set contract; freq mode adds u8 tf per posting (bm25-compatible).
 Both include real encoder outputs, headers, dictionary, and block-max tables over the full
 expanded corpus (units=3003, postings set/tf = 63,766/75,275). SMI fields on both arms read

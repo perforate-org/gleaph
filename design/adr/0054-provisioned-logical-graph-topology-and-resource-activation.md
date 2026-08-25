@@ -160,8 +160,10 @@ The following gaps must be closed before this ADR can describe the implemented d
   unconditional attach handshake.
 - Add Router admission for Property Index or Vector Index requests that do not contain a new
   GraphShard.
-- Extend or separate the provisioning model for Text Index and Procedure; neither is currently
-  a `LogicalResource` variant or artifact `CanisterKind`.
+- Extend the provisioning model for Procedure; it is not yet a `LogicalResource` variant or
+  artifact `CanisterKind`. (The Text Index half of this gap closed in plan 0297 slice 1:
+  `LogicalResource::TextIndex(TextIndexId)` and `CanisterKind::TextCanister` exist, and the
+  Router admits standalone Text issuance.)
 - Keep the current Vector Index invariant of one target per logical graph until federation policy
   is decided.
 
