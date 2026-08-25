@@ -2253,6 +2253,37 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 - **Impact:** Steady-state read-path cost proportional to definition size paid on every
   planning/validation resolve; grows as graph types get richer (records, inline edges).
 
+### GAP-2026-08-26-002 — No privileged authorization diagnosis surface; uniform Forbidden leaves "why denied" to trial-and-error
+
+- **Status:** Open — raised 2026-08-26 while closing the [ADR 0074] follow-up list;
+  design item (named `EXPLAIN AUTHORIZATION`), not a regression.
+- **Owner:** Router authorization seam (`crates/router/src/authz.rs`
+  `enforce_data_plane_authorization`, requirement walker `walk_ops`/`requirements_cover`)
+  together with the grammar surface in `crates/gql`; introspection precedent in
+  `crates/router/src/gql_grants.rs` (`list_graph_grants`).
+- **Observed behavior:** Every uncovered demand fails with the uniform non-disclosing
+  `Forbidden` that never names the missing privilege or resource ([ADR 0074] §4). The only
+  diagnosis paths today are reading code/tests plus owner-side `list_graph_grants`
+  introspection; the question "why can't caller X run program P on graph G" has no direct
+  answer anywhere in the system.
+- **Expected or needed behavior:** A privileged-only diagnostic statement (working name
+  `EXPLAIN AUTHORIZATION`, reserved by [ADR 0074] §4 and its Consequences trade-off) that
+  renders one program's requirement set joined with coverage evaluation: per requirement,
+  which effective row/root satisfies it or that it is uncovered — emitted only within the
+  asker's visibility scope.
+- **Evidence:** [ADR 0074] §4 ("diagnosis is a job for a future privileged-only
+  `EXPLAIN AUTHORIZATION`") and §Consequences ("support/debugging of 'cannot see my own
+  data' incidents requires either temporary explicit grants or the future
+  `EXPLAIN AUTHORIZATION`"); reusable machinery: `RequirementSet` extraction and
+  `requirements_cover` already exist as enforcement internals.
+- **Impact:** Operability only — non-disclosure itself is intact by design. Developers and
+  operators debug deny-by-default surprises via trial-and-error with temporary grants;
+  shared-graph incident support stays script-level as multi-principal usage grows.
+- **Next decision:** smallest resolving questions for the ADR: (a) who may ask about whom —
+  graph owner about a caller vs caller self-diagnosis; (b) whether self-diagnosis may name
+  uncovered resources on graphs visible to the asker (existence-leak boundary); (c) report
+  granularity — covered-by-row detail vs uncovered-only facts.
+
 ## Review cadence
 
 - The primary agent checks this ledger before final approval of a meaningful slice.
