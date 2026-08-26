@@ -16,7 +16,7 @@ use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
 };
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{RegisterGraphArgs, ShardRegistryEntry};
@@ -36,16 +36,9 @@ fn install_router_and_provision() -> Env {
     let router = pic.create_canister();
     pic.add_cycles(router, 2_000_000_000_000);
 
-    // Install Provision first so we know its principal for Router init. `deployment_id` derives
-    // from the admin principal (ADR 0068), matching the Router's `provision_graph_flow` caller.
-    let binding = DeploymentBinding {
-        deployment_id: admin.to_text(),
-        router_principal: router,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
-    let provision = install_provision_canister(&pic, binding);
+    // Install Provision first so we know its principal for Router init. Under the grant model
+    // the Router is granted as an issuer (deployment_id = router principal = caller, ADR 0068).
+    let provision = install_provision_canister(&pic, admin, &[router]);
     // The provision canister stores artifacts + release and pays `create_canister` cycles; top it
     // up well beyond the 2T seed so memory growth and canister creation never run dry.
     pic.add_cycles(provision, 100_000_000_000_000);

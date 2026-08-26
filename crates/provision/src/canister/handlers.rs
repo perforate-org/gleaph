@@ -5,20 +5,19 @@
 //! `pub(crate)` so the 33+ unit tests and the candid export tests can drive every branch without WASM.
 
 use crate::canister::{
-    ArtifactUpload, ProvisionIngressError, ProvisionIngressResult, ProvisionJobView,
-    RouterRegistrationAckResult, accept_envelope_with_caller,
-    admin_install_deployment_binding_with_caller, artifact_audit_history_with_caller,
+    ArtifactUpload, ProvisionIngressResult, ProvisionJobView,
+    RouterRegistrationAckResult, accept_envelope_with_caller, artifact_audit_history_with_caller,
     artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    complete_bootstrap_with_caller, complete_graph_registration_with_caller, query_job_with_caller,
-    release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller,
+    complete_graph_registration_with_caller, query_job_with_caller, release_activate_with_caller,
+    release_get_active, release_install_with_caller, release_publish_with_caller,
+    upsert_deployment_grant_with_caller,
 };
-use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
+use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, ArtifactAuditEntry, ArtifactError, ArtifactId,
-    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, InstallError,
-    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
+    ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
+    ArtifactUploadChunkArgs, InstallError, ProvisionRequest, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult,
+    ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck, UpsertDeploymentGrantArgs,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -26,14 +25,14 @@ pub fn init_handler(args: crate::canister::init::ProvisionInitArgs) {
     crate::canister::init::init(args);
 }
 
-/// No-op: `DeploymentTrustStore` survives upgrades via stable memory already.
+/// No-op: all stable stores survive upgrades via stable memory already.
 pub fn post_upgrade_handler() {}
 
 /// Authorize `accept_envelope` from the IC runtime and forward to the handler.
 pub async fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressResult {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
-    let deployment_store = DeploymentTrustStore::new();
+    let deployment_store = DeploymentGrantStore::new();
     match accept_envelope_with_caller(caller, &store, &deployment_store, req, crate::ic_time_ns())
         .await
     {
@@ -50,7 +49,7 @@ pub async fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressR
 pub fn query_job_handler(request_id: [u8; 32], deployment_id: String) -> Option<ProvisionJobView> {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
-    let deployment_store = DeploymentTrustStore::new();
+    let deployment_store = DeploymentGrantStore::new();
     query_job_with_caller(caller, &store, &deployment_store, request_id, deployment_id).ok()
 }
 
@@ -60,7 +59,7 @@ pub fn complete_graph_registration_handler(
 ) -> RouterRegistrationAckResult {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
-    let deployment_store = DeploymentTrustStore::new();
+    let deployment_store = DeploymentGrantStore::new();
     match complete_graph_registration_with_caller(
         caller,
         &store,
@@ -73,19 +72,12 @@ pub fn complete_graph_registration_handler(
     }
 }
 
-/// Authorize `complete_bootstrap` from the IC runtime and forward to the handler.
-pub fn complete_bootstrap_handler(deployment_id: String) -> Result<(), ProvisionIngressError> {
-    let caller = ic_cdk::api::msg_caller();
-    let deployment_store = DeploymentTrustStore::new();
-    complete_bootstrap_with_caller(caller, &deployment_id, &deployment_store)
-}
-
-/// Authorize `admin_install_deployment_binding` from the IC runtime and forward to the handler.
-pub fn admin_install_deployment_binding_handler(
-    args: AdminInstallDeploymentBindingArgs,
+/// Authorize `upsert_deployment_grant` from the IC runtime and forward to the handler.
+pub fn upsert_deployment_grant_handler(
+    args: UpsertDeploymentGrantArgs,
 ) -> Result<crate::types::BootstrapAuthEntry, crate::types::ProvisionAdminError> {
     let caller = ic_cdk::api::msg_caller();
-    admin_install_deployment_binding_with_caller(caller, args, crate::ic_time_ns())
+    upsert_deployment_grant_with_caller(caller, args, crate::ic_time_ns())
 }
 
 /// Authorize `artifact_publish_metadata` from the IC runtime and forward to the handler.

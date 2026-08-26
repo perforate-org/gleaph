@@ -58,6 +58,14 @@ pub struct RemoteTransport {
     agent: Agent,
     canister: candid::Principal,
     runtime: tokio::runtime::Runtime,
+    /// True when this connection targets the mainnet (`ic`) selector, where the standard
+    /// `create_canister` management method applies and provisional methods are unavailable.
+    mainnet: bool,
+    /// The local network's default effective canister id (a principal within the application
+    /// subnet's canister ranges), read from the `/_/topology` endpoint. Required as the
+    /// effective canister id for `provisional_create_canister_with_cycles` so its response
+    /// certification passes. `None` on mainnet or when the endpoint is unavailable.
+    default_effective_canister_id: Option<candid::Principal>,
 }
 
 impl RemoteTransport {
@@ -81,6 +89,46 @@ impl RemoteTransport {
             .map_err(|error| format!("update {method}: {error}"))?;
         Decode!(&response, T).map_err(|error| format!("decode {method} response: {error}"))
     }
+
+    /// Call a management-canister method with an explicit effective canister ID. Management
+    /// calls that target a specific canister (`install_code`, `install_chunked_code`, …) must
+    /// route through that canister's effective ID, not the management canister `aaaaa-aa`.
+    pub fn management_call_with_effective_canister_id<T>(
+        &self,
+        method: &str,
+        args: &impl CandidType,
+        effective_canister_id: candid::Principal,
+    ) -> Result<T, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let management = candid::Principal::from_text("aaaaa-aa")
+            .map_err(|e| format!("management canister id: {e}"))?;
+        let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        let response = self
+            .block_on(
+                self.agent
+                    .update(&management, method)
+                    .with_arg(encoded)
+                    .with_effective_canister_id(effective_canister_id)
+                    .call_and_wait(),
+            )
+            .map_err(|error| format!("update {method}: {error}"))?;
+        Decode!(&response, T).map_err(|error| format!("decode {method} response: {error}"))
+    }
+
+    /// Whether this connection targets the mainnet (`ic`) selector, where the standard
+    /// `create_canister` management method applies and provisional methods are unavailable.
+    pub fn is_mainnet(&self) -> bool {
+        self.mainnet
+    }
+
+    /// The local network's default effective canister id, used as the effective canister id
+    /// for `provisional_create_canister_with_cycles` (see GAP-2026-08-24-006(a)).
+    pub fn default_effective_canister_id(&self) -> Option<candid::Principal> {
+        self.default_effective_canister_id
+    }
+
     /// Build a transport using the same network and identity conventions as `gleaph migration`.
     pub fn connect(
         canister: &str,
@@ -112,10 +160,19 @@ impl RemoteTransport {
                 .block_on(agent.fetch_root_key())
                 .map_err(|error| format!("fetch IC root key: {error}"))?;
         }
+        let mainnet = network == "ic";
+        let default_effective_canister_id = if mainnet {
+            None
+        } else {
+            runtime
+                .block_on(fetch_default_effective_canister_id(url))
+        };
         Ok(Self {
             agent,
             canister,
             runtime,
+            mainnet,
+            default_effective_canister_id,
         })
     }
 
@@ -296,6 +353,29 @@ fn resolve_network(network: &str, fetch_root_key: bool) -> Result<(&str, bool), 
             "unknown network {other:?}; expected \"ic\", \"local\", or an http(s) URL"
         )),
     }
+}
+
+/// Fetch the local network's default effective canister id from the `/_/topology` endpoint
+/// (the same source dfx's `dfx info default-effective-canister-id` uses). Returns `None` when
+/// the endpoint is unavailable or the field is absent.
+async fn fetch_default_effective_canister_id(url: &str) -> Option<candid::Principal> {
+    #[derive(serde::Deserialize)]
+    struct Topology {
+        default_effective_canister_id: Option<DefaultEffectiveCanisterId>,
+    }
+    #[derive(serde::Deserialize)]
+    struct DefaultEffectiveCanisterId {
+        canister_id: String,
+    }
+    let body: Topology = reqwest::get(format!("{url}/_/topology"))
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let b64 = body.default_effective_canister_id?.canister_id;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64).ok()?;
+    Some(candid::Principal::from_slice(&bytes))
 }
 
 /// Decode one candid `Result<T, E>` payload, keeping the `Err` variant typed so callers can

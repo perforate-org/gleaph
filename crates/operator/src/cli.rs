@@ -46,9 +46,9 @@ pub enum Command {
     /// Canister lifecycle against active-release artifacts.
     #[command(subcommand)]
     Canister(CanisterCommand),
-    /// Deployment trust-binding commands.
+    /// Deployment grant commands (authorize an issuer to request issuance).
     #[command(subcommand)]
-    Binding(BindingCommand),
+    Grant(GrantCommand),
     /// Read the durable artifact/release audit history.
     #[command(subcommand)]
     Audit(AuditCommand),
@@ -162,11 +162,11 @@ pub enum CanisterCommand {
     Install(CanisterInstallArgs),
 }
 
-/// Deployment trust-binding commands.
+/// Deployment grant commands.
 #[derive(Debug, Subcommand)]
-pub enum BindingCommand {
-    /// Install a deployment trust binding as the governance principal.
-    Install(BindingInstallArgs),
+pub enum GrantCommand {
+    /// Authorize an issuer to request issuance for its own deployment (governance only).
+    Upsert(GrantUpsertArgs),
 }
 
 /// Artifact catalog commands.
@@ -249,24 +249,13 @@ pub struct CanisterInstallArgs {
     pub registry_version: u64,
 }
 
-/// Arguments of `binding install`.
+/// Arguments of `grant upsert`.
 #[derive(Debug, clap::Args)]
-pub struct BindingInstallArgs {
-    /// Deployment identifier the binding is keyed on.
-    #[arg(value_name = "DEPLOYMENT_ID")]
-    pub deployment_id: String,
-    /// Router principal authorized for this deployment.
-    #[arg(long, value_name = "PRINCIPAL")]
-    pub router: String,
-    /// Governance/recovery principal that can update this binding.
-    #[arg(long, value_name = "PRINCIPAL")]
-    pub governance: String,
-    /// Optional bootstrap trust subject (Account) for first-Router issuance.
-    #[arg(long, value_name = "PRINCIPAL")]
-    pub bootstrap: Option<String>,
-    /// Binding version at install time.
-    #[arg(long, value_name = "N", default_value_t = 1)]
-    pub binding_version: u64,
+pub struct GrantUpsertArgs {
+    /// The principal authorized to request issuance. The deployment is the issuer itself:
+    /// `deployment_id = issuer = caller`.
+    #[arg(value_name = "ISSUER")]
+    pub issuer: String,
 }
 
 /// Audit commands.
@@ -421,45 +410,15 @@ mod tests {
         assert!(error.contains("--target"), "got: {error}");
     }
     #[test]
-    fn binding_install_maps_all_fields_including_optional_bootstrap() {
+    fn grant_upsert_maps_issuer() {
         let cli = parse(&[
-            "binding",
-            "install",
-            "deployment-a",
-            "--router",
+            "grant",
+            "upsert",
             "r7inp-6aaaa-aaaaa-aaabq-cai",
-            "--governance",
-            "renrz-6aaaa-aaaaa-aaabq-cai",
-            "--bootstrap",
-            "w7x7r-cok77-xa-7ab7a-cai",
-            "--binding-version",
-            "4",
         ]);
         match cli.command {
-            Command::Binding(BindingCommand::Install(args)) => {
-                assert_eq!(args.deployment_id, "deployment-a");
-                assert_eq!(args.router, "r7inp-6aaaa-aaaaa-aaabq-cai");
-                assert_eq!(args.governance, "renrz-6aaaa-aaaaa-aaabq-cai");
-                assert_eq!(args.bootstrap.as_deref(), Some("w7x7r-cok77-xa-7ab7a-cai"));
-                assert_eq!(args.binding_version, 4);
-            }
-            other => panic!("wrong command mapping: {other:?}"),
-        }
-
-        // Without --bootstrap the field stays None and the version defaults to 1.
-        let cli = parse(&[
-            "binding",
-            "install",
-            "deployment-b",
-            "--router",
-            "r7inp-6aaaa-aaaaa-aaabq-cai",
-            "--governance",
-            "renrz-6aaaa-aaaaa-aaabq-cai",
-        ]);
-        match cli.command {
-            Command::Binding(BindingCommand::Install(args)) => {
-                assert!(args.bootstrap.is_none());
-                assert_eq!(args.binding_version, 1);
+            Command::Grant(GrantCommand::Upsert(args)) => {
+                assert_eq!(args.issuer, "r7inp-6aaaa-aaaaa-aaabq-cai");
             }
             other => panic!("wrong command mapping: {other:?}"),
         }
@@ -482,7 +441,7 @@ mod tests {
             "--wasm",
             "provision.wasm",
             "--init-args",
-            r#"{"bootstrap_bindings":[]}"#,
+            r#"{"governance_principal":"renrz-6aaaa-aaaaa-aaabq-cai"}"#,
         ]);
         match cli.command {
             Command::Bootstrap(BootstrapCommand::Deploy(args)) => {
@@ -490,7 +449,7 @@ mod tests {
                 assert_eq!(args.wasm, PathBuf::from("provision.wasm"));
                 assert_eq!(
                     args.init_args.init_args.as_deref(),
-                    Some(r#"{"bootstrap_bindings":[]}"#)
+                    Some(r#"{"governance_principal":"renrz-6aaaa-aaaaa-aaabq-cai"}"#)
                 );
                 assert!(args.init_args.init_args_hex.is_none());
                 assert_eq!(args.cycles, None);

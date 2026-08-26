@@ -4,7 +4,7 @@
 //! the REAL Provision canister by driving the shared idempotent ingest driver through an
 //! `ArtifactTransport` adapter implemented over PocketIC update/query calls — the same shape
 //! `gleaph-operator`'s ic-agent adapter has. Also proves runtime compatibility of the
-//! operator-only mirrors (`release_install`, `admin_install_deployment_binding`,
+//! operator-only mirrors (`release_install`, `upsert_deployment_grant`,
 //! `artifact_audit_history`) and, statically, both encode directions against the server's own
 //! Rust types.
 //!
@@ -79,21 +79,13 @@ fn bootstrap(provision_wasm: Vec<u8>) -> Env {
     let pic = new_pocket_ic();
     let admin = Principal::from_slice(&[0xAB; 29]);
 
-    // `deployment_id` derives from the governance principal (ADR 0068 convention).
-    let binding = gleaph_provision::types::DeploymentBinding {
-        deployment_id: admin.to_text(),
-        router_principal: Principal::from_slice(&[0x01; 29]),
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
     let provision = pic.create_canister();
     pic.add_cycles(provision, 100_000_000_000_000);
     pic.install_canister(
         provision,
         provision_wasm,
         Encode!(&gleaph_provision::canister::init::ProvisionInitArgs {
-            bootstrap_bindings: vec![binding],
+            governance_principal: admin,
         })
         .expect("encode provision init"),
         None,
@@ -324,61 +316,46 @@ fn operator_transport_drives_real_provision_ingestion() {
     let active = active.expect("an active release must exist");
     assert_eq!(active.release_id.0, RELEASE_ID);
 
-    // --- (8) binding install through the OPERATOR mirror types (runtime compat proof) ---
+    // --- (8) grant upsert through the OPERATOR mirror types (runtime compat proof) ---
     let router = Principal::from_slice(&[0x02; 29]);
     let entry_bytes = env
         .pic
         .update_call(
             env.provision,
             env.admin,
-            "admin_install_deployment_binding",
-            Encode!(&op_wire::AdminInstallDeploymentBindingArgs {
-                binding_version: 2,
-                router_principal: router,
-                governance_principal: env.admin,
-                bootstrap_principal: None,
-                deployment_id: "operator-e2e-deployment".to_owned(),
-            })
-            .expect("encode binding install"),
+            "upsert_deployment_grant",
+            Encode!(&op_wire::UpsertDeploymentGrantArgs { issuer: router })
+                .expect("encode grant upsert"),
         )
-        .expect("admin_install_deployment_binding");
-    let entry: Result<op_wire::BootstrapAuthEntry, op_wire::AdminInstallError> =
-        Decode!(&entry_bytes, Result<op_wire::BootstrapAuthEntry, op_wire::AdminInstallError>)
-            .expect("decode binding install");
-    let entry = entry.expect("binding install ok");
-    assert_eq!(entry.action, op_wire::BootstrapAuthAction::AdminInstall);
-    assert_eq!(
-        entry.deployment_id.as_deref(),
-        Some("operator-e2e-deployment")
-    );
+        .expect("upsert_deployment_grant");
+    let entry: Result<op_wire::BootstrapAuthEntry, op_wire::UpsertDeploymentGrantError> =
+        Decode!(&entry_bytes, Result<op_wire::BootstrapAuthEntry, op_wire::UpsertDeploymentGrantError>)
+            .expect("decode grant upsert");
+    let entry = entry.expect("grant upsert ok");
+    assert_eq!(entry.action, op_wire::BootstrapAuthAction::Upsert);
+    assert_eq!(entry.deployment_id.as_deref(), Some(router.to_text().as_str()));
 
-    // Non-authority installing a NEW deployment decodes to UnknownDeployment.
+    // Non-authority upserting a grant decodes to Unauthorized.
     let stranger = Principal::from_slice(&[0x03; 29]);
     let reject_bytes = env
         .pic
         .update_call(
             env.provision,
             stranger,
-            "admin_install_deployment_binding",
-            Encode!(&op_wire::AdminInstallDeploymentBindingArgs {
-                binding_version: 1,
-                router_principal: router,
-                governance_principal: stranger,
-                bootstrap_principal: None,
-                deployment_id: "stranger-deployment".to_owned(),
-            })
-            .expect("encode stranger binding install"),
+            "upsert_deployment_grant",
+            Encode!(&op_wire::UpsertDeploymentGrantArgs { issuer: router })
+                .expect("encode stranger grant upsert"),
         )
-        .expect("stranger admin_install_deployment_binding");
-    let rejected: Result<op_wire::BootstrapAuthEntry, op_wire::AdminInstallError> =
-        Decode!(&reject_bytes, Result<op_wire::BootstrapAuthEntry, op_wire::AdminInstallError>)
-            .expect("decode stranger binding install");
+        .expect("stranger upsert_deployment_grant");
+    let rejected: Result<op_wire::BootstrapAuthEntry, op_wire::UpsertDeploymentGrantError> =
+        Decode!(&reject_bytes, Result<op_wire::BootstrapAuthEntry, op_wire::UpsertDeploymentGrantError>)
+            .expect("decode stranger grant upsert");
     assert!(
         matches!(
             rejected,
-            Err(op_wire::AdminInstallError::UnknownDeployment(_))
+            Err(op_wire::UpsertDeploymentGrantError::Unauthorized)
         ),
-        "stranger must be UnknownDeployment-rejected, got {rejected:?}"
+        "stranger must be Unauthorized-rejected, got {rejected:?}"
     );
 
     // --- (9) audit history readback through the OPERATOR mirror types ---
@@ -491,49 +468,41 @@ fn operator_mirrors_round_trip_through_server_types() {
         );
     }
 
-    // AdminInstallDeploymentBindingArgs + AdminInstallError (both directions).
-    let op_binding = op::AdminInstallDeploymentBindingArgs {
-        binding_version: 3,
-        router_principal: Principal::from_slice(&[0x05; 29]),
-        governance_principal: Principal::from_slice(&[0x06; 29]),
-        bootstrap_principal: Some(Principal::from_slice(&[0x07; 29])),
-        deployment_id: "d".to_owned(),
+    // UpsertDeploymentGrantArgs + UpsertDeploymentGrantError (both directions).
+    let op_args = op::UpsertDeploymentGrantArgs {
+        issuer: Principal::from_slice(&[0x05; 29]),
     };
-    let _: server::AdminInstallDeploymentBindingArgs = Decode!(
-        &Encode!(&op_binding).expect("encode"),
-        server::AdminInstallDeploymentBindingArgs
+    let _: server::UpsertDeploymentGrantArgs = Decode!(
+        &Encode!(&op_args).expect("encode"),
+        server::UpsertDeploymentGrantArgs
     )
-    .expect("server decodes operator binding args");
-    let back: op::AdminInstallDeploymentBindingArgs = Decode!(
-        &Encode!(&server::AdminInstallDeploymentBindingArgs {
-            deployment_id: "d".to_owned(),
-            router_principal: Principal::from_slice(&[0x05; 29]),
-            governance_principal: Principal::from_slice(&[0x06; 29]),
-            binding_version: 3,
-            bootstrap_principal: Some(Principal::from_slice(&[0x07; 29])),
+    .expect("server decodes operator grant args");
+    let back: op::UpsertDeploymentGrantArgs = Decode!(
+        &Encode!(&server::UpsertDeploymentGrantArgs {
+            issuer: Principal::from_slice(&[0x05; 29]),
         })
-        .expect("encode server binding args"),
-        op::AdminInstallDeploymentBindingArgs
+        .expect("encode server grant args"),
+        op::UpsertDeploymentGrantArgs
     )
-    .expect("operator decodes server binding args");
-    assert_eq!(back, op_binding);
+    .expect("operator decodes server grant args");
+    assert_eq!(back, op_args);
 
     let admin_errors = [
-        op::AdminInstallError::UnknownDeployment("u".to_owned()),
-        op::AdminInstallError::AlreadyExists {
-            existing_governance: Principal::from_slice(&[0x06; 29]),
-            deployment_id: "d".to_owned(),
-        },
-        op::AdminInstallError::InvalidState("s".to_owned()),
+        op::UpsertDeploymentGrantError::NoBootstrapAuthority,
+        op::UpsertDeploymentGrantError::Unauthorized,
     ];
     for variant in admin_errors {
-        let bytes = Encode!(&variant).expect("encode admin error");
-        let server_variant: server::AdminInstallError = Decode!(&bytes, server::AdminInstallError)
-            .unwrap_or_else(|e| panic!("server cannot decode operator AdminInstallError: {e}"));
+        let bytes = Encode!(&variant).expect("encode grant error");
+        let server_variant: server::UpsertDeploymentGrantError =
+            Decode!(&bytes, server::UpsertDeploymentGrantError).unwrap_or_else(|e| {
+                panic!("server cannot decode operator UpsertDeploymentGrantError: {e}")
+            });
         let bytes_back =
-            Encode!(&server_variant).expect("re-encode decoded server AdminInstallError");
-        let round: op::AdminInstallError = Decode!(&bytes_back, op::AdminInstallError)
-            .unwrap_or_else(|e| panic!("operator cannot decode server AdminInstallError: {e}"));
+            Encode!(&server_variant).expect("re-encode decoded server UpsertDeploymentGrantError");
+        let round: op::UpsertDeploymentGrantError =
+            Decode!(&bytes_back, op::UpsertDeploymentGrantError).unwrap_or_else(|e| {
+                panic!("operator cannot decode server UpsertDeploymentGrantError: {e}")
+            });
         assert_eq!(
             format!("{round:?}"),
             format!("{variant:?}"),
@@ -545,17 +514,16 @@ fn operator_mirrors_round_trip_through_server_types() {
     let server_entry = server::BootstrapAuthEntry {
         caller: Principal::from_slice(&[0xAB; 29]),
         deployment_id: Some("d".to_owned()),
-        action: server::BootstrapAuthAction::AdminInstall,
+        action: server::BootstrapAuthAction::Upsert,
         timestamp_ns: 5,
-        registry_version: Some(2),
     };
     let op_entry: op::BootstrapAuthEntry = Decode!(
         &Encode!(&server_entry).expect("encode server entry"),
         op::BootstrapAuthEntry
     )
     .expect("decode server entry");
-    assert_eq!(op_entry.action, op::BootstrapAuthAction::AdminInstall);
-    assert_eq!(op_entry.registry_version, Some(2));
+    assert_eq!(op_entry.action, op::BootstrapAuthAction::Upsert);
+    assert_eq!(op_entry.deployment_id, Some("d".to_owned()));
 
     // ArtifactAuditEntry incl. action + outcome enums (both directions).
     let op_audit = op::ArtifactAuditEntry {

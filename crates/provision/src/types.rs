@@ -50,49 +50,11 @@ impl Storable for ProvisionIntentLockMarker {
     }
 }
 
-// === Deployment binding (stable region 0) ===
-
-/// Bootstrap trust binding for a deployment. Written only by governance principal.
-/// This is authentication configuration, not graph topology or tenancy.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct DeploymentBinding {
-    pub deployment_id: String,
-    /// Router principal authorized to send envelopes for this deployment.
-    pub router_principal: Principal,
-    /// Governance/recovery principal that can update this binding.
-    pub governance_principal: Principal,
-    /// Registry version at time of binding install.
-    pub binding_version: u64,
-    /// Optional bootstrap trust subject (ADR 0035 Amendment): the Account canister that may
-    /// issue the first Router before the Router principal exists. Transient; after the first
-    /// Router is issued the binding is handed to the Router principal.
-    pub bootstrap_principal: Option<Principal>,
-}
-
-impl Storable for DeploymentBinding {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            Encode!(&DeploymentBindingStableRecord::V1(self.clone()))
-                .expect("encode DeploymentBinding"),
-        )
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&DeploymentBindingStableRecord::V1(self)).expect("encode DeploymentBinding")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        match Decode!(bytes.as_ref(), DeploymentBindingStableRecord)
-            .expect("decode DeploymentBinding")
-        {
-            DeploymentBindingStableRecord::V1(v1) => v1,
-        }
-    }
-}
-
-#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
-pub(crate) enum DeploymentBindingStableRecord {
-    V1(DeploymentBinding),
-}
+// === Deployment grants (stable region 0) ===
+//
+// A deployment grant is a single principal authorized to request issuance (its own deployment).
+// The store is a set of authorized issuer principals: `deployment_id = issuer = caller` always
+// coincide, so there is no value payload — see `DeploymentGrantStore` (stable/store.rs).
 
 // === Job state machine (stable regions 1–3) ===
 
@@ -305,7 +267,6 @@ impl Storable for ProvisionJobRequestKey {
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapAuthorityRecord {
     pub governance_principal: Principal,
-    pub binding_version_at_seed: u64,
     pub seeded_at_ns: u64,
 }
 
@@ -326,20 +287,19 @@ impl Storable for BootstrapAuthorityRecord {
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BootstrapAuthAction {
     InitialSeed,
-    AdminInstall,
-    RejectUnknownDeployment,
-    RejectAlreadyExists,
-    RejectInvalidState,
+    Upsert,
+    RejectNotSeeded,
+    RejectUnauthorized,
 }
 
 /// One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapAuthEntry {
     pub caller: Principal,
+    /// Related deployment (= issuer principal text), if any.
     pub deployment_id: Option<String>,
     pub action: BootstrapAuthAction,
     pub timestamp_ns: u64,
-    pub registry_version: Option<u64>,
 }
 
 impl Storable for BootstrapAuthEntry {
@@ -355,30 +315,23 @@ impl Storable for BootstrapAuthEntry {
     }
 }
 
-/// Arguments for `admin_install_deployment_binding`.
+/// Arguments for `upsert_deployment_grant`.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AdminInstallDeploymentBindingArgs {
-    pub deployment_id: String,
-    pub router_principal: Principal,
-    pub governance_principal: Principal,
-    pub binding_version: u64,
-    /// Optional bootstrap trust subject (Account) for the first-Router issuance.
-    pub bootstrap_principal: Option<Principal>,
+pub struct UpsertDeploymentGrantArgs {
+    /// The principal authorized to request issuance. The deployment is the issuer itself:
+    /// `deployment_id = issuer = caller`.
+    pub issuer: Principal,
 }
 
-/// Error returned by `admin_install_deployment_binding`.
+/// Error returned by `upsert_deployment_grant`.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum AdminInstallError {
-    UnknownDeployment(String),
-    AlreadyExists {
-        deployment_id: String,
-        existing_governance: Principal,
-    },
-    InvalidState(String),
+pub enum UpsertDeploymentGrantError {
+    NoBootstrapAuthority,
+    Unauthorized,
 }
 
 /// Internal alias used by handler code and unit tests.
-pub type ProvisionAdminError = AdminInstallError;
+pub type ProvisionAdminError = UpsertDeploymentGrantError;
 
 // === Artifact catalog types (ADR 0036 Slice 8a) =============================
 

@@ -270,12 +270,11 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-006 — Pure-CLI platform bring-up fails on the Gleaph-owned launcher network
 
-- **Status:** (a) operator tier Resolved (2026-08-26); (b) Resolved (2026-08-26, daemonization);
-  CLI `network start` deploy still blocked by the same effective-canister-id routing defect
-  (see below) — blocks the `gleaph network start` self-contained bring-up path
-  (Account/Provision deploy + ADR 0068 lazy Router issuance + ADR 0070/0071 provisioned
-  topology) on a machine-local network without icp-cli; surfaced while executing plan
-  0296's quickstart (2026-08-24)
+- **Status:** Fully Resolved (2026-08-26). (a) operator tier + CLI deploy, (b) daemonization,
+  and (c) the Provision init/grant model refinement (below) all landed; `gleaph identity new
+  dev && gleaph network start -d` completes end to end (Account/Provision deploy + account
+  auto-registration) on a Gleaph-owned launcher network; `gleaph-operator grant upsert`
+  verified against the live network
 - **Owner:** `crates/cli/src/network.rs` (launcher lifecycle, management-canister transport)
   and the launcher's HTTP gateway contract (`icp-cli-network-launcher` v15.0.0);
   Account/Provision deployment flow in `network::start`
@@ -341,6 +340,49 @@ defect from being rediscovered without its prior reasoning.
   pure-CLI bring-up deploy rejects with `canister_not_found` on the launcher network. The same
   GAP-2026-08-24-006(a) fix must be applied to the CLI's `RemoteTransport` management calls
   before `gleaph network start` completes.
+
+  **Resolved 2026-08-27 — CLI deploy + Provision grant-model refinement (c).**
+  Two changes completed the pure-CLI bring-up:
+
+  1. *CLI deploy:* `RemoteTransport` mirrors the operator fix — local deploys go through
+     `provisional_create_canister_with_cycles` with per-call effective canister id (target
+     canister for install, `/_/topology` default for the provisional create). Additionally the
+     third launcher-start failure surfaced and was fixed: a reused, incomplete PocketIC state
+     dir panicked the launcher at startup (`nonblocking.rs: The state of subnet … is
+     incomplete`); `spawn_launcher` now removes the state dir before each start (the official
+     icp-cli pattern), redirects stdout/stderr to `launcher.stdout.log`/`launcher.stderr.log`,
+     and detects premature launcher exit, surfacing the stderr tail. It also refuses to start
+     a second launcher while one is alive (`gleaph network stop` first).
+
+  2. *Provision trust-model redesign (deployment grants).* The per-deployment
+     `DeploymentBinding` (router/governance/bootstrap principals + binding_version) is replaced
+     by a single set of authorized issuers:
+
+     - `DeploymentTrustStore` → `DeploymentGrantStore` = `StableBTreeSet<Principal>`; the set
+       holds principals authorized to request issuance. `admin_install_deployment_binding` →
+       `upsert_deployment_grant` (governance-only, idempotent; `BootstrapAuthAction::Upsert`).
+     - `DeploymentBinding.router_principal/governance_principal/bootstrap_principal/binding_version`
+       and the `complete_bootstrap` handover are all removed: deployment_id was a map key
+       duplicated in the value, binding_version was never read for logic, and the bootstrap
+       handover existed only to break a circularity that the set model dissolves. Each deploy is
+       independent — the account (via the Account canister) issues the first Router; the issued
+       Router is auto-granted at install time and issues graph resources; no transition concept.
+     - `ProvisionInitArgs` = `{ governance_principal }` (the only authority established at
+       init; grants are seeded per issuer afterwards). The CLI `network start` passes its
+       session principal as the governance authority.
+     - Envelope auth is set membership (`caller ∈ grants`); the deployment_id in an envelope is
+       data (the Account canister issues under the user's account principal, the Router under
+       its own). Authorization never depended on the deployment id again.
+     - Operator CLI `binding install` → `grant upsert <ISSUER>`; init-args JSON is
+       `{"governance_principal": "…"}`.
+
+     Verified: provision (110 unit tests), router (1043), operator (40), cli (142), account,
+     and the PocketIC E2E suite for the provision-affected targets (adr0035 callable
+     endpoints/outbound, adr0068 deployment/issuance, adr0087 bootstrap tier/operator
+     ingestion, text_index_provisioning, adr0070 fixture family 1). Known pre-existing E2E
+     failures unrelated to this change: adr0070 fixture 2 (`NotFound("graph context")` — RBAC
+     gate precedes the catalog-DDL path), adr0034 (vector stream WIP), router_gql_query
+     barrier test (ADR 0029 query/update export mismatch).
 
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 

@@ -10,7 +10,7 @@ use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
 use gleaph_pocket_ic_tests::{install_account_canister, install_provision_canister, new_pocket_ic};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;
@@ -31,23 +31,16 @@ fn admin_principal() -> Principal {
     Principal::from_slice(&[0x64; 29])
 }
 
-/// Install Account + Provision with the user's Account as the bootstrap trust subject. The Router
-/// principal is unknown before issuance (it is created by the Provision artifact install), so the
-/// binding's `router_principal` is the account principal as a placeholder; only the bootstrap
-/// principal matters for the first issuance.
+/// Install Account + Provision with the Account canister as the granted issuer. Under the grant
+/// model the deployment is the issuer itself: the Account canister (deployment = account
+/// principal) requests the first-Router issuance, and the issued Router is auto-granted at
+/// install time.
 fn env() -> Env {
     let pic = new_pocket_ic();
     let user = user_principal();
     let admin = admin_principal();
     let account = install_account_canister(&pic);
-    let binding = DeploymentBinding {
-        deployment_id: user.to_text(),
-        router_principal: account,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: Some(account),
-    };
-    let provision = install_provision_canister(&pic, binding);
+    let provision = install_provision_canister(&pic, admin, &[account]);
     pic.add_cycles(provision, 100_000_000_000_000);
     Env {
         pic,

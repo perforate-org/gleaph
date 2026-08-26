@@ -1,19 +1,13 @@
-// Arguments for `admin_install_deployment_binding`.
-type AdminInstallDeploymentBindingArgs = record {
-  binding_version : nat64;
-  router_principal : principal;
-  governance_principal : principal;
-  bootstrap_principal : opt principal;
-  deployment_id : text;
+// Arguments for `upsert_deployment_grant`.
+type UpsertDeploymentGrantArgs = record {
+  // The principal authorized to request issuance. The deployment is the issuer itself:
+  // deployment_id = issuer = caller.
+  issuer : principal;
 };
-// Error returned by `admin_install_deployment_binding`.
-type AdminInstallError = variant {
-  UnknownDeployment : text;
-  AlreadyExists : record {
-    existing_governance : principal;
-    deployment_id : text;
-  };
-  InvalidState : text;
+// Error returned by `upsert_deployment_grant`.
+type UpsertDeploymentGrantError = variant {
+  NoBootstrapAuthority;
+  Unauthorized;
 };
 // Action recorded for every artifact/release plan-level operation.
 type ArtifactAuditAction = variant {
@@ -111,34 +105,21 @@ type ArtifactUploadState = variant {
 // Action recorded for every bootstrap-authority decision.
 type BootstrapAuthAction = variant {
   InitialSeed;
-  RejectAlreadyExists;
-  AdminInstall;
-  RejectUnknownDeployment;
-  RejectInvalidState;
+  Upsert;
+  RejectNotSeeded;
+  RejectUnauthorized;
 };
 // One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
 type BootstrapAuthEntry = record {
   action : BootstrapAuthAction;
   timestamp_ns : nat64;
-  registry_version : opt nat64;
   caller : principal;
+  // Related deployment (= issuer principal text), if any.
   deployment_id : opt text;
 };
 // Kind of canister that an artifact can be installed into.
 // Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
 type CanisterKind = variant { Router; Graph; PropertyIndex; VectorCanister; TextCanister };
-// Bootstrap trust binding for a deployment. Written only by governance principal.
-// This is authentication configuration, not graph topology or tenancy.
-type DeploymentBinding = record {
-  // Registry version at time of binding install.
-  binding_version : nat64;
-  // Router principal authorized to send envelopes for this deployment.
-  router_principal : principal;
-  // Governance/recovery principal that can update this binding.
-  governance_principal : principal;
-  bootstrap_principal : opt principal;
-  deployment_id : text;
-};
 // Errors returned by `release_install`.
 type InstallError = variant {
   ArtifactNotFound : ArtifactId;
@@ -183,7 +164,7 @@ type ProvisionIngressResult = variant {
   Err : ProvisionIngressError;
 };
 // Bootstrap arguments for `init`.
-type ProvisionInitArgs = record { bootstrap_bindings : vec DeploymentBinding };
+type ProvisionInitArgs = record { governance_principal : principal };
 // Redacted job summary for admission responses.
 type ProvisionJobSummary = record {
   request_id : blob;
@@ -308,30 +289,26 @@ type ResourceJobView = record {
   logical_resource : LogicalResource;
   canister_id : opt principal;
 };
-type Result = variant { Ok : BootstrapAuthEntry; Err : AdminInstallError };
-type Result_1 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
-type Result_2 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
-type Result_3 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_4 = variant { Ok; Err : ProvisionIngressError };
-type Result_5 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_6 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_7 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
+type Result_1 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
+type Result_2 = variant { Ok : ArtifactUpload; Err : ArtifactError };
+type Result_3 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_4 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_5 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_6 = variant { Ok : BootstrapAuthEntry; Err : UpsertDeploymentGrantError };
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
-  admin_install_deployment_binding : (AdminInstallDeploymentBindingArgs) -> (
-      Result,
-    );
-  artifact_audit_history : () -> (Result_1) query;
+  artifact_audit_history : () -> (Result) query;
   artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query;
-  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_2);
-  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_3);
-  complete_bootstrap : (text) -> (Result_4);
+  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_1);
+  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_2);
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
   query_job : (blob, text) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_5);
+  release_activate : (ReleaseActivateArgs) -> (Result_3);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_6);
-  release_publish : (ReleasePublishArgs) -> (Result_7);
+  release_install : (ReleaseInstallArgs) -> (Result_4);
+  release_publish : (ReleasePublishArgs) -> (Result_5);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_6);
 }

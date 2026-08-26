@@ -7,7 +7,7 @@ use gleaph_graph_kernel::federation::{GlobalVertexId, RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
 use gleaph_provision::canister::init::ProvisionInitArgs;
-use gleaph_provision::types::DeploymentBinding;
+use gleaph_provision::types::UpsertDeploymentGrantArgs;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AtomicInsertRequest, AtomicInsertResponse, BulkLoadCommand,
@@ -310,21 +310,33 @@ pub fn install_vector_canister(pic: &PocketIc, router: Principal) -> Principal {
     vector
 }
 
-/// Install the Provision canister with a single bootstrap binding.
+/// Install the Provision canister with the given governance authority, then seed deployment
+/// grants for `granted_issuers` via `upsert_deployment_grant` (governance-only ingress).
 pub fn install_provision_canister(
     pic: &PocketIc,
-    bootstrap_binding: DeploymentBinding,
+    governance: Principal,
+    granted_issuers: &[Principal],
 ) -> Principal {
     let provision = create_funded_canister(pic);
     pic.install_canister(
         provision,
         wasm_bytes("PROVISION_WASM"),
         Encode!(&ProvisionInitArgs {
-            bootstrap_bindings: vec![bootstrap_binding],
+            governance_principal: governance,
         })
         .expect("encode provision init"),
         None,
     );
+    for issuer in granted_issuers {
+        pic.update_call(
+            provision,
+            governance,
+            "upsert_deployment_grant",
+            Encode!(&UpsertDeploymentGrantArgs { issuer: *issuer })
+                .expect("encode upsert args"),
+        )
+        .expect("seed deployment grant");
+    }
     provision
 }
 
@@ -624,26 +636,26 @@ pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
     let admin = Principal::from_slice(&[0xAB; 29]);
 
     let router = create_funded_canister(&pic);
-    // `deployment_id` derives from the admin principal (ADR 0068), matching the Router's
-    // issuance caller.
-    let binding = DeploymentBinding {
-        deployment_id: admin.to_text(),
-        router_principal: router,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
+    // Under the grant model each issuer IS its own deployment; the Router is granted so it can
+    // request issuance of the graph resources (deployment_id = issuer = caller).
     let provision = create_funded_canister(&pic);
     pic.add_cycles(provision, 100_000_000_000_000);
     pic.install_canister(
         provision,
         wasm_bytes("PROVISION_WASM"),
         Encode!(&ProvisionInitArgs {
-            bootstrap_bindings: vec![binding],
+            governance_principal: admin,
         })
         .expect("encode provision init"),
         None,
     );
+    pic.update_call(
+        provision,
+        admin,
+        "upsert_deployment_grant",
+        Encode!(&UpsertDeploymentGrantArgs { issuer: router }).expect("encode upsert args"),
+    )
+    .expect("seed router grant");
 
     pic.install_canister(
         router,
@@ -1504,9 +1516,11 @@ pub fn graph_index_pending_min_mutation_id(
 ) -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
     use gleaph_graph_kernel::plan_exec::MutationId;
 
+    // Update-semantics export (ADR 0029 read-your-writes barrier): the graph canister exports
+    // `index_pending_min_mutation_id` as an `#[update]`, not a query.
     let bytes = env
         .pic
-        .query_call(
+        .update_call(
             graph,
             env.router,
             "index_pending_min_mutation_id",

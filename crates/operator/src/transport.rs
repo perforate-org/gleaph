@@ -43,8 +43,8 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 use crate::wire::{
-    AdminInstallDeploymentBindingArgs, AdminInstallError, ArtifactAuditEntry, BootstrapAuthEntry,
-    InstallError, ReleaseInstallArgs, ReleaseInstallResult,
+    ArtifactAuditEntry, BootstrapAuthEntry, InstallError, ReleaseInstallArgs,
+    ReleaseInstallResult, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
 };
 
 /// Failures of the IC ingress layer itself (never the canister's typed rejections).
@@ -481,13 +481,13 @@ impl<'a> ProvisionClient<'a> {
             .await
     }
 
-    /// Typed `admin_install_deployment_binding`.
-    pub async fn admin_install_deployment_binding(
+    /// Typed `upsert_deployment_grant`.
+    pub async fn upsert_deployment_grant(
         &self,
-        args: AdminInstallDeploymentBindingArgs,
-    ) -> Result<Result<BootstrapAuthEntry, AdminInstallError>, IngressError> {
+        args: UpsertDeploymentGrantArgs,
+    ) -> Result<Result<BootstrapAuthEntry, UpsertDeploymentGrantError>, IngressError> {
         self.ingress
-            .update_result(self.provision, "admin_install_deployment_binding", &args)
+            .update_result(self.provision, "upsert_deployment_grant", &args)
             .await
     }
 

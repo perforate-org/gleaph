@@ -2,14 +2,14 @@
 
 use crate::types::{
     ArtifactAuditEntry, ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata,
-    ArtifactUpload, DeploymentBinding, ProvisionIntentLockMarker, ProvisionJobRecord,
-    ProvisionJobRequestKey, ReleaseId, ReleaseManifest,
+    ArtifactUpload, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
+    ReleaseId, ReleaseManifest,
 };
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
 use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_structures::{
-    StableBTreeMap, StableCell,
+    StableBTreeMap, StableBTreeSet, StableCell,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::cell::RefCell;
@@ -21,7 +21,7 @@ thread_local! {
         RefCell::new(MemoryManager::init(default_memory_impl()));
 }
 
-pub(crate) const DEPLOYMENT_TRUST: MemoryId = MemoryId::new(0);
+pub(crate) const DEPLOYMENT_GRANTS: MemoryId = MemoryId::new(0);
 pub(crate) const JOB_BY_REQUEST: MemoryId = MemoryId::new(1);
 pub(crate) const JOB_BY_DEPLOYMENT: MemoryId = MemoryId::new(2);
 pub(crate) const JOB_INTENT_LOCK: MemoryId = MemoryId::new(3);
@@ -48,7 +48,8 @@ pub(crate) const PROVISION_ARTIFACT_AUDIT_LOG: MemoryId = MemoryId::new(11);
 // ADR 0036 Slice 8a: internal artifact storage-id counter (MemoryId 12).
 pub(crate) const PROVISION_ARTIFACT_STORAGE_ID: MemoryId = MemoryId::new(12);
 
-pub(crate) type StableDeploymentTrustMap = StableBTreeMap<String, DeploymentBinding, Memory>;
+// Deployment grants: the set of principals authorized to request issuance (deployment = issuer).
+pub(crate) type StableDeploymentGrantSet = StableBTreeSet<Principal, Memory>;
 pub(crate) type StableJobByRequestMap =
     StableBTreeMap<ProvisionJobRequestKey, ProvisionJobRecord, Memory>;
 // P2-A: Map 2 derived key is the re-exported `ProvisioningIntentKey` (SSOT with Map 3 / Router Map 47).
@@ -69,8 +70,8 @@ pub(crate) type StableActiveReleaseCell = StableCell<Option<ReleaseId>, Memory>;
 pub(crate) type StableArtifactAuditLogMap =
     StableBTreeMap<(Principal, u64), ArtifactAuditEntry, Memory>;
 
-pub(crate) fn init_deployment_trust() -> StableDeploymentTrustMap {
-    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_TRUST)))
+pub(crate) fn init_deployment_grants() -> StableDeploymentGrantSet {
+    StableBTreeSet::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_GRANTS)))
 }
 
 pub(crate) fn init_job_by_request() -> StableJobByRequestMap {

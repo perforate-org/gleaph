@@ -7,8 +7,11 @@
 
 use crate::config::{self, LoadedConfig};
 use crate::remote::RemoteTransport;
+use ic_agent::Identity;
+use candid::Encode;
 use ic_management_canister_types::{
     CanisterIdRecord, CanisterInstallMode, CreateCanisterArgs, InstallCodeArgs,
+    ProvisionalCreateCanisterWithCyclesArgs,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -38,6 +41,7 @@ pub fn start(
     account_wasm: &Path,
     provision_wasm: &Path,
     background: bool,
+    identity_pem: Option<&Path>,
 ) -> Result<StartResult, String> {
     let mut launcher_child = None;
     let mut gateway_port = None;
@@ -64,11 +68,17 @@ pub fn start(
         gateway_port = Some(port);
     }
 
-    // Connect to the management canister (aaaaa-aa) on the local network.
-    let transport = RemoteTransport::connect("aaaaa-aa", network, None, true)?;
+    // Connect to the management canister (aaaaa-aa) on the local network. The session identity
+    // signs the deploy calls; its principal is Provision's governance authority at init.
+    let transport = RemoteTransport::connect("aaaaa-aa", network, identity_pem, true)?;
 
     let account_id = deploy_canister(&transport, account_wasm)?;
-    let provision_id = deploy_canister(&transport, provision_wasm)?;
+    let governance_principal = identity_pem
+        .map(identity_principal)
+        .transpose()?
+        .ok_or("no active identity; run `gleaph login` or `gleaph identity new` first")?;
+    let init_arg = provision_init_args(governance_principal)?;
+    let provision_id = install_canister(&transport, provision_wasm, init_arg)?;
 
     let mut mapping = BTreeMap::new();
     mapping.insert("account".to_owned(), account_id.to_text());
@@ -205,6 +215,23 @@ fn spawn_launcher(
 ) -> Result<(Child, u16), String> {
     let state_dir = std::env::temp_dir().join(format!("gleaph-{network}-state"));
     let status_dir = std::env::temp_dir().join(format!("gleaph-{network}-status"));
+
+    // Refuse to start a second network while a background launcher is already running; its
+    // state dir is in use and a fresh start would clobber it.
+    if let Some(pid) = read_alive_pid(network)? {
+        return Err(format!(
+            "network '{network}' is already running (launcher pid {pid}); run `gleaph network stop` first"
+        ));
+    }
+
+    // Start from a fresh state dir. The launcher persists PocketIC state across restarts, and a
+    // previous run killed mid-write leaves the subnet state incomplete, which makes the next
+    // launch panic ("The state of subnet ... is incomplete"). The official icp-cli removes the
+    // state dir before each start; do the same (GAP-2026-08-24-006).
+    if state_dir.exists() {
+        std::fs::remove_dir_all(&state_dir)
+            .map_err(|e| format!("remove stale state dir {}: {e}", state_dir.display()))?;
+    }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("create state dir: {e}"))?;
     std::fs::create_dir_all(&status_dir).map_err(|e| format!("create status dir: {e}"))?;
 
@@ -222,12 +249,21 @@ fn spawn_launcher(
         status_dir.to_str().unwrap(),
     ]);
     if background {
-        // Detach: redirect stdio and create a new session so the launcher (and its PocketIC
-        // process chain) survives the CLI's exit and a terminal close. Without `setsid` the
-        // launcher stays in the CLI's session and dies on SIGHUP when the controlling
+        // Detach: redirect stdio to log files and create a new session so the launcher (and its
+        // PocketIC process chain) survives the CLI's exit and a terminal close. Without `setsid`
+        // the launcher stays in the CLI's session and dies on SIGHUP when the controlling
         // terminal closes (GAP-2026-08-24-006(b)).
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
+        //
+        // stdout/stderr go to files (not `/dev/null`) so a launcher that dies during startup
+        // leaves a diagnosable trace; the official icp-cli does the same.
+        let stdout_log = state_dir.join("launcher.stdout.log");
+        let stderr_log = state_dir.join("launcher.stderr.log");
+        let stdout = std::fs::File::create(&stdout_log)
+            .map_err(|e| format!("create launcher stdout log {}: {e}", stdout_log.display()))?;
+        let stderr = std::fs::File::create(&stderr_log)
+            .map_err(|e| format!("create launcher stderr log {}: {e}", stderr_log.display()))?;
+        cmd.stdout(std::process::Stdio::from(stdout));
+        cmd.stderr(std::process::Stdio::from(stderr));
         cmd.stdin(std::process::Stdio::null());
         unsafe {
             cmd.pre_exec(|| {
@@ -238,9 +274,10 @@ fn spawn_launcher(
             });
         }
     }
-    let child = cmd.spawn().map_err(|e| format!("spawn launcher: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn launcher: {e}"))?;
 
-    // Wait for the status file to appear.
+    // Wait for the status file to appear, detecting a premature launcher exit so the caller gets
+    // the launcher's stderr instead of a bare timeout.
     let status_file = status_dir.join("status.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
@@ -254,6 +291,16 @@ fn spawn_launcher(
                 }
                 return Ok((child, status.gateway_port));
             }
+        }
+        // If the launcher exited before writing a ready status file, surface its stderr.
+        if let Some(status) = child.try_wait().map_err(|e| format!("wait launcher: {e}"))? {
+            let stderr_log = state_dir.join("launcher.stderr.log");
+            let tail = std::fs::read_to_string(&stderr_log)
+                .unwrap_or_else(|_| "<stderr log unavailable>".to_string());
+            return Err(format!(
+                "launcher exited prematurely with {status} before writing a ready status file; \
+                 stderr tail:\n{tail}"
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -348,6 +395,38 @@ fn deploy_canister(
     install_canister(transport, wasm_path, Vec::new())
 }
 
+/// Candid mirror of the Provision canister's `ProvisionInitArgs`
+/// (`crates/provision/provision.did`). Field names must match the did exactly.
+#[derive(candid::CandidType)]
+struct ProvisionInitArgsMirror {
+    governance_principal: candid::Principal,
+}
+
+/// Resolve the principal behind a PEM identity file.
+fn identity_principal(pem: &Path) -> Result<candid::Principal, String> {
+    let identity = ic_agent::identity::Secp256k1Identity::from_pem_file(pem)
+        .map_err(|e| format!("read identity {}: {e}", pem.display()))?;
+    Ok(identity
+        .sender()
+        .unwrap_or(candid::Principal::anonymous()))
+}
+
+/// Encode the Provision init argument: the CLI user's principal becomes the single governance
+/// authority. Deployment grants are seeded afterwards (`gleaph-operator grant upsert`).
+fn provision_init_args(governance_principal: candid::Principal) -> Result<Vec<u8>, String> {
+    if governance_principal == candid::Principal::anonymous() {
+        return Err(
+            "no active identity; run `gleaph login` or `gleaph identity new` before \
+             network start (Provision requires a non-anonymous governance_principal)"
+                .to_owned(),
+        );
+    }
+    candid::Encode!(&ProvisionInitArgsMirror {
+        governance_principal,
+    })
+    .map_err(|e| format!("encode provision init args: {e}"))
+}
+
 /// Create a canister and install the given wasm with the given Candid-encoded init argument,
 /// returning its id.
 ///
@@ -361,12 +440,39 @@ pub(crate) fn install_canister(
     let wasm =
         std::fs::read(wasm_path).map_err(|e| format!("read wasm {}: {e}", wasm_path.display()))?;
 
-    let create_args = CreateCanisterArgs {
-        settings: None,
-        sender_canister_version: None,
+    let canister_id = if transport.is_mainnet() {
+        let create_args = CreateCanisterArgs {
+            settings: None,
+            sender_canister_version: None,
+        };
+        let created: CanisterIdRecord =
+            transport.management_call("create_canister", &create_args)?;
+        created.canister_id
+    } else {
+        // Local/PocketIC endpoints cannot route an ingress-level `create_canister` (the real
+        // IC derives the target subnet from the caller+nonce; there is no such derived-id path
+        // here). The local equivalent is `provisional_create_canister_with_cycles`, whose
+        // response certification requires the effective canister id to fall within the target
+        // subnet's canister ranges, so we use the network's default effective canister id from
+        // `/_/topology` (GAP-2026-08-24-006(a)).
+        let effective = transport.default_effective_canister_id().ok_or_else(|| {
+            "local network did not expose a default effective canister id (/_/topology); \
+             cannot route the provisional create"
+                .to_string()
+        })?;
+        let provisional_args = ProvisionalCreateCanisterWithCyclesArgs {
+            amount: None,
+            settings: None,
+            specified_id: None,
+            sender_canister_version: None,
+        };
+        let created: CanisterIdRecord = transport.management_call_with_effective_canister_id(
+            "provisional_create_canister_with_cycles",
+            &provisional_args,
+            effective,
+        )?;
+        created.canister_id
     };
-    let created: CanisterIdRecord = transport.management_call("create_canister", &create_args)?;
-    let canister_id = created.canister_id;
 
     let install_args = InstallCodeArgs {
         mode: CanisterInstallMode::Install,
@@ -375,7 +481,11 @@ pub(crate) fn install_canister(
         arg: init_arg,
         sender_canister_version: None,
     };
-    transport.management_call::<()>("install_code", &install_args)?;
+    transport.management_call_with_effective_canister_id::<()>(
+        "install_code",
+        &install_args,
+        canister_id,
+    )?;
 
     Ok(canister_id)
 }

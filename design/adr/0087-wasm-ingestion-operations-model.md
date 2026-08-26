@@ -147,9 +147,9 @@ transport with destination `aaaaa-aa` — no second transport stack. Safety mode
 upgrade (the target stays stopped with resume instructions). Management wire shapes come from
 `ic-management-canister-types` (verified against the official management did); the
 `canister_status` reply is a local hand mirror because current crate versions require reply
-fields the validated replica generation does not send. Init arguments: Provision uses a JSON
-mirror of `ProvisionInitArgs`/`DeploymentBinding` (`--init-args-hex` remains the universal
-escape hatch); Account init takes no arguments. Known transport gap: ic-agent 0.49.2 cannot
+fields the validated replica generation does not send. Init arguments: Provision uses a JSON mirror of `ProvisionInitArgs`
+(`--init-args-hex` remains the universal escape hatch); Account init takes no arguments.
+Known transport gap: ic-agent 0.49.2 cannot
 attach cycles to ingress calls, so mainnet deploys fail fast (fee-free endpoints work);
 PocketIC's E2E (`adr0087_bootstrap_tier`) drives create → chunked install → stop → upgrade →
 start with exact module-hash verification through a management-transport adapter over real
@@ -190,7 +190,7 @@ authorized, anonymous stays rejected. See GAP-2026-08-26-005 for pinned tests.**
 **Slice 3 implemented (2026-08-26).** `gleaph-operator` (`crates/operator`) ships the platform
 operator binary on top of the slice-2 library: the clap command surface (`artifact ingest` /
 `artifact status`, `release publish` / `release activate` / `release get-active`,
-`canister install` to an explicit target, `binding install`, `audit history`), a generic
+`canister install` to an explicit target, `audit history`), a generic
 any-canister/any-method IC ingress layer whose endpoint, root-key, and PEM identity handling
 follow the dev CLI conventions, and the `ArtifactTransport` implementation over that layer
 that feeds the shared ingest driver. A PocketIC E2E (`adr0087_operator_ingestion`) drives the
@@ -198,6 +198,16 @@ driver against the real Provision canister through a transport adapter and round
 operator mirror type, proving wire compatibility end to end. Bootstrap-tier management-canister
 commands stay excluded per §Explicitly deferred; slice 4 (launcher convergence) remains
 pending.
+
+**Deployment-grant refinement (2026-08-27).** With GAP-2026-08-24-006(c) the Provision trust
+model was simplified: `binding install` → `grant upsert`, and the per-deployment
+`DeploymentBinding` became a single `StableBTreeSet<Principal>` of authorized issuers
+(`DeploymentGrantStore`). `ProvisionInitArgs` is now `{ governance_principal }`; grants are
+seeded per issuer afterwards (Router issuance auto-grants the issued Router at install time,
+replacing the `complete_bootstrap` handover). The CLI `network start` deploy passes its
+session principal as the governance authority, completing the pure-CLI bring-up path this
+ADR's bootstrap tier was built for. Full rationale and evidence in
+[implementation-gaps.md GAP-2026-08-24-006](../implementation-gaps.md).
 
 **Slice 2 implemented (2026-08-26).** `gleaph-artifact-api` (`crates/artifact-api`) ships the
 neutral candid+serde+sha2 wire mirror, the bounds-mirror constants, the pure planning pipeline,

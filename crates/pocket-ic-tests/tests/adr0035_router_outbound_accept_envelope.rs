@@ -15,10 +15,9 @@ use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::{ProvisionJobSummary, ProvisionableResource};
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
-    AdminInstallDeploymentBindingArgs, AdminInstallError, ArtifactAuditAction,
-    ArtifactAuditOutcome, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
-    BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, DeploymentBinding, ReleaseActivateArgs,
-    ReleaseInstallArgs, ReleasePublishArgs,
+    ArtifactAuditAction, ArtifactAuditOutcome, ArtifactPublishMetadataArgs,
+    ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthEntry, CanisterKind,
+    ReleaseActivateArgs, ReleaseInstallArgs, ReleasePublishArgs, UpsertDeploymentGrantArgs,
 };
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{ProvisionGraphArgs, ProvisionGraphResponse};
@@ -47,15 +46,9 @@ fn install_router_and_provision() -> Env {
     let router = pic.create_canister();
     pic.add_cycles(router, 2_000_000_000_000);
 
-    // Install Provision canister first so we know its principal for Router init.
-    let binding = DeploymentBinding {
-        deployment_id: "deploy-p0058".to_owned(),
-        router_principal: router,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
-    let provision = install_provision_canister(&pic, binding);
+    // Install Provision canister first so we know its principal for Router init. Under the
+    // grant model the Router is granted as an issuer: the deployment IS the Router principal.
+    let provision = install_provision_canister(&pic, admin, &[router]);
     pic.add_cycles(provision, 100_000_000_000_000);
 
     pic.install_canister(
@@ -117,26 +110,27 @@ fn query_provision_job(
         .expect("decode query_job response")
 }
 
-fn call_admin_install(
+fn call_grant_upsert(
     env: &Env,
     caller: Principal,
-    args: &AdminInstallDeploymentBindingArgs,
-) -> Result<BootstrapAuthEntry, AdminInstallError> {
+    issuer: Principal,
+) -> Result<BootstrapAuthEntry, gleaph_provision::types::UpsertDeploymentGrantError> {
     let bytes = env
         .pic
         .update_call(
             env.provision,
             caller,
-            "admin_install_deployment_binding",
-            Encode!(args).expect("encode admin_install_deployment_binding"),
+            "upsert_deployment_grant",
+            Encode!(&UpsertDeploymentGrantArgs { issuer })
+                .expect("encode upsert_deployment_grant"),
         )
-        .unwrap_or_else(|e| panic!("admin_install_deployment_binding on provision: {e:?}"));
+        .unwrap_or_else(|e| panic!("upsert_deployment_grant on provision: {e:?}"));
 
     Decode!(
         &bytes,
-        Result<BootstrapAuthEntry, AdminInstallError>
+        Result<BootstrapAuthEntry, gleaph_provision::types::UpsertDeploymentGrantError>
     )
-    .expect("decode admin_install_deployment_binding response")
+    .expect("decode upsert_deployment_grant response")
 }
 
 #[test]
@@ -144,8 +138,10 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
     let env = install_router_and_provision();
     activate_graph_release(&env);
 
+    // Under the grant model the deployment IS the Router principal; the Router derives the
+    // envelope deployment_id from itself (a caller-supplied deployment_id is ignored).
     let args = ProvisionGraphArgs {
-        deployment_id: "deploy-p0058".to_owned(),
+        deployment_id: env.router.to_text(),
         graph_name: "p0058.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
@@ -178,7 +174,7 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
         "one GraphShard(0) was installed"
     );
 
-    let completed_job = query_provision_job(&env, expected_request_id(), "deploy-p0058")
+    let completed_job = query_provision_job(&env, expected_request_id(), &env.router.to_text())
         .expect("Provision job exists");
     assert_eq!(completed_job.state_name, "Completed");
 
@@ -189,78 +185,24 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
         "second call must return durable Completed"
     );
 
-    // Scenario 7: admin_install_deployment_binding succeeds when called as the bootstrap
-    // governance principal seeded at init; a follow-up Router outbound call for the new
-    // deployment is no longer rejected with UnknownDeployment.
-    let admin_install_args = AdminInstallDeploymentBindingArgs {
-        deployment_id: "deploy-admin-1".to_owned(),
-        router_principal: env.router,
-        governance_principal: env.admin,
-        binding_version: 2,
-        bootstrap_principal: None,
-    };
-    let admin_install_result = call_admin_install(&env, env.admin, &admin_install_args)
-        .expect("bootstrap governance admin_install must succeed");
-    assert_eq!(
-        admin_install_result.action,
-        BootstrapAuthAction::AdminInstall
-    );
-    assert_eq!(admin_install_result.caller, env.admin);
+    // Scenario 7: grant upsert succeeds when called as the governance principal seeded at
+    // init; the newly granted issuer may then request its own deployment via the Router.
+    let second_issuer = Principal::from_slice(&[0x02; 29]);
+    let grant_result = call_grant_upsert(&env, env.admin, second_issuer)
+        .expect("governance grant upsert must succeed");
+    assert_eq!(grant_result.action, BootstrapAuthAction::Upsert);
+    assert_eq!(grant_result.caller, env.admin);
+    // Idempotent: upserting the same issuer again succeeds.
+    call_grant_upsert(&env, env.admin, second_issuer)
+        .expect("grant upsert is idempotent");
 
-    let admin_installed_args = ProvisionGraphArgs {
-        deployment_id: "deploy-admin-1".to_owned(),
-        graph_name: "admin1.graph".to_owned(),
-        requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
-        }],
-        authorized_caller: env.admin,
-        release_id: "rel-admin-1".to_owned(),
-        owner: env.admin,
-        admins: std::collections::BTreeSet::new(),
-    };
-    let admin_installed = call_provision_graph(&env, &admin_installed_args)
-        .expect("outbound call for admin-installed deployment must be accepted");
-    assert!(
-        matches!(admin_installed, ProvisionGraphResponse::Accepted { .. }),
-        "admin-installed deployment must accept fresh admission"
-    );
-
-    // Scenario 8: admin_install as a non-bootstrap, non-stored principal against a missing
-    // deployment returns UnknownDeployment and does not install a binding.
+    // Scenario 8: grant upsert as a non-governance principal returns Unauthorized.
     let wrong_principal = Principal::from_slice(&[0xCD; 29]);
-    let missing_install_args = AdminInstallDeploymentBindingArgs {
-        deployment_id: "deploy-admin-missing".to_owned(),
-        router_principal: env.router,
-        governance_principal: wrong_principal,
-        binding_version: 3,
-        bootstrap_principal: None,
-    };
-    let reject = call_admin_install(&env, wrong_principal, &missing_install_args)
-        .expect_err("unauthorized admin_install must be rejected");
+    let reject = call_grant_upsert(&env, wrong_principal, env.router)
+        .expect_err("unauthorized grant upsert must be rejected");
     assert_eq!(
         reject,
-        AdminInstallError::UnknownDeployment("deploy-admin-missing".to_owned())
-    );
-
-    let missing_args = ProvisionGraphArgs {
-        deployment_id: "deploy-admin-missing".to_owned(),
-        graph_name: "missing.graph".to_owned(),
-        requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
-        }],
-        authorized_caller: env.admin,
-        release_id: "rel-missing-1".to_owned(),
-        owner: env.admin,
-        admins: std::collections::BTreeSet::new(),
-    };
-    let missing_result = call_provision_graph(&env, &missing_args)
-        .expect_err("outbound call for rejected deployment must still be rejected");
-    assert!(
-        matches!(
-            missing_result,
-            gleaph_graph_kernel::federation::RouterError::UnknownDeployment(_)
-        ),
-        "expected UnknownDeployment, got {missing_result:?}"
+        gleaph_provision::types::UpsertDeploymentGrantError::Unauthorized
     );
 
     // Scenario 3: upgrade the Router with empty args; the durable stable
@@ -751,8 +693,8 @@ fn release_install_succeeds() {
 }
 
 /// `register_graph` provisioned fold (ADR 0056 §6): when a Provision canister is configured, the
-/// intent folds into the shared provisioning flow. `deployment_id` derives from the admin
-/// principal, so the bootstrap binding must use that value. With no release activated, the
+/// intent folds into the shared provisioning flow. The Router is the granted issuer
+/// (deployment_id = router principal = envelope caller). With no release activated, the
 /// admission returns `Reserved` and the fold surfaces success (no created resources to register).
 #[test]
 fn register_graph_provisioned_fold_admits_with_owner_deployment_id() {
@@ -765,14 +707,7 @@ fn register_graph_provisioned_fold_admits_with_owner_deployment_id() {
     let router = pic.create_canister();
     pic.add_cycles(router, 2_000_000_000_000);
 
-    let binding = DeploymentBinding {
-        deployment_id: admin.to_text(),
-        router_principal: router,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
-    let provision = install_provision_canister(&pic, binding);
+    let provision = install_provision_canister(&pic, admin, &[router]);
 
     pic.install_canister(
         router,

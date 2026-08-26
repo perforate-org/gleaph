@@ -12,8 +12,8 @@ use gleaph_artifact_api::pipeline::plan_artifact;
 use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivateArgs, ReleaseId};
 
 use crate::cli::{
-    ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BindingCommand,
-    BindingInstallArgs, CanisterCommand, CanisterInstallArgs, Command, ReleaseActivateCliArgs,
+    ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, CanisterCommand,
+    CanisterInstallArgs, Command, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
     ReleaseCommand, ReleasePublishCliArgs,
 };
 use crate::encoding::{
@@ -23,8 +23,7 @@ use crate::error::OperatorError;
 use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
-    AdminInstallDeploymentBindingArgs, ArtifactAuditAction, ArtifactAuditOutcome,
-    ReleaseInstallArgs,
+    ArtifactAuditAction, ArtifactAuditOutcome, ReleaseInstallArgs, UpsertDeploymentGrantArgs,
 };
 
 /// How many times `artifact ingest` polls a still-verifying artifact before handing control
@@ -119,8 +118,8 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         Command::Canister(CanisterCommand::Install(args)) => {
             run_canister_install(connection, args).await
         }
-        Command::Binding(BindingCommand::Install(args)) => {
-            run_binding_install(connection, args).await
+        Command::Grant(GrantCommand::Upsert(args)) => {
+            run_grant_upsert(connection, args).await
         }
         Command::Audit(AuditCommand::History) => run_audit_history(connection).await,
         // Bootstrap tier (ADR 0087 §Explicitly deferred): management-canister destination,
@@ -368,33 +367,21 @@ async fn run_canister_install(
     Ok(())
 }
 
-/// `binding install`: write a deployment trust binding as governance.
-async fn run_binding_install(
+/// `grant upsert`: authorize an issuer to request issuance (governance only).
+async fn run_grant_upsert(
     connection: &Connection,
-    args: BindingInstallArgs,
+    args: GrantUpsertArgs,
 ) -> Result<(), OperatorError> {
-    let router = parse_principal("--router", &args.router)?;
-    let governance = parse_principal("--governance", &args.governance)?;
-    let bootstrap = match &args.bootstrap {
-        Some(text) => Some(parse_principal("--bootstrap", text)?),
-        None => None,
-    };
+    let issuer = parse_principal("issuer", &args.issuer)?;
     let ingress = connection.connect_ingress().await?;
     let client = ProvisionClient::new(&ingress, connection.provision());
     let entry = client
-        .admin_install_deployment_binding(AdminInstallDeploymentBindingArgs {
-            binding_version: args.binding_version,
-            router_principal: router,
-            governance_principal: governance,
-            bootstrap_principal: bootstrap,
-            deployment_id: args.deployment_id.clone(),
-        })
+        .upsert_deployment_grant(UpsertDeploymentGrantArgs { issuer })
         .await??;
     println!(
-        "binding installed: deployment={:?} action={:?} binding_version={} timestamp_ns={}",
+        "grant upserted: deployment={:?} action={:?} timestamp_ns={}",
         entry.deployment_id,
         entry.action,
-        entry.registry_version.unwrap_or(0),
         entry.timestamp_ns
     );
     Ok(())

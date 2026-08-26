@@ -23,7 +23,7 @@ use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_pocket_ic_tests::new_pocket_ic;
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{RegisterGraphArgs, TextIndexInfo, TextIndexStatusView};
@@ -130,26 +130,27 @@ fn bootstrap() -> Env {
     let router = pic.create_canister();
     pic.add_cycles(router, 2_000_000_000_000);
 
-    // `deployment_id` derives from the admin principal (ADR 0068), matching the Router's
-    // issuance caller.
-    let binding = DeploymentBinding {
-        deployment_id: admin.to_text(),
-        router_principal: router,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
+    // Under the grant model the Router is granted as an issuer (deployment_id = router
+    // principal = caller, ADR 0068).
     let provision_canister = pic.create_canister();
     pic.add_cycles(provision_canister, 100_000_000_000_000);
     pic.install_canister(
         provision_canister,
         provision_wasm(),
         Encode!(&gleaph_provision::canister::init::ProvisionInitArgs {
-            bootstrap_bindings: vec![binding],
+            governance_principal: admin,
         })
         .expect("encode provision init"),
         None,
     );
+    pic.update_call(
+        provision_canister,
+        admin,
+        "upsert_deployment_grant",
+        Encode!(&gleaph_provision::types::UpsertDeploymentGrantArgs { issuer: router })
+            .expect("encode upsert args"),
+    )
+    .expect("seed router grant");
 
     pic.install_canister(
         router,

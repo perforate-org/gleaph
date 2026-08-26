@@ -9,7 +9,7 @@
 //! splitting, hashing, ordering, idempotent resume) lives in the shared [`gleaph_artifact_api`]
 //! library; this crate owns the command surface, the IC transport, and the wire mirrors for
 //! the operations outside the ingestion pipeline (`release_install`,
-//! `admin_install_deployment_binding`, `artifact_audit_history`).
+//! `upsert_deployment_grant`, `artifact_audit_history`).
 //!
 //! Module map:
 //! - [`cli`]: clap definitions (pure parsing, unit-tested offline).

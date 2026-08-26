@@ -3,7 +3,7 @@
 //! `gleaph-artifact-api` deliberately ships its wire-mirror error enums without `Display`
 //! (a neutral contract crate must not pick presentation). This module owns the operator
 //! presentation layer: exhaustive renderers for [`IngestError`], [`ArtifactError`],
-//! [`ReleaseError`], [`InstallError`], and [`AdminInstallError`], plus the top-level
+//! [`ReleaseError`], [`InstallError`], and [`UpsertDeploymentGrantError`], plus the top-level
 //! [`OperatorError`] that commands return. Every renderer matches exhaustively so a new
 //! server variant forces a rendering decision here instead of silently degrading output.
 
@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::encoding::{artifact_id_label, kind_name, to_hex};
 use crate::manifest::ManifestError;
-use crate::wire::{AdminInstallError, InstallError};
+use crate::wire::{InstallError, UpsertDeploymentGrantError};
 
 /// Everything that can abort an operator command.
 ///
@@ -41,9 +41,9 @@ pub enum OperatorError {
     /// `release_install` failed.
     #[error("release install failed: {}", describe_install_error(&.0))]
     Install(Box<InstallError>),
-    /// `admin_install_deployment_binding` failed.
-    #[error("binding install failed: {}", describe_admin_install_error(&.0))]
-    Binding(Box<AdminInstallError>),
+    /// `upsert_deployment_grant` failed.
+    #[error("grant upsert failed: {}", describe_grant_upsert_error(&.0))]
+    GrantUpsert(Box<UpsertDeploymentGrantError>),
     /// The release manifest file is malformed or incomplete.
     #[error(transparent)]
     Manifest(#[from] ManifestError),
@@ -79,9 +79,9 @@ impl From<InstallError> for OperatorError {
     }
 }
 
-impl From<AdminInstallError> for OperatorError {
-    fn from(error: AdminInstallError) -> Self {
-        Self::Binding(Box::new(error))
+impl From<UpsertDeploymentGrantError> for OperatorError {
+    fn from(error: UpsertDeploymentGrantError) -> Self {
+        Self::GrantUpsert(Box::new(error))
     }
 }
 
@@ -249,19 +249,16 @@ pub fn describe_install_error(error: &InstallError) -> String {
     }
 }
 
-/// Render a binding-install failure.
-pub fn describe_admin_install_error(error: &AdminInstallError) -> String {
+/// Render a grant-upsert failure.
+pub fn describe_grant_upsert_error(error: &UpsertDeploymentGrantError) -> String {
     match error {
-        AdminInstallError::UnknownDeployment(deployment_id) => format!(
-            "unknown deployment {deployment_id:?}; only the bootstrap authority may install new bindings"
-        ),
-        AdminInstallError::AlreadyExists {
-            existing_governance,
-            deployment_id,
-        } => format!(
-            "deployment {deployment_id} is already bound (existing governance principal {existing_governance})"
-        ),
-        AdminInstallError::InvalidState(reason) => format!("binding cannot be installed: {reason}"),
+        UpsertDeploymentGrantError::NoBootstrapAuthority => {
+            "bootstrap authority is not seeded; deploy Provision with a governance_principal first"
+                .to_owned()
+        }
+        UpsertDeploymentGrantError::Unauthorized => {
+            "only the governance authority may upsert deployment grants".to_owned()
+        }
     }
 }
 
@@ -409,19 +406,12 @@ mod tests {
         );
 
         assert!(
-            describe_admin_install_error(&AdminInstallError::UnknownDeployment("d".into()))
-                .contains("\"d\"")
+            describe_grant_upsert_error(&UpsertDeploymentGrantError::NoBootstrapAuthority)
+                .contains("not seeded")
         );
         assert!(
-            describe_admin_install_error(&AdminInstallError::AlreadyExists {
-                existing_governance: candid::Principal::anonymous(),
-                deployment_id: "d".into(),
-            })
-            .contains("already bound")
-        );
-        assert!(
-            describe_admin_install_error(&AdminInstallError::InvalidState("no seed".into()))
-                .contains("no seed")
+            describe_grant_upsert_error(&UpsertDeploymentGrantError::Unauthorized)
+                .contains("governance authority")
         );
     }
 }

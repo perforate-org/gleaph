@@ -335,62 +335,28 @@ impl ManagementTransport for ManagementClient<'_> {
 
 /// JSON input form of Provision's init argument.
 ///
-/// Schema mirror of `ProvisionInitArgs`/`DeploymentBinding`; source of truth:
-/// `crates/provision/provision.did:132-141` (DeploymentBinding),
-/// `crates/provision/provision.did:185-186` (ProvisionInitArgs),
-/// `crates/provision/src/canister/init.rs:13-16` (server types). Principals appear as
+/// Schema mirror of `ProvisionInitArgs`; source of truth:
+/// `crates/provision/provision.did` (ProvisionInitArgs),
+/// `crates/provision/src/canister/init.rs` (server types). Principals appear as
 /// text on the command line and are parsed before encoding.
 ///
 /// ```json
 /// {
-///   "bootstrap_bindings": [
-///     {
-///       "deployment_id": "acme",
-///       "router_principal": "rrkah-fqaaa-aaaaa-aaaaq-cai",
-///       "governance_principal": "renrz-6aaaa-aaaaa-aaabq-cai",
-///       "bootstrap_principal": null,
-///       "binding_version": 1
-///     }
-///   ]
+///   "governance_principal": "renrz-6aaaa-aaaaa-aaabq-cai"
 /// }
 /// ```
+///
+/// Deployment grants are seeded afterwards via `grant upsert`, never at init.
 #[derive(Debug, Deserialize)]
 pub struct ProvisionInitArgsInput {
-    /// Bindings seeded at init; the first establishes the durable authority singleton.
-    pub bootstrap_bindings: Vec<DeploymentBindingInput>,
-}
-
-/// One bootstrap trust binding in JSON input form (did field names verbatim).
-#[derive(Debug, Deserialize)]
-pub struct DeploymentBindingInput {
-    /// Deployment identifier the binding is keyed on.
-    pub deployment_id: String,
-    /// Router principal authorized for this deployment.
-    pub router_principal: String,
-    /// Governance/recovery principal that can update this binding.
+    /// The single governance authority established at init.
     pub governance_principal: String,
-    /// Optional bootstrap trust subject (Account) for first-Router issuance.
-    #[serde(default)]
-    pub bootstrap_principal: Option<String>,
-    /// Registry version at time of binding install.
-    pub binding_version: u64,
 }
 
-/// Candid mirror of `DeploymentBinding` (provision.did:132-141). Field names match the did
-/// exactly — candid encodes records by name hash; declaration order is kept for diffing.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Deserialize)]
-struct DeploymentBindingMirror {
-    deployment_id: String,
-    router_principal: Principal,
-    governance_principal: Principal,
-    bootstrap_principal: Option<Principal>,
-    binding_version: u64,
-}
-
-/// Candid mirror of `ProvisionInitArgs` (provision.did:185-186).
+/// Candid mirror of `ProvisionInitArgs` (provision.did).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, serde::Deserialize)]
 struct ProvisionInitArgsMirror {
-    bootstrap_bindings: Vec<DeploymentBindingMirror>,
+    governance_principal: Principal,
 }
 
 /// Resolve the init argument bytes for one bootstrap deploy/upgrade.
@@ -425,8 +391,8 @@ pub fn load_init_args(
             }
             let Some(json) = init_args_json else {
                 return Err(
-                    "provision requires --init-args <JSON> (bootstrap bindings seed the \
-                     governance authority) or --init-args-hex <HEX>"
+                    "provision requires --init-args <JSON> (governance_principal establishes the \
+                     authority) or --init-args-hex <HEX>"
                         .to_owned(),
                 );
             };
@@ -438,44 +404,15 @@ pub fn load_init_args(
 fn encode_provision_init_args(json: &str) -> Result<Vec<u8>, String> {
     let input: ProvisionInitArgsInput = serde_json::from_str(json)
         .map_err(|error| format!("parse --init-args as ProvisionInitArgs JSON: {error}"))?;
-    if input.bootstrap_bindings.is_empty() {
-        return Err(
-            "--init-args must carry at least one bootstrap binding; an unseeded provision \
-             has no governance authority"
-                .to_owned(),
-        );
-    }
-    let mut bindings = Vec::with_capacity(input.bootstrap_bindings.len());
-    for binding in input.bootstrap_bindings {
-        let deployment_id = binding.deployment_id;
-        if deployment_id.trim().is_empty() {
-            return Err("bootstrap binding has an empty deployment_id".to_owned());
-        }
-        let parse = |flag: &str, text: &str| {
-            Principal::from_text(text)
-                .map_err(|error| format!("binding {deployment_id}: invalid {flag}: {error}"))
-        };
-        let governance = parse("governance_principal", &binding.governance_principal)?;
-        // Mirrors the init-time trap (crates/provision/src/canister/init.rs): reject early
-        // so the failure surfaces before any management-canister call.
-        if governance == Principal::anonymous() {
-            return Err(format!(
-                "binding {deployment_id}: anonymous governance_principal is not allowed"
-            ));
-        }
-        bindings.push(DeploymentBindingMirror {
-            router_principal: parse("router_principal", &binding.router_principal)?,
-            governance_principal: governance,
-            bootstrap_principal: binding
-                .bootstrap_principal
-                .map(|text| parse("bootstrap_principal", &text))
-                .transpose()?,
-            binding_version: binding.binding_version,
-            deployment_id,
-        });
+    let governance = Principal::from_text(&input.governance_principal)
+        .map_err(|error| format!("invalid governance_principal: {error}"))?;
+    // Mirrors the init-time trap (crates/provision/src/canister/init.rs): reject early
+    // so the failure surfaces before any management-canister call.
+    if governance == Principal::anonymous() {
+        return Err("anonymous governance_principal is not allowed".to_owned());
     }
     let mirror = ProvisionInitArgsMirror {
-        bootstrap_bindings: bindings,
+        governance_principal: governance,
     };
     Encode!(&mirror).map_err(|error| format!("encode provision init args: {error}"))
 }
@@ -1347,66 +1284,44 @@ mod tests {
         Principal::from_slice(&[byte; 29]).to_text()
     }
 
-    fn binding_json() -> String {
+    fn init_args_json() -> String {
         format!(
-            r#"{{"bootstrap_bindings":[{{"deployment_id":"acme","router_principal":"{}","governance_principal":"{}","bootstrap_principal":null,"binding_version":2}}]}}"#,
-            principal_text(0x01),
+            r#"{{"governance_principal":"{}"}}"#,
             principal_text(0x02),
         )
     }
 
     #[test]
     fn provision_init_args_mirror_matches_server_wire() {
-        let bytes = load_init_args(BootstrapKind::Provision, Some(&binding_json()), None)
+        let bytes = load_init_args(BootstrapKind::Provision, Some(&init_args_json()), None)
             .expect("encode provision init args");
 
         // Operator mirror bytes decode with the server's own type.
         let server: gleaph_provision::canister::init::ProvisionInitArgs =
             Decode!(&bytes, gleaph_provision::canister::init::ProvisionInitArgs)
                 .expect("server decodes operator mirror");
-        assert_eq!(server.bootstrap_bindings.len(), 1);
-        let binding = &server.bootstrap_bindings[0];
-        assert_eq!(binding.deployment_id, "acme");
-        assert_eq!(binding.router_principal, Principal::from_slice(&[0x01; 29]));
         assert_eq!(
-            binding.governance_principal,
+            server.governance_principal,
             Principal::from_slice(&[0x02; 29])
         );
-        assert_eq!(binding.binding_version, 2);
-        assert_eq!(binding.bootstrap_principal, None);
 
         // Server-typed value encodes into something the operator mirror decodes identically.
         let server_value = gleaph_provision::canister::init::ProvisionInitArgs {
-            bootstrap_bindings: vec![gleaph_provision::types::DeploymentBinding {
-                deployment_id: "acme".to_owned(),
-                router_principal: Principal::from_slice(&[0x01; 29]),
-                governance_principal: Principal::from_slice(&[0x02; 29]),
-                bootstrap_principal: Some(Principal::from_slice(&[0x03; 29])),
-                binding_version: 3,
-            }],
+            governance_principal: Principal::from_slice(&[0x03; 29]),
         };
         let server_bytes = candid::Encode!(&server_value).expect("encode server init args");
         let decoded: ProvisionInitArgsMirror =
             Decode!(&server_bytes, ProvisionInitArgsMirror).expect("mirror decodes server");
-        assert_eq!(decoded.bootstrap_bindings[0].binding_version, 3);
-        assert!(decoded.bootstrap_bindings[0].bootstrap_principal.is_some());
+        assert_eq!(
+            decoded.governance_principal,
+            Principal::from_slice(&[0x03; 29])
+        );
     }
 
     #[test]
     fn provision_requires_explicit_init_args() {
         let error = load_init_args(BootstrapKind::Provision, None, None).expect_err("required");
         assert!(error.contains("--init-args"), "got: {error}");
-
-        let error = load_init_args(
-            BootstrapKind::Provision,
-            Some(r#"{"bootstrap_bindings":[]}"#),
-            None,
-        )
-        .expect_err("empty bindings rejected");
-        assert!(
-            error.contains("at least one bootstrap binding"),
-            "got: {error}"
-        );
     }
 
     #[test]
@@ -1430,12 +1345,13 @@ mod tests {
 
     #[test]
     fn provision_init_args_validate_principals_and_anonymous_governance() {
-        let bad_principal = binding_json().replace(&principal_text(0x01), "not-a-principal");
+        let bad_principal = init_args_json().replace(&principal_text(0x02), "not-a-principal");
         let error = load_init_args(BootstrapKind::Provision, Some(&bad_principal), None)
-            .expect_err("bad router principal");
-        assert!(error.contains("router_principal"), "got: {error}");
+            .expect_err("bad principal");
+        assert!(error.contains("governance_principal"), "got: {error}");
 
-        let anon = binding_json().replace(&principal_text(0x02), &Principal::anonymous().to_text());
+        let anon =
+            init_args_json().replace(&principal_text(0x02), &Principal::anonymous().to_text());
         let error = load_init_args(BootstrapKind::Provision, Some(&anon), None)
             .expect_err("anonymous governance");
         assert!(
@@ -1446,7 +1362,7 @@ mod tests {
 
     #[test]
     fn hex_escape_hatch_overrides_json_for_provision() {
-        let bytes = load_init_args(BootstrapKind::Provision, Some(&binding_json()), Some("00"))
+        let bytes = load_init_args(BootstrapKind::Provision, Some(&init_args_json()), Some("00"))
             .expect("hex wins");
         assert_eq!(bytes, vec![0x00]);
     }

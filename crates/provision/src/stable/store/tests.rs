@@ -1,6 +1,6 @@
-//! Unit tests for `DeploymentTrustStore` and `ProvisionJobStore`.
+//! Unit tests for `DeploymentGrantStore` and `ProvisionJobStore`.
 
-use super::{DeploymentTrustStore, ProvisionJobStore};
+use super::{DeploymentGrantStore, ProvisionJobStore};
 use crate::canister::{
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     release_activate_with_caller, release_publish_with_caller,
@@ -18,7 +18,7 @@ use crate::types::{
     ReleaseId, ReleaseManifest, ReleasePublishArgs, sha256,
 };
 use crate::types::{
-    DeploymentBinding, JobState, LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord,
+    JobState, LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord,
     ProvisionJobRequestKey, ProvisioningIntentKey, ResourceJobEntry,
 };
 use candid::Principal;
@@ -27,16 +27,6 @@ use ic_stable_structures::Storable;
 
 fn test_principal(id: u8) -> Principal {
     Principal::from_slice(&[id; 29])
-}
-
-fn test_deployment_binding(deployment_id: &str, router_id: u8, gov_id: u8) -> DeploymentBinding {
-    DeploymentBinding {
-        deployment_id: deployment_id.to_owned(),
-        router_principal: test_principal(router_id),
-        governance_principal: test_principal(gov_id),
-        binding_version: 1,
-        bootstrap_principal: None,
-    }
 }
 
 fn test_request_id(label: &str) -> [u8; 32] {
@@ -99,59 +89,26 @@ fn test_record(request_id: &str, deployment_id: &str, fingerprint: &str) -> Prov
 }
 
 #[test]
-fn test_get_or_install_creates_and_returns() {
+fn test_grant_insert_is_idempotent_and_contains() {
     super::reset_all_maps();
-    let store = DeploymentTrustStore::new();
-    let binding = test_deployment_binding("d1", 10, 20);
-    let first = store.get_or_install(binding.clone());
-    assert_eq!(first, binding);
-    let second = store.get_or_install(binding.clone());
-    assert_eq!(second, binding);
-    assert_eq!(store.get("d1"), Some(binding));
+    let store = DeploymentGrantStore::new();
+    let issuer = test_principal(10);
+    assert!(!store.contains(&issuer));
+    store.insert(issuer);
+    store.insert(issuer); // idempotent
+    assert!(store.contains(&issuer));
 }
 
 #[test]
-#[should_panic(expected = "DeploymentBinding mismatch")]
-fn test_get_or_install_mismatch_panics() {
+fn test_grant_remove_revokes() {
     super::reset_all_maps();
-    let store = DeploymentTrustStore::new();
-    let binding = test_deployment_binding("d1", 10, 20);
-    store.get_or_install(binding);
-    let mismatch = test_deployment_binding("d1", 11, 20);
-    store.get_or_install(mismatch);
-}
-
-#[test]
-fn test_update_by_governance() {
-    super::reset_all_maps();
-    let store = DeploymentTrustStore::new();
-    let binding = test_deployment_binding("d1", 10, 20);
-    store.get_or_install(binding.clone());
-    let updated = DeploymentBinding {
-        router_principal: test_principal(30),
-        ..binding.clone()
-    };
-    assert!(store.update(binding.governance_principal, updated).is_ok());
-    assert_eq!(
-        store.get("d1").unwrap().router_principal,
-        test_principal(30)
-    );
-}
-
-#[test]
-fn test_update_by_non_governance_fails() {
-    super::reset_all_maps();
-    let store = DeploymentTrustStore::new();
-    let binding = test_deployment_binding("d1", 10, 20);
-    store.get_or_install(binding.clone());
-    let updated = DeploymentBinding {
-        router_principal: test_principal(30),
-        ..binding.clone()
-    };
-    assert_eq!(
-        store.update(test_principal(99), updated),
-        Err(super::TrustUpdateError::NotAuthorized)
-    );
+    let store = DeploymentGrantStore::new();
+    let issuer = test_principal(10);
+    store.insert(issuer);
+    assert!(store.contains(&issuer));
+    assert!(store.remove(&issuer));
+    assert!(!store.contains(&issuer));
+    assert!(!store.remove(&issuer));
 }
 
 #[test]
@@ -695,38 +652,20 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
     );
 }
 
-// === admin_upsert + BootstrapAuth facade (ADR 0035 Slice 7) ================
+// === DeploymentGrantStore + BootstrapAuth facade (ADR 0035 Slice 7) ================
 
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::types::{BootstrapAuthAction, BootstrapAuthorityRecord};
 
-fn admin_binding(
-    deployment_id: &str,
-    router_id: u8,
-    gov_id: u8,
-    version: u64,
-) -> DeploymentBinding {
-    DeploymentBinding {
-        deployment_id: deployment_id.to_owned(),
-        router_principal: test_principal(router_id),
-        governance_principal: test_principal(gov_id),
-        binding_version: version,
-        bootstrap_principal: None,
-    }
-}
-
 #[test]
-fn admin_upsert_overwrites_existing_binding_without_panic() {
+fn grant_insert_overwrites_existing_grant_without_panic() {
     super::reset_all_maps();
-    let store = DeploymentTrustStore::new();
-    let first = admin_binding("d1", 10, 20, 1);
-    let second = admin_binding("d1", 11, 21, 2);
-    assert_eq!(store.admin_upsert(first), admin_binding("d1", 10, 20, 1));
-    assert_eq!(store.admin_upsert(second), admin_binding("d1", 11, 21, 2));
-    let persisted = store.get("d1").unwrap();
-    assert_eq!(persisted.router_principal, test_principal(11));
-    assert_eq!(persisted.governance_principal, test_principal(21));
-    assert_eq!(persisted.binding_version, 2);
+    let store = DeploymentGrantStore::new();
+    let issuer = test_principal(10);
+    store.insert(issuer);
+    store.insert(issuer);
+    assert!(store.contains(&issuer));
+    assert!(!store.contains(&test_principal(11)));
 }
 
 #[test]
@@ -736,7 +675,6 @@ fn bootstrap_auth_facade_uses_separate_memory_ids() {
     let gov = test_principal(42);
     let record = BootstrapAuthorityRecord {
         governance_principal: gov,
-        binding_version_at_seed: 7,
         seeded_at_ns: 100,
     };
     auth_store.set_authority(record.clone());
@@ -747,7 +685,6 @@ fn bootstrap_auth_facade_uses_separate_memory_ids() {
             deployment_id: Some("dep-a".to_owned()),
             action: BootstrapAuthAction::InitialSeed,
             timestamp_ns: 100,
-            registry_version: Some(7),
         },
     );
 
@@ -757,8 +694,8 @@ fn bootstrap_auth_facade_uses_separate_memory_ids() {
     assert_eq!(history[0].action, BootstrapAuthAction::InitialSeed);
     // A bug that placed both structures on one MemoryId would likely corrupt one of these reads.
     assert_eq!(
-        auth_store.get_authority().unwrap().binding_version_at_seed,
-        7
+        auth_store.get_authority().unwrap().seeded_at_ns,
+        100
     );
 }
 
@@ -768,12 +705,10 @@ fn stable_cell_singleton_writes_overwrite_previous_value() {
     let auth_store = ProvisionBootstrapAuthStore::new();
     let first = BootstrapAuthorityRecord {
         governance_principal: test_principal(1),
-        binding_version_at_seed: 1,
         seeded_at_ns: 1,
     };
     let second = BootstrapAuthorityRecord {
         governance_principal: test_principal(2),
-        binding_version_at_seed: 2,
         seeded_at_ns: 2,
     };
     auth_store.set_authority(first);
@@ -797,7 +732,6 @@ fn bootstrap_auth_constructor_rerun_preserves_seeded_authority() {
     let auth_store = ProvisionBootstrapAuthStore::new();
     let record = BootstrapAuthorityRecord {
         governance_principal: test_principal(12),
-        binding_version_at_seed: 3,
         seeded_at_ns: 42,
     };
     auth_store.init_authority(record.clone());
@@ -880,7 +814,6 @@ fn artifact_upload_chunk_promotes_to_verified_on_full_match() {
     let gov = Principal::from_slice(&[1; 29]);
     ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
         governance_principal: gov,
-        binding_version_at_seed: 1,
         seeded_at_ns: 1,
     });
 
@@ -993,7 +926,6 @@ fn artifact_upload_chunk_full_sha256_mismatch_returns_error_and_preserves_state(
     let gov = Principal::from_slice(&[1; 29]);
     ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
         governance_principal: gov,
-        binding_version_at_seed: 1,
         seeded_at_ns: 1,
     });
 
@@ -1174,7 +1106,6 @@ fn release_seed_bootstrap() {
     crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore::new().set_authority(
         crate::types::BootstrapAuthorityRecord {
             governance_principal: release_test_principal(),
-            binding_version_at_seed: 1,
             seeded_at_ns: 1,
         },
     );
@@ -1718,9 +1649,8 @@ fn bootstrap_auth_audit_log_cap_enforces_eviction() {
             crate::types::BootstrapAuthEntry {
                 caller: gov,
                 deployment_id: Some(format!("dep-{i}")),
-                action: BootstrapAuthAction::AdminInstall,
+                action: BootstrapAuthAction::Upsert,
                 timestamp_ns: 100 + i as u64,
-                registry_version: Some(i as u64),
             },
         );
     }
@@ -1745,9 +1675,8 @@ fn bootstrap_auth_audit_log_append_is_sequence_ordered() {
             crate::types::BootstrapAuthEntry {
                 caller: gov,
                 deployment_id: Some(format!("dep-{i}")),
-                action: BootstrapAuthAction::AdminInstall,
+                action: BootstrapAuthAction::Upsert,
                 timestamp_ns: 200 + i as u64,
-                registry_version: Some(i as u64),
             },
         );
     }
@@ -1755,7 +1684,6 @@ fn bootstrap_auth_audit_log_append_is_sequence_ordered() {
     assert_eq!(history.len(), 10);
     for (i, entry) in history.iter().enumerate() {
         assert_eq!(entry.deployment_id, Some(format!("dep-{i}")));
-        assert_eq!(entry.registry_version, Some(i as u64));
     }
     assert_eq!(
         auth_store.latest(gov).unwrap().deployment_id,
@@ -1771,7 +1699,6 @@ fn artifact_publish_metadata_rejects_excessive_version_length() {
     let gov = test_principal(11);
     ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
         governance_principal: gov,
-        binding_version_at_seed: 1,
         seeded_at_ns: 1,
     });
     let long_version = "x".repeat(MAX_ARTIFACT_SEMANTIC_VERSION_LEN + 1);
@@ -1801,7 +1728,6 @@ fn artifact_publish_metadata_rejects_excessive_byte_length() {
     let gov = test_principal(12);
     ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
         governance_principal: gov,
-        binding_version_at_seed: 1,
         seeded_at_ns: 1,
     });
     let err = artifact_publish_metadata_with_caller(
@@ -1831,7 +1757,6 @@ fn artifact_publish_metadata_rejects_empty_or_excessive_chunk_count() {
     let gov = test_principal(13);
     ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
         governance_principal: gov,
-        binding_version_at_seed: 1,
         seeded_at_ns: 1,
     });
 

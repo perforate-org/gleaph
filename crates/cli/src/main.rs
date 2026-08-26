@@ -418,6 +418,17 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 .path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
+            // Resolve the session's signing source (like auto-register): it signs the deploy
+            // calls and its principal becomes Provision's governance authority.
+            let identity = {
+                let session = auth::load_session();
+                let has_icp_yaml = identity::has_icp_yaml(project_root);
+                session
+                    .as_ref()
+                    .map(|s| identity::session_pem(s, has_icp_yaml))
+                    .transpose()
+                    .map_err(CliError::Message)?
+            };
             let result = network::start(
                 &args.network,
                 project_root,
@@ -425,6 +436,7 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 &args.account_wasm,
                 &args.provision_wasm,
                 args.background,
+                identity.as_deref(),
             )
             .map_err(CliError::Message)?;
             if let Some(port) = result.gateway_port {

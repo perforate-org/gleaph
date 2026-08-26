@@ -18,8 +18,8 @@ mod tests {
             .expect("actor must be a Candid service");
         let names: Vec<&str> = methods.iter().map(|(n, _)| n.as_str()).collect();
         assert!(
-            names.contains(&"admin_install_deployment_binding"),
-            "admin_install_deployment_binding must be in the public ingress surface in this slice; got {:?}",
+            names.contains(&"upsert_deployment_grant"),
+            "upsert_deployment_grant must be in the public ingress surface in this slice; got {:?}",
             names
         );
         for required in [
@@ -35,21 +35,21 @@ mod tests {
             );
         }
 
-        // Regression guard: the method must return Result<BootstrapAuthEntry, AdminInstallError>,
-        // not the earlier Result<Null, AdminInstallError> stub.
+        // Regression guard: the method must return Result<BootstrapAuthEntry, UpsertDeploymentGrantError>,
+        // not the earlier Result<Null, UpsertDeploymentGrantError> stub.
         let admin_method = methods
             .iter()
-            .find(|(n, _)| n == "admin_install_deployment_binding")
+            .find(|(n, _)| n == "upsert_deployment_grant")
             .map(|(_, ty)| ty.clone())
-            .expect("admin_install_deployment_binding method type");
+            .expect("upsert_deployment_grant method type");
         let admin_rets = match admin_method.as_ref() {
             candid::types::TypeInner::Func(func) => &func.rets,
-            _ => panic!("admin_install_deployment_binding must be a function"),
+            _ => panic!("upsert_deployment_grant must be a function"),
         };
         assert_eq!(
             admin_rets.len(),
             1,
-            "admin_install_deployment_binding must return exactly one result variant"
+            "upsert_deployment_grant must return exactly one result variant"
         );
         let admin_ret = &admin_rets[0];
         let is_null_result = matches!(admin_ret.as_ref(), candid::types::TypeInner::Var(name) if {
@@ -69,14 +69,14 @@ mod tests {
         });
         assert!(
             !is_null_result,
-            "admin_install_deployment_binding must not return Result<Null, AdminInstallError>"
+            "upsert_deployment_grant must not return Result<Null, UpsertDeploymentGrantError>"
         );
 
         for required in [
             "accept_envelope",
             "query_job",
             "complete_graph_registration",
-            "admin_install_deployment_binding",
+            "upsert_deployment_grant",
             "artifact_publish_metadata",
             "artifact_upload_chunk",
             "artifact_get_status",
@@ -183,8 +183,8 @@ mod tests {
             "RouterRegistrationAckResult",
             "BootstrapAuthEntry",
             "BootstrapAuthAction",
-            "AdminInstallDeploymentBindingArgs",
-            "AdminInstallError",
+            "UpsertDeploymentGrantArgs",
+            "UpsertDeploymentGrantError",
             "CanisterKind",
             "ArtifactId",
             "ArtifactMetadata",

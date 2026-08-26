@@ -21,7 +21,7 @@ use gleaph_migration_api::{
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
 use gleaph_router::RouterInitArgs;
 
@@ -40,16 +40,9 @@ fn env() -> Env {
     let router = pic.create_canister();
     pic.add_cycles(router, 2_000_000_000_000);
 
-    // The CREATE GRAPH bridge derives deployment_id from the caller principal (ADR 0068), so the
-    // binding must authorize that deployment for this Router.
-    let binding = DeploymentBinding {
-        deployment_id: admin.to_text(),
-        router_principal: router,
-        governance_principal: admin,
-        binding_version: 1,
-        bootstrap_principal: None,
-    };
-    let provision = install_provision_canister(&pic, binding);
+    // Under the grant model each issuer IS its own deployment: the Router is granted so it can
+    // request issuance (the CREATE GRAPH bridge derives deployment_id from the caller, ADR 0068).
+    let provision = install_provision_canister(&pic, admin, &[router]);
     pic.add_cycles(provision, 100_000_000_000_000);
 
     pic.install_canister(

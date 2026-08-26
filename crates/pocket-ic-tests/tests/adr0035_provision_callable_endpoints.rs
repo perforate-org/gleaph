@@ -13,7 +13,7 @@ use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::canister::{
     ProvisionAcceptResponse, ProvisionIngressError, ProvisionIngressResult, ProvisionJobView,
 };
-use gleaph_provision::types::{DeploymentBinding, ProvisionRequest};
+use gleaph_provision::types::ProvisionRequest;
 
 fn router_principal() -> Principal {
     Principal::from_slice(&[0x10; 29])
@@ -27,14 +27,10 @@ fn other_principal() -> Principal {
     Principal::from_slice(&[0x20; 29])
 }
 
-fn deployment_binding() -> DeploymentBinding {
-    DeploymentBinding {
-        deployment_id: "d1".to_owned(),
-        router_principal: router_principal(),
-        governance_principal: governance_principal(),
-        binding_version: 1,
-        bootstrap_principal: Some(governance_principal()),
-    }
+/// Under the grant model the deployment is the issuer itself: the granted Router requests
+/// issuance with `deployment_id = router_principal` text.
+fn deployment_id() -> String {
+    router_principal().to_text()
 }
 
 fn test_request(_request_id: &str, shard: u32) -> ProvisionRequest {
@@ -47,9 +43,9 @@ fn test_request(_request_id: &str, shard: u32) -> ProvisionRequest {
         &requested_resources,
     );
     ProvisionRequest {
-        deployment_id: "d1".to_owned(),
+        deployment_id: deployment_id(),
         request_id,
-        intent_key: ProvisioningIntentKey::new("d1", logical_resource),
+        intent_key: ProvisioningIntentKey::new(&deployment_id(), logical_resource),
         reserved_graph_id: None,
         graph_name,
         requested_resources,
@@ -106,7 +102,7 @@ fn query_job(
 #[test]
 fn provision_callable_endpoints_install_auth_and_idempotency() {
     let pic = new_pocket_ic();
-    let provision = install_provision_canister(&pic, deployment_binding());
+    let provision = install_provision_canister(&pic, governance_principal(), &[router_principal()]);
 
     // Scenario 1: install with one bootstrap binding.
     // (install_provision_canister already asserts the install succeeds.)
@@ -131,7 +127,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
             intent_lock_count,
             created_resources,
         }) => {
-            assert_eq!(job_view.deployment_id, "d1", "scenario 3 deployment_id");
+            assert_eq!(job_view.deployment_id, deployment_id(), "scenario 3 deployment_id");
             assert_eq!(
                 job_view.request_id,
                 expected_request_id(1),
@@ -163,8 +159,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         provision,
         other_principal(),
         expected_request_id(1),
-        "d1",
-    );
+        &deployment_id(),    );
     assert!(
         wrong_query.is_none(),
         "scenario 5: wrong principal query must map to None"
@@ -176,8 +171,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         provision,
         router_principal(),
         expected_request_id(1),
-        "d1",
-    );
+        &deployment_id(),    );
     assert!(
         view.is_some(),
         "scenario 6: router query must return Some(view)"
@@ -188,7 +182,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         expected_request_id(1),
         "scenario 6 request_id"
     );
-    assert_eq!(view.deployment_id, "d1", "scenario 6 deployment_id");
+    assert_eq!(view.deployment_id, deployment_id(), "scenario 6 deployment_id");
     assert_eq!(view.state_name, "Reserved", "scenario 6 state_name");
 }
 
@@ -196,7 +190,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
 #[test]
 fn provision_callable_endpoints_upgrade_durability() {
     let pic = new_pocket_ic();
-    let provision = install_provision_canister(&pic, deployment_binding());
+    let provision = install_provision_canister(&pic, governance_principal(), &[router_principal()]);
 
     // Pre-upgrade admission.
     let pre_req = test_request("r-pre", 5);
@@ -214,7 +208,7 @@ fn provision_callable_endpoints_upgrade_durability() {
         provision,
         wasm_bytes("PROVISION_WASM"),
         Encode!(&ProvisionInitArgs {
-            bootstrap_bindings: vec![],
+            governance_principal: governance_principal(),
         })
         .expect("encode provision upgrade args"),
         None,

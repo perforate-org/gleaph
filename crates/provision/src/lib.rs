@@ -14,16 +14,16 @@ pub mod canister;
 mod candid;
 
 use crate::canister::{
-    ProvisionIngressError, ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
+    ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
     handlers,
 };
-use crate::types::AdminInstallError;
+use crate::types::UpsertDeploymentGrantError;
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, ArtifactAuditEntry, ArtifactError, ArtifactId,
-    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
-    BootstrapAuthEntry, InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult,
-    ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
-    RouterRegistrationAck,
+    ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
+    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, InstallError, ProvisionRequest,
+    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
+    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
+    UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -53,15 +53,10 @@ fn complete_graph_registration(ack: RouterRegistrationAck) -> RouterRegistration
 }
 
 #[update]
-fn complete_bootstrap(deployment_id: String) -> Result<(), ProvisionIngressError> {
-    handlers::complete_bootstrap_handler(deployment_id)
-}
-
-#[update]
-fn admin_install_deployment_binding(
-    args: AdminInstallDeploymentBindingArgs,
-) -> Result<BootstrapAuthEntry, AdminInstallError> {
-    handlers::admin_install_deployment_binding_handler(args)
+fn upsert_deployment_grant(
+    args: UpsertDeploymentGrantArgs,
+) -> Result<BootstrapAuthEntry, UpsertDeploymentGrantError> {
+    handlers::upsert_deployment_grant_handler(args)
 }
 
 #[allow(clippy::result_large_err)]

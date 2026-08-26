@@ -1,10 +1,11 @@
-//! PocketIC coverage for the `gleaph deploy` flow (ADR 0068): Account registration,
-//! first-Router issuance via Provision, and bootstrap trust handover.
+//! PocketIC coverage for the `gleaph deploy` flow (ADR 0068): Account registration and
+//! first-Router issuance via Provision. Under the grant model each deploy is independent:
+//! the granted Account (deployment = account principal) issues the first Router, and the
+//! issued Router is auto-granted at install time — there is no bootstrap handover step.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
 use gleaph_pocket_ic_tests::{install_account_canister, install_provision_canister, new_pocket_ic};
-use gleaph_provision::types::DeploymentBinding;
 
 fn router_principal() -> Principal {
     Principal::from_slice(&[0x10; 29])
@@ -19,17 +20,12 @@ fn user_principal() -> Principal {
 }
 
 #[test]
-fn gleaph_deploy_registers_account_and_hands_over_bootstrap() {
+fn gleaph_deploy_registers_account_and_issues_first_router() {
     let pic = new_pocket_ic();
     let account = install_account_canister(&pic);
-    let binding = DeploymentBinding {
-        deployment_id: user_principal().to_text(),
-        router_principal: router_principal(),
-        governance_principal: governance_principal(),
-        binding_version: 1,
-        bootstrap_principal: Some(account),
-    };
-    let provision = install_provision_canister(&pic, binding);
+    // The Account canister is the granted issuer (deployment = account principal); it requests
+    // the first-Router issuance through `authorize_router_issuance`.
+    let provision = install_provision_canister(&pic, governance_principal(), &[account]);
 
     // 1. User registers a Personal account.
     let bytes = pic
@@ -65,59 +61,34 @@ fn gleaph_deploy_registers_account_and_hands_over_bootstrap() {
         "first-Router issuance must be accepted: {result:?}"
     );
 
-    // 3. User completes the bootstrap trust handover (Account -> Provision complete_bootstrap).
-    let bytes = pic
-        .update_call(
-            account,
-            user_principal(),
-            "complete_bootstrap",
-            candid::encode_args((&account_id, &provision)).expect("encode complete_bootstrap args"),
-        )
-        .expect("complete_bootstrap call");
-    let result: Result<(), gleaph_account::types::AccountError> =
-        Decode!(&bytes, Result<(), gleaph_account::types::AccountError>)
-            .expect("decode complete_bootstrap");
-    assert!(
-        result.is_ok(),
-        "complete_bootstrap must succeed: {result:?}"
-    );
-
-    // 4. The bootstrap principal no longer holds issuance authority: a fresh accept_envelope
-    //    from the Account is now rejected by Provision.
+    // 3. Deploys are independent: the Account remains a granted issuer and may request a
+    //    further deployment (a graph shard) with no handover step. (No active release is
+    //    seeded here, so admission returns Accepted with no created resources.)
+    let shard = gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
+        logical_resource: gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
+            gleaph_graph_kernel::federation::ShardId::new(2),
+        ),
+    };
     let bytes = pic
         .update_call(
             provision,
             account,
             "accept_envelope",
             Encode!(&gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-                deployment_id: user_principal().to_text(),
+                deployment_id: account.to_text(),
                 request_id: gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
                     "g2",
-                    &[
-                        gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
-                            logical_resource:
-                                gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
-                                    gleaph_graph_kernel::federation::ShardId::new(2),
-                                ),
-                        }
-                    ],
+                    &[shard.clone()],
                 ),
                 intent_key: gleaph_graph_kernel::provisioning::ProvisioningIntentKey::new(
-                    &user_principal().to_text(),
+                    &account.to_text(),
                     gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
                         gleaph_graph_kernel::federation::ShardId::new(2),
                     ),
                 ),
                 reserved_graph_id: None,
                 graph_name: "g2".to_owned(),
-                requested_resources: vec![
-                    gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
-                        logical_resource:
-                            gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
-                                gleaph_graph_kernel::federation::ShardId::new(2),
-                            ),
-                    }
-                ],
+                requested_resources: vec![shard],
                 install_args: vec![vec![0u8; 0]],
                 authorized_caller: user_principal(),
                 release_id: "rel2".to_owned(),
@@ -133,10 +104,10 @@ fn gleaph_deploy_registers_account_and_hands_over_bootstrap() {
     assert!(
         matches!(
             result,
-            gleaph_graph_kernel::provisioning::wire::ProvisionIngressResult::Err(
-                gleaph_graph_kernel::provisioning::wire::ProvisionIngressError::NotAuthorized
+            gleaph_graph_kernel::provisioning::wire::ProvisionIngressResult::Ok(
+                gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Accepted { .. }
             )
         ),
-        "bootstrap principal must be rejected after handover: {result:?}"
+        "a granted issuer may request a further independent deploy: {result:?}"
     );
 }

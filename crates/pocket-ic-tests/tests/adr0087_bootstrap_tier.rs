@@ -463,10 +463,8 @@ fn bootstrap_tier_deploys_and_upgrades_provision_end_to_end() {
     let adapter = ManagementPicAdapter::new(&pic, gov());
 
     // --- deploy through the operator stack, including the real JSON init-args loader ---
-    let router = Principal::from_slice(&[0x01; 29]);
     let init_json = format!(
-        r#"{{"bootstrap_bindings":[{{"deployment_id":"{}","router_principal":"{router}","governance_principal":"{}","bootstrap_principal":null,"binding_version":1}}]}}"#,
-        gov().to_text(),
+        r#"{{"governance_principal":"{}"}}"#,
         gov().to_text(),
     );
     let init_args = load_init_args(BootstrapKind::Provision, Some(&init_json), None)

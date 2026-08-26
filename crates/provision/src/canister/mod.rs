@@ -9,20 +9,20 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashSet;
 
-use crate::canister::init::binding_from_admin_args;
 use crate::stable::artifact::ProvisionArtifactStore;
+use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::release::ProvisionReleaseStore;
-use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
+use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
-    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
-    ArtifactUploadState, BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource,
-    JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
+    ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
+    ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, ArtifactUploadState,
+    BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, JobState,
+    LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
     MAX_ARTIFACT_SEMANTIC_VERSION_LEN, ProvisionAdminError, ProvisionJobRecord,
     ProvisionJobRequestKey, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
     ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest,
     ReleasePublishArgs, ResourceJobEntry, RouterRegistrationAck, RouterRegistrationAckResponse,
-    sha256, state_name,
+    UpsertDeploymentGrantArgs, sha256, state_name,
 };
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, InstallError,
@@ -96,6 +96,13 @@ pub struct ResourceJobView {
 }
 
 // === Helpers =================================================================
+
+/// Read the durable governance authority principal, if seeded.
+pub(crate) fn authority_governance() -> Option<Principal> {
+    ProvisionBootstrapAuthStore::new()
+        .get_authority()
+        .map(|record| record.governance_principal)
+}
 
 pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> ProvisionJobRecord {
     let immutable_request_digest =
@@ -209,21 +216,19 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
 pub(crate) async fn accept_envelope_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
-    deployment_store: &DeploymentTrustStore,
+    deployment_store: &DeploymentGrantStore,
     req: ProvisionRequest,
     now_ns: u64,
 ) -> Result<ProvisionAcceptResponse, ProvisionIngressError> {
     // 1. Authenticate first (Step 5A). Unauthorized callers never reach the store.
-    let binding = deployment_store
-        .get(&req.deployment_id)
-        .ok_or(ProvisionIngressError::UnknownDeployment)?;
-    // The Router principal is the normal issuer; the bootstrap principal (Account) may issue
-    // only the first Router before the Router principal exists (ADR 0035 Amendment).
-    let is_router = caller == binding.router_principal;
-    let is_bootstrap = binding.bootstrap_principal.is_some_and(|p| caller == p);
-    if !is_router && !is_bootstrap {
+    //
+    // A deployment grant authorizes one issuer principal. The issuer names the deployment in
+    // the envelope (the Account canister issues under the user's account principal; the Router
+    // issues under its own). Authorization is set membership: `caller ∈ grants`.
+    if !deployment_store.contains(&caller) {
         return Err(ProvisionIngressError::NotAuthorized);
     }
+    let governance_principal = authority_governance().ok_or(ProvisionIngressError::InvalidState)?;
 
     // 2. Validate requested_resources and install_args alignment.
     if req.requested_resources.is_empty() {
@@ -262,8 +267,7 @@ pub(crate) async fn accept_envelope_with_caller(
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
             //    InstallPending -> Installed for each resource, recording canister_id and
             //    artifact_hash, then advance to RouterRegistrationPending.
-            let created =
-                deploy_job_resources(store, &req, binding.governance_principal, now_ns).await;
+            let created = deploy_job_resources(store, &req, governance_principal, now_ns).await;
             let updated = store
                 .get_by_request_key(&ProvisionJobRequestKey::new(
                     &req.request_id,
@@ -346,7 +350,6 @@ async fn deploy_job_resources(
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
         // is already Reserved).
         let _ = store.advance_state(&key, JobState::CreatePending, Some(index), now_ns);
-
         // create_canister with controllers [Provision, governance].
         let canister_id = match create_canister_call(governance_principal).await {
             Some(id) => id,
@@ -355,6 +358,11 @@ async fn deploy_job_resources(
 
         store.set_resource_canister_id(&key, index, canister_id);
         let _ = store.advance_state(&key, JobState::CanisterCreated, Some(index), now_ns);
+
+        // Auto-grant: a freshly issued Router is authorized to request issuance for its own
+        // deployment (it issues the graph resources afterwards). Every deploy is independent:
+        // the issuer set simply gains one entry per issued Router.
+        let is_router = kind == CanisterKind::Router;
 
         // Install the release artifact for this kind.
         let _ = store.advance_state(&key, JobState::InstallPending, Some(index), now_ns);
@@ -376,6 +384,13 @@ async fn deploy_job_resources(
 
         store.set_resource_artifact_hash(&key, index, artifact_hash);
         let _ = store.advance_state(&key, JobState::Installed, Some(index), now_ns);
+
+        // Auto-grant: a freshly issued Router is authorized to request issuance for its own
+        // deployment (it issues the graph resources afterwards). Every deploy is independent:
+        // the issuer set simply gains one entry per issued Router.
+        if is_router {
+            DeploymentGrantStore::new().insert(canister_id);
+        }
 
         created.push(CreatedResource {
             logical_resource: resource.logical_resource,
@@ -452,33 +467,29 @@ async fn install_resource(
 pub(crate) fn query_job_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
-    deployment_store: &DeploymentTrustStore,
+    deployment_store: &DeploymentGrantStore,
     request_id: [u8; 32],
     deployment_id: String,
 ) -> Result<ProvisionJobView, ProvisionQueryError> {
-    let binding = deployment_store
-        .get(&deployment_id)
-        .ok_or(ProvisionQueryError::UnknownDeployment)?;
+    // Authorized: any granted issuer, or the governance authority.
+    if !deployment_store.contains(&caller) && authority_governance() != Some(caller) {
+        return Err(ProvisionQueryError::NotAuthorized);
+    }
     let record = store
         .get_by_request(&request_id, &deployment_id)
         .ok_or(ProvisionQueryError::NotFound)?;
-    if caller != binding.router_principal && caller != binding.governance_principal {
-        return Err(ProvisionQueryError::NotAuthorized);
-    }
     Ok(build_job_view(&record, caller))
 }
 
 pub(crate) fn complete_graph_registration_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
-    deployment_store: &DeploymentTrustStore,
+    deployment_store: &DeploymentGrantStore,
     ack: RouterRegistrationAck,
     now_ns: u64,
 ) -> Result<RouterRegistrationAckResponse, ProvisionIngressError> {
-    let binding = deployment_store
-        .get(&ack.deployment_id)
-        .ok_or(ProvisionIngressError::UnknownDeployment)?;
-    if caller != binding.router_principal {
+    // Only a granted issuer (a Router) completes registration.
+    if !deployment_store.contains(&caller) {
         return Err(ProvisionIngressError::NotAuthorized);
     }
 
@@ -495,109 +506,55 @@ pub(crate) fn complete_graph_registration_with_caller(
         })
 }
 
-/// Complete the bootstrap trust handover: clear `bootstrap_principal` so the Account no longer
-/// holds issuance authority. Authorized by the bootstrap principal (Account) or the governance
-/// principal. Idempotent.
-pub(crate) fn complete_bootstrap_with_caller(
-    caller: Principal,
-    deployment_id: &str,
-    deployment_store: &DeploymentTrustStore,
-) -> Result<(), ProvisionIngressError> {
-    use crate::stable::store::TrustUpdateError;
-    deployment_store
-        .complete_bootstrap(deployment_id, caller)
-        .map_err(|e| match e {
-            TrustUpdateError::NotFound => ProvisionIngressError::UnknownDeployment,
-            TrustUpdateError::NotAuthorized => ProvisionIngressError::NotAuthorized,
-        })
-}
+// === upsert_deployment_grant =========================================
 
-// === admin_install_deployment_binding (ADR 0035 Slice 7) =========
-
-pub(crate) fn admin_install_deployment_binding_with_caller(
+/// Governance-only upsert of a deployment grant: authorize `args.issuer` to request issuance
+/// for its own deployment. Idempotent. The bootstrap authority singleton must be seeded.
+pub(crate) fn upsert_deployment_grant_with_caller(
     caller: Principal,
-    args: AdminInstallDeploymentBindingArgs,
+    args: UpsertDeploymentGrantArgs,
     now_ns: u64,
 ) -> Result<BootstrapAuthEntry, ProvisionAdminError> {
     use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
-    use crate::stable::store::DeploymentTrustStore;
+    use crate::stable::store::DeploymentGrantStore;
 
     let auth_store = ProvisionBootstrapAuthStore::new();
-    let deployment_store = DeploymentTrustStore::new();
+    let deployment_store = DeploymentGrantStore::new();
 
-    // (1) Read the durable bootstrap authority singleton. If it has not been seeded,
-    //     every install attempt is an InvalidState and must still leave a Reject audit row.
+    // The authority must be seeded; only the governance principal may upsert grants.
     let authority = match auth_store.get_authority() {
         Some(record) => record,
         None => {
             let entry = BootstrapAuthEntry {
                 caller,
-                deployment_id: Some(args.deployment_id.clone()),
-                action: BootstrapAuthAction::RejectInvalidState,
+                deployment_id: Some(args.issuer.to_text()),
+                action: BootstrapAuthAction::RejectNotSeeded,
                 timestamp_ns: now_ns,
-                registry_version: Some(args.binding_version),
             };
             auth_store.put_record(caller, entry);
-            return Err(ProvisionAdminError::InvalidState(
-                "bootstrap authority not seeded".to_owned(),
-            ));
+            return Err(ProvisionAdminError::NoBootstrapAuthority);
         }
     };
-
-    let deployment_id = args.deployment_id.clone();
-    let new_binding = binding_from_admin_args(args);
-
-    if let Some(existing) = deployment_store.get(&deployment_id) {
-        // (2) Existing deployment: authorize either the bootstrap authority or the stored
-        //     governance principal. Anyone else is rejected with AlreadyExists.
-        if caller == authority.governance_principal || caller == existing.governance_principal {
-            let entry = BootstrapAuthEntry {
-                caller,
-                deployment_id: Some(deployment_id),
-                action: BootstrapAuthAction::AdminInstall,
-                timestamp_ns: now_ns,
-                registry_version: Some(new_binding.binding_version),
-            };
-            auth_store.put_record(caller, entry.clone());
-            deployment_store.admin_upsert(new_binding);
-            Ok(entry)
-        } else {
-            let entry = BootstrapAuthEntry {
-                caller,
-                deployment_id: Some(deployment_id.clone()),
-                action: BootstrapAuthAction::RejectAlreadyExists,
-                timestamp_ns: now_ns,
-                registry_version: Some(new_binding.binding_version),
-            };
-            auth_store.put_record(caller, entry);
-            Err(ProvisionAdminError::AlreadyExists {
-                deployment_id,
-                existing_governance: existing.governance_principal,
-            })
-        }
-    } else if caller == authority.governance_principal {
-        // (3) New deployment: only the bootstrap authority may install.
+    if caller != authority.governance_principal || args.issuer == Principal::anonymous() {
         let entry = BootstrapAuthEntry {
             caller,
-            deployment_id: Some(deployment_id),
-            action: BootstrapAuthAction::AdminInstall,
+            deployment_id: Some(args.issuer.to_text()),
+            action: BootstrapAuthAction::RejectUnauthorized,
             timestamp_ns: now_ns,
-            registry_version: Some(new_binding.binding_version),
-        };
-        auth_store.put_record(caller, entry.clone());
-        deployment_store.admin_upsert(new_binding);
-        Ok(entry)
-    } else {
-        let entry = BootstrapAuthEntry {
-            caller,
-            deployment_id: Some(deployment_id.clone()),
-            action: BootstrapAuthAction::RejectUnknownDeployment,
-            timestamp_ns: now_ns,
-            registry_version: Some(new_binding.binding_version),
         };
         auth_store.put_record(caller, entry);
-        Err(ProvisionAdminError::UnknownDeployment(deployment_id))
+        return Err(ProvisionAdminError::Unauthorized);
     }
+
+    deployment_store.insert(args.issuer);
+    let entry = BootstrapAuthEntry {
+        caller,
+        deployment_id: Some(args.issuer.to_text()),
+        action: BootstrapAuthAction::Upsert,
+        timestamp_ns: now_ns,
+    };
+    auth_store.put_record(caller, entry.clone());
+    Ok(entry)
 }
 
 // === Artifact catalog handlers (ADR 0036 Slice 8a) =============================

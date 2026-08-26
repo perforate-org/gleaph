@@ -164,50 +164,25 @@ pub enum InstallError {
     Unauthorized,
 }
 
-// === Deployment binding install =============================================
+// === Deployment grant upsert =============================================
 
-/// Arguments for `admin_install_deployment_binding`.
+/// Arguments for `upsert_deployment_grant`.
 ///
-/// Source: `crates/provision/provision.did:1-8`,
-/// `crates/provision/src/types.rs:359-367`. Field order follows the did (the server-side
-/// Rust struct declares its fields in a different order; the did is the wire authority).
+/// Source: `crates/provision/provision.did`, `crates/provision/src/types.rs`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct AdminInstallDeploymentBindingArgs {
-    /// Binding version at install time.
-    pub binding_version: u64,
-    /// Router principal authorized to send envelopes for this deployment.
-    pub router_principal: candid::Principal,
-    /// Governance/recovery principal that can update this binding.
-    pub governance_principal: candid::Principal,
-    /// Optional bootstrap trust subject (Account) for first-Router issuance.
-    pub bootstrap_principal: Option<candid::Principal>,
-    /// Deployment identifier the binding is keyed on.
-    pub deployment_id: String,
+pub struct UpsertDeploymentGrantArgs {
+    /// The principal authorized to request issuance. The deployment is the issuer itself:
+    /// `deployment_id = issuer = caller`.
+    pub issuer: candid::Principal,
 }
 
-/// Error returned by `admin_install_deployment_binding`.
-///
-/// Source: `crates/provision/provision.did:9-17`,
-/// `crates/provision/src/types.rs:369-378`. Variant and inner-field order follow the did.
+/// Error returned by `upsert_deployment_grant`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum AdminInstallError {
-    /// Unknown deployment id; only the bootstrap authority may create new bindings.
-    UnknownDeployment(
-        /// The unknown deployment id.
-        String,
-    ),
-    /// The deployment already exists under a different caller.
-    AlreadyExists {
-        /// Governance principal of the stored binding.
-        existing_governance: candid::Principal,
-        /// The conflicting deployment id.
-        deployment_id: String,
-    },
+pub enum UpsertDeploymentGrantError {
     /// Bootstrap authority has not been seeded yet.
-    InvalidState(
-        /// Failure reason.
-        String,
-    ),
+    NoBootstrapAuthority,
+    /// Caller is not the governance authority (or the issuer is anonymous).
+    Unauthorized,
 }
 
 /// Action recorded for every bootstrap-authority decision.
@@ -218,14 +193,12 @@ pub enum AdminInstallError {
 pub enum BootstrapAuthAction {
     /// First authority seed at init.
     InitialSeed,
-    /// A rejected install onto an already-existing deployment.
-    RejectAlreadyExists,
-    /// A successful admin install.
-    AdminInstall,
-    /// A rejected install for an unknown deployment.
-    RejectUnknownDeployment,
-    /// A rejected install before the authority was seeded.
-    RejectInvalidState,
+    /// A rejected upsert before the authority was seeded.
+    RejectNotSeeded,
+    /// A successful grant upsert.
+    Upsert,
+    /// A rejected upsert by a non-governance caller (or anonymous issuer).
+    RejectUnauthorized,
 }
 
 /// One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
@@ -238,11 +211,9 @@ pub struct BootstrapAuthEntry {
     pub action: BootstrapAuthAction,
     /// Timestamp (IC NNS nanoseconds).
     pub timestamp_ns: u64,
-    /// Binding/registry version carried by the decision, if any.
-    pub registry_version: Option<u64>,
     /// Caller that produced the decision.
     pub caller: candid::Principal,
-    /// Related deployment id, if any.
+    /// Related deployment (= issuer principal text), if any.
     pub deployment_id: Option<String>,
 }
 

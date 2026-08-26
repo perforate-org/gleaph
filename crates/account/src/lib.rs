@@ -10,11 +10,10 @@ pub mod stable;
 pub mod types;
 
 use canister::{
-    add_member_with_caller, authorize_router_issuance_with_caller, complete_bootstrap_with_caller,
-    create_account_with_caller, create_org_account_with_caller, delete_account_with_caller,
-    get_account_with_caller, list_routers_with_caller, register_router_with_caller,
-    remove_member_with_caller, resolve_my_accounts_with_caller, resolve_router_with_caller,
-    unregister_router_with_caller,
+    add_member_with_caller, authorize_router_issuance_with_caller, create_account_with_caller,
+    create_org_account_with_caller, delete_account_with_caller, get_account_with_caller,
+    list_routers_with_caller, register_router_with_caller, remove_member_with_caller,
+    resolve_my_accounts_with_caller, resolve_router_with_caller, unregister_router_with_caller,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 use types::{Account, AccountError, Role, RouterEntry};
@@ -152,20 +151,6 @@ async fn authorize_router_issuance(
         ic_cdk::api::msg_caller(),
         &account_id,
         &router_id,
-        provision_canister,
-        &stable::store::AccountStore::new(),
-    )
-    .await
-}
-
-#[update]
-async fn complete_bootstrap(
-    account_id: candid::Principal,
-    provision_canister: candid::Principal,
-) -> Result<(), AccountError> {
-    complete_bootstrap_with_caller(
-        ic_cdk::api::msg_caller(),
-        &account_id,
         provision_canister,
         &stable::store::AccountStore::new(),
     )
