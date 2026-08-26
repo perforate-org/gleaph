@@ -2286,9 +2286,16 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-08-26-003 — main HEAD does not compile standalone: committed provisioning code imports `TextIndexId` defined only in uncommitted graph-kernel edits (half-commit recurrence)
 
-- **Status:** Open — P1 build-integrity incident detected 2026-08-26 by pane w1:p8 during
-  standalone validation of `35c18f85c` and independently reproduced by the coordinator on
-  current HEAD (`e24bb57c5`). Same type as [GAP-2026-08-24-007].
+- **Status:** Resolved (2026-08-26). Root cause: the text-index track landed referencing
+  commits before their defining edits; fixed by landing the definitions as a
+  single-purpose commit.
+- **Resolution:** definitions landed in `31d716246`
+  (`crates/graph-kernel/src/federation/shard_id.rs` +87 incl. `TextIndexId`,
+  `federation.rs` re-export). Owner-side verification: check/clippy `-D warnings` /
+  `test -p gleaph-graph-kernel --lib` 180/180. Coordinator independent verification:
+  fresh detached worktree at `31d716246`, shared target dir,
+  `cargo check -p gleaph-graph-kernel --lib` → `Finished dev profile … 15.41s`, zero
+  errors/warnings — HEAD builds standalone again.
 - **Owner:** the text-index/canister track session holding the dirty defining edits
   (`crates/graph-kernel/src/federation.rs`, `crates/graph-kernel/src/federation/shard_id.rs`
   — `TextIndexId` at `shard_id.rs:246` with its `federation.rs:54` re-export). The
