@@ -5,15 +5,11 @@
 //! shard never persists text index definitions, so this gate can never go stale across the
 //! canister upgrade boundary.
 //!
-//! ## Dormancy (deliberate, scope-forced)
-//!
-//! No production caller installs a catalog yet: the per-operation wire field and the Router TEXT
-//! attach handshake belong to a separate in-flight slice. Dispatch is therefore inert in
-//! production and exercised only via the test-only [`enter_indexed`] helper — exactly the vector
-//! Slice 2 posture. The `allow(dead_code)` below covers only that window; it is removed when the
-//! install site lands.
-
-#![cfg_attr(not(test), allow(dead_code))]
+//! DML dispatch ([`crate::index::text_dispatch`]) consults this gate on every canonical property
+//! change and stays inert while no snapshot is installed. Two entry points still await their
+//! production callers and carry narrow `dead_code` allowances: [`enter`] (the per-operation
+//! install arrives with the Router TEXT catalog slice) and [`has_specs`] (its caller is the
+//! vertex-delete hook awaiting wiring in `crate::facade::store::vertex_delete`).
 
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use std::cell::RefCell;
@@ -55,6 +51,9 @@ impl Drop for TextCatalogGuard {
 }
 
 /// Install `specs` as the current operation's indexed-text catalog.
+// Awaiting the per-operation install site (Router TEXT catalog slice); tests install via
+// `enter_indexed` until then.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn enter(specs: Vec<IndexedTextSpec>) -> TextCatalogGuard {
     let previous = CURRENT.with(|c| c.borrow_mut().replace(specs));
     TextCatalogGuard { previous }
@@ -80,6 +79,9 @@ pub(crate) fn specs_for_property(property_id: PropertyId) -> Vec<IndexedTextSpec
 
 /// Cheap gate for whole-vertex removals: `true` when any text spec is installed at all. A single
 /// delete op covers every indexed property of the vertex (the doc key is the vertex identity).
+// Its only production caller is the vertex-delete hook awaiting wiring in
+// `crate::facade::store::vertex_delete`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn has_specs() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|specs| !specs.is_empty()))
 }

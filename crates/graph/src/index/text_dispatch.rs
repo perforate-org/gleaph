@@ -9,21 +9,21 @@
 //!
 //! Label-scoped membership changes ride the same rails as property postings: the label machinery
 //! synthesizes value transitions (gain: absent→value; loss: value→absent) that reach
-//! [`dispatch_vertex_property_change`] like any write. Whole-vertex deletion has no per-property
-//! transitions, so [`dispatch_vertex_removes_for_all_indexed`] covers it with a single delete op;
-//! over-notification is safe because unknown-key deletes are deterministic no-ops at flush.
+//! [`dispatch_vertex_property_change`] through
+//! [`crate::property::index_dispatch::dispatch_property_index_ops_for_physical`], the same funnel
+//! direct callers (label transitions, inline decode, sidecar observers) use. Ordinary writes reach
+//! it once per canonical change via
+//! [`crate::property::index_dispatch::dispatch_property_index_ops`]. Whole-vertex deletion has no
+//! per-property transitions, so [`dispatch_vertex_removes_for_all_indexed`] covers it with a
+//! single delete op; over-notification is safe because unknown-key deletes are deterministic
+//! no-ops at flush.
 //!
 //! Everything is gated by the ephemeral router-sourced catalog
 //! ([`crate::index::text_catalog_context`]): with no catalog installed (the production posture
 //! until the Router TEXT install lands) dispatch is inert.
 //!
-//! ## Dormancy (deliberate, scope-forced)
-//!
-//! The property-write hook sites (`crate::property::index_dispatch` paths) are owned by another
-//! slice's boundary, so no production caller invokes these functions yet; they are exercised by
-//! unit tests. The `allow(dead_code)` below covers only that window.
-
-#![cfg_attr(not(test), allow(dead_code))]
+//! [`dispatch_vertex_removes_for_all_indexed`] still awaits its production call site: its hook
+//! lives in `crate::facade::store::vertex_delete`, a file outside this slice's boundary.
 
 use crate::facade::GraphStore;
 use crate::index::text_catalog_context::{self, IndexedTextSpec};
@@ -78,6 +78,9 @@ pub(crate) fn dispatch_vertex_property_change(change: PropertyValueChange<'_>) {
 /// Queues one delete covering every indexed text property of `vertex_id` (vertex-delete sidecar
 /// clear). Safe to call unconditionally on the catalog gate alone: unknown-key deletes are
 /// deterministic no-ops at flush, so over-notifying vertices without text documents is harmless.
+// Awaiting its production call site in `crate::facade::store::vertex_delete` (file owned by
+// another slice's boundary); exercised by unit tests until that wiring lands.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn dispatch_vertex_removes_for_all_indexed(vertex_id: VertexId) {
     if !text_catalog_context::has_specs() {
         return;

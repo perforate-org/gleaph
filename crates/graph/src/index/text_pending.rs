@@ -137,8 +137,6 @@ pub(crate) fn clear_pending() {
 
 /// Enqueues one derived document mutation. Inert on shards with no federation routing: text sync
 /// is derived-state work that only exists relative to a routed text target.
-// Its only lib-side callers arrive with the dispatch wiring slice; tests exercise it directly.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn push_text_op(op: TextPendingOp) {
     if !GraphStore::new().federation_configured() {
         return;
