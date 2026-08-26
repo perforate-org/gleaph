@@ -42,7 +42,8 @@ use std::rc::Rc;
 
 use candid::{CandidType, Principal};
 use gleaph_auth::{
-    Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource, Privilege,
+    Direction, GrantSubject, GraphOperation, GraphPrivilege, GraphResource, MetadataScope,
+    Privilege,
 };
 use gleaph_gql::ast::{Expr, ExprKind};
 use gleaph_gql::type_check::PropertySchema as _;
@@ -52,7 +53,7 @@ use gleaph_gql_planner::plan::{
     EdgeLabelRef, NodeLabelRef, PhysicalPlan, PlanOp, RemovePlanItem, SearchProviderPlan,
     SetPlanItem, ShortestPathCost,
 };
-use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 
 use crate::facade::stable::graph_catalog;
 use crate::facade::store::RouterStore;
@@ -1404,6 +1405,478 @@ pub(crate) fn enforce_prepared_data_plane_authorization(
     enforce_data_plane_authorization(store, caller, root_graph, plan)
 }
 
+// ──── EXPLAIN AUTHORIZATION report mode (ADR 0084) ────
+
+/// Coverage source of one demanded row in report mode ([ADR 0084] §5).
+///
+/// The variant set is closed by construction: only the explained principal's own rows,
+/// `PUBLIC` rows, or the ownership root can ever cover a demand, so self-mode rendering
+/// can never name a foreign principal.
+///
+/// [ADR 0084]: https://github.com/gleaph/gleaph/blob/main/design/adr/0084-explain-authorization-diagnosis.md
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoverageSource {
+    /// Implicit ownership root (registry tenancy).
+    Tenancy,
+    /// A stored row held by the explained principal.
+    OwnGrant,
+    /// A stored `PUBLIC` row.
+    PublicGrant,
+}
+
+/// One rendered verdict row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoverageRow {
+    /// Grant-grammar-shaped description of the demanded privilege.
+    pub requirement: String,
+    /// Covering source; `None` when uncovered.
+    pub source: Option<CoverageSource>,
+}
+
+/// One graph's extracted demands with per-row coverage attribution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GraphCoverage {
+    pub graph_raw: u32,
+    /// Display name resolved at build time (rendering stays catalog-free).
+    pub graph_name: String,
+    pub conjunctive: Vec<CoverageRow>,
+    /// Alternation groups rendered as "any-of"; each group lists its arms' sources.
+    pub alternatives: Vec<Vec<CoverageRow>>,
+    /// Unattributed residue: only the ownership root can cover it.
+    pub unattributed: bool,
+}
+
+/// The join between one requirement set and one principal's coverage (report mode).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoverageReport {
+    pub covered: bool,
+    pub root_graph_raw: u32,
+    pub graphs: Vec<GraphCoverage>,
+    /// Set when a demand could not even be pinned to a graph; covered by ownership on
+    /// the executing root only.
+    pub root_unattributed: bool,
+}
+
+/// Split source probes over the same stored rows [`StoredGrants`] reads.
+///
+/// The disjunction of both arms IS the enforcement probe (`EffectiveGrants::covers`
+/// evaluates exactly `holds(effective_for(caller)) || holds(Public)`), so attributing a
+/// source cannot shift evaluation semantics — proven by an agreement test pairing this
+/// walk with `authorize_requirements` on identical fixtures.
+pub(crate) trait GrantSourceProbes {
+    fn holds_own_row(&self, subject: &Principal, privilege: &Privilege) -> bool;
+    fn holds_public_row(&self, privilege: &Privilege) -> bool;
+}
+
+/// Production probes over `ROUTER_AUTH_GRANTS` (expiry-aware): the two halves of
+/// [`StoredGrants::covers`].
+struct StoredGrantSources;
+
+impl GrantSourceProbes for StoredGrantSources {
+    fn holds_own_row(&self, subject: &Principal, privilege: &Privilege) -> bool {
+        let now_ns = crate::facade::store::ic_time_ns();
+        crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+            grants.holds(GrantSubject::effective_for(subject), privilege, now_ns)
+        })
+    }
+
+    fn holds_public_row(&self, privilege: &Privilege) -> bool {
+        let now_ns = crate::facade::store::ic_time_ns();
+        crate::facade::stable::ROUTER_AUTH_GRANTS
+            .with_borrow(|grants| grants.holds(GrantSubject::Public, privilege, now_ns))
+    }
+}
+
+/// Catalog-name resolution for requirement rendering; ids alone mean nothing to
+/// operators. Production resolves through the graph-scoped catalogs.
+pub(crate) trait RequirementNames {
+    fn graph_name(&self, graph_raw: u32) -> Option<String>;
+    fn vertex_label(&self, graph_raw: u32, label_id: u32) -> Option<String>;
+    fn edge_label(&self, graph_raw: u32, label_id: u32) -> Option<String>;
+    fn property(&self, graph_raw: u32, property_id: u32) -> Option<String>;
+}
+
+/// Production name resolution over the Router graph-scoped catalogs.
+struct StoreRequirementNames<'a> {
+    store: &'a RouterStore,
+}
+
+impl RequirementNames for StoreRequirementNames<'_> {
+    fn graph_name(&self, graph_raw: u32) -> Option<String> {
+        crate::facade::stable::graph_catalog::graph_name(GraphId::from_raw(graph_raw))
+    }
+
+    fn vertex_label(&self, graph_raw: u32, label_id: u32) -> Option<String> {
+        let label_id = u16::try_from(label_id).ok()?;
+        self.store
+            .reverse_vertex_label_name(
+                GraphId::from_raw(graph_raw),
+                VertexLabelId::from_raw(label_id),
+            )
+            .ok()
+    }
+
+    fn edge_label(&self, graph_raw: u32, label_id: u32) -> Option<String> {
+        let label_id = u16::try_from(label_id).ok()?;
+        self.store
+            .reverse_edge_label_name(
+                GraphId::from_raw(graph_raw),
+                EdgeLabelId::from_raw(label_id),
+            )
+            .ok()
+    }
+
+    fn property(&self, graph_raw: u32, property_id: u32) -> Option<String> {
+        self.store
+            .reverse_property_name(
+                GraphId::from_raw(graph_raw),
+                PropertyId::from_raw(property_id),
+            )
+            .ok()
+    }
+}
+
+/// Grant-grammar-shaped text of one demanded operation half.
+fn describe_operation(operation: GraphOperation) -> &'static str {
+    match operation {
+        GraphOperation::Match => "MATCH",
+        GraphOperation::Traverse(Some(Direction::Outgoing)) => "TRAVERSE OUTGOING",
+        GraphOperation::Traverse(Some(Direction::Incoming)) => "TRAVERSE INCOMING",
+        GraphOperation::Traverse(None) => "TRAVERSE",
+        GraphOperation::Read | GraphOperation::ReadProperty => "READ",
+        GraphOperation::Create => "CREATE",
+        GraphOperation::Update => "UPDATE",
+        GraphOperation::Delete => "DELETE",
+    }
+}
+
+/// Grant-grammar-shaped text of one demanded resource half. Unresolvable ids render as
+/// `#<id>` rather than being dropped: the report never hides a demand.
+fn describe_resource(
+    graph_raw: u32,
+    resource: &GraphResource,
+    names: &dyn RequirementNames,
+) -> String {
+    match *resource {
+        GraphResource::VertexLabel(label) => format!(
+            "NODES {}",
+            names
+                .vertex_label(graph_raw, label)
+                .unwrap_or_else(|| format!("#{label}"))
+        ),
+        GraphResource::EdgeLabel(label) => format!(
+            "EDGES {}",
+            names
+                .edge_label(graph_raw, label)
+                .unwrap_or_else(|| format!("#{label}"))
+        ),
+        GraphResource::VertexProperty { label, property } => format!(
+            "NODES {} {{ {} }}",
+            names
+                .vertex_label(graph_raw, label)
+                .unwrap_or_else(|| format!("#{label}")),
+            names
+                .property(graph_raw, property)
+                .unwrap_or_else(|| format!("#{property}"))
+        ),
+    }
+}
+
+/// Grant-grammar-shaped text of one demanded row ([ADR 0084] §4); metadata-plane rows
+/// render with their scope so elevation demands stay visible in reports. Prepared-execute
+/// rows never occur in extracted requirement sets, but the match stays exhaustive.
+fn describe_privilege(privilege: &Privilege, names: &dyn RequirementNames) -> String {
+    match privilege {
+        Privilege::Graph(graph_privilege) => format!(
+            "{} ON {}",
+            describe_operation(graph_privilege.operation),
+            describe_resource(graph_privilege.graph, &graph_privilege.resource, names)
+        ),
+        Privilege::Metadata(MetadataScope::Graph(graph)) => format!(
+            "READ_METADATA ON GRAPH {}",
+            names
+                .graph_name(*graph)
+                .unwrap_or_else(|| format!("#{graph}"))
+        ),
+        Privilege::Metadata(MetadataScope::ControlPlane) => "READ_METADATA CONTROL PLANE".into(),
+        Privilege::ExecutePreparedQuery { name } => format!("EXECUTE ON PREPARED QUERY {name}"),
+    }
+}
+
+/// Attribute the covering source of one demanded row through the same probes
+/// enforcement evaluates (`own ∪ PUBLIC`, expiry-aware). Tenancy is resolved by the
+/// caller, mirroring `authorize_requirements`' per-graph tenancy shortcut.
+fn attribute_row(
+    subject: &Principal,
+    privilege: &Privilege,
+    sources: &dyn GrantSourceProbes,
+) -> Option<CoverageSource> {
+    if sources.holds_own_row(subject, privilege) {
+        Some(CoverageSource::OwnGrant)
+    } else if sources.holds_public_row(privilege) {
+        Some(CoverageSource::PublicGrant)
+    } else {
+        None
+    }
+}
+
+/// Build the coverage join for one requirement set in report mode.
+///
+/// This walk renders what [`authorize_requirements`] judges: identical structure
+/// (per-graph tenancy shortcut, conjunctive all-of, any-one-group alternation,
+/// tenancy-only unattributed residue, root-unattributed arm), no evaluation of its own.
+pub(crate) fn build_coverage_report(
+    reqs: &RequirementSet,
+    root_graph_raw: u32,
+    subject: &Principal,
+    tenancy: &dyn GraphTenancy,
+    sources: &dyn GrantSourceProbes,
+    names: &dyn RequirementNames,
+) -> CoverageReport {
+    let mut covered = true;
+    let root_unattributed = reqs.root_unattributed;
+    if root_unattributed && !tenancy.is_tenant(root_graph_raw, subject) {
+        covered = false;
+    }
+    let mut graphs = Vec::new();
+    for (&graph_raw, demands) in &reqs.graphs {
+        // Tenancy covers every demand on the graph at once (the enforcement shortcut).
+        let tenant = tenancy.is_tenant(graph_raw, subject);
+        let attribute = |privilege: &Privilege| -> Option<CoverageSource> {
+            if tenant {
+                Some(CoverageSource::Tenancy)
+            } else {
+                attribute_row(subject, privilege, sources)
+            }
+        };
+        let mut conjunctive = Vec::with_capacity(demands.conjunctive.len());
+        for privilege in &demands.conjunctive {
+            let source = attribute(privilege);
+            if source.is_none() {
+                covered = false;
+            }
+            conjunctive.push(CoverageRow {
+                requirement: describe_privilege(privilege, names),
+                source,
+            });
+        }
+        let mut alternatives = Vec::with_capacity(demands.alternatives.len());
+        // Alternation semantics of `authorize_requirements`: the demand fails only when
+        // NO group is fully covered; individual uncovered arms render informationally.
+        let mut any_group_covered = demands.alternatives.is_empty();
+        for group in &demands.alternatives {
+            let mut arms = Vec::with_capacity(group.len());
+            let mut group_covered = true;
+            for privilege in group {
+                let source = attribute(privilege);
+                if source.is_none() {
+                    group_covered = false;
+                }
+                arms.push(CoverageRow {
+                    requirement: describe_privilege(privilege, names),
+                    source,
+                });
+            }
+            if group_covered {
+                any_group_covered = true;
+            }
+            alternatives.push(arms);
+        }
+        if !any_group_covered {
+            covered = false;
+        }
+        if demands.unattributed && !tenant {
+            covered = false;
+        }
+        graphs.push(GraphCoverage {
+            graph_raw,
+            graph_name: names
+                .graph_name(graph_raw)
+                .unwrap_or_else(|| format!("#{graph_raw}")),
+            conjunctive,
+            alternatives,
+            unattributed: demands.unattributed,
+        });
+    }
+    CoverageReport {
+        covered,
+        root_graph_raw,
+        graphs,
+        root_unattributed,
+    }
+}
+
+/// Rendering mode controlling source redaction ([ADR 0084] §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExplainRenderMode {
+    /// Source classes only; never names another principal.
+    SelfMode,
+    /// Full row identities; owners already see every row via introspection.
+    OwnerMode,
+}
+
+/// Source text of one coverage verdict under `mode`.
+fn render_source(
+    source: Option<CoverageSource>,
+    mode: ExplainRenderMode,
+    subject_text: &str,
+) -> String {
+    match source {
+        Some(CoverageSource::Tenancy) => "graph tenancy".to_string(),
+        Some(CoverageSource::PublicGrant) => "PUBLIC grant".to_string(),
+        Some(CoverageSource::OwnGrant) => match mode {
+            ExplainRenderMode::SelfMode => "your grant".to_string(),
+            ExplainRenderMode::OwnerMode => format!("grant to {subject_text}"),
+        },
+        None => "UNCOVERED".to_string(),
+    }
+}
+
+/// Render a [`CoverageReport`] as human-readable lines ([ADR 0084] §4): per-graph
+/// conjunctive rows with sources, any-of alternation groups, unattributed residue as
+/// "requires graph tenancy", and the root-unattributed arm. Conditional-policy
+/// predicates do not appear: policies filter outputs, they never deny coverage.
+pub(crate) fn render_coverage_report(
+    report: &CoverageReport,
+    mode: ExplainRenderMode,
+    subject_text: &str,
+) -> Vec<String> {
+    let verdict = if report.covered {
+        "COVERED"
+    } else {
+        "NOT COVERED"
+    };
+    let mut lines = vec![verdict.to_string()];
+    for graph in &report.graphs {
+        lines.push(format!("graph {}:", graph.graph_name));
+        for row in &graph.conjunctive {
+            lines.push(format!(
+                "  {} — {}",
+                row.requirement,
+                render_source(row.source, mode, subject_text)
+            ));
+        }
+        for arms in &graph.alternatives {
+            lines.push("  ANY OF:".to_string());
+            for arm in arms {
+                lines.push(format!(
+                    "    {} — {}",
+                    arm.requirement,
+                    render_source(arm.source, mode, subject_text)
+                ));
+            }
+        }
+        if graph.unattributed {
+            lines.push("  UNATTRIBUTED READ — requires graph tenancy (owner/admin)".to_string());
+        }
+    }
+    if report.root_unattributed {
+        lines.push(
+            "unattributed root-graph demand — requires graph tenancy (owner/admin)".to_string(),
+        );
+    }
+    lines
+}
+
+/// Asker authority gate of EXPLAIN AUTHORIZATION ([ADR 0084] §3).
+///
+/// Self mode requires settled visibility of every touched graph under the admission
+/// arms (`tenancy ∪ grant-derived ∪ elevation`); owner mode requires registry tenancy
+/// of every touched graph. Any failure is the indistinguishable [`RouterError::NotFound`]
+/// used everywhere else, so the diagnostic cannot become an existence oracle. The gate
+/// takes no capability input by construction: caps confer no explain authority
+/// ([ADR 0074] invariant 1).
+pub(crate) fn authorize_explain_visibility(
+    touched_graphs: impl IntoIterator<Item = u32>,
+    asker: &Principal,
+    owner_mode: bool,
+    may_access: &dyn Fn(u32, &Principal) -> bool,
+    is_tenant: &dyn Fn(u32, &Principal) -> bool,
+) -> Result<(), RouterError> {
+    for graph_raw in touched_graphs {
+        let authorized = if owner_mode {
+            is_tenant(graph_raw, asker)
+        } else {
+            may_access(graph_raw, asker)
+        };
+        if !authorized {
+            return Err(RouterError::NotFound("prepared query".to_owned()));
+        }
+    }
+    Ok(())
+}
+
+/// EXPLAIN AUTHORIZATION FOR PREPARED QUERY ([ADR 0084]): resolve the record exactly as
+/// execution does, decide through enforcement's stored-primary/live-fallback duality,
+/// gate the asker's authority over every touched graph, then render the coverage join.
+///
+/// Failure contract: unknown record and invisible touched graph yield indistinguishable
+/// `NotFound`s. Nothing dispatches and nothing mutates stable state; the live fallback
+/// replans onto the heap cache only, and a replan failure fails closed onto the stored
+/// set instead of surfacing planner internals to the diagnostic caller.
+pub(crate) fn explain_prepared_authorization(
+    store: &RouterStore,
+    asker: &Principal,
+    query_name: &str,
+    subject: &Principal,
+    owner_mode: bool,
+) -> Result<Vec<String>, RouterError> {
+    let uniform_missing = || RouterError::NotFound(format!("prepared query {query_name:?}"));
+    let key = crate::facade::stable::prepared_catalog::PreparedPlanKey::new(query_name);
+    let v1 = crate::facade::stable::prepared_catalog::get_prepared_plan(&key)
+        .ok_or_else(uniform_missing)?
+        .as_v1()
+        .clone();
+
+    // Enforcement's exact duality: the stored set decides unless it denies, in which
+    // case the live walk of the replanned current source decides (catalog drift rule).
+    let stored_covers =
+        requirements_cover(&v1.required_privileges, v1.graph_id.raw(), subject, store);
+    let (reqs, covered) = if stored_covers {
+        (v1.required_privileges.clone(), true)
+    } else if let Some(plan) = crate::prepared::live_requirements_for_explanation(&key, &v1, *asker)
+    {
+        let live = extract_live(store, &plan, v1.graph_id);
+        let live_covers = requirements_cover(&live, v1.graph_id.raw(), subject, store);
+        (live, live_covers)
+    } else {
+        (v1.required_privileges.clone(), false)
+    };
+
+    // Authority gate before anything renders. Touched graphs conservatively include the
+    // bound graph plus every graph named by either considered requirement set, so the
+    // fallback can never disclose a graph the stored set hid.
+    let mut touched: BTreeSet<u32> = reqs.graphs.keys().copied().collect();
+    touched.extend(v1.required_privileges.graphs.keys().copied());
+    touched.insert(v1.graph_id.raw());
+    authorize_explain_visibility(
+        touched,
+        asker,
+        owner_mode,
+        &|graph_raw, asker| store.caller_may_access_graph(GraphId::from_raw(graph_raw), *asker),
+        &|graph_raw, asker| store.is_graph_tenant(GraphId::from_raw(graph_raw), *asker),
+    )
+    .map_err(|_| uniform_missing())?;
+
+    // Render the join with the production probes (same rows, same expiry semantics).
+    let names = StoreRequirementNames { store };
+    let report = build_coverage_report(
+        &reqs,
+        v1.graph_id.raw(),
+        subject,
+        &StoreTenancy { store },
+        &StoredGrantSources,
+        &names,
+    );
+    debug_assert_eq!(report.covered, covered, "report walk must mirror verdict");
+    let mode = if owner_mode {
+        ExplainRenderMode::OwnerMode
+    } else {
+        ExplainRenderMode::SelfMode
+    };
+    Ok(render_coverage_report(&report, mode, &subject.to_text()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2635,5 +3108,422 @@ mod tests {
             extract_ops(vec![base_scan]),
             "policy-internal chain must stay invisible to requirement extraction"
         );
+    }
+
+    // ── EXPLAIN AUTHORIZATION report mode (ADR 0084) ──
+
+    /// Fixed-name catalog for rendering tests: graph 7 = "main", Person/KNOWS/name.
+    struct FixedNames;
+
+    impl RequirementNames for FixedNames {
+        fn graph_name(&self, graph_raw: u32) -> Option<String> {
+            (graph_raw == GRAPH_RAW).then(|| "main".to_string())
+        }
+        fn vertex_label(&self, _g: u32, label_id: u32) -> Option<String> {
+            (label_id == 1).then(|| "Person".to_string())
+        }
+        fn edge_label(&self, _g: u32, label_id: u32) -> Option<String> {
+            (label_id == 10).then(|| "KNOWS".to_string())
+        }
+        fn property(&self, _g: u32, property_id: u32) -> Option<String> {
+            (property_id == 21).then(|| "name".to_string())
+        }
+    }
+
+    /// Fixture probes over explicit row sets; an absent own row models a lapsed
+    /// (expired) one — the real `holds` primitive already treats expired rows as absent.
+    #[derive(Debug)]
+    struct FixtureProbes {
+        own: Vec<Privilege>,
+        public: Vec<Privilege>,
+    }
+
+    impl GrantSourceProbes for FixtureProbes {
+        fn holds_own_row(&self, _s: &Principal, p: &Privilege) -> bool {
+            self.own.contains(p)
+        }
+        fn holds_public_row(&self, p: &Privilege) -> bool {
+            self.public.contains(p)
+        }
+    }
+
+    /// Enforcement view of the same fixture rows: the exact `StoredGrants::covers`
+    /// formula (`own || PUBLIC`), so agreement proves single semantics.
+    struct ProbesAsEnforcementGrants<'a>(&'a FixtureProbes);
+
+    impl EffectiveGrants for ProbesAsEnforcementGrants<'_> {
+        fn covers(&self, caller: &Principal, privilege: &Privilege) -> bool {
+            self.0.holds_own_row(caller, privilege) || self.0.holds_public_row(privilege)
+        }
+    }
+
+    struct FakeTenancy {
+        tenants: Vec<u32>,
+    }
+
+    impl GraphTenancy for FakeTenancy {
+        fn is_tenant(&self, graph_raw: u32, _c: &Principal) -> bool {
+            self.tenants.contains(&graph_raw)
+        }
+    }
+
+    fn match_person(graph: u32) -> Privilege {
+        vertex_row(graph, GraphOperation::Match, 1)
+    }
+
+    fn read_person(graph: u32) -> Privilege {
+        vertex_row(graph, GraphOperation::Read, 1)
+    }
+
+    fn reqs_with(rows: Vec<Privilege>, alternatives: Vec<Vec<Privilege>>) -> RequirementSet {
+        let mut reqs = RequirementSet::default();
+        if !rows.is_empty() {
+            reqs.require_all(graph(), rows);
+        }
+        for group in alternatives {
+            reqs.require_alternatives(graph(), vec![group]);
+        }
+        reqs
+    }
+
+    fn subject() -> Principal {
+        Principal::from_slice(&[0xE1; 29])
+    }
+
+    #[test]
+    fn report_agrees_with_authorize_requirements_on_identical_fixtures() {
+        let subjects = [subject(), Principal::anonymous()];
+        let grant_states = [
+            FixtureProbes {
+                own: vec![match_person(GRAPH_RAW), read_person(GRAPH_RAW)],
+                public: vec![],
+            },
+            FixtureProbes {
+                own: vec![],
+                public: vec![match_person(GRAPH_RAW)],
+            },
+            FixtureProbes {
+                own: vec![],
+                public: vec![],
+            },
+            FixtureProbes {
+                own: vec![read_person(GRAPH_RAW)],
+                public: vec![match_person(GRAPH_RAW)],
+            },
+        ];
+        let tenancies = [
+            FakeTenancy { tenants: vec![] },
+            FakeTenancy {
+                tenants: vec![GRAPH_RAW],
+            },
+        ];
+        let fixtures = [
+            // Conjunctive only.
+            reqs_with(vec![match_person(GRAPH_RAW)], vec![]),
+            // Conjunctive + alternation.
+            reqs_with(
+                vec![match_person(GRAPH_RAW)],
+                vec![vec![edge_row(
+                    GRAPH_RAW,
+                    GraphOperation::Traverse(None),
+                    10,
+                )]],
+            ),
+            // Alternation where one arm is covered by PUBLIC and the other by tenancy.
+            reqs_with(
+                vec![],
+                vec![vec![read_person(GRAPH_RAW)], vec![match_person(GRAPH_RAW)]],
+            ),
+            // Unattributed residue.
+            {
+                let mut reqs = RequirementSet::default();
+                reqs.require_unattributed(graph());
+                reqs
+            },
+            // Root-unattributed demand.
+            {
+                let mut reqs = RequirementSet {
+                    root_unattributed: true,
+                    ..Default::default()
+                };
+                reqs.require_all(graph(), vec![match_person(GRAPH_RAW)]);
+                reqs
+            },
+        ];
+        for req_fixture in &fixtures {
+            for grants in &grant_states {
+                for tenancy in &tenancies {
+                    for asker in &subjects {
+                        let report = build_coverage_report(
+                            req_fixture,
+                            GRAPH_RAW,
+                            asker,
+                            tenancy,
+                            grants,
+                            &FixedNames,
+                        );
+                        let verdict = authorize_requirements(
+                            req_fixture,
+                            GRAPH_RAW,
+                            asker,
+                            &ProbesAsEnforcementGrants(grants),
+                            tenancy,
+                        );
+                        assert_eq!(
+                            report.covered, verdict,
+                            "report/verdict drift on {req_fixture:?} with {grants:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn self_mode_renders_source_classes_and_owner_mode_full_identity() {
+        let grants = FixtureProbes {
+            own: vec![match_person(GRAPH_RAW)],
+            public: vec![read_person(GRAPH_RAW)],
+        };
+        let reqs = reqs_with(
+            vec![match_person(GRAPH_RAW), read_person(GRAPH_RAW)],
+            vec![],
+        );
+        let no_tenancy = FakeTenancy { tenants: vec![] };
+        let report = build_coverage_report(
+            &reqs,
+            GRAPH_RAW,
+            &subject(),
+            &no_tenancy,
+            &grants,
+            &FixedNames,
+        );
+        let self_lines = render_coverage_report(&report, ExplainRenderMode::SelfMode, "ignored");
+        assert_eq!(self_lines[0], "COVERED");
+        assert!(self_lines.contains(&"  MATCH ON NODES Person — your grant".to_string()));
+        assert!(self_lines.contains(&"  READ ON NODES Person — PUBLIC grant".to_string()));
+        // No foreign principal names exist anywhere in self-mode output.
+        let owner_text = subject().to_text();
+        for line in &self_lines {
+            assert!(
+                !line.contains("grant to"),
+                "self mode must not name principals: {line}"
+            );
+            assert!(!line.contains(&owner_text));
+        }
+
+        let owner_lines =
+            render_coverage_report(&report, ExplainRenderMode::OwnerMode, &owner_text);
+        assert!(owner_lines.contains(&format!("  MATCH ON NODES Person — grant to {owner_text}")));
+    }
+
+    #[test]
+    fn alternatives_unattributed_and_metadata_render_per_adr() {
+        let mut reqs = reqs_with(
+            vec![vertex_property_row(GRAPH_RAW, 1, 21)],
+            vec![vec![
+                edge_row(
+                    GRAPH_RAW,
+                    GraphOperation::Traverse(Some(Direction::Outgoing)),
+                    10,
+                ),
+                edge_row(
+                    GRAPH_RAW,
+                    GraphOperation::Traverse(Some(Direction::Incoming)),
+                    10,
+                ),
+            ]],
+        );
+        reqs.require(
+            graph(),
+            Privilege::Metadata(MetadataScope::Graph(GRAPH_RAW)),
+        );
+        reqs.require_unattributed(graph());
+        let grants = FixtureProbes {
+            own: vec![vertex_property_row(GRAPH_RAW, 1, 21)],
+            public: vec![edge_row(
+                GRAPH_RAW,
+                GraphOperation::Traverse(Some(Direction::Incoming)),
+                10,
+            )],
+        };
+        let report = build_coverage_report(
+            &reqs,
+            GRAPH_RAW,
+            &subject(),
+            &FakeTenancy { tenants: vec![] },
+            &grants,
+            &FixedNames,
+        );
+        assert!(!report.covered);
+        let lines = render_coverage_report(&report, ExplainRenderMode::SelfMode, "x");
+        assert!(lines.contains(&"  READ ON NODES Person { name } — your grant".to_string()));
+        assert!(lines.contains(&"  ANY OF:".to_string()));
+        assert!(lines.contains(&"    TRAVERSE OUTGOING ON EDGES KNOWS — UNCOVERED".to_string()));
+        assert!(lines.contains(&"    TRAVERSE INCOMING ON EDGES KNOWS — PUBLIC grant".to_string()));
+        assert!(
+            lines.contains(&"  UNATTRIBUTED READ — requires graph tenancy (owner/admin)".into())
+        );
+        assert!(lines.contains(&"  READ_METADATA ON GRAPH main — UNCOVERED".to_string()));
+    }
+
+    #[test]
+    fn expired_rows_are_absent_from_reports() {
+        // The production probe is `holds`, which already reads expiry; model its
+        // observable effect: an expired own row covers nothing.
+        let grants = FixtureProbes {
+            own: vec![],
+            public: vec![],
+        };
+        let reqs = reqs_with(vec![match_person(GRAPH_RAW)], vec![]);
+        let report = build_coverage_report(
+            &reqs,
+            GRAPH_RAW,
+            &subject(),
+            &FakeTenancy { tenants: vec![] },
+            &grants,
+            &FixedNames,
+        );
+        assert!(!report.covered);
+        assert_eq!(
+            report.graphs[0].conjunctive[0].source, None,
+            "an expired row must render uncovered, never as a source"
+        );
+    }
+
+    #[test]
+    fn explain_visibility_gate_requires_every_graph_and_ignores_caps() {
+        let asker = subject();
+        let may_access = |g: u32, _a: &Principal| g == GRAPH_RAW;
+        let tenant_of = |g: u32, a: &Principal| g == GRAPH_RAW && *a == asker;
+
+        // Self mode: all visible graphs pass.
+        authorize_explain_visibility(vec![GRAPH_RAW], &asker, false, &may_access, &tenant_of)
+            .expect("visible graph passes self gate");
+
+        // Self mode: one invisible touched graph fails with NotFound.
+        let err = authorize_explain_visibility(
+            vec![GRAPH_RAW, 99],
+            &asker,
+            false,
+            &may_access,
+            &tenant_of,
+        )
+        .expect_err("invisible graph must fail");
+        assert!(matches!(err, RouterError::NotFound(_)));
+
+        // Owner mode: visibility is not enough — registry tenancy is required even of
+        // a grant-derived visible principal who is not a tenant.
+        let err = authorize_explain_visibility(
+            vec![GRAPH_RAW],
+            &Principal::from_slice(&[0xE2; 29]),
+            true,
+            &may_access,
+            &tenant_of,
+        )
+        .expect_err("owner mode requires tenancy");
+        assert!(matches!(err, RouterError::NotFound(_)));
+
+        // Structural caps proof: the gate signature takes no capability input, so a
+        // MANAGE_AUTHORIZATION holder is indistinguishable from a stranger here.
+    }
+
+    /// Full entry on live Router stable state: record resolution, gate ordering, and
+    /// the uniform-NotFound contract ([ADR 0084] §3/§6 invariant 4).
+    #[test]
+    fn explain_entry_gates_before_rendering_with_uniform_not_found() {
+        use crate::facade::stable::prepared_catalog::{
+            PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, insert_prepared_plan,
+        };
+        use crate::facade::store::tests::{register_test_graph, test_init_args};
+
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let owner = Principal::from_slice(&[0x0A; 29]);
+        crate::facade::auth::grant_admins(&[owner]);
+        register_test_graph(&store, owner, "explain.main");
+        let graph_id = crate::facade::stable::graph_catalog::lookup_graph_id("explain.main")
+            .expect("registered graph");
+
+        // Prepared record with one conjunctive MATCH demand on label 1 of its graph.
+        let mut reqs = RequirementSet::default();
+        reqs.require(graph_id, match_person(graph_id.raw()));
+        insert_prepared_plan(
+            PreparedPlanKey::new("adr0084_q"),
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
+                graph_id,
+                query: "MATCH (p:Person) RETURN p".to_string(),
+                metadata: None,
+                required_privileges: reqs,
+            }),
+        );
+
+        let stranger = Principal::from_slice(&[0xE3; 29]);
+        let missing =
+            explain_prepared_authorization(&store, &stranger, "adr0084_absent", &stranger, false)
+                .expect_err("unknown record");
+        let gated =
+            explain_prepared_authorization(&store, &stranger, "adr0084_q", &stranger, false)
+                .expect_err("invisible touched graph");
+        assert!(
+            matches!(missing, RouterError::NotFound(_))
+                && matches!(gated, RouterError::NotFound(_)),
+            "both failures are NotFound"
+        );
+        // Existence-oracle dead end: each failure carries exactly the asked name and
+        // nothing else, so "absent" and "present but invisible" have identical shapes.
+        assert_eq!(
+            format!("{missing:?}"),
+            r#"NotFound("prepared query \"adr0084_absent\"")"#
+        );
+        assert_eq!(
+            format!("{gated:?}"),
+            r#"NotFound("prepared query \"adr0084_q\"")"#
+        );
+
+        // A full-caps holder without visibility receives the identical NotFound:
+        // capabilities confer no explain authority (ADR 0074 invariant 1).
+        crate::facade::auth::grant_admins(&[Principal::from_slice(&[0xE4; 29])]);
+        let caps_holder = explain_prepared_authorization(
+            &store,
+            &Principal::from_slice(&[0xE4; 29]),
+            "adr0084_q",
+            &stranger,
+            true,
+        )
+        .expect_err("caps holder in owner mode");
+        assert_eq!(format!("{caps_holder:?}"), format!("{gated:?}"));
+
+        // A grantee passes the settled visibility arms and gets rendered coverage; no
+        // rendering happened above because every rejection preceded it.
+        let grantee = subject();
+        crate::facade::auth::add_grant(
+            GrantSubject::effective_for(&grantee),
+            &match_person(graph_id.raw()),
+            None,
+            None,
+        )
+        .expect("grant row");
+        let lines = explain_prepared_authorization(&store, &grantee, "adr0084_q", &grantee, false)
+            .expect("grantee self-explain");
+        assert_eq!(lines[0], "COVERED");
+        assert!(lines.iter().any(|l| l.ends_with("— your grant")));
+
+        // Owner mode by the tenant renders the grantee's full identity.
+        let owner_lines =
+            explain_prepared_authorization(&store, &owner, "adr0084_q", &grantee, true)
+                .expect("owner explains collaborator");
+        assert_eq!(owner_lines[0], "COVERED");
+        assert!(
+            owner_lines
+                .iter()
+                .any(|l| l.contains(&format!("grant to {}", grantee.to_text())))
+        );
+
+        // Owner mode refused to a non-tenant asker, indistinguishably.
+        let non_tenant_owner_ask =
+            explain_prepared_authorization(&store, &stranger, "adr0084_q", &grantee, true)
+                .expect_err("BY requires tenancy of every touched graph");
+        assert!(matches!(non_tenant_owner_ask, RouterError::NotFound(_)));
     }
 }

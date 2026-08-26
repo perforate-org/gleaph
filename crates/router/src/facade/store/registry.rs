@@ -1106,6 +1106,16 @@ impl RouterStore {
             .is_some_and(|entry| entry_names_tenant(&entry, caller))
     }
 
+    /// Read-only visibility probe for diagnostic surfaces (ADR 0084 §3): whether
+    /// `caller` may access `graph_id` under the settled admission arms (tenancy ∪
+    /// grant-derived ∪ metadata-elevation ∪ own-shard). Delegates to the same ACL
+    /// predicate name resolution uses, so the diagnostic cannot widen visibility.
+    pub fn caller_may_access_graph(&self, graph_id: GraphId, caller: Principal) -> bool {
+        ROUTER_GRAPHS
+            .with_borrow(|graphs| graphs.get(&graph_id))
+            .is_some_and(|entry| caller_may_access_graph(&entry, graph_id, caller))
+    }
+
     pub fn list_visible_graph_ids(&self, caller: Principal) -> Result<Vec<GraphId>, RouterError> {
         let mut out = Vec::new();
         ROUTER_GRAPHS.with_borrow(|graphs| {

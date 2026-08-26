@@ -12,7 +12,7 @@
 
 use candid::Principal;
 use gleaph_auth::{AdminCaps, GrantSubject, Privilege};
-use gleaph_gql::ast::GqlProgram;
+use gleaph_gql::ast::{GqlProgram, Statement};
 use gleaph_gql::program_modification::ProgramModificationFlags;
 use gleaph_graph_kernel::entry::GraphId;
 
@@ -52,11 +52,28 @@ pub fn authorize_adhoc_gql(
         // against their own graph.
         return Ok(());
     }
+    if program_is_explain_authorization(program) {
+        // EXPLAIN AUTHORIZATION (ADR 0084 §3) is a pure diagnostic read with no graph
+        // context; its own visibility gates run at dispatch, so the default-graph
+        // resolution below must not pre-empt them.
+        return Ok(());
+    }
     let store = crate::facade::store::RouterStore::new();
     crate::graph_context::resolve_graph_context(&store, program, *caller)
         .map(|_| ())
         // Deny without disclosing graph existence (ADR 0028).
         .map_err(|_| RouterError::NotFound("graph context".into()))
+}
+
+/// Whether the program is exactly one `EXPLAIN AUTHORIZATION` statement ([ADR 0084]).
+pub(crate) fn program_is_explain_authorization(program: &GqlProgram) -> bool {
+    let Some(tx) = &program.transaction_activity else {
+        return false;
+    };
+    let Some(block) = &tx.body else {
+        return false;
+    };
+    block.next.is_empty() && matches!(&block.first, Statement::ExplainAuthorization(_))
 }
 
 /// Index DDL (`CREATE INDEX` / `DROP INDEX` ordinary parse path, vector-index DDL, and the

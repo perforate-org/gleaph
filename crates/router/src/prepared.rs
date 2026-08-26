@@ -396,6 +396,22 @@ fn prepare_cache_for_execution(
     }
 }
 
+/// Live-walk input for the EXPLAIN AUTHORIZATION drift fallback (ADR 0084): replan the
+/// record's current source exactly as execution would, so the diagnostic inherits
+/// enforcement's stored-primary/live-fallback rule instead of a second semantics.
+///
+/// Heap-only: a successful replan lands in the ordinary prepared plan cache and nothing
+/// touches stable state. `Err`/`None` fails closed — the explanation proceeds on the
+/// stored requirement set rather than surfacing planner internals to the diagnostic.
+pub(crate) fn live_requirements_for_explanation(
+    key: &PreparedPlanKey,
+    v1: &PreparedPlanRecordV1,
+    asker: Principal,
+) -> Option<PhysicalPlan> {
+    let cache = prepare_cache_for_execution(key, v1.graph_id, v1, asker).ok()?;
+    Some(cache.plan)
+}
+
 /// Best-effort prepared cache warmup after canister upgrade.
 ///
 /// Stable query records remain authoritative. A failed parse or plan is recorded in heap state and

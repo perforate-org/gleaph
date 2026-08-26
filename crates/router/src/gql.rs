@@ -3062,6 +3062,56 @@ where
     }
 }
 
+/// Whether any statement in the block is an `EXPLAIN AUTHORIZATION` diagnostic
+/// ([ADR 0084]); used to route standalone diagnostics and reject mixed blocks.
+fn block_contains_explain_authorization(block: &gleaph_gql::ast::StatementBlock) -> bool {
+    block
+        .iter_statements()
+        .any(|stmt| matches!(stmt, gleaph_gql::ast::Statement::ExplainAuthorization(_)))
+}
+
+/// Execute one standalone `EXPLAIN AUTHORIZATION` statement ([ADR 0084]): resolve the
+/// prepared record, apply the visibility authority gate, render the coverage join, and
+/// return it as one `explanation` text row per report line. Dispatches nothing.
+fn execute_explain_authorization(
+    caller: Principal,
+    stmt: &gleaph_gql::ast::ExplainAuthorizationStatement,
+) -> Result<GqlQueryResult, RouterError> {
+    let store = RouterStore::new();
+    let (subject, owner_mode) = match &stmt.by_principal {
+        None => (caller, false),
+        Some(text) => (
+            Principal::from_text(text).map_err(|_| {
+                RouterError::InvalidArgument(format!("invalid BY principal {text:?}"))
+            })?,
+            true,
+        ),
+    };
+    let lines = crate::authz::explain_prepared_authorization(
+        &store,
+        &caller,
+        &stmt.query_name,
+        &subject,
+        owner_mode,
+    )?;
+    let rows: Vec<BTreeMap<String, gleaph_gql::Value>> = lines
+        .into_iter()
+        .map(|line| BTreeMap::from([("explanation".to_string(), gleaph_gql::Value::Text(line))]))
+        .collect();
+    let row_count = rows.len() as u64;
+    let blob = GqlWireRows::try_from_value_rows(&rows)
+        .map_err(|e| RouterError::Internal(format!("explain report encode failed: {e}")))?
+        .encode_blob()
+        .map_err(|e| RouterError::Internal(format!("explain report encode failed: {e}")))?;
+    Ok(GqlQueryResult {
+        row_count,
+        rows_blob: Some(blob),
+        phase: None,
+        token: None,
+        truncated: None,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_gql_unchecked(
     query: &str,
@@ -3212,6 +3262,25 @@ async fn run_gql_unchecked(
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         crate::gql_grants::execute_authorization_block(block, caller)?;
         return Ok(GqlQueryResult::row_count_only(0));
+    }
+
+    // EXPLAIN AUTHORIZATION (ADR 0084): pure diagnostic read. It dispatches nothing and
+    // mutates nothing; its own authority is settled visibility over every touched graph,
+    // enforced inside the explanation path with indistinguishable NotFound failures.
+    if block_contains_explain_authorization(block) {
+        let stmt = match &block.first {
+            gleaph_gql::ast::Statement::ExplainAuthorization(stmt) if block.next.is_empty() => stmt,
+            _ => {
+                return Err(RouterError::InvalidArgument(
+                    "EXPLAIN AUTHORIZATION must be issued standalone and cannot be combined with \
+                     other GQL statements"
+                        .into(),
+                ));
+            }
+        };
+        gleaph_gql::validate::validate(&program)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        return execute_explain_authorization(caller, stmt);
     }
 
     let store = RouterStore::new();
