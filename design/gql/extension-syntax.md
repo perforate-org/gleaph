@@ -49,6 +49,7 @@ semantics.
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 | Data-plane authorization      | `GRANT <privilege> ON GRAPH <graph> <selector> TO <subject>`; `GRANT EXECUTE ON PREPARED QUERY <name> TO <subject>`; `REVOKE ... FROM <subject>` (ADR 0074 §5) | **Implemented (ADR 0074 slices 2a–3):** parsing, owner/caps-gated Router execution with catalog/schema validation, grant introspection with the implicit-root marker, revoke, invariant-7-bounded publication, and plan-time enforcement of granted privileges against queries are all implemented | Router control path (`gql_grants`) + `gleaph-auth` grant storage                                     |
+| Authorization diagnosis       | `EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> [BY PRINCIPAL '<principal>']` (ADR 0084 §1) | **Implemented:** statement parses behind the `gleaph` feature gate, round-trips the formatter, classifies as a pure diagnostic read (zero modification flags), and renders the requirement-set × coverage join on the Router with visibility-only authority and per-mode redaction — see [rbac-and-prepared.md](../security/rbac-and-prepared.md) § EXPLAIN AUTHORIZATION | Router report mode (`authz`) + `gleaph-auth` evaluation seams                                        |
 
 ## Namespace policy
 
@@ -905,6 +906,32 @@ never stored as a row, invariant 3) followed by that graph's stored rows as
 The `predicate` field carries the condition inline in canonical text — e.g.
 `WHERE visibility = 'public' AND owner = MSG_CALLER()` — with property names resolved
 through the graph catalogs ([ADR 0075] §1).
+
+### Authorization diagnosis (`EXPLAIN AUTHORIZATION`, [ADR 0084] — implemented)
+
+```gql
+EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name>;                    -- self mode (default)
+EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> BY PRINCIPAL '<p>'; -- owner mode
+```
+
+- Parses behind the `gleaph` feature gate as a top-level statement
+  (`Statement::ExplainAuthorization`); the formatter round-trips both modes; classification
+  produces zero modification flags. The statement must be issued standalone — mixing it
+  with other GQL statements is rejected before dispatch, and it never reaches the planner.
+- **Self mode** explains the asker's own coverage; **owner mode** (`BY`) explains another
+  principal and requires registry tenancy of every touched graph. Self mode requires only
+  settled graph visibility. Any invisible touched graph or unknown record fails with the
+  same indistinguishable `NotFound`, so the diagnostic cannot become an existence oracle;
+  administrative capabilities confer no explain authority.
+- The report joins the record's stored requirement set (live-walk drift fallback identical
+  to execution) with coverage: conjunctive rows with covering sources, alternatives as
+  any-of groups, unattributed residue as "requires graph tenancy (owner/admin)", metadata
+  rows included, policy predicates never shown. Self mode redacts to source classes
+  ("your grant" / "PUBLIC grant" / "graph tenancy"); owner mode renders full row
+  identities.
+- Results return as one `explanation` text column per report line on the ordinary read
+  transport (`gql_query`); evaluation semantics live in
+  [rbac-and-prepared.md](../security/rbac-and-prepared.md) § EXPLAIN AUTHORIZATION.
 
 ## Full-text, property, and hybrid search
 

@@ -25,12 +25,13 @@
 > store; grant/revoke/caps history and a unified time-ordered view are deferred until DAO
 > governance is designed.
 
-> **EXPLAIN AUTHORIZATION (proposed, not implemented):**
-> [ADR 0084](../adr/0084-explain-authorization-diagnosis.md) designs the privileged-only
+> **EXPLAIN AUTHORIZATION (implemented, 2026-08-26):**
+> [ADR 0084](../adr/0084-explain-authorization-diagnosis.md) ships the privileged-only
 > diagnosis statement reserved by [ADR 0074] §4 — a prepared query's requirement set
 > joined with coverage, in self mode (source-class redaction) or owner mode (full
-> identities), gated purely by visibility. Execution-path uniform errors are unchanged;
-> the diagnostic itself fails with indistinguishable `NotFound` on invisible graphs.
+> identities), gated purely by visibility (below). Execution-path uniform errors are
+> unchanged; the diagnostic itself fails with indistinguishable `NotFound` on invisible
+> graphs.
 
 ## Purpose
 
@@ -273,6 +274,42 @@ visible iff at least one matching chain exists from the selector vertex.
   graphs' identical numeric ids survive.
 - **Fingerprints include chain bytes**, so lowered plans never reuse across rows or callers
   differing in chain shape or resolved terminal constants.
+
+### EXPLAIN AUTHORIZATION ([ADR 0084] — implemented)
+
+**Source:** `crates/gql/src/ast/catalog.rs`, `crates/gql/src/parser/statement.rs`,
+`crates/gql/src/program_modification.rs` (statement + zero-flag classification),
+`crates/router/src/authz.rs` (`build_coverage_report`, `explain_prepared_authorization`),
+`crates/router/src/gql.rs` (standalone dispatch hook), `crates/router/src/prepared.rs`
+(live-fallback replan).
+
+`EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> [BY PRINCIPAL '<principal>']` renders the
+join between a prepared record's requirement set and one principal's coverage. It is a pure
+diagnostic read: it dispatches nothing, mutates no stable state, classifies with zero
+modification flags, and must be issued standalone.
+
+- **Enforcement's exact duality, report mode:** the stored `required_privileges` set decides
+  unless it denies, in which case the live walk of a replanned current source decides — the
+  same drift rule prepared execution uses, reusing `extract_live` + `requirements_cover`
+  seams; source attribution only splits `StoredGrants`' own `covers()` disjunction into its
+  two stored-row arms (own ∪ PUBLIC), and an agreement test proves verdict/report single
+  semantics.
+- **Authority is visibility, not privilege** ([ADR 0084] §3): self mode requires settled
+  visibility of every touched graph (`caller_may_access_graph` arms); owner mode (`BY`)
+  requires registry tenancy of every touched graph. The gate consumes no capability input;
+  any failure is the indistinguishable record-shaped `NotFound`, so the diagnostic cannot
+  become an existence oracle.
+- **Rendering mirrors evaluation** ([ADR 0084] §4): conjunctive rows with covering sources,
+  alternatives as any-of groups with per-arm sources, unattributed residue as "requires
+  graph tenancy (owner/admin)", `ReadMetadata` rows included when present; conditional-
+  policy predicates never appear (policies filter outputs, they do not deny). Expired rows
+  are absent through the same expiry-aware `holds` primitive enforcement reads.
+- **Redaction** ([ADR 0084] §5): self mode names source classes only ("your grant" /
+  "PUBLIC grant" / "graph tenancy") and structurally cannot name another principal — only
+  the subject's own or PUBLIC rows can cover a demand; owner mode renders full row
+  identities, which owners can already derive from `list_graph_grants`.
+- Report lines return as one `explanation` text column per row on the ordinary read
+  transport; the statement is parsed behind the `gleaph` feature gate.
 
 ### Authorization-aware vector search ([ADR 0078], Phase 2 — implemented)
 

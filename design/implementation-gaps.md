@@ -2255,10 +2255,14 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-08-26-002 — No privileged authorization diagnosis surface; uniform Forbidden leaves "why denied" to trial-and-error
 
-- **Status:** Planned — designed as
-  [ADR 0084](adr/0084-explain-authorization-diagnosis.md) (proposed, 2026-08-26), which
-  answers the three questions below via its §5 redaction model; entry closes when the
-  statement lands with its PocketIC suite.
+- **Status:** Resolved (2026-08-26). `EXPLAIN AUTHORIZATION FOR PREPARED QUERY` shipped per
+  [ADR 0084](adr/0084-explain-authorization-diagnosis.md) (status: implemented): statement
+  grammar behind the `gleaph` gate with zero-flag classification, Router report mode reusing
+  `extract_live`/`requirements_cover` (stored-primary + live-drift fallback), visibility-only
+  authority gates with indistinguishable `NotFound`, per-mode redaction, and the
+  `adr0084_explain_authorization` PocketIC suite including an invariant-1 execution-bytes
+  regression guard. Fixing commit: `cc80c5327` (suite) with grammar `7d6cf5083`, report mode
+  `1ffce1888`.
 - **Owner:** Router authorization seam (`crates/router/src/authz.rs`
   `enforce_data_plane_authorization`, requirement walker `walk_ops`/`requirements_cover`)
   together with the grammar surface in `crates/gql`; introspection precedent in
@@ -2281,10 +2285,11 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 - **Impact:** Operability only — non-disclosure itself is intact by design. Developers and
   operators debug deny-by-default surprises via trial-and-error with temporary grants;
   shared-graph incident support stays script-level as multi-principal usage grows.
-- **Next decision:** smallest resolving questions for the ADR: (a) who may ask about whom —
-  graph owner about a caller vs caller self-diagnosis; (b) whether self-diagnosis may name
-  uncovered resources on graphs visible to the asker (existence-leak boundary); (c) report
-  granularity — covered-by-row detail vs uncovered-only facts.
+- **Next decision:** resolved by [ADR 0084] §1/§5: (a) self mode plus owner mode (`BY`)
+  restricted to tenancy of every touched graph; (b) self-diagnosis may name uncovered
+  resources on graphs whose visibility the asker passed — invisible graphs abort before any
+  rendering; (c) full coverage detail with source-class redaction in self mode and full row
+  identities in owner mode.
 
 ### GAP-2026-08-26-003 — main HEAD does not compile standalone: committed provisioning code imports `TextIndexId` defined only in uncommitted graph-kernel edits (half-commit recurrence)
 

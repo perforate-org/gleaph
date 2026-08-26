@@ -200,8 +200,10 @@ Privilege {
   (destructively redefined V1; fresh state required) and execute **SECURITY INVOKER**: caller
   grants merged with PUBLIC grants at invocation. `SECURITY DEFINER` is rejected for now.
 - Failure returns a uniform generic authorization error that does **not** name the missing
-  privilege or resource (existence non-disclosure aligned with [ADR 0028]); diagnosis is a
-  job for a future privileged-only `EXPLAIN AUTHORIZATION`.
+  privilege or resource (existence non-disclosure aligned with [ADR 0028]); diagnosis is the
+  job of the now-implemented privileged-only
+  [EXPLAIN AUTHORIZATION](0084-explain-authorization-diagnosis.md) ([ADR 0084]), which leaves
+  this failure contract byte-for-byte unchanged.
 - Conditional policies (owner/visibility predicates, `MSG_CALLER()` resolution, constant
   pushdown) are out of scope here — separate follow-up ADR. Structural-privilege failures
   remain hard errors; only resource-level policies may filter result sets.
@@ -244,7 +246,8 @@ Trade-offs accepted:
 
 - Two-plane configuration burden for simple deployments (mitigated later by preset sugar).
 - No admin bypass: support/debugging of "cannot see my own data" incidents requires either
-  temporary explicit grants or the future `EXPLAIN AUTHORIZATION`.
+  temporary explicit grants or
+  [EXPLAIN AUTHORIZATION](0084-explain-authorization-diagnosis.md) (implemented, [ADR 0084]).
 - Uniform error messages cost diagnosability by design.
 - Direct grant rows scale linearly with principals×resources; named roles deferred, not free.
 

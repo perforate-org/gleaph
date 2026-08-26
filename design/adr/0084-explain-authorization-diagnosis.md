@@ -1,8 +1,19 @@
 # 0084. EXPLAIN AUTHORIZATION: privileged diagnosis of requirement coverage
 
 Date: 2026-08-26
-Status: proposed
+Status: implemented
 Last revised: 2026-08-26
+
+> **Implemented (2026-08-26).** Statement grammar behind the `gleaph` feature gate
+> (`Statement::ExplainAuthorization`, zero-flag classification, formatter round-trip);
+> Router report mode in `crates/router/src/authz.rs` reusing `extract_live` +
+> `requirements_cover` with the stored-primary/live-fallback drift rule; visibility-only
+> authority gate with the indistinguishable record-shaped `NotFound`; per-mode redaction;
+> PocketIC suite `adr0084_explain_authorization` (6 tests) including the invariant-1 wire-
+> byte regression guard. As-implemented refinements vs. the text below: the terminal
+> rendering vocabulary and standalone-statement rule are normative here; expired-row
+> absence is exercised through revocation E2E plus unit proof (the grant grammar mints
+> only non-expiring data-plane rows).
 
 ## Context
 
