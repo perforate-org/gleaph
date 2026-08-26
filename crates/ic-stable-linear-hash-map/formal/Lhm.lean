@@ -17,6 +17,7 @@ import Lhm.Abs.Preserve
 import Lhm.Abs.Place
 import Lhm.Abs.Cleared
 import Lhm.Abs.OpPreserve
+import Lhm.Abs.Split
 
 namespace Lhm
 
@@ -39,5 +40,6 @@ namespace Lhm
 #print axioms Lhm.Abs.inv_reset
 #print axioms Lhm.Abs.opInsert_preserves
 #print axioms Lhm.Abs.opRemove_preserves
+#print axioms Lhm.Abs.inv_split_transfer
 
 end Lhm

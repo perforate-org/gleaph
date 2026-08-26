@@ -1,7 +1,8 @@
-# Verification Report — ic-stable-linear-hash-map, Stage A + Stage 3
+# Verification Report — ic-stable-linear-hash-map, Stage A + Stage 3 + Stage 4
 
 Anchor timestamp: 2026-08-24 16:33:21 UTC +0000
 (stage 3 addendum anchored 2026-08-25 03:17:05 UTC +0000)
+(stage 4 addendum anchored 2026-08-26 02:14:56 UTC +0000)
 Target revision: git `0da342d62b2a3c3b293fa7ff5ed21b9f577dd23d`
 (`crates/ic-stable-linear-hash-map/` clean at this revision)
 Mode: audit of an existing implementation, run as a permanent fixture (see SCOPE.md)
@@ -28,8 +29,9 @@ to Cargo.
 
 Stage A of the staged roadmap in SCOPE.md: routing mathematics and control-region
 invariants (properties P1–P5), plus — since the 2026-08-25 addendum below — stage 3,
-the abstract logical map layer (`Lhm/Abs/`). Stages 4–5 (split preservation, epoch
-fencing) remain planned follow-up work and are not claimed here.
+the abstract logical map layer (`Lhm/Abs/`), and — since the 2026-08-26 addendum
+below — stage 4, split preservation (`Lhm/Abs/Split.lean`). Stage 5 (epoch fencing)
+remains planned follow-up work and is not claimed here.
 
 ## Method
 
@@ -87,6 +89,47 @@ Modeling decisions recorded during stage 3:
   two independent `omega` closers removed the dependency; every stage-3 headline now
   rests on `propext` / `Quot.sound` only.
 
+## Stage 4 addendum — split preservation (anchored 2026-08-26 02:14:56 UTC +0000)
+
+Stage 4 verifies `inv_split_transfer` in `Lhm/Abs/Split.lean`: one successful
+maintenance split — map.rs `plan_split` L1453-L1557 with `insert = none`, published by
+L1668-L1675, counters recomputed as in `finish_split_plan` L1575-L1620 — preserves
+`Inv`. The headline depends only on `propext` / `Quot.sound` (`#print axioms` in the
+root module re-checks this on every build).
+
+| Result | Lean theorem | Content |
+|---|---|---|
+| Step shape | `nextGeometry_cases` | a successful `nextGeometry` (map.rs L1693-L1709) is exactly a cursor advance or a frontier level increment; both grow buckets by one |
+| Routing fixity | `route_fixed_step` (+ `_adv` / `_up` / `_high_*` variants) | off the source bucket, every entry keeps both candidates across the step; on the source, P2 gives `{source, source + 2^level}` |
+| Destination choice | `splitDest`, `splitDest_cases`, `splitDest_disjoint`, `splitDest_defined` | mirror of map.rs L1476-L1483: source when either candidate hits it, else new bucket, else fail-closed `none`; every old-source entry has a destination |
+| Transformer | `splitState` over `splitSrcFun` / `splitNewFun` / `splitBuckets` / `splitOverflow` | source block re-packed to `{source, source + base}` via `packImg` (map.rs `entries_from_image` + `append_entry_to_image`), everything else copied verbatim |
+| Load partition | `part`, `lsrc`, `lnew`, `partL` | the two re-packed images' loads sum to the old source load; each image's occupancy equals its selection count |
+| Counter recomputation | countersLen / countersOvf bullets of `inv_split_transfer_aux` | `len = Σ loads` and `overflow_entries = Σ overflow-loads` over the grown extent, using per-image identification `ovfLoadOf s2 b = ovfCountFun image` and `totalLoads_except` |
+| Placement transport | `placed` bullet | every new-state entry lies in a real slot of a candidate block under the stepped geometry |
+| Key uniqueness | `unique` bullet | global key uniqueness transports through re-packing; cross-image same-key collisions are excluded by `splitDest_disjoint` |
+
+Modeling decisions recorded during stage 4:
+
+- **Overflow accounting needs no partition identity.** An early draft postulated
+  `ovfCountFun srcImage + ovfCountFun newImage = ovfLoadOf oldSource`. That claim is
+  **false** in general: re-packing compacts entries into freed primary slots, so the
+  packed images' overflow counts do not sum to the old block's overflow count whenever
+  the split distributes entries across both destinations while the old block had
+  primary-slot holes. The Rust code never asserts such an identity either —
+  `finish_split_plan` simply subtracts `source_old_overflow` and adds each rewritten
+  image's own `overflow_entries`. The proof mirrors that directly: the invariant's
+  `overflow_entries = Σ ovfLoadOf` equation is discharged by decomposing the sum at
+  the old extent plus identifying each new bucket's overflow occupancy with its
+  packed image's count (`ovfCountFun_eq_ovfLoadOf`). No partition lemma exists.
+- **Axiom hygiene fix.** `srcPred_true` / `newPred_true` originally used
+  `simp [srcPred, hd]`, which pulled `Classical.choice` into their axiom footprint
+  (and hence into the stage-4 headline via the selection-count lemmas). They are now
+  proved by unfolding the `==`, rewriting with the destination fact, and closing with
+  `decide_eq_true rfl`; the headline rests on `propext` / `Quot.sound` only.
+- **Slot-bound helper.** `packImg_slot_lt` shows any non-empty packed output slot is a
+  genuine slot index (`j < SlotsPerBucket`), via the strict prefix-count gap
+  `countMatch_true_lt`.
+
 ## Assumption list (see SCOPE.md for full statements)
 
 - A1 hash opacity — rapidhash is uninterpreted; P1–P5 hold for arbitrary hashes. No
@@ -103,7 +146,7 @@ No new axioms were introduced. All headline theorems depend only on Lean's stand
 
 ## `sorry` list
 
-None. Stage A and stage 3 proofs are complete.
+None. Stage A, stage 3, and stage 4 proofs are complete.
 
 ## Findings
 
@@ -158,7 +201,10 @@ the proof obligations that later stages must formalize.
 
 The stage-3 addendum extends this to the abstract logical map: insert (update, place,
 refusal), remove, clear, and reset all preserve `Inv`, with the two-choice search
-shown complete under it. Remaining stages per SCOPE.md: split preservation
-(stage 4) — which also subsumes finding 5's termination obligation — and epoch
-fencing / failure atomicity (stage 5), which should encode finding 4's
-write-before-publish ordering explicitly.
+shown complete under it. The stage-4 addendum closes split preservation: a successful
+maintenance split relocates entries only to `source` or `source + base(level)`,
+re-packs both destination blocks without loss, and keeps `len` / `overflow_entries`
+consistent with per-bucket occupancy — so `Inv` survives every split the control
+layer can publish. Remaining stages per SCOPE.md: epoch fencing / failure atomicity
+(stage 5), which should encode finding 4's write-before-publish ordering and finding
+5's termination progress measure explicitly.

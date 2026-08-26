@@ -43,8 +43,8 @@ which makes automated extraction high-effort and low-coverage for this target.
 5. **Epoch fencing** — even/odd mutation epoch protocol; failure atomicity claims in
    ADR 0067 ("a prewrite error leaves logical bytes and the even epoch unchanged").
 
-Stages 1–2 and 3 are **in scope now** (see Status). Stages 4–5 are planned follow-up
-work; they are listed here so the roadmap survives agent handoffs.
+Stages 1–4 are **in scope now** (see Status). Stage 5 is planned follow-up
+work; it is listed here so the roadmap survives agent handoffs.
 
 ## Properties verified (stage 1–2 contract)
 
@@ -103,9 +103,15 @@ work; they are listed here so the roadmap survives agent handoffs.
 | 3b | `placeAt` / `clearSlot` preservation via counter deltas and the generalized transfer core (`inv_transfer_core`) in `Lhm/Abs/Place.lean`, `Deltas.lean`, `Preserve.lean` | Verified, no `sorry` |
 | 3c | Cleared-state preservation (`inv_cleared`, `inv_reset`, `Lhm/Abs/Cleared.lean`). Modeling decision: at the logical layer `clearedState` wipes every flattened slot; physical stale bytes beyond the initial extent (REPORT.md finding 4) are unreachable under any published control because a later `apply_split` writes complete block images before publishing growth — that write-before-publish ordering remains the stage-5 obligation | Verified, no `sorry` |
 | 3d | Top-level operation contracts: `opInsert_preserves` / `opRemove_preserves` plus result-state computation lemmas and the free-slot choice fact (`Lhm/Abs/OpPreserve.lean`) | Verified, no `sorry` |
-| 4 | Split preservation | Planned |
+| 4 | Split preservation: `inv_split_transfer` in `Lhm/Abs/Split.lean` — one successful maintenance split (map.rs `plan_split` L1453-L1557 with `insert = none`, counters recomputed as in `finish_split_plan` L1575-L1620) preserves `Inv`. Covers candidate routing corollaries off the source (`route_fixed_step`), destination choice (`splitDest`), the re-packing transformer (`splitState` via `packImg`), load partition of the source block between the two images, and len/overflow counter recomputation. Placement and key-uniqueness are transported through the re-packed images; entries whose candidates miss both destinations model Rust's fail-closed `TablePressure` and are shown unreachable for old-source entries | Verified, no `sorry`; headline depends only on `propext`/`Quot.sound` |
 | 5 | Epoch fencing / failure atomicity | Planned |
+
+Stage-4 modeling notes: Rust's `SPLIT_ENTRY_BUDGET`/`SPLIT_BYTE_BUDGET` rejection and the `split_debt` recomputation (map.rs L1596–L1613) are not modeled — `Inv` does not constrain `splitDebt`, so this is out of the preservation claim. A split that carries an insert (`plan_split(control, Some(…))`, map.rs L953) is covered by neither stage 3 nor 4; it remains unlisted work.
 
 Stage-3 files: `Lhm/Abs/Base.lean`, `State.lean`, `Ops.lean`, `Search.lean`,
 `Transfer.lean`, `Deltas.lean`, `Preserve.lean`, `Place.lean`, `Cleared.lean`,
 `OpPreserve.lean`.
+
+Stage-4 file: `Lhm/Abs/Split.lean` (imports `Lhm.Abs.OpPreserve`; re-packing tools
+`blockPred`/`scanTo`/`nthPack`/`packImg` and the additive counting lemmas live in
+stage-3's `Base.lean`).
