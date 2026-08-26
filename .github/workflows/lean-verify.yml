@@ -1,0 +1,36 @@
+name: lean-verify
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/ic-stable-linear-hash-map/**"]
+  pull_request:
+    paths: ["crates/ic-stable-linear-hash-map/**"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache elan toolchain and lake artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            crates/ic-stable-linear-hash-map/formal/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('crates/ic-stable-linear-hash-map/formal/lean-toolchain') }}
+      - name: Install elan
+        run: |
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Rebuild and replay all proofs
+        working-directory: crates/ic-stable-linear-hash-map/formal
+        run: lake build
+      - name: Axiom discipline gate (fail on sorryAx / Classical.choice)
+        working-directory: crates/ic-stable-linear-hash-map/formal
+        run: |
+          lake env lean Lhm.lean 2>&1 | tee axioms.log
+          if grep -E "sorryAx|Classical.choice" axioms.log; then
+            echo "::error::Axiom discipline violated: sorryAx or Classical.choice found"
+            exit 1
+          fi
