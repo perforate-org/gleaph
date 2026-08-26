@@ -436,7 +436,7 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
     }
 
     // Drive the migration one bounded step per apply.
-    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} ON (v:{LABEL}).{PROPERTY}");
+    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
     let args = migration_args(MIGRATION_ID, &statement);
 
     // Step 1 — prepare only: pending ledger row + durable build identity; no remote effects.
