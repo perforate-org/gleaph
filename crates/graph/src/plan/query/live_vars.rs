@@ -175,6 +175,7 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
         | PlanOp::EdgeIndexScan { .. }
         | PlanOp::ConditionalIndexScan { .. }
         | PlanOp::IndexIntersection { .. }
+        | PlanOp::TextScan { .. }
         | PlanOp::InsertVertex { .. }
         | PlanOp::InsertEdge { .. }
         | PlanOp::UseGraph { .. }

@@ -764,6 +764,11 @@ pub(crate) fn plan_op_name(op: &PlanOp) -> &'static str {
     match op {
         PlanOp::NodeScan { .. } => "NodeScan",
         PlanOp::IndexScan { .. } => "IndexScan",
+        // Router-owned seed: plans dispatched to a graph shard never contain a
+        // TextScan (the Router lowers it to canister search + bound rows before
+        // wire transport), so if one ever arrives here the shared catch-all
+        // rejects it as `UnsupportedOp("TextScan")`.
+        PlanOp::TextScan { .. } => "TextScan",
         PlanOp::EdgeIndexScan { .. } => "EdgeIndexScan",
         PlanOp::EdgeBindEndpoints { .. } => "EdgeBindEndpoints",
         PlanOp::ConditionalIndexScan { .. } => "ConditionalIndexScan",

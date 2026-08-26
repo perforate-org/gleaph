@@ -120,7 +120,8 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
         PlanOp::NodeScan { variable, .. }
         | PlanOp::IndexScan { variable, .. }
         | PlanOp::EdgeIndexScan { variable, .. }
-        | PlanOp::IndexIntersection { variable, .. } => {
+        | PlanOp::IndexIntersection { variable, .. }
+        | PlanOp::TextScan { variable, .. } => {
             out.insert(variable.to_string());
         }
         PlanOp::ConditionalIndexScan {
