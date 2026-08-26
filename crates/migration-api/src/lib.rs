@@ -156,6 +156,9 @@ pub enum SchemaMigrationStatementProfile {
     /// Gleaph `CREATE VECTOR INDEX` migration, which provisions and registers a vector index
     /// against a resolved graph (a synchronous one-shot catalog write plus optional provisioning).
     CreateVectorIndex,
+    /// Gleaph `CREATE TEXT INDEX` migration, which drives the text-canister backfill lifecycle
+    /// (ADR 0059 §Text build kind) against an already-provisioned TEXT definition.
+    CreateTextBackfill,
 }
 
 /// Compact terminal reason for a migration-driven index build.

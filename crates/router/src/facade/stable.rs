@@ -170,6 +170,12 @@ thread_local! {
         RefCell<memory::StableTextIndexIdAllocator> =
         RefCell::new(memory::init_next_text_index_id());
 
+    /// `(graph_id, text_index_id) → migration-driven TEXT backfill build identity`
+    /// (plan 0297 backfill-pull / ADR 0059 §Text build kind).
+    pub(crate) static ROUTER_TEXT_BACKFILL_BUILDS:
+        RefCell<memory::StableTextBackfillBuildMap> =
+        RefCell::new(memory::init_text_backfill_builds());
+
     /// `PhysicalIndexId → pending posting-purge obligation` (ADR 0023 D6). The sole durable
     /// identity of a dropped index's purge work: the catalog row is already gone, so this
     /// record — not the caller's stack — owns resumable drain progress until every frozen

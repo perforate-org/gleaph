@@ -4,6 +4,6 @@
 //! cannot drift. Router keeps this narrow module as its internal import boundary.
 
 pub(crate) use gleaph_index_ddl::{
-    IndexDdlStatement, IndexTarget, VectorIndexDdlStatement, VectorIndexTarget, try_parse,
-    try_parse_vector,
+    IndexDdlStatement, IndexTarget, TextIndexDdlStatement, VectorIndexDdlStatement,
+    VectorIndexTarget, try_parse, try_parse_text, try_parse_vector,
 };

@@ -152,6 +152,11 @@ const ROUTER_TEXT_INDEXES: MemoryId = MemoryId::new(56);
 /// Next never-issued opaque text-index id (mirrors `ROUTER_NEXT_VECTOR_INDEX_ID`). Zero invalid.
 const ROUTER_NEXT_TEXT_INDEX_ID: MemoryId = MemoryId::new(57);
 
+// --- catalog: TEXT backfill build lifecycle (plan 0297 backfill-pull / ADR 0059 Text kind) ---
+/// `(graph_id, text_index_id) → TextBackfillBuildRecord`. Sole MemoryId 58 owner; layout version
+/// is the record's `TextBackfillBuildStableRecord::V1` envelope (fresh-state installs only).
+const ROUTER_TEXT_BACKFILL_BUILDS: MemoryId = MemoryId::new(58);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -461,6 +466,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_INDEX_RETIRED, 8),
     (ROUTER_TEXT_INDEXES, 8),
     (ROUTER_NEXT_TEXT_INDEX_ID, 1),
+    (ROUTER_TEXT_BACKFILL_BUILDS, 8),
 ];
 
 thread_local! {
@@ -645,6 +651,16 @@ pub(crate) fn init_text_indexes() -> StableTextIndexMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_TEXT_INDEXES)))
 }
 
+pub(crate) type StableTextBackfillBuildMap = BTreeMap<
+    super::text_index_catalog::TextIndexKey,
+    super::text_index_catalog::TextBackfillBuildRecord,
+    Memory,
+>;
+
+pub(crate) fn init_text_backfill_builds() -> StableTextBackfillBuildMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_TEXT_BACKFILL_BUILDS)))
+}
+
 pub(crate) fn init_next_text_index_id() -> StableTextIndexIdAllocator {
     Cell::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_NEXT_TEXT_INDEX_ID)),
@@ -748,17 +764,17 @@ mod tests {
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 58);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 59);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=57)
+                (0..=58)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 58);
-        for id in 0..=57 {
+        assert_eq!(ids.len(), 59);
+        for id in 0..=58 {
             assert!(ids.contains(&id));
         }
     }

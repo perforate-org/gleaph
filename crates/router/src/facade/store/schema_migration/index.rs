@@ -113,6 +113,28 @@ pub(crate) trait IndexMigrationDriver {
     ) -> Pin<
         Box<dyn Future<Output = Result<IndexMigrationStepResponse, IndexMigrationDriveError>> + '_>,
     >;
+
+    /// TEXT backfill lane (ADR 0059 §Text build kind). The default fails closed so a
+    /// property-only driver can never be routed a text envelope by accident.
+    fn drive_text_backfill(
+        &self,
+        _request: crate::facade::store::schema_migration::driver::TextBackfillStepRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        crate::facade::store::schema_migration::driver::TextBackfillStepResponse,
+                        IndexMigrationDriveError,
+                    >,
+                > + '_,
+        >,
+    > {
+        Box::pin(async move {
+            Err(IndexMigrationDriveError::Terminal(
+                MigrationFailureCode::TargetRejected,
+            ))
+        })
+    }
 }
 
 pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
@@ -333,7 +355,7 @@ pub(super) fn validate_new_chain(
     }
 }
 
-fn pending_migration_exists() -> bool {
+pub(super) fn pending_migration_exists() -> bool {
     ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| {
         ledger.iter().any(|entry| {
             matches!(
@@ -410,7 +432,7 @@ fn capture_targets(
     Ok((targets, topology_epoch))
 }
 
-fn topology_epoch(routes: &[(u32, Principal, Principal)]) -> u64 {
+pub(super) fn topology_epoch(routes: &[(u32, Principal, Principal)]) -> u64 {
     let mut routes = routes.to_vec();
     routes.sort_by(|left, right| {
         left.0

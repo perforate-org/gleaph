@@ -24,6 +24,7 @@ use std::ops::Bound;
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::index::PhysicalIndexId;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 
@@ -264,10 +265,6 @@ fn resolve_status(has_target: bool) -> TextIndexStatus {
 /// proof holds (text-canister scan done AND the Graph flushed watermark). This is the
 /// only transition that makes a definition planner/query-visible. Any other current
 /// state rejects without mutating the row.
-#[allow(
-    dead_code,
-    reason = "consumed by the ledger consumer when text lifecycle rows land (plan 0297)"
-)]
 pub(crate) fn complete_text_backfill(
     graph_id: GraphId,
     text_index_id: u32,
@@ -280,7 +277,6 @@ pub(crate) fn complete_text_backfill(
 
 /// Applies the single exact status move selected by `step`; `None` means the current
 /// state forbids the transition and the row is left untouched (fail closed).
-#[allow(dead_code, reason = "consumed with complete_text_backfill (plan 0297)")]
 fn transition_text_backfill_status(
     graph_id: GraphId,
     text_index_id: u32,
@@ -322,6 +318,173 @@ pub(crate) fn planning_visible_text_indexes(graph_id: GraphId) -> Vec<TextIndexD
 
 pub(crate) fn get_text_index(graph_id: GraphId, text_index_id: u32) -> Option<TextIndexDefRecord> {
     ROUTER_TEXT_INDEXES.with_borrow(|map| map.get(&TextIndexKey::new(graph_id, text_index_id)))
+}
+
+// -- Migration-driven backfill build records (plan 0297 backfill-pull) ----------------------
+
+/// Lifecycle of one migration-driven TEXT backfill build. Mirrors the property lane's
+/// Building → Sealing → Converged spine; there is no Active state because readiness is the
+/// TEXT catalog row's own [`TextIndexStatus::Ready`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub(crate) enum TextBackfillBuildPhase {
+    /// Registered with the text canister; bounded pull steps advance it.
+    Building,
+    /// Graph scope frozen at the fresh epoch; awaiting both convergence gates.
+    Sealing,
+    /// Both gates proven; the definition reached `Ready` and the sub-build is terminal.
+    Converged,
+}
+
+/// Durable per-build identity for one migration-driven TEXT backfill (the text analogue of
+/// the property `IndexDefRecord.build` metadata). Created once at migration prepare and
+/// dropped when the build converges or its cleanup completes.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub(crate) struct TextBackfillBuildRecord {
+    pub migration_id: String,
+    pub topology_epoch: u64,
+    pub prepared_catalog_epoch: u64,
+    pub physical_index_id: PhysicalIndexId,
+    pub home_shard_id: u32,
+    pub home_graph_canister: Principal,
+    /// One-shot registration guard for the Building phase.
+    pub registered: bool,
+    pub phase: TextBackfillBuildPhase,
+}
+
+/// Versioned stable envelope (ADR 0007). Fresh-state installs only.
+#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
+enum TextBackfillBuildStableRecord {
+    V1(TextBackfillBuildRecord),
+}
+
+impl Storable for TextBackfillBuildRecord {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(
+            Encode!(&TextBackfillBuildStableRecord::V1(self.clone()))
+                .expect("encode text backfill build"),
+        )
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&TextBackfillBuildStableRecord::V1(self)).expect("encode text backfill build")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        match Decode!(bytes.as_ref(), TextBackfillBuildStableRecord)
+            .expect("decode text backfill build")
+        {
+            TextBackfillBuildStableRecord::V1(v1) => v1,
+        }
+    }
+}
+
+/// Creates one durable build record after full validation. The caller has already resolved
+/// the identity allocations (physical id + prepared epoch) inside the migration co-write;
+/// this function rejects a conflicting live record for the same definition fail-closed.
+pub(crate) fn prepare_text_backfill_build(
+    graph_id: GraphId,
+    text_index_id: u32,
+    record: TextBackfillBuildRecord,
+) -> Result<(), RouterError> {
+    let key = TextIndexKey::new(graph_id, text_index_id);
+    if crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS.with_borrow(|map| map.contains_key(&key))
+    {
+        return Err(RouterError::Conflict(format!(
+            "text index {text_index_id} already has a pending backfill build"
+        )));
+    }
+    crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS.with_borrow_mut(|map| {
+        map.insert(key, record);
+    });
+    Ok(())
+}
+
+pub(crate) fn get_text_backfill_build(
+    graph_id: GraphId,
+    text_index_id: u32,
+) -> Option<TextBackfillBuildRecord> {
+    crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS
+        .with_borrow(|map| map.get(&TextIndexKey::new(graph_id, text_index_id)))
+}
+
+/// Marks the one-shot text-canister registration complete. Rejecting an already-registered
+/// build keeps the Register step exactly-once even across ambiguous retries.
+pub(crate) fn mark_text_backfill_registered(
+    graph_id: GraphId,
+    text_index_id: u32,
+) -> Result<(), RouterError> {
+    let key = TextIndexKey::new(graph_id, text_index_id);
+    let existing = crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS
+        .with_borrow(|map| map.get(&key))
+        .ok_or_else(|| RouterError::NotFound(format!("text backfill build {text_index_id}")))?;
+    if existing.registered {
+        return Err(RouterError::Conflict(
+            "text backfill already registered".into(),
+        ));
+    }
+    let updated = TextBackfillBuildRecord {
+        registered: true,
+        ..existing.clone()
+    };
+    crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS.with_borrow_mut(|map| {
+        map.insert(key, updated);
+    });
+    Ok(())
+}
+
+/// Advances the durable phase after validating the exact state-machine edge.
+pub(crate) fn transition_text_backfill_build(
+    graph_id: GraphId,
+    text_index_id: u32,
+    next: TextBackfillBuildPhase,
+) -> Result<TextBackfillBuildRecord, RouterError> {
+    let key = TextIndexKey::new(graph_id, text_index_id);
+    let existing = crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS
+        .with_borrow(|map| map.get(&key))
+        .ok_or_else(|| RouterError::NotFound(format!("text backfill build {text_index_id}")))?;
+    let valid = matches!(
+        (existing.phase, next),
+        (
+            TextBackfillBuildPhase::Building,
+            TextBackfillBuildPhase::Sealing
+        ) | (
+            TextBackfillBuildPhase::Sealing,
+            TextBackfillBuildPhase::Converged
+        )
+    );
+    if !valid || existing.phase == next {
+        return Err(RouterError::InvalidState(format!(
+            "text backfill build {text_index_id} phase {:?} rejects {:?}",
+            existing.phase, next
+        )));
+    }
+    let updated = TextBackfillBuildRecord {
+        phase: next,
+        ..existing.clone()
+    };
+    crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS.with_borrow_mut(|map| {
+        map.insert(key, updated.clone());
+    });
+    Ok(updated)
+}
+
+/// Drops the build record once it converged or its cleanup completed. The TEXT definition
+/// row survives; only the migration-owned build identity is released.
+pub(crate) fn drop_text_backfill_build(graph_id: GraphId, text_index_id: u32) {
+    crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS
+        .with_borrow_mut(|map| map.remove(&TextIndexKey::new(graph_id, text_index_id)));
+}
+
+/// Resolves the migration-driven build record by logical name, if any.
+pub(crate) fn get_text_backfill_build_by_name_id(
+    graph_id: GraphId,
+    index_name_id: IndexNameId,
+) -> Option<(TextIndexDefRecord, TextBackfillBuildRecord)> {
+    let def = get_text_index_by_name_id(graph_id, index_name_id)?;
+    let build = get_text_backfill_build(graph_id, def.text_index_id)?;
+    Some((def, build))
 }
 
 /// Resolve one TEXT definition by its graph-scoped logical name. Registration enforces

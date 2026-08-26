@@ -879,6 +879,24 @@ pub(crate) fn current_index_catalog_epoch() -> u64 {
     ROUTER_INDEX_CATALOG_EPOCH.with_borrow(|epoch| *epoch.get())
 }
 
+/// Allocates one never-reused physical namespace and advances the shared catalog epoch for a
+/// TEXT backfill build (ADR 0059 §Text build kind). The caller persists both values inside the
+/// same synchronous co-write as the migration ledger record; a trap rolls all three back.
+pub(crate) fn prepare_text_backfill_identity() -> Result<(PhysicalIndexId, u64), RouterError> {
+    let physical = allocate_physical_index_id()?;
+    let prepared = next_catalog_epoch()?;
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(prepared));
+    Ok((physical, prepared))
+}
+
+/// Bumps the shared catalog epoch once for the TEXT seal fence and returns the fresh value
+/// (the text analogue of the property `begin_index_sealing` epoch capture).
+pub(crate) fn advance_index_catalog_epoch_for_text_seal() -> Result<u64, RouterError> {
+    let next = next_catalog_epoch()?;
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(next));
+    Ok(next)
+}
+
 fn next_catalog_epoch() -> Result<u64, RouterError> {
     current_index_catalog_epoch()
         .checked_add(1)

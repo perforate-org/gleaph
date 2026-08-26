@@ -2,6 +2,7 @@
 
 mod driver;
 mod index;
+mod text;
 mod text_backfill;
 mod vector;
 
@@ -40,6 +41,9 @@ impl RouterStore {
         let ApplySchemaMigrationArgs::V1(inner) = &args;
         if gleaph_index_ddl::try_parse_vector(&inner.statement).is_some() {
             return vector::apply_vector_index_migration(self, caller, args, driver).await;
+        }
+        if gleaph_index_ddl::try_parse_text(&inner.statement).is_some() {
+            return text::apply_text_index_migration(self, caller, args, driver).await;
         }
         if gleaph_index_ddl::try_parse(&inner.statement).is_some() {
             return index::apply_index_migration(self, caller, args, driver).await;

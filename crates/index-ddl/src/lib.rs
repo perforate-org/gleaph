@@ -23,6 +23,28 @@ pub enum IndexDdlStatement {
     },
 }
 
+/// Gleaph-specific `CREATE TEXT INDEX` DDL (plan 0297 `backfill-pull`; ADR 0059 §Text build
+/// kind).
+///
+/// Deliberately separate from [`IndexDdlStatement`]: a text declaration routes through the
+/// text-canister backfill lifecycle, never the property-posting build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextIndexDdlStatement {
+    Create {
+        index_name: String,
+        label: String,
+        property: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TextIndexDdlParseError {
+    #[error("expected {0}")]
+    Expected(String),
+    #[error("unexpected trailing input")]
+    TrailingInput,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexTarget {
     pub kind: IndexedPropertyKind,
@@ -168,6 +190,66 @@ pub fn try_parse_vector(
         )));
     }
     Some(parse_vector(trimmed))
+}
+
+/// Returns `None` when the query is not `CREATE TEXT INDEX` DDL.
+///
+/// Grammar: `CREATE TEXT INDEX <name> ON (<var>:<label>).<property>`, mirroring the vendor
+/// property-index target shape. The analyzer is creation-fixed by the Router TEXT catalog
+/// (v0 production pipeline) and therefore not part of the syntax.
+pub fn try_parse_text(
+    query: &str,
+) -> Option<Result<TextIndexDdlStatement, TextIndexDdlParseError>> {
+    let trimmed = query.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if !upper.starts_with("CREATE TEXT INDEX") {
+        return None;
+    }
+    Some(parse_text(trimmed))
+}
+
+fn parse_text(query: &str) -> Result<TextIndexDdlStatement, TextIndexDdlParseError> {
+    let mut cur = Cursor::new(query);
+    cur.skip_ws();
+    cur.expect_ascii_ci("CREATE")
+        .map_err(|_| TextIndexDdlParseError::Expected("CREATE".into()))?;
+    cur.expect_ascii_ci("TEXT")
+        .map_err(|_| TextIndexDdlParseError::Expected("TEXT".into()))?;
+    cur.expect_ascii_ci("INDEX")
+        .map_err(|_| TextIndexDdlParseError::Expected("INDEX".into()))?;
+    let index_name = cur
+        .parse_ident()
+        .map_err(|_| TextIndexDdlParseError::Expected("text index name".into()))?;
+    cur.expect_ascii_ci("ON")
+        .map_err(|_| TextIndexDdlParseError::Expected("ON".into()))?;
+    cur.expect('(')
+        .map_err(|_| TextIndexDdlParseError::Expected("'('".into()))?;
+    cur.skip_ws();
+    let _variable = cur
+        .parse_ident()
+        .map_err(|_| TextIndexDdlParseError::Expected("pattern variable".into()))?;
+    cur.expect(':')
+        .map_err(|_| TextIndexDdlParseError::Expected("':'".into()))?;
+    let label = cur
+        .parse_ident()
+        .map_err(|_| TextIndexDdlParseError::Expected("vertex label".into()))?;
+    cur.expect(')')
+        .map_err(|_| TextIndexDdlParseError::Expected("')'".into()))?;
+    cur.expect('.')
+        .map_err(|_| TextIndexDdlParseError::Expected("'.'".into()))?;
+    let property = cur
+        .parse_ident()
+        .map_err(|_| TextIndexDdlParseError::Expected("property name".into()))?;
+    cur.try_consume(';');
+    cur.skip_ws();
+    if !cur.is_eof() {
+        return Err(TextIndexDdlParseError::TrailingInput);
+    }
+    Ok(TextIndexDdlStatement::Create {
+        index_name,
+        label,
+        property,
+    })
 }
 
 /// Returns `None` when the query is not constraint DDL (caller should use standard GQL parsing).
@@ -1418,5 +1500,29 @@ mod tests {
         .expect("constraint DDL")
         .expect_err("NEXT is index-only");
         assert_eq!(next_error, ConstraintDdlParseError::TrailingInput);
+    }
+
+    #[test]
+    fn text_ddl_parses_label_property_target_and_rejects_other_statements() {
+        let parsed = try_parse_text("CREATE TEXT INDEX docs ON (v:Person).bio;").expect("text DDL");
+        assert_eq!(
+            parsed.expect("parse"),
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                label: "Person".into(),
+                property: "bio".into(),
+            }
+        );
+        // Case-insensitive keywords, optional semicolon.
+        assert!(try_parse_text("create text index docs on (v:person).bio").is_some());
+        // Other vendor DDL and plain GQL are not text DDL.
+        assert!(try_parse_text("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
+        assert!(try_parse_text("CREATE VECTOR INDEX v FOR (n:N) ON (n.e)").is_none());
+        assert!(try_parse_text("MATCH (n) RETURN n").is_none());
+        // Trailing junk rejects.
+        let trailing = try_parse_text("CREATE TEXT INDEX docs ON (v:Person).bio DROP TEXT INDEX x")
+            .expect("recognized")
+            .expect_err("trailing input");
+        assert_eq!(trailing, TextIndexDdlParseError::TrailingInput);
     }
 }

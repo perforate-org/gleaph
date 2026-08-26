@@ -13,7 +13,7 @@ use std::pin::Pin;
 
 use candid::Principal;
 use gleaph_graph_kernel::canonical_export::{
-    CanonicalExportError, CanonicalExportScope, CanonicalExportStatus,
+    CanonicalExportError, CanonicalExportScope, CanonicalExportStatus, CanonicalExportTarget,
     IndexBuildOutboxDrainProgress, IndexBuildOutboxDrainRequest,
 };
 use gleaph_graph_kernel::index::{
@@ -186,7 +186,6 @@ pub(crate) struct IcGraphScopeClient;
 pub(crate) struct RealIndexMigrationDriver<IB, GS, TB> {
     index_build: IB,
     graph_scope: GS,
-    #[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
     text_backfill: TB,
 }
 
@@ -458,19 +457,11 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
 
 /// Bounded pull budget per text backfill Build step, mirroring the graph-index worker bound
 /// (the text canister clamps to the same kernel constant internally).
-#[allow(
-    dead_code,
-    reason = "text lane consumed by ledger routing when text lifecycle rows land"
-)]
 pub(crate) const MAX_TEXT_BACKFILL_ADVANCE_BUDGET: u32 = MAX_INDEX_BUILD_ADVANCE_PAGES;
 
 /// One bounded text backfill owner operation. The envelope carries the FULL text identity —
 /// including the `TextIndexId` that the property-posting envelope has no slot for — so every
 /// downstream call still derives exactly from the immutable request.
-#[allow(
-    dead_code,
-    reason = "text lane awaits ledger routing (plan 0297 backfill-pull)"
-)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TextBackfillStepRequest {
     pub migration_id: String,
@@ -485,10 +476,6 @@ pub(crate) struct TextBackfillStepRequest {
     pub action: IndexMigrationStepAction,
 }
 
-#[allow(
-    dead_code,
-    reason = "text lane awaits ledger routing (plan 0297 backfill-pull)"
-)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TextBackfillStepResult {
     Registered,
@@ -498,10 +485,6 @@ pub(crate) enum TextBackfillStepResult {
 }
 
 /// Response echoes the immutable request identity so stale and cross-target replies fail closed.
-#[allow(
-    dead_code,
-    reason = "text lane awaits ledger routing (plan 0297 backfill-pull)"
-)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TextBackfillStepResponse {
     pub migration_id: String,
@@ -510,8 +493,43 @@ pub(crate) struct TextBackfillStepResponse {
     pub result: TextBackfillStepResult,
 }
 
+/// Builds the immutable text step envelope from the durable build identity. The text canister
+/// and home shard come from the SAME registration/record pair the caller persisted at prepare,
+/// so every downstream call derives exactly from durable state.
+pub(crate) fn text_step_request(
+    migration_id: String,
+    lifecycle_catalog_epoch: u64,
+    registration: RegisterTextBackfillRequest,
+    home_shard_id: u32,
+    home_graph_canister: Principal,
+    action: IndexMigrationStepAction,
+) -> TextBackfillStepRequest {
+    let scope = CanonicalExportScope {
+        graph_id: registration.graph_id,
+        index_name_id: registration.index_name_id,
+        catalog_epoch: registration.catalog_epoch,
+        target: CanonicalExportTarget::Text {
+            label_id: registration.scope.label_id,
+            property_id: registration.scope.property_id,
+        },
+        inline: None,
+    };
+    TextBackfillStepRequest {
+        migration_id,
+        lifecycle_catalog_epoch,
+        text_canister: registration.graph_canister,
+        home_graph_canister,
+        registration,
+        export_scopes: vec![IndexMigrationExportScope {
+            shard_id: home_shard_id,
+            graph_canister: home_graph_canister,
+            scope,
+        }],
+        action,
+    }
+}
+
 impl<TB: TextBackfillClient, GS: GraphScopeClient, IB> RealIndexMigrationDriver<IB, GS, TB> {
-    #[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
     fn text_control(&self, request: &TextBackfillStepRequest) -> TextBackfillControl {
         TextBackfillControl {
             text_index_id: request.registration.text_index_id,
@@ -522,8 +540,7 @@ impl<TB: TextBackfillClient, GS: GraphScopeClient, IB> RealIndexMigrationDriver<
     /// Register/Build/Seal/Cleanup dispatch for one text backfill step. Graph-index is never
     /// called on this lane; the Graph export-scope lifecycle and its watermark capture are the
     /// SHARED code paths.
-    #[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
-    pub(crate) async fn drive_text_backfill(
+    async fn drive_text_backfill_inner(
         &self,
         request: TextBackfillStepRequest,
     ) -> Result<TextBackfillStepResponse, IndexMigrationDriveError> {
@@ -689,7 +706,7 @@ impl<TB: TextBackfillClient, GS: GraphScopeClient, IB> RealIndexMigrationDriver<
     }
 }
 
-impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> IndexMigrationDriver
+impl<TB: TextBackfillClient, GS: GraphScopeClient, IB: IndexBuildClient> IndexMigrationDriver
     for RealIndexMigrationDriver<IB, GS, TB>
 {
     fn drive(
@@ -716,6 +733,15 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> IndexMigrationDriver
             }
         })
     }
+
+    fn drive_text_backfill(
+        &self,
+        request: TextBackfillStepRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<TextBackfillStepResponse, IndexMigrationDriveError>> + '_>,
+    > {
+        Box::pin(self.drive_text_backfill_inner(request))
+    }
 }
 
 /// Production driver instance wired into the control plane.
@@ -738,7 +764,6 @@ fn frozen_scope(
 }
 
 /// Text-lane variant of [`frozen_scope`]: same rule over the text envelope's registration epoch.
-#[allow(dead_code, reason = "text lane awaits ledger routing (plan 0297)")]
 fn frozen_text_scope(
     scope: &IndexMigrationExportScope,
     request: &TextBackfillStepRequest,
