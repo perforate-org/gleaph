@@ -21,6 +21,7 @@ import Lhm.Abs.Cleared
 import Lhm.Abs.OpPreserve
 import Lhm.Abs.Split
 import Lhm.Abs.Epoch
+import Lhm.Abs.SplitInsert
 
 namespace Lhm
 
@@ -54,5 +55,11 @@ namespace Lhm
 #print axioms Lhm.Abs.cleared_published_empty
 #print axioms Lhm.Abs.next_geometry_rem_splits
 #print axioms Lhm.Abs.retry_loop_terminates
+#print axioms Lhm.Abs.pickImage_spec
+#print axioms Lhm.Abs.findIn_splitState_absent
+#print axioms Lhm.Abs.inv_splitInsert_preserves
+#print axioms Lhm.Abs.splitInsert_eq_opInsert
+#print axioms Lhm.Abs.apply_split_insert_call_fail_atomic
+#print axioms Lhm.Abs.apply_split_insert_call_ok_realizes
 
 end Lhm

@@ -106,7 +106,14 @@ what each stage covers so it survives agent handoffs.
 | 4 | Split preservation: `inv_split_transfer` in `Lhm/Abs/Split.lean` — one successful maintenance split (map.rs `plan_split` L1453-L1557 with `insert = none`, counters recomputed as in `finish_split_plan` L1575-L1620) preserves `Inv`. Covers candidate routing corollaries off the source (`route_fixed_step`), destination choice (`splitDest`), the re-packing transformer (`splitState` via `packImg`), load partition of the source block between the two images, and len/overflow counter recomputation. Placement and key-uniqueness are transported through the re-packed images; entries whose candidates miss both destinations model Rust's fail-closed `TablePressure` and are shown unreachable for old-source entries | Verified, no `sorry`; headline depends only on `propext`/`Quot.sound` |
 | 5 | Epoch fencing / failure atomicity: guard transitions (`beginMutationAt`, `guardFinish`, `runGuarded`, `entryGate`), store-carrying failure atomicity per ADR 0067 (`run_guarded_fail_atomic`, `apply_split_call_fail_atomic`) with exact realization of the stage-3/4 committed states (`*_realizes`), entry-point fencing and cross-message recovery (`entry_gate_odd_fails`), write-before-publish byte layer (`write_before_publish`, `cleared_published_empty`), insert retry-loop progress measure (`remSplits`, `next_geometry_rem_splits`, `geom_chain_bounded`, `retry_loop_terminates`) in `Lhm/Abs/Epoch.lean` | Verified, no `sorry`; headline depends only on `propext`/`Quot.sound` |
 
-Stage-4 modeling notes: Rust's `SPLIT_ENTRY_BUDGET`/`SPLIT_BYTE_BUDGET` rejection and the `split_debt` recomputation (map.rs L1596–L1613) are not modeled — `Inv` does not constrain `splitDebt`, so this is out of the preservation claim. A split that carries an insert (`plan_split(control, Some(…))`, map.rs L953) is covered by neither stage 3 nor 4; it remains unlisted work.
+Stage-4 modeling notes: Rust's `SPLIT_ENTRY_BUDGET`/`SPLIT_BYTE_BUDGET` rejection
+(map.rs L1607-L1608) is not modeled — `Inv` does not constrain block-level budgets.
+The `split_debt` recomputation (map.rs L1596–L1613) is likewise not modeled, so the
+modeled debt of a carried insert follows the stage-3 convention (`debt_after_insert`,
+map.rs L1680–L1691). A split that carries an insert (`plan_split(control, Some(…))`,
+map.rs L953) was originally covered by neither stage 3 nor 4; it is now verified in
+`Lhm/Abs/SplitInsert.lean` (see the stage-5 addendum's companion section in
+REPORT.md).
 
 Stage-5 modeling notes: call results carry the store in the failure branch too
 (`CallResult.fail err state`), so "a prewrite error leaves logical bytes and the even
@@ -136,3 +143,8 @@ stage-3's `Base.lean`).
 
 Stage-5 file: `Lhm/Abs/Epoch.lean` (imports `Lhm.Abs.Split`; guard transitions,
 failure atomicity, the published-view byte layer, and the retry-loop measure).
+
+Stage-4-note file: `Lhm/Abs/SplitInsert.lean` (imports `Lhm.Abs.Split` and
+`Lhm.Abs.Epoch`; the insert-carrying split variant — picker bridge lemmas, key
+absence across the split, `Inv` preservation, equivalence with plain split then
+insert, and the guarded call wrapper).

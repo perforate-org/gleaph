@@ -4,6 +4,7 @@ Anchor timestamp: 2026-08-24 16:33:21 UTC +0000
 (stage 3 addendum anchored 2026-08-25 03:17:05 UTC +0000)
 (stage 4 addendum anchored 2026-08-26 02:14:56 UTC +0000)
 (stage 5 addendum anchored 2026-08-26 04:44:01 UTC +0000)
+(insert-carrying split addendum anchored 2026-08-26 05:52:09 UTC +0000)
 Target revision: git `0da342d62b2a3c3b293fa7ff5ed21b9f577dd23d`
 (`crates/ic-stable-linear-hash-map/` clean at this revision)
 Mode: audit of an existing implementation, run as a permanent fixture (see SCOPE.md)
@@ -31,10 +32,11 @@ to Cargo.
 Stage A of the staged roadmap in SCOPE.md: routing mathematics and control-region
 invariants (properties P1–P5), plus — since the 2026-08-25 addendum below — stage 3,
 the abstract logical map layer (`Lhm/Abs/`), — since the 2026-08-26 addendum below —
-stage 4, split preservation (`Lhm/Abs/Split.lean`), and — since the second
-2026-08-26 addendum below — stage 5, epoch fencing / failure atomicity, the
-write-before-publish ordering, and the retry-loop progress measure
-(`Lhm/Abs/Epoch.lean`).
+stage 4, split preservation (`Lhm/Abs/Split.lean`), — since the second 2026-08-26
+addendum below — stage 5, epoch fencing / failure atomicity, the write-before-publish
+ordering, and the retry-loop progress measure (`Lhm/Abs/Epoch.lean`), and — since the
+third 2026-08-26 addendum below — the insert-carrying split variant
+(`Lhm/Abs/SplitInsert.lean`), resolving the stage-4 note.
 
 ## Method
 
@@ -183,6 +185,41 @@ Modeling decisions recorded during stage 5:
   (`EpochExhausted`, map.rs L1237) is modeled as the explicit bound
   `mutationEpoch + 2 ≤ U64Max` per SCOPE.md A3.
 
+## Stage 4-note addendum — the insert-carrying split (anchored 2026-08-26 05:52:09 UTC +0000)
+
+`insert` reaches `plan_split(control, Some((k, v)))` (map.rs L953) only after the key
+was found absent from both candidate blocks and no candidate slot is free; the plan
+re-packs the source block as in stage 4, then routes the new key under the stepped
+geometry and appends it to the destination image chosen by `choose_image_location`
+(map.rs L1623-L1660). `Lhm/Abs/SplitInsert.lean` models this composition and closes
+the stage-4 note. Headlines depend only on `propext` / `Quot.sound`.
+
+| Result | Lean theorem | Content |
+|---|---|---|
+| Post-split surface | `splitState_buckets_at_src/_at_new/_at_else`, `occPred_splitState_src/_new`, `loadOf_splitState_src/_new/_eq`, `firstFreeIdx_splitState_eq` | the post-split state's per-block content, loads, and first free slots are exactly what `choose_image_location` compares: re-packed prefix images for the two destinations (`packImg_isSome`), untouched disk state otherwise |
+| Picker | `pickImage`, `pickImage_spec` | the destination is stage 3's least-loaded-admissible chooser applied to the post-split candidate blocks — by the bridge lemmas this computes precisely `choose_image_location`'s outcome (same admission gate, same counts, ties to the first candidate); a picked `(b, j)` lies in the new-geometry candidate pair at a bounded genuinely free slot |
+| Absence survives | `findIn_splitState_absent` | a key absent from both pre-split candidate blocks stays absent everywhere post-split: entries of the re-packed images all originate in the old source block, whose resident keys lie in their own pre-candidate pairs (`Inv.placed`), and untouched buckets are searched verbatim |
+| Preservation | `inv_splitInsert_preserves` | one split carrying a fresh insert preserves `Inv` — stage 4's transfer followed by stage 3's placement lemma on the post-split state |
+| Equivalence | `splitInsert_eq_opInsert` | the carried variant realizes exactly the plain split followed by `opInsert` under the stepped geometry: outcome `placed`, identical final state |
+| Guarded call | `applySplitInsertCall`, `apply_split_insert_call_fail_atomic`, `apply_split_insert_call_ok_realizes` | the stage-5 fence wraps the composed transition with the usual failure atomicity and exact realization |
+
+Modeling decisions recorded during this addendum:
+
+- **The composed transition is derived syntax.** Because a re-packed image occupies a
+  prefix of its block (`packImg_isSome`) and `append_entry_to_image` lands at the
+  first free slot, the split-with-insert final state is literally
+  `placeAt (splitState st g) k v b j` — no third transformer exists. This makes the
+  preservation proof a two-line composition of `inv_split_transfer` and `inv_place`,
+  and makes the equivalence corollary immediate from `opInsert_state_place`.
+- **Absence needs the placement invariant.** The pre-split existence check covers
+  only the pre-candidate pair, while post-split candidates can differ; the gap is
+  closed by `Inv.placed` (every stored key lies in its own candidate pair) plus the
+  fact that re-packed entries originate exclusively in the old source block.
+- **Debt convention.** As recorded in the stage-4 notes, `split_debt` stays outside
+  `Inv`; the modeled debt of the carried insert follows the stage-3 rule
+  (`debt_after_insert`, map.rs L1680–L1691) rather than `finish_split_plan`'s
+  saturating-subtract detail (map.rs L1596–L1602).
+
 ## Assumption list (see SCOPE.md for full statements)
 
 - A1 hash opacity — rapidhash is uninterpreted; P1–P5 hold for arbitrary hashes. No
@@ -199,7 +236,8 @@ No new axioms were introduced. All headline theorems depend only on Lean's stand
 
 ## `sorry` list
 
-None. Stage A, stage 3, stage 4, and stage 5 proofs are complete.
+None. Stage A, stage 3, stage 4, stage 5, and the insert-carrying split variant are
+complete.
 
 ## Findings
 
@@ -274,5 +312,8 @@ as explicit state transitions whose failures provably carry the store untouched 
 an interrupted window fences every entry point and reopen until recovery,
 `apply_split`'s write-before-publish ordering makes stale bytes beyond the published
 extent permanently unreadable (finding 4), and the insert retry loop terminates by an
-explicit progress measure that fails closed at the geometry cap (finding 5). All
-stages of the SCOPE.md roadmap are now verified with no `sorry`.
+explicit progress measure that fails closed at the geometry cap (finding 5). The
+companion addendum resolves the last open note: a split carrying an insert preserves
+`Inv` and is proven equivalent to the plain split followed by `opInsert` under the
+stepped geometry. All stages of the SCOPE.md roadmap — including the stage-4 note —
+are now verified with no `sorry`.
