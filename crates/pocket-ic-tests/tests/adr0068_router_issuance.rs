@@ -179,7 +179,7 @@ fn activate_release(env: &Env) {
         chunk_index += 1;
     }
 
-    // Publish the release with all four kinds (the manifest requires them). The other three kinds
+    // Publish the release with all five kinds (the manifest requires them). The other four kinds
     // use a minimal valid wasm that is never installed by this test.
     let minimal = minimal_canister_wasm();
     let minimal_sha = sha256(&minimal);
@@ -193,6 +193,8 @@ fn activate_release(env: &Env) {
         minimal_sha,
     );
     publish_artifact(env, CanisterKind::VectorCanister, "0.1.0", &minimal);
+    let text_id = ArtifactId::new(CanisterKind::TextCanister, "0.1.0".to_owned(), minimal_sha);
+    publish_artifact(env, CanisterKind::TextCanister, "0.1.0", &minimal);
 
     let bytes = env
         .pic
@@ -202,7 +204,7 @@ fn activate_release(env: &Env) {
             "release_publish",
             Encode!(&ReleasePublishArgs {
                 release_id: ReleaseId("release-router".to_owned()),
-                artifact_ids: vec![router_id, graph_id, prop_id, vec_id],
+                artifact_ids: vec![router_id, graph_id, prop_id, vec_id, text_id],
             })
             .expect("encode release_publish"),
         )

@@ -170,6 +170,11 @@ same module set — is the confined fix, plus post-upgrade survival assertions i
 `adr0087_bootstrap_tier`. Must land before Provision's first production upgrade;
 upgrade orchestration otherwise remains ADR 0037 territory.
 
+**Defect fixed (2026-08-26): both Provision cell constructors now use `StableCell::init`
+(read-or-create), and `adr0087_bootstrap_tier` asserts survival — a pre-upgrade published +
+activated release and its audit rows survive the chunked upgrade, governance readback stays
+authorized, anonymous stays rejected. See GAP-2026-08-26-005 for pinned tests.**
+
 **Slice 3 implemented (2026-08-26).** `gleaph-operator` (`crates/operator`) ships the platform
 operator binary on top of the slice-2 library: the clap command surface (`artifact ingest` /
 `artifact status`, `release publish` / `release activate` / `release get-active`,

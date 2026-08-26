@@ -26,6 +26,13 @@ pub(crate) fn reset_release_maps() {
     });
 }
 
+/// Test-only helper simulating a process restart: rebuild the active-release cell through its
+/// constructor over the same durable MemoryId without clearing any persisted value.
+#[cfg(test)]
+pub(crate) fn reopen_active_release_cell_for_test() {
+    ACTIVE_RELEASE_CELL.with(|slot| slot.replace(init_active_release()));
+}
+
 /// Regular (non-singleton) facade for the release manifest and active-release pointer.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProvisionReleaseStore;

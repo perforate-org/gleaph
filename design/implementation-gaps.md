@@ -2378,10 +2378,13 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-08-26-005 — Real Provision upgrades wipe the bootstrap authority and active release: eager `StableCell::new` constructors clobber durable cells on every process restart
 
-- **Status:** Open — blocks Provision's first production upgrade and the ADR 0037
-  lifecycle slice. Surfaced by the ADR 0087 bootstrap-tier E2E
-  (`adr0087_bootstrap_tier`, 2026-08-26); root cause verified against vendored
-  `ic-stable-structures` source the same day.
+- **Status:** Resolved (2026-08-26, slice "Provision upgrade durability"). The two eager
+  constructors now use the read-or-create form `StableCell::init(memory, default)`
+  (`crates/provision/src/stable/bootstrap_auth.rs` `init_bootstrap_auth_cell`, MemoryId 4;
+  `crates/provision/src/stable/memory.rs` `init_active_release`, MemoryId 10), matching the safe
+  precedent of `init_artifact_storage_id`. `init` decodes an existing durable cell and only writes
+  the default when the region is empty (fresh install), so a process restart no longer rewrites
+  state before any handler runs. No other store logic changed; `post_upgrade` remains a no-op.
 - **Owner:** `crates/provision/src/stable/bootstrap_auth.rs:26-38` (`BOOTSTRAP_AUTH`
   thread-local, MemoryId 4) and `crates/provision/src/stable/memory.rs:111-116`
   (`init_active_release`, MemoryId 10).
@@ -2405,11 +2408,14 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   Blast radius if unfixed: a post-upgrade Provision rejects every catalog write as
   unauthorized and aborts every issuance at the no-active-release guard while remaining
   live.
-- **Next decision:** fix = switch the two constructors to `StableCell::init(memory,
-  default)` (read-or-create), then strengthen `adr0087_bootstrap_tier` to assert
-  post-upgrade authorized readback and active-release survival instead of liveness only.
-  Small dedicated slice required before Provision's first production upgrade; pairs with
-  ADR 0037.
+- **Pinned tests:** unit — `stable::store::tests::bootstrap_auth_constructor_rerun_preserves_seeded_authority`
+  and `active_release_constructor_rerun_preserves_active_release` rebuild each cell through its
+  constructor over the same MemoryId (process-restart simulation via new test-only reopen helpers);
+  both were red-proofed against the write-on-build form. E2E —
+  `adr0087_bootstrap_tier::bootstrap_tier_deploys_and_upgrades_provision_end_to_end` now publishes
+  five placeholder artifacts plus a release before upgrading and asserts post-upgrade: governance
+  `artifact_audit_history` authorized with the pre-upgrade successful activation row intact,
+  anonymous still unauthorized, and `release_get_active` equal to the pre-upgrade release id.
 
 ## Review cadence
 

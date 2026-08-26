@@ -155,6 +155,7 @@ fn activate_release(env: &Env) {
     let minimal = minimal_canister_wasm();
     let router_id = publish_artifact(env, CanisterKind::Router, &minimal);
     let vec_id = publish_artifact(env, CanisterKind::VectorCanister, &minimal);
+    let text_id = publish_artifact(env, CanisterKind::TextCanister, &minimal);
 
     let bytes = env
         .pic
@@ -164,7 +165,7 @@ fn activate_release(env: &Env) {
             "release_publish",
             Encode!(&ReleasePublishArgs {
                 release_id: ReleaseId("release-create-graph".to_owned()),
-                artifact_ids: vec![graph_id, router_id, prop_id, vec_id],
+                artifact_ids: vec![graph_id, router_id, prop_id, vec_id, text_id],
             })
             .expect("encode release_publish"),
         )

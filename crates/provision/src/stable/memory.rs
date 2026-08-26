@@ -109,7 +109,11 @@ pub(crate) fn init_release_manifest() -> StableReleaseManifestMap {
 }
 
 pub(crate) fn init_active_release() -> StableActiveReleaseCell {
-    StableCell::new(
+    // Read-or-create (`StableCell::init`), never write-on-build: this constructor runs in an eager
+    // thread-local initializer at EVERY process start, so `StableCell::new(memory, None)` would
+    // wipe the active-release pointer on each upgrade (GAP-2026-08-26-005). Same safe form as
+    // `init_artifact_storage_id` above.
+    StableCell::init(
         MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ACTIVE_RELEASE)),
         None,
     )

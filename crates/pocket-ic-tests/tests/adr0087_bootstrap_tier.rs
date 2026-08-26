@@ -13,7 +13,11 @@
 //!    the bootstrap authority (governance caller authorized afterwards, anonymous not);
 //! 3. the full upgrade cycle stop → upload → `install_chunked_code` mode=upgrade → start,
 //!    with `module_hash` changing to exactly the local wasm's SHA-256;
-//! 4. empirically, that `ic-management-canister-types` reply types decode real replica
+//! 4. post-upgrade survival of Provision's durable state (seeded authority + active-release
+//!    pointer), published before the upgrade as five artifacts + an activated release —
+//!    the GAP-2026-08-26-005 regression proof that read-or-create cell constructors must be
+//!    used, and
+//! 5. empirically, that `ic-management-canister-types` reply types decode real replica
 //!    responses (`canister_status`) — the wire-type verification recorded in
 //!    `crates/operator/src/bootstrap.rs`.
 //!
@@ -23,7 +27,11 @@
 //! `PROVISION_WASM` / `ACCOUNT_WASM`.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_artifact_api::types::ArtifactError;
+use gleaph_artifact_api::types::{
+    ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload,
+    ArtifactUploadChunkArgs, CanisterKind, ReleaseActivateArgs, ReleaseActivateResult,
+    ReleaseError, ReleaseId, ReleaseManifest, ReleasePublishArgs,
+};
 use gleaph_operator::bootstrap::ManagementTransport;
 use gleaph_operator::bootstrap::{
     DeployRequest, UpgradeRequest, execute_deploy, execute_upgrade, load_init_args,
@@ -324,6 +332,130 @@ impl ManagementTransport for ManagementPicAdapter<'_> {
 
 // -- Scenarios --------------------------------------------------------------------------------
 
+/// Lightweight artifact bytes for release publication. The catalog verifies chunk/full SHA-256
+/// integrity of whatever bytes are supplied but never decodes them as wasm, so the 8-byte wasm
+/// magic header suffices (same placeholder-blob pattern as `text_index_provisioning`).
+const PLACEHOLDER_WASM: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+
+#[allow(clippy::result_large_err)]
+fn call_on_provision<
+    R: candid::CandidType + serde::de::DeserializeOwned,
+    E: candid::CandidType + serde::de::DeserializeOwned,
+>(
+    pic: &PocketIc,
+    provision: Principal,
+    caller: Principal,
+    method: &str,
+    args: &impl candid::CandidType,
+) -> Result<R, E> {
+    let bytes = pic
+        .update_call(
+            provision,
+            caller,
+            method,
+            Encode!(args).expect("encode args"),
+        )
+        .unwrap_or_else(|e| panic!("{method} on provision rejected: {e:?}"));
+    Decode!(&bytes, Result<R, E>).expect("decode provision response")
+}
+
+/// Publishes one verified artifact per non-Provision canister kind from placeholder bytes, then
+/// publishes and activates a release over them. Returns the activated release id. Everything
+/// runs as `caller` (the seeded governance principal) through real replica ingress.
+fn publish_and_activate_release(
+    pic: &PocketIc,
+    provision: Principal,
+    caller: Principal,
+) -> ReleaseId {
+    let full_sha = sha256(PLACEHOLDER_WASM);
+    let mut ids = Vec::new();
+    for kind in [
+        CanisterKind::Router,
+        CanisterKind::Graph,
+        CanisterKind::PropertyIndex,
+        CanisterKind::VectorCanister,
+        CanisterKind::TextCanister,
+    ] {
+        let id = ArtifactId::new(kind.clone(), "0.1.0".to_owned(), full_sha);
+        let _: ArtifactMetadata = call_on_provision::<_, ArtifactError>(
+            pic,
+            provision,
+            caller,
+            "artifact_publish_metadata",
+            &ArtifactPublishMetadataArgs {
+                canister_kind: kind.clone(),
+                semantic_version: "0.1.0".to_owned(),
+                sha256: full_sha,
+                byte_length: PLACEHOLDER_WASM.len() as u64,
+                chunk_hashes: vec![full_sha],
+            },
+        )
+        .map_err(|e| panic!("artifact_publish_metadata rejected: {e:?}"))
+        .expect("metadata ok");
+        let _: ArtifactUpload = call_on_provision::<_, ArtifactError>(
+            pic,
+            provision,
+            caller,
+            "artifact_upload_chunk",
+            &ArtifactUploadChunkArgs {
+                artifact_id: id.clone(),
+                chunk_index: 0,
+                bytes: PLACEHOLDER_WASM.to_vec(),
+            },
+        )
+        .map_err(|e| panic!("artifact_upload_chunk rejected: {e:?}"))
+        .expect("upload ok");
+        ids.push(id);
+    }
+
+    let release_id = ReleaseId("bootstrap-tier-release".to_owned());
+    let manifest: ReleaseManifest = call_on_provision::<_, ReleaseError>(
+        pic,
+        provision,
+        caller,
+        "release_publish",
+        &ReleasePublishArgs {
+            release_id: release_id.clone(),
+            artifact_ids: ids,
+        },
+    )
+    .expect("release_publish ok");
+    assert_eq!(manifest.release_id, release_id);
+
+    let activated: ReleaseActivateResult = call_on_provision::<_, ReleaseError>(
+        pic,
+        provision,
+        caller,
+        "release_activate",
+        &ReleaseActivateArgs {
+            release_id: release_id.clone(),
+        },
+    )
+    .expect("release_activate ok");
+    assert_eq!(activated.previous_release_id, None);
+    release_id
+}
+
+fn read_active_release(
+    pic: &PocketIc,
+    provision: Principal,
+    caller: Principal,
+) -> Option<ReleaseActivateResult> {
+    let bytes = pic
+        .query_call(
+            provision,
+            caller,
+            "release_get_active",
+            Encode!(&()).expect("encode"),
+        )
+        .expect("release_get_active");
+    Decode!(
+        &bytes,
+        Option<gleaph_artifact_api::types::ReleaseActivateResult>
+    )
+    .expect("decode release_get_active")
+}
+
 #[test]
 fn bootstrap_tier_deploys_and_upgrades_provision_end_to_end() {
     let wasms = platform_wasms();
@@ -400,6 +532,15 @@ fn bootstrap_tier_deploys_and_upgrades_provision_end_to_end() {
         "module_hash must equal the local wasm sha256 after deploy"
     );
 
+    // --- seed durable state before the upgrade: five artifacts + published/activated release ---
+    let pre_upgrade_release_id = publish_and_activate_release(&pic, provision, gov());
+    let pre_active = read_active_release(&pic, provision, gov());
+    assert_eq!(
+        pre_active.map(|a| a.release_id),
+        Some(pre_upgrade_release_id.clone()),
+        "activation must be visible before the upgrade"
+    );
+
     // --- upgrade with a different-yet-valid wasm changes the module hash accordingly ---
     let upgraded_wasm = append_custom_section(&wasms.provision);
     let upgrade_request = UpgradeRequest {
@@ -429,26 +570,61 @@ fn bootstrap_tier_deploys_and_upgrades_provision_end_to_end() {
         "the upgrade must replace the module"
     );
 
-    // The upgraded canister is live and serves queries after start_canister. Observed
-    // environment limitation (not a bootstrap-tier property): this PocketIC generation does
-    // not preserve Provision's durable authority across ANY wasm upgrade — the same
-    // unauthorized-readback result occurs regardless of how the upgraded module arrives.
-    // Provision-side upgrade durability is ADR 0037 territory (its post_upgrade hook is a
-    // deliberate no-op) and was never exercised by any earlier scenario; see the ADR 0087
-    // implementation-status note recorded with this slice.
-    let active_bytes_after = pic
+    // --- post-upgrade durability (GAP-2026-08-26-005): state seeded before the restart must
+    // survive it. Before the read-or-create constructor fix, the eager thread-local
+    // `StableCell::new` initializers rewrote the seeded authority and active-release pointer
+    // empty on every process start: this exact governance readback returned `Unauthorized` and
+    // the pointer read `None`.
+    let audit_bytes_after = pic
         .query_call(
             provision,
             gov(),
-            "release_get_active",
+            "artifact_audit_history",
             Encode!(&()).expect("encode"),
         )
-        .expect("release_get_active after upgrade");
-    let _active_after: Option<gleaph_artifact_api::types::ReleaseActivateResult> = Decode!(
-        &active_bytes_after,
-        Option<gleaph_artifact_api::types::ReleaseActivateResult>
+        .expect("artifact_audit_history after upgrade as governance");
+    let rows_after: Result<Vec<op_wire::ArtifactAuditEntry>, ArtifactError> = Decode!(
+        &audit_bytes_after,
+        Result<Vec<op_wire::ArtifactAuditEntry>, ArtifactError>
     )
-    .expect("decode post-upgrade release_get_active");
+    .expect("decode artifact_audit_history");
+    let rows_after = rows_after.expect("governance readback must stay authorized after upgrade");
+    assert!(
+        rows_after.iter().any(|row| {
+            row.action == op_wire::ArtifactAuditAction::ActivateRelease
+                && row.release_id == Some(ReleaseId(pre_upgrade_release_id.0.clone()))
+                && row.outcome == op_wire::ArtifactAuditOutcome::Success
+        }),
+        "the pre-upgrade successful activation audit row must survive the upgrade, got {rows_after:?}"
+    );
+
+    // Anonymous stays unauthorized after the upgrade: the surviving authority is still exactly
+    // the governance principal (fail-closed behavior preserved across the restart).
+    let anon_bytes_after = pic
+        .query_call(
+            provision,
+            Principal::anonymous(),
+            "artifact_audit_history",
+            Encode!(&()).expect("encode"),
+        )
+        .expect("artifact_audit_history as anonymous after upgrade");
+    let rejected_after: Result<Vec<op_wire::ArtifactAuditEntry>, ArtifactError> = Decode!(
+        &anon_bytes_after,
+        Result<Vec<op_wire::ArtifactAuditEntry>, ArtifactError>
+    )
+    .expect("decode anon artifact_audit_history");
+    assert!(
+        matches!(rejected_after, Err(ArtifactError::Unauthorized)),
+        "anonymous must stay unauthorized after upgrade, got {rejected_after:?}"
+    );
+
+    // The active-release pointer survives the upgrade unchanged.
+    let active_after = read_active_release(&pic, provision, gov());
+    assert_eq!(
+        active_after.map(|a| a.release_id),
+        Some(pre_upgrade_release_id),
+        "active release must survive the upgrade unchanged"
+    );
 }
 
 #[test]

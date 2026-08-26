@@ -31,7 +31,11 @@ thread_local! {
 }
 
 fn init_bootstrap_auth_cell() -> StableCell<Option<BootstrapAuthorityRecord>, Memory> {
-    StableCell::new(
+    // Read-or-create (`StableCell::init`), never write-on-build: thread-local initializers run at
+    // EVERY process start, so an eager `StableCell::new(memory, None)` would wipe the seeded
+    // authority on each upgrade before any handler runs (GAP-2026-08-26-005). `init` decodes the
+    // existing cell and only writes `None` when this MemoryId region is still empty (fresh install).
+    StableCell::init(
         MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_BOOTSTRAP_AUTH)),
         None,
     )
@@ -55,10 +59,10 @@ impl ProvisionBootstrapAuthStore {
         BOOTSTRAP_AUTH.with_borrow(|cell| cell.get().clone())
     }
 
-    /// First init-time write of the singleton. Uses `StableCell::init` to read any existing
-    /// bytes; on a fresh canister the thread-local `StableCell::new` has already written a
-    /// `None` header, so we overwrite with `set` only when the cell is currently empty. This
-    /// makes the call idempotent across upgrades while still establishing the seed on first init.
+    /// First init-time write of the singleton. `StableCell::init` decodes any existing durable
+    /// value (an upgrade replay must not clobber a seeded authority), so we overwrite with `set`
+    /// only when the cell is currently empty. This keeps the call idempotent across upgrades while
+    /// still establishing the seed on first init.
     pub fn init_authority(&self, record: BootstrapAuthorityRecord) {
         let memory = MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_BOOTSTRAP_AUTH));
         BOOTSTRAP_AUTH.with_borrow_mut(|cell| {
@@ -138,4 +142,11 @@ pub(crate) fn reset_bootstrap_auth_maps() {
         cell.set(None);
     });
     BOOTSTRAP_AUDIT_LOG.with_borrow_mut(|map| map.clear_new());
+}
+
+/// Test-only helper simulating a process restart: rebuild the authority cell through its
+/// constructor over the same durable MemoryId without clearing any persisted value.
+#[cfg(test)]
+pub(crate) fn reopen_bootstrap_auth_cell_for_test() {
+    BOOTSTRAP_AUTH.with(|slot| slot.replace(init_bootstrap_auth_cell()));
 }

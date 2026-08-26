@@ -204,7 +204,7 @@ fn publish_valid_artifact(env: &Env, kind: CanisterKind, version: &str) -> Artif
     id
 }
 
-/// Publish all four release kinds and activate the release so the Provision canister can install a
+/// Publish all five release kinds and activate the release so the Provision canister can install a
 /// PropertyIndex canister on demand.
 fn activate_release(env: &Env, release_id: &str) {
     let ids = vec![
@@ -212,6 +212,7 @@ fn activate_release(env: &Env, release_id: &str) {
         publish_valid_artifact(env, CanisterKind::Graph, "0.1.0"),
         publish_valid_artifact(env, CanisterKind::PropertyIndex, "0.1.0"),
         publish_valid_artifact(env, CanisterKind::VectorCanister, "0.1.0"),
+        publish_valid_artifact(env, CanisterKind::TextCanister, "0.1.0"),
     ];
     call_release_publish(
         env,

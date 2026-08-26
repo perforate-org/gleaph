@@ -152,8 +152,20 @@ fn build_corpus() -> Corpus {
         "router", "search", "token", "segment", "posting", "merge", "budget",
     ];
     const JP_WORDS: [&str; 14] = [
-        "東京", "京都", "大阪", "北海道", "ひらがな", "カタカナ", "漢字", "平仮名", "片仮名",
-        "検索", "索引", "結合", "分散", "安定",
+        "東京",
+        "京都",
+        "大阪",
+        "北海道",
+        "ひらがな",
+        "カタカナ",
+        "漢字",
+        "平仮名",
+        "片仮名",
+        "検索",
+        "索引",
+        "結合",
+        "分散",
+        "安定",
     ];
 
     let mut rng = Lcg(2026_0824);
@@ -396,11 +408,11 @@ fn assert_parity(
             .iter()
             .map(|hit| (hit.key, hit.docid, hit.score as u64))
             .collect();
-        let want: Vec<(u64, u32, u64)> =
-            expected_hits(corpus, tfs, query, k, visible.end, deleted);
+        let want: Vec<(u64, u32, u64)> = expected_hits(corpus, tfs, query, k, visible.end, deleted);
         assert_eq!(
             got, want,
-            "parity failed for {query:?} (k={k}, visible={})", visible.end
+            "parity failed for {query:?} (k={k}, visible={})",
+            visible.end
         );
         reply_bytes.push(search_bytes(ctx, query, k));
     }
@@ -431,10 +443,7 @@ fn scenario_ingest_search_parity(
     // oracle restricted to the flushed prefix; B contributes nothing yet.
     ingest(ctx, corpus.batch(mid..corpus.docs.len()));
     let stats_after_b = get_stats(ctx);
-    assert_eq!(
-        stats_after_b.pending_ops,
-        (corpus.docs.len() - mid) as u64
-    );
+    assert_eq!(stats_after_b.pending_ops, (corpus.docs.len() - mid) as u64);
     assert_parity(ctx, corpus, tfs, ..mid, &BTreeSet::new());
     flush_all(ctx);
 
@@ -491,10 +500,16 @@ fn scenario_tombstone_then_merge_exactness(
 
     // Physical reclaim via resumable bounded steps.
     let reclaimed = merge_to_completion(ctx, RESUME_BUDGET);
-    assert!(reclaimed > 0, "merge must physically reclaim tombstoned units");
+    assert!(
+        reclaimed > 0,
+        "merge must physically reclaim tombstoned units"
+    );
 
     let stats = get_stats(ctx);
-    assert_eq!(stats.tombstoned_docs, 0, "completed merge pass clears tombstones");
+    assert_eq!(
+        stats.tombstoned_docs, 0,
+        "completed merge pass clears tombstones"
+    );
     assert_eq!(stats.ndocs, (corpus.docs.len() - deleted.len()) as u64);
 
     // Exactness: physical reclaim changes no logical output.
@@ -555,8 +570,10 @@ fn scenario_budget_and_upgrade(ctx: &Ctx) {
     );
 
     let stats_before = get_stats(ctx);
-    let replies_before: Vec<Vec<u8>> =
-        QUERIES.iter().map(|(q, k)| search_bytes(ctx, q, *k)).collect();
+    let replies_before: Vec<Vec<u8>> = QUERIES
+        .iter()
+        .map(|(q, k)| search_bytes(ctx, q, *k))
+        .collect();
 
     ctx.pic
         .upgrade_canister(
@@ -568,9 +585,14 @@ fn scenario_budget_and_upgrade(ctx: &Ctx) {
         .expect("upgrade text canister");
 
     let stats_after = get_stats(ctx);
-    assert_eq!(stats_after, stats_before, "stats must survive upgrade identically");
-    let replies_after: Vec<Vec<u8>> =
-        QUERIES.iter().map(|(q, k)| search_bytes(ctx, q, *k)).collect();
+    assert_eq!(
+        stats_after, stats_before,
+        "stats must survive upgrade identically"
+    );
+    let replies_after: Vec<Vec<u8>> = QUERIES
+        .iter()
+        .map(|(q, k)| search_bytes(ctx, q, *k))
+        .collect();
     assert_eq!(
         replies_after, replies_before,
         "search outputs must survive upgrade byte-for-byte"

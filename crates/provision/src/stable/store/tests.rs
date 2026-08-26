@@ -788,6 +788,30 @@ fn stable_cell_singleton_writes_overwrite_previous_value() {
     );
 }
 
+/// GAP-2026-08-26-005 regression: the thread-local constructor must be read-or-create
+/// (`StableCell::init`). Re-running it after seeding simulates an upgrade's process restart;
+/// a write-on-build constructor (`StableCell::new`) would decode as an empty authority here.
+#[test]
+fn bootstrap_auth_constructor_rerun_preserves_seeded_authority() {
+    super::reset_all_maps();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let record = BootstrapAuthorityRecord {
+        governance_principal: test_principal(12),
+        binding_version_at_seed: 3,
+        seeded_at_ns: 42,
+    };
+    auth_store.init_authority(record.clone());
+    assert_eq!(auth_store.get_authority(), Some(record.clone()));
+
+    // Process restart: the constructor runs again over the same durable MemoryId.
+    crate::stable::bootstrap_auth::reopen_bootstrap_auth_cell_for_test();
+    assert_eq!(
+        auth_store.get_authority(),
+        Some(record),
+        "re-running the constructor must not wipe the seeded authority"
+    );
+}
+
 // === Artifact catalog store tests (Plan 0061a) ===============================
 
 fn router_artifact_id(version: &str, sha: [u8; 32]) -> ArtifactId {
@@ -1509,6 +1533,24 @@ fn release_activate_rejects_unverified_artifact() {
         err
     );
     assert_eq!(ProvisionReleaseStore::new().get_active(), None);
+}
+
+/// GAP-2026-08-26-005 regression: `init_active_release()` must be read-or-create
+/// (`StableCell::init`). Re-running it after activation simulates an upgrade's process restart;
+/// a write-on-build constructor (`StableCell::new`) would decode as no active release here.
+#[test]
+fn active_release_constructor_rerun_preserves_active_release() {
+    super::reset_all_maps();
+    let release_id = mk_release_id("release-restart");
+    ProvisionReleaseStore::new().set_active(release_id.clone());
+
+    // Process restart: the constructor runs again over the same durable MemoryId.
+    crate::stable::release::reopen_active_release_cell_for_test();
+    assert_eq!(
+        ProvisionReleaseStore::new().get_active(),
+        Some(release_id),
+        "re-running the constructor must not wipe the active release"
+    );
 }
 
 /// (j) release stable layout uses separate MemoryIds for manifest and active pointer.

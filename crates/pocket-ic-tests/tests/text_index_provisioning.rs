@@ -18,15 +18,15 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
-use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_graph_kernel::provisioning::LogicalResource;
+use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_pocket_ic_tests::new_pocket_ic;
 use gleaph_provision::types::{
-    sha256, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
+    ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
+    DeploymentBinding, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
-use gleaph_router::types::{RegisterGraphArgs, TextIndexInfo, TextIndexStatusView};
 use gleaph_router::RouterInitArgs;
+use gleaph_router::types::{RegisterGraphArgs, TextIndexInfo, TextIndexStatusView};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
@@ -497,7 +497,9 @@ fn text_index_provisions_replays_and_guards() {
         .err()
         .expect("non-controller must be denied");
     assert!(
-        denied.reject_message.contains("is not the text index controller"),
+        denied
+            .reject_message
+            .contains("is not the text index controller"),
         "unexpected denial reason: {}",
         denied.reject_message
     );
