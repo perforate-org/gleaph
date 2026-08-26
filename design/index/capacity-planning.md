@@ -55,6 +55,23 @@ Leave **≥ 100 GiB** below 500 GiB for B-tree internal nodes, `MemoryManager` b
 
 Catalog (`BidirectionalCatalog` on router today; optional on index later) scales with **unique metadata names** — typically **≪ 1 GiB** even for aggressive schemas. It is **not** a driver of the 500 GiB limit.
 
+### text canister (layout v4, [ADR 0077](adr/0077-text-index-engine.md))
+
+The text canister owns its own 16-region map (`crates/text-canister/src/state.rs`). Planning
+growth classes:
+
+| Region group | Scales with | Class |
+|--------------|-------------|-------|
+| Postings + block-max blob refs, term entries, shared blob arena | Analyzed corpus (units × document frequency); CJK bigram expansion multiplies units | derived |
+| Dictionary probes, docid↔key maps, tombstone containers | Distinct terms / indexed documents | derived |
+| Meta, segment registry, stats, controller, merge cursor, pending-ops FIFO | O(1) / bounded | fixed |
+| Backfill registration cell + resumable cursor cell (MemoryIds 14/15) | One active build | fixed |
+
+Budgets: measured build/query/storage figures live in
+[text-index.md](text-index.md#budgets-and-capacity); the same soft/hard split thresholds
+(350/400/450 GiB) apply per text canister. DML batches are capped at ≤2 MiB payload per
+shipped call, well under the 2 GiB per-update stable-write bound.
+
 ### Dominance order (typical production)
 
 1. **Label postings** — one entry per `(label, shard, vertex)`; not opt-in.
