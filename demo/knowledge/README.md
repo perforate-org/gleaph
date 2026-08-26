@@ -106,6 +106,18 @@ done
 > in traversal order (pinned by PocketIC `knowledge_demo_citation_reach_flow.rs`). The
 > stability caveat above still applies to every id in the list. `shortest-path` remains
 > blocked by the planner/index-client issue, unchanged.
+>
+> **Update (2026-08-26, plans 0310/0311 / GAP-2026-08-26-004):** the last blocked scenario
+> is closed, and the "planner/index-client issue" framing is corrected. `shortest-path`'s
+> plan leads with two labeled scans; the router's label-only multi-variable fallback
+> dispatched it without seeds, which federation-configured shards reject fail-closed —
+> property indexes were never the cause. Standalone topologies now seed those anchors via
+> existing label postings (multi-shard stays fail-closed behind the federated-traversal
+> ADR), prepared apply additionally rejects unservable index anchors up front, and the
+> direction fix above makes the op read incoming from the sink. Scenario 2 now executes
+> end-to-end as dev after `apply-public-grants.sh` (pinned by PocketIC
+> `knowledge_demo_shortest_path_flow.rs`). All four demo scenarios execute as dev after
+> grants.
 
 ### Browser host
 

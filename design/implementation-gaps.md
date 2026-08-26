@@ -2331,6 +2331,49 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   extraction commit moves the definitions in; afterwards re-run the clean-worktree check
   to close this entry.
 
+### GAP-2026-08-26-004 — ANY-SHORTEST-style prepared ops are undispatchable: label-only multi-variable anchor prefixes dispatch without seeds and the federated wire guard rejects them
+
+- **Status:** Resolved (2026-08-26). The original index-servability framing (plan 0309
+  draft, briefs #5/#6) is superseded by the root cause below; both halves are fixed and
+  pinned.
+- **Owner:** Router seeding (`crates/router/src/seed.rs` `SeedAnchorSet::from_plans`, the
+  ADR 0046 Phase 1 label-only fallback) against the graph wire guard
+  (`crates/graph/src/plan_wire_guard.rs::ensure_federated_seeds_for_index_anchors`); the
+  apply-time index-anchor half lives in `crates/router/src/prepared.rs`
+  (`validate_leading_index_anchor_servability`). gql/gql-planner untouched throughout.
+- **Observed behavior:** plans planned with ≥2 leading labeled endpoint scans —
+  structurally every `ANY SHORTEST` between two labeled endpoints — were rejected at run
+  time for every caller on federation-configured shards with
+  `unsupported plan query operator: IndexScan(no index client)`: the label-only
+  multi-variable fallback dispatched them seed-less while the guard requires effective
+  seeds exactly for labeled-scan-led plans. First recorded as the knowledge-demo
+  `shortest-path` failure (0296 bring-up evidence; 2026-08-24 matrix row), mis-framed
+  through plans 0309/0310 as an index-catalog mismatch until the PocketIC probe in 0310
+  falsified that reading.
+- **Expected or needed behavior:** label-only multi-variable prefixes must be seedable on
+  the topology that can serve them (standalone), stay fail-closed where they cannot
+  (multi-shard), and unservable index anchors must fail at apply time instead of run time.
+- **Resolution:** (a) `SeedAnchorSet::from_plans` keeps pure label-only multi-variable
+  prefixes on single-live-shard topologies; anchors resolve through the existing
+  label-posting lookup (`lookup_label`, ADR 0004) and the sole shard executes remaining
+  labeled scans locally. Multi-shard keeps fail-closed `None` pending the
+  federated-traversal restoration ADR ([federation-target.md](sharding/federation-target.md)).
+  (b) prepared apply rejects leading index anchors without a unique Active posting
+  namespace (migration-000002 hazard class). Fixing commits: standalone seeding + E2E
+  (`feat(router): seed label-only anchors in standalone topology`) and the apply-time
+  guard (`feat(router): guard prepared apply against unservable index anchors`),
+  2026-08-26.
+- **Pinned contracts:** `with_hits_encodes_seed_bindings_blob_for_single_shard_dispatch`,
+  `from_plans_keeps_multi_variable_label_only_prefix_on_standalone`,
+  `from_plans_multi_shard_still_drops_label_only_multi_variable_prefix`,
+  `wave_4_multi_anchor_seed_extracts_two_variables` (router);
+  `shortest_path_demo_plan_leading_ops_diagnostic_dump` (router, plan 0309);
+  `index_scan_requires_index_client` (graph); PocketIC
+  `knowledge_demo_shortest_path_flow.rs` (default-deny then non-owner row-content
+  execution after publication).
+- **Next decision:** none open. Multi-shard label-only-multi seeding returns with the
+  federated-traversal restoration ADR.
+
 ## Review cadence
 
 - The primary agent checks this ledger before final approval of a meaningful slice.

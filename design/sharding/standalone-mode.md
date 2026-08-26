@@ -23,10 +23,18 @@ Define the **default execution mode** while multi-shard production rollout is pr
 | Client `ELEMENT_ID` | `EncodedVertexId` (8B) / `EncodedEdgeId` (12B) via router encoding key |
 | `PlanBinding` | `Vertex(VertexId)` only on the query hot path |
 | Index lookup | Router or graph calls index canister; hits filtered to `shard_id == local` |
-| Router dispatch | Single shard in registry; no seed required |
+| Router dispatch | Single shard in registry; label-anchor seeds — including multi-variable prefixes — resolve via `lookup_label` since 2026-08-26 (plan 0311) |
 | Cross-shard expand | Not used (`Unsupported` or code paths deferred) |
 
 Standalone is the **degenerate case** of the target federation model in [federation-target.md](federation-target.md).
+
+Label-anchor seeding (2026-08-26, plan 0311): on this topology
+`SeedAnchorSet::from_plans` (`crates/router/src/seed.rs`) keeps multi-variable label-only
+anchor prefixes instead of dropping them — label postings (`lookup_label`, ADR 0004) seed
+the routing variable and the sole shard executes any remaining labeled scans locally once
+the wire guard sees effective seeds. This is what makes `MATCH ANY SHORTEST` between two
+labeled endpoints dispatchable. Multi-shard graphs keep the fail-closed `None`; see
+[federation-target.md](federation-target.md).
 
 ## Code cohesion (planned layout)
 

@@ -7,6 +7,12 @@ Anchor timestamp: 2026-06-17 14:00:46 UTC +0000
 
 **Planned** — target design for multi-shard production. Router index seeds and graph skip of leading anchors are **implemented** on the wire path. Cross-shard `federated_expand`, remote-vertex stable, and peer ACL were **removed**; traverse returns `UnsupportedOp` until a follow-up ADR restores them per [standalone-mode.md](standalone-mode.md).
 
+2026-08-26: multi-shard `ANY SHORTEST` — generally, label-only multi-variable anchor
+seeding — remains behind the planned federated-traversal restoration ADR. Until it lands,
+`SeedAnchorSet::from_plans` keeps the fail-closed `None` on multi-shard graphs and the wire
+guard rejects the resulting unseeded labeled-scan plans (intended). The single-shard
+topology seeds those anchors since plan 0311.
+
 ## Purpose
 
 Describe the **intended** distributed query execution model: Router owns index access and per-shard dispatch; graph-index owns posting lookup and intersection; each graph shard executes locally and reaches peers only when traversal requires foreign vertices; Router merges partial results.

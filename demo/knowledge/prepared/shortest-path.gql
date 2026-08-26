@@ -1,3 +1,6 @@
-/// Shortest path: shortest RELATED_TO path between two Concepts.
-MATCH ANY SHORTEST (a:Concept {name: 'Graph databases'})-[e:RELATED_TO]->{1,4}(b:Concept {name: 'Vector search'})
+/// Shortest path: shortest RELATED_TO chain between two Concepts. Seeds author
+/// every RELATED_TO edge toward `graph-databases` (a pure sink in the seeds), so
+/// like variable-length-reach this pattern reads incoming from that sink; the
+/// matched chain is the authored 2-hop Vector search -> GraphRAG -> Graph databases.
+MATCH ANY SHORTEST (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,4}(b:Concept {name: 'Vector search'})
 RETURN ELEMENT_ID(b) AS concept_id, b.name AS concept
