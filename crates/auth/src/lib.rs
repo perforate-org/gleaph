@@ -1414,6 +1414,12 @@ fn decode_expiry(b: &[u8]) -> (Option<u64>, usize) {
     }
 }
 
+/// Review window of an expired grant row ([ADR 0083] §2): rows whose `expires_at_ns`
+/// passed are retained this long for post-use review (`list_elevations` /
+/// `list_graph_grants`), then GC'd. A constant, not a knob — configurability waits for
+/// a demonstrated operator need.
+pub const EXPIRED_ROW_RETENTION_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
+
 /// Stable data-plane grant collection ([ADR 0074] §6).
 ///
 /// Owns the `(principal | PUBLIC) × privilege` rows. The anonymous principal can never hold a
@@ -1585,6 +1591,61 @@ impl<M: Memory> GrantState<M> {
         dead.len()
     }
 
+    /// One bounded retention-sweep step ([ADR 0083] §3): walk keys in canonical order
+    /// starting strictly after `resume_after` (`None` starts a fresh lap), visit at most
+    /// `budget` keys, and remove every visited row whose review window passed — i.e.
+    /// `now_ns > expires_at_ns + EXPIRED_ROW_RETENTION_NS`.
+    ///
+    /// The rule is generic over `expires_at_ns`: any time-boxed row shape is swept once
+    /// its window passed, while rows without an expiry are never touched and a row
+    /// exactly at the window edge stays stored (`saturating_add`, so an effectively
+    /// immortal `u64::MAX` expiry is never swept). Removal happens only after the scan
+    /// slice completes, mirroring [`Self::revoke_all_for_graph`].
+    ///
+    /// Returns [`RetentionSweepStep`]; its `resume_after` is the canonical key examined
+    /// last, or `None` when the scan reached the end of the keyspace and the lap is
+    /// complete. A pass is idempotent: resuming from a lost cursor restarts from the
+    /// beginning and re-derives the same removals.
+    pub fn sweep_expired_rows(
+        &mut self,
+        now_ns: u64,
+        budget: usize,
+        resume_after: Option<&GrantKey>,
+    ) -> RetentionSweepStep {
+        let lower = match resume_after {
+            Some(key) => std::ops::Bound::Excluded(key.clone()),
+            None => std::ops::Bound::Unbounded,
+        };
+        let mut visited = 0usize;
+        let mut last_examined: Option<GrantKey> = None;
+        let mut dead: Vec<GrantKey> = Vec::new();
+        for entry in self.grants.range((lower, std::ops::Bound::Unbounded)) {
+            let key = entry.key().clone();
+            last_examined = Some(key.clone());
+            visited += 1;
+            if entry.value().expires_at_ns.is_some_and(|expires_at| {
+                now_ns > expires_at.saturating_add(EXPIRED_ROW_RETENTION_NS)
+            }) {
+                dead.push(key);
+            }
+            if visited == budget {
+                break;
+            }
+        }
+        // A short slice means the scan reached the end of the keyspace: the lap is
+        // complete and the next call starts from the beginning.
+        if visited < budget {
+            last_examined = None;
+        }
+        for key in &dead {
+            self.grants.remove(key);
+        }
+        RetentionSweepStep {
+            removed: dead.len(),
+            resume_after: last_examined,
+        }
+    }
+
     /// All stored rows decoded to their canonical parts, ordered by canonical key.
     ///
     /// Backs owner-facing introspection surfaces. Malformed keys trap (see
@@ -1625,6 +1686,17 @@ pub struct GrantRowEntry {
     pub predicate: Option<Rc<CompiledPredicate>>,
     /// Approval evidence; `Some` exactly on loop-issued elevation rows ([ADR 0080] §4).
     pub evidence: Option<ElevationEvidence>,
+}
+
+/// Outcome of one bounded retention-sweep step ([ADR 0083] §3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetentionSweepStep {
+    /// Rows removed because their review window passed.
+    pub removed: usize,
+    /// Canonical key examined last; the next step resumes strictly after it. `None`
+    /// means the lap completed and the next step starts from the beginning of the
+    /// keyspace (safe: a pass is idempotent).
+    pub resume_after: Option<GrantKey>,
 }
 
 #[cfg(test)]
@@ -2871,5 +2943,322 @@ mod tests {
         let data_key = GrantKey::new(&graph_traverse(None, 3), &GrantSubject::Public);
         let metadata_key = GrantKey::new(&metadata_scope(7), &GrantSubject::Public);
         assert!(data_key < metadata_key);
+    }
+
+    #[test]
+    fn reissued_elevation_replaces_prior_evidence() {
+        // ADR 0083 invariant 3 trade-off: `GrantKey` carries no issuance time, so
+        // re-elevating the same (subject, scope) overwrites the prior row's evidence
+        // even inside its review window. Accepted v1 semantics, pinned here.
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(35);
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(3),
+                1_000,
+                ElevationEvidence {
+                    approver: principal(36),
+                    justification: "first".into(),
+                    emergency: false,
+                },
+            )
+            .expect("first issuance");
+        grants
+            .grant_elevation(
+                GrantSubject::Principal(p),
+                &metadata_scope(3),
+                2_000,
+                ElevationEvidence {
+                    approver: principal(37),
+                    justification: "second".into(),
+                    emergency: true,
+                },
+            )
+            .expect("superseding issuance");
+        let rows = grants.rows();
+        assert_eq!(rows.len(), 1, "the same canonical key holds one row");
+        assert_eq!(rows[0].expires_at_ns, Some(2_000));
+        let evidence = rows[0].evidence.as_ref().expect("evidence survives");
+        assert_eq!(evidence.justification, "second");
+        assert_eq!(evidence.approver, principal(37));
+        assert!(evidence.emergency);
+    }
+
+    // --- Retention sweep (ADR 0083 §2–§3) ---
+
+    /// Window end of a row expiring at `expires_at`: kept while
+    /// `now <= expires_at + EXPIRED_ROW_RETENTION_NS`.
+    fn window_end(expires_at: u64) -> u64 {
+        expires_at.saturating_add(EXPIRED_ROW_RETENTION_NS)
+    }
+
+    fn elevation(expires_at: u64) -> GrantRow {
+        GrantRow {
+            expires_at_ns: Some(expires_at),
+            predicate: None,
+            evidence: Some(ElevationEvidence {
+                approver: principal(50),
+                justification: "retention".into(),
+                emergency: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn sweep_keeps_window_edge_and_sweeps_one_ns_past_it() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let edge = principal(51);
+        let later = principal(52);
+        grants
+            .put(
+                GrantSubject::Principal(edge),
+                &metadata_scope(3),
+                elevation(1_000),
+            )
+            .expect("edge row");
+        grants
+            .put(
+                GrantSubject::Principal(later),
+                &metadata_scope(3),
+                elevation(2_000),
+            )
+            .expect("later row");
+
+        // Exactly at the review-window edge: still retained for post-use review.
+        let step = grants.sweep_expired_rows(window_end(1_000), 16, None);
+        assert_eq!(step.removed, 0);
+        assert_eq!(step.resume_after, None, "a short slice completes the lap");
+        assert_eq!(grants.len(), 2);
+
+        // One nanosecond past the window: only that row joins the sweep.
+        let step = grants.sweep_expired_rows(window_end(1_000) + 1, 16, None);
+        assert_eq!(step.removed, 1);
+        assert!(!grants.contains(GrantSubject::Principal(edge), &metadata_scope(3)));
+        assert!(grants.contains(GrantSubject::Principal(later), &metadata_scope(3)));
+
+        // Enforcement semantics are untouched by storage: the survivor still reads as
+        // absent once its own expiry passed (`holds`), it merely stays stored.
+        assert!(!grants.holds(
+            GrantSubject::Principal(later),
+            &metadata_scope(3),
+            window_end(2_000) + 1
+        ));
+    }
+
+    #[test]
+    fn sweep_never_touches_rows_without_expiry() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(53);
+        // Standing data-plane rows (named + PUBLIC), a standing grammar-form metadata
+        // row, and an effectively immortal `u64::MAX` expiry (saturating window math).
+        grants
+            .grant(GrantSubject::Public, &exec_priv("q1"), None, None)
+            .expect("public execute row");
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(None, 3),
+                None,
+                None,
+            )
+            .expect("standing traverse row");
+        grants
+            .grant(GrantSubject::Principal(p), &metadata_scope(9), None, None)
+            .expect("standing metadata row");
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &exec_priv("immortal"),
+                Some(u64::MAX),
+                None,
+            )
+            .expect("immortal row");
+
+        let step = grants.sweep_expired_rows(u64::MAX, 16, None);
+        assert_eq!(step.removed, 0, "no-expiry and immortal rows stay stored");
+        assert_eq!(grants.len(), 4);
+        assert!(grants.contains(GrantSubject::Public, &exec_priv("q1")));
+        assert!(grants.contains(GrantSubject::Principal(p), &graph_traverse(None, 3)));
+        assert!(grants.contains(GrantSubject::Principal(p), &metadata_scope(9)));
+        assert!(grants.contains(GrantSubject::Principal(p), &exec_priv("immortal")));
+    }
+
+    #[test]
+    fn sweep_is_generic_over_every_expiring_row_shape() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let p = principal(54);
+        // Tag 4: loop-issued elevation evidence row.
+        grants
+            .put(
+                GrantSubject::Principal(p),
+                &metadata_scope(5),
+                elevation(100),
+            )
+            .expect("evidence row");
+        // Tag 2: evidence-free grammar-form metadata row with an expiry.
+        grants
+            .grant(GrantSubject::Public, &metadata_scope(6), Some(100), None)
+            .expect("expiring metadata row");
+        // Tag 2 data-plane form.
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(None, 4),
+                Some(100),
+                None,
+            )
+            .expect("expiring data-plane row");
+        // Tag 3: conditional-policy row with an expiry.
+        grants
+            .grant(
+                GrantSubject::Principal(p),
+                &graph_traverse(None, 3),
+                Some(100),
+                Some(Rc::new(CompiledPredicate {
+                    label: 1,
+                    conjuncts: vec![caller_comparison(30)],
+                    chain: None,
+                })),
+            )
+            .expect("expiring conditional row");
+        assert_eq!(grants.len(), 4);
+
+        let step = grants.sweep_expired_rows(window_end(100) + 1, 16, None);
+        assert_eq!(step.removed, 4, "every time-boxed shape is swept alike");
+        assert!(grants.is_empty());
+        assert_eq!(step.resume_after, None, "the lap drained completely");
+    }
+
+    #[test]
+    fn sweep_advances_cursor_when_nothing_is_removable() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        // Three standing rows occupy the earliest canonical slots; one dead row hides
+        // behind them. Budget 2: the first step removes nothing yet must advance its
+        // resume point — a driver that restarted from the beginning whenever a step
+        // removed nothing would never reach the dead row.
+        for i in 0u8..3 {
+            grants
+                .grant(
+                    GrantSubject::Principal(principal(60 + i)),
+                    &exec_priv("standing"),
+                    None,
+                    None,
+                )
+                .expect("standing row");
+        }
+        grants
+            .put(
+                GrantSubject::Principal(principal(63)),
+                &metadata_scope(1),
+                elevation(100),
+            )
+            .expect("dead row");
+
+        let step = grants.sweep_expired_rows(window_end(100) + 1, 2, None);
+        assert_eq!(step.removed, 0);
+        assert!(
+            step.resume_after.is_some(),
+            "a full slice must advance the cursor even without removals"
+        );
+
+        let step = grants.sweep_expired_rows(window_end(100) + 1, 2, step.resume_after.as_ref());
+        assert_eq!(step.removed, 1, "resumption reaches the dead row");
+        assert_eq!(grants.len(), 3, "only the dead row left");
+        assert!(
+            step.resume_after.is_some(),
+            "the slice ended exactly at the keyspace end, so the lap is not yet complete"
+        );
+        // One more step confirms completion from the (now empty) remainder.
+        let step = grants.sweep_expired_rows(window_end(100) + 1, 2, step.resume_after.as_ref());
+        assert_eq!(step.removed, 0);
+        assert_eq!(step.resume_after, None, "the lap completed");
+    }
+
+    #[test]
+    fn sweep_resume_drains_backlog_without_skip_or_revisit() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        // Five dead rows interleaved with three survivors across privilege planes.
+        for i in 0u8..5 {
+            grants
+                .grant(
+                    GrantSubject::Principal(principal(70 + i)),
+                    &exec_priv("timed"),
+                    Some(100),
+                    None,
+                )
+                .expect("dead row");
+        }
+        grants
+            .grant(GrantSubject::Public, &exec_priv("standing"), None, None)
+            .expect("public survivor");
+        grants
+            .grant(
+                GrantSubject::Principal(principal(80)),
+                &graph_traverse(None, 3),
+                None,
+                None,
+            )
+            .expect("traverse survivor");
+        grants
+            .grant(
+                GrantSubject::Principal(principal(81)),
+                &metadata_scope(7),
+                None,
+                None,
+            )
+            .expect("metadata survivor");
+
+        let deadline = window_end(100) + 1;
+        let mut removed_total = 0usize;
+        let mut steps = 0usize;
+        let mut cursor: Option<GrantKey> = None;
+        while steps < 16 {
+            let step = grants.sweep_expired_rows(deadline, 2, cursor.as_ref());
+            assert!(step.removed <= 2, "no step may exceed its bounded slice");
+            removed_total += step.removed;
+            cursor = step.resume_after;
+            steps += 1;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(cursor.is_none(), "the backlog drained to lap completion");
+        assert_eq!(removed_total, 5, "exactly the dead rows, no skips");
+        assert!(steps >= 3, "drain needed multiple bounded steps");
+        assert_eq!(grants.len(), 3, "survivors untouched");
+        assert!(grants.contains(GrantSubject::Public, &exec_priv("standing")));
+        assert!(grants.contains(
+            GrantSubject::Principal(principal(80)),
+            &graph_traverse(None, 3)
+        ));
+        assert!(grants.contains(GrantSubject::Principal(principal(81)), &metadata_scope(7)));
+
+        // Idempotent: a fresh full lap finds nothing left to remove.
+        let step = grants.sweep_expired_rows(deadline, 16, None);
+        assert_eq!(step.removed, 0);
+        assert_eq!(step.resume_after, None);
+        assert_eq!(grants.len(), 3);
+    }
+
+    #[test]
+    fn sweep_empty_store_completes_immediately() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut grants = GrantState::init(DefaultMemoryImpl::default());
+        let step = grants.sweep_expired_rows(u64::MAX, 16, None);
+        assert_eq!(
+            step,
+            RetentionSweepStep {
+                removed: 0,
+                resume_after: None,
+            }
+        );
+        assert!(grants.is_empty());
     }
 }
