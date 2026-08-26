@@ -61,10 +61,7 @@ pub(crate) use canister::instr_log;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
 use crate::canister::guards::guard_control_plane_admin;
-use crate::canister::{
-    GraphInitArgs,
-    guards::{guard_router_canister},
-};
+use crate::canister::{GraphInitArgs, guards::guard_router_canister};
 
 #[init]
 async fn init(args: GraphInitArgs) {
@@ -134,7 +131,10 @@ fn retire_ordered_vertex_mutation(
     canister::handlers::retire_ordered_vertex_mutation(args)
 }
 
-#[query(guard = "guard_router_canister")]
+/// Router → graph: label-stats deltas pending at/after `from_seq`. Update-semantics export:
+/// the Router awaits this cross-canister, and queries cannot be reached by inter-canister
+/// calls outside composite queries.
+#[update(guard = "guard_router_canister")]
 fn list_pending_label_stats_deltas(
     from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,
     limit: u32,
@@ -142,7 +142,9 @@ fn list_pending_label_stats_deltas(
     canister::handlers::list_pending_label_stats_deltas(from_seq, limit)
 }
 
-#[query(guard = "guard_router_canister")]
+/// Router → graph: one durable mutation-journal entry. Update-semantics export: the Router
+/// awaits this cross-canister during read-your-writes convergence.
+#[update(guard = "guard_router_canister")]
 fn get_mutation_journal_entry(
     mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
 ) -> Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire> {
@@ -165,7 +167,9 @@ fn retire_ordered_mixed_mutation(
     canister::handlers::retire_ordered_mixed_mutation(args)
 }
 
-#[query(guard = "guard_router_canister")]
+/// Update-semantics export: the Router awaits this cross-canister from the mutation
+/// preflight (queries cannot be reached by inter-canister calls).
+#[update(guard = "guard_router_canister")]
 fn get_mutation_journal_entries(
     args: gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs,
 ) -> gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult {
@@ -174,7 +178,9 @@ fn get_mutation_journal_entries(
 
 /// Router → graph: smallest tracked mutation id with unapplied index postings, or
 /// `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
-#[query(guard = "guard_router_canister")]
+/// Update-semantics export: the Router awaits this cross-canister as the ADR 0029 Phase 2
+/// read-your-writes barrier.
+#[update(guard = "guard_router_canister")]
 fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
     canister::handlers::index_pending_min_mutation_id()
 }
@@ -259,7 +265,11 @@ fn admin_register_index_export_scope(
     scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
     authorized_puller: Option<candid::Principal>,
 ) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
-    canister::handlers::admin_register_index_export_scope(physical_index_id, scope, authorized_puller)
+    canister::handlers::admin_register_index_export_scope(
+        physical_index_id,
+        scope,
+        authorized_puller,
+    )
 }
 
 /// Router → graph: remove an export scope under its complete current owner contract.

@@ -1741,7 +1741,12 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        crate::index::canonical_export::register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let _catalog = crate::index::catalog_context::enter(
             gleaph_graph_kernel::index::IndexedPropertyCatalog {
                 edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
@@ -1839,7 +1844,12 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        crate::index::canonical_export::register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         crate::index::canonical_export::seal_scope(physical, scope.clone(), 2).expect("seal");
         let _catalog = crate::index::catalog_context::enter(
             gleaph_graph_kernel::index::IndexedPropertyCatalog {

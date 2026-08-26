@@ -547,7 +547,12 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        crate::index::canonical_export::register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let _catalog = crate::index::catalog_context::enter(
             gleaph_graph_kernel::index::IndexedPropertyCatalog {
                 edge_indexes: vec![IndexedEdgeMembership {
@@ -705,7 +710,12 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        crate::index::canonical_export::register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let membership = |phase| IndexedEdgeMembership {
             physical_index_id: physical,
             catalog_epoch: 1,
@@ -807,7 +817,12 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        crate::index::canonical_export::register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let _catalog = crate::index::catalog_context::enter(
             gleaph_graph_kernel::index::IndexedPropertyCatalog {
                 edge_indexes: vec![IndexedEdgeMembership {
@@ -1024,10 +1039,18 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(target_physical, target_scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11]))
-            .expect("target scope");
-        crate::index::canonical_export::register_scope(decoy_physical, decoy_scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11]))
-            .expect("decoy scope");
+        crate::index::canonical_export::register_scope(
+            target_physical,
+            target_scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("target scope");
+        crate::index::canonical_export::register_scope(
+            decoy_physical,
+            decoy_scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("decoy scope");
         crate::index::canonical_export::seal_scope(decoy_physical, decoy_scope.clone(), 2)
             .expect("decoy seal");
 

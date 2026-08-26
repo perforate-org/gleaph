@@ -67,8 +67,12 @@ fn bench_graph_index_export_vertex_page_256() -> canbench_rs::BenchResult {
         property_id: property,
         record_source: None,
     };
-    crate::index::canonical_export::register_scope(physical_index_id, export_scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11]))
-        .expect("register vertex scope");
+    crate::index::canonical_export::register_scope(
+        physical_index_id,
+        export_scope(target.clone()),
+        candid::Principal::from_slice(&[0x5E, 0x11]),
+    )
+    .expect("register vertex scope");
     let request = export_request(physical_index_id, target);
     let sanity = crate::index::canonical_export::export_page(request.clone())
         .expect("sanity vertex export page");
@@ -119,8 +123,12 @@ fn bench_graph_index_export_edge_sidecar_page_256() -> canbench_rs::BenchResult 
         property_id: property,
         direction: EdgeIndexDirection::Any,
     };
-    crate::index::canonical_export::register_scope(physical_index_id, export_scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11]))
-        .expect("register sidecar scope");
+    crate::index::canonical_export::register_scope(
+        physical_index_id,
+        export_scope(target.clone()),
+        candid::Principal::from_slice(&[0x5E, 0x11]),
+    )
+    .expect("register sidecar scope");
     let request = export_request(physical_index_id, target);
     let sanity = crate::index::canonical_export::export_page(request.clone())
         .expect("sanity sidecar export page");
@@ -182,8 +190,12 @@ fn bench_graph_index_export_edge_inline_page_256() -> canbench_rs::BenchResult {
         source_profile: profile.clone(),
         value_profile: profile,
     });
-    crate::index::canonical_export::register_scope(physical_index_id, scope, candid::Principal::from_slice(&[0x5E, 0x11]))
-        .expect("register inline scope");
+    crate::index::canonical_export::register_scope(
+        physical_index_id,
+        scope,
+        candid::Principal::from_slice(&[0x5E, 0x11]),
+    )
+    .expect("register inline scope");
     let request = export_request(physical_index_id, target);
     let sanity = crate::index::canonical_export::export_page(request.clone())
         .expect("sanity inline export page");

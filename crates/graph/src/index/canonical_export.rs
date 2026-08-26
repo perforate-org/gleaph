@@ -5,7 +5,6 @@
 
 use super::catalog_context;
 use crate::facade::stable::CANONICAL_EXPORT_SCOPES;
-use candid::Principal;
 use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
 use crate::facade::stable::edge_properties::EdgePropertyKey;
 use crate::facade::stable::vertex_properties::VertexPropertyKey;
@@ -13,6 +12,7 @@ use crate::{
     edge_inline_property_scalar_codec::decode_edge_inline_property_scalar, facade::GraphStore,
     index::lookup::PropertyIndexLookup, property::sortable_index_key,
 };
+use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::{
     canonical_export::{
@@ -1686,7 +1686,12 @@ mod tests {
             label_id: label.raw(),
             property_id: property,
         };
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let mut request = request_with(target.clone(), physical);
         request.limit = 1_000;
 
@@ -1737,7 +1742,12 @@ mod tests {
             label_id: label.raw(),
             property_id: property,
         };
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let mut request = request_with(target.clone(), physical);
         // The limit must not be the splitter: the RAW-byte budget decides the page break.
         request.limit = 1_000;
@@ -1873,12 +1883,26 @@ mod tests {
             property_id: PropertyId::from_raw(2),
             record_source: None,
         });
-        register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
-        register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("exact replay");
+        register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
+        register_scope(
+            physical,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("exact replay");
         let mut conflict = scope.clone();
         conflict.catalog_epoch += 1;
         assert_eq!(
-            register_scope(physical, conflict.clone(), candid::Principal::from_slice(&[0x5E, 0x11])),
+            register_scope(
+                physical,
+                conflict.clone(),
+                candid::Principal::from_slice(&[0x5E, 0x11])
+            ),
             Err(CanonicalExportError::ScopeConflict)
         );
         // Seal advances `record.epoch` to 2 while `record.scope.catalog_epoch` stays frozen at
@@ -1951,7 +1975,12 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen, candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            frozen,
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let facts = drain(request_with(target, physical));
         let matching: Vec<_> = facts
             .into_iter()
@@ -2030,7 +2059,12 @@ mod tests {
                 field_tail: "score".to_owned(),
             }),
         };
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let mut request = request_with(target, physical);
         request.limit = 1_000;
 
@@ -2068,7 +2102,12 @@ mod tests {
         )
         .expect("cleanup first scope");
         let physical = PhysicalIndexId::new(900_010).unwrap();
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register deep scope");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register deep scope");
         let mut request = request_with(target, physical);
         request.limit = 1_000;
 
@@ -2123,7 +2162,12 @@ mod tests {
             property_id: property,
             record_source: None,
         };
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let mut request = request_with(target, physical);
         request.limit = 1_000;
 
@@ -2196,7 +2240,12 @@ mod tests {
             property_id: property,
             record_source: None,
         };
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let mut changed = request_with(target.clone(), physical);
         changed.graph_id = GraphId::from_raw(2);
         assert!(matches!(
@@ -2287,7 +2336,12 @@ mod tests {
             source_profile: profile.clone(),
             value_profile: profile,
         });
-        register_scope(physical, frozen, candid::Principal::from_slice(&[0x5E, 0x11])).expect("register inline scope");
+        register_scope(
+            physical,
+            frozen,
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register inline scope");
         let facts = drain(request_with(target, physical));
         let edge_facts: Vec<_> = facts
             .into_iter()
@@ -2394,7 +2448,12 @@ mod tests {
             direction: EdgeIndexDirection::Any,
         };
         let physical = PhysicalIndexId::new(900_007).unwrap();
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register sidecar scope");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register sidecar scope");
         let facts = drain(request_with(target, physical));
         let values: Vec<_> = facts
             .into_iter()
@@ -2510,7 +2569,12 @@ mod tests {
             property_id: property,
             record_source: None,
         };
-        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            scope(target.clone()),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let facts = drain(request_with(target.clone(), physical));
         let exported: Vec<_> = facts
             .iter()
@@ -2551,7 +2615,12 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            frozen.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         seal_scope(physical, frozen.clone(), 2).expect("seal");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
@@ -2610,7 +2679,12 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            frozen.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         seal_scope(physical, frozen.clone(), 2).expect("seal");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
@@ -2655,7 +2729,12 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target);
-        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            frozen.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         seal_scope(physical, frozen.clone(), 2).expect("seal");
         let proof = IndexBuildSealStatus {
             base_complete: true,
@@ -2725,7 +2804,12 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            frozen.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
                 physical,
@@ -2883,7 +2967,12 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(
+            physical,
+            frozen.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
                 physical,
@@ -2990,11 +3079,15 @@ mod tests {
             Err(CanonicalExportError::ScopeNotFound)
         );
 
-        register_scope(physical, scope(CanonicalExportTarget::Vertex {
-            label_id: 1,
-            property_id: PropertyId::from_raw(2),
-            record_source: None,
-        }), puller)
+        register_scope(
+            physical,
+            scope(CanonicalExportTarget::Vertex {
+                label_id: 1,
+                property_id: PropertyId::from_raw(2),
+                record_source: None,
+            }),
+            puller,
+        )
         .expect("register with explicit puller");
 
         assert_eq!(authorize_page_pull(puller, physical), Ok(()));
@@ -3033,11 +3126,14 @@ mod tests {
             ),
             Err(CanonicalExportError::ScopeConflict)
         );
-        remove_scope(physical, &scope(CanonicalExportTarget::Vertex {
-            label_id: 1,
-            property_id: PropertyId::from_raw(2),
-            record_source: None,
-        }))
+        remove_scope(
+            physical,
+            &scope(CanonicalExportTarget::Vertex {
+                label_id: 1,
+                property_id: PropertyId::from_raw(2),
+                record_source: None,
+            }),
+        )
         .expect("cleanup");
     }
 }

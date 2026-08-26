@@ -599,10 +599,21 @@ pub fn install_single_shard_federation_with_graph_admins(
     }
 }
 
-/// Single-shard federation whose Router is born wired to a Provision canister (ADR 0035
-/// issuance active) — plan 0297 text-backfill E2E support. Returns the env plus the
-/// Provision principal so tests can publish/activate a release before issuing resources.
-pub fn install_single_shard_federation_with_provision() -> (FederationEnv, Principal) {
+/// Phase 1 of the provision-wired single-shard stack: PocketIC instance, admin, Provision
+/// canister, Router BORN wired to it (ADR 0035 issuance active), and the shard's property-index
+/// canister. Graph registration deliberately happens in
+/// [`finish_provision_wired_single_shard_federation`]: a provision-wired router rejects
+/// `register_graph` until a release is ACTIVE on Provision, so tests must publish + activate
+/// their release between the two phases.
+pub struct ProvisionWiredRouterEnv {
+    pub pic: PocketIc,
+    pub admin: Principal,
+    pub router: Principal,
+    pub index: Principal,
+    pub provision: Principal,
+}
+
+pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
     let pic = new_pocket_ic();
     let admin = Principal::from_slice(&[0xAB; 29]);
 
@@ -651,42 +662,81 @@ pub fn install_single_shard_federation_with_provision() -> (FederationEnv, Princ
         None,
     );
 
-    let graph_source = create_funded_canister(&pic);
-    register_graph_single_shard_with_admins(
-        &pic,
+    ProvisionWiredRouterEnv {
+        pic,
         admin,
         router,
         index,
-        graph_source,
+        provision,
+    }
+}
+
+/// Phase 2: AFTER a release is active on Provision, register the single-shard logical graph,
+/// attach its index shard, and install the graph canister. Consumes `wired` because
+/// [`FederationEnv`] owns the PocketIC instance. Returns the federation env (`graph_dest`
+/// stays anonymous: one live shard IS the home shard).
+pub fn finish_provision_wired_single_shard_federation(
+    wired: ProvisionWiredRouterEnv,
+) -> FederationEnv {
+    let graph_source = create_funded_canister(&wired.pic);
+    // Provision-wired routers require at least one requested resource at registration; this
+    // stack requests the shard it installs.
+    register_graph_intent(
+        &wired.pic,
+        wired.admin,
+        wired.router,
+        RegisterGraphIntent {
+            graph_name: GRAPH_NAME,
+            owner: wired.admin,
+            admins: Default::default(),
+            is_home: false,
+            shards: vec![RegisterGraphShard {
+                shard_id: SOURCE_SHARD,
+                graph_canister: graph_source,
+                index_canister: wired.index,
+            }],
+            requested_resources: vec![
+                gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
+                    logical_resource:
+                        gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(SOURCE_SHARD),
+                },
+            ],
+        },
+    );
+    let graph_id = lookup_graph_id(&wired.pic, wired.admin, wired.router, GRAPH_NAME);
+    attach_index_shard_canister(
+        &wired.pic,
+        graph_id,
+        1,
+        0,
+        wired.router,
+        wired.index,
         SOURCE_SHARD,
-        Default::default(),
+        graph_source,
     );
 
-    pic.install_canister(
+    wired.pic.install_canister(
         graph_source,
         wasm_bytes("GRAPH_WASM"),
         Encode!(&GraphInitArgs {
             logical_graph_name: Some(GRAPH_NAME.into()),
-            router_canister: Some(router),
+            router_canister: Some(wired.router),
             shard_id: Some(SOURCE_SHARD),
-            index_canister: Some(index),
+            index_canister: Some(wired.index),
         })
         .expect("encode graph init"),
         None,
     );
 
-    (
-        FederationEnv {
-            pic,
-            admin,
-            router,
-            index_dest: index,
-            index,
-            graph_source,
-            graph_dest: Principal::anonymous(),
-        },
-        provision,
-    )
+    FederationEnv {
+        pic: wired.pic,
+        admin: wired.admin,
+        router: wired.router,
+        index_dest: wired.index,
+        index: wired.index,
+        graph_source,
+        graph_dest: Principal::anonymous(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -776,6 +826,9 @@ pub struct RegisterGraphIntent<'a> {
     pub admins: BTreeSet<Principal>,
     pub is_home: bool,
     pub shards: Vec<RegisterGraphShard>,
+    /// Issuance requests honored only when the Router is provision-wired; dev-mode routers
+    /// take an empty vec (the historical shape).
+    pub requested_resources: Vec<gleaph_graph_kernel::provisioning::wire::ProvisionableResource>,
 }
 
 /// Dev-mode `register_graph`: commit a graph entry and its shards in one synchronous call.
@@ -791,15 +844,26 @@ pub fn register_graph_intent(
         admins: intent.admins,
         is_home: intent.is_home,
         shards: intent.shards,
-        requested_resources: Vec::new(),
+        requested_resources: intent.requested_resources,
     };
-    pic.update_call(
-        router,
-        admin,
-        "register_graph",
-        Encode!(&args).expect("encode register_graph"),
-    )
-    .expect("register_graph");
+    let bytes = pic
+        .update_call(
+            router,
+            admin,
+            "register_graph",
+            Encode!(&args).expect("encode register_graph"),
+        )
+        .expect("register_graph");
+    // Surface app-level rejections (a provision-wired router rejects registration until a
+    // release is active); swallowing them left later lookups failing with an opaque NotFound.
+    match Decode!(
+        &bytes,
+        Result<(), gleaph_graph_kernel::federation::RouterError>
+    ) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("register_graph rejected: {err:?}"),
+        Err(err) => panic!("decode register_graph: {err}"),
+    }
 }
 
 fn register_graph_single_shard_with_admins(
@@ -825,6 +889,7 @@ fn register_graph_single_shard_with_admins(
                 graph_canister: graph,
                 index_canister: index,
             }],
+            requested_resources: Vec::new(),
         },
     );
     let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
@@ -861,6 +926,7 @@ pub fn register_graph_and_shards(
                     index_canister: dest_index,
                 },
             ],
+            requested_resources: Vec::new(),
         },
     );
 
@@ -901,6 +967,7 @@ pub fn register_two_graphs_and_shards(
                     graph_canister: graph,
                     index_canister: index,
                 }],
+                requested_resources: Vec::new(),
             },
         );
         let graph_id = lookup_graph_id(pic, admin, router, name);
@@ -960,6 +1027,7 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
                     graph_canister: graph,
                     index_canister: index,
                 }],
+                requested_resources: Vec::new(),
             },
         );
 

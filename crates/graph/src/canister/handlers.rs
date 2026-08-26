@@ -1806,7 +1806,7 @@ pub fn admin_register_index_export_scope(
         None => match GraphStore::new().federation_routing() {
             Some(routing) => routing.index_canister,
             None => {
-                return Err(gleaph_graph_kernel::canonical_export::CanonicalExportError::Storage)
+                return Err(gleaph_graph_kernel::canonical_export::CanonicalExportError::Storage);
             }
         },
     };
