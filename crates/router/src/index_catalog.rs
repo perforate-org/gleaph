@@ -219,6 +219,162 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
     }
 }
 
+/// Analyzer pipeline identity pinned by every TEXT definition in v1 (ADR 0077 production
+/// pipeline; mirrors `text_canister::ANALYZER_ID`). Later analyzers take new ids behind
+/// explicit DDL options, so this constant stays the only v1 value.
+pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 1;
+
+/// Execute Router-owned TEXT index admission (plan 0297).
+///
+/// In provisioned mode a standalone `TextIndex(id)` resource is issued through the shared ADR
+/// 0035 add-on flow (the ADR 0071 pattern: no GraphShard in the request); Provision creates and
+/// installs the text canister inside the awaited envelope exchange, and the returned canister id
+/// is registered as the definition's target, flipping its status to `Ready`. Dev mode commits one
+/// targetless `Registered` definition.
+///
+/// An exact re-issue of an existing declaration is a no-op returning the existing resource; any
+/// differing re-declaration of the logical name conflicts before any durable or remote effect.
+pub(crate) async fn execute_create_text_index(
+    graph_id: GraphId,
+    index_name: &str,
+    vertex_label: &str,
+    property: &str,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::text_index_catalog;
+    use gleaph_graph_kernel::federation::TextIndexId;
+
+    if index_name.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "text index name must not be empty".to_owned(),
+        ));
+    }
+    let store = RouterStore::new();
+    let label_id = store.lookup_vertex_label_id(graph_id, vertex_label)?;
+    let property_id = store.lookup_property_id(graph_id, property)?;
+
+    // Resolve every conflict against existing state before any write or remote effect: an exact
+    // replay returns the existing resource unchanged; cross-kind logical-name reuse conflicts.
+    if let Some(index_name_id) = lookup_index_name_id(graph_id, index_name) {
+        if get_named_index(graph_id, index_name_id).is_some() {
+            return Err(RouterError::Conflict(format!(
+                "index name already belongs to a property index: {index_name}"
+            )));
+        }
+        if vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id).is_some() {
+            return Err(RouterError::Conflict(format!(
+                "index name already belongs to a vector index: {index_name}"
+            )));
+        }
+        if let Some(existing) =
+            text_index_catalog::get_text_index_by_name_id(graph_id, index_name_id)
+        {
+            let exact = existing.label_id == label_id
+                && existing.property_id == property_id
+                && existing.analyzer_id == TEXT_INDEX_ANALYZER_V0;
+            if !exact {
+                return Err(RouterError::Conflict(format!(
+                    "text index already exists with a different declaration: {index_name}"
+                )));
+            }
+            return Ok(());
+        }
+    }
+
+    // Prove fallible allocations before the first durable write. The commit region below is
+    // otherwise synchronous except for the single awaited provision send.
+    preflight_index_name(graph_id, index_name)?;
+    text_index_catalog::preflight_allocate_text_index_id()?;
+
+    let index_name_id = intern_index_name(graph_id, index_name)?;
+    let raw_id = text_index_catalog::allocate_text_index_id()?;
+
+    let target = if crate::provisioning::config::get().is_some() {
+        Some(provision_text_canister(graph_id, TextIndexId::new(raw_id)).await?)
+    } else {
+        None
+    };
+
+    text_index_catalog::register_text_index(
+        graph_id,
+        raw_id,
+        index_name_id,
+        label_id,
+        property_id,
+        TEXT_INDEX_ANALYZER_V0,
+        target,
+        false,
+    )?;
+    Ok(())
+}
+
+/// Project one TEXT definition into its wire view by logical name (plan 0297).
+pub(crate) fn text_index_info_by_name(
+    graph_id: GraphId,
+    index_name: &str,
+) -> Result<crate::types::TextIndexInfo, RouterError> {
+    use crate::facade::stable::text_index_catalog;
+
+    let Some(index_name_id) = lookup_index_name_id(graph_id, index_name) else {
+        return Err(RouterError::NotFound(index_name.to_owned()));
+    };
+    let def = text_index_catalog::get_text_index_by_name_id(graph_id, index_name_id)
+        .ok_or_else(|| RouterError::NotFound(index_name.to_owned()))?;
+    Ok(text_index_catalog::text_index_info(&def))
+}
+
+/// Issue one standalone `TextIndex(id)` resource through the shared provisioned add-on admission
+/// flow and return the created canister principal. Only callable when a `provision_canister` is
+/// configured (ADR 0035 issuance job → Provision creates the text canister → this caller registers
+/// the returned canister id as the definition target).
+async fn provision_text_canister(
+    graph_id: GraphId,
+    text_index_id: gleaph_graph_kernel::federation::TextIndexId,
+) -> Result<candid::Principal, RouterError> {
+    use gleaph_graph_kernel::provisioning::LogicalResource;
+    use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+
+    let caller = ic_cdk::api::msg_caller();
+    let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
+        .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
+    let args = crate::types::ProvisionGraphArgs {
+        deployment_id: caller.to_text(),
+        graph_name,
+        requested_resources: vec![ProvisionableResource {
+            logical_resource: LogicalResource::TextIndex(text_index_id),
+        }],
+        authorized_caller: caller,
+        release_id: "default".to_owned(),
+        owner: caller,
+        admins: std::collections::BTreeSet::new(),
+    };
+    let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
+    match response {
+        crate::types::ProvisionGraphResponse::Accepted {
+            created_resources, ..
+        }
+        | crate::types::ProvisionGraphResponse::Replay {
+            created_resources, ..
+        } => created_resources
+            .into_iter()
+            .find(|r| matches!(r.logical_resource, LogicalResource::TextIndex(_)))
+            .map(|r| r.canister_id)
+            .ok_or_else(|| {
+                RouterError::Internal(
+                    "provisioned text canister missing from created_resources".to_owned(),
+                )
+            }),
+        crate::types::ProvisionGraphResponse::Completed => {
+            // A completed prior admission already provisioned the canister; resolve it from the
+            // catalog rather than issuing again.
+            crate::facade::stable::text_index_catalog::get_text_index(graph_id, text_index_id.raw())
+                .and_then(|def| def.target)
+                .ok_or_else(|| {
+                    RouterError::Internal("text target not set after provision".to_owned())
+                })
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ResolvedIndexDefinition {
     pub entry: IndexCatalogEntry,
@@ -953,6 +1109,119 @@ mod tests {
             admin_compat_index_name(IndexedPropertyKind::Vertex, "Person", "age"),
             "__gleaph_admin_vertex_Person_age"
         );
+    }
+
+    #[test]
+    fn text_index_dev_mode_registers_registered_and_exact_replay_is_noop() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.ddl";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "title",
+        );
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "body",
+        );
+
+        futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_title_text_idx",
+            "Document",
+            "title",
+        ))
+        .expect("create text index");
+        let info =
+            text_index_info_by_name(graph_id, "doc_title_text_idx").expect("text definition");
+        assert_eq!(info.analyzer_id, TEXT_INDEX_ANALYZER_V0);
+        assert_eq!(info.canister, None, "dev mode registers targetless");
+        assert_eq!(info.status, crate::types::TextIndexStatusView::Registered);
+        let cursor_before =
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        // An exact re-issue is a no-op returning the existing resource.
+        futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_title_text_idx",
+            "Document",
+            "title",
+        ))
+        .expect("exact replay");
+        assert_eq!(
+            text_index_info_by_name(graph_id, "doc_title_text_idx").expect("replayed def"),
+            info,
+            "exact replay must return the unchanged resource"
+        );
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "exact replay must not allocate a physical id"
+        );
+
+        // A differing declaration conflicts without mutating the original row.
+        let err = futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_title_text_idx",
+            "Document",
+            "body",
+        ))
+        .expect_err("differing re-declaration must conflict");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert_eq!(
+            text_index_info_by_name(graph_id, "doc_title_text_idx").expect("original survives"),
+            info
+        );
+    }
+
+    #[test]
+    fn text_index_rejects_unknown_label_and_cross_kind_name_reuse() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.guards";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "title",
+        );
+
+        let unknown_label = futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_title_text_idx",
+            "MissingLabel",
+            "title",
+        ))
+        .expect_err("unknown label must fail closed");
+        assert!(matches!(unknown_label, RouterError::NotFound(_)));
+
+        // Cross-kind logical-name reuse: the property-index owner wins, text admission conflicts
+        // before any durable write.
+        let name = "shared_idx";
+        futures::executor::block_on(create_index(
+            graph_id,
+            name,
+            false,
+            &IndexTarget {
+                kind: IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "title".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create property index");
+        let err = futures::executor::block_on(execute_create_text_index(
+            graph_id, name, "Document", "title",
+        ))
+        .expect_err("property-index-owned name must conflict");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert!(text_index_info_by_name(graph_id, name).is_err());
     }
 
     #[test]
