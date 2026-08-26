@@ -10,8 +10,8 @@
 
 use candid::Principal;
 use gleaph_auth::{
-    AdminCaps, AuthWriteError, ElevationEvidence, GrantRowEntry, GrantSubject, MetadataScope,
-    Privilege,
+    AdminCaps, AuthWriteError, ElevationEvidence, GrantKey, GrantRowEntry, GrantSubject,
+    MetadataScope, Privilege, RetentionSweepStep,
 };
 
 use crate::state::RouterError;
@@ -201,6 +201,19 @@ pub fn remove_grant(subject: GrantSubject, privilege: &Privilege) -> bool {
 pub fn sweep_graph_grants(graph_raw: u32) -> usize {
     crate::policy_pushdown::invalidate_lowered_plan_cache();
     ROUTER_AUTH_GRANTS.with_borrow_mut(|grants| grants.revoke_all_for_graph(graph_raw))
+}
+
+/// One bounded retention-GC step over the grant store ([ADR 0083] §3), driven by the
+/// autonomous timer in `crate::retention`. Removes only rows whose review window
+/// passed — rows that every enforcement read already treats as absent via expiry-aware
+/// `holds` — so no lowered-plan cache invalidation is needed and no verdict changes.
+pub fn sweep_expired_retention_rows(
+    now_ns: u64,
+    budget: usize,
+    resume_after: Option<&GrantKey>,
+) -> RetentionSweepStep {
+    ROUTER_AUTH_GRANTS
+        .with_borrow_mut(|grants| grants.sweep_expired_rows(now_ns, budget, resume_after))
 }
 
 /// Read-only existence probe for revoke preflights (expired rows still exist as state).

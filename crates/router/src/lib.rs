@@ -65,6 +65,7 @@ mod provisioning;
 mod rbac;
 mod reclaim;
 mod recovery;
+mod retention;
 mod seed;
 pub mod state;
 pub mod types;
@@ -114,6 +115,9 @@ fn init(args: RouterInitArgs) {
     );
     // ADR 0029 Phase 4: arm the autonomous saga recovery driver (no-op until there is work).
     crate::recovery::arm_if_needed();
+    // ADR 0083 §3: arm the autonomous expired-grant retention GC (always-on heartbeat,
+    // bounded sweep per tick behind a heap-resident cursor).
+    crate::retention::arm_if_needed();
 }
 
 #[post_upgrade]
@@ -130,6 +134,10 @@ fn post_upgrade(args: Option<RouterUpgradeArgs>) {
     // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
     // persisted across the upgrade still converge (ADR 0029 Phase 4).
     crate::recovery::arm_if_needed();
+    // Timers do not survive an upgrade; the retention GC re-arms here too. Its heap
+    // cursor restarts from the beginning of the keyspace, which is safe because a
+    // sweep pass is idempotent (ADR 0083 §3).
+    crate::retention::arm_if_needed();
     facade::stable::graph_type_catalog::rebuild_caches_after_upgrade();
     prepared::rebuild_prepared_caches_after_upgrade();
 }
