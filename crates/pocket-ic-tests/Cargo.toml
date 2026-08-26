@@ -59,6 +59,11 @@ path = "tests/adr0057_durable_bulk_load.rs"
 harness = true
 
 [[test]]
+name = "adr0084_explain_authorization"
+path = "tests/adr0084_explain_authorization.rs"
+harness = true
+
+[[test]]
 name = "adr0060_property_endpoint_resolution"
 path = "tests/adr0060_property_endpoint_resolution.rs"
 harness = true
