@@ -235,6 +235,79 @@ impl Storable for VectorIndexId {
     }
 }
 
+/// Text index resource ordinal. One issued text index canister per id (plan 0297); `0` is valid.
+/// Mirrors [`VectorIndexId`] so `LogicalResource::TextIndex` keeps the fixed-size tag+u32 stable
+/// encoding shared by Router and Provision.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct TextIndexId(pub u32);
+
+impl TextIndexId {
+    #[inline]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+}
+
+impl From<u32> for TextIndexId {
+    #[inline]
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<TextIndexId> for u32 {
+    #[inline]
+    fn from(value: TextIndexId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for TextIndexId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Storable for TextIndexId {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 4,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Vec::from(self.to_le_bytes()))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Vec::from(self.to_le_bytes())
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(bytes.as_ref());
+        Self::from_le_bytes(raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +330,19 @@ mod tests {
     fn shard_id_u32_conversions() {
         assert_eq!(ShardId::from(7u32), ShardId::new(7));
         assert_eq!(u32::from(ShardId::new(7)), 7);
+    }
+
+    #[test]
+    fn text_index_id_storable_roundtrip() {
+        let id = TextIndexId::new(4);
+        assert_eq!(id.raw(), 4);
+        assert_eq!(TextIndexId::from_le_bytes(id.to_le_bytes()), id);
+        assert_eq!(
+            TextIndexId::from_bytes(id.to_bytes()),
+            id,
+            "Storable roundtrip must preserve the raw u32"
+        );
+        assert_eq!(u32::from(TextIndexId::new(11)), 11);
+        assert_eq!(TextIndexId::from(11u32), TextIndexId::new(11));
     }
 }
