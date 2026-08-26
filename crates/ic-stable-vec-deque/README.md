@@ -1,12 +1,15 @@
 # ic-stable-vec-deque
 
-Double-ended **queue** (`VecDeque`) in Internet Computer **stable memory**, V1 layout with magic **`SVD`**. The 64-byte header matches the prefix of [`ic_stable_structures::vec::Vec`] (`SVC`); extra fields store a ring-buffer `head` and `capacity`. Elements live from byte offset **64**.
+Double-ended **queue** (`VecDeque`) in Internet Computer **stable memory**, V1 **segmented block-ring** layout with magic **`SVD`** and a 128-byte header.
+
+Elements live in fixed-size blocks (`blockSlots` slots each, targeting 256 KiB per block). A directory of consecutive 8-byte entries maps block positions to physical base addresses, and fully drained top-most blocks are recycled through an intrusive free list. Logical index `i` resolves to virtual position `(headOff + i) % virtCap`, then to block `k = r / blockSlots`, slot `k' = r % blockSlots`, byte address `dir[k] + k' · SLOT_SIZE`.
 
 The type is exported as **`VecDeque`** and as **`StableVecDeque`** (alias).
 
 ## Features
 
-- `push_front` / `push_back` / `pop_front` / `pop_back` / `get` / `set` in **O(1)** amortized time; growth linearizes the ring and may double capacity (**O(len)**).
+- `push_front` / `push_back` / `pop_front` / `pop_back` / `get` / `set` in bounded time: at most one element encode/decode plus O(64 bytes) of header writes per operation.
+- Growth never relocates elements in bulk. A push into a full deque appends one block page-aligned at the end of stable memory (reusing a drained block from the free list when available), rotates and at most once doubles the directory (`8 · dirSlots` metadata bytes), and migrates at most one block of boundary slots into the new block. No operation scales with the stored length.
 - Bounded `Storable` element type `T` (from `ic-stable-structures`).
 
 ## Usage

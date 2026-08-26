@@ -1,16 +1,22 @@
-//! **Stable deque** in Internet Computer stable memory: V1 layout with magic **`SVD`**, same
-//! 64-byte header prefix as [`ic_stable_structures::vec::Vec`] (`SVC`), plus ring-buffer `head` and
-//! `capacity`. Elements are stored from byte offset **64**; logical index `i` maps to physical slot
-//! `(head + i) % capacity`.
+//! **Stable deque** in Internet Computer stable memory: **V1 segmented block-ring** layout with
+//! magic **`SVD`** and a 128-byte header. Elements live in fixed-size blocks routed through an
+//! on-structure directory: logical index `i` sits at virtual position `(headOff + i) % virtCap`,
+//! i.e. block `k = r / blockSlots`, slot `k' = r % blockSlots`, at byte address
+//! `dir[k] + k' · SLOT_SIZE`. Drained top-most blocks are recycled through an intrusive free list.
 //!
 //! The main type is [`VecDeque`], also re-exported as [`StableVecDeque`].
 //!
 //! # Operations
 //!
-//! - **O(1)** amortized [`VecDeque::push_front`], [`VecDeque::push_back`], [`VecDeque::pop_front`],
-//!   [`VecDeque::pop_back`], [`VecDeque::get`], [`VecDeque::set`] (by logical index).
-//! - Growing when `len == capacity` linearizes the ring into slots `0..len` and may double capacity:
-//!   **O(len)** work plus stable memory growth.
+//! - **O(1)** [`VecDeque::push_front`], [`VecDeque::push_back`], [`VecDeque::pop_front`],
+//!   [`VecDeque::pop_back`], [`VecDeque::get`], [`VecDeque::set`] (by logical index): each performs
+//!   at most one element encode/decode plus O(64 bytes) of header writes.
+//! - Pushing into a full deque additionally appends one block of `blockSlots · SLOT_SIZE` bytes
+//!   page-aligned at the end of memory (reused from the free list when one is available), rotates
+//!   and at most once doubles the directory (`8 · dirSlots ≤ 8 · (len/blockSlots + 1)` metadata
+//!   bytes), and migrates at most one block of boundary slots into the new block. All envelopes
+//!   are constants for a fixed element type at a fixed moment in time; growth never relocates
+//!   elements in bulk and no operation's cost grows with `len`.
 //!
 //! # Type parameters
 //!

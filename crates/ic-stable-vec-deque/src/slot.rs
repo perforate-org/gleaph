@@ -1,4 +1,4 @@
-//! Storable slot encoding shared by [crate::base_vec::BaseVec] and [crate::vec_deque::VecDeque].
+//! Storable slot encoding used by [crate::vec_deque::VecDeque] block slots.
 
 use crate::memory::{GrowFailed, read_to_vec, read_u32, safe_write};
 use crate::storable::{bounds, bytes_to_store_size_bounded};

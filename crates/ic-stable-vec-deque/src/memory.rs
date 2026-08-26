@@ -87,30 +87,22 @@ impl Display for GrowFailed {
 
 impl error::Error for GrowFailed {}
 
-/// Grows `memory` so its size in bytes is at least `min_bytes`.
-pub(crate) fn grow_memory_to_at_least_bytes<M: Memory>(
-    memory: &M,
-    min_bytes: u64,
-) -> Result<(), GrowFailed> {
+/// Grows `memory` by `bytes` rounded up to whole pages and returns the byte offset of the
+/// previous end of memory. The returned offset is page-aligned, and the grown range starting
+/// there is usable for `ceil(bytes / PAGE) * PAGE` bytes.
+pub(crate) fn alloc_at_end<M: Memory>(memory: &M, bytes: u64) -> Result<u64, GrowFailed> {
     let size_pages = memory.size();
-    let size_bytes = size_pages
+    let base = size_pages
         .checked_mul(WASM_PAGE_SIZE)
         .expect("Address space overflow");
-    if size_bytes >= min_bytes {
-        return Ok(());
-    }
-    let diff_bytes = min_bytes - size_bytes;
-    let diff_pages = diff_bytes
-        .checked_add(WASM_PAGE_SIZE - 1)
-        .expect("Address space overflow")
-        / WASM_PAGE_SIZE;
+    let diff_pages = bytes.div_ceil(WASM_PAGE_SIZE);
     if memory.grow(diff_pages) == -1 {
         return Err(GrowFailed {
             current_size: size_pages,
             delta: diff_pages,
         });
     }
-    Ok(())
+    Ok(base)
 }
 
 /// Writes the bytes at the specified offset, growing the memory size if needed.
