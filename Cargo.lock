@@ -3551,6 +3551,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-artifact-api"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "serde",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "gleaph-auth"
 version = "0.1.0"
 dependencies = [
@@ -3605,6 +3614,7 @@ dependencies = [
  "gleaph-gql-ic",
  "gleaph-gql-ic-wire",
  "gleaph-gql-params",
+ "gleaph-gql-planner",
  "gleaph-graph-kernel",
  "gleaph-index-ddl",
  "gleaph-message-sizing",
@@ -3914,6 +3924,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-operator"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "clap",
+ "gleaph-artifact-api",
+ "gleaph-provision",
+ "ic-agent",
+ "ic-management-canister-types 0.9.0",
+ "pollster 1.0.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "gleaph-pocket-ic-tests"
 version = "0.1.0"
 dependencies = [
@@ -3921,20 +3949,26 @@ dependencies = [
  "cargo_metadata",
  "flate2",
  "gleaph-account",
+ "gleaph-artifact-api",
  "gleaph-bulk-load-api",
  "gleaph-cli",
  "gleaph-codegen",
  "gleaph-gql",
  "gleaph-gql-ic",
+ "gleaph-gql-ic-wire",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
  "gleaph-migration-api",
+ "gleaph-operator",
  "gleaph-prepared-api",
  "gleaph-provision",
  "gleaph-router",
+ "ic-management-canister-types 0.9.0",
  "pocket-ic",
+ "pollster 1.0.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "text-canister",
  "ureq",
 ]
@@ -3984,6 +4018,7 @@ dependencies = [
  "gleaph-bulk-load-api",
  "gleaph-gql",
  "gleaph-gql-ic",
+ "gleaph-gql-ic-wire",
  "gleaph-gql-integration",
  "gleaph-gql-planner",
  "gleaph-graph-catalog",
@@ -10099,15 +10134,20 @@ dependencies = [
 name = "text-canister"
 version = "0.1.0"
 dependencies = [
+ "canbench-rs",
  "candid",
+ "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",
+ "ic-stable-linear-hash-map",
  "ic-stable-memory-backend",
  "ic-stable-structures",
  "ic-stable-text-postings",
+ "ic-stable-vec-deque",
  "serde",
  "unicode-normalization",
  "unicode-segmentation",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -12331,6 +12371,12 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 
 [[package]]
 name = "y4m"

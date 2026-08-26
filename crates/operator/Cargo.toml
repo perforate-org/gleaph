@@ -1,0 +1,32 @@
+[package]
+name = "gleaph-operator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gleaph platform-operator tool: artifact ingestion, releases, installs, bindings, audit (ADR 0087)"
+
+[lib]
+name = "gleaph_operator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gleaph-operator"
+path = "src/main.rs"
+
+[dependencies]
+candid.workspace = true
+clap.workspace = true
+gleaph-artifact-api.workspace = true
+ic-agent.workspace = true
+ic-management-canister-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# Wire-compat proof for the bootstrap init-args mirror: operator bytes must decode
+# with the server's own ProvisionInitArgs/DeploymentBinding and vice versa.
+gleaph-provision = { path = "../provision" }
+pollster.workspace = true

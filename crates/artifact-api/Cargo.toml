@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-artifact-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Neutral Provision artifact-ingestion wire contract and idempotent upload pipeline"
+
+[dependencies]
+candid.workspace = true
+serde.workspace = true
+sha2.workspace = true

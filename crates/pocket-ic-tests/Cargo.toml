@@ -75,21 +75,27 @@ harness = true
 
 [dependencies]
 candid.workspace = true
+gleaph-artifact-api.workspace = true
 gleaph-bulk-load-api.workspace = true
 gleaph-cli.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true }
 gleaph-gql-planner = { path = "../gql-planner", features = ["plan-wire"] }
 gleaph-gql-ic.workspace = true
+gleaph-gql-ic-wire.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-account = { path = "../account" }
 gleaph-migration-api.workspace = true
+gleaph-operator.workspace = true
 gleaph-prepared-api.workspace = true
 gleaph-router = { path = "../router", features = ["pocket-ic-e2e"] }
 gleaph-provision = { path = "../provision" }
+ic-management-canister-types.workspace = true
 pocket-ic = "15.0.0"
+pollster.workspace = true
 serde.workspace = true
 serde_json = "1"
+sha2.workspace = true
 text-canister = { path = "../text-canister" }
 
 [build-dependencies]
@@ -140,4 +146,14 @@ harness = true
 [[test]]
 name = "adr0059_text_backfill_migration"
 path = "tests/adr0059_text_backfill_migration.rs"
+harness = true
+
+[[test]]
+name = "adr0087_operator_ingestion"
+path = "tests/adr0087_operator_ingestion.rs"
+harness = true
+
+[[test]]
+name = "adr0087_bootstrap_tier"
+path = "tests/adr0087_bootstrap_tier.rs"
 harness = true

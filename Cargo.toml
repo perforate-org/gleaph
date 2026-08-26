@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/artifact-api",
     "crates/auth",
     "crates/bulk-load-api",
     "crates/cli",
@@ -22,6 +23,7 @@ members = [
     "crates/gleaph-theme",
     "crates/message-sizing",
     "crates/migration-api",
+    "crates/operator",
     "crates/prepared-runtime",
     "crates/vector-canister",
     "crates/ic-stable-lara",
@@ -55,6 +57,7 @@ license = "MIT or Apache-2.0"
 
 [workspace.dependencies]
 gleaph-account = { path = "crates/account" }
+gleaph-artifact-api = { path = "crates/artifact-api" }
 gleaph-auth = { path = "crates/auth" }
 gleaph-bulk-load-api = { path = "crates/bulk-load-api" }
 gleaph-cli = { path = "crates/cli" }
@@ -87,6 +90,7 @@ gleaph-index-ddl = { path = "crates/index-ddl" }
 gleaph-instruction-budget = { path = "crates/instruction-budget", default-features = false }
 gleaph-message-sizing = { path = "crates/message-sizing" }
 gleaph-migration-api = { path = "crates/migration-api" }
+gleaph-operator = { path = "crates/operator" }
 gleaph-prepared-runtime = { path = "crates/prepared-runtime" }
 gleaph-vector-canister = { path = "crates/vector-canister" }
 gleaph-router = { path = "crates/router" }
