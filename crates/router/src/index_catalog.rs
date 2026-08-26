@@ -19,7 +19,9 @@ use crate::facade::stable::indexed_catalog::{
 };
 use crate::facade::stable::vector_index_catalog;
 use crate::facade::store::RouterStore;
-use crate::index_ddl::{IndexDdlStatement, IndexTarget, VectorIndexDdlStatement};
+use crate::index_ddl::{
+    IndexDdlStatement, IndexTarget, TextIndexDdlStatement, VectorIndexDdlStatement,
+};
 use crate::planner_stats::{IndexCatalogEntry, RouterGraphStats};
 use crate::state::RouterError;
 
@@ -224,6 +226,28 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
 /// explicit DDL options, so this constant stays the only v1 value.
 pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 1;
 
+/// Execute Router-owned TEXT index DDL (plan 0297): `CREATE TEXT INDEX` admission and
+/// `DROP TEXT INDEX` catalog removal.
+pub(crate) async fn execute_text_index_ddl_for_graph(
+    graph_id: GraphId,
+    stmt: TextIndexDdlStatement,
+) -> Result<(), RouterError> {
+    match stmt {
+        TextIndexDdlStatement::Create {
+            index_name,
+            if_not_exists,
+            label,
+            property,
+        } => {
+            execute_create_text_index(graph_id, &index_name, &label, &property, if_not_exists).await
+        }
+        TextIndexDdlStatement::Drop {
+            index_name,
+            if_exists,
+        } => drop_text_index(graph_id, &index_name, if_exists),
+    }
+}
+
 /// Execute Router-owned TEXT index admission (plan 0297).
 ///
 /// In provisioned mode a standalone `TextIndex(id)` resource is issued through the shared ADR
@@ -232,13 +256,17 @@ pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 1;
 /// is registered as the definition's target, flipping its status to `Ready`. Dev mode commits one
 /// targetless `Registered` definition.
 ///
-/// An exact re-issue of an existing declaration is a no-op returning the existing resource; any
-/// differing re-declaration of the logical name conflicts before any durable or remote effect.
+/// An exact re-issue of an existing declaration is a no-op returning the existing resource — this
+/// admits both a bare replay and `IF NOT EXISTS`; any differing re-declaration of the logical name
+/// conflicts before any durable or remote effect even under `IF NOT EXISTS`, mirroring the vector
+/// catalog's stricter-than-name rule and keeping cross-kind name theft fail-closed. `if_not_exists`
+/// additionally arms the catalog co-write's duplicate guard across the provision await window.
 pub(crate) async fn execute_create_text_index(
     graph_id: GraphId,
     index_name: &str,
     vertex_label: &str,
     property: &str,
+    if_not_exists: bool,
 ) -> Result<(), RouterError> {
     use crate::facade::stable::text_index_catalog;
     use gleaph_graph_kernel::federation::TextIndexId;
@@ -302,8 +330,42 @@ pub(crate) async fn execute_create_text_index(
         property_id,
         TEXT_INDEX_ANALYZER_V0,
         target,
-        false,
+        if_not_exists,
     )?;
+    Ok(())
+}
+
+/// Execute Router-owned `DROP TEXT INDEX [IF EXISTS]` (plan 0297): remove the TEXT catalog
+/// definition row. Fail-closed while a migration-driven backfill build is live — its
+/// convergence proof keys on this row, so removing it mid-build would orphan the build
+/// record and reopen the readiness gate. A name owned by another index kind is simply not a
+/// TEXT definition: it is treated as absent (suppressed by `IF EXISTS`, `NotFound`
+/// otherwise), never silently unowned from its actual catalog.
+pub(crate) fn drop_text_index(
+    graph_id: GraphId,
+    index_name: &str,
+    if_exists: bool,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::text_index_catalog;
+
+    let Some(name_id) = lookup_index_name_id(graph_id, index_name) else {
+        if if_exists {
+            return Ok(());
+        }
+        return Err(RouterError::NotFound(index_name.to_owned()));
+    };
+    let Some(def) = text_index_catalog::get_text_index_by_name_id(graph_id, name_id) else {
+        if if_exists {
+            return Ok(());
+        }
+        return Err(RouterError::NotFound(index_name.to_owned()));
+    };
+    if text_index_catalog::get_text_backfill_build(graph_id, def.text_index_id).is_some() {
+        return Err(RouterError::Conflict(format!(
+            "text index {index_name} has an active backfill build; drop is rejected until it converges or fails"
+        )));
+    }
+    text_index_catalog::remove_text_index(graph_id, def.text_index_id);
     Ok(())
 }
 
@@ -1135,6 +1197,7 @@ mod tests {
             "doc_title_text_idx",
             "Document",
             "title",
+            false,
         ))
         .expect("create text index");
         let info =
@@ -1151,6 +1214,7 @@ mod tests {
             "doc_title_text_idx",
             "Document",
             "title",
+            false,
         ))
         .expect("exact replay");
         assert_eq!(
@@ -1170,6 +1234,7 @@ mod tests {
             "doc_title_text_idx",
             "Document",
             "body",
+            false,
         ))
         .expect_err("differing re-declaration must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
@@ -1197,6 +1262,7 @@ mod tests {
             "doc_title_text_idx",
             "MissingLabel",
             "title",
+            false,
         ))
         .expect_err("unknown label must fail closed");
         assert!(matches!(unknown_label, RouterError::NotFound(_)));
@@ -1217,11 +1283,216 @@ mod tests {
         ))
         .expect("create property index");
         let err = futures::executor::block_on(execute_create_text_index(
-            graph_id, name, "Document", "title",
+            graph_id, name, "Document", "title", false,
         ))
         .expect_err("property-index-owned name must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
         assert!(text_index_info_by_name(graph_id, name).is_err());
+    }
+
+    #[test]
+    fn text_ddl_if_not_exists_replays_exactly_and_conflicts_on_drift() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.inr";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "title",
+        );
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "body",
+        );
+        let statement = |property: &str| TextIndexDdlStatement::Create {
+            index_name: "doc_text_idx".into(),
+            if_not_exists: true,
+            label: "Document".into(),
+            property: property.into(),
+        };
+
+        futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            statement("title"),
+        ))
+        .expect("create");
+        let info = text_index_info_by_name(graph_id, "doc_text_idx").expect("definition");
+        let cursor_before =
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            statement("title"),
+        ))
+        .expect("exact IF NOT EXISTS replay is a no-op");
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "exact replay must not allocate a physical id"
+        );
+
+        // A differing declaration conflicts even under IF NOT EXISTS: drift stays fail-closed.
+        let err = futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            statement("body"),
+        ))
+        .expect_err("differing re-declaration must conflict");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert_eq!(
+            text_index_info_by_name(graph_id, "doc_text_idx").expect("original survives"),
+            info
+        );
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "conflicting re-declaration must not allocate a physical id"
+        );
+    }
+
+    #[test]
+    fn drop_text_index_removes_definition_and_honors_if_exists() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.drop";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "bio",
+        );
+        let drop_statement = |index_name: &str, if_exists: bool| TextIndexDdlStatement::Drop {
+            index_name: index_name.to_owned(),
+            if_exists,
+        };
+        futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_drop_text_idx",
+            "Document",
+            "bio",
+            false,
+        ))
+        .expect("create");
+        let cursor_before =
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
+        let name_id = lookup_index_name_id(graph_id, "doc_drop_text_idx").expect("name interned");
+
+        let err = futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            drop_statement("no_such_idx", false),
+        ))
+        .expect_err("absent drop without IF EXISTS must fail closed");
+        assert!(matches!(err, RouterError::NotFound(_)));
+
+        futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            drop_statement("no_such_idx", true),
+        ))
+        .expect("IF EXISTS suppresses the absent-name error");
+
+        futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            drop_statement("doc_drop_text_idx", false),
+        ))
+        .expect("drop removes the definition");
+        assert!(text_index_info_by_name(graph_id, "doc_drop_text_idx").is_err());
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "drop must not touch the id allocator"
+        );
+        assert_eq!(
+            lookup_index_name_id(graph_id, "doc_drop_text_idx"),
+            Some(name_id),
+            "the interned logical name is shared vocabulary and survives"
+        );
+
+        futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            drop_statement("doc_drop_text_idx", true),
+        ))
+        .expect("re-drop under IF EXISTS is a no-op");
+    }
+
+    #[test]
+    fn drop_text_index_fails_closed_during_active_backfill_build() {
+        use gleaph_graph_kernel::index::PhysicalIndexId;
+
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.dropgate";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "bio",
+        );
+        futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_gate_text_idx",
+            "Document",
+            "bio",
+            false,
+        ))
+        .expect("create");
+        let name_id = lookup_index_name_id(graph_id, "doc_gate_text_idx").expect("name interned");
+        let def =
+            crate::facade::stable::text_index_catalog::get_text_index_by_name_id(graph_id, name_id)
+                .expect("definition");
+
+        // A live migration-driven backfill build rejects the drop before any mutation.
+        crate::facade::stable::text_index_catalog::prepare_text_backfill_build(
+            graph_id,
+            def.text_index_id,
+            crate::facade::stable::text_index_catalog::TextBackfillBuildRecord {
+                migration_id: "mig-dropgate".into(),
+                topology_epoch: 1,
+                prepared_catalog_epoch: 1,
+                physical_index_id: PhysicalIndexId::new(9).expect("valid physical id"),
+                home_shard_id: 0,
+                home_graph_canister: candid::Principal::management_canister(),
+                registered: true,
+                phase: crate::facade::stable::text_index_catalog::TextBackfillBuildPhase::Building,
+            },
+        )
+        .expect("seed active backfill build");
+        let err = futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            TextIndexDdlStatement::Drop {
+                index_name: "doc_gate_text_idx".into(),
+                if_exists: true,
+            },
+        ))
+        .expect_err("active backfill build must reject the drop");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            crate::facade::stable::text_index_catalog::get_text_index(graph_id, def.text_index_id),
+            Some(def.clone()),
+            "rejected drop must leave the definition intact"
+        );
+
+        // Once the build record is released (converged or failed), the drop proceeds.
+        crate::facade::stable::text_index_catalog::drop_text_backfill_build(
+            graph_id,
+            def.text_index_id,
+        );
+        futures::executor::block_on(execute_text_index_ddl_for_graph(
+            graph_id,
+            TextIndexDdlStatement::Drop {
+                index_name: "doc_gate_text_idx".into(),
+                if_exists: false,
+            },
+        ))
+        .expect("drop after build release");
+        assert!(text_index_info_by_name(graph_id, "doc_gate_text_idx").is_err());
     }
 
     #[test]

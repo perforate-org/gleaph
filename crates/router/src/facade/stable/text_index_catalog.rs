@@ -509,6 +509,19 @@ pub(crate) fn list_text_indexes(graph_id: GraphId) -> Vec<TextIndexDefRecord> {
     })
 }
 
+/// Removes one TEXT definition row. The caller owns every precondition: the drop path
+/// rejects while a migration-driven backfill build is live, so no build record can be
+/// orphaned here. The interned logical name is shared catalog vocabulary and survives,
+/// exactly like the property-index lane. Returns the removed record; `None` means the
+/// key was already absent.
+pub(crate) fn remove_text_index(
+    graph_id: GraphId,
+    text_index_id: u32,
+) -> Option<TextIndexDefRecord> {
+    ROUTER_TEXT_INDEXES
+        .with_borrow_mut(|map| map.remove(&TextIndexKey::new(graph_id, text_index_id)))
+}
+
 /// Map a stored definition to its public wire view (plan 0297).
 pub(crate) fn text_index_info(def: &TextIndexDefRecord) -> crate::types::TextIndexInfo {
     crate::types::TextIndexInfo {

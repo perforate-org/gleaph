@@ -544,6 +544,7 @@ async fn create_text_index(
         &index_name,
         &vertex_label,
         &property,
+        false,
     )
     .await?;
     crate::index_catalog::text_index_info_by_name(graph_id, &index_name)

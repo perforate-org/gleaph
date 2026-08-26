@@ -3062,6 +3062,49 @@ where
     }
 }
 
+/// Execute one standalone TEXT index DDL statement (`CREATE TEXT INDEX` / `DROP TEXT INDEX`,
+/// plan 0297) through the same admission gates as the vector lane: index-DDL capability,
+/// write-mode enforcement, default-graph resolution.
+async fn try_execute_text_index_ddl<C, R>(
+    query: &str,
+    mode: GqlExecutionMode,
+    entrypoint: &str,
+    force: bool,
+    caller: C,
+    resolve_graph: R,
+) -> Option<Result<GqlQueryResult, RouterError>>
+where
+    C: FnOnce() -> Principal,
+    R: FnOnce(Principal) -> Result<GraphId, RouterError>,
+{
+    let ddl = crate::index_ddl::try_parse_text(query)?;
+    let caller = caller();
+    let stmt = match ddl {
+        Ok(s) => s,
+        Err(e) => return Some(Err(RouterError::InvalidArgument(e.to_string()))),
+    };
+    if let Err(e) = authorize_index_ddl(&caller) {
+        return Some(Err(e));
+    }
+    if mode == GqlExecutionMode::Query && !force {
+        return Some(Err(RouterError::ExecutionPathMismatch {
+            entrypoint: entrypoint.to_string(),
+            program_kind: "write".to_string(),
+            call_kind: "query".to_string(),
+            remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+        }));
+    }
+    match resolve_graph(caller) {
+        Ok(graph_id) => {
+            match crate::index_catalog::execute_text_index_ddl_for_graph(graph_id, stmt).await {
+                Ok(()) => Some(Ok(GqlQueryResult::row_count_only(0))),
+                Err(e) => Some(Err(e)),
+            }
+        }
+        Err(e) => Some(Err(e)),
+    }
+}
+
 /// Whether any statement in the block is an `EXPLAIN AUTHORIZATION` diagnostic
 /// ([ADR 0084]); used to route standalone diagnostics and reject mixed blocks.
 fn block_contains_explain_authorization(block: &gleaph_gql::ast::StatementBlock) -> bool {
@@ -3125,6 +3168,16 @@ async fn run_gql_unchecked(
 ) -> Result<GqlQueryResult, RouterError> {
     if let Some(result) =
         try_execute_vector_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
+            let store = RouterStore::new();
+            crate::graph_context::resolve_default_graph_id(&store, caller)
+        })
+        .await
+    {
+        return result;
+    }
+
+    if let Some(result) =
+        try_execute_text_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
             let store = RouterStore::new();
             crate::graph_context::resolve_default_graph_id(&store, caller)
         })
@@ -6185,6 +6238,152 @@ mod tests {
         )
         .expect("definition created");
         assert!(def.target.is_none());
+    }
+
+    #[test]
+    fn text_ddl_ingress_enforces_rbac_and_executes_create_and_drop() {
+        use gleaph_auth::AdminCaps;
+
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let admin = Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "Document")
+            .expect("intern text label");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.main",
+            "bio",
+        );
+        let query = "CREATE TEXT INDEX doc_bio_text_idx IF NOT EXISTS FOR (d:Document) ON (d.bio)";
+        let next_before =
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        let anonymous = Principal::anonymous();
+        let anonymous_err = futures::executor::block_on(super::try_execute_text_index_ddl(
+            query,
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || anonymous,
+            |_| Ok(graph_id),
+        ))
+        .expect("text DDL detected")
+        .expect_err("anonymous caller must be rejected");
+        assert!(matches!(anonymous_err, RouterError::Forbidden));
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before,
+            "rejected admission must not allocate a text id"
+        );
+
+        let index_admin = Principal::self_authenticating([33; 32]);
+        crate::facade::stable::ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
+            auth.upsert_caps(index_admin, AdminCaps::INDEX_CREATE)
+                .expect("index-create auth record");
+        });
+        let read_mode_err = futures::executor::block_on(super::try_execute_text_index_ddl(
+            query,
+            GqlExecutionMode::Query,
+            "gql_query",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("text DDL detected")
+        .expect_err("DDL on the query path must be rejected");
+        assert!(matches!(
+            read_mode_err,
+            RouterError::ExecutionPathMismatch { .. }
+        ));
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before,
+            "read-mode rejection must not allocate a text id"
+        );
+
+        let result = futures::executor::block_on(super::try_execute_text_index_ddl(
+            query,
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("text DDL detected")
+        .expect("caller with INDEX_CREATE may create");
+        assert_eq!(result.row_count, 0);
+        let index_name_id = crate::facade::stable::index_name_catalog::lookup_index_name_id(
+            graph_id,
+            "doc_bio_text_idx",
+        )
+        .expect("logical name created");
+        let def = crate::facade::stable::text_index_catalog::get_text_index_by_name_id(
+            graph_id,
+            index_name_id,
+        )
+        .expect("definition created");
+        assert!(def.target.is_none(), "dev mode registers targetless");
+
+        let replay = futures::executor::block_on(super::try_execute_text_index_ddl(
+            query,
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("text DDL detected")
+        .expect("IF NOT EXISTS exact replay is a no-op");
+        assert_eq!(replay.row_count, 0);
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before + 1,
+            "exact replay must not allocate a second text id"
+        );
+
+        let drop_missing = futures::executor::block_on(super::try_execute_text_index_ddl(
+            "DROP TEXT INDEX no_such_text_idx",
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("drop detected")
+        .expect_err("missing drop without IF EXISTS must fail closed");
+        assert!(matches!(drop_missing, RouterError::NotFound(_)));
+
+        futures::executor::block_on(super::try_execute_text_index_ddl(
+            "DROP TEXT INDEX no_such_text_idx IF EXISTS",
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("drop detected")
+        .expect("IF EXISTS suppresses the absent-name error");
+
+        futures::executor::block_on(super::try_execute_text_index_ddl(
+            "DROP TEXT INDEX doc_bio_text_idx",
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("drop detected")
+        .expect("drop removes the definition");
+        assert!(
+            crate::facade::stable::text_index_catalog::get_text_index_by_name_id(
+                graph_id,
+                index_name_id
+            )
+            .is_none(),
+            "dropped definition must leave the TEXT catalog"
+        );
     }
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;

@@ -23,8 +23,12 @@ pub enum IndexDdlStatement {
     },
 }
 
-/// Gleaph-specific `CREATE TEXT INDEX` DDL (plan 0297 `backfill-pull`; ADR 0059 §Text build
-/// kind).
+/// Gleaph-specific `CREATE TEXT INDEX` / `DROP TEXT INDEX` DDL (plan 0297 `backfill-pull`;
+/// ADR 0059 §Text build kind).
+///
+/// Grammar (recorded decision, 2026-08-26):
+/// `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)`
+/// and `DROP TEXT INDEX <name> [IF EXISTS]`.
 ///
 /// Deliberately separate from [`IndexDdlStatement`]: a text declaration routes through the
 /// text-canister backfill lifecycle, never the property-posting build.
@@ -32,8 +36,13 @@ pub enum IndexDdlStatement {
 pub enum TextIndexDdlStatement {
     Create {
         index_name: String,
+        if_not_exists: bool,
         label: String,
         property: String,
+    },
+    Drop {
+        index_name: String,
+        if_exists: bool,
     },
 }
 
@@ -43,6 +52,10 @@ pub enum TextIndexDdlParseError {
     Expected(String),
     #[error("unexpected trailing input")]
     TrailingInput,
+    #[error("the ON variable must match the FOR pattern variable")]
+    VariableMismatch,
+    #[error("edge patterns are not supported in CREATE TEXT INDEX")]
+    EdgePatternUnsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,17 +205,17 @@ pub fn try_parse_vector(
     Some(parse_vector(trimmed))
 }
 
-/// Returns `None` when the query is not `CREATE TEXT INDEX` DDL.
+/// Returns `None` when the query is not text-index DDL.
 ///
-/// Grammar: `CREATE TEXT INDEX <name> ON (<var>:<label>).<property>`, mirroring the vendor
-/// property-index target shape. The analyzer is creation-fixed by the Router TEXT catalog
-/// (v0 production pipeline) and therefore not part of the syntax.
+/// Grammar: `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)`
+/// and `DROP TEXT INDEX <name> [IF EXISTS]`, mirroring the vendor property-index target shape
+/// (`CREATE INDEX person_age FOR (n:Person) ON (n.age)`). The analyzer is creation-fixed by the
+/// Router TEXT catalog (v0 production pipeline) and therefore not part of the syntax.
 pub fn try_parse_text(
     query: &str,
 ) -> Option<Result<TextIndexDdlStatement, TextIndexDdlParseError>> {
     let trimmed = query.trim();
-    let upper = trimmed.to_ascii_uppercase();
-    if !upper.starts_with("CREATE TEXT INDEX") {
+    if !starts_with_text_ddl(trimmed) {
         return None;
     }
     Some(parse_text(trimmed))
@@ -211,45 +224,90 @@ pub fn try_parse_text(
 fn parse_text(query: &str) -> Result<TextIndexDdlStatement, TextIndexDdlParseError> {
     let mut cur = Cursor::new(query);
     cur.skip_ws();
-    cur.expect_ascii_ci("CREATE")
-        .map_err(|_| TextIndexDdlParseError::Expected("CREATE".into()))?;
-    cur.expect_ascii_ci("TEXT")
-        .map_err(|_| TextIndexDdlParseError::Expected("TEXT".into()))?;
-    cur.expect_ascii_ci("INDEX")
-        .map_err(|_| TextIndexDdlParseError::Expected("INDEX".into()))?;
-    let index_name = cur
-        .parse_ident()
-        .map_err(|_| TextIndexDdlParseError::Expected("text index name".into()))?;
-    cur.expect_ascii_ci("ON")
-        .map_err(|_| TextIndexDdlParseError::Expected("ON".into()))?;
-    cur.expect('(')
-        .map_err(|_| TextIndexDdlParseError::Expected("'('".into()))?;
-    cur.skip_ws();
-    let _variable = cur
-        .parse_ident()
-        .map_err(|_| TextIndexDdlParseError::Expected("pattern variable".into()))?;
-    cur.expect(':')
-        .map_err(|_| TextIndexDdlParseError::Expected("':'".into()))?;
-    let label = cur
-        .parse_ident()
-        .map_err(|_| TextIndexDdlParseError::Expected("vertex label".into()))?;
-    cur.expect(')')
-        .map_err(|_| TextIndexDdlParseError::Expected("')'".into()))?;
-    cur.expect('.')
-        .map_err(|_| TextIndexDdlParseError::Expected("'.'".into()))?;
-    let property = cur
-        .parse_ident()
-        .map_err(|_| TextIndexDdlParseError::Expected("property name".into()))?;
-    cur.try_consume(';');
-    cur.skip_ws();
-    if !cur.is_eof() {
-        return Err(TextIndexDdlParseError::TrailingInput);
+    if cur.consume_ascii_ci("CREATE") {
+        cur.expect_ascii_ci("TEXT")?;
+        cur.expect_ascii_ci("INDEX")?;
+        let index_name = cur.parse_ident()?;
+        let if_not_exists = cur.try_consume_ascii_ci("IF NOT EXISTS");
+        cur.expect_ascii_ci("FOR")?;
+        let (variable, label) = parse_text_vertex_pattern(&mut cur)?;
+        cur.expect_ascii_ci("ON")?;
+        let (on_variable, property) = parse_text_property_ref(&mut cur)?;
+        if on_variable != variable {
+            return Err(TextIndexDdlParseError::VariableMismatch);
+        }
+        cur.try_consume(';');
+        cur.skip_ws();
+        if !cur.is_eof() {
+            return Err(TextIndexDdlParseError::TrailingInput);
+        }
+        Ok(TextIndexDdlStatement::Create {
+            index_name,
+            if_not_exists,
+            label,
+            property,
+        })
+    } else if cur.consume_ascii_ci("DROP") {
+        cur.expect_ascii_ci("TEXT")?;
+        cur.expect_ascii_ci("INDEX")?;
+        let index_name = cur.parse_ident()?;
+        let if_exists = cur.try_consume_ascii_ci("IF EXISTS");
+        cur.try_consume(';');
+        cur.skip_ws();
+        if !cur.is_eof() {
+            return Err(TextIndexDdlParseError::TrailingInput);
+        }
+        Ok(TextIndexDdlStatement::Drop {
+            index_name,
+            if_exists,
+        })
+    } else {
+        Err(TextIndexDdlParseError::Expected(
+            "CREATE TEXT INDEX or DROP TEXT INDEX".into(),
+        ))
     }
-    Ok(TextIndexDdlStatement::Create {
-        index_name,
-        label,
-        property,
-    })
+}
+
+/// Word-boundary-precise recognition so `CREATE TEXT INDEXED …` stays ordinary GQL instead of
+/// surfacing as a confusing text-DDL parse error.
+fn starts_with_text_ddl(input: &str) -> bool {
+    let mut cur = Cursor::new(input);
+    (cur.consume_ascii_ci("CREATE") || cur.consume_ascii_ci("DROP"))
+        && cur.consume_ascii_ci("TEXT")
+        && cur.consume_ascii_ci("INDEX")
+}
+
+/// Parses `(var:Label)`. An edge pattern (`()-[..]-()`) is rejected as unsupported; the TEXT
+/// catalog only declares vertex-property targets.
+fn parse_text_vertex_pattern(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, String), TextIndexDdlParseError> {
+    cur.expect('(')?;
+    cur.skip_ws();
+    if cur.peek() == Some(')') {
+        return Err(TextIndexDdlParseError::EdgePatternUnsupported);
+    }
+    let var = cur.parse_ident()?;
+    cur.expect(':')?;
+    let label = cur.parse_ident()?;
+    cur.skip_ws();
+    cur.expect(')')?;
+    Ok((var, label))
+}
+
+/// Parses `(var.property)` — the parenthesized single-segment form shared with the vendor
+/// `CREATE INDEX` ON clause. Nested dotted paths are not part of the v0 text contract.
+fn parse_text_property_ref(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, String), TextIndexDdlParseError> {
+    cur.expect('(')?;
+    cur.skip_ws();
+    let var = cur.parse_ident()?;
+    cur.expect('.')?;
+    let property = cur.parse_ident()?;
+    cur.skip_ws();
+    cur.expect(')')?;
+    Ok((var, property))
 }
 
 /// Returns `None` when the query is not constraint DDL (caller should use standard GQL parsing).
@@ -887,6 +945,12 @@ impl From<CursorExpected> for VectorIndexDdlParseError {
     }
 }
 
+impl From<CursorExpected> for TextIndexDdlParseError {
+    fn from(error: CursorExpected) -> Self {
+        Self::Expected(error.0)
+    }
+}
+
 impl<'a> Cursor<'a> {
     fn new(s: &'a str) -> Self {
         Self {
@@ -1503,26 +1567,83 @@ mod tests {
     }
 
     #[test]
-    fn text_ddl_parses_label_property_target_and_rejects_other_statements() {
-        let parsed = try_parse_text("CREATE TEXT INDEX docs ON (v:Person).bio;").expect("text DDL");
+    fn text_ddl_parses_for_on_target_and_rejects_other_statements() {
+        let parsed =
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio);").expect("text DDL");
         assert_eq!(
             parsed.expect("parse"),
             TextIndexDdlStatement::Create {
                 index_name: "docs".into(),
+                if_not_exists: false,
                 label: "Person".into(),
                 property: "bio".into(),
             }
         );
         // Case-insensitive keywords, optional semicolon.
-        assert!(try_parse_text("create text index docs on (v:person).bio").is_some());
+        assert!(try_parse_text("create text index docs for (v:person) on (v.bio)").is_some());
         // Other vendor DDL and plain GQL are not text DDL.
         assert!(try_parse_text("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
+        assert!(try_parse_text("DROP INDEX x IF EXISTS").is_none());
         assert!(try_parse_text("CREATE VECTOR INDEX v FOR (n:N) ON (n.e)").is_none());
         assert!(try_parse_text("MATCH (n) RETURN n").is_none());
+        // Keyword boundaries: a longer identifier is not the TEXT INDEX header.
+        assert!(try_parse_text("CREATE TEXT INDEXED x FOR (n:N) ON (n.p)").is_none());
         // Trailing junk rejects.
-        let trailing = try_parse_text("CREATE TEXT INDEX docs ON (v:Person).bio DROP TEXT INDEX x")
-            .expect("recognized")
-            .expect_err("trailing input");
+        let trailing =
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) DROP TEXT INDEX x")
+                .expect("recognized")
+                .expect_err("trailing input");
         assert_eq!(trailing, TextIndexDdlParseError::TrailingInput);
+    }
+
+    #[test]
+    fn text_ddl_parses_if_not_exists_between_name_and_for() {
+        let parsed =
+            try_parse_text("CREATE TEXT INDEX docs IF NOT EXISTS FOR (v:Person) ON (v.bio);")
+                .expect("text DDL")
+                .expect("parse");
+        assert_eq!(
+            parsed,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: true,
+                label: "Person".into(),
+                property: "bio".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn text_ddl_parses_drop_with_and_without_if_exists() {
+        let parsed = try_parse_text("DROP TEXT INDEX docs IF EXISTS;").expect("text DDL");
+        assert_eq!(
+            parsed.expect("parse"),
+            TextIndexDdlStatement::Drop {
+                index_name: "docs".into(),
+                if_exists: true,
+            }
+        );
+        assert_eq!(
+            try_parse_text("drop text index docs")
+                .expect("text DDL")
+                .expect("parse"),
+            TextIndexDdlStatement::Drop {
+                index_name: "docs".into(),
+                if_exists: false,
+            }
+        );
+    }
+
+    #[test]
+    fn text_ddl_rejects_variable_mismatch_and_edge_patterns() {
+        let mismatch = try_parse_text("CREATE TEXT INDEX docs FOR (n:Person) ON (m.bio)")
+            .expect("text DDL")
+            .expect_err("variable mismatch");
+        assert_eq!(mismatch, TextIndexDdlParseError::VariableMismatch);
+
+        let edge = try_parse_text("CREATE TEXT INDEX docs FOR ()-[r:KNOWS]->() ON (r.weight)")
+            .expect("text DDL")
+            .expect_err("edge pattern");
+        assert_eq!(edge, TextIndexDdlParseError::EdgePatternUnsupported);
     }
 }

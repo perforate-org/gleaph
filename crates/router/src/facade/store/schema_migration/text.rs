@@ -44,8 +44,18 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
     auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
     let ApplySchemaMigrationArgs::V1(args) = args;
 
-    let statement = match crate::index_ddl::try_parse_text(&args.statement) {
-        Some(Ok(statement)) => statement,
+    let (index_name, label, property) = match crate::index_ddl::try_parse_text(&args.statement) {
+        Some(Ok(crate::index_ddl::TextIndexDdlStatement::Create {
+            index_name,
+            label,
+            property,
+            ..
+        })) => (index_name, label, property),
+        Some(Ok(crate::index_ddl::TextIndexDdlStatement::Drop { .. })) => {
+            return Err(RouterError::InvalidArgument(
+                "TEXT backfill migrations only accept CREATE TEXT INDEX statements".into(),
+            ));
+        }
         Some(Err(error)) => {
             return Err(RouterError::InvalidArgument(format!(
                 "invalid migration CREATE TEXT INDEX syntax: {error}"
@@ -88,11 +98,6 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
 
     // Exact replay: the same id/checksum resumes its pending lifecycle without re-resolving
     // anything; a different payload for a recorded id conflicts before any effect.
-    let crate::index_ddl::TextIndexDdlStatement::Create {
-        index_name,
-        label,
-        property,
-    } = statement;
     if let Some(existing) = ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.get(&args.id)) {
         let existing_v1 = super::record_v1(&existing.0)?;
         if !super::record_matches_args(existing_v1, &args)
