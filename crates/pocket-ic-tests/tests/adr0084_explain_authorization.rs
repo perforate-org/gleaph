@@ -7,7 +7,9 @@
 //! 2. Self-explain redaction matrix across own-grant / PUBLIC / tenancy sources.
 //! 3. An invisible touched graph returns the indistinguishable record-shaped `NotFound`
 //!    (the existence-oracle probe fails), including for capability holders.//! 4. Invariant-1 regression guard: execution-path `Forbidden` responses are Candid-
-//!    byte-identical to the constant captured before this feature landed.
+//!    byte-identical to the constant captured from the execution path (this slice does
+//!    not modify enforcement, so the bytes describe the pre-existing contract; the
+//!    guard pins future drift).
 //! 5. Alternatives render any-of with per-arm sources; unattributed residue renders
 //!    "requires graph tenancy"; revoked (absent) rows stop appearing as sources.
 //!    Expired-row absence is proven at unit level (`holds` already reads expiry and the
@@ -417,9 +419,9 @@ fn invisible_graph_probe_is_an_indistinguishable_not_found() {
 }
 
 // Candid wire bytes of `gql_query` answering `Err(Forbidden)` for this probe, captured
-// from the execution path before this feature landed. The table section carries the
-// RouterError/GqlQueryResult type descriptors; any change to the enforcement route's
-// response shape shifts these bytes and fails the guard.
+// from the execution path as landed (this slice does not modify enforcement). The table
+// section carries the RouterError/GqlQueryResult type descriptors; any change to the
+// enforcement route's response shape shifts these bytes and fails the guard.
 const EXPECTED_FORBIDDEN_BYTES: [u8; 386] = [
     68, 73, 68, 76, 19, 107, 2, 188, 138, 1, 1, 197, 254, 210, 1, 12, 108, 5, 131, 147, 61, 2, 249,
     133, 174, 161, 1, 4, 190, 182, 179, 220, 4, 9, 170, 251, 147, 185, 5, 120, 187, 208, 164, 143,
