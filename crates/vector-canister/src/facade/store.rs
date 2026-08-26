@@ -16,6 +16,10 @@ mod maintenance_step;
 mod mutation;
 mod rebuild;
 mod search;
+#[cfg(test)]
+pub(crate) use search::page_skip_stats;
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) use search::reset_page_skip_stats;
 mod watermark;
 
 use crate::facade::stable::region_store::RegionError;

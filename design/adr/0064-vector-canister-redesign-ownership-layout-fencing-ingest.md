@@ -232,6 +232,17 @@ Slab/page headers use a 3-byte magic (`VSL`/`VPG`) plus a binary `u8` version by
   position); no per-row stamp/vector_id/generation.
 - Memory manager: `ic-stable-variable-memory-manager` with per-region bucket policies.
 
+> **Revised (Phase-0 Slice 8, 2026-08-26):** pages occupy **uniform blocks** inside
+> `VECTOR_ROW_SLAB` at `SLAB_HEADER_SIZE + seq × BLOCK_LEN` (`BLOCK_LEN = DEFAULT_MAX_PAGE_BYTES`),
+> so the per-page `VECTOR_PAGE_META` directory (MemoryId 10) is retired — MemoryId 10 becomes an
+> explicit layout hole. Per-page state moved into `VECTOR_PARTITION_HEADS` (id 9): the head mirrors
+> the mutable tail page as scalars, sealed-page-table chunks carry
+> `{seq, row_count, live_count, block_bound}` per positional id, and a slab free-list of `(start,len)`
+> block runs enables free-side-first reuse after version teardowns. The scalar `block_bound`
+> `M = max‖row‖` gates L2 page reads (`max(0, ‖q‖ − M)² > kth` skips the whole page before any slab
+> read); cosine keeps full scans (unit rows make the bound powerless). A future Dot metric would gate
+> on `‖q‖·M < kth`.
+
 ### 8. EncodingRecord (multi-encoding; kernels)
 
 `EncodingRecord { encoding, dims, stride_bytes, pad_stride_bytes, aux_bytes, kernel }` is a
@@ -266,13 +277,14 @@ rebuild-pool region budget — see `design/index/vector-index.md`.
 
 ### 10. Compaction = rebuild; plus an opt-in bounded slab reclaim
 
-Routine compaction stays rebuild-only: no free-span allocator, no PMA rebalance, no automatic
-policy trigger. Tail-only allocation grows the slab; the Slice 9/10 tombstone-ratio policy bounds
-it (`slab <= live/(1 − r)`). In addition, plan 0278 adds an **opt-in, Router-driven bounded slab
-compaction** for drained dead space: a durable driver state machine copies live pages down into a
-dense prefix — bytes persisted before each page's single `VectorPageMeta.slab_offset` swap — then
-rewinds `occupied_tail` once at finalize. The kernel stays append-only; there is still no
-free-span reuse and no row-level defragmentation inside partially-live pages.
+Routine compaction stays rebuild-only: no automatic policy trigger. Tail allocation grows the slab;
+the Slice 9/10 tombstone-ratio policy bounds it (`slab <= live/(1 − r)`). In addition, plan 0278 adds
+an **opt-in, Router-driven bounded slab compaction** for drained dead space: a durable driver state
+machine copies live blocks down into a dense prefix — bytes persisted before each owner's seq swap —
+then rewinds `occupied_tail` once at finalize. **Revised (Slice 8):** the kernel gains free-run reuse
+(teardowns feed a slab-wide free list consumed first-fit before the tail grows) and compaction
+registers its reclaimed gap as free runs; row-level defragmentation inside partially-live pages
+remains out of scope.
 
 ### 11. Multi-canister readiness
 

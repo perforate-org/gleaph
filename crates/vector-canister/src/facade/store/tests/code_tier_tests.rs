@@ -111,7 +111,10 @@ fn head_live_len() -> u64 {
             0,
         ))
         .expect("head get")
-        .map(|head| head.live_len)
+        .map(|record| match record {
+            crate::records::PartitionHeadRecord::Head(head) => head.live_len,
+            other => panic!("partition heads: unexpected record kind: {other:?}"),
+        })
         .unwrap_or(0)
     })
 }
@@ -280,7 +283,10 @@ fn tier_on_combines_with_flat_and_two_level_shapes() {
                         p,
                     ))
                     .expect("head get")
-                    .map(|head| head.live_len)
+                    .map(|record| match record {
+                        crate::records::PartitionHeadRecord::Head(head) => head.live_len,
+                        other => panic!("partition heads: unexpected record kind: {other:?}"),
+                    })
                     .unwrap_or(0)
                 })
             })

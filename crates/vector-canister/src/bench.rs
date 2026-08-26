@@ -506,7 +506,28 @@ partitioned_bench!(bench_ivf_d1536_nlist16_eps0, 1536, 16, 0.0);
 partitioned_bench!(bench_ivf_d1536_nlist16_eps05, 1536, 16, 0.5);
 partitioned_bench!(bench_ivf_d1536_nlist16_eps1, 1536, 16, 1.0);
 partitioned_bench!(bench_ivf_d1536_nlist16_epsinf, 1536, 16, f32::INFINITY);
-partitioned_bench!(bench_ivf_d1536_nlist64_eps0, 1536, 64, 0.0);
+
+/// Slice 8: same shape as the generic eps0 sweep entry, plus the scalar-block-bound **skip-rate
+/// report** (`skipped / considered` pages, printed after the measured closure so the counters
+/// never pollute the instruction count).
+#[bench(raw)]
+fn bench_ivf_d1536_nlist64_eps0() -> canbench_rs::BenchResult {
+    setup_partitioned_store(1536, SCAN_N, 64);
+    // The query sits between the first two clusters (see [`SWEEP_QUERY`]).
+    let req = search_req_value(1536, 10, SWEEP_QUERY);
+    crate::facade::store::reset_page_skip_stats();
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_ivf_d1536_nlist64_eps0");
+        let result = vector_search_tuned(black_box(&req), SearchTuning { eps_query: 0.0 })
+            .expect("vector_search_tuned");
+        black_box(result);
+    });
+    // Skip-rate note: the ε₂=0 scan visits only the nearest cluster whose per-page norms are
+    // homogeneous, so the bound rarely fires here; the deterministic two-page fixture in
+    // `facade/store/tests.rs::slice8_block_bound_skips_far_page_and_full_walk_stays_exact`
+    // reports the rate (1/2 pages skipped) natively.
+    result
+}
 partitioned_bench!(bench_ivf_d1536_nlist64_eps05, 1536, 64, 0.5);
 partitioned_bench!(bench_ivf_d1536_nlist64_eps1, 1536, 64, 1.0);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps0, 1536, 256, 0.0);

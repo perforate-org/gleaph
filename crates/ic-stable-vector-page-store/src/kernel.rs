@@ -37,7 +37,10 @@ use core::arch::wasm64::{
 /// Returns the number of matching bits in `[0, 8 × bytes.len()]`.
 pub fn popcount_xnor_words(a: &[u8], b: &[u8]) -> u32 {
     debug_assert_eq!(a.len(), b.len(), "code spans must be equal width");
-    debug_assert!(a.len().is_multiple_of(8), "code spans must be word-granular");
+    debug_assert!(
+        a.len().is_multiple_of(8),
+        "code spans must be word-granular"
+    );
     let mut matched = 0u32;
     for (wa, wb) in a.as_chunks::<8>().0.iter().zip(b.as_chunks::<8>().0) {
         let x = u64::from_le_bytes(*wa);

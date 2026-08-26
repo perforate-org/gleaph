@@ -41,6 +41,10 @@ pub(crate) fn reset_definition_domain(
     ticket: DefinitionResetTicket,
     subject_ticket: SubjectResetTicket,
 ) -> Result<u64, DefinitionDomainResetError> {
+    // Force the page-store thread-local to initialize *before* any coupled-region borrow is
+    // taken: its reopen validation reads `VECTOR_PARTITION_HEADS`, so the acquisition order
+    // must stay `PAGE_STORE` → `VECTOR_PARTITION_HEADS` everywhere.
+    PAGE_STORE.with(|_| {});
     IVF_CENTROID_META.with(|centroid_meta| {
         let mut centroid_meta = centroid_meta.try_borrow_mut().map_err(|_| {
             DefinitionDomainResetError::RegionHandleUnavailable("IVF_CENTROID_META")
@@ -124,8 +128,10 @@ thread_local! {
     pub(crate) static VECTOR_PARTITION_HEADS: RefCell<memory::StablePartitionHeadsMap> =
         RefCell::new(memory::init_partition_heads());
 
-    // ADR 0032 composite slab page store: VECTOR_PAGE_META (id 10) + VECTOR_ROW_SLAB (id 13),
-    // opened together with reopen validation.
+    // Slice 8 composite slab page store: pages live in VECTOR_ROW_SLAB (id 13) addressed
+    // arithmetically as uniform blocks; the per-partition page state lives in
+    // VECTOR_PARTITION_HEADS (heads + sealed-page tables + slab free-list). Opened with
+    // reopen validation over both collections.
     pub(crate) static PAGE_STORE: RefCell<page_store::VectorSlabStore> =
         RefCell::new(page_store::VectorSlabStore::init());
 
@@ -150,4 +156,145 @@ thread_local! {
     // slot, MemoryId 11).
     pub(crate) static VECTOR_SLAB_COMPACTION_STATE: RefCell<memory::StableSlabCompactionStateCell> =
         RefCell::new(memory::init_slab_compaction_state());
+}
+
+// --- Intrusive free-block chain anchor (Slice 8) ---
+//
+// The free list is a LIFO chain threaded through the free blocks themselves (each block's first
+// four bytes hold the next block's seq); the anchor lives in the durable compaction-state record
+// so it survives upgrades and is sanitized by compaction finalize.
+
+// --- Typed accessors over `VECTOR_PARTITION_HEADS` (Slice 8) ---
+//
+// One hash-map collection carries three record kinds under disjoint key-level tags
+// (`PartitionHeadRecord`). These accessors are the only place that unwraps the tag, so a record
+// whose tag disagrees with its key's level is a fail-closed corruption trap at the boundary.
+
+use crate::records::{
+    MAX_PAGE_TABLE_CHUNKS, PageTableChunk, PartitionHead, PartitionHeadRecord, PartitionKey,
+    VectorSlabCompactionState,
+};
+
+fn unwrap_head_record(
+    key: &PartitionKey,
+    record: Option<PartitionHeadRecord>,
+) -> Option<PartitionHead> {
+    match record {
+        None => None,
+        Some(PartitionHeadRecord::Head(head)) => Some(head),
+        Some(_) => panic!("partition heads: non-head record under head key {key:?}"),
+    }
+}
+
+/// The leaf partition head of `key`, or `None` when the partition has no pages.
+pub(crate) fn partition_head_get(key: &PartitionKey) -> Option<PartitionHead> {
+    let record = VECTOR_PARTITION_HEADS.with_borrow(|h| h.get(key).expect("partition heads read"));
+    unwrap_head_record(key, record)
+}
+
+/// Inserts (or overwrites) the head of `key`. `Err(())` surfaces the map's grow failure so
+/// hot-path callers keep their existing `StableGrowFailed` mapping instead of trapping.
+pub(crate) fn partition_head_insert(key: PartitionKey, head: PartitionHead) -> Result<(), ()> {
+    VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
+        h.insert(key, PartitionHeadRecord::Head(head))
+            .map(|_| ())
+            .map_err(|_| ())
+    })
+}
+
+/// Removes the head of `key` (teardown). Panics when absent — callers own the lifecycle order.
+pub(crate) fn partition_head_remove(key: &PartitionKey) {
+    VECTOR_PARTITION_HEADS
+        .with_borrow_mut(|h| h.remove(key).expect("partition head remove"))
+        .expect("partition head present");
+}
+
+/// Reads one sealed-page-table chunk of a leaf partition; `None` when that chunk does not exist.
+pub(crate) fn page_table_chunk_get(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    chunk: u32,
+) -> Option<PageTableChunk> {
+    let key = PartitionKey::page_table_chunk(index_id, index_version, partition_id, chunk);
+    match VECTOR_PARTITION_HEADS.with_borrow(|h| h.get(&key).expect("partition heads read")) {
+        None => None,
+        Some(PartitionHeadRecord::Table(table)) => Some(table),
+        Some(other) => panic!(
+            "partition heads: unexpected record kind under table chunk key {key:?}: {other:?}"
+        ),
+    }
+}
+
+/// Writes one sealed-page-table chunk of a leaf partition. `Err(())` surfaces grow failure.
+pub(crate) fn page_table_chunk_put(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    chunk: u32,
+    table: PageTableChunk,
+) -> Result<(), ()> {
+    let key = PartitionKey::page_table_chunk(index_id, index_version, partition_id, chunk);
+    VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
+        h.insert(key, PartitionHeadRecord::Table(table))
+            .map(|_| ())
+            .map_err(|_| ())
+    })
+}
+
+/// Removes every sealed-page-table chunk of one leaf partition (teardown).
+pub(crate) fn page_table_remove_all(index_id: u32, index_version: u64, partition_id: u32) {
+    for chunk in 0..MAX_PAGE_TABLE_CHUNKS {
+        let key = PartitionKey::page_table_chunk(index_id, index_version, partition_id, chunk);
+        match VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.remove(&key)) {
+            Ok(None) => break, // chunks are dense; the first absent one ends the table.
+            Ok(Some(_)) => {}
+            Err(error) => panic!("partition table chunk remove failed: {error:?}"),
+        }
+    }
+}
+
+/// Removes one sealed-page-table chunk of a leaf partition; `Err(())` surfaces grow failure of
+/// the underlying map operation (removal itself cannot grow — mapped for uniformity).
+pub(crate) fn page_table_chunk_remove(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    chunk: u32,
+) {
+    let key = PartitionKey::page_table_chunk(index_id, index_version, partition_id, chunk);
+    VECTOR_PARTITION_HEADS
+        .with_borrow_mut(|h| h.remove(&key).expect("partition table chunk remove"))
+        .expect("partition table chunk present");
+}
+
+/// Reads the intrusive free-block chain anchor (`None` = no reusable holes below the tail).
+pub(crate) fn slab_free_anchor_get() -> Option<u32> {
+    match VECTOR_SLAB_COMPACTION_STATE.with_borrow(|c| *c.get()) {
+        VectorSlabCompactionState::Idle { free_head } => free_head,
+        VectorSlabCompactionState::Compacting { free_head, .. } => free_head,
+    }
+}
+
+/// Writes the intrusive free-block chain anchor, preserving whichever driver variant is current.
+pub(crate) fn slab_free_anchor_set(free_head: Option<u32>) {
+    VECTOR_SLAB_COMPACTION_STATE.with_borrow_mut(|c| {
+        let next = match *c.get() {
+            VectorSlabCompactionState::Idle { .. } => VectorSlabCompactionState::Idle { free_head },
+            VectorSlabCompactionState::Compacting {
+                write_cursor,
+                range_end,
+                scan_cursor,
+                pages_moved,
+                ..
+            } => VectorSlabCompactionState::Compacting {
+                write_cursor,
+                range_end,
+                scan_cursor,
+                pages_moved,
+                free_head,
+            },
+        };
+        c.set(next);
+    });
 }

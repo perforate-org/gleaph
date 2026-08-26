@@ -327,7 +327,10 @@ mod tests {
 
     #[test]
     fn max_capacity_for_rejects_too_small_budget_and_bad_geometry() {
-        assert_eq!(PageLayout::max_capacity_for(40, D1536_STRIDE, 4, 1, 0), None);
+        assert_eq!(
+            PageLayout::max_capacity_for(40, D1536_STRIDE, 4, 1, 0),
+            None
+        );
         assert_eq!(PageLayout::max_capacity_for(65_536, 0, 4, 1, 0), None);
         assert_eq!(
             PageLayout::max_capacity_for(65_536, D1536_STRIDE, 6, 1, 0),

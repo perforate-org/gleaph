@@ -62,6 +62,14 @@ cost bounded on the Internet Computer.
    accelerate only the first-stage scan — every emitted hit is exactly rescored over original
    bytes from the same loaded page, and advertised result quality stays the original tier.
    Non-`F32` indexes remain approximate by contract, documented per definition.
+5. **Durable hot-path records are not wide Candid enums (Phase-0 Slice 7; cf. ADR 0074).** A
+   record that stable reads decode once per ingest op must be stored as a versioned fixed-width
+   binary codec, not Candid: Candid's self-describing wire ships its type table inside every row,
+   so a wide enum taxed each read ~800 instructions per byte of type table regardless of payload —
+   the rebuild-state row cost ~425K instructions per op while it existed (527B row, ~15B payload)
+   until replaced by a fail-closed `[magic][version][tag]` codec (~0.9K). The router hit the same
+   pattern from the encode side when ADR 0074 added `required_privileges` to prepared-plan rows
+   (~0.5M instructions per row for an empty set).
 
 ## Ownership model
 
@@ -320,9 +328,12 @@ finite-time GC bound is claimed.
 
 ## Physical layout
 
-### Slab and pages (two-table format)
+### Slab and pages (two-table format; Slice 8 uniform blocks)
 
-The `VECTOR_ROW_SLAB` holds fixed-stride pages; `VECTOR_PAGE_META` is the directory. Each page:
+The `VECTOR_ROW_SLAB` holds fixed-stride pages, each occupying **one uniform block** of
+`BLOCK_LEN = DEFAULT_MAX_PAGE_BYTES` (64 KiB) at `SLAB_HEADER_SIZE + seq × BLOCK_LEN` — physical
+addresses derive arithmetically from the block sequence, and the former `VECTOR_PAGE_META`
+directory (MemoryId 10) is retired. Each page:
 
 ```text
 [PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
@@ -333,14 +344,32 @@ The `VECTOR_ROW_SLAB` holds fixed-stride pages; `VECTOR_PAGE_META` is the direct
   range the canister owns (`run_capacity = min(owned_shards, MAX_RUNS=64)`).
 - **row_meta** unifies identity + aux constants into one table so the partition scan reads a single
   metadata span per page.
-- **vector_bytes** is 16-byte aligned for SIMD scoring.
+- **vector_bytes** is 16-byte aligned for SIMD scoring; the block's trailing slack is zero-filled at
+  reservation.
 - Tail-only allocation, positions are write-once (never reused), so a row is validated **positionally**
   (subject map slot matches the scanned position) — no stamp/vector_id/generation per row.
 
-**Implemented failure boundary (2026-08-14 UTC):** `append_rows` prevalidates and plans every page,
-then reserves every planned page before publishing the partition head. A reservation failure leaves
-only unpublished, unreachable bytes beyond the occupied tail and never partially publishes the head.
-This is covered by `append_rows_grow_failure_leaves_consistent_state` and
+**Per-page state lives in `VECTOR_PARTITION_HEADS` (id 9)** under disjoint key-level tags: the leaf
+head mirrors the single mutable tail page as scalars (`mutable_rows/live/bound/run_count/last_shard/
+seq` — an append performs exactly two durable map ops: head get + head insert), sealed pages live in
+fixed-width table chunks (`level = 2..=201`, up to 200 × 32 entries of `{seq, row_count, live_count,
+block_bound}`), and the slab free list is an **intrusive LIFO chain** threaded through the dead blocks
+themselves (each block's first four bytes hold the next seq), anchored by `free_head` in the
+`VECTOR_SLAB_COMPACTION_STATE` record (MemoryId 11) and popped first-fit on allocation. Teardown drains
+whole partitions atomically (chunks + blocks + leaf head) so their blocks become reusable holes;
+compaction reclaims gaps into merged free runs.
+
+**Scalar block bound (L2 page skip).** Each page carries `M = max‖row‖` (computed at append from the
+stored bytes; tombstones never lower it — conservative and monotone). L2 scans drop a whole page
+before any slab read when `max(0, ‖q‖ − M)² > kth` (strict; non-finite fails open). **Cosine pages
+are never gated**: rows are unit-normalized at write, so `M ≈ 1` and the bound is powerless — cosine
+keeps its exact full-scan path. A future Dot metric would gate on `‖q‖·M < kth` (kth > 0).
+
+**Implemented failure boundary:** `append_rows` prevalidates and plans every page, leases and reserves
+every planned block before publishing the partition head (the committing head insert is the last
+returned-error path; deferred tail publication keeps `occupied_tail` untouched on failure). A
+reservation failure leaves only unpublished, unreachable blocks below/above the tail and never partially
+publishes the head. This is covered by `append_rows_grow_failure_leaves_consistent_state` and
 `append_rows_second_page_reserve_failure_is_atomic`.
 
 ### Headers (3-byte magic + u8 version; version 1, breaking)
@@ -403,10 +432,11 @@ The vector canister uses `ic-stable-variable-memory-manager` with per-region buc
 | --------------------------- | --------- |
 | `VECTOR_ROW_SLAB`           | 64 pages  |
 | `VECTOR_SUBJECT_TO_ID`      | 32 pages  |
-| `VECTOR_PAGE_META`          | 16 pages  |
 | centroids / heads / defs    | 8 pages   |
 | rebuild / maintenance state | 4–8 pages |
 | `VECTOR_REBUILD_POOL`       | grown to the bounded pool geometry on rebuild start (≤ 128 pages) |
+
+(MemoryId 10, the former page directory, is an unallocated hole since Slice 8.)
 
 ## Encodings
 
@@ -610,30 +640,32 @@ publish is retained unchanged. There is no free-span allocator, no PMA rebalance
 extent-compaction trigger: tail-only allocation grows the slab, and the Slice 9/10 tombstone-ratio
 policy bounds it (`slab ≤ live/(1 − r)` for trigger ratio `r`).
 
-**Opt-in bounded slab compaction (plan 0278)** reclaims the dead bytes that rebuild cleanup and
-tombstone-GC page teardowns leave behind. A Router-driven driver (`admin_start_vector_slab_compact`
+**Opt-in bounded slab compaction (plan 0278; Slice 8 block addressing)** reclaims the dead blocks that
+rebuild cleanup and tombstone-GC page teardowns leave behind. A Router-driven driver (`admin_start_vector_slab_compact`
 → repeated `admin_vector_slab_compact_step` → `admin_vector_slab_compact_status`) works entirely
 above the append-only kernel:
 
-- `VectorPageMeta.slab_offset` is the **only** reference to a page's bytes (subject `SlotRef`s are
-  page-relative; centroids live in their own regions), so moving one page = copy its bytes +
-  swap one fixed-16 B directory value.
+- A page's owner record (sealed-table chunk entry or the head's mutable mirror) is the **only**
+  reference to its block (subject `SlotRef`s are page-relative; centroids live in their own regions),
+  so moving one page = copy its block + swap one `{seq}` field after the bytes persist.
 - Start freezes the snapshot source range `[slab header end, occupied_tail at start)` in the
   durable `VECTOR_SLAB_COMPACTION_STATE` record (MemoryId 11) together with the write cursor and
   lap cursor, so an interrupted or upgraded canister resumes fail-closed.
-- Each step examines a bounded slice of the page directory and copies at most a byte budget down
-  into the dense prefix, in ascending original-offset order so no copy can overwrite a not-yet-
-  read source; each page's bytes are persisted strictly before its meta swap, so an interrupted
-  move leaves duplicate dead bytes below — never a dangling offset.
-- Pages appended after start land above the snapshot range and are never touched; metas dropped
-  mid-compaction by GC/cleanup are skipped by the read cursor.
-- When a full directory lap finds nothing live inside the range, finalize fails closed if any live
-  span sits inside the reclaimed gap, then persists `occupied_tail = max(write_cursor, highest
-  live span end)` exactly once: a quiescent store reclaims to header-only, while post-start
-  appends keep the tail above the gap.
+- Each step examines a bounded slice of live-page locations and copies at most a byte budget down
+  into the dense prefix, in ascending source order so no copy can overwrite a not-yet-
+  read source; each page's bytes are persisted strictly before its seq swap, so an interrupted
+  move leaves duplicate dead bytes below — never a dangling reference. Destination blocks are
+  removed from the free list as they are consumed.
+- Pages appended after start may land inside the snapshot range in a free hole; they are moved like
+  any other live page. Records dropped mid-compaction by teardown are skipped by the lap cursor.
+- When a full lap finds nothing live inside the range, finalize fails closed if any live
+  block sits inside the reclaimed gap, then persists `occupied_tail = max(write_cursor, highest
+  live block end)` exactly once and registers the gap as merged free runs: a quiescent store
+  reclaims to the dense prefix, while post-start appends above the range keep the tail up.
 
-There is still no free-span reuse and no row-level defragmentation inside partially-live pages;
-automatic policy triggers for this driver are deferred with the maintenance trust-model work.
+Free-run reuse (Slice 8) already returns torn-down blocks to service before the tail grows;
+row-level defragmentation inside partially-live pages remains out of scope, and automatic policy
+triggers for this driver are deferred with the maintenance trust-model work.
 
 Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
 `Sampling` freezes each candidate in its **native stored form** (row bytes + aux scale, deduped on
@@ -676,7 +708,7 @@ stride (`align16(component_bytes × dims)`),
 | `VECTOR_ROW_SLAB` (code tier, ADR 0079) | `+ N × c` per tier-on generation | `c = 8 + ceil(P/64)·8` with `P = next_pow2(dims)` (d1536 → P=2048 → **264 B/row**, +4.3% vs F32; d768 → 136 B); page capacity shrinks under the fixed byte budget (`slots_per_page` rederived by `shape_def_for`) |
 | `VECTOR_SUBJECT_TO_ID`        | `G × ~60B × η` while deleted clocks are retained | Every fully attached catalog lane uses `min(graph_watermark, router_watermark)` after frontier publication, including markerless Graph-only lanes; no finite-time or global bound is claimed |
 | `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy; opt-in bounded slab compaction reclaims drained spans (plan 0278) |
-| `VECTOR_PAGE_META` / heads    | O(N / slots per page), O(nlist)   | negligible                                                 |
+| heads + sealed-table chunks   | O(N / slots per page), O(nlist)   | negligible                                                 |
 | `VECTOR_REBUILD_POOL`         | fixed ≤ 8 MiB while a rebuild is in flight | single-tenant region budget + per-iteration op budget cap the pool; released at teardown (ADR 0033 implementation) |
 | centroids / defs / watermarks | O(nlist × d), O(#defs), O(shards) | negligible                                                 |
 | graph                         | 0 embedding bytes                 | outbox carries remove metadata only                        |

@@ -15,8 +15,6 @@ use super::{
     VectorSyncBatchOutcomeOperationError,
 };
 use crate::encoding::EncodingRecord;
-#[cfg(test)]
-use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::{
     IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS,
@@ -1739,13 +1737,9 @@ pub(crate) fn partition_head_for_test(
     index_id: u32,
     index_version: u64,
 ) -> Option<crate::records::PartitionHead> {
-    VECTOR_PARTITION_HEADS.with_borrow(|heads| {
-        heads
-            .get(&PartitionKey::new(
-                index_id,
-                index_version,
-                DEGENERATE_PARTITION_ID,
-            ))
-            .expect("partition head get")
-    })
+    crate::facade::stable::partition_head_get(&PartitionKey::new(
+        index_id,
+        index_version,
+        DEGENERATE_PARTITION_ID,
+    ))
 }

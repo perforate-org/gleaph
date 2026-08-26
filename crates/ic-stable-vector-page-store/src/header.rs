@@ -216,7 +216,8 @@ impl PageHeader {
         if self.run_capacity == 0 || self.run_capacity > MAX_RUNS {
             return Err(HeaderError::InvalidRunCapacity(self.run_capacity));
         }
-        if self.code_stride != MIN_CODE_STRIDE && !self.code_stride.is_multiple_of(CODE_STRIDE_ALIGN)
+        if self.code_stride != MIN_CODE_STRIDE
+            && !self.code_stride.is_multiple_of(CODE_STRIDE_ALIGN)
         {
             return Err(HeaderError::InvalidCodeStride(self.code_stride));
         }
@@ -342,10 +343,7 @@ mod tests {
         assert_eq!(off.code_stride, 0);
         // Tier-on pages carry the per-row `[code_aux 8B][codes …]` width (8-byte aligned).
         let on = PageHeader::with_code_stride(1024, 6144, 4, 8, 8 + 24 * 8).expect("valid header");
-        assert_eq!(
-            PageHeader::from_bytes(&on.to_bytes()).expect("decode"),
-            on
-        );
+        assert_eq!(PageHeader::from_bytes(&on.to_bytes()).expect("decode"), on);
         assert_eq!(
             PageHeader::with_code_stride(1024, 6144, 4, 8, 7).expect_err("unaligned code stride"),
             HeaderError::InvalidCodeStride(7)

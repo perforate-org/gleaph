@@ -33,8 +33,22 @@ pub(crate) const LEVELS_TWO: u8 = 2;
 /// `PartitionKey` level tag occupying the key's dedicated byte. Coarse keys (tag `0`) sort before
 /// all leaf keys (tag `1`) within one `(index_id, index_version)` prefix, so a teardown can
 /// range-delete both levels with a single `(index_id, version)` prefix scan.
-const PARTITION_LEVEL_COARSE: u8 = 0;
-const PARTITION_LEVEL_LEAF: u8 = 1;
+///
+/// Tags `2`/`3` (Phase-0 Slice 8) are **not generations**: they address companion records of the
+/// leaf generation inside the same hash map — the per-partition sealed-page table (`2`) and the
+/// slab free-list sentinel (`3`). All map access is exact-key, so the extra tags need no ordering
+/// property beyond staying distinct from `0`/`1`.
+pub(crate) const PARTITION_LEVEL_COARSE: u8 = 0;
+pub(crate) const PARTITION_LEVEL_LEAF: u8 = 1;
+/// Sealed-page-table chunk base: chunk `i` of a partition's table lives at level
+/// `PARTITION_LEVEL_PAGE_TABLE_BASE + i` (`i < MAX_PAGE_TABLE_CHUNKS`).
+pub(crate) const PARTITION_LEVEL_PAGE_TABLE_BASE: u8 = 2;
+/// Maximum sealed-page-table chunks per partition. The chunk index is packed into the key's
+/// `partition_id` high bits (`(partition << 16) | chunk`), giving 65,536 chunks x 3 entries =
+/// 196,608 sealed pages per partition before the fail-closed cap.
+pub(crate) const MAX_PAGE_TABLE_CHUNKS: u32 = 200;
+/// Fixed entry capacity of one [`PageTableChunk`].
+pub(crate) const ENTRIES_PER_TABLE_CHUNK: usize = 3;
 
 /// `(index_id, subject)` key for `VECTOR_SUBJECT_TO_ID`.
 ///
@@ -130,7 +144,9 @@ impl StableHashKey for SubjectKey {
 pub struct PartitionKey {
     pub index_id: u32,
     pub index_version: u64,
-    /// Level tag: [`PARTITION_LEVEL_COARSE`] or [`PARTITION_LEVEL_LEAF`].
+    /// Level tag: [`PARTITION_LEVEL_COARSE`], [`PARTITION_LEVEL_LEAF`], a sealed-table chunk tag
+    /// (`PARTITION_LEVEL_PAGE_TABLE_BASE..`), or the free-list sentinel
+    /// ([`PARTITION_LEVEL_FREE_LIST`]).
     pub level: u8,
     pub partition_id: u32,
 }
@@ -154,6 +170,32 @@ impl PartitionKey {
             index_version,
             level: PARTITION_LEVEL_COARSE,
             partition_id,
+        }
+    }
+
+    /// Sealed-page-table chunk key of one leaf partition (Slice 8): chunk `chunk` of the table.
+    /// Same collection as the heads; chunks own the positional page id → slab block seq mapping
+    /// of every sealed (non-mutable) page of the partition. Panics fail-closed when `chunk`
+    /// exceeds [`MAX_PAGE_TABLE_CHUNKS`] or overflows the level byte range.
+    /// Sealed-page-table chunk key (Slice 8). The chunk index packs into the `partition_id`
+    /// field's high bits (`(real_partition << 16) | chunk`), so one level tag (`2`) addresses
+    /// every chunk of every leaf partition while the level-tag space stays reserved for future
+    /// companion kinds. Fail-closed when either half exceeds 16 bits.
+    pub(crate) fn page_table_chunk(
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+        chunk: u32,
+    ) -> Self {
+        assert!(
+            partition_id < (1 << 16) && chunk < (1 << 16),
+            "page-table key overflow: partition {partition_id} chunk {chunk}"
+        );
+        Self {
+            index_id,
+            index_version,
+            level: PARTITION_LEVEL_PAGE_TABLE_BASE,
+            partition_id: (partition_id << 16) | chunk,
         }
     }
 
@@ -710,31 +752,152 @@ impl Storable for ShardWatermarks {
     }
 }
 
-/// Per-partition head: page chain bounds + durable `page_id` allocator (`VECTOR_PARTITION_HEADS`).
-///
+/// Per-partition head: page chain bounds + per-partition counters (`VECTOR_PARTITION_HEADS`).
 /// `live_len`/`page_count` serve the documented O(`nlist`) partition-health check without full
-/// scans.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+/// scans. `next_page_id` is the number of pages this partition has created (dense positional page
+/// ids, so it always equals `page_count`); `mutable_page` is the positional id of the tail page.
+///
+/// **Slab addressing + hot-path mirrors (Phase-0 Slice 8).** The former MemoryId 10 page directory
+/// is replaced by arithmetic addressing: every slab page occupies one uniform block
+/// (`BLOCK_LEN`, see `page_store`) at `SLAB_HEADER_SIZE + seq × BLOCK_LEN`. This head owns its
+/// partition's page chain: sealed pages live in the companion [`PageTable`] record
+/// (`{seq, row_count, live_count, block_bound}` per positional id) while the single mutable tail
+/// page's state is mirrored here as scalars — `mutable_rows/mutable_live/mutable_bound/
+/// mutable_run_count/mutable_last_shard` plus the tail page's `mutable_seq` block number. An
+/// append therefore performs exactly two durable map ops (head get + head insert): the roll
+/// decision and the write layout derive from these scalars and from the generation def, never
+/// from a stable read.
+///
+/// `block_bound` is the conservative scalar skip bound `M = max‖row‖` of a page (monotone:
+/// tombstones never lower it; cosine generations still maintain it but search ignores it because
+/// unit-normalized rows make the bound powerless). Fixed-width `Storable` (56 bytes; breaking
+/// layout change, reinstall required).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PartitionHead {
     pub mutable_page: u64,
     pub page_count: u64,
     pub live_len: u64,
-    /// Durable monotonic `page_id` allocator within this `(index_version, partition)`.
+    /// Number of pages created by this partition so far (== `page_count`).
     pub next_page_id: u64,
+    /// Rows written into the mutable tail page (`0` ⇔ no mutable page ⇔ `page_count == 0`).
+    pub mutable_rows: u32,
+    /// Live rows in the mutable tail page.
+    pub mutable_live: u32,
+    /// Block bound `M = max‖row‖` over the mutable tail page's rows (0.0 when empty).
+    pub mutable_bound: f32,
+    /// Mirror of the mutable page's on-slab header `run_count`.
+    pub mutable_run_count: u32,
+    /// Shard of the mutable page's last run (run-extension decision without a slab read).
+    pub mutable_last_shard: u32,
+    /// Slab block sequence of the mutable tail page.
+    pub mutable_seq: u32,
 }
 
-impl Storable for PartitionHead {
+impl Eq for PartitionHead {}
+
+/// The value type of `VECTOR_PARTITION_HEADS` (MemoryId 9, Slice 8): one collection carries the
+/// leaf partition heads, their fixed-width sealed-page-table chunks, and the slab free-list
+/// sentinel record, discriminated by this tag. The linear hash map requires a **fixed-width**
+/// value, so every member is encoded into the common [`RECORD_PAYLOAD_WIDTH`] payload (zero
+/// padded) behind a one-byte tag. The three key ranges are disjoint by construction; decoding a
+/// tag that disagrees with its key's level is corruption and fails closed at the typed accessors.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PartitionHeadRecord {
+    Head(PartitionHead),
+    Table(PageTableChunk),
+}
+
+impl PartitionHeadRecord {
+    const TAG_HEAD: u8 = 0;
+    const TAG_TABLE: u8 = 1;
+    /// Common encoded payload width: the head is the widest member (the slab free list lives in
+    /// intrusive block headers anchored by the compaction-state record, not here).
+    const PAYLOAD_WIDTH: usize = PageTableChunk::ENCODED_LEN;
+
+    // Invariant: `PageTableChunk::ENCODED_LEN >= 56` (the head width), so the head payload
+    // zero-pads into the chunk-sized slot.
+
+    fn tag(&self) -> u8 {
+        match self {
+            Self::Head(_) => Self::TAG_HEAD,
+            Self::Table(_) => Self::TAG_TABLE,
+        }
+    }
+
+    fn encode_payload(&self) -> Vec<u8> {
+        let mut payload = match self {
+            Self::Head(head) => head.to_bytes().into_owned(),
+            Self::Table(table) => table.encode(),
+        };
+        assert!(payload.len() <= Self::PAYLOAD_WIDTH);
+        payload.resize(Self::PAYLOAD_WIDTH, 0);
+        payload
+    }
+
+    fn decode_payload(tag: u8, payload: &[u8]) -> Self {
+        match tag {
+            Self::TAG_HEAD => Self::Head(PartitionHead::from_bytes(Cow::Owned(
+                payload[..56].to_vec(),
+            ))),
+            Self::TAG_TABLE => Self::Table(PageTableChunk::decode(payload)),
+            other => panic!("PartitionHeadRecord: unknown tag {other}"),
+        }
+    }
+}
+
+impl Storable for PartitionHeadRecord {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 32,
+        max_size: (1 + PartitionHeadRecord::PAYLOAD_WIDTH) as u32,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut out = [0u8; 32];
+        let mut out = Vec::with_capacity(1 + Self::PAYLOAD_WIDTH);
+        out.push(self.tag());
+        out.extend_from_slice(&self.encode_payload());
+        Cow::Owned(out)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(1 + Self::PAYLOAD_WIDTH);
+        out.push(self.tag());
+        out.extend_from_slice(&self.encode_payload());
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        assert!(
+            bytes.len() == 1 + Self::PAYLOAD_WIDTH,
+            "PartitionHeadRecord: corrupt width {}",
+            bytes.len()
+        );
+        let (tag, payload) = bytes.as_ref().split_first().expect("empty record");
+        Self::decode_payload(*tag, payload)
+    }
+}
+
+impl StableMapValue for PartitionHeadRecord {
+    const VALUE_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTVAL-1";
+}
+
+impl Storable for PartitionHead {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 56,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut out = [0u8; 56];
         out[0..8].copy_from_slice(&self.mutable_page.to_le_bytes());
         out[8..16].copy_from_slice(&self.page_count.to_le_bytes());
         out[16..24].copy_from_slice(&self.live_len.to_le_bytes());
         out[24..32].copy_from_slice(&self.next_page_id.to_le_bytes());
+        out[32..36].copy_from_slice(&self.mutable_rows.to_le_bytes());
+        out[36..40].copy_from_slice(&self.mutable_live.to_le_bytes());
+        out[40..44].copy_from_slice(&self.mutable_bound.to_bits().to_le_bytes());
+        out[44..48].copy_from_slice(&self.mutable_run_count.to_le_bytes());
+        out[48..52].copy_from_slice(&self.mutable_last_shard.to_le_bytes());
+        out[52..56].copy_from_slice(&self.mutable_seq.to_le_bytes());
         Cow::Owned(out.to_vec())
     }
 
@@ -744,18 +907,116 @@ impl Storable for PartitionHead {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let b = bytes.as_ref();
-        assert_eq!(b.len(), 32, "PartitionHead expects exactly 32 bytes");
+        assert_eq!(b.len(), 56, "PartitionHead expects exactly 56 bytes");
         Self {
             mutable_page: u64::from_le_bytes(b[0..8].try_into().expect("mutable_page")),
             page_count: u64::from_le_bytes(b[8..16].try_into().expect("page_count")),
             live_len: u64::from_le_bytes(b[16..24].try_into().expect("live_len")),
             next_page_id: u64::from_le_bytes(b[24..32].try_into().expect("next_page_id")),
+            mutable_rows: u32::from_le_bytes(b[32..36].try_into().expect("mutable_rows")),
+            mutable_live: u32::from_le_bytes(b[36..40].try_into().expect("mutable_live")),
+            mutable_bound: f32::from_bits(u32::from_le_bytes(
+                b[40..44].try_into().expect("mutable_bound"),
+            )),
+            mutable_run_count: u32::from_le_bytes(b[44..48].try_into().expect("mutable_run_count")),
+            mutable_last_shard: u32::from_le_bytes(
+                b[48..52].try_into().expect("mutable_last_shard"),
+            ),
+            mutable_seq: u32::from_le_bytes(b[52..56].try_into().expect("mutable_seq")),
         }
     }
 }
 
-impl StableMapValue for PartitionHead {
-    const VALUE_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTVAL-0";
+/// One sealed (non-mutable) page in a partition's [`PageTableChunk`] (Slice 8). `positional page
+/// id` equals the global entry index across the partition's chunks, so
+/// [`crate::records::SlotRef`] addressing is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PageTableEntry {
+    /// Slab block sequence: physical base is `SLAB_HEADER_SIZE + seq × BLOCK_LEN`.
+    pub seq: u32,
+    /// Written rows (sealed pages may be short when a run-table roll closed them early).
+    pub row_count: u32,
+    /// Live (non-tombstoned) rows; tombstones are `row_count − live_count`.
+    pub live_count: u32,
+    /// Scalar skip bound `M = max‖row‖` over all written rows (tombstones included).
+    pub block_bound: f32,
+}
+
+impl PageTableEntry {
+    const ENCODED_LEN: usize = 16;
+
+    fn to_array(self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0u8; Self::ENCODED_LEN];
+        out[0..4].copy_from_slice(&self.seq.to_le_bytes());
+        out[4..8].copy_from_slice(&self.row_count.to_le_bytes());
+        out[8..12].copy_from_slice(&self.live_count.to_le_bytes());
+        out[12..16].copy_from_slice(&self.block_bound.to_bits().to_le_bytes());
+        out
+    }
+
+    fn from_array(raw: &[u8]) -> Self {
+        let bound = f32::from_bits(u32::from_le_bytes(raw[12..16].try_into().expect("bound")));
+        if !bound.is_finite() || bound < 0.0 {
+            panic!("PageTableEntry: corrupt block bound {bound}");
+        }
+        Self {
+            seq: u32::from_le_bytes(raw[0..4].try_into().expect("seq")),
+            row_count: u32::from_le_bytes(raw[4..8].try_into().expect("row_count")),
+            live_count: u32::from_le_bytes(raw[8..12].try_into().expect("live_count")),
+            block_bound: bound,
+        }
+    }
+}
+
+/// One fixed-capacity chunk of a leaf partition's sealed-page table (Phase-0 Slice 8), stored
+/// under the `PARTITION_LEVEL_PAGE_TABLE_BASE + chunk_index` key of `VECTOR_PARTITION_HEADS`.
+/// The linear hash map requires fixed-width values, so a partition's table is a list of up to
+/// [`MAX_PAGE_TABLE_CHUNKS`] chunks of [`ENTRIES_PER_TABLE_CHUNK`] entries each (6,400 sealed
+/// pages per partition; growth past the cap fails closed). Global positional page id =
+/// `chunk_index * ENTRIES_PER_TABLE_CHUNK + slot`. Versioned fixed-width codec.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct PageTableChunk {
+    /// Populated entries (`len <= ENTRIES_PER_TABLE_CHUNK`; only the last chunk may be partial).
+    pub entries: Vec<PageTableEntry>,
+}
+
+impl PageTableChunk {
+    const MAGIC: [u8; 3] = *b"PTC";
+    const VERSION: u8 = 1;
+    /// Natural encoded width: magic + version + len + `ENTRIES_PER_TABLE_CHUNK` × 16 B entries.
+    const ENCODED_LEN: usize = 8 + ENTRIES_PER_TABLE_CHUNK * PageTableEntry::ENCODED_LEN;
+
+    fn encode(&self) -> Vec<u8> {
+        assert!(self.entries.len() <= ENTRIES_PER_TABLE_CHUNK);
+        let mut out = vec![0u8; Self::ENCODED_LEN];
+        out[..3].copy_from_slice(&Self::MAGIC);
+        out[3] = Self::VERSION;
+        out[4..8].copy_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        for (i, entry) in self.entries.iter().enumerate() {
+            out[8 + i * 16..8 + (i + 1) * 16].copy_from_slice(&entry.to_array());
+        }
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        assert!(
+            bytes.len() >= Self::ENCODED_LEN && bytes[..3] == Self::MAGIC,
+            "PageTableChunk: bad magic/width"
+        );
+        assert_eq!(bytes[3], Self::VERSION, "PageTableChunk: unknown version");
+        let len = u32::from_le_bytes(bytes[4..8].try_into().expect("len")) as usize;
+        assert!(
+            len <= ENTRIES_PER_TABLE_CHUNK,
+            "PageTableChunk: entry count {len} exceeds chunk capacity"
+        );
+        let entries = bytes[8..8 + len * PageTableEntry::ENCODED_LEN]
+            .as_chunks::<{ PageTableEntry::ENCODED_LEN }>()
+            .0
+            .iter()
+            .map(|raw| PageTableEntry::from_array(raw))
+            .collect();
+        Self { entries }
+    }
 }
 
 /// One frozen rebuild candidate: a live row's native stored bytes plus its row-meta aux (the `I8`
@@ -763,8 +1024,8 @@ impl StableMapValue for PartitionHead {
 /// `Training` even though dual-write mutations keep mutating live rows mid-rebuild.
 ///
 /// This is a transient heap value and the fixed-width row format of the durable rebuild-pool
-/// region (`facade/stable/rebuild_pool.rs`); it is **not** part of any Candid state — the durable
-/// lifecycle record carries only a `pool_len` scalar.
+/// region (`facade/stable/rebuild_pool.rs`); it is **not** part of the durable lifecycle record —
+/// that record carries only a `pool_len` scalar.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RebuildCandidate {
     /// The row's stored vector bytes (pad-stride wide, trailing pad zeroed), verbatim from the
@@ -783,7 +1044,7 @@ pub struct RebuildCandidate {
 /// carries only the `pool_len` scalar — then `Training` refines `nlist` canonical-f32 centroids
 /// from that pool with deterministic k-means-lite before they are written to `IVF_CENTROIDS` on
 /// the transition to `Building` (ADR 0031 Slice 8). The pool rows and the `Training` centroid work
-/// area never enter this Candid value; every step reads only the rows it needs from the pool
+/// area never enter this durable record; every step reads only the rows it needs from the pool
 /// region. `Cleaning`/`Aborting` carry the `nlist` they must tear down because `publish`
 /// overwrites `def.nlist`; their key teardown is a `(index_id, version)` prefix range deletion, so
 /// they need no shape fields.
@@ -798,7 +1059,13 @@ pub struct RebuildCandidate {
 /// that write or publish shadow **pages** (`Building`/`ReadyToPublish`) additionally carry
 /// `code_tier`, because the code tier changes the shadow generation's row geometry while the
 /// training phases touch only original-tier pool rows.
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+///
+/// **Durable row codec (Phase-0 Slice 7).** The row is a versioned custom binary format (see
+/// [`VectorRebuildStateRecord::decode_rebuild_state`]), not Candid: the ingest hot path decodes this
+/// record once per op while a rebuild row exists (`rebuild_mutation_mode`), and Candid's
+/// self-describing type table for this wide enum made that decode cost ~425K instructions per op.
+/// Unknown magic/version/tag fails closed; there is no migration reader (fresh install).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum VectorRebuildStateRecord {
     #[default]
     Idle,
@@ -897,15 +1164,513 @@ impl Storable for VectorRebuildStateRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode VectorRebuildStateRecord"))
+        Cow::Owned(self.encode_rebuild_state())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode VectorRebuildStateRecord")
+        self.encode_rebuild_state()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), VectorRebuildStateRecord).expect("decode VectorRebuildStateRecord")
+        Self::decode_rebuild_state(bytes.as_ref()).expect("decode VectorRebuildStateRecord")
+    }
+}
+
+/// Fail-closed decode errors for the [`VectorRebuildStateRecord`] binary codec.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RebuildStateCodecError {
+    /// Leading magic byte is not the rebuild-state codec marker.
+    Magic,
+    /// Unsupported format version (fail-closed; fresh install, never migrated).
+    Version,
+    /// Unknown record variant tag or cursor scope tag.
+    Tag,
+    /// Buffer ended before the record was complete.
+    UnexpectedEof,
+    /// Bytes remain after a complete record.
+    TrailingBytes,
+    /// A flag byte was not 0/1, or the `Failed` reason was not UTF-8.
+    Payload,
+}
+
+/// Cursor scope tags, following [`SubjectScanScope`] declaration order.
+const CURSOR_SCOPE_DETACH: u8 = 0;
+const CURSOR_SCOPE_SAMPLING: u8 = 1;
+const CURSOR_SCOPE_BUILDING: u8 = 2;
+const CURSOR_SCOPE_CLEANING: u8 = 3;
+const CURSOR_SCOPE_ABORTING: u8 = 4;
+
+fn put_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_flag(out: &mut Vec<u8>, value: bool) {
+    out.push(u8::from(value));
+}
+
+fn put_blob(out: &mut Vec<u8>, bytes: &[u8]) {
+    let len = u32::try_from(bytes.len()).expect("blob length fits u32");
+    put_u32(out, len);
+    out.extend_from_slice(bytes);
+}
+
+/// Encodes the scope-bound cursor envelope structurally. The LHM owner bytes stay opaque here —
+/// they are validated by `ScanCursor::decode` when the consumer resumes, exactly as with Candid.
+fn put_cursor(out: &mut Vec<u8>, cursor: &SubjectScanCursor) {
+    out.push(cursor.version);
+    match &cursor.scope {
+        SubjectScanScope::Detach { shard_id } => {
+            out.push(CURSOR_SCOPE_DETACH);
+            put_u32(out, *shard_id);
+        }
+        SubjectScanScope::Sampling {
+            index_id,
+            target_index_version,
+        } => {
+            out.push(CURSOR_SCOPE_SAMPLING);
+            put_u32(out, *index_id);
+            put_u64(out, *target_index_version);
+        }
+        SubjectScanScope::Building {
+            index_id,
+            target_index_version,
+        } => {
+            out.push(CURSOR_SCOPE_BUILDING);
+            put_u32(out, *index_id);
+            put_u64(out, *target_index_version);
+        }
+        SubjectScanScope::Cleaning {
+            index_id,
+            target_index_version,
+        } => {
+            out.push(CURSOR_SCOPE_CLEANING);
+            put_u32(out, *index_id);
+            put_u64(out, *target_index_version);
+        }
+        SubjectScanScope::Aborting {
+            index_id,
+            target_index_version,
+        } => {
+            out.push(CURSOR_SCOPE_ABORTING);
+            put_u32(out, *index_id);
+            put_u64(out, *target_index_version);
+        }
+    }
+    put_blob(out, &cursor.cursor);
+    put_flag(out, cursor.done);
+}
+
+/// Straight-line little-endian reader over one encoded rebuild-state row. Every short read,
+/// invalid flag, or leftover byte fails closed instead of being guessed away.
+struct RebuildStateReader<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> RebuildStateReader<'a> {
+    fn new(src: &'a [u8]) -> Self {
+        Self { src, pos: 0 }
+    }
+
+    fn take(&mut self, len: usize) -> Result<&'a [u8], RebuildStateCodecError> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .filter(|&end| end <= self.src.len())
+            .ok_or(RebuildStateCodecError::UnexpectedEof)?;
+        let slice = &self.src[self.pos..end];
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn le<const N: usize>(&mut self) -> Result<[u8; N], RebuildStateCodecError> {
+        let mut bytes = [0u8; N];
+        bytes.copy_from_slice(self.take(N)?);
+        Ok(bytes)
+    }
+
+    fn u8(&mut self) -> Result<u8, RebuildStateCodecError> {
+        Ok(self.le::<1>()?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, RebuildStateCodecError> {
+        Ok(u32::from_le_bytes(self.le()?))
+    }
+
+    fn u64(&mut self) -> Result<u64, RebuildStateCodecError> {
+        Ok(u64::from_le_bytes(self.le()?))
+    }
+
+    fn flag(&mut self) -> Result<bool, RebuildStateCodecError> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(RebuildStateCodecError::Payload),
+        }
+    }
+
+    fn blob(&mut self) -> Result<&'a [u8], RebuildStateCodecError> {
+        let len = self.u32()? as usize;
+        self.take(len)
+    }
+
+    fn opt_blob(&mut self) -> Result<Option<Vec<u8>>, RebuildStateCodecError> {
+        if self.flag()? {
+            Ok(Some(self.blob()?.to_vec()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn opt_cursor(&mut self) -> Result<Option<SubjectScanCursor>, RebuildStateCodecError> {
+        if !self.flag()? {
+            return Ok(None);
+        }
+        let version = self.u8()?;
+        if version != SubjectScanCursor::VERSION {
+            return Err(RebuildStateCodecError::Version);
+        }
+        let scope = match self.u8()? {
+            CURSOR_SCOPE_DETACH => SubjectScanScope::Detach {
+                shard_id: self.u32()?,
+            },
+            CURSOR_SCOPE_SAMPLING => SubjectScanScope::Sampling {
+                index_id: self.u32()?,
+                target_index_version: self.u64()?,
+            },
+            CURSOR_SCOPE_BUILDING => SubjectScanScope::Building {
+                index_id: self.u32()?,
+                target_index_version: self.u64()?,
+            },
+            CURSOR_SCOPE_CLEANING => SubjectScanScope::Cleaning {
+                index_id: self.u32()?,
+                target_index_version: self.u64()?,
+            },
+            CURSOR_SCOPE_ABORTING => SubjectScanScope::Aborting {
+                index_id: self.u32()?,
+                target_index_version: self.u64()?,
+            },
+            _ => return Err(RebuildStateCodecError::Tag),
+        };
+        let cursor = self.blob()?.to_vec();
+        let done = self.flag()?;
+        Ok(Some(SubjectScanCursor {
+            version,
+            scope,
+            cursor,
+            done,
+        }))
+    }
+
+    fn finish(&self) -> Result<(), RebuildStateCodecError> {
+        if self.pos == self.src.len() {
+            Ok(())
+        } else {
+            Err(RebuildStateCodecError::TrailingBytes)
+        }
+    }
+}
+
+impl VectorRebuildStateRecord {
+    const CODEC_MAGIC: u8 = b'R';
+    const CODEC_VERSION: u8 = 1;
+
+    // Variant tags follow enum declaration order.
+    const TAG_IDLE: u8 = 0;
+    const TAG_SAMPLING: u8 = 1;
+    const TAG_TRAINING: u8 = 2;
+    const TAG_TRAIN_COARSE: u8 = 3;
+    const TAG_TRAIN_FINE: u8 = 4;
+    const TAG_BUILDING: u8 = 5;
+    const TAG_READY_TO_PUBLISH: u8 = 6;
+    const TAG_CLEANING: u8 = 7;
+    const TAG_ABORTING: u8 = 8;
+    const TAG_FAILED: u8 = 9;
+
+    /// Durable row layout (`VECTOR_REBUILD_STATE`, MemoryId 12), Phase-0 Slice 7:
+    ///
+    /// ```text
+    /// [magic b'R'][format version u8 = 1][variant tag u8][variant payload…]
+    /// ```
+    ///
+    /// Variant payload fields are written in declaration order as fixed-width little-endian
+    /// scalars; `Option<_>` and `bool` are 0/1 flag bytes; variable parts (`Vec<u8>`, `String`)
+    /// are u32-length-prefixed byte strings. The embedded `SubjectScanCursor` re-encodes
+    /// structurally (version + scope tag + fixed-width scope fields + length-prefixed opaque LHM
+    /// owner bytes + done flag). Unknown magic/version/tags, truncation, trailing bytes, non-0/1
+    /// flags, or non-UTF-8 reasons fail closed. Candid was replaced because its self-describing
+    /// type table (~500B per ~15B payload) taxed every hot-path op read ~425K instructions while a
+    /// rebuild row exists (see design/index/vector-index.md design principle 5); fresh install,
+    /// no migration reader.
+    fn encode_rebuild_state(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(48);
+        out.push(Self::CODEC_MAGIC);
+        out.push(Self::CODEC_VERSION);
+        match self {
+            Self::Idle => out.push(Self::TAG_IDLE),
+            Self::Sampling {
+                target_index_version,
+                nlist,
+                sample_limit,
+                cursor,
+                subjects_scanned,
+                pool_len,
+                levels,
+                nlist_fine,
+            } => {
+                out.push(Self::TAG_SAMPLING);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *nlist);
+                put_u32(&mut out, *sample_limit);
+                put_flag(&mut out, cursor.is_some());
+                if let Some(cursor) = cursor {
+                    put_cursor(&mut out, cursor);
+                }
+                put_u64(&mut out, *subjects_scanned);
+                put_u32(&mut out, *pool_len);
+                out.push(*levels);
+                put_u32(&mut out, *nlist_fine);
+            }
+            Self::Training {
+                target_index_version,
+                nlist,
+                sample_limit,
+                iteration,
+                pool_len,
+                levels,
+                nlist_fine,
+            } => {
+                out.push(Self::TAG_TRAINING);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *nlist);
+                put_u32(&mut out, *sample_limit);
+                put_u32(&mut out, *iteration);
+                put_u32(&mut out, *pool_len);
+                out.push(*levels);
+                put_u32(&mut out, *nlist_fine);
+            }
+            Self::TrainCoarse {
+                target_index_version,
+                nlist,
+                nlist_fine,
+                sample_limit,
+                iteration,
+                pool_len,
+            } => {
+                out.push(Self::TAG_TRAIN_COARSE);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *nlist);
+                put_u32(&mut out, *nlist_fine);
+                put_u32(&mut out, *sample_limit);
+                put_u32(&mut out, *iteration);
+                put_u32(&mut out, *pool_len);
+            }
+            Self::TrainFine {
+                target_index_version,
+                nlist,
+                nlist_fine,
+                sample_limit,
+                coarse_cursor,
+                iteration,
+                pool_len,
+            } => {
+                out.push(Self::TAG_TRAIN_FINE);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *nlist);
+                put_u32(&mut out, *nlist_fine);
+                put_u32(&mut out, *sample_limit);
+                put_u32(&mut out, *coarse_cursor);
+                put_u32(&mut out, *iteration);
+                put_u32(&mut out, *pool_len);
+            }
+            Self::Building {
+                target_index_version,
+                nlist,
+                cursor,
+                subjects_processed,
+                levels,
+                nlist_fine,
+                code_tier,
+            } => {
+                out.push(Self::TAG_BUILDING);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *nlist);
+                put_flag(&mut out, cursor.is_some());
+                if let Some(cursor) = cursor {
+                    put_cursor(&mut out, cursor);
+                }
+                put_u64(&mut out, *subjects_processed);
+                out.push(*levels);
+                put_u32(&mut out, *nlist_fine);
+                put_flag(&mut out, *code_tier);
+            }
+            Self::ReadyToPublish {
+                target_index_version,
+                nlist,
+                levels,
+                nlist_fine,
+                code_tier,
+            } => {
+                out.push(Self::TAG_READY_TO_PUBLISH);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *nlist);
+                out.push(*levels);
+                put_u32(&mut out, *nlist_fine);
+                put_flag(&mut out, *code_tier);
+            }
+            Self::Cleaning {
+                old_version,
+                old_nlist,
+                old_levels,
+                old_nlist_fine,
+                target_index_version,
+                subject_cursor,
+                page_cursor,
+            } => {
+                out.push(Self::TAG_CLEANING);
+                put_u64(&mut out, *old_version);
+                put_u32(&mut out, *old_nlist);
+                out.push(*old_levels);
+                put_u32(&mut out, *old_nlist_fine);
+                put_u64(&mut out, *target_index_version);
+                put_flag(&mut out, subject_cursor.is_some());
+                if let Some(cursor) = subject_cursor {
+                    put_cursor(&mut out, cursor);
+                }
+                put_flag(&mut out, page_cursor.is_some());
+                if let Some(page_key) = page_cursor {
+                    put_blob(&mut out, page_key);
+                }
+            }
+            Self::Aborting {
+                target_index_version,
+                target_nlist,
+                target_levels,
+                target_nlist_fine,
+                subject_cursor,
+                page_cursor,
+            } => {
+                out.push(Self::TAG_ABORTING);
+                put_u64(&mut out, *target_index_version);
+                put_u32(&mut out, *target_nlist);
+                out.push(*target_levels);
+                put_u32(&mut out, *target_nlist_fine);
+                put_flag(&mut out, subject_cursor.is_some());
+                if let Some(cursor) = subject_cursor {
+                    put_cursor(&mut out, cursor);
+                }
+                put_flag(&mut out, page_cursor.is_some());
+                if let Some(page_key) = page_cursor {
+                    put_blob(&mut out, page_key);
+                }
+            }
+            Self::Failed {
+                target_index_version,
+                reason,
+            } => {
+                out.push(Self::TAG_FAILED);
+                put_u64(&mut out, *target_index_version);
+                put_blob(&mut out, reason.as_bytes());
+            }
+        }
+        out
+    }
+
+    /// Decodes a durable rebuild-state row, failing closed on any unknown or malformed input
+    /// (see the layout contract on [`Self::encode_rebuild_state`]).
+    fn decode_rebuild_state(bytes: &[u8]) -> Result<Self, RebuildStateCodecError> {
+        let mut reader = RebuildStateReader::new(bytes);
+        if reader.u8()? != Self::CODEC_MAGIC {
+            return Err(RebuildStateCodecError::Magic);
+        }
+        if reader.u8()? != Self::CODEC_VERSION {
+            return Err(RebuildStateCodecError::Version);
+        }
+        let state = match reader.u8()? {
+            Self::TAG_IDLE => Self::Idle,
+            Self::TAG_SAMPLING => Self::Sampling {
+                target_index_version: reader.u64()?,
+                nlist: reader.u32()?,
+                sample_limit: reader.u32()?,
+                cursor: reader.opt_cursor()?,
+                subjects_scanned: reader.u64()?,
+                pool_len: reader.u32()?,
+                levels: reader.u8()?,
+                nlist_fine: reader.u32()?,
+            },
+            Self::TAG_TRAINING => Self::Training {
+                target_index_version: reader.u64()?,
+                nlist: reader.u32()?,
+                sample_limit: reader.u32()?,
+                iteration: reader.u32()?,
+                pool_len: reader.u32()?,
+                levels: reader.u8()?,
+                nlist_fine: reader.u32()?,
+            },
+            Self::TAG_TRAIN_COARSE => Self::TrainCoarse {
+                target_index_version: reader.u64()?,
+                nlist: reader.u32()?,
+                nlist_fine: reader.u32()?,
+                sample_limit: reader.u32()?,
+                iteration: reader.u32()?,
+                pool_len: reader.u32()?,
+            },
+            Self::TAG_TRAIN_FINE => Self::TrainFine {
+                target_index_version: reader.u64()?,
+                nlist: reader.u32()?,
+                nlist_fine: reader.u32()?,
+                sample_limit: reader.u32()?,
+                coarse_cursor: reader.u32()?,
+                iteration: reader.u32()?,
+                pool_len: reader.u32()?,
+            },
+            Self::TAG_BUILDING => Self::Building {
+                target_index_version: reader.u64()?,
+                nlist: reader.u32()?,
+                cursor: reader.opt_cursor()?,
+                subjects_processed: reader.u64()?,
+                levels: reader.u8()?,
+                nlist_fine: reader.u32()?,
+                code_tier: reader.flag()?,
+            },
+            Self::TAG_READY_TO_PUBLISH => Self::ReadyToPublish {
+                target_index_version: reader.u64()?,
+                nlist: reader.u32()?,
+                levels: reader.u8()?,
+                nlist_fine: reader.u32()?,
+                code_tier: reader.flag()?,
+            },
+            Self::TAG_CLEANING => Self::Cleaning {
+                old_version: reader.u64()?,
+                old_nlist: reader.u32()?,
+                old_levels: reader.u8()?,
+                old_nlist_fine: reader.u32()?,
+                target_index_version: reader.u64()?,
+                subject_cursor: reader.opt_cursor()?,
+                page_cursor: reader.opt_blob()?,
+            },
+            Self::TAG_ABORTING => Self::Aborting {
+                target_index_version: reader.u64()?,
+                target_nlist: reader.u32()?,
+                target_levels: reader.u8()?,
+                target_nlist_fine: reader.u32()?,
+                subject_cursor: reader.opt_cursor()?,
+                page_cursor: reader.opt_blob()?,
+            },
+            Self::TAG_FAILED => Self::Failed {
+                target_index_version: reader.u64()?,
+                reason: std::str::from_utf8(reader.blob()?)
+                    .map_err(|_| RebuildStateCodecError::Payload)?
+                    .to_string(),
+            },
+            _ => return Err(RebuildStateCodecError::Tag),
+        };
+        reader.finish()?;
+        Ok(state)
     }
 }
 
@@ -1023,10 +1788,10 @@ impl From<ScanError> for SubjectScanCursorError {
 
 /// A pre-encoded [`VectorRebuildStateRecord`] stored verbatim in `VECTOR_REBUILD_STATE`.
 ///
-/// The bytes are exactly `VectorRebuildStateRecord::into_bytes()` (Candid), so the on-disk format is
-/// identical to storing the record directly. The wrapper lets the step persist share a single
-/// Candid encode with the store call (ADR 0031 Slice 7/8). `rebuild_state_of` decodes them back
-/// into a [`VectorRebuildStateRecord`].
+/// The bytes are exactly `VectorRebuildStateRecord::into_bytes()` (the versioned custom binary
+/// codec, not Candid), so the on-disk format is identical to storing the record directly. The
+/// wrapper lets the step persist share a single encode with the store call (ADR 0031 Slice 7/8).
+/// `rebuild_state_of` decodes them back into a [`VectorRebuildStateRecord`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRebuildState(pub Vec<u8>);
 
@@ -1049,10 +1814,12 @@ impl Storable for RawRebuildState {
 /// A pre-encoded [`VectorMaintenanceState`](gleaph_graph_kernel::vector_index::VectorMaintenanceState)
 /// stored verbatim in `VECTOR_MAINTENANCE_STATE` (ADR 0031 Slice 10).
 ///
-/// Mirrors [`RawRebuildState`]: the bytes are exactly the Candid encoding of the kernel
-/// `VectorMaintenanceState`, so the on-disk format is identical to storing the type directly while
-/// keeping the `Storable` impl local (the kernel type is foreign to this crate). The maintenance
-/// step encodes once and persists these bytes; `maintenance_state_of` decodes them back.
+/// Follows the same verbatim-bytes wrapper pattern as [`RawRebuildState`]: these bytes are exactly
+/// the Candid encoding of the kernel `VectorMaintenanceState`, so the on-disk format is identical to
+/// storing the type directly while keeping the `Storable` impl local (the kernel type is foreign to
+/// this crate). The maintenance step encodes once and persists these bytes; `maintenance_state_of`
+/// decodes them back. Unlike the rebuild-state row this type stays Candid — it is not read once per
+/// ingest op.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawMaintenanceState(pub Vec<u8>);
 
@@ -1087,16 +1854,27 @@ impl Storable for RawMaintenanceState {
 ///
 /// `pages_moved` is cumulative progress bookkeeping for the status surface only. The record is
 /// cleared (`Idle`) when finalize rewinds `occupied_tail` once.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VectorSlabCompactionState {
-    #[default]
-    Idle,
+    Idle {
+        /// Intrusive LIFO free-block chain anchor (Slice 8): each free block begins with a
+        /// `u32` next-pointer in its own first bytes; `None` = no reusable holes below the tail.
+        free_head: Option<u32>,
+    },
     Compacting {
         write_cursor: u64,
         range_end: u64,
         scan_cursor: Option<PageKey>,
         pages_moved: u64,
+        /// Same anchor, carried through compaction so finalize can sanitize stale nodes.
+        free_head: Option<u32>,
     },
+}
+
+impl Default for VectorSlabCompactionState {
+    fn default() -> Self {
+        Self::Idle { free_head: None }
+    }
 }
 
 impl Storable for VectorSlabCompactionState {
@@ -1546,6 +2324,57 @@ mod tests {
                 target_index_version: 2,
                 reason: "insufficient live vectors".to_string(),
             },
+            // Extended codec coverage (Phase-0 Slice 7): absent/present cursor combinations,
+            // done-marker cursors with empty owner bytes, and boundary scalar widths.
+            VectorRebuildStateRecord::Sampling {
+                target_index_version: u64::MAX,
+                nlist: 65_536,
+                sample_limit: u32::MAX,
+                cursor: None,
+                subjects_scanned: u64::MAX,
+                pool_len: u32::MAX,
+                levels: LEVELS_TWO,
+                nlist_fine: 16,
+            },
+            VectorRebuildStateRecord::Building {
+                target_index_version: 9,
+                nlist: 64,
+                cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Building {
+                    index_id: 3,
+                    target_index_version: 9,
+                })),
+                subjects_processed: u64::MAX,
+                levels: LEVELS_FLAT,
+                nlist_fine: 1,
+                code_tier: false,
+            },
+            VectorRebuildStateRecord::Cleaning {
+                old_version: u64::MAX,
+                old_nlist: 256,
+                old_levels: LEVELS_TWO,
+                old_nlist_fine: 16,
+                target_index_version: 7,
+                subject_cursor: Some(SubjectScanCursor::done(SubjectScanScope::Cleaning {
+                    index_id: 3,
+                    target_index_version: 7,
+                })),
+                page_cursor: Some(vec![0xAB; 24]),
+            },
+            VectorRebuildStateRecord::Aborting {
+                target_index_version: 11,
+                target_nlist: 16,
+                target_levels: LEVELS_FLAT,
+                target_nlist_fine: 1,
+                subject_cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Aborting {
+                    index_id: 3,
+                    target_index_version: 11,
+                })),
+                page_cursor: None,
+            },
+            VectorRebuildStateRecord::Failed {
+                target_index_version: 13,
+                reason: String::new(),
+            },
         ] {
             assert_eq!(
                 VectorRebuildStateRecord::from_bytes(state.to_bytes()),
@@ -1555,20 +2384,179 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_state_codec_pins_v1_layout_bytes() {
+        // Idle is exactly header (magic + format version) + variant tag.
+        assert_eq!(
+            VectorRebuildStateRecord::Idle.to_bytes().as_ref(),
+            &[b'R', 1, VectorRebuildStateRecord::TAG_IDLE]
+        );
+
+        // Field order/width pin for one multi-scalar variant: declaration order, little-endian.
+        let training = VectorRebuildStateRecord::Training {
+            target_index_version: 2,
+            nlist: 8,
+            sample_limit: 1024,
+            iteration: 3,
+            pool_len: 5,
+            levels: LEVELS_FLAT,
+            nlist_fine: 1,
+        };
+        let mut expected = vec![b'R', 1, VectorRebuildStateRecord::TAG_TRAINING];
+        expected.extend_from_slice(&2u64.to_le_bytes());
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&1024u32.to_le_bytes());
+        expected.extend_from_slice(&3u32.to_le_bytes());
+        expected.extend_from_slice(&5u32.to_le_bytes());
+        expected.push(LEVELS_FLAT);
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        assert_eq!(training.to_bytes().as_ref(), &expected);
+    }
+
+    #[test]
+    fn rebuild_state_codec_fails_closed_on_unknown_or_malformed_rows() {
+        let decode_err =
+            |bytes: &[u8]| VectorRebuildStateRecord::decode_rebuild_state(bytes).unwrap_err();
+
+        // Unknown magic / format version / variant tag.
+        assert_eq!(decode_err(&[b'X', 1, 0]), RebuildStateCodecError::Magic);
+        assert_eq!(decode_err(&[b'R', 2, 0]), RebuildStateCodecError::Version);
+        assert_eq!(decode_err(&[b'R', 1, 99]), RebuildStateCodecError::Tag);
+
+        // Truncation of a complete row fails closed.
+        let training = VectorRebuildStateRecord::Training {
+            target_index_version: 2,
+            nlist: 8,
+            sample_limit: 1024,
+            iteration: 3,
+            pool_len: 5,
+            levels: LEVELS_FLAT,
+            nlist_fine: 1,
+        }
+        .to_bytes()
+        .to_vec();
+        assert_eq!(
+            decode_err(&training[..training.len() - 1]),
+            RebuildStateCodecError::UnexpectedEof
+        );
+
+        // Trailing bytes after a complete record fail closed.
+        let mut trailing = VectorRebuildStateRecord::Idle.to_bytes().to_vec();
+        trailing.push(7);
+        assert_eq!(decode_err(&trailing), RebuildStateCodecError::TrailingBytes);
+
+        // Non-0/1 flag byte in a bool field (`ReadyToPublish.code_tier`).
+        let mut bad_flag = vec![b'R', 1, VectorRebuildStateRecord::TAG_READY_TO_PUBLISH];
+        bad_flag.extend_from_slice(&1u64.to_le_bytes());
+        bad_flag.extend_from_slice(&1u32.to_le_bytes());
+        bad_flag.push(LEVELS_TWO);
+        bad_flag.extend_from_slice(&1u32.to_le_bytes());
+        bad_flag.push(2);
+        assert_eq!(decode_err(&bad_flag), RebuildStateCodecError::Payload);
+
+        // Non-UTF-8 failure reason.
+        let mut bad_reason = vec![b'R', 1, VectorRebuildStateRecord::TAG_FAILED];
+        bad_reason.extend_from_slice(&1u64.to_le_bytes());
+        bad_reason.extend_from_slice(&2u32.to_le_bytes());
+        bad_reason.push(0xFF);
+        bad_reason.push(0xFE);
+        assert_eq!(decode_err(&bad_reason), RebuildStateCodecError::Payload);
+
+        // Embedded cursor envelope: unsupported envelope version and unknown scope tag.
+        let mut sampling_head = vec![b'R', 1, VectorRebuildStateRecord::TAG_SAMPLING];
+        sampling_head.extend_from_slice(&1u64.to_le_bytes());
+        sampling_head.extend_from_slice(&8u32.to_le_bytes());
+        sampling_head.extend_from_slice(&16u32.to_le_bytes());
+        sampling_head.push(1); // cursor present
+
+        let mut bad_cursor_version = sampling_head.clone();
+        bad_cursor_version.push(3); // not SubjectScanCursor::VERSION
+        assert_eq!(
+            decode_err(&bad_cursor_version),
+            RebuildStateCodecError::Version
+        );
+
+        let mut bad_scope_tag = sampling_head;
+        bad_scope_tag.push(SubjectScanCursor::VERSION);
+        bad_scope_tag.push(9); // not a SubjectScanScope tag
+        assert_eq!(decode_err(&bad_scope_tag), RebuildStateCodecError::Tag);
+    }
+
+    #[test]
+    fn rebuild_state_codec_hot_path_rows_stay_bounded() {
+        // Native unit tests cannot count wasm instructions; the deterministic cost proxy is the
+        // encoded size. Decoding is straight-line parsing over these few hundred bytes with no
+        // self-describing type table — orders of magnitude below the ≤5K-instruction budget for
+        // `rebuild_state_decode`. The live instruction figures are reported by the focused
+        // canbench scopes (`rebuild_state_get` / `rebuild_state_decode`) in Phase-0 verification.
+        //
+        // Bound composition: ~30B fixed scalars/header, one embedded cursor whose dominant part is
+        // the opaque LHM owner bytes (~88B today), and a page-key allowance. The Candid row this
+        // codec replaced was 527B for a ~15B payload.
+        const HOT_PATH_ROW_BOUND: usize = 256;
+
+        assert_eq!(VectorRebuildStateRecord::Idle.to_bytes().len(), 3);
+        let hot_path_rows = [
+            // The variants decoded once per ingest op (`rebuild_mutation_mode`): Building /
+            // ReadyToPublish / Cleaning. Their only variable parts are system-owned cursors and
+            // the page-key bytes, so this bound is data-independent.
+            VectorRebuildStateRecord::Building {
+                target_index_version: u64::MAX,
+                nlist: u32::MAX,
+                cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Building {
+                    index_id: u32::MAX,
+                    target_index_version: u64::MAX,
+                })),
+                subjects_processed: u64::MAX,
+                levels: LEVELS_TWO,
+                nlist_fine: u32::MAX,
+                code_tier: true,
+            },
+            VectorRebuildStateRecord::ReadyToPublish {
+                target_index_version: u64::MAX,
+                nlist: u32::MAX,
+                levels: LEVELS_TWO,
+                nlist_fine: u32::MAX,
+                code_tier: true,
+            },
+            VectorRebuildStateRecord::Cleaning {
+                old_version: u64::MAX,
+                old_nlist: u32::MAX,
+                old_levels: LEVELS_TWO,
+                old_nlist_fine: u32::MAX,
+                target_index_version: u64::MAX,
+                subject_cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Cleaning {
+                    index_id: u32::MAX,
+                    target_index_version: u64::MAX,
+                })),
+                page_cursor: Some(vec![0u8; 64]),
+            },
+        ];
+        for state in hot_path_rows {
+            assert!(
+                state.to_bytes().len() <= HOT_PATH_ROW_BOUND,
+                "hot-path rebuild-state row grew beyond the codec bound: {state:?}"
+            );
+        }
+    }
+
+    #[test]
     fn slab_compaction_state_record_storable_roundtrip() {
         for state in [
-            VectorSlabCompactionState::Idle,
+            VectorSlabCompactionState::Idle { free_head: Some(7) },
+            VectorSlabCompactionState::Idle { free_head: None },
             VectorSlabCompactionState::Compacting {
                 write_cursor: 0xdead_beef_cafe_f00d,
                 range_end: 0x0123_4567_89ab_cdef,
                 scan_cursor: Some(PageKey::new(7, 3, 2, 41)),
                 pages_moved: 19,
+                free_head: None,
             },
             VectorSlabCompactionState::Compacting {
                 write_cursor: 32,
                 range_end: 32,
                 scan_cursor: None,
                 pages_moved: 0,
+                free_head: Some(3),
             },
         ] {
             assert_eq!(

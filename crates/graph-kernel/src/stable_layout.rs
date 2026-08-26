@@ -1679,23 +1679,27 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "VECTOR_PARTITION_HEADS",
             9,
             StableMemoryClass::Derived,
-            "partition heads",
-            "(index_id, index_version, partition_id) → head { mutable_page, \
-             page_count, live_len, next_page_id }: durable page allocator per partition/version",
+            "partition heads + page tables",
+            "(index_id, index_version, level, partition_id) → PartitionHeadRecord { head | \
+             sealed-page-table chunk | slab free-list }: per-partition page-chain state for the \
+             Slice 8 arithmetically-addressed slab (head mirrors the mutable tail page; sealed \
+             pages carry {seq, row_count, live_count, block_bound}); tombstoned rows are derived \
+             as row_count − live_count",
             RebuildPath::Named("admin_start_vector_rebuild"),
             ProductionCompat::Unaudited,
         ),
         region(
             "VECTOR_PAGE_META",
             10,
-            StableMemoryClass::Derived,
-            "vector page directory",
-            "(index_id, index_version, partition_id, page_id) → VectorPageMeta { slab_offset, \
-             row_count, live_count }: page directory for the ADR 0064 §7 two-table slab page store \
-             (companion to VECTOR_ROW_SLAB id 13); page geometry is owned by VECTOR_INDEX_DEFS and \
-             tombstoned rows are derived as row_count − live_count. Fresh layout cutover (format \
-             version 1, breaking): no migration or compatibility reader",
-            RebuildPath::Named("admin_start_vector_rebuild"),
+            StableMemoryClass::Unallocated,
+            "retired vector page directory",
+            "Unallocated: the former ADR 0032 page directory (VectorPageMeta per PageKey). Phase-0 \
+             Slice 8 addresses slab pages arithmetically as uniform blocks inside VECTOR_ROW_SLAB \
+             (id 13) and moved per-page state into VECTOR_PARTITION_HEADS (id 9: heads + \
+             sealed-page-table chunks + slab free-list). Kept as an explicit hole so MemoryIds \
+             9/12/13/14 stay stable without a repack. Fresh layout cutover (format version 1, \
+             breaking): no migration or compatibility reader",
+            RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
         region(
@@ -2296,7 +2300,7 @@ mod tests {
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 19);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 18);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 17);
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(18));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
@@ -2320,14 +2324,25 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[7].symbol,
             "VECTOR_SUBJECT_TO_ID"
         );
-        // ADR 0032: MemoryId 10 reused as the slab page directory (was VECTOR_PAGE).
+        // ADR 0064 §7: MemoryId 8 is an explicit unallocated hole (retired VECTOR_ID_TO_SLOT).
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[8].symbol,
+            "VECTOR_ID_TO_SLOT"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[8].class,
+            StableMemoryClass::Unallocated
+        );
+        // Phase-0 Slice 8: MemoryId 10 is an explicit unallocated hole — the former ADR 0032 page
+        // directory; slab pages are addressed arithmetically inside VECTOR_ROW_SLAB (id 13) and
+        // per-page state lives in VECTOR_PARTITION_HEADS (id 9).
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[10].symbol,
             "VECTOR_PAGE_META"
         );
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[10].class,
-            StableMemoryClass::Derived
+            StableMemoryClass::Unallocated
         );
         // ADR 0064 §7: MemoryId 8 is an explicit unallocated hole (retired VECTOR_ID_TO_SLOT).
         assert_eq!(

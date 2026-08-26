@@ -9,8 +9,9 @@
 //!
 //! **Snapshot range.** `admin_start_vector_slab_compact` records
 //! `[SLAB_HEADER_SIZE, occupied_tail)` as the source range and fails if a compaction is already
-//! active. Pages appended afterwards land at/above `range_end` — outside the snapshot — and are
-//! never moved; metas dropped mid-compaction by GC/cleanup are skipped by the read cursor.
+//! active. With Slice 8 free-list reuse, pages appended after compaction start may land inside
+//! the snapshot range (in a hole); they are moved like any other live page and their owners'
+//! references updated. Records dropped mid-compaction by teardown are skipped by the scan.
 //!
 //! **Durability.** The whole driver state lives in one record (`VECTOR_SLAB_COMPACTION_STATE`,
 //! MemoryId 11) carrying `{write_cursor, range_end, scan_cursor, pages_moved}`, so an interrupted
@@ -23,7 +24,6 @@ use super::authorization::assert_router_caller;
 use super::{MAX_COMPACT_STEP_BYTES, MAX_COMPACT_STEP_PAGES};
 use crate::facade::stable::PAGE_STORE;
 use crate::facade::stable::VECTOR_SLAB_COMPACTION_STATE;
-use crate::facade::stable::page_store::live_def_resolver;
 use crate::records::VectorSlabCompactionState;
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -61,15 +61,19 @@ pub(crate) fn admin_start_vector_slab_compact(
     caller: Principal,
 ) -> Result<(), VectorCanisterError> {
     assert_router_caller(caller)?;
-    if !matches!(compaction_state(), VectorSlabCompactionState::Idle) {
-        return Err(VectorCanisterError::CompactionAlreadyActive);
-    }
+    let free_head = match compaction_state() {
+        VectorSlabCompactionState::Idle { free_head } => free_head,
+        VectorSlabCompactionState::Compacting { .. } => {
+            return Err(VectorCanisterError::CompactionAlreadyActive);
+        }
+    };
     let range_end = PAGE_STORE.with_borrow(|store| store.occupied_tail());
     put_compaction_state(VectorSlabCompactionState::Compacting {
         write_cursor: SLAB_HEADER_SIZE as u64,
         range_end,
         scan_cursor: None,
         pages_moved: 0,
+        free_head,
     });
     Ok(())
 }
@@ -93,6 +97,7 @@ pub(crate) fn admin_vector_slab_compact_step(
         range_end,
         scan_cursor,
         pages_moved,
+        ..
     } = compaction_state()
     else {
         return Err(VectorCanisterError::NoActiveCompaction);
@@ -105,13 +110,15 @@ pub(crate) fn admin_vector_slab_compact_step(
             scan_cursor,
             entry_budget,
             byte_budget,
-            &mut live_def_resolver(),
         )
     })?;
     let total_pages_moved = pages_moved + outcome.pages_moved;
+    // Re-read the free-block anchor afterwards: the step itself may have consumed destination
+    // blocks or registered reclaimed ones through the same record.
+    let free_head = crate::facade::stable::slab_free_anchor_get();
 
     if outcome.finalized {
-        put_compaction_state(VectorSlabCompactionState::Idle);
+        put_compaction_state(VectorSlabCompactionState::Idle { free_head });
         Ok(status_of(
             VectorSlabCompactionPhase::Idle,
             outcome.write_cursor,
@@ -124,6 +131,7 @@ pub(crate) fn admin_vector_slab_compact_step(
             range_end,
             scan_cursor: outcome.scan_cursor,
             pages_moved: total_pages_moved,
+            free_head,
         });
         Ok(status_of(
             VectorSlabCompactionPhase::Compacting,
@@ -141,7 +149,9 @@ pub(crate) fn admin_vector_slab_compact_status(
 ) -> Result<VectorSlabCompactionStatus, VectorCanisterError> {
     assert_router_caller(caller)?;
     match compaction_state() {
-        VectorSlabCompactionState::Idle => Ok(status_of(VectorSlabCompactionPhase::Idle, 0, 0, 0)),
+        VectorSlabCompactionState::Idle { .. } => {
+            Ok(status_of(VectorSlabCompactionPhase::Idle, 0, 0, 0))
+        }
         VectorSlabCompactionState::Compacting {
             write_cursor,
             range_end,

@@ -36,7 +36,7 @@ use super::{
     MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS, MAX_REBUILD_TRAINING_ITERATIONS,
 };
 use crate::facade::stable::definition_store;
-use crate::facade::stable::page_store::{PageScratch, live_def_resolver};
+use crate::facade::stable::page_store::PageScratch;
 use crate::facade::stable::rebuild_pool;
 use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::subject_store::{self, SubjectScanPage};
@@ -44,9 +44,9 @@ use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE,
 };
 use crate::records::{
-    FixedSubjectMapEntry, IvfCentroidMeta, LEVELS_FLAT, LEVELS_TWO, PageKey, PartitionKey,
-    RawRebuildState, RebuildCandidate, SlotRef, SubjectKey, SubjectScanCursor, SubjectScanScope,
-    VectorIndexDef, VectorRebuildStateRecord,
+    FixedSubjectMapEntry, IvfCentroidMeta, LEVELS_FLAT, LEVELS_TWO, PageKey, PartitionHeadRecord,
+    PartitionKey, RawRebuildState, RebuildCandidate, SlotRef, SubjectKey, SubjectScanCursor,
+    SubjectScanScope, VectorIndexDef, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -97,10 +97,10 @@ pub(super) fn partition_health_summary(
     let mut max_partition_live_rows = 0u64;
     VECTOR_PARTITION_HEADS.with_borrow(|heads| {
         for p in 0..nlist {
-            if let Some(head) = heads
+            let record = heads
                 .get(&PartitionKey::new(index_id, active, p))
-                .expect("partition head get")
-            {
+                .expect("partition head get");
+            if let Some(PartitionHeadRecord::Head(head)) = record {
                 partitions_examined += 1;
                 live_rows = live_rows.saturating_add(head.live_len);
                 page_count = page_count.saturating_add(head.page_count);
@@ -499,11 +499,12 @@ fn drop_version_pages(
 }
 
 /// Deletes the `0..nlist` partition heads and centroids of `(index_id, version)`. O(`nlist`),
-/// bounded by [`MAX_NLIST`]; called only once a version's pages are fully drained.
-/// Deletes the partition heads and centroids of `(index_id, version)` for **both key levels**
-/// (Slice 5): the level-0 coarse keys `0..nlist` of a two-level generation and every leaf key
-/// `0..leaves` (a flat generation's leaf count is its `nlist`). Called only once a version's
-/// pages are fully drained. The counts come from the teardown record's frozen shape, so a shape
+/// bounded by [`MAX_NLIST`]. Deletes the partition heads and centroids of `(index_id, version)`
+/// for **both key levels** (Slice 5): the level-0 coarse keys `0..nlist` of a two-level generation
+/// and every leaf key `0..leaves` (a flat generation's leaf count is its `nlist`). Since Slice 8,
+/// leaf heads are already removed by the page teardown (`drop_version_pages` drains whole
+/// partitions atomically), so leaf removals tolerate absence; coarse heads have no pages and are
+/// always removed here. The counts come from the teardown record's frozen shape, so a shape
 /// change between generations cannot strand keys.
 fn drop_version_heads_and_centroids(
     index_id: u32,
@@ -526,9 +527,8 @@ fn drop_version_heads_and_centroids(
             }
         }
         for p in 0..leaves {
-            heads
-                .remove(&PartitionKey::new(index_id, version, p))
-                .expect("partition head remove");
+            // Leaf heads are normally already gone (page teardown); tolerate absence.
+            let _ = heads.remove(&PartitionKey::new(index_id, version, p));
         }
     });
     IVF_CENTROIDS.with_borrow_mut(|centroids| {
@@ -2127,8 +2127,7 @@ pub(crate) fn admin_vector_slab_stats(
     index_id: Option<u32>,
 ) -> Result<VectorSlabStats, VectorCanisterError> {
     assert_router_caller(caller)?;
-    let mut def_of = live_def_resolver();
-    Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id, &mut def_of)))
+    Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id)))
 }
 
 /// IC-safe, cursor/budgeted variant of [`admin_vector_slab_stats`](Self::admin_vector_slab_stats)
@@ -2142,8 +2141,7 @@ pub(crate) fn admin_vector_slab_stats_step(
     index_id: Option<u32>,
 ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
     assert_router_caller(caller)?;
-    let mut def_of = live_def_resolver();
-    PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id, &mut def_of))
+    PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id))
 }
 
 /// Bounded page-meta tombstone-health step for the active index version (ADR 0031 Slice 9).
@@ -2221,16 +2219,13 @@ pub(crate) fn admin_publish_vector_rebuild(
     def.nlist = nlist;
     def.levels = levels;
     def.nlist_fine = nlist_fine;
-    // The code tier flips with the generation (Slice 6): the published def's frozen width and
-    // flag now describe the pages just built, so search routes through Stage A/B exactly when
-    // scanned rows carry code segments.
-    def.code_tier = code_tier;
-    def.code_stride_bytes = if code_tier {
-        VectorIndexDef::canonical_code_stride_bytes(def.dims)
-    } else {
-        0
-    };
-    definition_store::insert(index_id, def)
+    // The whole target shape flips with the generation (Slices 5/6/8): the code tier changes the
+    // frozen row width **and therefore `slots_per_page`**, so the published def must be derived
+    // through the `shape_def_for` SSOT — never by patching flags onto the base def. Appends
+    // derive their write layout from this def, so a stale capacity would corrupt every row.
+    let published = shape_def_for(&def, levels, nlist_fine, code_tier)?;
+    debug_assert_eq!(published.active_index_version, target_index_version);
+    definition_store::insert(index_id, published)
         .map(|_| ())
         .map_err(VectorCanisterError::from)?;
     // The active centroid set just changed generation; drop any warmed heap entry so search does

@@ -4,6 +4,19 @@ Date: 2026-06-25
 Status: **Implemented (2026-08-24, refined Alternative C) — umbrella redesign: [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
 Last revised: 2026-08-24 03:56:12 UTC +0000
 
+> **Implementation note (2026-08-26, Phase-0 Slice 7).** The durable `VectorRebuildStateRecord` row
+> (`VECTOR_REBUILD_STATE`, MemoryId 12) no longer uses Candid. The `Storable` is now a versioned
+> custom binary codec — `[magic b'R'][format version u8 = 1][variant tag][fixed-width LE scalars in
+> declaration order; 0/1 flag bytes for `Option`/`bool`; u32-length-prefixed variable parts;
+> structurally re-encoded scope-bound cursor envelope]` — that fails closed on unknown
+> magic/version/tags, truncation, trailing bytes, and malformed flags. Motivation (measured): the
+> wide 10-variant Candid enum shipped a ~500B self-describing type table per ~15B payload, so every
+> hot-path op read of an existing rebuild row paid ~425K instructions to decode
+> (`rebuild_mutation_mode` during Building/ReadyToPublish/Cleaning). Post-change the same decode
+> scope reports ~0.9K instructions and the partitioned upsert control benchmark improves ~53%. The
+> verbatim-bytes wrapper (`RawRebuildState`) and its single-encode persist property are unchanged;
+> fresh install required, no migration reader.
+
 > **Implementation note (2026-08-24).** The decision below rejected a dedicated pool region
 > (Alternative C) in favor of heap memoization (D), based on a probe against the pre-Slice-3 build.
 > Phase 0 of the vector-canister working notes later directed implementing the region instead:

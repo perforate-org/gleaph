@@ -1,7 +1,7 @@
 # Stable-memory inventory
 
 Last updated: 2026-08-22
-Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, ADR 0059 canonical-export scopes at 51, and the exact derived-index pending floor at 52, with reserved holes 35, 44–45, and 47–50 = 53 numbered regions, 0–52; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058/0059 schema-migration ledger at MemoryId 50 + ADR 0059 index-catalog epoch at MemoryId 51 + ADR 0059 physical-index allocator cell at MemoryId 20 + ADR 0065 vector-index allocator cell at MemoryId 52 + Router direct-ingestion outbox at MemoryId 53 = 54 regions, 0–53; graph-index: ADR 0059 physical-index build states (MemoryId 7) + touched subjects (MemoryId 8) = 9 regions, 0–8; vector-canister: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state + ADR 0064 per-shard watermarks, GC cursor, and deleted-subjects list + plan 0278 slab-compaction driver state reusing the retired reverse-map slot at MemoryId 11 + the ADR-0033-implementation rebuild pool region at MemoryId 18 = 18 allocated regions across 19 numbered slots, 0–18 (hole 8); provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8), internal storage-id counter (MemoryId 12) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 13 regions, 0–12)
+Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, ADR 0059 canonical-export scopes at 51, and the exact derived-index pending floor at 52, with reserved holes 35, 44–45, and 47–50 = 53 numbered regions, 0–52; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058/0059 schema-migration ledger at MemoryId 50 + ADR 0059 index-catalog epoch at MemoryId 51 + ADR 0059 physical-index allocator cell at MemoryId 20 + ADR 0065 vector-index allocator cell at MemoryId 52 + Router direct-ingestion outbox at MemoryId 53 = 54 regions, 0–53; graph-index: ADR 0059 physical-index build states (MemoryId 7) + touched subjects (MemoryId 8) = 9 regions, 0–8; vector-canister: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state + ADR 0064 per-shard watermarks, GC cursor, and deleted-subjects list + plan 0278 slab-compaction driver state reusing the retired reverse-map slot at MemoryId 11 + the ADR-0033-implementation rebuild pool region at MemoryId 18 = 17 allocated regions across 19 numbered slots, 0–18 (holes 8 and 10); provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8), internal storage-id counter (MemoryId 12) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 13 regions, 0–12)
 Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
 Plan 0171 update (2026-07-24 23:03:51 UTC +0000): the implemented mate owner is explicitly
@@ -424,8 +424,13 @@ positionally against `VECTOR_SUBJECT_TO_ID` (MemoryId 7); rows carry neither `ve
 Slice 7 adds `VECTOR_REBUILD_STATE` (MemoryId 12): a `index_id → VectorRebuildStateRecord` holding
 the per-index bounded shadow-version rebuild lifecycle (`Idle`/`Sampling`/`Training`/`Building`/
 `ReadyToPublish`/`Cleaning`/`Aborting`/`Failed`), each long-running phase carrying a resume cursor so
-admin steps stay bounded. The value is persisted as `RawRebuildState` — the verbatim
-`VectorRebuildStateRecord` Candid bytes — so the persist and the step share a single Candid encode.
+admin steps stay bounded. The value is persisted as `RawRebuildState` — the verbatim record bytes —
+so the persist and the step share a single encode. Since Phase-0 Slice 7 those bytes are a versioned
+custom binary codec (`[magic b'R'][format version u8][variant tag][fixed-width LE scalars +
+length-prefixed variable parts]`, fail-closed on unknown magic/version/tags), replacing Candid: the
+wide enum's self-describing type table made every hot-path op read of an existing row cost ~425K
+instructions to decode, which the codec removes (~0.9K measured). Fresh install required for the new
+row format; no migration or compatibility reader.
 It is derived (reconstructible by re-running a rebuild from the active version) through the live
 `admin_start_vector_rebuild` entry point. Slice 7 also extends the
 `VECTOR_SUBJECT_TO_ID` value (`SubjectMapEntry`) with a second `shadow_slot: Option<SlotRef>`
@@ -466,52 +471,64 @@ reconstructed by re-running a rebuild from the active version.
 
 ADR 0064 §7 replaces the ADR 0032 structure-of-arrays page store with the **two-table** page format from
 `ic-stable-vector-page-store`: `[PageHeader][run_table × run_capacity][row_meta × capacity][vector_bytes ×
-capacity]`. MemoryId 10 remains `VECTOR_PAGE_META` (a `(index_id, version, partition_id, page_id) →
-VectorPageMeta` directory of `{ slab_offset, row_count, live_count }`; page geometry is owned by
-`VECTOR_INDEX_DEFS` and tombstoned rows are derived as `row_count − live_count`, cross-checked against
-the on-slab header at reopen), and MemoryId 13 `VECTOR_ROW_SLAB` holds the raw pages
-behind a `VSL`/version-1 slab header. Rows store a packed 30-bit `VertexPayload` (vertex id + bit-31
-tombstone); the shard is shared across contiguous rows via the run table, and the page rolls a new page
-when its run table is full. `vector_bytes` rows are `pad_stride_bytes` wide (16-byte aligned), with the
-trailing pad zeroed so scoring kernels never observe non-finite garbage. Rows are write-once at tail
-positions: superseded rows are tombstoned, and freshness is validated positionally (subject-map slot
-matches the scanned position) rather than by a row-carried `vector_id`/`generation` (removed). The two
-regions form one composite store (`PAGE_STORE`) that opens together and fails closed on a partial layout
-(see [ADR 0032](../adr/0032-vector-index-slab-page-store.md); the row format is superseded by
+capacity]`. MemoryId 13 `VECTOR_ROW_SLAB` holds the raw pages behind a `VSL`/version-1 slab header. Rows
+store a packed 30-bit `VertexPayload` (vertex id + bit-31 tombstone); the shard is shared across contiguous
+rows via the run table, and the page rolls a new page when its run table is full. `vector_bytes` rows are
+`pad_stride_bytes` wide (16-byte aligned), with the trailing pad zeroed so scoring kernels never observe
+non-finite garbage. Rows are write-once at tail positions: superseded rows are tombstoned, and freshness is
+validated positionally (subject-map slot matches the scanned position) rather than by a row-carried
+`vector_id`/`generation` (removed).
+
+**Phase-0 Slice 8 — arithmetically-addressed slab; the page directory is retired.** Every page occupies one
+uniform block of `DEFAULT_MAX_PAGE_BYTES` (64 KiB) at `SLAB_HEADER_SIZE + seq × BLOCK_LEN`, so the former
+MemoryId 10 `VECTOR_PAGE_META` directory (`VectorPageMeta { slab_offset, row_count, live_count }`) is gone
+and MemoryId 10 becomes a second explicit hole (like MemoryId 8). Page geometry stays owned by
+`VECTOR_INDEX_DEFS`; per-page state lives in `VECTOR_PARTITION_HEADS` (MemoryId 9), which now carries three
+record kinds under disjoint key-level tags in one fixed-width-value LHM:
+
+- **Head** (leaf key): mirrors the single mutable tail page as scalars (`mutable_rows/live/bound/
+  run_count/last_shard/seq`) plus the chain counters — an append performs exactly two durable map ops
+  (head get + head insert) with zero stable reads;
+- **Sealed-page-table chunks** (`level = 2..=201`, up to 200 chunks × 32 entries): `{seq, row_count,
+  live_count, block_bound}` per positional page id for every non-mutable page; `block_bound` is the
+  conservative scalar skip bound `M = max‖row‖` (monotone under tombstones);
+- The slab **free list** is an intrusive LIFO chain threaded through the dead blocks themselves
+  (each block's first four bytes hold the next seq), anchored by `free_head` in the
+  `VECTOR_SLAB_COMPACTION_STATE` record (MemoryId 11); popped first-fit on allocation.
+
+Tombstoned rows are derived as `row_count − live_count`. The composite store opens together and fails closed
+on a partial layout (see [ADR 0032](../adr/0032-vector-index-slab-page-store.md); the row format is superseded by
 [ADR 0064](../adr/0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)). This is a **fresh
 layout cutover** (format version 1, breaking) with no deployed state, no migration, and no compatibility
 reader; `VECTOR_SUBJECT_TO_ID` stays the freshness source of truth, and the `VECTOR_ID_TO_SLOT` /
 `VECTOR_ID_TO_SUBJECT` reverse maps are **retired** (MemoryId 8 unallocated; MemoryId 11 reused by
-plan 0278 for the slab-compaction driver state; no production reader
-after ADR 0064 §7 positional validation). `VECTOR_PARTITION_HEADS`
-(MemoryId 9) remains the per-partition allocator/counter owner and is deliberately outside the composite
-store. Since Slice 5, heads, page metas, and pages exist **for leaf partitions only**: one head per
-leaf id `0..leaf_count` (`nlist × nlist_fine`; flat keeps `nlist_fine = 1`). A two-level generation
-stores its extra level inside `IVF_CENTROIDS` (MemoryId 6) under level-tagged keys — the 17-byte
-`PartitionKey` gained a coarse/leaf tag byte (schema `GLEAPH-PARTKEY-1`) — so no new region and no
-MemoryId repack are needed; teardown deletes both levels' keys with one `(index_id, version)`
-prefix range deletion. The definition record itself grew to 46 bytes (schema `GLEAPH-VECDEF-02`,
-adding `levels`/`nlist_fine`); fresh install required for both schema changes, with no migration or
-compatibility reader.
+plan 0278 for the slab-compaction driver state). Since Slice 5, heads and pages exist **for leaf partitions
+only**: one head per leaf id `0..leaf_count` (`nlist × nlist_fine`; flat keeps `nlist_fine = 1`). A two-level
+generation stores its extra level inside `IVF_CENTROIDS` (MemoryId 6) under level-tagged keys — the 17-byte
+`PartitionKey` gained a coarse/leaf tag byte (schema `GLEAPH-PARTKEY-1`) — so no new region and no MemoryId
+repack are needed; teardown deletes both levels' keys with one `(index_id, version)` prefix range deletion.
+The definition record itself grew to 46 bytes (schema `GLEAPH-VECDEF-02`, adding `levels`/`nlist_fine`);
+fresh install required for all schema changes, with no migration or compatibility reader.
 
 A derived, router-guarded admin query (`get_vector_slab_stats`) reports slab-space observability
-over these two regions: whole-slab physical facts (size, `occupied_tail`, global referenced bytes,
-conservative dead-space estimate) plus optional per-`index_id`/per-version logical counters. Because
+over the slab: whole-slab physical facts (size, `occupied_tail`, global referenced bytes, conservative
+dead-space estimate) plus optional per-`index_id`/per-version logical counters. Because
 `VECTOR_ROW_SLAB` is a single global allocation domain, the physical facts are always global while
-`index_id` scopes only the logical counters. It reads only `VECTOR_PAGE_META` + the slab header
+`index_id` scopes only the logical counters. Referenced bytes count whole uniform blocks (Slice 8), so they
+and `occupied_tail` share one unit. It reads only the partition-heads collection + the slab header
 (never row bytes or `VECTOR_SUBJECT_TO_ID`). `get_vector_slab_stats` is the **unbounded** full
-page-meta scan kept as a convenience query; `scan_slab_stats` is the IC-safe bounded
-companion that scans at most `max_pages` page-meta entries per call and returns an opaque `PageKey`
+page-record walk kept as a convenience query; `scan_slab_stats` is the IC-safe bounded
+companion that processes at most `max_pages` page records per call and returns an opaque `PageKey`
 cursor. Its steps are additive partials merged client-side: each step sums global referenced
-bytes across the whole map (even under an `index_id` filter) but carries only snapshot
+bytes across the whole collection (even under an `index_id` filter) but carries only snapshot
 size/tail facts — no step can know the global dead-space estimate, so it is absent from the step
 shape and recomputed once after merging. A malformed step cursor returns an error rather than
 trapping. The stepped path is a bounded best-effort scan with **no snapshot isolation** (the cursor
-is only a `PageKey`, so concurrent `VECTOR_PAGE_META` writes between calls can be missed or
+is only a `PageKey`, so concurrent page writes between calls can be missed or
 double-counted); run it during a quiescent window or use the single-call query for an exact figure.
 Both queries are diagnostic only and never affect search/freshness. Dead space itself is reclaimed
-by the opt-in Router-driven slab compaction (plan 0278) described below; automatic policy triggers
-remain deferred.
+by free-list reuse and the opt-in Router-driven slab compaction (plan 0278) described below; automatic
+policy triggers remain deferred.
 
 Plan 0278 adds `VECTOR_SLAB_COMPACTION_STATE` (MemoryId 11, reusing the retired
 `VECTOR_ID_TO_SUBJECT` slot): one global `VectorSlabCompactionState` record (`Idle` |
@@ -519,14 +536,15 @@ Plan 0278 adds `VECTOR_SLAB_COMPACTION_STATE` (MemoryId 11, reusing the retired
 Router-guarded driver endpoints `admin_start_vector_slab_compact` /
 `admin_vector_slab_compact_step` / `admin_vector_slab_compact_status`. The start freezes the
 snapshot source range `[SLAB_HEADER_SIZE, occupied_tail)`; each bounded step copies live pages
-whose spans sit inside the range down into the dense prefix — bytes persisted strictly before
-each page's single `VectorPageMeta.slab_offset` swap — and the final step fails closed if any
-live span sits inside the reclaimed gap, then rewinds `occupied_tail` once to
-`max(write_cursor, highest live span end)` (post-start appends keep the tail above the gap; a
-quiescent store reclaims down to the write cursor). Pages appended after start land above
-`range_end` and are never touched; metas dropped mid-compaction by GC/cleanup are skipped by the
-lap cursor. All cursors are reopen-visible in this one record, so an interrupted or upgraded
-driver resumes fail-closed. Operational bookkeeping, not query truth: it carries no rebuild path
+whose blocks sit inside the range down into the dense prefix — bytes persisted strictly before
+each owner's `seq` swap (sealed-table entry or head mirror) — and the final step fails closed if any
+live block sits inside the reclaimed gap, then rewinds `occupied_tail` once to
+`max(write_cursor, highest live block end)` and registers the reclaimed gap as free-list runs (a
+quiescent store reclaims down to the write cursor). With Slice 8 free-list reuse, pages appended
+after start may land inside the snapshot range in a hole; they are moved like any other live page.
+Records dropped mid-compaction by teardown are skipped by the lap cursor. All cursors are
+reopen-visible in this one record, so an interrupted or upgraded driver resumes fail-closed.
+Operational bookkeeping, not query truth: it carries no rebuild path
 and is cleared with the fixture-only definition-domain reset.
 
 | MemoryId | Symbol                                 | Thread-local               | Init fn                       | Class       | Owner domain                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Rebuild                                                                                    |
@@ -539,12 +557,12 @@ and is cleared with the fixture-only definition-domain reset.
 | 5        | `IVF_CENTROID_META`                    | `IVF_CENTROID_META`        | `init_centroid_meta`          | derived     | centroid-specific state                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `admin_start_vector_rebuild`                                                               |
 | 6        | `IVF_CENTROIDS`                        | `IVF_CENTROIDS`            | `init_centroids`              | derived     | centroid vectors (**reserved-empty in Slice 2**)                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `admin_start_vector_rebuild`                                                               |
 | 7        | `VECTOR_SUBJECT_TO_ID`                 | `SUBJECT_STORE`            | `create_for_install` / `open_after_upgrade` | canonical   | `SubjectStore` is the sole private owner of `StableLinearHashMap<SubjectKey, FixedSubjectMapEntry>`: the canonical subject freshness, tombstone, and slot authority. It starts uninitialized, strict-creates with the trusted `subject_map_seed`, and seed-free exact-opens after upgrade. Existing CHM or unknown bytes require a pre-release wipe/reinstall; no reader, migration, or create-on-open-error fallback exists. All point access and physical scans route through this owner, so unavailable is never interpreted as empty. | `client_reingestion` (symbolic recovery contract, not an API)                             |
-| 8        | `VECTOR_ID_TO_SLOT`                    | —                          | —                             | unallocated | **retired** reverse map (no production reader after ADR 0064 §7); explicit hole so MemoryIds 9/10/12/13/14 stay stable                                                                                                                                                                                                                                                                                                                                                                              | —                                                                                          |
-| 9        | `VECTOR_PARTITION_HEADS`               | `VECTOR_PARTITION_HEADS`   | `init_partition_heads`        | derived     | partition page chains + `next_page_id` allocator. `StableLinearHashMap<PartitionKey, PartitionHead>` (LHM, same cutover as defs/subjects); previous CHM bytes require a pre-release wipe/reinstall. Cleared (not incarnation-reset) on coordinated reset because it is derived state. | `admin_start_vector_rebuild`                                                               |
-| 10       | `VECTOR_PAGE_META`                     | `PAGE_STORE`               | `init_page_store`             | derived     | page-directory metadata (slab offset + capacity/row/live/tombstone counts + meta/run geometry) for the two-table slab page store (**ADR 0064 §7**)                                                                                                                                                                                                                                                                                                                                                  | `admin_start_vector_rebuild`                                                               |
+| 8        | `VECTOR_ID_TO_SLOT`                    | —                          | —                             | unallocated | **retired** reverse map (no production reader after ADR 0064 §7); explicit hole so MemoryIds 9/12/13/14 stay stable                                                                                                                                                                                                                                                                                                                                                                              | —                                                                                          |
+| 9        | `VECTOR_PARTITION_HEADS`               | `VECTOR_PARTITION_HEADS`   | `init_partition_heads`        | derived     | partition page-chain state for the Slice 8 arithmetically-addressed slab: one fixed-width `PartitionHeadRecord` per key — leaf **head** (mutable-tail scalars + counters, value schema `GLEAPH-PARTVAL-1`), **sealed-page-table chunks** (`partition_id` packs `real_partition << 16 | chunk`, `{seq, row_count, live_count, block_bound}` × 3 per chunk), plus the slab free-list anchor carried in the same record (`free_head` for the intrusive chain threaded through dead blocks). Cleared (not incarnation-reset) on coordinated reset because it is derived state. | `admin_start_vector_rebuild`                                                               |
+| 10       | —                                      | —                          | —                             | unallocated | **retired** ADR 0032 page directory (superseded by Slice 8 arithmetic block addressing inside `VECTOR_ROW_SLAB`; per-page state moved to id 9); explicit hole so MemoryIds 9/12/13/14 stay stable (**Phase-0 Slice 8**; fresh install, no migration reader)                                                                                                                                                                            | —                                                                                          |
 | 11       | `VECTOR_SLAB_COMPACTION_STATE`         | `VECTOR_SLAB_COMPACTION_STATE` | `init_slab_compaction_state` | maintenance | one global `VectorSlabCompactionState` (`Idle` \| `Compacting { write_cursor, range_end, scan_cursor, pages_moved }`) for the opt-in bounded slab dead-space compaction driver (**plan 0278**); reuses the retired `VECTOR_ID_TO_SUBJECT` reverse-map slot (no production reader after ADR 0064 §7) so MemoryIds 9/10/12–14 stay stable. Operational bookkeeping, not query truth; persists across upgrade so an interrupted driver resumes fail-closed | —                                                                                          |
 | 12       | `VECTOR_REBUILD_STATE`                 | `VECTOR_REBUILD_STATE`     | `init_rebuild_state`          | derived     | bounded shadow-version rebuild lifecycle (**Slice 7**)                                                                                                                                                                                                                                                                                                                                                                                                                                              | `admin_start_vector_rebuild`                                                               |
-| 13       | `VECTOR_ROW_SLAB`                      | `PAGE_STORE`               | `init_page_store`             | derived     | raw two-table vector row slab (run table + packed `VertexPayload` + pad-stride rows, plus a per-generation trailing code-segment table when the generation's `code_tier` is on: `PageHeader.code_stride` at offset `24..28`, 28→32 B header; **ADR 0079** / Slice 6) with `VSL`/version-1 header (**ADR 0064 §7**); companion to `VECTOR_PAGE_META`, opened as one composite store; total durable-row loss requires client re-ingestion                                                                                                                                                                                                                                             | `client_reingestion` (symbolic recovery contract, not an API)                             |
+| 13       | `VECTOR_ROW_SLAB`                      | `PAGE_STORE`               | `init_row_slab`              | derived     | raw two-table vector row slab (run table + packed `VertexPayload` + pad-stride rows, plus a per-generation trailing code-segment table when the generation's `code_tier` is on: `PageHeader.code_stride` at offset `24..28`, 28→32 B header; **ADR 0079** / Slice 6) with `VSL`/version-1 header (**ADR 0064 §7**). Slice 8: pages occupy **uniform 64 KiB blocks** addressed arithmetically (`SLAB_HEADER_SIZE + seq × BLOCK_LEN`) with free-run reuse and whole-block compaction; total durable-row loss requires client re-ingestion                                                                                                                                                                                                                                             | `client_reingestion` (symbolic recovery contract, not an API)                             |
 | 14       | `VECTOR_MAINTENANCE_STATE`             | `VECTOR_MAINTENANCE_STATE` | `init_maintenance_state`      | maintenance | `index_id → VectorMaintenanceState` page-health scan progress cursor + merged counters (`Failed` carries a bounded message) for Router-forwarded maintenance orchestration (**Slice 10**); operational bookkeeping discarded/restarted, not reconstructed; persists across upgrade, cleared only on init/reset                                                                                                                                                                                      | —                                                                                          |
 | 15       | `VECTOR_SHARD_WATERMARKS`              | `VECTOR_SHARD_WATERMARKS`  | `init_shard_watermarks`       | maintenance | `shard_id → ShardWatermarks { graph_watermark, router_watermark }` (**ADR 0064 §5**): the attached Graph shard advances `graph_watermark` for a contiguous applied prefix; the Router-only frontier endpoint advances `router_watermark` monotonically for an exact fully attached shard after lane validation, including a markerless Graph-only lane. The same no-await update runs one bounded GC step, whose cutoff is always `min(graph_watermark, router_watermark)`. This is operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path | —                                                                                          |
 | 16       | `VECTOR_GC_CURSOR`                     | `VECTOR_GC_CURSOR`         | `init_gc_cursor`              | maintenance | `Option<DeletedSubjectKey>` (**ADR 0064 §5**): persisted cursor for bounded tombstone-retention steps. The catalog-driven frontier may advance the cutoff for any fully attached lane; an empty marker snapshot retires no Router rows, but the monotonic Vector watermark still permits the bounded GC step. This is operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path                                                                                                                                                                                                            | —                                                                                          |

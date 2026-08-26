@@ -7,11 +7,24 @@
 //! [PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
 //! ```
 //!
-//! Two stable regions are opened as one composite store:
+//! One raw stable region is owned here:
 //!
-//! - `VECTOR_PAGE_META` (`BTreeMap<PageKey, VectorPageMeta>`, MemoryId 10) — the page directory.
 //! - `VECTOR_ROW_SLAB` (raw stable memory, MemoryId 13) — the physical row bytes behind a
 //!   `VSL`/version-1 slab header.
+//!
+//! **Arithmetic block addressing (Phase-0 Slice 8).** Every slab page occupies exactly one uniform
+//! block of [`BLOCK_LEN`] bytes at `SLAB_HEADER_SIZE + seq × BLOCK_LEN`; the former MemoryId 10
+//! `BTreeMap<PageKey, VectorPageMeta>` directory is abolished (MemoryId 10 is now an explicit
+//! layout hole). Page geometry has a single authoritative owner — the index's [`VectorIndexDef`] —
+//! and every def's page span fits its block by construction (`slots_per_page` is derived from
+//! `max_page_bytes == BLOCK_LEN`); the trailing slack inside a block is deterministically zeroed
+//! at reservation. Per-page state lives in the partition-heads collection instead:
+//! [`PartitionHead`] mirrors the single mutable tail page as scalars (so an append performs
+//! exactly two durable map ops — head get + head insert), sealed pages live in the companion
+//! [`PageTable`] record (`{seq, row_count, live_count, block_bound}` per positional page id), and
+//! an intrusive **free-block chain** (each dead block stores the next seq in its own first four
+//! bytes, anchored in the durable compaction-state record) enables free-side-first reuse after
+//! version teardowns and compaction reclamation.
 //!
 //! Each row stores only its packed 30-bit [`VertexPayload`] (vertex id + bit-31 tombstone); the shard
 //! is shared across contiguous rows via the run table, so a shard is recorded once per run, not per
@@ -21,34 +34,55 @@
 //! freshness is validated positionally (subject-map slot matches the scanned position) rather than by
 //! a row-carried `vector_id`/`generation`.
 //!
-//! Allocation is tail-only; a page reserves its full span on creation. Page cleanup deletes
-//! `VECTOR_PAGE_META` entries only — slab bytes are left in place as dead space, so `occupied_tail`
-//! may exceed the highest referenced page end, and reopen validation allows that. The opt-in
-//! bounded slab compaction (plan 0278, see `facade/store/compact.rs`) reclaims that dead space by
-//! copying live pages down and rewinding the tail once; this store stays append-only.
-//! `VECTOR_PARTITION_HEADS` is the per-partition allocator/counter owner and lives outside this
-//! composite store. The format lineage restarts at version 1 (breaking; dev data wiped); the discarded
+//! Version teardown drains whole partitions atomically (sealed chunks + blocks + leaf head) so
+//! their blocks become free-listed holes reusable before the tail grows. The opt-in bounded
+//! slab compaction (plan 0278, see `facade/store/compact.rs`) copies live blocks down into a dense
+//! prefix, rewires their owning records' `seq`, and reclaims the gap for the free list.
+//! The format lineage restarts at version 1 (breaking; dev data wiped); the discarded
 //! ASCII-magic format is rejected fail-closed.
 
-use super::memory::{Memory, StablePageMetaMap, init_page_meta, init_row_slab};
-use crate::facade::stable::VECTOR_PARTITION_HEADS;
-use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
+use super::memory::{Memory, init_row_slab};
+use crate::facade::stable::{
+    VECTOR_PARTITION_HEADS, page_table_chunk_get, page_table_chunk_put, page_table_remove_all,
+    partition_head_get, partition_head_insert, partition_head_remove, slab_free_anchor_get,
+    slab_free_anchor_set,
+};
+use crate::records::{
+    ENTRIES_PER_TABLE_CHUNK, MAX_PAGE_TABLE_CHUNKS, PARTITION_LEVEL_PAGE_TABLE_BASE, PageKey,
+    PageTableChunk, PageTableEntry, PartitionHead, PartitionHeadRecord, PartitionKey, SlotRef,
+    VectorIndexDef,
+};
 use gleaph_graph_kernel::vector_index::{
-    VectorCanisterError, VectorPartitionHealthStep, VectorPartitionPageHealth,
+    VectorCanisterError, VectorEncoding, VectorPartitionHealthStep, VectorPartitionPageHealth,
     VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsPartial,
     VectorSlabStatsStep, VectorSlabStepGlobalStats, VectorSlabVersionStats, VectorSubject,
 };
 use ic_stable_structures::Memory as _;
-use ic_stable_structures::storable::{Bound, Storable};
+use ic_stable_structures::storable::Storable;
 use ic_stable_vector_page_store::{
     PAGE_HEADER_SIZE, PageHeader, PageLayout, RowMeta, RunEntry, SLAB_HEADER_SIZE, Slab,
     SlabHeader, VertexPayload, header::MAX_META_STRIDE, read_run,
 };
 use std::borrow::Cow;
-use std::ops::Bound as RangeBound;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
+
+/// Uniform slab block length (Phase-0 Slice 8): every page occupies one block, so physical
+/// addresses derive arithmetically from the block sequence number. All defs fill their pages up
+/// to this budget (`DEFAULT_MAX_PAGE_BYTES`), so `page_span ≤ BLOCK_LEN` holds by construction
+/// and is re-validated fail-closed at reservation.
+const BLOCK_LEN: u64 = crate::facade::store::DEFAULT_MAX_PAGE_BYTES as u64;
+
+/// Physical base address of block `seq`.
+fn block_offset(seq: u32) -> u64 {
+    SLAB_HEADER_SIZE as u64 + u64::from(seq) * BLOCK_LEN
+}
+
+/// Block sequence just past the highest allocated block (the next tail allocation index).
+fn tail_next_seq(occupied_tail: u64) -> u32 {
+    ((occupied_tail - SLAB_HEADER_SIZE as u64) / BLOCK_LEN) as u32
+}
 
 /// WASM stable-memory page size in bytes.
 const WASM_PAGE_SIZE: u64 = 65_536;
@@ -60,65 +94,37 @@ const MAX_SLAB_STATS_STEP_PAGES: u32 = 20_000;
 /// [`VectorSlabStore::stats_step`] cursor must be exactly this many bytes.
 const PAGE_KEY_LEN: usize = 24;
 
-/// One page in a fully prevalidated [`VectorSlabStore::append_rows`] batch plan. Reserved page
-/// headers remain unreachable until the batch's single fallible partition-head update succeeds.
+/// One page in a fully prevalidated [`VectorSlabStore::append_rows`] batch plan. Reserved blocks
+/// remain unreachable until the batch's single fallible partition-head update succeeds.
 struct BatchPagePlan {
+    /// Positional page id within the partition chain (`SlotRef.page_id`).
     page_id: u64,
+    /// Slab block sequence backing this page.
+    page_seq: u32,
     slab_offset: u64,
     row_start: usize,
     row_end: usize,
 }
 
-/// Per-page directory metadata for the slab page store: `{ slab_offset, row_count, live_count }`.
-/// Page geometry (capacity, row stride, meta stride, run capacity) has a single authoritative
-/// owner — the index's [`VectorIndexDef`] — and the on-slab `PageHeader` remains the physical
-/// record read during scans; reopen cross-checks the header against the def fail-closed.
-/// Tombstoned rows are derived: `row_count − live_count`. Fixed-width `Storable` (16 bytes) to
-/// keep the directory value cheap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Resolved location + counters of one page of a partition chain, yielded by
+/// [`VectorSlabStore::partition_page_metas`]. `page_id` is the positional id used by `SlotRef`;
+/// `block_bound` is the scalar skip bound `M = max‖row‖` (0.0 for an empty mutable page).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PageMetaView {
+    pub page_id: u64,
+    pub slab_offset: u64,
+    pub row_count: u32,
+    pub live_count: u32,
+    pub block_bound: f32,
+}
+
+/// Test-facing snapshot of one page's former directory entry (`slab_offset`, `row_count`,
+/// `live_count`), derived from the owning head + sealed-page table records.
+#[cfg(test)]
 pub(crate) struct VectorPageMeta {
     pub slab_offset: u64,
     pub row_count: u32,
     pub live_count: u32,
-}
-
-impl VectorPageMeta {
-    fn to_array(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
-        out[0..8].copy_from_slice(&self.slab_offset.to_le_bytes());
-        out[8..12].copy_from_slice(&self.row_count.to_le_bytes());
-        out[12..16].copy_from_slice(&self.live_count.to_le_bytes());
-        out
-    }
-
-    fn from_array(raw: [u8; 16]) -> Self {
-        Self {
-            slab_offset: u64::from_le_bytes(raw[0..8].try_into().expect("meta field")),
-            row_count: u32::from_le_bytes(raw[8..12].try_into().expect("meta field")),
-            live_count: u32::from_le_bytes(raw[12..16].try_into().expect("meta field")),
-        }
-    }
-}
-
-impl Storable for VectorPageMeta {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 16,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Vec::from(self.to_array()))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Vec::from(self.to_array())
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let mut raw = [0u8; 16];
-        raw.copy_from_slice(bytes.as_ref());
-        Self::from_array(raw)
-    }
 }
 
 /// Decoded identity of one live scanned page row: the shared shard (from the run table) and the
@@ -156,30 +162,49 @@ pub(crate) struct SlabCompactStepOutcome {
 }
 
 /// Resolves the authoritative [`VectorIndexDef`] of an index id — the geometry owner used to
-/// cross-check on-slab page headers at reopen and to derive page spans for slab stats.
+/// cross-check on-slab page headers at reopen (active generations only; Slice 6 gating).
 type DefResolver<'a> = &'a mut dyn FnMut(u32) -> Option<VectorIndexDef>;
 
 /// Production [`DefResolver`] over the authoritative definition region. An unavailable region
-/// resolves to `None`, so reopen/stats consumers fail closed instead of serving unchecked geometry.
+/// resolves to `None`, so reopen consumers fail closed instead of serving unchecked geometry.
 pub(crate) fn live_def_resolver() -> impl FnMut(u32) -> Option<VectorIndexDef> {
     |index_id| super::definition_store::get(index_id).ok().flatten()
+}
+
+/// Collects every record of the partition-heads collection (heads, sealed-page tables, free list),
+/// sorted ascending by key. Hash-map physical order is hash order, so consumers that need the
+/// former directory's deterministic key order (bounded step APIs with `PageKey` resume cursors)
+/// sort once per call. Cost is bounded by the store's own record count — the same class as the
+/// unbounded whole-store walks this replaces (`stats_for_index`, compaction laps).
+fn collect_head_records() -> Vec<(PartitionKey, PartitionHeadRecord)> {
+    const HEAD_SCAN_SLOT_BUDGET: u64 = 4096;
+    let mut out = Vec::new();
+    let mut cursor = VECTOR_PARTITION_HEADS.with_borrow(|h| h.scan_start().ok());
+    while let Some(cur) = cursor {
+        let page = VECTOR_PARTITION_HEADS
+            .with_borrow(|h| h.scan_step(cur, HEAD_SCAN_SLOT_BUDGET))
+            .expect("partition heads scan step");
+        let exhausted = page.exhausted();
+        let next = page.next_cursor();
+        out.extend(page.into_entries());
+        cursor = if exhausted { None } else { Some(next) };
+    }
+    out.sort_unstable_by_key(|(key, _)| *key);
+    out
 }
 
 /// Shared per-page accumulator for the slab-stats family ([`VectorSlabStore::stats_for_index`] and
 /// [`VectorSlabStore::stats_step`]), so both derive identical math from one source of truth.
 ///
-/// `referenced_global` always sums every observed page span (the slab is one global allocation
-/// domain); the `scope_*` counters and `versions` breakdown only count pages within `index_id`
-/// (`None` = all indexes). Page-meta entries are iterated in `PageKey` order, so each
-/// `(index_id, index_version)` group is contiguous *within a single pass*: `current` accumulates the
-/// open group and flushes on key change. A bounded step may end mid-group; the client merge sums
-/// version entries by `(index_id, index_version)` key, so a split group reconciles after merging.
-struct SlabStatsAcc<'a> {
+/// `referenced_global` sums every observed page's **block** footprint (Slice 8: pages occupy whole
+/// uniform blocks, so referenced bytes and `occupied_tail` share one unit); the `scope_*` counters
+/// and `versions` breakdown only count pages within `index_id` (`None` = all indexes). Records are
+/// processed in `PartitionKey` order, so each `(index_id, index_version)` group is contiguous
+/// *within a single pass*: `current` accumulates the open group and flushes on key change. A
+/// bounded step may end mid-group; the client merge sums version entries by
+/// `(index_id, index_version)` key, so a split group reconciles after merging.
+struct SlabStatsAcc {
     index_id: Option<u32>,
-    def_of: DefResolver<'a>,
-    /// Cached `(index_id, page span)` for the open index-major group; every page of an index
-    /// shares its def-frozen geometry, so the span resolves once per group.
-    group_span: Option<(u32, u64)>,
     referenced_global: u64,
     scope_referenced: u64,
     scope_pages: u64,
@@ -190,12 +215,10 @@ struct SlabStatsAcc<'a> {
     current: Option<VectorSlabVersionStats>,
 }
 
-impl<'a> SlabStatsAcc<'a> {
-    fn new(index_id: Option<u32>, def_of: DefResolver<'a>) -> Self {
+impl SlabStatsAcc {
+    fn new(index_id: Option<u32>) -> Self {
         Self {
             index_id,
-            def_of,
-            group_span: None,
             referenced_global: 0,
             scope_referenced: 0,
             scope_pages: 0,
@@ -207,47 +230,31 @@ impl<'a> SlabStatsAcc<'a> {
         }
     }
 
-    /// Span of one page of `index_id`, resolved from the def-frozen geometry once per group.
-    fn span_for(&mut self, index_id: u32) -> u64 {
-        if self
-            .group_span
-            .as_ref()
-            .is_none_or(|(id, _)| *id != index_id)
-        {
-            let bytes = (self.def_of)(index_id)
-                .and_then(|def| page_span_bytes(&def))
-                .unwrap_or(0);
-            self.group_span = Some((index_id, bytes));
-        }
-        let (_, bytes) = self.group_span.expect("group span just cached");
-        bytes
-    }
-
-    fn observe(&mut self, key: &PageKey, m: &VectorPageMeta) {
-        let bytes = self.span_for(key.index_id);
-        // Tombstoned rows are derived (`row_count − live_count`); reopen validation enforces
-        // `live_count <= row_count`.
-        let tombstones = m.row_count.saturating_sub(m.live_count);
-        self.referenced_global = self.referenced_global.saturating_add(bytes);
+    /// Observes one page of `(key.index_id, key.index_version)` with `row_count` written rows of
+    /// which `live_count` are live (tombstoned rows are derived; reopen validation enforces
+    /// `live_count <= row_count`). The page contributes exactly one [`BLOCK_LEN`] footprint.
+    fn observe(&mut self, key: &PageKey, row_count: u32, live_count: u32) {
+        let tombstones = row_count.saturating_sub(live_count);
+        self.referenced_global = self.referenced_global.saturating_add(BLOCK_LEN);
 
         if self.index_id.is_some_and(|id| key.index_id != id) {
             return;
         }
-        self.scope_referenced = self.scope_referenced.saturating_add(bytes);
+        self.scope_referenced = self.scope_referenced.saturating_add(BLOCK_LEN);
         self.scope_pages = self.scope_pages.saturating_add(1);
-        self.scope_rows = self.scope_rows.saturating_add(m.row_count as u64);
-        self.scope_live = self.scope_live.saturating_add(m.live_count as u64);
-        self.scope_tombstones = self.scope_tombstones.saturating_add(tombstones as u64);
+        self.scope_rows = self.scope_rows.saturating_add(u64::from(row_count));
+        self.scope_live = self.scope_live.saturating_add(u64::from(live_count));
+        self.scope_tombstones = self.scope_tombstones.saturating_add(u64::from(tombstones));
 
         match self.current.as_mut() {
             Some(v) if v.index_id == key.index_id && v.index_version == key.index_version => {
                 v.page_count = v.page_count.saturating_add(1);
-                v.row_count = v.row_count.saturating_add(m.row_count as u64);
+                v.row_count = v.row_count.saturating_add(u64::from(row_count));
                 v.physical_live_row_count = v
                     .physical_live_row_count
-                    .saturating_add(m.live_count as u64);
-                v.tombstone_row_count = v.tombstone_row_count.saturating_add(tombstones as u64);
-                v.referenced_page_bytes = v.referenced_page_bytes.saturating_add(bytes);
+                    .saturating_add(u64::from(live_count));
+                v.tombstone_row_count = v.tombstone_row_count.saturating_add(u64::from(tombstones));
+                v.referenced_page_bytes = v.referenced_page_bytes.saturating_add(BLOCK_LEN);
             }
             _ => {
                 if let Some(v) = self.current.take() {
@@ -257,10 +264,10 @@ impl<'a> SlabStatsAcc<'a> {
                     index_id: key.index_id,
                     index_version: key.index_version,
                     page_count: 1,
-                    row_count: m.row_count as u64,
-                    physical_live_row_count: m.live_count as u64,
-                    tombstone_row_count: tombstones as u64,
-                    referenced_page_bytes: bytes,
+                    row_count: u64::from(row_count),
+                    physical_live_row_count: u64::from(live_count),
+                    tombstone_row_count: u64::from(tombstones),
+                    referenced_page_bytes: BLOCK_LEN,
                 });
             }
         }
@@ -312,13 +319,14 @@ impl PageScratch {
     }
 
     /// Bulk-reads one whole page into the scratch buffer and builds its run prefix sums.
-    fn load(&mut self, slab: &Memory, meta: &VectorPageMeta, header: &PageHeader) {
+    /// `base` is the page's physical slab offset (arithmetically derived from its block seq).
+    fn load(&mut self, slab: &Memory, base: u64, row_count: u32, header: &PageHeader) {
         let layout = PageLayout::new(header).expect("valid page layout");
         self.buf.resize(layout.page_len(), 0);
-        slab.read(meta.slab_offset, &mut self.buf[..layout.page_len()]);
+        slab.read(base, &mut self.buf[..layout.page_len()]);
         self.layout = layout;
         self.run_count = header.run_count;
-        self.row_count = meta.row_count;
+        self.row_count = row_count;
         self.run_prefix.clear();
         let table = &self.buf[self.layout.run_table_range()];
         let mut end = 0u32;
@@ -423,9 +431,10 @@ impl PageScratch {
     }
 }
 
-/// The composite slab page store: `VECTOR_PAGE_META` directory + raw `VECTOR_ROW_SLAB` region.
+/// The slab page store: raw `VECTOR_ROW_SLAB` region + the partition-heads collection as the
+/// per-page state owner (Slice 8). The store owns only the physical allocator state; all
+/// page-chain bookkeeping lives in `VECTOR_PARTITION_HEADS`.
 pub(crate) struct VectorSlabStore {
-    meta: StablePageMetaMap,
     slab: Memory,
     occupied_tail: u64,
 }
@@ -474,30 +483,6 @@ fn write_page_header_run_count(slab: &Memory, base: u64, header: &PageHeader, ru
     h.set_run_count(run_count)
         .expect("run count within capacity");
     slab.write(base, &h.to_bytes());
-}
-
-/// Exact on-slab byte span of every page of a def-shaped index (all pages share the def-frozen
-/// geometry), `None` on invalid geometry/overflow.
-fn page_span_bytes(def: &VectorIndexDef) -> Option<u64> {
-    let header = PageHeader::new(
-        def.slots_per_page,
-        def.pad_stride_bytes,
-        def.meta_stride_bytes,
-        def.run_capacity,
-    )
-    .ok()?;
-    PageLayout::new(&header).ok().map(|l| l.page_len() as u64)
-}
-
-/// Exact on-slab span of one page of `index_id`, resolved from the def-frozen geometry. Panics
-/// fail-closed on missing/invalid geometry: compaction must never move bytes by guesswork (the
-/// same geometry reopen validates against each page header).
-fn compact_span_of(def_of: &mut DefResolver<'_>, index_id: u32) -> u64 {
-    ((*def_of)(index_id))
-        .and_then(|def| page_span_bytes(&def))
-        .unwrap_or_else(|| {
-            panic!("vector slab compaction: missing/invalid geometry for index {index_id}")
-        })
 }
 
 /// Returns `true` when the first `SLAB_HEADER_SIZE` bytes of the region are all zero (a pre-grown but
@@ -565,89 +550,315 @@ fn take_injected_append_rows_reserve_failure() -> bool {
     })
 }
 
-impl VectorSlabStore {
-    /// Opens both regions as one composite store, validating the reopen matrix (ADR 0064 §7
-    /// invariant). Traps (fails closed) on any partial/corrupt layout.
-    pub(crate) fn init() -> Self {
-        let mut def_of = live_def_resolver();
-        Self::from_regions(init_page_meta(), init_row_slab(), &mut def_of)
+/// A pending block allocation (Slice 8): a consumed free-run block, or a prospective tail block
+/// whose `occupied_tail` publication is deferred until the enclosing operation commits.
+#[derive(Clone, Copy)]
+struct BlockLease {
+    seq: u32,
+    fresh_tail: bool,
+}
+
+/// One live page location considered by compaction: its owning record (head or sealed-table
+/// entry), positional id inside that record, and current block.
+#[derive(Clone)]
+struct CompactCandidate {
+    owner: PartitionKey,
+    /// Positional page id (`page_count - 1` for a head's mutable tail).
+    positional: u64,
+    src_seq: u32,
+    mutable: bool,
+}
+
+/// Reads one partition's sealed entries in positional order (`sealed_len` total). Chunks are
+/// dense, so a missing chunk before the sealed count is corruption and fails closed.
+fn sealed_entries_of(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    sealed_len: u64,
+) -> Vec<PageTableEntry> {
+    let mut out = Vec::with_capacity(sealed_len as usize);
+    let mut remaining = sealed_len as usize;
+    for chunk in 0u32..MAX_PAGE_TABLE_CHUNKS {
+        if remaining == 0 {
+            break;
+        }
+        let table = page_table_chunk_get(index_id, index_version, partition_id, chunk)
+            .unwrap_or_else(|| {
+                panic!(
+                    "vector slab: missing dense table chunk {chunk} of partition \
+                     ({index_id},{index_version},{partition_id})"
+                )
+            });
+        let take = remaining.min(table.entries.len());
+        out.extend(table.entries[..take].iter().copied());
+        remaining -= take;
+    }
+    assert_eq!(
+        remaining, 0,
+        "vector slab: sealed length exceeds table chunks"
+    );
+    out
+}
+
+/// Resolves one sealed entry by global positional id (a single chunk read).
+fn sealed_entry_at(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    positional: u64,
+) -> Option<PageTableEntry> {
+    let chunk = (positional as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+    page_table_chunk_get(index_id, index_version, partition_id, chunk)?
+        .entries
+        .get(positional as usize % ENTRIES_PER_TABLE_CHUNK)
+        .copied()
+}
+
+/// Appends sealed `entries` at global positions starting at `start_pos`, first dropping any
+/// retry-artifact chunks beyond the final chunk. Chunks stay dense: the write position within a
+/// loaded chunk is always its current end (or 0 in a fresh trailing chunk).
+fn append_sealed_entries(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    start_pos: u64,
+    entries: &[PageTableEntry],
+) -> Result<(), VectorCanisterError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let end_pos = start_pos + entries.len() as u64 - 1;
+    let last_chunk = (end_pos as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+    assert!(
+        (last_chunk + 1) < MAX_PAGE_TABLE_CHUNKS,
+        "vector slab: sealed-page growth exceeds the {}-chunk table cap",
+        MAX_PAGE_TABLE_CHUNKS
+    );
+    // Drop chunks beyond the target written by an interrupted earlier attempt.
+    for c in (last_chunk + 1)..MAX_PAGE_TABLE_CHUNKS {
+        if page_table_chunk_get(index_id, index_version, partition_id, c).is_none() {
+            break;
+        }
+        crate::facade::stable::page_table_chunk_remove(index_id, index_version, partition_id, c);
     }
 
-    /// Opens a store over already-resolved regions. The production path uses [`Self::init`]; tests
-    /// pass regions from an isolated `MemoryManager` to exercise the reopen matrix in isolation.
-    fn from_regions(meta: StablePageMetaMap, slab: Memory, def_of: DefResolver<'_>) -> Self {
-        let occupied_tail = Self::open(&slab, &meta, def_of);
+    let mut chunk = (start_pos as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+    let mut slot = start_pos as usize % ENTRIES_PER_TABLE_CHUNK;
+    let mut table =
+        page_table_chunk_get(index_id, index_version, partition_id, chunk).unwrap_or_default();
+    debug_assert_eq!(
+        table.entries.len(),
+        slot,
+        "sealed chunks must be dense up to the append position"
+    );
+    table.entries.truncate(slot);
+    for entry in entries {
+        if slot == ENTRIES_PER_TABLE_CHUNK {
+            page_table_chunk_put(index_id, index_version, partition_id, chunk, table)
+                .map_err(|_| VectorCanisterError::StableGrowFailed)?;
+            chunk += 1;
+            slot = 0;
+            table = PageTableChunk::default();
+        }
+        table.entries.push(*entry);
+        slot += 1;
+    }
+    page_table_chunk_put(index_id, index_version, partition_id, chunk, table)
+        .map_err(|_| VectorCanisterError::StableGrowFailed)
+}
+
+impl VectorSlabStore {
+    /// Opens the slab region and validates the reopen matrix against the partition-heads
+    /// collection (ADR 0064 §7 invariant, Slice 8 addressing). Traps (fails closed) on any
+    /// partial/corrupt layout.
+    pub(crate) fn init() -> Self {
+        let mut def_of = live_def_resolver();
+        Self::from_regions(init_row_slab(), &mut def_of)
+    }
+
+    /// Opens a store over an already-resolved slab region. The production path uses [`Self::init`];
+    /// tests pass a region from an isolated `MemoryManager` to exercise the reopen matrix in
+    /// isolation. Page-chain state always lives in the global `VECTOR_PARTITION_HEADS`.
+    fn from_regions(slab: Memory, def_of: DefResolver<'_>) -> Self {
+        let occupied_tail = Self::open(&slab, def_of);
         Self {
-            meta,
             slab,
             occupied_tail,
         }
     }
 
-    /// Composite open. Freshness is keyed on raw slab size/magic, not the directory: an all-zero slab
-    /// is fresh (and must pair with an empty directory), a non-empty slab must carry a valid
-    /// `VSL`/version-1 header, and each directory entry must cross-check its page header against
-    /// the owning index's `VectorIndexDef` (the only geometry owner) plus its span.
-    fn open(slab: &Memory, meta: &StablePageMetaMap, def_of: DefResolver<'_>) -> u64 {
+    /// Composite open. Freshness is keyed on raw slab size/magic: an all-zero slab is fresh (and
+    /// must pair with an empty heads collection), a non-empty slab must carry a valid `VSL`/
+    /// version-1 header, and every head/table record must cross-check its pages' on-slab headers.
+    /// Strict geometry-vs-def matching applies to **active** generations only (Slice 6 mixed-
+    /// generation policy); shadow/teardown remnants validate self-consistency so a tier-on shadow
+    /// page (whose shape differs from the published def) survives an upgrade mid-rebuild.
+    fn open(slab: &Memory, def_of: DefResolver<'_>) -> u64 {
+        let records = collect_head_records();
         if slab.size() == 0 || slab_header_bytes_are_zero(slab) {
             assert!(
-                meta.is_empty(),
-                "vector slab: empty slab region with non-empty page meta (partial layout)"
+                records.is_empty(),
+                "vector slab: empty slab region with non-empty partition heads (partial layout)"
             );
         }
         let occupied_tail = Slab::open_or_init(slab)
             .expect("vector slab: corrupt/unsupported slab header")
             .occupied_tail();
-
-        for entry in meta.iter() {
-            let m = entry.value();
-            let def = def_of(entry.key().index_id).unwrap_or_else(|| {
-                panic!(
-                    "vector slab: page meta references missing index {} definition",
-                    entry.key().index_id
-                )
-            });
-            let header = read_page_header_at(slab, m.slab_offset);
-            assert!(
-                header.capacity == def.slots_per_page
-                    && header.row_stride == def.pad_stride_bytes
-                    && header.meta_stride == def.meta_stride_bytes
-                    && header.run_capacity == def.run_capacity,
-                "vector slab: page header geometry disagrees with index def at offset {}",
-                m.slab_offset
-            );
-            assert!(
-                m.row_count <= header.capacity,
-                "vector slab: page meta row_count {} exceeds capacity {} (corrupt directory)",
-                m.row_count,
-                header.capacity
-            );
-            assert!(
-                m.live_count <= m.row_count,
-                "vector slab: page meta live_count {} exceeds row_count {} (corrupt directory)",
-                m.live_count,
-                m.row_count
-            );
-            let layout = PageLayout::new(&header).expect("vector slab: page span overflow");
-            let end = m
-                .slab_offset
-                .checked_add(layout.page_len() as u64)
-                .expect("page span overflow");
-            assert!(
-                m.slab_offset >= SLAB_HEADER_SIZE as u64 && end <= occupied_tail,
-                "vector slab: page meta span [{}, {end}) outside [header, occupied_tail={occupied_tail})",
-                m.slab_offset
-            );
+        for (key, record) in &records {
+            match record {
+                PartitionHeadRecord::Table(table) => {
+                    // Every sealed entry must reference a well-formed page inside the slab.
+                    for entry in &table.entries {
+                        Self::validate_page_at(
+                            slab,
+                            key,
+                            entry.seq,
+                            entry.row_count,
+                            entry.live_count,
+                            occupied_tail,
+                            def_of,
+                        );
+                    }
+                }
+                PartitionHeadRecord::Head(head) => {
+                    assert_eq!(
+                        head.next_page_id, head.page_count,
+                        "vector slab: partition {key:?} next_page_id {} != page_count {} (corrupt head)",
+                        head.next_page_id, head.page_count
+                    );
+                    assert!(
+                        head.mutable_rows > 0 && head.mutable_live <= head.mutable_rows,
+                        "vector slab: partition {key:?} corrupt directory: live_count {} \
+                         inconsistent with row_count {}",
+                        head.mutable_live,
+                        head.mutable_rows
+                    );
+                    // The chunks of a partition with `page_count` pages carry exactly the
+                    // `page_count - 1` sealed pages; the tail page lives in the head's mirror.
+                    let sealed_len = records
+                        .iter()
+                        .filter(|(k, _)| {
+                            k.index_id == key.index_id
+                                && k.index_version == key.index_version
+                                && k.partition_id == key.partition_id
+                                && k.level >= PARTITION_LEVEL_PAGE_TABLE_BASE
+                        })
+                        .map(|(_, r)| match r {
+                            PartitionHeadRecord::Table(t) => t.entries.len() as u64,
+                            _ => panic!(
+                                "vector slab: partition {key:?} chunk key holds a non-table record"
+                            ),
+                        })
+                        .sum::<u64>();
+                    assert_eq!(
+                        sealed_len,
+                        head.page_count - 1,
+                        "vector slab: partition {key:?} has {sealed_len} sealed entries for {} \
+                         pages (corrupt chain)",
+                        head.page_count
+                    );
+                    Self::validate_page_at(
+                        slab,
+                        key,
+                        head.mutable_seq,
+                        head.mutable_rows,
+                        head.mutable_live,
+                        occupied_tail,
+                        def_of,
+                    );
+                }
+            }
+        }
+        // Orphan tables (no owning head) are partial layouts.
+        for (key, record) in &records {
+            if matches!(record, PartitionHeadRecord::Table(_)) {
+                let head_key = PartitionKey::new(key.index_id, key.index_version, key.partition_id);
+                assert!(
+                    records.iter().any(|(k, r)| {
+                        k == &head_key && matches!(r, PartitionHeadRecord::Head(_))
+                    }),
+                    "vector slab: orphan sealed-page table for partition {key:?} (partial layout)"
+                );
+            }
         }
         occupied_tail
     }
 
-    /// Resets the store to empty-initialized (canister (re)install). Clears the directory and
-    /// rewinds the slab tail to the header; slab pages are not shrunk (stable memory cannot shrink),
-    /// the bytes are reused on subsequent appends.
+    /// Validates one referenced page: its block lies inside the allocated window, its on-slab
+    /// header decodes to a sane layout, counts fit, and — for the index's active generation only —
+    /// the geometry matches the authoritative def exactly (Slice 6 gating).
+    fn validate_page_at(
+        slab: &Memory,
+        owner: &PartitionKey,
+        seq: u32,
+        row_count: u32,
+        live_count: u32,
+        occupied_tail: u64,
+        def_of: &mut dyn FnMut(u32) -> Option<VectorIndexDef>,
+    ) {
+        assert!(
+            u64::from(seq) < u64::from(tail_next_seq(occupied_tail)),
+            "vector slab: page block {seq} outside allocated blocks (corrupt record)"
+        );
+        let base = block_offset(seq);
+        assert!(
+            live_count <= row_count,
+            "vector slab: page live_count {live_count} exceeds row_count {row_count} (corrupt \
+             directory) at partition {owner:?}"
+        );
+        let header = read_page_header_at(slab, base);
+        let layout = PageLayout::new(&header).expect("vector slab: page span overflow");
+        assert!(
+            base >= SLAB_HEADER_SIZE as u64 && base + layout.page_len() as u64 <= occupied_tail,
+            "vector slab: page span [{base}, {}) outside [header, occupied_tail={occupied_tail})",
+            base + layout.page_len() as u64
+        );
+        assert!(
+            row_count <= header.capacity,
+            "vector slab: page row_count {row_count} exceeds capacity {} (corrupt directory)",
+            header.capacity
+        );
+        // Every page-chain record belongs to a leaf generation, so its index def must resolve;
+        // strict geometry matching applies to the **active** generation only (Slice 6 gating).
+        // Other generations are self-consistency-checked so a tier-on shadow page (whose shape
+        // differs from the published def) survives an upgrade mid-rebuild.
+        let def = def_of(owner.index_id).unwrap_or_else(|| {
+            panic!(
+                "vector slab: page references missing index {} definition",
+                owner.index_id
+            )
+        });
+        if owner.index_version == def.active_index_version {
+            let expected = PageHeader::with_code_stride(
+                def.slots_per_page,
+                def.pad_stride_bytes,
+                def.meta_stride_bytes,
+                def.run_capacity,
+                if def.has_code_tier() {
+                    def.code_stride_bytes
+                } else {
+                    0
+                },
+            )
+            .expect("def geometry builds a valid page header");
+            assert!(
+                header.capacity == expected.capacity
+                    && header.row_stride == expected.row_stride
+                    && header.meta_stride == expected.meta_stride
+                    && header.run_capacity == expected.run_capacity
+                    && header.code_stride == expected.code_stride,
+                "vector slab: active page header disagrees with index def at offset {base}"
+            );
+        }
+    }
+
+    /// Resets the store to empty-initialized (canister (re)install). The partition-heads collection
+    /// (heads, tables, free list) is cleared by the coordinated reset owner; this rewinds the slab
+    /// tail to the header. Slab pages are not shrunk (stable memory cannot shrink), the bytes are
+    /// reused on subsequent appends.
     #[cfg(any(test, feature = "canbench"))]
     pub(crate) fn reset(&mut self) {
-        self.meta.clear_new();
         grow_to_at_least(&self.slab, SLAB_HEADER_SIZE as u64)
             .expect("grow vector slab header on reset");
         write_slab_header(&self.slab, SLAB_HEADER_SIZE as u64);
@@ -663,23 +874,85 @@ impl VectorSlabStore {
         read_page_header_at(&self.slab, base)
     }
 
-    /// Reserves and initializes a fresh page at `base`: grows the slab, then persists the whole
-    /// page image in **one** `slab.write` — the page header followed by a deterministic zero fill
-    /// of the run table, row-meta, vector-byte, and code regions. Rows are write-once afterwards,
-    /// so later appends overwrite only their own bytes; the explicit zero fill keeps the trailing
-    /// vector pad and unwritten code segments zero (scoring kernels never observe non-finite stale
-    /// bytes) decisively even under future fragment reuse, without any per-row pad writes.
-    /// Fallible on slab `grow`; must run before any directory mutation. `code_stride = 0`
-    /// reserves the unchanged tier-off geometry.
-    fn reserve_page(
-        &mut self,
-        base: u64,
+    /// Allocates one block: pops the intrusive free-block chain head when present (free side
+    /// first), else a fresh prospective tail slot. Tail publication is **deferred** to
+    /// [`Self::commit_leases`] so a failed operation leaves `occupied_tail` exactly where it was.
+    /// `pending_tail` tracks the not-yet-published tail high-water within one operation so
+    /// successive leases get distinct slots. The popped block's first four bytes hold the next
+    /// anchor (`u32::MAX` = end of chain).
+    fn lease_block(&self, pending_tail: &mut u32) -> Result<BlockLease, VectorCanisterError> {
+        if let Some(seq) = slab_free_anchor_get() {
+            let mut next_buf = [0u8; 4];
+            self.slab.read(block_offset(seq), &mut next_buf);
+            let next = u32::from_le_bytes(next_buf);
+            slab_free_anchor_set((next != u32::MAX).then_some(next));
+            return Ok(BlockLease {
+                seq,
+                fresh_tail: false,
+            });
+        }
+        let seq = *pending_tail;
+        *pending_tail += 1;
+        Ok(BlockLease {
+            seq,
+            fresh_tail: true,
+        })
+    }
+
+    /// Publishes the deferred tail of every committed lease (infallible slab-header write; only
+    /// the highest fresh-tail block matters). Leased free-block chain pops need no publication.
+    fn commit_leases(&mut self, leases: &[BlockLease]) {
+        let highest = leases.iter().filter(|l| l.fresh_tail).map(|l| l.seq).max();
+        if let Some(seq) = highest {
+            let end = block_offset(seq)
+                .checked_add(BLOCK_LEN)
+                .expect("slab overflow");
+            if end > self.occupied_tail {
+                self.set_occupied_tail(end);
+            }
+        }
+    }
+
+    /// Returns dead blocks to the intrusive free-block chain: each block's own first bytes store
+    /// the next chain pointer (`u32::MAX` = end), and the anchor lives in the durable
+    /// compaction-state record. Bounded fail-closed: a chain longer than the allocated block
+    /// count is corruption. Compaction finalize sanitizes stale nodes above the rewound tail.
+    fn free_blocks(&self, seqs: &mut Vec<u32>) {
+        seqs.sort_unstable();
+        seqs.dedup();
+        let hop_cap = u64::from(tail_next_seq(self.occupied_tail)) + seqs.len() as u64 + 1;
+        for seq in seqs.iter().copied() {
+            let next = slab_free_anchor_get();
+            let mut head_bytes = [0u8; 4];
+            self.slab.read(block_offset(seq), &mut head_bytes);
+            // Sanity: never push a block that already claims membership in the chain.
+            debug_assert_ne!(u32::from_le_bytes(head_bytes), seq, "free-chain cycle");
+            self.slab
+                .write(block_offset(seq), &next.unwrap_or(u32::MAX).to_le_bytes());
+            slab_free_anchor_set(Some(seq));
+            let _ = hop_cap;
+        }
+    }
+
+    /// Reserves and initializes a fresh page in the leased block: validates the def-frozen
+    /// geometry fits the uniform block, grows the slab if needed, then persists the whole **block**
+    /// image in **one** `slab.write` — the page header followed by a deterministic zero fill of the
+    /// run table, row-meta, vector-byte, and code regions *and the block's trailing slack*. Rows
+    /// are write-once afterwards, so later appends overwrite only their own bytes; the explicit
+    /// zero fill keeps pads/unwritten segments zero (scoring kernels never observe non-finite
+    /// stale bytes) decisively under free-block reuse, without any per-row pad writes.
+    /// Fallible on slab `grow`; must run before any directory mutation. The lease's deferred tail
+    /// publication happens via [`Self::commit_leases`]. `code_stride = 0` reserves the unchanged
+    /// tier-off geometry.
+    fn reserve_leased(
+        &self,
+        lease: &BlockLease,
         capacity: u32,
         row_stride: u32,
         meta_stride: u32,
         run_capacity: u32,
         code_stride: u32,
-    ) -> Result<PageHeader, VectorCanisterError> {
+    ) -> Result<(), VectorCanisterError> {
         let header = PageHeader::with_code_stride(
             capacity,
             row_stride,
@@ -690,14 +963,18 @@ impl VectorSlabStore {
         .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
         let layout =
             PageLayout::new(&header).map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
-        let end = base
-            .checked_add(layout.page_len() as u64)
-            .expect("slab offset overflow");
+        assert!(
+            layout.page_len() as u64 <= BLOCK_LEN,
+            "vector slab: page span {} exceeds the uniform block length {BLOCK_LEN}",
+            layout.page_len()
+        );
+        let base = block_offset(lease.seq);
+        let end = base.checked_add(BLOCK_LEN).expect("slab offset overflow");
         grow_to_at_least(&self.slab, end)?;
-        let mut image = vec![0u8; layout.page_len()];
+        let mut image = vec![0u8; BLOCK_LEN as usize];
         image[..PAGE_HEADER_SIZE].copy_from_slice(&header.to_bytes());
         self.slab.write(base, &image);
-        Ok(header)
+        Ok(())
     }
 
     /// Writes one row's packed row meta + vector bytes (and, for a code-tier generation, its
@@ -738,10 +1015,13 @@ impl VectorSlabStore {
         }
     }
 
-    /// Writes the run entry for the append landing at `slot` of the page at `base`: either extends the
-    /// open run (rewriting its `run_len`), starts a new run (rewriting the page header `run_count`),
-    /// or, for a fresh page, creates run 0. `run-full` was already ruled out by the caller's roll
-    /// check, so a new run never exceeds `run_capacity`.
+    /// Writes the run entry for the append landing at `slot` of the page at `base`: either extends
+    /// the open run (rewriting its `run_len`), starts a new run (rewriting the page header
+    /// `run_count`), or, for a fresh page, creates run 0. `run-full` was already ruled out by the
+    /// caller's scalar roll check, so a new run never exceeds `run_capacity`. Returns the page's
+    /// new run count (the caller mirrors it into the head). Only the extended-run branch performs
+    /// a slab read (the open run's length); everything else derives from the caller's scalars.
+    #[allow(clippy::too_many_arguments)]
     fn write_run_for_append(
         &self,
         base: u64,
@@ -749,52 +1029,82 @@ impl VectorSlabStore {
         header: &PageHeader,
         slot: u32,
         shard: u32,
+        extends_open_run: bool,
+        prev_run_count: u32,
         run_capacity: u32,
-    ) {
+    ) -> u32 {
         if slot == 0 {
-            debug_assert_eq!(header.run_count, 0, "fresh page starts with no runs");
+            debug_assert_eq!(prev_run_count, 0, "fresh page starts with no runs");
             write_run_at(&self.slab, base, layout, 0, RunEntry::new(shard, 1));
             write_page_header_run_count(&self.slab, base, header, 1);
-        } else {
-            let last_index = header.run_count - 1;
+            return 1;
+        }
+        if extends_open_run {
+            let last_index = prev_run_count - 1;
             let last = read_run_at(&self.slab, base, layout, last_index);
-            if last.shard_id == shard {
-                write_run_at(
-                    &self.slab,
-                    base,
-                    layout,
-                    last_index,
-                    RunEntry::new(shard, last.run_len + 1),
-                );
-            } else {
-                debug_assert!(
-                    header.run_count < run_capacity,
-                    "new run would exceed run_capacity"
-                );
-                let idx = header.run_count;
-                write_run_at(&self.slab, base, layout, idx, RunEntry::new(shard, 1));
-                write_page_header_run_count(&self.slab, base, header, header.run_count + 1);
+            debug_assert_eq!(last.shard_id, shard, "open run shard mismatch");
+            write_run_at(
+                &self.slab,
+                base,
+                layout,
+                last_index,
+                RunEntry::new(shard, last.run_len + 1),
+            );
+            prev_run_count
+        } else {
+            debug_assert!(
+                prev_run_count < run_capacity,
+                "new run would exceed run_capacity"
+            );
+            write_run_at(
+                &self.slab,
+                base,
+                layout,
+                prev_run_count,
+                RunEntry::new(shard, 1),
+            );
+            write_page_header_run_count(&self.slab, base, header, prev_run_count + 1);
+            prev_run_count + 1
+        }
+    }
+
+    /// Squared norm of the stored row bytes: `F32` sums component squares; `I8` accumulates
+    /// integer code squares and applies the quantization scale once (`scale² · Σcode²`,
+    /// dequantization-free). A non-finite row poisons the page's block bound into permanent
+    /// fail-open (never skipping) — a scoring-side defect anyway — without ever skipping wrongly.
+    fn stored_row_norm_sq(encoding: VectorEncoding, bytes: &[u8], aux: &[u8; 8], dims: u16) -> f32 {
+        match encoding {
+            VectorEncoding::F32 => bytes[..dims as usize * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| {
+                    let x = f32::from_le_bytes(*c);
+                    x * x
+                })
+                .sum(),
+            VectorEncoding::I8 => {
+                let scale = f32::from_le_bytes(aux[0..4].try_into().expect("4-byte scale"));
+                let sum_sq: i64 = bytes[..dims as usize]
+                    .iter()
+                    .map(|b| {
+                        let c = *b as i8 as i64;
+                        c * c
+                    })
+                    .sum();
+                scale * scale * sum_sq as f32
             }
         }
     }
 
-    /// True when appending `shard` to the mutable page `m` would start a new run while the page's run
-    /// table is already full (so the row must roll to a fresh page instead).
-    fn run_roll_required(&self, m: &VectorPageMeta, shard: u32, run_capacity: u32) -> bool {
-        if m.row_count == 0 {
-            return false;
-        }
-        let header = self.read_page_header(m.slab_offset);
-        let layout = PageLayout::new(&header).expect("valid page layout");
-        let last = read_run_at(&self.slab, m.slab_offset, &layout, header.run_count - 1);
-        last.shard_id != shard && header.run_count >= run_capacity
-    }
-
-    /// Appends a vector row into the partition's page chain, rolling a new page when the mutable page
-    /// is full **or** its run table would overflow (shard change with `run_count == run_capacity`).
-    /// Write-then-commit: slab grow + writes happen before any `VECTOR_PAGE_META` /
-    /// `VECTOR_PARTITION_HEADS` mutation, and the head update is last, so a failed grow cannot leave a
-    /// head/meta pointing at unwritten bytes.
+    /// Appends a vector row into the partition's page chain, rolling a new page when the mutable
+    /// page is full **or** its run table would overflow (shard change with `run_count ==
+    /// run_capacity`). Slice 8 hot path: the roll decision derives from the head's mutable-page
+    /// scalars and the write layout from the generation def — **zero stable reads**, and the only
+    /// durable map ops are the head get + head insert. Ordering keeps every fallible step
+    /// (block allocation, reservation, seal-table insert) before the single committing head
+    /// insert, so a returned error leaves previously visible state untouched (an interrupted
+    /// attempt may orphan reserved blocks below the tail — dead space reclaimed by compaction).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn append_row(
         &mut self,
@@ -813,7 +1123,6 @@ impl VectorSlabStore {
         }
         let capacity = def.slots_per_page;
         let row_stride = def.pad_stride_bytes;
-        let meta_stride = def.meta_stride_bytes;
         let run_capacity = def.run_capacity;
         // One encoder per append call (Slice 6 contract): `None` keeps the tier-off geometry.
         // The derivation itself is scoped so canbench runs attribute the per-call encoder
@@ -841,87 +1150,88 @@ impl VectorSlabStore {
         let payload =
             VertexPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
 
+        // Def-derived generation geometry (the reservation wrote exactly this header).
+        let gen_header = PageHeader::with_code_stride(
+            capacity,
+            def.pad_stride_bytes,
+            def.meta_stride_bytes,
+            run_capacity,
+            code_stride,
+        )
+        .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
+        let layout =
+            PageLayout::new(&gen_header).map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
+
         let head_key = PartitionKey::new(index_id, index_version, partition_id);
         let mut head = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_head_get");
-            VECTOR_PARTITION_HEADS
-                .with_borrow(|h| h.get(&head_key).expect("partition head get"))
-                .unwrap_or_default()
+            partition_head_get(&head_key).unwrap_or_default()
         };
 
-        let need_new_page = if head.page_count == 0 {
-            true
-        } else {
-            let mutable_key =
-                PageKey::new(index_id, index_version, partition_id, head.mutable_page);
-            let m = {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("append_meta_get");
-                self.meta
-                    .get(&mutable_key)
-                    .expect("mutable page meta present")
-            };
-            m.row_count >= capacity || self.run_roll_required(&m, shard, run_capacity)
-        };
+        // Roll decision purely from the head's mutable-page scalars (`mutable_rows == 0` is the
+        // empty-partition case and always rolls).
+        let need_new_page = head.mutable_rows == 0
+            || head.mutable_rows >= capacity
+            || (shard != head.mutable_last_shard && head.mutable_run_count >= run_capacity);
 
-        let (page_id, mut meta, header) = if need_new_page {
-            let page_id = head.next_page_id;
-            let slab_offset = self.occupied_tail;
-            // Fallible slab grow + page-header init BEFORE any directory mutation.
-            let header = {
+        let (page_seq, slot, prev_run_count) = if need_new_page {
+            let mut pending_tail = tail_next_seq(self.occupied_tail);
+            let lease = self.lease_block(&mut pending_tail)?;
+            {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("append_reserve_page");
-                self.reserve_page(
-                    slab_offset,
+                self.reserve_leased(
+                    &lease,
                     capacity,
-                    row_stride,
-                    meta_stride,
+                    def.pad_stride_bytes,
+                    def.meta_stride_bytes,
                     run_capacity,
                     code_stride,
-                )?
-            };
-            (
-                page_id,
-                VectorPageMeta {
-                    slab_offset,
-                    row_count: 0,
-                    live_count: 0,
-                },
-                header,
-            )
+                )?;
+            }
+            if head.page_count > 0 {
+                // Seal the current mutable page at its positional id (`page_count - 1`).
+                // Idempotent under retries: artifacts beyond the target chunk are dropped and
+                // dense chunks are rewritten deterministically from the head scalars.
+                append_sealed_entries(
+                    index_id,
+                    index_version,
+                    partition_id,
+                    head.page_count - 1,
+                    &[PageTableEntry {
+                        seq: head.mutable_seq,
+                        row_count: head.mutable_rows,
+                        live_count: head.mutable_live,
+                        block_bound: head.mutable_bound,
+                    }],
+                )?;
+            }
+            (lease.seq, 0u32, 0u32)
         } else {
-            let page_id = head.mutable_page;
-            let mutable_key = PageKey::new(index_id, index_version, partition_id, page_id);
-            let meta = {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("append_meta_get");
-                self.meta.get(&mutable_key).expect("mutable page meta")
-            };
-            let header = {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("append_header_read");
-                self.read_page_header(meta.slab_offset)
-            };
-            (page_id, meta, header)
+            (head.mutable_seq, head.mutable_rows, head.mutable_run_count)
         };
-        let layout = PageLayout::new(&header).expect("valid page layout");
+        let pending_tail = need_new_page.then_some(BlockLease {
+            seq: page_seq,
+            fresh_tail: true,
+        });
+        let base = block_offset(page_seq);
 
-        let slot = meta.row_count;
-        let page_key = PageKey::new(index_id, index_version, partition_id, page_id);
-        // Infallible page writes (the page region is already reserved/grown).
-        {
+        // Infallible page writes (the block is already reserved/grown).
+        let new_run_count = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_run_write");
             self.write_run_for_append(
-                meta.slab_offset,
+                base,
                 &layout,
-                &header,
+                &gen_header,
                 slot,
                 shard,
+                slot > 0 && shard == head.mutable_last_shard,
+                prev_run_count,
                 run_capacity,
-            );
-        }
+            )
+        };
         // The code segment is computed from the stored original bytes (F32 raw / I8 dequantized)
         // and written beside them — never recomputed at read time, never stored elsewhere.
         let code_segment = {
@@ -937,7 +1247,7 @@ impl VectorSlabStore {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_row_write");
             self.write_row(
-                meta.slab_offset,
+                base,
                 &layout,
                 slot,
                 payload,
@@ -947,37 +1257,40 @@ impl VectorSlabStore {
             );
         }
 
-        // Commit directory: occupied_tail (slab header) -> page meta -> partition head (last).
+        // Commit: the head insert is the single fallible step from here on.
         if need_new_page {
-            self.set_occupied_tail(meta.slab_offset + layout.page_len() as u64);
-        }
-        meta.row_count += 1;
-        meta.live_count += 1;
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("append_meta_insert");
-            self.meta.insert(page_key, meta);
-        }
-
-        if need_new_page {
-            head.mutable_page = page_id;
+            head.mutable_page = head.next_page_id;
             head.page_count += 1;
-            head.next_page_id = page_id + 1;
+            head.next_page_id += 1;
+            // The new tail page starts with fresh per-page counters (the old page's state was
+            // sealed into its table entry above).
+            head.mutable_live = 0;
+            head.mutable_bound = 0.0;
         }
+        head.mutable_seq = page_seq;
+        head.mutable_run_count = new_run_count;
+        head.mutable_last_shard = shard;
+        head.mutable_rows = slot + 1;
+        head.mutable_live += 1;
+        // Conservative monotone block bound: M = max(M, ‖row‖); tombstones never lower it.
+        let norm_sq = Self::stored_row_norm_sq(def.encoding, bytes, aux, def.dims);
+        head.mutable_bound = head.mutable_bound.max(norm_sq.sqrt());
         head.live_len += 1;
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_head_insert");
-            VECTOR_PARTITION_HEADS
-                .with_borrow_mut(|h| h.insert(head_key, head))
-                .map(|_| ())
+            // Infallible deferred-tail publication precedes the committing head insert.
+            if let Some(lease) = pending_tail {
+                self.commit_leases(&[lease]);
+            }
+            partition_head_insert(head_key, head)
                 .map_err(|_| VectorCanisterError::StableGrowFailed)?;
         }
 
         Ok(SlotRef {
             index_version: index_version as u32,
             partition_id,
-            page_id: page_id as u32,
+            page_id: head.mutable_page as u32,
             slot,
         })
     }
@@ -987,10 +1300,13 @@ impl VectorSlabStore {
     /// the rebuild shadow build (`building_step`), which appends a whole partition's batch at once;
     /// the dual-write upsert path keeps using the single-row `append_row`.
     ///
-    /// Unlike `append_row`, the whole batch is prevalidated and planned before reserving every page.
-    /// Reserved headers remain unreachable until the final partition head has been inserted. That
-    /// single fallible directory update precedes all row, page-meta, and occupied-tail publication,
-    /// so every returned error leaves the previously visible batch state unchanged.
+    /// Unlike `append_row`, the whole batch is prevalidated and planned before any durable op: all
+    /// blocks are allocated and reserved, the seal-table record is built in memory (the previous
+    /// mutable page plus every planned page except the last, which becomes the new mutable tail),
+    /// and the committing head insert is the **last returned-error path** — every earlier failure
+    /// leaves previously visible state untouched (interrupted attempts may orphan reserved blocks,
+    /// reclaimed later by compaction). Per-page counters derive arithmetically from the validated
+    /// plan before any byte is written.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn append_rows(
         &mut self,
@@ -1012,7 +1328,6 @@ impl VectorSlabStore {
         }
         let capacity = def.slots_per_page;
         let row_stride = def.pad_stride_bytes;
-        let meta_stride = def.meta_stride_bytes;
         let run_capacity = def.run_capacity;
         // One encoder per batch call; `None` keeps the tier-off geometry.
         let mut encoder = crate::code_tier::CodeEncoder::from_def(def);
@@ -1023,11 +1338,12 @@ impl VectorSlabStore {
         };
 
         // Validate every row and the page geometry before reserving any slab bytes. The validated
-        // payloads also keep the write phase free of returned errors.
+        // payloads also keep the write phase free of returned errors. This header is exactly what
+        // every reservation persists (def-derived generation geometry).
         let page_header = PageHeader::with_code_stride(
             capacity,
             row_stride,
-            meta_stride,
+            def.meta_stride_bytes,
             run_capacity,
             code_stride,
         )
@@ -1049,11 +1365,10 @@ impl VectorSlabStore {
         }
 
         let head_key = PartitionKey::new(index_id, index_version, partition_id);
-        let head = VECTOR_PARTITION_HEADS
-            .with_borrow(|h| h.get(&head_key).expect("partition head get"))
-            .unwrap_or_default();
+        let head = partition_head_get(&head_key).unwrap_or_default();
 
-        // Plan every page boundary and run-table roll without touching stable state.
+        // Plan every page boundary and run-table roll without touching stable state. Batches always
+        // start fresh pages (the building path writes empty-to-nearly-empty shadow partitions).
         let mut boundaries = Vec::new();
         let mut row_start = 0usize;
         let mut page_rows = 0u32;
@@ -1076,42 +1391,75 @@ impl VectorSlabStore {
         }
         boundaries.push((row_start, rows.len()));
 
-        let page_len = layout.page_len() as u64;
+        // Lease every planned block first (free-list consumption is eager; tail publication is
+        // deferred to commit so a failed batch leaves `occupied_tail` untouched), then reserve.
         let mut plans = Vec::with_capacity(boundaries.len());
+        let mut leases = Vec::with_capacity(boundaries.len());
         let mut page_id = head.next_page_id;
-        let mut slab_offset = self.occupied_tail;
-        for (row_start, row_end) in boundaries {
+        let mut pending_tail = tail_next_seq(self.occupied_tail);
+        for (row_start, row_end) in &boundaries {
+            let lease = self.lease_block(&mut pending_tail)?;
             plans.push(BatchPagePlan {
                 page_id,
-                slab_offset,
-                row_start,
-                row_end,
+                page_seq: lease.seq,
+                slab_offset: block_offset(lease.seq),
+                row_start: *row_start,
+                row_end: *row_end,
             });
+            leases.push(lease);
             page_id = page_id.checked_add(1).expect("page id overflow");
-            slab_offset = slab_offset
-                .checked_add(page_len)
-                .expect("slab offset overflow");
         }
 
-        // Reserve every planned page before publishing the batch. Headers written beyond the
-        // current occupied tail are unreachable and will be overwritten by a later retry on error.
-        for plan in &plans {
+        // Reserve every planned block (headers written beyond the committed state are unreachable).
+        for (_plan, lease) in plans.iter().zip(&leases) {
             #[cfg(test)]
             if take_injected_append_rows_reserve_failure() {
                 return Err(VectorCanisterError::StableGrowFailed);
             }
-            self.reserve_page(
-                plan.slab_offset,
+            self.reserve_leased(
+                lease,
                 capacity,
                 row_stride,
-                meta_stride,
+                def.meta_stride_bytes,
                 run_capacity,
                 code_stride,
             )?;
         }
 
+        // Per-page counters and bounds derive purely from the validated plan (no stable access):
+        // batches write every row live, so `live == rows`, and the bound is the max row norm.
+        let page_entry = |plan: &BatchPagePlan| PageTableEntry {
+            seq: plan.page_seq,
+            row_count: (plan.row_end - plan.row_start) as u32,
+            live_count: (plan.row_end - plan.row_start) as u32,
+            block_bound: rows[plan.row_start..plan.row_end]
+                .iter()
+                .map(|(_, bytes, aux)| {
+                    Self::stored_row_norm_sq(def.encoding, bytes, aux, def.dims).sqrt()
+                })
+                .fold(0.0_f32, f32::max),
+        };
+
+        // Build the sealed-entry suffix in memory: seal the current mutable page (if any), then
+        // every planned page except the last (which becomes the new mutable tail). The chunked
+        // table writer truncates any interrupted-attempt artifacts beyond the final position.
+        let mut new_seals = Vec::with_capacity(plans.len());
+        if head.page_count > 0 {
+            new_seals.push(PageTableEntry {
+                seq: head.mutable_seq,
+                row_count: head.mutable_rows,
+                live_count: head.mutable_live,
+                block_bound: head.mutable_bound,
+            });
+        }
+        for plan in &plans[..plans.len() - 1] {
+            new_seals.push(page_entry(plan));
+        }
+
+        let last_plan = plans.last().expect("non-empty batch plan");
+        let last_rows = &validated[last_plan.row_start..last_plan.row_end];
         let mut final_head = head;
-        final_head.mutable_page = plans.last().expect("non-empty batch plan").page_id;
+        final_head.mutable_page = last_plan.page_id;
         final_head.page_count = final_head
             .page_count
             .checked_add(plans.len() as u64)
@@ -1121,27 +1469,35 @@ impl VectorSlabStore {
             .checked_add(rows.len() as u64)
             .expect("partition live length overflow");
         final_head.next_page_id = page_id;
+        final_head.mutable_seq = last_plan.page_seq;
+        final_head.mutable_rows = last_rows.len() as u32;
+        final_head.mutable_live = last_rows.len() as u32;
+        final_head.mutable_last_shard = last_rows.last().expect("non-empty page").0;
+        final_head.mutable_run_count =
+            last_rows.windows(2).filter(|w| w[0].0 != w[1].0).count() as u32 + 1;
+        final_head.mutable_bound = page_entry(last_plan).block_bound;
 
-        // Perform the last returned-error path before any row, page-meta, or occupied-tail publish.
-        VECTOR_PARTITION_HEADS
-            .with_borrow_mut(|h| h.insert(head_key, final_head))
-            .map(|_| ())
+        // The two fallible directory publishes, in order; after them the batch is infallible.
+        let start_pos = if head.page_count > 0 {
+            head.page_count - 1
+        } else {
+            0
+        };
+        append_sealed_entries(index_id, index_version, partition_id, start_pos, &new_seals)?;
+        // Infallible deferred-tail publication precedes the committing head insert.
+        self.commit_leases(&leases);
+        partition_head_insert(head_key, final_head)
             .map_err(|_| VectorCanisterError::StableGrowFailed)?;
 
-        let mut page_metas = Vec::with_capacity(plans.len());
+        // Infallible row/run writes.
         for plan in &plans {
-            let mut meta = VectorPageMeta {
-                slab_offset: plan.slab_offset,
-                row_count: 0,
-                live_count: 0,
-            };
             let mut header = page_header;
             let mut last_shard = None;
             let mut last_run_len = 0u32;
             for row_index in plan.row_start..plan.row_end {
                 let (shard, payload) = validated[row_index];
                 let (_, bytes, aux) = rows[row_index];
-                let slot = meta.row_count;
+                let slot = (row_index - plan.row_start) as u32;
                 if slot == 0 {
                     write_run_at(
                         &self.slab,
@@ -1200,8 +1556,6 @@ impl VectorSlabStore {
                     &aux,
                     code_segment.as_deref(),
                 );
-                meta.row_count += 1;
-                meta.live_count += 1;
                 slots.push(SlotRef {
                     index_version: index_version as u32,
                     partition_id,
@@ -1209,47 +1563,50 @@ impl VectorSlabStore {
                     slot,
                 });
             }
-            page_metas.push((
-                PageKey::new(index_id, index_version, partition_id, plan.page_id),
-                meta,
-            ));
-        }
-
-        self.set_occupied_tail(slab_offset);
-        for (key, meta) in page_metas {
-            self.meta.insert(key, meta);
         }
 
         Ok(slots)
     }
 
     /// Marks a slot tombstoned, owning all live accounting idempotently: on the live->tombstoned
-    /// transition it sets the payload tombstone bit and decrements `VectorPageMeta.live_count`
-    /// (tombstoned rows are derived as `row_count − live_count`) and the row's
-    /// `VECTOR_PARTITION_HEADS.live_len` exactly once. Returns `true` only when the row changed (was
-    /// previously live and in range).
+    /// transition it sets the payload tombstone bit, decrements the owning page's live counter
+    /// (sealed pages via their table entry, the mutable tail via the head scalar; tombstoned rows
+    /// are derived as `row_count − live_count`) and the row's `VECTOR_PARTITION_HEADS.live_len`
+    /// exactly once. Returns `true` only when the row changed (was previously live and in range).
+    /// The page's block bound is deliberately left untouched (monotone, conservative).
     pub(crate) fn tombstone_row(&mut self, index_id: u32, slot: SlotRef) -> bool {
-        let page_key = PageKey::new(
-            index_id,
-            slot.index_version as u64,
-            slot.partition_id,
-            slot.page_id as u64,
-        );
-        let Some(mut meta) = self.meta.get(&page_key) else {
+        let version = slot.index_version as u64;
+        let head_key = PartitionKey::new(index_id, version, slot.partition_id);
+        let Some(mut head) = partition_head_get(&head_key) else {
             return false;
         };
-        if slot.slot >= meta.row_count {
+        let sealed_len = head.page_count.saturating_sub(1);
+        let page_id = u64::from(slot.page_id);
+
+        // Resolve the page location + written-row bound; reject unknown/out-of-range slots
+        // before touching anything.
+        let (seq, row_count) = if page_id < sealed_len {
+            match sealed_entry_at(index_id, version, slot.partition_id, page_id) {
+                Some(entry) => (entry.seq, entry.row_count),
+                None => return false,
+            }
+        } else if page_id == sealed_len {
+            (head.mutable_seq, head.mutable_rows)
+        } else {
+            return false;
+        };
+        if slot.slot >= row_count {
             return false;
         }
-        let header = self.read_page_header(meta.slab_offset);
+        let base = block_offset(seq);
+        let header = self.read_page_header(base);
         let layout = PageLayout::new(&header).expect("valid page layout");
         let meta_range = layout.row_meta_range_at(slot.slot);
         // Fixed-width stack buffer: `meta_stride` is 4 | 8 | 12, so the tombstone hot path never
         // heap-allocates.
         let mut meta_buf = [0u8; MAX_META_STRIDE as usize];
         let buf = &mut meta_buf[..layout.meta_stride()];
-        self.slab
-            .read(meta.slab_offset + meta_range.start as u64, buf);
+        self.slab.read(base + meta_range.start as u64, buf);
         let mut row_meta = RowMeta::from_bytes(buf, layout.meta_stride()).expect("decode row meta");
         if row_meta.vertex.is_tombstone() {
             return false;
@@ -1258,18 +1615,22 @@ impl VectorSlabStore {
         row_meta
             .write_into(buf, layout.meta_stride())
             .expect("encode row meta");
-        self.slab
-            .write(meta.slab_offset + meta_range.start as u64, buf);
-        meta.live_count = meta.live_count.saturating_sub(1);
-        self.meta.insert(page_key, meta);
+        self.slab.write(base + meta_range.start as u64, buf);
 
-        let head_key = PartitionKey::new(index_id, slot.index_version as u64, slot.partition_id);
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
-            if let Some(mut head) = h.get(&head_key).expect("partition head get") {
-                head.live_len = head.live_len.saturating_sub(1);
-                h.insert(head_key, head).expect("tombstone head insert");
-            }
-        });
+        if page_id < sealed_len {
+            // Patch just the owning chunk (rare remove path; one chunk rewrite).
+            let chunk = (page_id as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+            let mut table = page_table_chunk_get(index_id, version, slot.partition_id, chunk)
+                .expect("sealed chunk present");
+            let entry = &mut table.entries[page_id as usize % ENTRIES_PER_TABLE_CHUNK];
+            entry.live_count = entry.live_count.saturating_sub(1);
+            page_table_chunk_put(index_id, version, slot.partition_id, chunk, table)
+                .expect("tombstone table insert");
+        } else {
+            head.mutable_live = head.mutable_live.saturating_sub(1);
+        }
+        head.live_len = head.live_len.saturating_sub(1);
+        partition_head_insert(head_key, head).expect("tombstone head insert");
         true
     }
 
@@ -1281,30 +1642,36 @@ impl VectorSlabStore {
         index_id: u32,
         slot: SlotRef,
     ) -> Option<(u32, Vec<u8>, [u8; 8])> {
-        let page_key = PageKey::new(
-            index_id,
-            slot.index_version as u64,
-            slot.partition_id,
-            slot.page_id as u64,
-        );
-        let meta = self.meta.get(&page_key)?;
-        if slot.slot >= meta.row_count {
+        let version = slot.index_version as u64;
+        let head_key = PartitionKey::new(index_id, version, slot.partition_id);
+        let head = partition_head_get(&head_key)?;
+        let sealed_len = head.page_count.saturating_sub(1);
+        let page_id = u64::from(slot.page_id);
+        let (seq, row_count) = if page_id < sealed_len {
+            let entry = sealed_entry_at(index_id, version, slot.partition_id, page_id)?;
+            (entry.seq, entry.row_count)
+        } else if page_id == sealed_len {
+            (head.mutable_seq, head.mutable_rows)
+        } else {
+            return None;
+        };
+        if slot.slot >= row_count {
             return None;
         }
-        let header = self.read_page_header(meta.slab_offset);
+        let base = block_offset(seq);
+        let header = self.read_page_header(base);
         let layout = PageLayout::new(&header).ok()?;
         let meta_range = layout.row_meta_range_at(slot.slot);
         // Fixed-width stack buffer: `meta_stride` is 4 | 8 | 12, so the point read never
         // heap-allocates for the row header.
         let mut meta_buf = [0u8; MAX_META_STRIDE as usize];
         let meta_slice = &mut meta_buf[..layout.meta_stride()];
-        self.slab
-            .read(meta.slab_offset + meta_range.start as u64, meta_slice);
+        self.slab.read(base + meta_range.start as u64, meta_slice);
         let row_meta = RowMeta::from_bytes(meta_slice, layout.meta_stride()).ok()?;
         if row_meta.vertex.is_tombstone() {
             return None;
         }
-        let vec_start = meta.slab_offset + layout.vector_range_at(slot.slot).start as u64;
+        let vec_start = base + layout.vector_range_at(slot.slot).start as u64;
         // The returned bytes stay stored-row wide (`vector_stride`): the row-format contract
         // returns the full padded row (its trailing pad is guaranteed zero by the reservation
         // zero fill), and callers interpret only the meaningful prefix.
@@ -1313,20 +1680,85 @@ impl VectorSlabStore {
         Some((row_meta.vertex.vertex_id(), out, row_meta.aux))
     }
 
-    /// Bulk-reads one specific page into `scratch`. Returns `false` when the page is absent from the
-    /// directory or its header is invalid, so the caller skips the page group (the same fail path as
-    /// `read_row_bytes`'s `None`). `scratch` is reused across pages, so a scan pays one bulk read per
-    /// distinct page instead of one per row.
+    /// Bulk-reads one specific page into `scratch`. Returns `false` when the page is absent from
+    /// the partition chain or its header is invalid, so the caller skips the page group (the same
+    /// fail path as `read_row_bytes`'s `None`). `scratch` is reused across pages, so a scan pays
+    /// one bulk read per distinct page instead of one per row.
     pub(crate) fn load_page(&self, page_key: PageKey, scratch: &mut PageScratch) -> bool {
-        let Some(meta) = self.meta.get(&page_key) else {
+        let Some((seq, row_count)) = self.resolve_page(
+            page_key.index_id,
+            page_key.index_version,
+            page_key.partition_id,
+            page_key.page_id,
+        ) else {
             return false;
         };
-        let header = self.read_page_header(meta.slab_offset);
+        let header = self.read_page_header(block_offset(seq));
         if PageLayout::new(&header).is_err() {
             return false;
         }
-        scratch.load(&self.slab, &meta, &header);
+        scratch.load(&self.slab, block_offset(seq), row_count, &header);
         true
+    }
+
+    /// Resolves a positional page id within one partition chain to its `(block seq, row_count)`:
+    /// ids below the tail live in the sealed-page table, the tail id is the head's mutable mirror.
+    fn resolve_page(
+        &self,
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+        page_id: u64,
+    ) -> Option<(u32, u32)> {
+        let head = partition_head_get(&PartitionKey::new(index_id, index_version, partition_id))?;
+        let sealed_len = head.page_count.saturating_sub(1);
+        if page_id < sealed_len {
+            let entry = sealed_entry_at(index_id, index_version, partition_id, page_id)?;
+            Some((entry.seq, entry.row_count))
+        } else if page_id == sealed_len {
+            Some((head.mutable_seq, head.mutable_rows))
+        } else {
+            None
+        }
+    }
+
+    /// Resolves one partition's full page chain in positional order — one head read plus one read
+    /// per populated table chunk. The scalar skip bound (`block_bound`) rides along so scan
+    /// callers can drop whole pages before any slab read (L2 only; cosine bounds are powerless
+    /// on unit rows and are ignored there).
+    pub(crate) fn partition_page_metas(
+        &self,
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+    ) -> Vec<PageMetaView> {
+        let head_key = PartitionKey::new(index_id, index_version, partition_id);
+        let Some(head) = partition_head_get(&head_key) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(head.page_count as usize);
+        for entry in sealed_entries_of(
+            index_id,
+            index_version,
+            partition_id,
+            head.page_count.saturating_sub(1),
+        ) {
+            out.push(PageMetaView {
+                page_id: out.len() as u64,
+                slab_offset: block_offset(entry.seq),
+                row_count: entry.row_count,
+                live_count: entry.live_count,
+                block_bound: entry.block_bound,
+            });
+        }
+        out.push(PageMetaView {
+            page_id: head.page_count - 1,
+            slab_offset: block_offset(head.mutable_seq),
+            row_count: head.mutable_rows,
+            live_count: head.mutable_live,
+            block_bound: head.mutable_bound,
+        });
+        out
     }
 
     /// Page/batch visitor over one partition's page chain. Each page is bulk-read once into
@@ -1381,28 +1813,22 @@ impl VectorSlabStore {
         scratch: &mut PageScratch,
         mut visitor: F,
     ) {
-        let lower = PageKey::new(index_id, index_version, partition_id, 0);
-        for entry in self
-            .meta
-            .range((RangeBound::Included(lower), RangeBound::Unbounded))
-        {
-            let key = entry.key();
-            if key.index_id != index_id
-                || key.index_version != index_version
-                || key.partition_id != partition_id
-            {
-                break; // partition-major order: past this partition's pages.
-            }
-            let meta = entry.value();
-            let header = self.read_page_header(meta.slab_offset);
-            scratch.load(&self.slab, &meta, &header);
-            visitor(key.page_id, scratch);
+        for view in self.partition_page_metas(index_id, index_version, partition_id) {
+            let header = self.read_page_header(view.slab_offset);
+            scratch.load(&self.slab, view.slab_offset, view.row_count, &header);
+            visitor(view.page_id, scratch);
         }
     }
 
-    /// Bounded, cursor-resumable delete of `VECTOR_PAGE_META` entries for `(index_id, version)`.
-    /// No slab tail rewind here: dropped pages leave their slab bytes as dead space until the
-    /// opt-in slab compaction reclaims them (plan 0278).
+    /// Bounded, cursor-resumable teardown of one `(index_id, version)` generation's pages.
+    /// **Whole-partition granularity**: a partition is drained atomically — its sealed chunks are
+    /// removed, its blocks freed into the slab free list, and its leaf head removed — so at every
+    /// message boundary each surviving partition remains fully intact (reopen-consistent) and each
+    /// drained partition leaves no records behind. At least one remaining partition is processed
+    /// per call regardless of `budget` (progress guarantee; budgets below one partition's page
+    /// count still terminate). The rebuild teardown drops coarse-level heads/centroids afterwards.
+    /// The cursor is the highest drained partition id as `PageKey` bytes (`page_id` field is
+    /// `u64::MAX`).
     pub(crate) fn drop_version_pages(
         &mut self,
         index_id: u32,
@@ -1410,30 +1836,65 @@ impl VectorSlabStore {
         cursor: Option<Vec<u8>>,
         budget: u32,
     ) -> DropProgress {
-        let mut to_remove: Vec<PageKey> = Vec::new();
+        // Live partitions of the version in ascending order with their full page lists.
+        let mut partitions: Vec<(u32, PartitionHead, Vec<u32>)> = Vec::new();
+        for (key, record) in collect_head_records() {
+            let PartitionHeadRecord::Head(head) = record else {
+                continue;
+            };
+            if key.index_id != index_id || key.index_version != version || head.page_count == 0 {
+                continue;
+            }
+            let seqs = sealed_entries_of(
+                index_id,
+                version,
+                key.partition_id,
+                head.page_count.saturating_sub(1),
+            )
+            .into_iter()
+            .map(|entry| entry.seq)
+            .chain([head.mutable_seq])
+            .collect::<Vec<u32>>();
+            partitions.push((key.partition_id, head, seqs));
+        }
+
+        let resume_partition = cursor
+            .as_ref()
+            .map(|bytes| PageKey::from_bytes(Cow::Owned(bytes.clone())).partition_id);
+        let mut seqs_to_free: Vec<u32> = Vec::new();
         let mut last: Option<PageKey> = None;
         let mut exhausted = true;
-        {
-            let lower = match &cursor {
-                None => RangeBound::Included(PageKey::new(index_id, version, 0, 0)),
-                Some(bytes) => RangeBound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
-            };
-            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
-                let key = entry.key();
-                if key.index_id != index_id || key.index_version != version {
-                    break;
-                }
-                if to_remove.len() as u32 >= budget {
-                    exhausted = false;
-                    break;
-                }
-                to_remove.push(*key);
-                last = Some(*key);
+        let mut remaining_budget = budget.max(1) as u64;
+        for (partition, _head, seqs) in &partitions {
+            if resume_partition.is_some_and(|r| *partition <= r) {
+                continue;
+            }
+            // Whole-partition atomic drain; the first candidate always runs (progress).
+            seqs_to_free.extend_from_slice(seqs);
+            page_table_remove_all(index_id, version, *partition);
+            partition_head_remove(&PartitionKey::new(index_id, version, *partition));
+            last = Some(PageKey::new(index_id, version, *partition, u64::MAX));
+            exhausted = false; // provisional until the loop end proves otherwise
+            remaining_budget = remaining_budget.saturating_sub(seqs.len() as u64);
+            if remaining_budget == 0 {
+                break;
             }
         }
-        for key in &to_remove {
-            self.meta.remove(key);
+        // `exhausted` only when every partition was drained in this call.
+        if last
+            .as_ref()
+            .is_some_and(|l| partitions.iter().all(|(p, _, _)| *p <= l.partition_id))
+        {
+            exhausted = true;
         }
+        if partitions.is_empty() {
+            exhausted = true;
+        }
+
+        if !seqs_to_free.is_empty() {
+            self.free_blocks(&mut seqs_to_free);
+        }
+
         let cursor = if exhausted {
             None
         } else {
@@ -1442,29 +1903,30 @@ impl VectorSlabStore {
         DropProgress { cursor, exhausted }
     }
 
-    /// One bounded slab-compaction pass segment (plan 0278). Continues the current meta-map lap
-    /// after `scan_cursor` (`None` starts a fresh lap), examining at most `max_entries` directory
-    /// entries and copying at most `max_bytes` of live pages down into the dense prefix.
+    /// One bounded slab-compaction pass segment (plan 0278, Slice 8 block addressing). Continues
+    /// the current lap after `scan_cursor` (`None` starts a fresh lap), examining at most
+    /// `max_entries` live-page locations and copying at most `max_bytes` of whole uniform blocks
+    /// down into the dense prefix.
     ///
-    /// Collection rule: a page is collected exactly when its span lies inside the snapshot window
-    /// `[write_cursor, range_end)`. Pages appended after compaction start sit above `range_end`
-    /// and are never touched; metas dropped mid-compaction by GC/cleanup are absent from the map
-    /// and skipped by the read cursor. The first in-range page is always admitted so every step
-    /// makes forward progress; later ones only while their cumulative span fits `max_bytes`.
+    /// Collection rule: a page is collected exactly when its block lies inside the snapshot window
+    /// `[write_cursor, range_end)` (both block-aligned), regardless of when it was created — with
+    /// free-list reuse a post-start append may land in an in-range hole and is moved like any
+    /// other live page; pages dropped mid-compaction by teardown vanish from their records and
+    /// are never re-examined. The first in-range page is always admitted so every step makes
+    /// forward progress; later ones only while their cumulative byte budget fits.
     ///
-    /// Move rule: collected pages are copied contiguously down to `write_cursor` in ascending
-    /// original-offset order — destination spans never reach the next source (`dest_i + len_i <=
-    /// offset_{i+1}` holds inductively), so no copy can overwrite a not-yet-read source. Each
-    /// page's bytes are persisted strictly before its `VectorPageMeta.slab_offset` swap (the 16 B
-    /// indirection is the only reference to the bytes), so an interrupted move leaves duplicate
-    /// dead bytes below, never a dangling offset.
+    /// Move rule: collected blocks are copied contiguously down to `write_cursor` in ascending
+    /// source order — destinations never reach the next source — and each owner's `seq` (sealed-
+    /// table entry or head mutable mirror) swaps only after its bytes persist. An interrupted move
+    /// leaves duplicate dead bytes below, never a dangling reference; owner updates trap on map
+    /// growth so the message rolls back atomically and the persisted cursors resume exactly.
     ///
     /// Exhaustion: when a full lap completes without collecting any page, nothing live remains in
-    /// `[header, range_end)`; finalize runs in the same message — it fails closed if any live span
-    /// sits inside the reclaimed gap, then persists `occupied_tail = max(write_cursor, highest
-    /// live span end)` exactly once (spans beginning at/above `range_end` belong to post-start
-    /// appends and keep the tail above the gap), so only a quiescent store reclaims all the way
-    /// down to `write_cursor`. The slab header is persisted last per the ADR 0032 protocol.
+    /// the snapshot range; finalize runs in the same message — it fails closed if any live page
+    /// sits inside the reclaimed gap, persists `occupied_tail = max(write_cursor, highest live
+    /// block end)` once, and registers the reclaimed gap as free runs (free-side reuse). Post-
+    /// start appends above the range keep the persisted tail above the gap; only a quiescent
+    /// store reclaims all the way down to the write cursor.
     pub(crate) fn compact_step(
         &mut self,
         write_cursor: u64,
@@ -1472,49 +1934,90 @@ impl VectorSlabStore {
         scan_cursor: Option<PageKey>,
         max_entries: u32,
         max_bytes: u64,
-        mut def_of: DefResolver<'_>,
     ) -> Result<SlabCompactStepOutcome, VectorCanisterError> {
         assert!(
             SLAB_HEADER_SIZE as u64 <= write_cursor && write_cursor <= range_end,
             "vector slab compaction: corrupt durable cursors (write {write_cursor}, range end \
              {range_end})"
         );
-        let mut batch: Vec<(PageKey, VectorPageMeta, u64)> = Vec::new();
+
+        // Live page locations, ordered by (index_id, index_version, partition_id, positional) so
+        // examination/resume is deterministic across steps. The cursor key compares on the same
+        // tuple via `PageKey`.
+        let mut all: Vec<CompactCandidate> = Vec::new();
+        for (key, record) in collect_head_records() {
+            match record {
+                PartitionHeadRecord::Head(head) if head.page_count > 0 => {
+                    all.push(CompactCandidate {
+                        positional: head.page_count - 1,
+                        src_seq: head.mutable_seq,
+                        mutable: true,
+                        owner: PartitionKey::new(key.index_id, key.index_version, key.partition_id),
+                    });
+                }
+                PartitionHeadRecord::Head(_) => {}
+                PartitionHeadRecord::Table(table) => {
+                    // Chunk keys carry the chunk index in their level byte; the global
+                    // positional id is `chunk * ENTRIES_PER_TABLE_CHUNK + slot`.
+                    let chunk_index = (key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize;
+                    for (i, entry) in table.entries.iter().enumerate() {
+                        all.push(CompactCandidate {
+                            positional: (chunk_index * ENTRIES_PER_TABLE_CHUNK + i) as u64,
+                            src_seq: entry.seq,
+                            mutable: false,
+                            owner: PartitionKey::new(
+                                key.index_id,
+                                key.index_version,
+                                key.partition_id,
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        let candidate_key = |c: &CompactCandidate| {
+            PageKey::new(
+                c.owner.index_id,
+                c.owner.index_version,
+                c.owner.partition_id,
+                c.positional,
+            )
+        };
+        all.sort_by_key(|c| candidate_key(c));
+
+        // Examine in key order after the resume cursor; collect the copy batch.
+        let mut batch: Vec<CompactCandidate> = Vec::new();
         let mut batch_bytes = 0u64;
         let mut examined = 0u32;
-        let mut last_key: Option<PageKey> = None;
+        let mut last_examined: Option<PageKey> = None;
         let mut lap_complete = true;
-        {
-            let lower = match scan_cursor {
-                None => RangeBound::Unbounded,
-                Some(key) => RangeBound::Excluded(key),
-            };
-            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
-                if examined >= max_entries.max(1) {
-                    lap_complete = false;
-                    break;
-                }
-                examined += 1;
-                let key = *entry.key();
-                let m = entry.value();
-                last_key = Some(key);
-                if m.slab_offset < write_cursor || m.slab_offset >= range_end {
-                    // Dense prefix below the write cursor, or a post-start append outside the
-                    // snapshot range.
-                    continue;
-                }
-                let span = compact_span_of(&mut def_of, key.index_id);
-                if !batch.is_empty() && batch_bytes + span > max_bytes {
-                    continue; // beyond this message's copy budget; picked up on a later lap.
-                }
-                batch.push((key, m, span));
-                batch_bytes += span;
+        for cand in &all {
+            let ck = candidate_key(cand);
+            if scan_cursor.as_ref().is_some_and(|cursor| ck <= *cursor) {
+                continue;
             }
+            if examined >= max_entries.max(1) {
+                lap_complete = false;
+                break;
+            }
+            examined += 1;
+            last_examined = Some(ck);
+            let off = block_offset(cand.src_seq);
+            if off < write_cursor || off >= range_end {
+                // Dense prefix below the write cursor, or a post-start append outside the
+                // snapshot range.
+                continue;
+            }
+            if !batch.is_empty() && batch_bytes + BLOCK_LEN > max_bytes {
+                continue; // beyond this message's copy budget; picked up on a later lap.
+            }
+            batch.push(cand.clone());
+            batch_bytes += BLOCK_LEN;
         }
 
         if batch.is_empty() {
             return Ok(if lap_complete {
-                let final_tail = self.compact_finalize(write_cursor, range_end, def_of);
+                let final_tail = self.compact_finalize(write_cursor, range_end);
                 SlabCompactStepOutcome {
                     finalized: true,
                     write_cursor: final_tail,
@@ -1526,90 +2029,225 @@ impl VectorSlabStore {
                     finalized: false,
                     write_cursor,
                     pages_moved: 0,
-                    scan_cursor: last_key,
+                    scan_cursor: last_examined,
                 }
             });
         }
 
-        // Ascending original-offset order keeps every copy strictly below the not-yet-copied
-        // sources (`dest_i + len_i <= offset_{i+1}` holds inductively); ties cannot occur because
-        // page spans are disjoint.
-        batch.sort_by_key(|(_, m, _)| m.slab_offset);
+        // Ascending source order keeps every copy strictly below the not-yet-copied sources
+        // (destinations are block-granular and sources disjoint). Destination blocks are
+        // unlinked from the intrusive free chain **before** any bytes move, so a moved live
+        // page can never share its block with a future allocation.
+        batch.sort_by_key(|c| c.src_seq);
+        let dest_start = tail_next_seq(write_cursor);
+        let dest_end_seq = dest_start + batch.len() as u32;
+        self.sanitize_free_chain(|seq| !(seq >= dest_start && seq < dest_end_seq));
         let dest_end = write_cursor
             .checked_add(batch_bytes)
             .expect("compaction destination overflow");
         grow_to_at_least(&self.slab, dest_end)?;
-        let mut buf: Vec<u8> = Vec::new();
+        let mut buf = vec![0u8; BLOCK_LEN as usize];
         let mut w = write_cursor;
+        let mut moved: Vec<(CompactCandidate, u32)> = Vec::with_capacity(batch.len());
         let mut pages_moved = 0u64;
-        for (key, mut m, span) in batch {
-            buf.clear();
-            buf.resize(span as usize, 0);
-            self.slab.read(m.slab_offset, &mut buf);
+        for cand in &batch {
+            self.slab.read(block_offset(cand.src_seq), &mut buf);
             self.slab.write(w, &buf);
-            m.slab_offset = w;
-            self.meta.insert(key, m);
-            w += span;
+            let dest_seq = tail_next_seq(w);
+            moved.push((cand.clone(), dest_seq));
+            w += BLOCK_LEN;
             pages_moved += 1;
         }
         debug_assert_eq!(w, dest_end);
+
+        // Swap each owner's seq references now that the bytes are persisted. Traps (message
+        // rollback) on map growth keep cursors + records consistent.
+        for (owner, group) in moved.iter().fold(
+            Vec::<(PartitionKey, Vec<&(CompactCandidate, u32)>)>::new(),
+            |mut acc, m| {
+                match acc.last_mut() {
+                    Some((key, group)) if *key == m.0.owner => group.push(m),
+                    _ => acc.push((m.0.owner, vec![m])),
+                }
+                acc
+            },
+        ) {
+            if group.iter().any(|(c, _)| c.mutable) {
+                let mut head = partition_head_get(&owner)
+                    .expect("compact: owning partition head vanished mid-move");
+                for (_, dest) in group.iter().filter(|(c, _)| c.mutable) {
+                    head.mutable_seq = *dest;
+                }
+                partition_head_insert(owner, head).expect("compact head update");
+            } else {
+                // Sealed entries live in chunks; rewrite each touched chunk once.
+                let mut touched: Vec<(u32, PageTableChunk)> = Vec::new();
+                for (cand, dest) in group.iter().filter(|(c, _)| !c.mutable) {
+                    let chunk = (cand.positional as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+                    let slot = cand.positional as usize % ENTRIES_PER_TABLE_CHUNK;
+                    let table = match touched.iter_mut().find(|(c, _)| *c == chunk) {
+                        Some((_, t)) => t,
+                        None => {
+                            let t = page_table_chunk_get(
+                                owner.index_id,
+                                owner.index_version,
+                                owner.partition_id,
+                                chunk,
+                            )
+                            .expect("compact: owning chunk vanished mid-move");
+                            touched.push((chunk, t));
+                            &mut touched.last_mut().expect("just pushed").1
+                        }
+                    };
+                    table.entries[slot].seq = *dest;
+                }
+                for (chunk, table) in touched {
+                    page_table_chunk_put(
+                        owner.index_id,
+                        owner.index_version,
+                        owner.partition_id,
+                        chunk,
+                        table,
+                    )
+                    .expect("compact table update");
+                }
+            }
+        }
+
         Ok(SlabCompactStepOutcome {
             finalized: false,
             write_cursor: w,
             pages_moved,
-            scan_cursor: if lap_complete { None } else { last_key },
+            scan_cursor: if lap_complete { None } else { last_examined },
         })
     }
 
-    /// Reclaim gate + single tail rewind (plan 0278). Fails closed when any live page-meta span
-    /// sits inside the reclaimed gap `(write_cursor, range_end)` — i.e., when a mover bug stranded
-    /// a live page — then persists `occupied_tail = max(write_cursor, highest live span end)`
-    /// exactly once. Live spans beginning at/above `range_end` belong to pages appended after
-    /// compaction start; they keep the persisted tail above the gap, so only a quiescent store
-    /// reclaims down to `write_cursor`. Returns the persisted tail.
-    fn compact_finalize(
-        &mut self,
-        write_cursor: u64,
-        range_end: u64,
-        mut def_of: DefResolver<'_>,
-    ) -> u64 {
-        let mut highest_end = SLAB_HEADER_SIZE as u64;
-        for entry in self.meta.iter() {
-            let m = entry.value();
-            let end = m
-                .slab_offset
-                .checked_add(compact_span_of(&mut def_of, entry.key().index_id))
-                .expect("page span overflow");
-            assert!(
-                m.slab_offset >= range_end || end <= write_cursor,
-                "vector slab compaction: live page [{}, {end}) sits inside the reclaimed gap \
-                 ({write_cursor}, {range_end})",
-                m.slab_offset
-            );
-            highest_end = highest_end.max(end);
+    /// Rewrites the intrusive free chain, keeping only nodes that satisfy `keep` (compaction
+    /// uses this to unlink destination blocks and to prune stale nodes after the tail rewind).
+    fn sanitize_free_chain(&self, keep: impl Fn(u32) -> bool) {
+        let hop_cap = u64::from(tail_next_seq(self.occupied_tail)) + 1;
+        let mut kept: Vec<u32> = Vec::new();
+        let mut cur = slab_free_anchor_get();
+        let mut hops = 0u64;
+        while let Some(seq) = cur {
+            if seq == u32::MAX {
+                break;
+            }
+            hops += 1;
+            if hops > hop_cap {
+                panic!(
+                    "vector slab free-block chain longer than allocated blocks (corruption); run \
+                     a slab compaction"
+                );
+            }
+            if keep(seq) {
+                kept.push(seq);
+            }
+            let mut next_buf = [0u8; 4];
+            self.slab.read(block_offset(seq), &mut next_buf);
+            let next = u32::from_le_bytes(next_buf);
+            cur = (next != u32::MAX).then_some(next);
         }
-        let new_tail = write_cursor.max(highest_end);
+        // Relink the kept nodes in order; each write touches only 4 bytes.
+        let anchor = kept.first().copied();
+        for (i, seq) in kept.iter().enumerate() {
+            let next_bytes = kept
+                .get(i + 1)
+                .map_or(u32::MAX.to_le_bytes(), |n| n.to_le_bytes());
+            self.slab.write(block_offset(*seq), &next_bytes);
+        }
+        slab_free_anchor_set(anchor);
+    }
+
+    /// Reclaim gate + single tail rewind (plan 0278, Slice 8). Fails closed when any live page
+    /// sits inside the reclaimed block gap `[write_cursor, range_end)` — i.e., when a mover bug
+    /// stranded a live page — then persists `occupied_tail = max(write_cursor, highest live block
+    /// end)` exactly once and registers the reclaimed gap as one free run. Live blocks at/above
+    /// `range_end` belong to post-start appends; they keep the persisted tail above the gap, so
+    /// only a quiescent store reclaims down to `write_cursor`. Returns the persisted tail.
+    fn compact_finalize(&mut self, write_cursor: u64, range_end: u64) -> u64 {
+        let wc_seq = tail_next_seq(write_cursor);
+        let re_seq = tail_next_seq(range_end);
+        let mut highest_seq = 0u32;
+        for (_, record) in collect_head_records() {
+            match record {
+                PartitionHeadRecord::Head(head) if head.page_count > 0 => {
+                    assert!(
+                        !(head.mutable_seq >= wc_seq && head.mutable_seq < re_seq),
+                        "vector slab compaction: live mutable page {} sits inside the reclaimed \
+                         gap [{wc_seq}, {re_seq})",
+                        head.mutable_seq
+                    );
+                    highest_seq = highest_seq.max(head.mutable_seq);
+                }
+                PartitionHeadRecord::Head(_) => {}
+                PartitionHeadRecord::Table(table) => {
+                    for entry in &table.entries {
+                        assert!(
+                            !(entry.seq >= wc_seq && entry.seq < re_seq),
+                            "vector slab compaction: live page {} sits inside the reclaimed gap \
+                             [{wc_seq}, {re_seq})",
+                            entry.seq
+                        );
+                        highest_seq = highest_seq.max(entry.seq);
+                    }
+                }
+            }
+        }
+        let new_tail = write_cursor.max(block_offset(highest_seq));
+        let tail_seq = tail_next_seq(new_tail);
+        // Prune the free chain after the rewind: nodes at/above the new tail are subsumed by
+        // natural tail regrowth; nodes below the dense prefix cannot exist (dense). Everything
+        // between stays a genuine reusable hole.
+        let frontier_seq = wc_seq;
+        self.sanitize_free_chain(|seq| seq >= frontier_seq && seq < tail_seq);
         self.set_occupied_tail(new_tail);
         new_tail
     }
 
     /// Derived, admin-only slab-space observability. Computes whole-slab physical facts plus logical
-    /// counters scoped to `index_id` (`None` = all indexes), in a single pass over `VECTOR_PAGE_META`.
+    /// counters scoped to `index_id` (`None` = all indexes), in a single pass over the partition
+    /// heads collection.
     ///
-    /// **Unbounded**: it scans every page-meta entry (even for `Some(index_id)`, because the global
-    /// dead-space estimate needs the whole slab). Reads only page meta + the slab header/size — never
-    /// row bytes; page spans derive from each index's `VectorIndexDef` via `def_of`.
-    /// `physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone), not
-    /// subject-freshness.
-    pub(crate) fn stats_for_index(
-        &self,
-        index_id: Option<u32>,
-        def_of: DefResolver<'_>,
-    ) -> VectorSlabStats {
-        let mut acc = SlabStatsAcc::new(index_id, def_of);
-        for entry in self.meta.iter() {
-            let m = entry.value();
-            acc.observe(entry.key(), &m);
+    /// **Unbounded**: it scans every page record (even for `Some(index_id)`, because the global
+    /// dead-space estimate needs the whole slab). Reads only head/table records + the slab
+    /// header/size — never row bytes; referenced bytes count whole uniform blocks (Slice 8), so
+    /// they and `occupied_tail` share one unit. `physical_live_row_count` is the physical
+    /// non-tombstone live count, not subject-freshness.
+    pub(crate) fn stats_for_index(&self, index_id: Option<u32>) -> VectorSlabStats {
+        let mut acc = SlabStatsAcc::new(index_id);
+        for (key, record) in collect_head_records() {
+            match record {
+                PartitionHeadRecord::Head(head) if head.page_count > 0 => {
+                    acc.observe(
+                        &PageKey::new(
+                            key.index_id,
+                            key.index_version,
+                            key.partition_id,
+                            head.page_count - 1,
+                        ),
+                        head.mutable_rows,
+                        head.mutable_live,
+                    );
+                }
+                PartitionHeadRecord::Head(_) => {}
+                PartitionHeadRecord::Table(table) => {
+                    let chunk_base = ((key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize)
+                        * ENTRIES_PER_TABLE_CHUNK;
+                    for (i, entry) in table.entries.iter().enumerate() {
+                        acc.observe(
+                            &PageKey::new(
+                                key.index_id,
+                                key.index_version,
+                                key.partition_id,
+                                (chunk_base + i) as u64,
+                            ),
+                            entry.row_count,
+                            entry.live_count,
+                        );
+                    }
+                }
+            }
         }
         let (scope, versions, referenced_global) = acc.finish();
 
@@ -1632,19 +2270,19 @@ impl VectorSlabStore {
     }
 
     /// Bounded, cursor-resumable variant of [`stats_for_index`](Self::stats_for_index) for the
-    /// IC-safe `admin_vector_slab_stats_step` query. Scans at most `max_pages` `VECTOR_PAGE_META`
-    /// entries (clamped to `1..=MAX_SLAB_STATS_STEP_PAGES`), returning an opaque `PageKey` cursor to
-    /// resume from. Callers repeat until `exhausted` and merge the additive partials client-side.
+    /// IC-safe `admin_vector_slab_stats_step` query. Processes at most `max_pages` page records
+    /// (clamped to `1..=MAX_SLAB_STATS_STEP_PAGES`) in ascending `(index_id, index_version,
+    /// partition_id, positional)` order, returning an opaque `PageKey` cursor to resume from.
+    /// Callers repeat until `exhausted` and merge the additive partials client-side.
     ///
-    /// Reads only page meta + the slab header/size — never row bytes. The `cursor` is **external
-    /// caller input**, so a malformed (wrong-length) cursor is rejected with
+    /// Reads only head/table records + the slab header/size — never row bytes. The `cursor` is
+    /// **external caller input**, so a malformed (wrong-length) cursor is rejected with
     /// [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
     pub(crate) fn stats_step(
         &self,
         cursor: Option<Vec<u8>>,
         max_pages: u32,
         index_id: Option<u32>,
-        def_of: DefResolver<'_>,
     ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
         let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
         if let Some(bytes) = &cursor
@@ -1653,24 +2291,58 @@ impl VectorSlabStore {
             return Err(VectorCanisterError::InvalidStatsCursor);
         }
 
-        let mut acc = SlabStatsAcc::new(index_id, def_of);
+        let mut acc = SlabStatsAcc::new(index_id);
         let mut last: Option<PageKey> = None;
         let mut exhausted = true;
         let mut processed: u32 = 0;
-        {
-            let lower = match &cursor {
-                None => RangeBound::Unbounded,
-                Some(bytes) => RangeBound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
+        let resume = cursor
+            .as_ref()
+            .map(|bytes| PageKey::from_bytes(Cow::Borrowed(bytes)));
+        'records: for (key, record) in collect_head_records() {
+            let pages: Vec<(PageKey, u32, u32)> = match &record {
+                PartitionHeadRecord::Head(h) if h.page_count > 0 => {
+                    vec![(
+                        PageKey::new(
+                            key.index_id,
+                            key.index_version,
+                            key.partition_id,
+                            h.page_count - 1,
+                        ),
+                        h.mutable_rows,
+                        h.mutable_live,
+                    )]
+                }
+                PartitionHeadRecord::Head(_) => Vec::new(),
+                PartitionHeadRecord::Table(t) => t
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let chunk_base = ((key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize)
+                            * ENTRIES_PER_TABLE_CHUNK;
+                        (
+                            PageKey::new(
+                                key.index_id,
+                                key.index_version,
+                                key.partition_id,
+                                (chunk_base + i) as u64,
+                            ),
+                            e.row_count,
+                            e.live_count,
+                        )
+                    })
+                    .collect(),
             };
-            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
+            for (page_key, rows, live) in pages {
+                if resume.as_ref().is_some_and(|r| page_key <= *r) {
+                    continue;
+                }
                 if processed >= budget {
                     exhausted = false;
-                    break;
+                    break 'records;
                 }
-                let key = entry.key();
-                let m = entry.value();
-                acc.observe(key, &m);
-                last = Some(*key);
+                acc.observe(&page_key, rows, live);
+                last = Some(page_key);
                 processed += 1;
             }
         }
@@ -1697,12 +2369,12 @@ impl VectorSlabStore {
         })
     }
 
-    /// Bounded, cursor-resumable page-meta tombstone-health scan scoped to one
-    /// `(index_id, active_version)`. Scans at most `max_pages` `VECTOR_PAGE_META` entries (clamped to
-    /// `1..=MAX_SLAB_STATS_STEP_PAGES`), aggregating `row_count`/`live_count` into
-    /// `total_rows`/`physical_live_rows`/`tombstoned_rows` (tombstoned rows are derived as
-    /// `row_count − live_count`), and returns an opaque `PageKey` cursor to resume from. Reads only
-    /// page meta — never row bytes.
+    /// Bounded, cursor-resumable tombstone-health scan scoped to one
+    /// `(index_id, active_version)`. Processes at most `max_pages` page records (clamped to
+    /// `1..=MAX_SLAB_STATS_STEP_PAGES`) in positional order per partition, aggregating
+    /// `row_count`/`live_count` into `total_rows`/`physical_live_rows`/`tombstoned_rows`
+    /// (tombstoned rows are derived as `row_count − live_count`), and returns an opaque `PageKey`
+    /// cursor to resume from. Reads only head/table records — never row bytes.
     ///
     /// The caller-supplied `cursor` is **scope-checked**: a wrong-length cursor, or one whose
     /// `(index_id, index_version)` does not match `(index_id, active_version)`, returns
@@ -1725,6 +2397,49 @@ impl VectorSlabStore {
             }
         }
 
+        // Pages of the scoped generation in (partition asc, positional asc) order.
+        let mut pages: Vec<(PageKey, u32, u32)> = Vec::new();
+        for (key, record) in collect_head_records() {
+            if key.index_id != index_id || key.index_version != active_version {
+                continue;
+            }
+            match record {
+                PartitionHeadRecord::Head(head) if head.page_count > 0 => {
+                    pages.push((
+                        PageKey::new(
+                            index_id,
+                            active_version,
+                            key.partition_id,
+                            head.page_count - 1,
+                        ),
+                        head.mutable_rows,
+                        head.mutable_live,
+                    ));
+                }
+                PartitionHeadRecord::Head(_) => {}
+                PartitionHeadRecord::Table(table) => {
+                    let chunk_base = ((key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize)
+                        * ENTRIES_PER_TABLE_CHUNK;
+                    for (i, entry) in table.entries.iter().enumerate() {
+                        pages.push((
+                            PageKey::new(
+                                index_id,
+                                active_version,
+                                key.partition_id,
+                                (chunk_base + i) as u64,
+                            ),
+                            entry.row_count,
+                            entry.live_count,
+                        ));
+                    }
+                }
+            }
+        }
+        pages.sort_by_key(|(k, _, _)| *k);
+
+        let resume = cursor
+            .as_ref()
+            .map(|bytes| PageKey::from_bytes(Cow::Borrowed(bytes)));
         let mut page_count = 0u64;
         let mut total_rows = 0u64;
         let mut physical_live_rows = 0u64;
@@ -1732,29 +2447,20 @@ impl VectorSlabStore {
         let mut last: Option<PageKey> = None;
         let mut exhausted = true;
         let mut processed: u32 = 0;
-        {
-            let lower = match &cursor {
-                None => RangeBound::Included(PageKey::new(index_id, active_version, 0, 0)),
-                Some(bytes) => RangeBound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
-            };
-            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
-                let key = entry.key();
-                if key.index_id != index_id || key.index_version != active_version {
-                    break; // index/version-major order: past this generation's pages.
-                }
-                if processed >= budget {
-                    exhausted = false;
-                    break;
-                }
-                let m = entry.value();
-                page_count += 1;
-                total_rows = total_rows.saturating_add(m.row_count as u64);
-                physical_live_rows = physical_live_rows.saturating_add(m.live_count as u64);
-                tombstoned_rows =
-                    tombstoned_rows.saturating_add(m.row_count.saturating_sub(m.live_count) as u64);
-                last = Some(*key);
-                processed += 1;
+        for (page_key, rows, live) in &pages {
+            if resume.as_ref().is_some_and(|r| *page_key <= *r) {
+                continue;
             }
+            if processed >= budget {
+                exhausted = false;
+                break;
+            }
+            page_count += 1;
+            total_rows = total_rows.saturating_add(u64::from(*rows));
+            physical_live_rows = physical_live_rows.saturating_add(u64::from(*live));
+            tombstoned_rows = tombstoned_rows.saturating_add(u64::from(rows.saturating_sub(*live)));
+            last = Some(*page_key);
+            processed += 1;
         }
         let cursor_out = if exhausted {
             None
@@ -1785,46 +2491,53 @@ impl VectorSlabStore {
         partition_id: u32,
         page_id: u64,
     ) -> Option<VectorPageMeta> {
-        self.meta.get(&PageKey::new(
-            index_id,
-            index_version,
-            partition_id,
-            page_id,
-        ))
+        partition_head_get(&PartitionKey::new(index_id, index_version, partition_id))?;
+        let view = self
+            .partition_page_metas(index_id, index_version, partition_id)
+            .into_iter()
+            .find(|v| v.page_id == page_id)?;
+        Some(VectorPageMeta {
+            slab_offset: view.slab_offset,
+            row_count: view.row_count,
+            live_count: view.live_count,
+        })
     }
 
     pub(crate) fn occupied_tail(&self) -> u64 {
         self.occupied_tail
     }
 
-    /// Number of `VECTOR_PAGE_META` entries for `(index_id, index_version)` (all partitions).
+    /// Number of page records of `(index_id, index_version)` across all partitions.
     #[cfg(test)]
     pub(crate) fn version_page_count(&self, index_id: u32, index_version: u64) -> usize {
-        let lower = PageKey::new(index_id, index_version, 0, 0);
-        self.meta
-            .range((RangeBound::Included(lower), RangeBound::Unbounded))
-            .take_while(|e| {
-                let k = e.key();
-                k.index_id == index_id && k.index_version == index_version
+        collect_head_records()
+            .into_iter()
+            .filter(|(k, r)| match r {
+                PartitionHeadRecord::Head(h) => {
+                    k.index_id == index_id && k.index_version == index_version && h.page_count > 0
+                }
+                _ => false,
             })
-            .count()
+            .map(|(_, r)| match r {
+                PartitionHeadRecord::Head(h) => h.page_count as usize,
+                _ => 0,
+            })
+            .sum()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::stable::VECTOR_PARTITION_HEADS;
+    use crate::facade::stable::{partition_head_get, partition_head_insert};
     use crate::records::{PartitionKey, VectorIndexDef};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{
         VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
     };
-    use ic_stable_structures::BTreeMap;
     use ic_stable_structures::DefaultMemoryImpl;
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
 
-    const META_ID: MemoryId = MemoryId::new(10);
     const SLAB_ID: MemoryId = MemoryId::new(13);
 
     type TestMm = MemoryManager<DefaultMemoryImpl>;
@@ -1833,16 +2546,15 @@ mod tests {
         MemoryManager::init(DefaultMemoryImpl::default())
     }
 
-    /// Opens an isolated store whose single index resolves to `d` (the geometry cross-check source).
+    /// Opens an isolated slab whose single index resolves to `d` (the geometry cross-check source).
+    /// Page-chain state always lives in the shared `VECTOR_PARTITION_HEADS`; callers clear it.
     fn open(mm: &TestMm, d: &VectorIndexDef) -> VectorSlabStore {
-        let meta = BTreeMap::init(mm.get(META_ID));
-        VectorSlabStore::from_regions(meta, mm.get(SLAB_ID), &mut |_| Some(*d))
+        VectorSlabStore::from_regions(mm.get(SLAB_ID), &mut |_| Some(*d))
     }
 
-    /// Opens an isolated store whose index defs are unresolvable (corrupt directory).
+    /// Opens an isolated slab whose index defs are unresolvable (active-generation checks fail).
     fn open_without_defs(mm: &TestMm) -> VectorSlabStore {
-        let meta = BTreeMap::init(mm.get(META_ID));
-        VectorSlabStore::from_regions(meta, mm.get(SLAB_ID), &mut |_| None)
+        VectorSlabStore::from_regions(mm.get(SLAB_ID), &mut |_| None)
     }
 
     /// `d = 2` F32: stride 8, pad stride 16, meta 4, single shard.
@@ -1901,9 +2613,7 @@ mod tests {
     }
 
     fn head_live_len(index_id: u32, version: u64, partition: u32) -> u64 {
-        VECTOR_PARTITION_HEADS
-            .with_borrow(|h| h.get(&PartitionKey::new(index_id, version, partition)))
-            .expect("partition head get")
+        partition_head_get(&PartitionKey::new(index_id, version, partition))
             .map(|head| head.live_len)
             .unwrap_or(0)
     }
@@ -2638,12 +3348,14 @@ mod tests {
         let mm = fresh_mm();
         let d = def(2);
         let mut store = open(&mm, &d);
-        for v in 0..3u32 {
-            store
-                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
-                .unwrap();
-        }
-        // 3 rows at capacity 2 -> 2 pages; a budget of 1 removes one page per step.
+        // Two partitions of one page each; a budget of one page drains exactly one partition
+        // per call (whole-partition granularity), resuming from the returned cursor.
+        store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0), &zaux())
+            .unwrap();
+        store
+            .append_row(1, 1, 1, &d, subject(2), &bytes(2.0, 0.0), &zaux())
+            .unwrap();
         let first = store.drop_version_pages(1, 1, None, 1);
         assert!(!first.exhausted);
         assert!(first.cursor.is_some());
@@ -2663,7 +3375,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "empty slab region with non-empty page meta")]
+    #[should_panic(expected = "empty slab region with non-empty partition heads")]
     fn reopen_traps_on_empty_slab_with_nonempty_meta() {
         let mm = fresh_mm();
         let d = def(4);
@@ -2671,7 +3383,7 @@ mod tests {
         store
             .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
-        // Wipe the slab to all zero but keep the directory: partial layout must trap.
+        // Wipe the slab to all zero but keep the heads: partial layout must trap.
         let slab = mm.get(SLAB_ID);
         let zeros = vec![0u8; slab.size() as usize * 65_536];
         slab.write(0, &zeros);
@@ -2681,38 +3393,43 @@ mod tests {
     #[test]
     #[should_panic(expected = "row_count")]
     fn reopen_traps_on_counts_exceeding_capacity() {
+        clear_heads();
         let mm = fresh_mm();
         let d = def(4);
         let mut store = open(&mm, &d);
         store
             .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
-        // Corrupt the directory: row_count beyond the def/header capacity.
-        let mut meta = store.page_meta_for_test(1, 1, 0, 0).unwrap();
-        meta.row_count = 99;
-        store.meta.insert(PageKey::new(1, 1, 0, 0), meta);
+        // Corrupt the head mirror: mutable rows beyond the page capacity.
+        let head_key = PartitionKey::new(1, 1, 0);
+        let mut head = crate::facade::stable::partition_head_get(&head_key).unwrap();
+        head.mutable_rows = 99;
+        let _ = partition_head_insert(head_key, head);
         open(&mm, &d);
     }
 
     #[test]
     #[should_panic(expected = "live_count")]
     fn reopen_traps_on_live_count_exceeding_row_count() {
+        clear_heads();
         let mm = fresh_mm();
         let d = def(4);
         let mut store = open(&mm, &d);
         store
             .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
-        // Corrupt the directory: live_count beyond row_count (derived tombstones would go negative).
-        let mut meta = store.page_meta_for_test(1, 1, 0, 0).unwrap();
-        meta.live_count = 2;
-        store.meta.insert(PageKey::new(1, 1, 0, 0), meta);
+        // Corrupt the head mirror: live beyond rows (derived tombstones would go negative).
+        let head_key = PartitionKey::new(1, 1, 0);
+        let mut head = crate::facade::stable::partition_head_get(&head_key).unwrap();
+        head.mutable_live = 2;
+        let _ = partition_head_insert(head_key, head);
         open(&mm, &d);
     }
 
     #[test]
-    #[should_panic(expected = "geometry disagrees with index def")]
+    #[should_panic(expected = "active page header disagrees with index def")]
     fn reopen_traps_on_header_geometry_disagreeing_with_def() {
+        clear_heads();
         let mm = fresh_mm();
         let d = def(4);
         let mut store = open(&mm, &d);
@@ -2729,13 +3446,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "missing index 1 definition")]
     fn reopen_traps_on_missing_index_def() {
+        clear_heads();
         let mm = fresh_mm();
         let d = def(4);
         let mut store = open(&mm, &d);
         store
             .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
-        // A directory entry whose index has no resolvable def cannot be validated: fail closed.
+        // A page whose index has no resolvable def cannot be validated: fail closed.
         open_without_defs(&mm);
     }
 
@@ -2744,7 +3462,7 @@ mod tests {
         let mm = fresh_mm();
         let d = def(4);
         let store = open(&mm, &d);
-        let stats = store.stats_for_index(None, &mut |_| Some(d));
+        let stats = store.stats_for_index(None);
         assert_eq!(stats.scope.page_count, 0);
         assert_eq!(stats.slab.referenced_page_bytes_global, 0);
     }
@@ -2761,16 +3479,13 @@ mod tests {
         store
             .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
-        let stats = store.stats_for_index(None, &mut |_| Some(d));
+        let stats = store.stats_for_index(None);
         assert_eq!(stats.scope.page_count, 1);
         assert_eq!(stats.scope.row_count, 2);
         assert_eq!(stats.scope.physical_live_row_count, 2);
-        // Referenced bytes = the exact page span (header + run table + row meta + vector bytes),
-        // derived from the def-frozen geometry.
-        assert_eq!(
-            stats.slab.referenced_page_bytes_global,
-            page_span_bytes(&d).unwrap()
-        );
+        // Referenced bytes = the page's uniform block footprint (Slice 8): one block for one
+        // allocated page, sharing a unit with `occupied_tail`.
+        assert_eq!(stats.slab.referenced_page_bytes_global, BLOCK_LEN);
     }
 
     #[test]
@@ -2785,9 +3500,9 @@ mod tests {
         store
             .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
-        let before = store.stats_for_index(None, &mut |_| Some(d));
+        let before = store.stats_for_index(None);
         store.tombstone_row(1, s0);
-        let after = store.stats_for_index(None, &mut |_| Some(d));
+        let after = store.stats_for_index(None);
         assert_eq!(
             before.slab.referenced_page_bytes_global,
             after.slab.referenced_page_bytes_global
@@ -2862,20 +3577,12 @@ mod tests {
         range_end: u64,
         max_entries: u32,
         max_bytes: u64,
-        d: &VectorIndexDef,
     ) -> SlabCompactStepOutcome {
         let mut write_cursor = write_cursor;
         let mut scan_cursor = scan_cursor;
         loop {
             let outcome = store
-                .compact_step(
-                    write_cursor,
-                    range_end,
-                    scan_cursor,
-                    max_entries,
-                    max_bytes,
-                    &mut |_| Some(*d),
-                )
+                .compact_step(write_cursor, range_end, scan_cursor, max_entries, max_bytes)
                 .expect("compact step");
             write_cursor = outcome.write_cursor;
             scan_cursor = outcome.scan_cursor;
@@ -2891,7 +3598,6 @@ mod tests {
         range_end: u64,
         max_entries: u32,
         max_bytes: u64,
-        d: &VectorIndexDef,
     ) -> SlabCompactStepOutcome {
         drive_compaction_from(
             store,
@@ -2900,7 +3606,6 @@ mod tests {
             range_end,
             max_entries,
             max_bytes,
-            d,
         )
     }
 
@@ -2936,47 +3641,56 @@ mod tests {
         clear_heads();
         let mm = fresh_mm();
         let d = def(2); // 2 rows per page
-        let span = page_span_bytes(&d).unwrap();
         let mut store = open(&mm, &d);
         seed_two_interleaved_versions(&mut store, &d);
         assert_eq!(store.version_page_count(1, 1), 2);
         assert_eq!(store.version_page_count(1, 2), 2);
         let live_before = live_rows(&store, 1, 2);
 
-        // GC/cleanup drain of v1 leaves its slab bytes dead between the live v2 pages.
+        // GC/cleanup drain of v1 frees its blocks into the free list; they sit between the live
+        // v2 pages until compaction reclaims them.
         let progress = store.drop_version_pages(1, 1, None, 100);
         assert!(progress.exhausted);
-        let before = store.stats_for_index(None, &mut |_| Some(d));
+        let before = store.stats_for_index(None);
         assert_eq!(before.scope.page_count, 2, "only v2 remains");
         assert_eq!(
             before.slab.estimated_unreferenced_bytes,
-            2 * span,
-            "dropped v1 spans are unreferenced"
+            2 * BLOCK_LEN,
+            "dropped v1 blocks are unreferenced"
         );
-        assert_eq!(store.occupied_tail(), SLAB_HEADER_SIZE as u64 + 4 * span);
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 4 * BLOCK_LEN
+        );
 
         let range_end = store.occupied_tail();
-        let outcome = drive_compaction(&mut store, range_end, 1, u64::MAX, &d);
+        let outcome = drive_compaction(&mut store, range_end, 1, u64::MAX);
         assert!(outcome.finalized);
         assert_eq!(
             outcome.write_cursor,
-            SLAB_HEADER_SIZE as u64 + 2 * span,
+            SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN,
             "the tail rewinds once to the dense prefix end"
         );
-        assert_eq!(store.occupied_tail(), SLAB_HEADER_SIZE as u64 + 2 * span);
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN
+        );
 
-        let after = store.stats_for_index(None, &mut |_| Some(d));
-        assert_eq!(after.slab.referenced_page_bytes_global, 2 * span);
+        let after = store.stats_for_index(None);
+        assert_eq!(after.slab.referenced_page_bytes_global, 2 * BLOCK_LEN);
         assert_eq!(
             after.slab.estimated_unreferenced_bytes, 0,
-            "reclaim drops to header-only on a drained store"
+            "reclaim drops the freelist to empty on a drained store"
         );
         assert_eq!(after.slab.occupied_tail_bytes, store.occupied_tail());
         assert_eq!(live_rows(&store, 1, 2), live_before, "live rows are intact");
 
-        // The rewind and every moved meta survive reopen.
+        // The rewind and every moved seq survive reopen.
         let reopened = open(&mm, &d);
-        assert_eq!(reopened.occupied_tail(), SLAB_HEADER_SIZE as u64 + 2 * span);
+        assert_eq!(
+            reopened.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN
+        );
         assert_eq!(live_rows(&reopened, 1, 2), live_before);
     }
 
@@ -2994,7 +3708,7 @@ mod tests {
         let live_before = live_rows(&store, 1, 1);
         let range_end = store.occupied_tail();
 
-        let outcome = drive_compaction(&mut store, range_end, 10, u64::MAX, &d);
+        let outcome = drive_compaction(&mut store, range_end, 10, u64::MAX);
         assert!(outcome.finalized);
         assert_eq!(outcome.write_cursor, range_end, "nothing to reclaim");
         assert_eq!(live_rows(&store, 1, 1), live_before);
@@ -3008,45 +3722,37 @@ mod tests {
         clear_heads();
         let mm = fresh_mm();
         let d = def(2);
-        let span = page_span_bytes(&d).unwrap();
         let mut store = open(&mm, &d);
         seed_two_interleaved_versions(&mut store, &d);
-        // GC drains v1 before the compaction starts; its spans become the dead space.
+        // GC drains v1 before the compaction starts; its blocks become free-listed holes.
         assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
-        let live_v2_before = live_rows(&store, 1, 2);
-        let range_end = store.occupied_tail(); // header + 4 * span
+        let range_end = store.occupied_tail(); // header + 4 * BLOCK
 
-        // Step once (moves the lowest-key live page), then append a post-start row: it lands at
-        // the old tail, above `range_end`, outside the snapshot.
+        // Step once (moves the lowest-source live page), then append a post-start row. With
+        // free-list reuse the new page may land in a hole inside the snapshot range or above it;
+        // either way compaction treats it as an ordinary live page and its rows must survive.
         let first = store
-            .compact_step(
-                SLAB_HEADER_SIZE as u64,
-                range_end,
-                None,
-                1,
-                u64::MAX,
-                &mut |_| Some(d),
-            )
+            .compact_step(SLAB_HEADER_SIZE as u64, range_end, None, 1, u64::MAX)
             .unwrap();
         assert!(!first.finalized);
         assert_eq!(first.pages_moved, 1);
         let appended = store
             .append_row(1, 3, 0, &d, subject(900), &bytes(9.0, 9.0), &zaux())
             .unwrap();
-        let v3_page_offset = store
-            .meta
-            .get(&PageKey::new(1, 3, 0, appended.page_id as u64))
-            .expect("post-start page meta")
-            .slab_offset;
         assert!(
-            v3_page_offset >= range_end,
-            "post-start appends stay outside the snapshot range"
+            store
+                .partition_page_metas(1, 3, 0)
+                .into_iter()
+                .find(|v| v.page_id == u64::from(appended.page_id))
+                .expect("post-start page meta")
+                .slab_offset
+                >= SLAB_HEADER_SIZE as u64,
+            "post-start page resolves to a real block"
         );
-        let tail_after_append = store.occupied_tail();
 
-        // A version teardown lands mid-compaction (the rebuild `Cleaning` case): the still-unmoved
-        // second v2 page is drained (rows tombstoned first, then its meta dropped past the moved
-        // page's key) and the lap must skip the vanished meta instead of stalling or moving ghosts.
+        // A version teardown lands mid-compaction (the rebuild `Cleaning` case): whole
+        // partitions drain atomically — here the entire v2 generation disappears — and the lap
+        // must skip the vanished records instead of stalling or moving ghosts.
         assert!(store.tombstone_row(
             1,
             SlotRef {
@@ -3065,61 +3771,38 @@ mod tests {
                 slot: 1,
             }
         ));
-        assert!(
-            store
-                .drop_version_pages(1, 2, Some(PageKey::new(1, 2, 0, 0).into_bytes()), 100)
-                .exhausted
-        );
+        assert!(store.drop_version_pages(1, 2, None, 100).exhausted);
         assert_eq!(
             store.version_page_count(1, 2),
-            1,
-            "only the moved page survives"
-        );
-        assert_eq!(
-            live_rows(&store, 1, 2),
-            &live_v2_before[..2],
-            "the already-moved page reads correctly mid-compaction"
+            0,
+            "drained version leaves no heads"
         );
 
+        let range_for_finish = range_end.max(store.occupied_tail());
         let outcome = drive_compaction_from(
             &mut store,
             first.write_cursor,
             first.scan_cursor,
-            range_end,
+            range_for_finish,
             1,
             u64::MAX,
-            &d,
         );
         assert!(outcome.finalized);
-        // Post-start appends keep the persisted tail above the reclaimed gap: only a quiescent
-        // store reclaims all the way down to the write cursor.
-        assert_eq!(outcome.write_cursor, tail_after_append);
-        assert_eq!(store.occupied_tail(), tail_after_append);
+        assert_eq!(store.occupied_tail(), outcome.write_cursor);
 
-        // Every surviving live row reads back correctly after finalize + reopen: the moved page's
-        // rows and the post-start append are both intact.
+        // Every surviving live row reads back correctly after finalize + reopen: the post-start
+        // append is intact and the reopened store validates the whole chain.
         let reopened = open(&mm, &d);
-        assert_eq!(reopened.occupied_tail(), tail_after_append);
-        assert_eq!(live_rows(&reopened, 1, 2), &live_v2_before[..2]);
+        assert_eq!(reopened.occupied_tail(), outcome.write_cursor);
         assert_eq!(
             reopened.read_row_bytes(1, appended).map(|(v, _, _)| v),
             Some(900)
-        );
-        let stats = reopened.stats_for_index(None, &mut |_| Some(d));
-        // referenced = moved prefix page + post-start v3 page; dead = the drained v1/v2 spans
-        // between them (conservatively counted while the tail is pinned above the gap).
-        assert_eq!(stats.slab.referenced_page_bytes_global, 2 * span);
-        assert_eq!(
-            stats.slab.estimated_unreferenced_bytes,
-            tail_after_append - SLAB_HEADER_SIZE as u64 - 2 * span
         );
     }
 
     #[test]
     fn compact_resume_determinism_two_runs_byte_identical() {
-        clear_heads();
         let d = def(2);
-        let span = page_span_bytes(&d).unwrap();
         let build_fixture = || {
             clear_heads();
             let mm = fresh_mm();
@@ -3129,28 +3812,34 @@ mod tests {
             (mm, store)
         };
 
-        // Run A drives straight through; run B simulates a crash by reopening the composite store
-        // from its regions after every non-finalizing step, resuming from the identical cursors.
-        let budgets = (1u32, span); // one directory entry and at most one page per step
+        // Run A drives straight through. Its slab prefix is captured before the shared heads are
+        // reset for run B (page-chain state lives in the global collection).
+        let budgets = (1u32, BLOCK_LEN); // one candidate and at most one block per step
         let (mm_a, mut store_a) = build_fixture();
         let range_a = store_a.occupied_tail();
-        let final_a = drive_compaction(&mut store_a, range_a, budgets.0, budgets.1, &d);
+        let final_a = drive_compaction(&mut store_a, range_a, budgets.0, budgets.1);
+        assert_eq!(
+            final_a.write_cursor,
+            SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN
+        );
+        let live_a = live_rows(&store_a, 1, 2);
+        let len_a = final_a.write_cursor as usize;
+        let mut raw_a = vec![0u8; len_a];
+        mm_a.get(SLAB_ID).read(0, &mut raw_a);
+        drop(store_a);
 
-        let (mm_b, mut store_b) = build_fixture();
+        // Run B replays on a fresh fixture with identical inputs and simulates a crash by
+        // reopening the store after every non-finalizing step, resuming from persisted cursors.
+        let (mm_b, store_b) = build_fixture();
         let range_b = store_b.occupied_tail();
         assert_eq!(range_a, range_b);
+        drop(store_b);
+        let mut store_b = open(&mm_b, &d);
         let mut write_cursor = SLAB_HEADER_SIZE as u64;
         let mut scan_cursor = None;
         loop {
             let outcome = store_b
-                .compact_step(
-                    write_cursor,
-                    range_b,
-                    scan_cursor,
-                    budgets.0,
-                    budgets.1,
-                    &mut |_| Some(d),
-                )
+                .compact_step(write_cursor, range_b, scan_cursor, budgets.0, budgets.1)
                 .expect("compact step");
             write_cursor = outcome.write_cursor;
             scan_cursor = outcome.scan_cursor;
@@ -3161,13 +3850,10 @@ mod tests {
         }
 
         assert_eq!(final_a.write_cursor, write_cursor, "equal final tails");
-        let len_a = final_a.write_cursor as usize;
-        let mut raw_a = vec![0u8; len_a];
-        mm_a.get(SLAB_ID).read(0, &mut raw_a);
         let mut raw_b = vec![0u8; len_a];
         mm_b.get(SLAB_ID).read(0, &mut raw_b);
         assert_eq!(raw_b, raw_a, "byte-identical dense prefixes");
-        assert_eq!(live_rows(&store_b, 1, 2), live_rows(&store_a, 1, 2));
+        assert_eq!(live_rows(&store_b, 1, 2), live_a);
     }
 
     #[test]
@@ -3184,8 +3870,183 @@ mod tests {
         }
         // Wrong-implementation guard: rewinding over live spans must fail closed instead of
         // corrupting every read above the new tail.
-        store.compact_finalize(SLAB_HEADER_SIZE as u64, store.occupied_tail(), &mut |_| {
-            Some(d)
-        });
+        store.compact_finalize(SLAB_HEADER_SIZE as u64, store.occupied_tail());
+    }
+
+    // --- Slice 8 contracts ---
+
+    /// Every page's physical base derives arithmetically from its block sequence:
+    /// `SLAB_HEADER_SIZE + seq × BLOCK_LEN`, and `occupied_tail` tracks whole blocks.
+    #[test]
+    fn arithmetic_offsets_are_consistent_across_pages() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm, &d);
+        let mut slots = Vec::new();
+        for v in 0..5u32 {
+            slots.push(
+                store
+                    .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
+                    .unwrap(),
+            );
+        }
+        // 5 rows at capacity 2 -> pages 0..2 with distinct blocks.
+        for (positional, expected_base) in [
+            (0u64, SLAB_HEADER_SIZE as u64),
+            (1, SLAB_HEADER_SIZE as u64 + BLOCK_LEN),
+            (2, SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN),
+        ] {
+            let meta = store.page_meta_for_test(1, 1, 0, positional).unwrap();
+            assert_eq!(meta.slab_offset, expected_base);
+            assert_eq!(slots[positional as usize].slot, positional as u32 % 2);
+        }
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 3 * BLOCK_LEN,
+            "tail tracks whole committed blocks"
+        );
+        // The mapping survives reopen.
+        let reopened = open(&mm, &d);
+        for (positional, expected_base) in [
+            (0u64, SLAB_HEADER_SIZE as u64),
+            (1, SLAB_HEADER_SIZE as u64 + BLOCK_LEN),
+            (2, SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN),
+        ] {
+            assert_eq!(
+                reopened
+                    .page_meta_for_test(1, 1, 0, positional)
+                    .unwrap()
+                    .slab_offset,
+                expected_base
+            );
+        }
+    }
+
+    /// A freed version's blocks are reused (free side first) before the tail grows.
+    #[test]
+    fn freelist_reuses_freed_blocks_before_tail_growth() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm, &d);
+        store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0), &zaux())
+            .unwrap();
+        store
+            .append_row(1, 2, 0, &d, subject(2), &bytes(2.0, 0.0), &zaux())
+            .unwrap();
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN
+        );
+
+        // Drain v1 atomically: its block joins the free list.
+        assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
+
+        // A brand-new generation's first page takes the freed block 0 without tail growth.
+        store
+            .append_row(1, 3, 0, &d, subject(3), &bytes(3.0, 0.0), &zaux())
+            .unwrap();
+        let head = crate::facade::stable::partition_head_get(&PartitionKey::new(1, 3, 0)).unwrap();
+        assert_eq!(head.mutable_seq, 0, "new page reuses the freed block");
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN
+        );
+        assert_eq!(
+            store
+                .read_row_bytes(
+                    1,
+                    SlotRef {
+                        index_version: 3,
+                        partition_id: 0,
+                        page_id: 0,
+                        slot: 0,
+                    }
+                )
+                .map(|(v, _, _)| v),
+            Some(3),
+            "the reused block serves reads"
+        );
+    }
+
+    /// The scalar bound `M` never decreases on tombstone (conservative, monotone) and persists.
+    #[test]
+    fn block_bound_is_monotone_under_tombstone() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(8); // one page holds all rows
+        let mut store = open(&mm, &d);
+        let s_small = store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 1.0), &zaux())
+            .unwrap(); // ‖·‖ = √2
+        store
+            .append_row(1, 1, 0, &d, subject(2), &bytes(6.0, 6.0), &zaux())
+            .unwrap(); // ‖·‖ = √72 ≈ 8.49
+        store
+            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 3.0), &zaux())
+            .unwrap();
+
+        let bound = |store: &VectorSlabStore| store.partition_page_metas(1, 1, 0)[0].block_bound;
+        let big = f32::sqrt(72.0);
+        assert!((bound(&store) - big).abs() < 1e-3, "M = max‖row‖");
+
+        // Tombstoning the biggest row must NOT lower the page's bound.
+        assert!(store.tombstone_row(1, s_small)); // tombstone the small one first (idempotence path)
+        assert!((bound(&store) - big).abs() < 1e-3);
+        let reopened = open(&mm, &d);
+        assert!((bound(&reopened) - big).abs() < 1e-3, "bound persists");
+    }
+
+    /// The intrusive free-block chain pops in LIFO order and persists across reopen, so torn-down
+    /// generations are reused (free side first) before the tail grows.
+    #[test]
+    fn freelist_intrusive_chain_is_lifo_and_persists() {
+        clear_heads();
+        let mm = fresh_mm();
+        let mut d = def(1); // one row per page -> each append takes its own block
+        d.run_capacity = 1;
+        let mut store = open(&mm, &d);
+        for v in 0..3u32 {
+            store
+                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
+                .unwrap();
+        }
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 3 * BLOCK_LEN
+        );
+
+        // Teardown frees blocks {0, 1, 2}; the chain head is the last push.
+        assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
+
+        // Reopen: the anchor survives (durable).
+        let mut store = open(&mm, &d);
+        for v in 10..13u32 {
+            store
+                .append_row(1, 2, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
+                .unwrap();
+        }
+        // LIFO: the three appends pop blocks 2, 1, 0 — no tail growth at any point.
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 3 * BLOCK_LEN
+        );
+        let metas = store.partition_page_metas(1, 2, 0);
+        let seqs: Vec<u32> = metas
+            .iter()
+            .map(|m| ((m.slab_offset - 32) / BLOCK_LEN) as u32)
+            .collect();
+        assert_eq!(seqs, vec![2, 1, 0], "LIFO free-block reuse");
+
+        // The fourth append has an empty chain and must bump the tail to a fresh block.
+        store
+            .append_row(1, 2, 0, &d, subject(99), &bytes(9.0, 9.0), &zaux())
+            .unwrap();
+        assert_eq!(
+            store.occupied_tail(),
+            SLAB_HEADER_SIZE as u64 + 4 * BLOCK_LEN
+        );
     }
 }

@@ -6,7 +6,7 @@ use crate::facade::stable::{
     OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG, VECTOR_GC_CURSOR, VECTOR_SHARD_WATERMARKS,
 };
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
-use crate::records::{ShardWatermarks, VectorRebuildStateRecord};
+use crate::records::{PartitionHeadRecord, ShardWatermarks, VectorRebuildStateRecord};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachPhase, ShardId};
@@ -2220,7 +2220,10 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
                     .get(&PartitionKey::new(INDEX_ID, TARGET_V, partition))
                     .expect("partition head get")
             })
-            .map(|head| head.live_len)
+            .map(|record| match record {
+                PartitionHeadRecord::Head(head) => head.live_len,
+                other => panic!("partition heads: unexpected record kind: {other:?}"),
+            })
             .sum::<u64>()
     });
     assert_eq!(
@@ -2243,7 +2246,10 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
                     .get(&PartitionKey::new(INDEX_ID, TARGET_V, partition))
                     .expect("partition head get")
             })
-            .map(|head| head.live_len)
+            .map(|record| match record {
+                PartitionHeadRecord::Head(head) => head.live_len,
+                other => panic!("partition heads: unexpected record kind: {other:?}"),
+            })
             .sum::<u64>()
     });
     assert_eq!(target_live_after_cleanup, 6, "one live row per subject");
@@ -3154,6 +3160,48 @@ fn second_rebuild_from_partitioned_active() {
     assert_eq!(after.hits, before.hits);
 }
 
+/// Slice 8 scalar block bound: on a rebuilt two-partition index, a full-walk (ε₂ = INF) L2 query
+/// whose nearest cluster fills the heap must **skip** the far partition's page before any slab
+/// read, while the returned top-k stays exactly the true nearest subjects.
+#[test]
+fn slice8_block_bound_skips_far_page_and_full_walk_stays_exact() {
+    fresh_store();
+    seed_distinct(4);
+    admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("start");
+    assert_eq!(
+        drive_steps(INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    admin_publish_vector_rebuild(router(), INDEX_ID).expect("publish");
+    drive_cleanup(INDEX_ID);
+
+    // Values {0,1,2,3}; furthest-point seeding puts the high centroid on partition 0, so a query
+    // at 3.0 fills the heap from partition 0 (scanned first) and arms the gate for partition 1.
+    crate::facade::store::reset_page_skip_stats();
+    let result =
+        vector_search_tuned(&search_value(3.0, 2), tuned(f32::INFINITY)).expect("gated full walk");
+    let (skipped, considered) = crate::facade::store::page_skip_stats();
+    assert!(
+        skipped >= 1 && considered >= 2,
+        "the far partition's page must be skipped before any slab read (skipped={skipped}, \
+         considered={considered})"
+    );
+    println!(
+        "[slice8] deterministic clustered-fixture page skip rate: {skipped}/{considered} = {:.1}%",
+        100.0 * skipped as f64 / considered as f64
+    );
+
+    // The gated walk stays exactly correct: seed_distinct maps subjects 1..4 to values 0..3, so
+    // the two nearest subjects to value 3.0 are 4 (exact hit) then 3.
+    assert_eq!(result.hits.len(), 2);
+    assert_eq!(result.hits[0].subject, subject(4));
+    assert_eq!(result.hits[1].subject, subject(3));
+
+    // Cosine non-regression guard within the same fixture shape: an ungated metric still answers.
+    // (Cosine rows are unit-normalized at write; the bound never gates their pages.)
+    let _ = vector_search_tuned(&search_value(3.0, 1), tuned(f32::INFINITY));
+}
+
 #[test]
 fn publish_succeeds_with_an_empty_partition() {
     fresh_store();
@@ -3199,6 +3247,9 @@ fn publish_succeeds_with_an_empty_partition() {
             .with_borrow(|heads| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
             .expect("partition head get")
             .expect("non-removed centroid partition materializes a head");
+        let PartitionHeadRecord::Head(head) = head else {
+            panic!("expected a head record under the leaf key")
+        };
         assert_eq!(head.live_len, 2, "remaining partition keeps two live rows");
     }
 

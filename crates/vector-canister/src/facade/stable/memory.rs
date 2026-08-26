@@ -2,9 +2,11 @@
 //! and `facade/stable/layout.rs` (ADR 0007 registry, ADR 0031 Slice 2).
 //!
 //! MemoryIds: router auth → shard catalog → ownership config → index defs → centroid meta →
-//! reserved centroids → subject clock → partition heads → pages → rebuild state → row slab →
-//! maintenance state. MemoryId 8 is unallocated (retired id reverse map); MemoryId 11 holds the
-//! slab-compaction driver state (plan 0278); MemoryId 18 is the raw rebuild-pool region
+//! reserved centroids → subject clock → partition heads (+ Slice 8 sealed-page tables and slab
+//! free-list companion records) → rebuild state → row slab → maintenance state. MemoryId 8 is
+//! unallocated (retired id reverse map); MemoryId 10 is unallocated since Phase-0 Slice 8 (the
+//! former page directory — pages are addressed arithmetically inside the row slab); MemoryId 11
+//! holds the slab-compaction driver state (plan 0278); MemoryId 18 is the raw rebuild-pool region
 //! (ADR 0033 implementation).
 
 use candid::{CandidType, Decode, Encode, Principal};
@@ -18,7 +20,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::records::{
-    DeletedSubjectKey, IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawMaintenanceState,
+    DeletedSubjectKey, IvfCentroidMeta, PartitionHeadRecord, PartitionKey, RawMaintenanceState,
     RawRebuildState, ShardWatermarks,
 };
 use ic_stable_linear_hash_map::StableLinearHashMap;
@@ -36,9 +38,11 @@ const IVF_CENTROID_META: MemoryId = MemoryId::new(5);
 const IVF_CENTROIDS: MemoryId = MemoryId::new(6);
 const VECTOR_SUBJECT_TO_ID: MemoryId = MemoryId::new(7);
 const VECTOR_PARTITION_HEADS: MemoryId = MemoryId::new(9);
-// ADR 0032: the former `VECTOR_PAGE` large-value store is replaced by a composite slab page store.
-// MemoryId 10 is reused for the page-metadata directory; MemoryId 13 is the raw row slab.
-pub(crate) const VECTOR_PAGE_META: MemoryId = MemoryId::new(10);
+// Phase-0 Slice 8: the former page-metadata directory (`VECTOR_PAGE_META`, ADR 0032) is abolished —
+// slab pages are addressed arithmetically inside VECTOR_ROW_SLAB (uniform blocks), and per-page
+// state moved into the partition heads collection. Like retired id 8, MemoryId 10 stays an
+// explicit hole (registered Unallocated in the layout) so the other ids keep their meaning
+// without a repack.
 const VECTOR_REBUILD_STATE: MemoryId = MemoryId::new(12);
 pub(crate) const VECTOR_ROW_SLAB: MemoryId = MemoryId::new(13);
 // ADR 0031 Slice 10: Router-forwarded maintenance orchestration. Holds the vector-canister-owned
@@ -71,8 +75,8 @@ pub(crate) type StableShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StableCentroidMetaMap = BTreeMap<u32, IvfCentroidMeta, Memory>;
 pub(crate) type StableCentroidsMap = BTreeMap<PartitionKey, Vec<u8>, Memory>;
 pub(crate) type StableDeletedSubjectsMap = BTreeMap<DeletedSubjectKey, u8, Memory>;
-pub(crate) type StablePartitionHeadsMap = StableLinearHashMap<PartitionKey, PartitionHead, Memory>;
-pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
+pub(crate) type StablePartitionHeadsMap =
+    StableLinearHashMap<PartitionKey, PartitionHeadRecord, Memory>;
 pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
 pub(crate) type StableShardWatermarksMap = BTreeMap<ShardId, ShardWatermarks, Memory>;
@@ -251,10 +255,6 @@ pub(crate) fn init_partition_heads() -> StablePartitionHeadsMap {
     StableLinearHashMap::init(memory).expect("init partition heads")
 }
 
-pub(crate) fn init_page_meta() -> StablePageMetaMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_PAGE_META)))
-}
-
 pub(crate) fn init_row_slab() -> Memory {
     MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_ROW_SLAB))
 }
@@ -285,7 +285,7 @@ pub(crate) fn init_gc_cursor() -> StableGcCursorCell {
 pub(crate) fn init_slab_compaction_state() -> StableSlabCompactionStateCell {
     Cell::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SLAB_COMPACTION_STATE)),
-        crate::records::VectorSlabCompactionState::Idle,
+        crate::records::VectorSlabCompactionState::Idle { free_head: None },
     )
 }
 

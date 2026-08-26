@@ -37,6 +37,7 @@ use ic_stable_vector_page_store::kernel::{
     l2_squared_i8_f32_early_exit,
 };
 use rapidhash::{HashSetExt, RapidHashSet};
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -356,13 +357,60 @@ fn score_sorted_rows(
     });
 }
 
+/// L2 scalar page-skip decision (Slice 8): the page's conservative norm bound `M = max‖row‖`
+/// lower-bounds every row distance by `max(0, ‖q‖ − M)²` (triangle inequality; tombstones never
+/// lower `M`, so it stays valid). Skip only when that lower bound **strictly** exceeds the current
+/// k-th best distance. Non-finite inputs fail open (never skip).
+#[inline]
+fn l2_page_skippable(q_norm: f32, block_bound: f32, threshold: f32) -> bool {
+    if !threshold.is_finite() || !q_norm.is_finite() || !block_bound.is_finite() {
+        return false;
+    }
+    let slack = q_norm - block_bound;
+    slack > 0.0 && slack * slack > threshold
+}
+
+thread_local! {
+    /// Cumulative `(skipped_pages, considered_pages)` of gated scans since the last reset
+    /// (Slice 8 observability for the skip-rate report; test/canbench only).
+    static PAGE_SKIP_STATS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+}
+
+fn note_page_skip(skipped: bool) {
+    #[cfg(any(test, feature = "canbench"))]
+    PAGE_SKIP_STATS.with(|c| {
+        let (s, t) = c.get();
+        c.set(if skipped { (s + 1, t + 1) } else { (s, t + 1) });
+    });
+    #[cfg(not(any(test, feature = "canbench")))]
+    let _ = skipped;
+}
+
+/// Resets the page-skip counters (call once per measured search).
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) fn reset_page_skip_stats() {
+    PAGE_SKIP_STATS.with(|c| c.set((0, 0)));
+}
+
+/// `(skipped_pages, considered_pages)` since the last reset.
+#[cfg(test)]
+pub(crate) fn page_skip_stats() -> (u64, u64) {
+    PAGE_SKIP_STATS.with(|c| c.get())
+}
+
 /// Bulk-reads the given partitions' page chains at the active version and scores every
-/// non-tombstoned row directly, with **no subject-map access**. `visit_partition_pages` already skips
-/// tombstoned rows, and the write path guarantees a non-tombstoned row in the active version is the
-/// subject's current live slot (invariant: re-upsert tombstones the old row, remove tombstones both
-/// active and shadow, publish cleans the old version), so the scored rows are exactly the live rows.
-/// Shared by the partitioned scan (ε₂-selected partitions) and the exact fallback (`0..nlist`). The
-/// early-exit threshold is order-independent, so the walk order does not change the result.
+/// non-tombstoned row directly, with **no subject-map access**. The write path guarantees a
+/// non-tombstoned row in the active version is the subject's current live slot (invariant:
+/// re-upsert tombstones the old row, remove tombstones both active and shadow, publish cleans the
+/// old version), so the scored rows are exactly the live rows. Shared by the partitioned scan
+/// (ε₂-selected partitions) and the exact fallback (`0..nlist`). The early-exit threshold is
+/// order-independent, so the walk order does not change the result.
+///
+/// **Scalar block bound (Slice 8).** For `L2Squared` only, each page's conservative bound
+/// `M = max‖row‖` lower-bounds every distance on the page by `max(0, ‖q‖ − M)²`; a page whose
+/// lower bound strictly exceeds the current k-th best is dropped **before any slab read**.
+/// Cosine pages are never gated (unit-normalized rows make `M ≈ 1`, so the bound is powerless) —
+/// their walk stays exactly the pre-Slice-8 path.
 ///
 /// `query_code` selects the two-tier precision path (Slice 6 / ADR 0078): when the generation
 /// carries code segments, each page is scored in two stages ([`scan_partitions_code_tier`]); the
@@ -384,30 +432,45 @@ fn scan_partitions(
     let Some(query_code) = query_code else {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut scratch = PageScratch::new();
+        // The gate arms for L2 only; cosine keeps its exact pre-Slice-8 walk (non-regression).
+        let gate_l2 = metric == VectorMetric::L2Squared;
         PAGE_STORE.with_borrow(|store| {
             for partition_id in partitions {
-                store.visit_partition_pages(
-                    index_id,
-                    active_index_version,
-                    partition_id,
-                    &mut scratch,
-                    |_slot, info, bytes| {
-                        // The L2 early-exit threshold is the current k-th best, applied only once the
-                        // heap is full (a partial max before then would wrongly skip top-k candidates).
-                        let threshold = if heap.len() as u32 == top_k {
-                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                        } else {
-                            f32::INFINITY
+                for view in store.partition_page_metas(index_id, active_index_version, partition_id)
+                {
+                    // The L2 early-exit threshold is the current k-th best, applied only once the
+                    // heap is full (a partial max before then would wrongly skip top-k candidates).
+                    let threshold = if heap.len() as u32 == top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    if gate_l2 && l2_page_skippable(q_norm, view.block_bound, threshold) {
+                        note_page_skip(true);
+                        continue;
+                    }
+                    note_page_skip(false);
+                    if !store.load_page(
+                        PageKey::new(index_id, active_index_version, partition_id, view.page_id),
+                        &mut scratch,
+                    ) {
+                        continue;
+                    }
+                    for slot in 0..scratch.row_count() {
+                        // One decode per row decides liveness; tombstoned rows skip scoring and
+                        // the run-table lookup entirely.
+                        let Some(info) = scratch.live_row_info(slot) else {
+                            continue;
                         };
                         let subject = VectorSubject::Vertex {
                             shard_id: ShardId::new(info.shard_id),
                             vertex_id: info.vertex_id,
                         };
-                        let scale = row_scale(encoding, info);
+                        let scale = row_scale(encoding, &info);
                         let Some(distance) = score_row(
                             metric,
                             encoding,
-                            bytes,
+                            scratch.vec_slice(slot),
                             scale,
                             query,
                             q_norm,
@@ -415,11 +478,11 @@ fn scan_partitions(
                             max_norm,
                             threshold,
                         ) else {
-                            return;
+                            continue;
                         };
                         push_bounded(&mut heap, top_k, Candidate { distance, subject });
-                    },
-                );
+                    }
+                }
             }
         });
         return finalize(heap);
@@ -442,6 +505,28 @@ fn scan_partitions(
 /// Shortlist capacity of the two-tier first stage (Slice 6 contract): `C = clamp(8k, 128..=1024)`.
 fn shortlist_capacity(top_k: u32) -> usize {
     (top_k.saturating_mul(8)).clamp(128, 1024) as usize
+}
+
+#[cfg(test)]
+mod slice8_gate_tests {
+    use super::*;
+
+    /// The skip rule is the strict triangle-inequality lower bound; equality never skips and
+    /// non-finite inputs fail open.
+    #[test]
+    fn l2_page_skip_bound_is_strict_and_fail_open() {
+        // Lower bound strictly above kth → skip.
+        assert!(l2_page_skippable(10.0, 1.0, 80.0));
+        // Equality is NOT a skip (strict inequality keeps boundary candidates).
+        assert!(!l2_page_skippable(10.0, 1.0, 81.0));
+        // Bound covering the query norm → zero slack → never skip.
+        assert!(!l2_page_skippable(5.0, 5.0, 1.0));
+        assert!(!l2_page_skippable(1.0, 7.0, 1.0));
+        // Non-finite anything fails open.
+        assert!(!l2_page_skippable(f32::NAN, 1.0, 1.0));
+        assert!(!l2_page_skippable(4.0, f32::INFINITY, 1.0));
+        assert!(!l2_page_skippable(4.0, 1.0, f32::INFINITY));
+    }
 }
 
 /// Monotonicity of the shortlist capacity in `top_k` (contract item ④'s pure core).
@@ -572,109 +657,122 @@ pub(super) fn scan_partitions_code_tier_with_cap(
     // Reused Stage A buffer; cleared per page.
     let mut shortlist: Vec<EstimateCandidate> = Vec::with_capacity(shortlist_cap);
     let mut scratch = PageScratch::new();
+    // The Slice 8 scalar bound gates L2 pages before any slab read; cosine stays ungated.
+    let gate_l2 = metric == VectorMetric::L2Squared;
     PAGE_STORE.with_borrow(|store| {
         for partition_id in partitions {
-            store.visit_partition_pages_grouped(
-                index_id,
-                active_index_version,
-                partition_id,
-                &mut scratch,
-                |page_id, scratch| {
-                    if !scratch.has_code_table() {
-                        score_whole_page_exact(
-                            scratch,
-                            page_id,
-                            partition_id,
-                            active_index_version,
-                            query,
-                            metric,
-                            encoding,
-                            q_norm,
-                            suffix_norm,
-                            max_norm,
-                            top_k,
-                            &mut heap,
-                        );
-                        return;
+            for view in store.partition_page_metas(index_id, active_index_version, partition_id) {
+                let pre_threshold = if heap.len() as u32 == top_k {
+                    heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                } else {
+                    f32::INFINITY
+                };
+                if gate_l2 && l2_page_skippable(q_norm, view.block_bound, pre_threshold) {
+                    note_page_skip(true);
+                    continue;
+                }
+                note_page_skip(false);
+                if !store.load_page(
+                    PageKey::new(index_id, active_index_version, partition_id, view.page_id),
+                    &mut scratch,
+                ) {
+                    continue;
+                }
+                let page_id = view.page_id;
+                if !scratch.has_code_table() {
+                    score_whole_page_exact(
+                        &scratch,
+                        page_id,
+                        partition_id,
+                        active_index_version,
+                        query,
+                        metric,
+                        encoding,
+                        q_norm,
+                        suffix_norm,
+                        max_norm,
+                        top_k,
+                        &mut heap,
+                    );
+                    continue;
+                }
+                // ---- Stage A: top-C estimates on this page (worst-evicting bounded heap) ----
+                let mut stage_a: BinaryHeap<EstimateCandidate> =
+                    BinaryHeap::with_capacity(shortlist_cap);
+                for slot in 0..scratch.row_count() {
+                    let Some(info) = scratch.live_row_info(slot) else {
+                        continue;
+                    };
+                    let segment = scratch.code_slice(slot);
+                    if segment.len() < CODE_AUX_BYTES {
+                        continue;
                     }
-                    // ---- Stage A: top-C estimates on this page (worst-evicting bounded heap) ----
-                    let mut stage_a: BinaryHeap<EstimateCandidate> =
-                        BinaryHeap::with_capacity(shortlist_cap);
-                    for slot in 0..scratch.row_count() {
-                        let Some(info) = scratch.live_row_info(slot) else {
-                            continue;
-                        };
-                        let segment = scratch.code_slice(slot);
-                        if segment.len() < CODE_AUX_BYTES {
-                            continue;
-                        }
-                        stage_a.push({
-                            let scored = query_code.score_row(segment);
-                            EstimateCandidate {
-                                estimate: scored.distance,
-                                lower_bound: scored.lower_bound,
-                                subject: VectorSubject::Vertex {
-                                    shard_id: ShardId::new(info.shard_id),
-                                    vertex_id: info.vertex_id,
-                                },
-                                slot,
-                            }
-                        });
-                        if stage_a.len() > shortlist_cap {
-                            stage_a.pop(); // evicts the worst estimate (ties: largest subject)
-                        }
-                    }
-                    // Deterministic Stage B order: `into_sorted_vec` yields ascending `Ord`, i.e.
-                    // best (smallest) estimate first, lowest subject on ties.
-                    shortlist = stage_a.into_sorted_vec();
-                    // ---- Stage B: same-page exact rerank ----
-                    #[cfg(test)]
-                    for entry in &shortlist {
-                        let _ = &entry;
-                    }
-                    for entry in &shortlist {
-                        let threshold = if heap.len() as u32 == top_k {
-                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                        } else {
-                            f32::INFINITY
-                        };
-                        // Exact lower-bound pruning: even the most favorable consistent cosine
-                        // (full Cauchy–Schwarz residual slack) cannot strictly beat the current
-                        // k-th best exact hit.
-                        if threshold != f32::INFINITY && entry.lower_bound > threshold {
-                            continue;
-                        }
-                        let bytes = scratch.vec_slice(entry.slot);
-                        let scale = row_scale(
-                            encoding,
-                            &scratch
-                                .live_row_info(entry.slot)
-                                .expect("shortlist row stays live within one page"),
-                        );
-                        let Some(distance) = score_row(
-                            metric,
-                            encoding,
-                            bytes,
-                            scale,
-                            query,
-                            q_norm,
-                            suffix_norm,
-                            max_norm,
-                            threshold,
-                        ) else {
-                            continue;
-                        };
-                        push_bounded(
-                            &mut heap,
-                            top_k,
-                            Candidate {
-                                distance,
-                                subject: entry.subject,
+                    stage_a.push({
+                        let scored = query_code.score_row(segment);
+                        EstimateCandidate {
+                            estimate: scored.distance,
+                            lower_bound: scored.lower_bound,
+                            subject: VectorSubject::Vertex {
+                                shard_id: ShardId::new(info.shard_id),
+                                vertex_id: info.vertex_id,
                             },
-                        );
+                            slot,
+                        }
+                    });
+                    if stage_a.len() > shortlist_cap {
+                        stage_a.pop(); // evicts the worst estimate (ties: largest subject)
                     }
-                },
-            );
+                }
+                // Deterministic Stage B order: `into_sorted_vec` yields ascending `Ord`, i.e.
+                // best (smallest) estimate first, lowest subject on ties.
+                shortlist = stage_a.into_sorted_vec();
+                // ---- Stage B: same-page exact rerank ----
+                #[cfg(test)]
+                for entry in &shortlist {
+                    let _ = &entry;
+                }
+                for entry in &shortlist {
+                    let threshold = if heap.len() as u32 == top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    // Exact lower-bound pruning: even the most favorable consistent cosine
+                    // (full Cauchy–Schwarz residual slack) cannot strictly beat the current
+                    // k-th best exact hit.
+                    if threshold != f32::INFINITY && entry.lower_bound > threshold {
+                        continue;
+                    }
+                    let bytes = scratch.vec_slice(entry.slot);
+                    let scale = row_scale(
+                        encoding,
+                        &scratch
+                            .live_row_info(entry.slot)
+                            .expect("shortlist row stays live within one page"),
+                    );
+                    let Some(distance) = score_row(
+                        metric,
+                        encoding,
+                        bytes,
+                        scale,
+                        query,
+                        q_norm,
+                        suffix_norm,
+                        max_norm,
+                        threshold,
+                    ) else {
+                        continue;
+                    };
+                    push_bounded(
+                        &mut heap,
+                        top_k,
+                        Candidate {
+                            distance,
+                            subject: entry.subject,
+                        },
+                    );
+                }
+            }
         }
     });
     finalize(heap)
@@ -736,7 +834,10 @@ fn active_live_count(index_id: u32, active: u64, nlist: u32) -> u64 {
             .map(|p| {
                 h.get(&PartitionKey::new(index_id, active, p))
                     .expect("partition head get")
-                    .map(|head| head.live_len)
+                    .map(|record| match record {
+                        crate::records::PartitionHeadRecord::Head(head) => head.live_len,
+                        other => panic!("partition heads: unexpected record kind: {other:?}"),
+                    })
                     .unwrap_or(0)
             })
             .sum()
@@ -1093,12 +1194,10 @@ fn search_impl(
     {
         return Err(VectorCanisterError::InvalidQueryVector);
     }
-    // Precompute the query norm once for cosine scoring (the query is validated non-zero-norm).
-    let q_norm = if req.metric == VectorMetric::Cosine {
-        query.iter().map(|x| x * x).sum::<f32>().sqrt()
-    } else {
-        0.0
-    };
+    // Precompute the query norm once. Cosine scoring divides by it; the Slice 8 L2 page gate
+    // lower-bounds page distances by `max(0, ‖q‖ − M)²`, so it needs the norm for **both**
+    // metrics (L2 rows may legitimately be zero, the query may not for cosine only).
+    let q_norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
     // Precompute the query suffix norms once for the cosine Cauchy-Schwarz early exit (length
     // `dims + 1`); L2 passes an empty slice and ignores it.
     let suffix_norm: Vec<f32> = if req.metric == VectorMetric::Cosine {
