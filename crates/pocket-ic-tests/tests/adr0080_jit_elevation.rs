@@ -239,6 +239,7 @@ fn jit_elevation_loop_end_to_end() {
                 graph_canister: Principal::management_canister(),
                 index_canister: env.index,
             }],
+            requested_resources: Vec::new(),
         },
     );
 
@@ -396,6 +397,7 @@ fn jit_elevation_loop_end_to_end() {
                 graph_canister: Principal::management_canister(),
                 index_canister: env.index,
             }],
+            requested_resources: Vec::new(),
         },
     );
     get_graph_id_of(&env, operator_a(), TARGET_GRAPH);
