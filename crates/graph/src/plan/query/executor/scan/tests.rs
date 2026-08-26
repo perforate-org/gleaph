@@ -4197,6 +4197,39 @@ fn index_intersection_requires_index_client() {
 }
 
 #[test]
+fn index_scan_requires_index_client() {
+    // Plan 0308 C2 diagnosis: the executor half of the 0296 knowledge-demo
+    // shortest-path bring-up failure (`Router rejected prepared_query: ...
+    // IndexScan(no index client)`). An unseeded leading IndexScan must reject
+    // fail-closed when no index client is attached; router seed resolution is
+    // what makes such plans runnable on the wire path ([lookup-intersection.md]).
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "uid".into(),
+        value: ScanValue::Literal(Value::Text("alice".into())),
+        cmp: CmpOp::Eq,
+        property_projection: None,
+        ordered_by_sort: None,
+    }]);
+
+    let err = pollster::block_on(execute_plan_query_bindings(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+    ))
+    .expect_err("missing index client");
+
+    assert!(matches!(
+        err,
+        PlanQueryError::UnsupportedOp("IndexScan(no index client)")
+    ));
+}
+
+#[test]
 fn seeded_skip_leading_index_intersection_does_not_call_index() {
     let store = GraphStore::new();
     configure_test_index(&store);

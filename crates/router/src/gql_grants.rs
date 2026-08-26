@@ -1327,6 +1327,121 @@ mod publication_tests {
     use candid::Principal;
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 
+    /// Plan 0308 C2 diagnosis: the knowledge demo's `shortest-path` op was observed at
+    /// bring-up failing execution with `IndexScan(no index client)` while
+    /// `variable-length-reach` executed. Dumps both physical plans under demo-faithful
+    /// catalog state (Document.title actively indexed per migration 000002;
+    /// Concept.name intentionally unindexed) and pins each plan's leading op so the
+    /// seeded-vs-unseeded dispatch difference stays visible against regression.
+    #[test]
+    fn shortest_path_demo_plan_leading_ops_diagnostic_dump() {
+        let owner = Principal::from_slice(&[7; 29]);
+        let registrar = Principal::from_slice(&[255; 29]); // has MANAGE_CATALOG via grant_admins
+        let graph = owned_graph(owner, "diag_sp");
+        let store = crate::facade::store::RouterStore::new();
+        store
+            .admin_intern_vertex_label(registrar, "diag_sp", "Concept")
+            .expect("intern Concept");
+        store
+            .admin_intern_vertex_label(registrar, "diag_sp", "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_edge_label(registrar, "diag_sp", "RELATED_TO")
+            .expect("intern RELATED_TO");
+        store
+            .admin_intern_properties(
+                registrar,
+                "diag_sp",
+                &["name".to_owned(), "title".to_owned()],
+            )
+            .expect("intern properties");
+        // Migration 000002 equivalent: Document.title is the demo's only active vertex index.
+        let label_id = store
+            .lookup_vertex_label_id(graph, "Document")
+            .expect("Document label id");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            graph,
+            label_id.raw(),
+            "title",
+        );
+
+        // Byte-identical to demo/knowledge/prepared/shortest-path.gql (post-C1 polarity).
+        let shortest_source = "MATCH ANY SHORTEST \
+             (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,4}(b:Concept {name: 'Vector search'}) \
+             RETURN ELEMENT_ID(b) AS concept_id, b.name AS concept";
+        // Byte-identical to demo/knowledge/prepared/variable-length-reach.gql.
+        let varlen_source = "MATCH \
+             (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,3}(b:Concept) \
+             RETURN DISTINCT b.name AS concept, ELEMENT_ID(b) AS concept_id";
+
+        let (sp_cache, _) =
+            crate::prepared::build_prepared_cache(shortest_source, owner, Some(graph))
+                .expect("plan shortest-path");
+        let (vl_cache, _) =
+            crate::prepared::build_prepared_cache(varlen_source, owner, Some(graph))
+                .expect("plan variable-length-reach");
+
+        println!("== shortest-path plan ==\n{:#?}", sp_cache.plan);
+        println!("== variable-length-reach plan ==\n{:#?}", vl_cache.plan);
+
+        // Pin the healthy shapes: with the demo catalog (only Document.title indexed),
+        // neither op may contain an index scan — every op is locally executable on a
+        // graph shard without an index client and without seed bindings
+        // ([lookup-intersection.md]: unseeded IndexScan rejects with
+        // `IndexScan(no index client)`).
+        let sp_debug = format!("{:#?}", sp_cache.plan);
+        let vl_debug = format!("{:#?}", vl_cache.plan);
+        for (name, debug) in [
+            ("shortest-path", &sp_debug),
+            ("variable-length-reach", &vl_debug),
+        ] {
+            assert!(
+                !debug.contains("IndexScan")
+                    && !debug.contains("IndexIntersection")
+                    && !debug.contains("EdgeIndexScan"),
+                "{name} plan must not contain index-scan ops under the demo catalog"
+            );
+            assert!(debug.starts_with("PhysicalPlan"));
+        }
+        assert!(
+            sp_debug.contains("NodeScan"),
+            "shortest-path must lead with NodeScan"
+        );
+        assert!(sp_debug.contains("AnyShortest"));
+
+        // Historical-shape repro (0296 bring-up evidence): when Concept.name IS actively
+        // indexed, equality anchoring lowers the endpoint to a leading IndexScan — the
+        // shape that fails closed on unseeded single-shard dispatch. Registering the
+        // index flips the plan deterministically; this documents why an index on a
+        // same-named multi-label property (Concept.name/Person.name) is hazardous here.
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            graph,
+            store
+                .lookup_vertex_label_id(graph, "Concept")
+                .expect("Concept label id")
+                .raw(),
+            "name",
+        );
+        let (sp_indexed, _) =
+            crate::prepared::build_prepared_cache(shortest_source, owner, Some(graph))
+                .expect("plan shortest-path with name index");
+        let sp_indexed_debug = format!("{:#?}", sp_indexed.plan);
+        println!("== shortest-path plan (Concept.name indexed) ==\n{sp_indexed_debug}");
+        assert!(
+            sp_indexed_debug.contains("IndexScan"),
+            "indexing Concept.name must lower the anchored endpoint to IndexScan"
+        );
+        let (vl_indexed, _) =
+            crate::prepared::build_prepared_cache(varlen_source, owner, Some(graph))
+                .expect("plan variable-length-reach with name index");
+        println!(
+            "== variable-length-reach plan (Concept.name indexed) ==\n{:#?}",
+            vl_indexed.plan
+        );
+    }
+
     /// Plan 0306 / closes GAP-2026-08-24-008 residual follow-up (a): an ELEMENT_ID
     /// projection on a MATCH-bound edge variable demands nothing beyond the traversal row
     /// its label facts already cover — symmetric with vertex element-id reads; pinned

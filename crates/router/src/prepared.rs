@@ -10,6 +10,7 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::PhysicalPlan;
+use gleaph_gql_planner::plan::PlanOp;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
@@ -179,6 +180,91 @@ fn plan_prepared_program(
     Ok((plan, graph_id, requires_write_path))
 }
 
+/// Leading-seed-prefix op classification, mirroring the graph executor's
+/// `is_router_seed_skippable_op`: these ops are skipped on the wire only when effective
+/// Router seed bindings ride along, so an index anchor among them must be servable by
+/// Router seeding at dispatch time or the operation fails for every caller.
+fn is_leading_seed_prefix_op(op: &PlanOp) -> bool {
+    matches!(
+        op,
+        PlanOp::NodeScan { label: Some(_), .. }
+            | PlanOp::PropertyFilter { .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+    )
+}
+
+/// One index anchor extracted from a plan's leading seed prefix.
+struct LeadingIndexAnchor {
+    variable: String,
+    property: String,
+}
+
+fn leading_index_anchors(plan: &PhysicalPlan) -> Vec<LeadingIndexAnchor> {
+    let mut anchors = Vec::new();
+    for op in plan
+        .ops
+        .iter()
+        .take_while(|op| is_leading_seed_prefix_op(op))
+    {
+        match op {
+            PlanOp::IndexScan {
+                variable, property, ..
+            } => anchors.push(LeadingIndexAnchor {
+                variable: variable.to_string(),
+                property: property.to_string(),
+            }),
+            PlanOp::IndexIntersection {
+                variable, scans, ..
+            } => {
+                for scan in scans {
+                    anchors.push(LeadingIndexAnchor {
+                        variable: variable.to_string(),
+                        property: scan.property.to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    anchors
+}
+
+/// Registration-time servability gate: every index anchor in a plan's leading seed prefix
+/// must resolve to exactly one Active posting namespace in the Router index catalog — the
+/// same resolution (`active_vertex_physical_index`) Router seeding performs at dispatch.
+/// A leading anchor the executing topology does not serve would otherwise be rejected at
+/// run time for every caller (`IndexScan(no index client)`, the 2026-08-24 knowledge-demo
+/// shortest-path failure shape). Edge and conditional anchors stay dispatch-extracted:
+/// edge extraction pairs with `EdgeBindEndpoints`, and conditional scans carry a designed
+/// null-parameter full-scan fallback.
+fn validate_leading_index_anchor_servability(
+    graph_id: GraphId,
+    plan: &PhysicalPlan,
+) -> Result<(), RouterError> {
+    for anchor in leading_index_anchors(plan) {
+        let property_id = crate::facade::stable::ROUTER_PROPERTY_CATALOG
+            .with_borrow(|catalog| catalog.get_id(graph_id, &anchor.property));
+        let Some(property_id) = property_id else {
+            return Err(RouterError::InvalidArgument(format!(
+                "leading index anchor on variable '{}' cannot be served: property '{}' is not interned on this graph",
+                anchor.variable, anchor.property
+            )));
+        };
+        if let Err(reason) = crate::facade::stable::indexed_catalog::active_vertex_physical_index(
+            graph_id,
+            None,
+            property_id,
+        ) {
+            return Err(RouterError::InvalidArgument(format!(
+                "leading index anchor on variable '{}': index on property '{}' is defined but not served to the executing topology ({reason}); drop the index or add seeds/topology support",
+                anchor.variable, anchor.property
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Register or replace named prepared operations in one atomic batch (idempotent upsert).
 ///
 /// The batch is all-or-nothing: every operation is parsed, planned, and metadata-completed
@@ -218,6 +304,8 @@ pub(crate) fn prepare_batch_core(
         // ADR 0074 slice 3: extract the static requirement set from the exact plan that
         // was just built, through the same walker enforcement uses at execution time.
         let required_privileges = crate::authz::extract_live(&store, &cache.plan, graph_id);
+        validate_leading_index_anchor_servability(graph_id, &cache.plan)
+            .map_err(|error| batch_op_error(&operation.name, error))?;
         let mut metadata = operation.metadata.clone();
         if let Some(metadata) = &mut metadata {
             let open = NoSchema;
@@ -1692,5 +1780,224 @@ mod sorted_variant_cache_tests {
             "failures never cache"
         );
         assert_eq!(sorted_cache_len_for(&key), 0, "failures never cache");
+    }
+
+    // ---- plan 0310 S2: leading-index-anchor servability guard ----
+
+    /// Registers one graph with interned labels/properties and optional Active vertex
+    /// indexes, each under an explicit index name so same-named properties can carry two
+    /// namespaces (the migration-000002 hazard shape).
+    fn servability_fixture(
+        admin: Principal,
+        graph_name: &str,
+        labels: &[&str],
+        edge_labels: &[&str],
+        properties: &[&str],
+        indexed: &[(&str, &str, &str)], // (index name, label, property)
+    ) -> (crate::facade::store::RouterStore, GraphId) {
+        use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+            provision_canister: None,
+        });
+        crate::facade::auth::grant_admins(&[admin]);
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+                graph_name,
+            )
+            .expect("register graph");
+        let graph_id =
+            crate::facade::stable::graph_catalog::lookup_graph_id(graph_name).expect("graph id");
+        for label in labels {
+            store
+                .admin_intern_vertex_label(admin, graph_name, label)
+                .expect("intern vertex label");
+        }
+        for label in edge_labels {
+            store
+                .admin_intern_edge_label(admin, graph_name, label)
+                .expect("intern edge label");
+        }
+        let owned: Vec<String> = properties.iter().map(|p| p.to_string()).collect();
+        store
+            .admin_intern_properties(admin, graph_name, &owned)
+            .expect("intern properties");
+        for (index_name, label, property) in indexed {
+            let property_id = store
+                .lookup_property_id(graph_id, property)
+                .expect("interned property");
+            let index_name_id =
+                crate::facade::stable::index_name_catalog::intern_index_name(graph_id, index_name)
+                    .expect("intern index name");
+            let label_id = store
+                .lookup_vertex_label_id(graph_id, label)
+                .expect("label id");
+            crate::facade::stable::indexed_catalog::create_named_index(
+                graph_id,
+                index_name_id,
+                crate::planner_stats::IndexCatalogEntry {
+                    kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                    vertex_label: Some(label.to_string()),
+                    edge_label: None,
+                    property: property.to_string(),
+                    edge_direction: None,
+                },
+                property_id,
+                label_id.raw(),
+                None,
+                false,
+            )
+            .expect("register active vertex index");
+        }
+        (store, graph_id)
+    }
+
+    #[test]
+    fn apply_accepts_leading_index_anchor_when_namespace_is_served() {
+        let admin = Principal::from_slice(&[41; 29]);
+        let (_store, graph_id) = servability_fixture(
+            admin,
+            "guard-served",
+            &["Person"],
+            &[],
+            &["uid"],
+            &[("idx_person_uid", "Person", "uid")],
+        );
+        let query = "MATCH (n:Person {uid: 'u1'}) RETURN n.uid AS uid";
+        // The planner must actually lead with the anchor, else the acceptance is vacuous.
+        let (cache, _) =
+            build_prepared_cache(query, admin, Some(graph_id)).expect("plan served anchor");
+        assert!(
+            matches!(cache.plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+            "expected a leading IndexScan, got {:?}",
+            cache.plan.ops.first()
+        );
+        prepare_batch_core(
+            &[PreparedRegistration {
+                name: "by-uid".into(),
+                query: query.into(),
+                metadata: None,
+            }],
+            admin,
+        )
+        .expect("served leading anchor must register");
+    }
+
+    #[test]
+    fn apply_rejects_leading_index_anchor_when_namespace_is_not_uniquely_served() {
+        // Mirrors the migration-000002 hazard: the same property actively indexed under
+        // two labels leaves no unique posting namespace, so dispatch seeding cannot
+        // resolve the anchor and execution fails at run time for every caller.
+        let admin = Principal::from_slice(&[42; 29]);
+        let (_store, graph_id) = servability_fixture(
+            admin,
+            "guard-ambiguous",
+            &["Person", "Candidate"],
+            &[],
+            &["name"],
+            &[
+                ("idx_person_name", "Person", "name"),
+                ("idx_candidate_name", "Candidate", "name"),
+            ],
+        );
+        let query = "MATCH (n:Person {name: 'x'}) RETURN n.name AS name";
+        let (cache, _) =
+            build_prepared_cache(query, admin, Some(graph_id)).expect("plan ambiguous anchor");
+        assert!(matches!(
+            cache.plan.ops.first(),
+            Some(PlanOp::IndexScan { .. })
+        ));
+        let error = prepare_batch_core(
+            &[PreparedRegistration {
+                name: "by-name".into(),
+                query: query.into(),
+                metadata: None,
+            }],
+            admin,
+        )
+        .expect_err("unservable leading anchor must fail registration");
+        assert!(
+            matches!(error, RouterError::InvalidArgument(ref message)
+                if message.contains("'n'") && message.contains("'name'") && message.contains("not served to the executing topology")),
+            "unexpected error {error:?}"
+        );
+        assert!(
+            get_prepared_core("by-name").is_err(),
+            "rejected registration must leave no record"
+        );
+    }
+
+    #[test]
+    fn apply_ignores_non_leading_equality_without_served_namespace() {
+        let admin = Principal::from_slice(&[43; 29]);
+        let (_store, _graph_id) = servability_fixture(
+            admin,
+            "guard-nonleading",
+            &["A", "B"],
+            &["R"],
+            &["name"],
+            &[],
+        );
+        prepare_batch_core(
+            &[PreparedRegistration {
+                name: "trailing-pred".into(),
+                query: "MATCH (a:A)-[r:R]->(b:B {name: 'x'}) RETURN b.name AS name".into(),
+                metadata: None,
+            }],
+            admin,
+        )
+        .expect("non-leading equality must not demand a served namespace");
+    }
+
+    #[test]
+    fn apply_keeps_demo_operations_accepted_under_demo_catalog() {
+        // Demo catalog equivalent (migration 000002): only Document.title carries an
+        // Active namespace; Concept.name is intentionally unindexed, so both demo reads
+        // plan NodeScan-led and must keep registering.
+        let admin = Principal::from_slice(&[44; 29]);
+        let (_store, _graph_id) = servability_fixture(
+            admin,
+            "guard-demo",
+            &["Concept", "Document"],
+            &["RELATED_TO"],
+            &["name", "title"],
+            &[("idx_document_title", "Document", "title")],
+        );
+        prepare_batch_core(
+            &[
+                PreparedRegistration {
+                    name: "shortest-path".into(),
+                    query: "MATCH ANY SHORTEST \
+                         (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,4}(b:Concept {name: 'Vector search'}) \
+                         RETURN ELEMENT_ID(b) AS concept_id, b.name AS concept"
+                        .into(),
+                    metadata: None,
+                },
+                PreparedRegistration {
+                    name: "variable-length-reach".into(),
+                    query: "MATCH \
+                         (a:Concept {name: 'Graph databases'})<-[e:RELATED_TO]-{1,3}(b:Concept) \
+                         RETURN DISTINCT b.name AS concept, ELEMENT_ID(b) AS concept_id"
+                        .into(),
+                    metadata: None,
+                },
+            ],
+            admin,
+        )
+        .expect("demo operations must register under the demo catalog");
     }
 }
