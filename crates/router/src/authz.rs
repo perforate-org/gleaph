@@ -696,6 +696,19 @@ fn walk_op(
             }
         }
 
+        PlanOp::TextScan {
+            variable,
+            label,
+            property,
+            ..
+        } => {
+            // The text scan binds labeled vertices and reads the indexed TEXT property;
+            // grant coverage on the label plus a deferred property requirement mirror
+            // NodeScan + IndexScan above.
+            scope.note_vertex_label(variable, &label.name);
+            scope.defer_vertex_property(variable, property);
+        }
+
         PlanOp::EdgeIndexScan {
             variable,
             property,

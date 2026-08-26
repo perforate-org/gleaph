@@ -3542,6 +3542,18 @@ async fn run_gql_unchecked(
             {
                 return Ok(result);
             }
+            if let Some(result) = crate::gql_text_scan::try_execute_gql_text_scan(
+                plan,
+                dispatch.dispatch_graph_id,
+                params,
+                mode,
+                &stats,
+                &store,
+            )
+            .await?
+            {
+                return Ok(result);
+            }
         }
         crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
             let focused_stats = graph_stats_for(*graph_id);
@@ -3563,12 +3575,29 @@ async fn run_gql_unchecked(
             {
                 return Ok(result);
             }
+            if let Some(result) = crate::gql_text_scan::try_execute_gql_text_scan(
+                plan,
+                *graph_id,
+                params,
+                mode,
+                &focused_stats,
+                &store,
+            )
+            .await?
+            {
+                return Ok(result);
+            }
         }
         crate::use_graph::UseGraphV2Dispatch::Multi { plan, .. }
         | crate::use_graph::UseGraphV2Dispatch::Join { plan, .. } => {
             if gleaph_gql_planner::plan_contains_search(plan) {
                 return Err(RouterError::InvalidArgument(
                     "GQL SEARCH is only supported for single-graph queries in this slice".into(),
+                ));
+            }
+            if crate::gql_text_scan::plan_mentions_text_score(plan) {
+                return Err(RouterError::InvalidArgument(
+                    "text_score is only supported for single-graph queries in this slice".into(),
                 ));
             }
         }

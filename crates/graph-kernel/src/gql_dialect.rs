@@ -164,6 +164,9 @@ pub const GLEAPH_VERTEX_LIST: QualifiedName = QualifiedName::new(&["GLEAPH", "VE
 /// `SEARCH`
 pub const SEARCH: QualifiedName = QualifiedName::new(&["SEARCH"]);
 
+/// `TEXT_SCORE`
+pub const TEXT_SCORE: QualifiedName = QualifiedName::new(&["TEXT_SCORE"]);
+
 /// `INLINE`
 pub const INLINE: QualifiedName = QualifiedName::new(&["INLINE"]);
 
@@ -280,6 +283,13 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
         status: GqlDialectExtensionStatus::Planned,
         owner: GqlDialectExtensionOwner::Router,
         doc_anchor: "design/gql/extension-syntax.md#vector-index-ddl",
+    },
+    GqlDialectExtensionSpec {
+        canonical_name: TEXT_SCORE,
+        kind: GqlDialectExtensionKind::RuntimeFunction,
+        status: GqlDialectExtensionStatus::Implemented,
+        owner: GqlDialectExtensionOwner::Router,
+        doc_anchor: "design/gql/extension-syntax.md#text-score",
     },
 ];
 

@@ -305,10 +305,6 @@ fn transition_text_backfill_status(
 /// Planner/query projection: ONLY `Ready` definitions with an attached canister are
 /// visible to query planning; `Registered` and `Backfilling` rows stay invisible exactly
 /// like non-Active property indexes (ADR 0059 §Text build kind readiness gate).
-#[allow(
-    dead_code,
-    reason = "text planner projection wiring lands with plan 0297"
-)]
 pub(crate) fn planning_visible_text_indexes(graph_id: GraphId) -> Vec<TextIndexDefRecord> {
     list_text_indexes(graph_id)
         .into_iter()

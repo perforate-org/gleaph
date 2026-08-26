@@ -295,7 +295,7 @@ fn deepening_stop(
 /// observe more authorized survivors than the requested k, and GQL LIMIT is an
 /// upper-bound contract, so the deterministic prefix of materialized rows is kept.
 /// Count-only results carry no materialized rows and are returned untouched.
-fn cap_result_rows(result: &mut GqlQueryResult, cap: u32) -> Result<(), RouterError> {
+pub(crate) fn cap_result_rows(result: &mut GqlQueryResult, cap: u32) -> Result<(), RouterError> {
     let Some(blob) = result.rows_blob.take() else {
         return Ok(());
     };
@@ -1454,7 +1454,7 @@ fn strip_search_prefix(
     })
 }
 
-async fn dispatch_search_read_plan(
+pub(crate) async fn dispatch_search_read_plan(
     graph_id: GraphId,
     _original_plan: &PhysicalPlan,
     stripped_plan_blob: &[u8],

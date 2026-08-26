@@ -29,6 +29,7 @@ mod federation;
 mod gql;
 mod gql_grants;
 mod gql_search;
+mod gql_text_scan;
 mod graph_client;
 mod graph_context;
 mod index_catalog;
