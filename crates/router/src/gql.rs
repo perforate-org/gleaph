@@ -9891,12 +9891,33 @@ mod tests {
         );
         let plan_no_index =
             build_router_block_plan(block, &NoSchema, &stats_no_index).expect("plan no index");
-        assert!(
-            SeedAnchorSet::from_plans(&[plan_no_index], &BTreeMap::new(), &store, &stats_no_index,)
+        // Plan 0311: on a single-shard topology a multi-variable label-only prefix KEEPS its
+        // per-variable anchors — label postings seed the routing variable and the sole shard
+        // executes the remaining labeled scans locally once the wire guard sees effective
+        // seeds. Multi-shard stores still get None (pinned by
+        // from_plans_multi_shard_still_drops_label_only_multi_variable_prefix).
+        let label_only_set =
+            SeedAnchorSet::from_plans(&[plan_no_index], &BTreeMap::new(), &store, &stats_no_index)
                 .expect("parse anchors")
-                .is_none(),
-            "multi-variable no-index plan must not produce a single seed anchor"
+                .expect("standalone keeps label-only multi-variable anchors");
+        assert_eq!(
+            label_only_set
+                .variables
+                .iter()
+                .map(|v| v.variable.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "both labeled endpoints anchor"
         );
+        for variable in &label_only_set.variables {
+            assert!(
+                variable
+                    .anchors
+                    .iter()
+                    .all(|a| matches!(a, IndexAnchor::Label { .. })),
+                "no-index extraction yields plain label anchors only"
+            );
+        }
 
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store, graph_id, 0, "demo_id",
@@ -10312,10 +10333,9 @@ mod tests {
             label_id: 0x8001,
             slot_index: 3,
         });
-        let pattern_bytes =
-            gleaph_gql::value_to_index_key_bytes(&Value::Text("Str".into()))
-                .unwrap()
-                .unwrap();
+        let pattern_bytes = gleaph_gql::value_to_index_key_bytes(&Value::Text("Str".into()))
+            .unwrap()
+            .unwrap();
         let anchor = crate::seed::IndexAnchor::EdgePrefix(crate::seed::EdgePrefixSeedProbe {
             variable: "e".into(),
             property: "name".into(),
@@ -10348,8 +10368,7 @@ mod tests {
         assert_eq!(*label, Some(0x8001));
         // The seeded interval is the half-open encoded TEXT prefix window derived
         // from the stored key: [tag + payload, tag + payload + sentinel].
-        let gleaph_graph_kernel::index::PostingRangeRequest::Between { low, high } = request
-        else {
+        let gleaph_graph_kernel::index::PostingRangeRequest::Between { low, high } = request else {
             panic!("edge prefix probe must issue a Between request, got {request:?}");
         };
         assert_eq!(

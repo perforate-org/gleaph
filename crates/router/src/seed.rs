@@ -151,6 +151,16 @@ fn has_non_label_anchor(anchor: &VariableAnchor) -> bool {
     })
 }
 
+/// Whether every anchor in the set is a plain label (or label-intersection) anchor.
+fn all_anchors_label_only(anchors: &[IndexAnchor]) -> bool {
+    anchors.iter().all(|a| {
+        matches!(
+            a,
+            IndexAnchor::Label { .. } | IndexAnchor::LabelIntersection { .. }
+        )
+    })
+}
+
 impl SeedAnchorSet {
     /// Leading anchor prefix for seed routing (label + property intersection when present).
     pub fn from_plans(
@@ -159,6 +169,7 @@ impl SeedAnchorSet {
         store: &RouterStore,
         stats: &RouterGraphStats,
     ) -> Result<Option<Self>, RouterError> {
+        let graph_id = stats.graph_id();
         let mut all: Vec<VariableAnchor> = Vec::new();
         for plan in plans {
             if let Some(prefix) =
@@ -173,8 +184,27 @@ impl SeedAnchorSet {
         // ADR 0046 Phase 1: a multi-variable prefix is only useful when every variable has at
         // least one selective equality/index anchor. Label-only variables would explode the
         // Cartesian product and provide no index path, so fall back to Graph-local execution.
+        //
+        // Standalone exception (plan 0311): with exactly one live shard there is nothing to
+        // fan out — label anchors resolve through the existing label-posting lookup
+        // (`collect_label_hits_for_shards` over graph-index `lookup_label`, ADR 0004) and the
+        // sole shard executes the remaining labeled scans locally once the wire guard sees
+        // effective seeds. Only pure label-only prefixes take this branch: a mixed set would
+        // leave a later variable's index anchor unskipped and unserved on the shard. Multi-
+        // shard graphs keep the fail-closed None — cross-shard traversal is removed pending
+        // the federated-traversal restoration ADR, so those plans stay rejected by the guard.
         if all.len() > 1 && !all.iter().all(has_non_label_anchor) {
-            return Ok(None);
+            let label_only_prefix = all
+                .iter()
+                .all(|variable| all_anchors_label_only(&variable.anchors));
+            let standalone = label_only_prefix
+                && store
+                    .list_live_shards_for_graph_id(graph_id)
+                    .map(|shards| shards.len() == 1)
+                    .unwrap_or(false);
+            if !standalone {
+                return Ok(None);
+            }
         }
         Ok(Some(Self { variables: all }))
     }
