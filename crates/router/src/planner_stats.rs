@@ -284,6 +284,25 @@ impl GraphStats for RouterGraphStats {
     ) -> bool {
         self.is_edge_property_indexed_for(label, property, direction)
     }
+
+    /// TEXT coverage is planner/query-visible only for `Ready` definitions with an
+    /// attached canister (`planning_visible_text_indexes`), so `Backfilling` indexes are
+    /// invisible here exactly as they are to query planning.
+    fn is_vertex_property_text_indexed_for(&self, label: Option<&str>, property: &str) -> bool {
+        let (Some(label), Some(property_id)) = (
+            label,
+            ROUTER_PROPERTY_CATALOG.with_borrow(|catalog| catalog.get_id(self.graph_id, property)),
+        ) else {
+            return false;
+        };
+        let label_id = match RouterStore::new().lookup_vertex_label_id(self.graph_id, label) {
+            Ok(label_id) => label_id.raw(),
+            Err(_) => return false,
+        };
+        crate::facade::stable::text_index_catalog::planning_visible_text_indexes(self.graph_id)
+            .iter()
+            .any(|def| def.label_id.raw() == label_id && def.property_id == property_id)
+    }
 }
 
 #[cfg(test)]

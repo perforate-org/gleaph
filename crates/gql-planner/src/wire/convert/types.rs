@@ -38,6 +38,14 @@ pub enum PlanOpWire {
         cmp: CmpOp,
         property_projection: Option<Vec<String>>,
     },
+    TextScan {
+        variable: String,
+        label: String,
+        property: String,
+        query: ScanValueWire,
+        mode: TextScanModeWire,
+        property_projection: Option<Vec<String>>,
+    },
     EdgeBindEndpoints {
         edge: String,
         near: String,
@@ -299,6 +307,13 @@ pub enum ScanValueWire {
     /// `omit_bounds` treatment breaks the recursion through the boxed inner
     /// bound.
     TextPrefix(#[rkyv(omit_bounds)] Box<ScanValueWire>),
+}
+
+/// Wire form of [`crate::plan::TextScanMode`].
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum TextScanModeWire {
+    Threshold { cmp: CmpOp, bound: ScanValueWire },
+    TopK { limit: ScanValueWire },
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

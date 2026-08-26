@@ -7082,3 +7082,203 @@ fn explain_reply_to_seed_pattern_reverts_to_comma() {
         explain_plan(&plan)
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// TextScan lowering (plan 0297): text_score threshold + top-k seeds
+// ════════════════════════════════════════════════════════════════════════════════
+
+fn text_coverage_stats() -> TableStats {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("Document".to_string(), 1000);
+    stats
+        .text_indexed_vertex_properties
+        .insert(("Document".to_string(), "body".to_string()));
+    stats
+}
+
+#[test]
+fn text_threshold_predicate_lowers_to_text_scan_and_drops_residual() {
+    let stats = text_coverage_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, 'index') > 0.5 RETURN n",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::TextScan {
+                label,
+                property,
+                query: ScanValue::Literal(gleaph_gql::Value::Text(q)),
+                mode:
+                    TextScanMode::Threshold {
+                        cmp: CmpOp::Gt,
+                        bound: ScanValue::Literal(gleaph_gql::Value::Float64(_)),
+                    },
+                ..
+            } if &**label == "Document" && &**property == "body" && q == "index"
+        )),
+        "expected a threshold TextScan seed, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(is_text_score_expr)
+        )),
+        "the lowered score conjunct must not survive as a residual filter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn text_threshold_without_coverage_stays_residual_fail_closed() {
+    // No TEXT coverage declared: the planner must not emit TextScan and must keep the
+    // predicate residual so the Router rejects the unfused score function.
+    let mut stats = text_coverage_stats();
+    stats
+        .text_indexed_vertex_properties
+        .remove(&("Document".to_string(), "body".to_string()));
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, 'index') > 0.5 RETURN n",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "no TextScan may be emitted without confirmed coverage, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(contains_text_score_call)
+        )),
+        "uncovered score predicates stay residual for the Router's fail-closed check, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn text_topk_order_by_lowers_to_single_text_scan() {
+    let stats = text_coverage_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) RETURN n ORDER BY text_score(n.body, 'index') DESC LIMIT 3",
+        &stats,
+    );
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::TextScan {
+                label,
+                mode:
+                    TextScanMode::TopK {
+                        limit: ScanValue::Literal(gleaph_gql::Value::Int64(3)),
+                    },
+                ..
+            }) if &**label == "Document"
+        ),
+        "expected the leading scan rewritten into a TopK TextScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. } | PlanOp::Sort { .. })),
+        "the scan delivers (score DESC, key ASC); no Sort/TopK may remain, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn text_topk_without_coverage_keeps_ordinary_pipeline() {
+    let mut stats = text_coverage_stats();
+    stats
+        .text_indexed_vertex_properties
+        .remove(&("Document".to_string(), "body".to_string()));
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) RETURN n ORDER BY text_score(n.body, 'index') DESC LIMIT 3",
+        &stats,
+    );
+
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "no TextScan without coverage"
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. } | PlanOp::TopK { .. })),
+        "without coverage the ORDER BY stays in the ordinary pipeline, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "plan-wire")]
+fn text_scan_wire_round_trip_preserves_mode_and_target() {
+    use gleaph_gql_planner::wire::{decode_plan_bundle, encode_block_plans};
+
+    let stats = text_coverage_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, 'index') >= 0.25 RETURN n",
+        &stats,
+    );
+    let bytes = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+    let (_, plans) = decode_plan_bundle(&bytes).expect("decode");
+    assert_eq!(plans.len(), 1);
+    // Spans are intentionally dropped on the wire; compare the semantic fields.
+    assert!(plans[0].ops.iter().any(|op| matches!(
+        op,
+        PlanOp::TextScan {
+            variable,
+            label,
+            property,
+            query: ScanValue::Literal(gleaph_gql::Value::Text(q)),
+            mode:
+                TextScanMode::Threshold {
+                    cmp: CmpOp::Ge,
+                    bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
+                },
+            property_projection: None,
+        } if &**variable == "n"
+            && &**label == "Document"
+            && &**property == "body"
+            && q == "index"
+            && *bound == 0.25
+    )));
+}
+
+// Local helpers kept private to this module.
+fn contains_text_score_call(expr: &gleaph_gql::ast::Expr) -> bool {
+    use gleaph_gql_planner::expr_children::for_each_immediate_child_expr;
+    if is_text_score_expr(expr) {
+        return true;
+    }
+    let mut found = false;
+    for_each_immediate_child_expr(expr, |child| {
+        if !found && contains_text_score_call(child) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn is_text_score_expr(expr: &gleaph_gql::ast::Expr) -> bool {
+    matches!(
+        &expr.kind,
+        gleaph_gql::ast::ExprKind::FunctionCall { name, .. }
+            if name.parts.len() == 1 && name.parts[0].eq_ignore_ascii_case("text_score")
+    )
+}

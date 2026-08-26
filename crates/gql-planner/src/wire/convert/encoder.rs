@@ -91,6 +91,33 @@ impl Encoder {
                 cmp: *cmp,
                 property_projection: opt_str_slice(property_projection),
             },
+            PlanOp::TextScan {
+                variable,
+                label,
+                property,
+                query,
+                mode,
+                property_projection,
+            } => PlanOpWire::TextScan {
+                variable: variable.to_string(),
+                label: label.to_string(),
+                property: property.to_string(),
+                query: encode_scan_value(query)?,
+                mode: match mode {
+                    crate::plan::TextScanMode::Threshold { cmp, bound } => {
+                        crate::wire::convert::types::TextScanModeWire::Threshold {
+                            cmp: *cmp,
+                            bound: encode_scan_value(bound)?,
+                        }
+                    }
+                    crate::plan::TextScanMode::TopK { limit } => {
+                        crate::wire::convert::types::TextScanModeWire::TopK {
+                            limit: encode_scan_value(limit)?,
+                        }
+                    }
+                },
+                property_projection: opt_str_slice(property_projection),
+            },
             PlanOp::EdgeBindEndpoints {
                 edge,
                 near,

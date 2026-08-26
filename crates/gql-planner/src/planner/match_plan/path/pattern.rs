@@ -151,6 +151,25 @@ pub(crate) fn plan_match(
         annotations.optimizer.anchor = Some(anchor_info);
     }
 
+    // Full-text threshold seed: drain the matched conjunct so no residual filter can
+    // reference the score function, and remember the original for restoration if the
+    // seeded variable never receives its own scan (the predicate must never be lost
+    // silently; an unconsumed seed falls back to a residual conjunct that plan
+    // validation rejects fail-closed).
+    let mut restored_text_conjunct: Option<Expr> = None;
+    if stage == 0
+        && annotations.optimizer.text_seed.is_none()
+        && let Some((idx, seed)) = crate::text_scan::find_text_threshold_seed(
+            &where_conjuncts,
+            pattern,
+            bound_node_vars,
+            stats,
+        )
+    {
+        restored_text_conjunct = Some(where_conjuncts.remove(idx));
+        annotations.optimizer.text_seed = Some(seed);
+    }
+
     // Plan each path pattern. If a single MATCH contains multiple disconnected
     // path groups, plan each group as a sub-plan and combine with CartesianProduct.
     // This keeps the top-level plan from presenting several leading scans to the
@@ -200,6 +219,16 @@ pub(crate) fn plan_match(
                 annotations,
             )?;
         }
+    }
+
+    // A seed that was never consumed means the seeded variable binds through traversal
+    // instead of its own scan; restore the conjunct so it stays residual and plan
+    // validation rejects the unfused score expression instead of dropping it.
+    if let Some(conjunct) = restored_text_conjunct.take()
+        && annotations.optimizer.text_seed.is_some()
+    {
+        where_conjuncts.push(conjunct);
+        annotations.optimizer.text_seed = None;
     }
 
     if !where_conjuncts.is_empty() {

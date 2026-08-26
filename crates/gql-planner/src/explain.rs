@@ -276,6 +276,37 @@ fn format_op(op: &PlanOp) -> String {
             )
         }
 
+        PlanOp::TextScan {
+            variable,
+            label,
+            property,
+            query,
+            mode,
+            property_projection,
+        } => {
+            let mode_text = match mode {
+                TextScanMode::Threshold { cmp, bound } => {
+                    format!(
+                        "threshold score {} {}",
+                        format_cmp(cmp),
+                        format_scan_value(bound)
+                    )
+                }
+                TextScanMode::TopK { limit } => {
+                    format!("top-k limit {}", format_scan_value(limit))
+                }
+            };
+            format!(
+                "TextScan({}, label={}, text_score({}) query={} {}){}",
+                variable,
+                label,
+                property,
+                format_scan_value(query),
+                mode_text,
+                format_property_projection(property_projection.as_deref()),
+            )
+        }
+
         PlanOp::EdgeIndexScan {
             variable,
             property,

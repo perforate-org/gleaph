@@ -3,7 +3,7 @@
 //! Uses a simple additive cost model ported from gleaph-old. Each operator
 //! contributes a cost based on its type and estimated input cardinality.
 
-use crate::plan::{PlanOp, VarLenSpec};
+use crate::plan::{PlanOp, ScanValue, TextScanMode, VarLenSpec};
 use crate::stats::{self, GraphStats};
 
 /// Estimate the total cost of a plan (arbitrary units).
@@ -67,6 +67,23 @@ fn estimate_op_cost(op: &PlanOp, input_rows: f64, stats: Option<&dyn GraphStats>
 
         PlanOp::EdgeIndexScan { .. } => {
             let rows = 10.0;
+            (
+                rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION,
+                rows,
+            )
+        }
+
+        // Text relevance scans are index seeks like property postings; the score
+        // computation cost is dominated by the posting lookup either way. Top-k mode
+        // bounds output rows at the limit; threshold mode keeps the seek estimate.
+        PlanOp::TextScan { mode, .. } => {
+            let rows = match mode {
+                TextScanMode::TopK { limit } => match limit {
+                    ScanValue::Literal(gleaph_gql::Value::Int64(k)) if *k > 0 => *k as f64,
+                    _ => 10.0,
+                },
+                TextScanMode::Threshold { .. } => 10.0,
+            };
             (
                 rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION,
                 rows,

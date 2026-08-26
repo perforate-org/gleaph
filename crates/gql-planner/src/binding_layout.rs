@@ -67,6 +67,7 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
         PlanOp::NodeScan { variable, .. }
         | PlanOp::IndexScan { variable, .. }
         | PlanOp::EdgeIndexScan { variable, .. }
+        | PlanOp::TextScan { variable, .. }
         | PlanOp::IndexIntersection { variable, .. } => {
             layout.insert_name(variable.clone());
         }

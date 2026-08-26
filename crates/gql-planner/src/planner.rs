@@ -514,6 +514,9 @@ fn build_plan_core(
     pushdown::apply_late_project(&mut ops, &mut annotations);
     pushdown::apply_limit_pushdown(&mut ops, &mut annotations);
     pushdown::apply_topk_fusion(&mut ops, &mut annotations);
+    // Full-text top-k: rewrite [TextScan-eligible seed, …, TopK { text_score DESC, k }]
+    // into a single TextScan delivering deterministic (score DESC, key ASC) order.
+    crate::text_scan::apply_text_topk_lowering(&mut ops, stats);
     pushdown::apply_shortest_path_binding_pruning(&mut ops, &mut annotations);
     // Replace simple `Expand` cycles with a single `WorstCaseOptimalJoin` when safe.
     apply_wcoj_replacement(&mut ops, &mut annotations);
@@ -694,6 +697,7 @@ fn remote_use_graph_op_name(op: &PlanOp) -> &'static str {
     match op {
         PlanOp::NodeScan { .. } => "NODE SCAN",
         PlanOp::IndexScan { .. } => "INDEX SCAN",
+        PlanOp::TextScan { .. } => "TEXT SCAN",
         PlanOp::EdgeIndexScan { .. } => "EDGE INDEX SCAN",
         PlanOp::EdgeBindEndpoints { .. } => "EDGE BIND ENDPOINTS",
         PlanOp::ConditionalIndexScan { .. } => "CONDITIONAL INDEX SCAN",

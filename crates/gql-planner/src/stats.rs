@@ -56,6 +56,16 @@ pub trait GraphStats {
         false
     }
 
+    /// Whether a query-visible full-text index covers `(label, property)`.
+    ///
+    /// Text coverage is declared per label+property pair, so unlike the equality/range
+    /// probes this takes the label. Defaults to `false`: a `text_score` seed lowers only
+    /// under confirmed coverage and there is no sequential-scan fallback.
+    fn is_vertex_property_text_indexed_for(&self, label: Option<&str>, property: &str) -> bool {
+        let _ = (label, property);
+        false
+    }
+
     /// Whether an edge property has an index for the given label and query direction (ADR 0012).
     fn is_edge_property_indexed_for(
         &self,
@@ -154,6 +164,8 @@ pub struct TableStats {
     pub property_selectivity: BTreeMap<String, f64>,
     pub indexed_vertex_properties: BTreeSet<String>,
     pub range_indexed_vertex_properties: BTreeSet<String>,
+    /// `(vertex_label, property)` pairs covered by a query-visible full-text index.
+    pub text_indexed_vertex_properties: BTreeSet<(String, String)>,
     pub indexed_edge_properties: BTreeSet<String>,
     /// Edge label → (source node labels, destination node labels).
     pub edge_endpoint_labels: BTreeMap<String, (Vec<String>, Vec<String>)>,
@@ -172,6 +184,7 @@ impl Default for TableStats {
             property_selectivity: BTreeMap::new(),
             indexed_vertex_properties: BTreeSet::new(),
             range_indexed_vertex_properties: BTreeSet::new(),
+            text_indexed_vertex_properties: BTreeSet::new(),
             indexed_edge_properties: BTreeSet::new(),
             edge_endpoint_labels: BTreeMap::new(),
             property_histograms: BTreeMap::new(),
@@ -227,6 +240,14 @@ impl GraphStats for TableStats {
 
     fn is_vertex_property_range_indexed(&self, property: &str) -> bool {
         self.range_indexed_vertex_properties.contains(property)
+    }
+
+    fn is_vertex_property_text_indexed_for(&self, label: Option<&str>, property: &str) -> bool {
+        let Some(label) = label else {
+            return false;
+        };
+        self.text_indexed_vertex_properties
+            .contains(&(label.to_owned(), property.to_owned()))
     }
 
     fn is_edge_property_indexed(&self, property: &str) -> bool {

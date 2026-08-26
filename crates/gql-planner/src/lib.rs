@@ -35,6 +35,7 @@ pub mod property_projection;
 pub mod pushdown;
 pub mod semantic;
 pub mod stats;
+pub mod text_scan;
 
 #[cfg(feature = "plan-wire")]
 pub mod wire;

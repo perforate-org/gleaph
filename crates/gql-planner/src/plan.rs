@@ -437,6 +437,31 @@ pub enum PlanOp {
         property_projection: Option<Rc<[Str]>>,
     },
 
+    /// Full-text relevance scan over a TEXT-indexed vertex property (plan 0297 planner
+    /// lowering of the `text_score(prop, query)` contract).
+    ///
+    /// Binds `variable` to vertices of `label` whose `property` matches the text `query`.
+    /// Rows arrive in deterministic `(score DESC, element-key ASC)` order — explicit sort
+    /// keys, never HashMap iteration — so replicated merges are reproducible. Coverage of
+    /// `(label, property)` by a query-visible TEXT index must be confirmed through
+    /// [`crate::stats::GraphStats`] before this op is emitted; there is deliberately no
+    /// sequential-scan fallback. A lowered `text_score(…)` conjunct never stays residual:
+    /// score functions are not row-evaluable outside the scan that produced them, so
+    /// unfused uses are rejected at plan validation instead.
+    TextScan {
+        /// Variable bound to each scanned vertex.
+        variable: Str,
+        /// Required label constraint (text coverage is declared per label+property).
+        label: NodeLabelRef,
+        /// The TEXT-indexed vertex property.
+        property: Str,
+        /// The query expression: a Text literal or a parameter.
+        query: ScanValue,
+        mode: TextScanMode,
+        /// When set, only these property keys are hydrated on each bound vertex record.
+        property_projection: Option<Rc<[Str]>>,
+    },
+
     // ──── Filter ────
     /// Apply one or more predicates (from WHERE or inline pattern constraints).
     PropertyFilter {
@@ -849,6 +874,9 @@ fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
                 if let Some(label) = label {
                     uses.add_node(label, LabelUseIntent::ReadExisting);
                 }
+            }
+            PlanOp::TextScan { label, .. } => {
+                uses.add_node(label, LabelUseIntent::ReadExisting);
             }
             PlanOp::EdgeBindEndpoints { label, .. }
             | PlanOp::Expand { label, .. }
@@ -1453,6 +1481,10 @@ pub struct SemanticPlanAnnotations {
 pub struct OptimizerPlanAnnotations {
     /// The variable chosen as the scan anchor (starting point).
     pub anchor: Option<AnchorInfo>,
+    /// Pending full-text relevance seed for one variable: a WHERE
+    /// `text_score(…)` threshold conjunct was drained from the residual set and the
+    /// named variable's seed scan must become a [`PlanOp::TextScan`].
+    pub text_seed: Option<TextSeedInfo>,
     /// Estimated result row count.
     pub estimated_rows: Option<f64>,
     /// Estimated total cost (arbitrary unit).
@@ -1515,6 +1547,19 @@ pub struct IndexScanSpec {
     pub cmp: CmpOp,
 }
 
+/// Delivery mode of [`PlanOp::TextScan`].
+#[derive(Clone, Debug)]
+pub enum TextScanMode {
+    /// Threshold mode (the decided contract's `WHERE text_score(…) > t` shape): keep
+    /// vertices whose relevance score satisfies `cmp bound`. `Ge` is accepted alongside
+    /// `Gt`; any other operator never lowers and fails closed at plan validation.
+    Threshold { cmp: CmpOp, bound: ScanValue },
+    /// Top-k mode (the decided contract's `ORDER BY text_score(…) DESC LIMIT k` shape):
+    /// deliver only the `limit` highest-scoring vertices. `limit` is an Int64 literal or
+    /// a parameter resolved by the executor.
+    TopK { limit: ScanValue },
+}
+
 /// An edge in a WCOJ plan: directed hop from pattern `src` to `dst` (cycle closes on last→first).
 #[derive(Clone, Debug)]
 pub struct WcojEdge {
@@ -1546,6 +1591,21 @@ pub struct SemiHop {
     pub dst_variable: Str,
     /// Concrete destination label (unlabeled mid/dest vertices are not grantable).
     pub dst_label: NodeLabelRef,
+}
+
+/// A drained WHERE `text_score(…)` threshold conjunct awaiting its seed scan.
+///
+/// The conjunct is removed from the residual filter set at detection time — score
+/// functions are not row-evaluable outside the scan that produced them — so
+/// `emit_scan_for_node` must honor this seed or the plan loses the predicate entirely.
+#[derive(Clone, Debug)]
+pub struct TextSeedInfo {
+    pub variable: Str,
+    pub label: NodeLabelRef,
+    pub property: Str,
+    pub query: ScanValue,
+    pub cmp: CmpOp,
+    pub bound: ScanValue,
 }
 
 /// Information about the chosen scan anchor.

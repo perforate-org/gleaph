@@ -104,6 +104,33 @@ impl<'a> Decoder<'a> {
                 cmp: *cmp,
                 property_projection: decode_str_slice(property_projection),
             },
+            PlanOpWire::TextScan {
+                variable,
+                label,
+                property,
+                query,
+                mode,
+                property_projection,
+            } => PlanOp::TextScan {
+                variable: rc_str(variable),
+                label: crate::plan::NodeLabelRef::from(label.as_str()),
+                property: rc_str(property),
+                query: decode_scan_value(query)?,
+                mode: match mode {
+                    crate::wire::convert::types::TextScanModeWire::Threshold { cmp, bound } => {
+                        crate::plan::TextScanMode::Threshold {
+                            cmp: *cmp,
+                            bound: decode_scan_value(bound)?,
+                        }
+                    }
+                    crate::wire::convert::types::TextScanModeWire::TopK { limit } => {
+                        crate::plan::TextScanMode::TopK {
+                            limit: decode_scan_value(limit)?,
+                        }
+                    }
+                },
+                property_projection: decode_str_slice(property_projection),
+            },
             PlanOpWire::EdgeBindEndpoints {
                 edge,
                 near,

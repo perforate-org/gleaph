@@ -151,6 +151,7 @@ fn first_unfused_gleaph_vector_expr_in_op(op: &PlanOp) -> Option<String> {
             SetPlanItem::Label { .. } => None,
         }),
         PlanOp::RemoveProperties { .. } => None,
+        PlanOp::TextScan { .. } => None,
     }
 }
 

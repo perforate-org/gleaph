@@ -659,6 +659,33 @@ pub(super) fn emit_scan_for_node(
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) {
+    // A drained full-text threshold conjunct turns this node's scan into a TextScan.
+    // The seed is consumed exactly once; its conjunct is already gone from the residual
+    // set, so emitting anything but the seeded scan would lose the predicate.
+    if annotations
+        .optimizer
+        .text_seed
+        .as_ref()
+        .is_some_and(|seed| &*seed.variable == var)
+    {
+        let seed = annotations
+            .optimizer
+            .text_seed
+            .take()
+            .expect("text seed presence checked above");
+        ops.push(PlanOp::TextScan {
+            variable: Str::from(var),
+            label: seed.label.clone(),
+            property: seed.property.clone(),
+            query: seed.query.clone(),
+            mode: crate::plan::TextScanMode::Threshold {
+                cmp: seed.cmp,
+                bound: seed.bound.clone(),
+            },
+            property_projection: None,
+        });
+        return;
+    }
     // Collect all equality predicates from inline properties and the inline WHERE clause.
     let mut equality_preds: Vec<(String, Expr)> = Vec::new();
     // Non-negated `var.prop IN […]` predicates that can lower into a union of
