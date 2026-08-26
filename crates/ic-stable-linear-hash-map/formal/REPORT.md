@@ -3,6 +3,7 @@
 Anchor timestamp: 2026-08-24 16:33:21 UTC +0000
 (stage 3 addendum anchored 2026-08-25 03:17:05 UTC +0000)
 (stage 4 addendum anchored 2026-08-26 02:14:56 UTC +0000)
+(stage 5 addendum anchored 2026-08-26 04:44:01 UTC +0000)
 Target revision: git `0da342d62b2a3c3b293fa7ff5ed21b9f577dd23d`
 (`crates/ic-stable-linear-hash-map/` clean at this revision)
 Mode: audit of an existing implementation, run as a permanent fixture (see SCOPE.md)
@@ -29,9 +30,11 @@ to Cargo.
 
 Stage A of the staged roadmap in SCOPE.md: routing mathematics and control-region
 invariants (properties P1–P5), plus — since the 2026-08-25 addendum below — stage 3,
-the abstract logical map layer (`Lhm/Abs/`), and — since the 2026-08-26 addendum
-below — stage 4, split preservation (`Lhm/Abs/Split.lean`). Stage 5 (epoch fencing)
-remains planned follow-up work and is not claimed here.
+the abstract logical map layer (`Lhm/Abs/`), — since the 2026-08-26 addendum below —
+stage 4, split preservation (`Lhm/Abs/Split.lean`), and — since the second
+2026-08-26 addendum below — stage 5, epoch fencing / failure atomicity, the
+write-before-publish ordering, and the retry-loop progress measure
+(`Lhm/Abs/Epoch.lean`).
 
 ## Method
 
@@ -130,6 +133,56 @@ Modeling decisions recorded during stage 4:
   genuine slot index (`j < SlotsPerBucket`), via the strict prefix-count gap
   `countMatch_true_lt`.
 
+## Stage 5 addendum — epoch fencing / failure atomicity (anchored 2026-08-26 04:44:01 UTC +0000)
+
+Stage 5 verifies the even/odd mutation fence as explicit `MapState` transitions in
+`Lhm/Abs/Epoch.lean`: `beginMutationAt` (map.rs L1229-L1243) opens odd,
+`MutationGuard::finish` (map.rs L375-L383) closes at observed + 2, and the parity
+gate every entry point performs first (insert map.rs L892-L894, remove L973-L975,
+maintenance_step L607-L609, clear L757-L759, reset L689-L691; readers via
+`read_consistent_hot` L1203-L1219 over `read_hot_with_epoch`, control.rs L96-L116).
+Headlines depend only on `propext` / `Quot.sound` (`#print axioms` re-checks this on
+every build); several are axiom-free outright.
+
+| Result | Lean theorem | Content |
+|---|---|---|
+| Guard behavior | `begin_mutation_at_ok`, `begin_mutation_at_fail_id`, `entry_gate_odd_fails`, `entry_gate_even_ok` | a successful open pins quiescence + observation + u64 headroom and differs from the input only in the epoch; every failure branch carries the store untouched |
+| Failure atomicity (ADR 0067) | `run_guarded_fail_atomic`, `apply_split_call_fail_atomic` | when a guarded commit or the split pipeline reports an error, the reported store *is* the input — logical bytes, counters, incarnation, and the even epoch included; all fallible steps precede the first write (map.rs L946, L999, L1663-L1664, L716, L776) |
+| Quiescence restore | `run_guarded_ok_epoch` | every committed mutation lands on an even epoch advanced by exactly 2, so odd epochs arise only inside a guard window and are blocked everywhere afterwards (`InProgress` at entry points, `RecoveryRequired` at reopen via validate_control L1048-L1050 = `ValidControl` conjunct 8) |
+| Realization | `run_guarded_setValue_realizes`, `_placeAt_realizes`, `_clearSlot_realizes`, `_clearedState_realizes`, `_resetState_realizes`, `apply_split_call_ok_realizes` | the guarded protocol reproduces the stage-3/4 committed states exactly (`splitState` inherits the epoch, so its realization writes the completed epoch on top of it) |
+| Write-before-publish (finding 4) | `write_before_publish`, `cleared_published_empty`, `zero_initial_blocks_keeps_stale`, `published_view_inside/outside` | under the newly published extent every readable slot lies either in a rewritten complete block image or coincides with the previous published surface; after clear/reset the published surface is empty despite stale physical bytes beyond the initial extent — grounding stage 3's `fun _ _ => none` abstraction |
+| Progress measure (finding 5) | `remSplits`, `next_geometry_rem_splits`, `rem_splits_zero_fails`, `rem_splits_by_buckets`, `geom_chain_bounded`, `retry_loop_terminates` | remaining successful splits from `(level, cursor)` is exactly `2^63 − (2^level + cursor)` (= `2^63 − physical_buckets` under the control equation); each maintenance split consumes one unit, any retry-loop chain is bounded by the initial budget, and at exhaustion `nextGeometry` fails closed |
+
+Modeling decisions recorded during stage 5:
+
+- **Store-carrying failures.** `CallResult.fail err state` returns the store together
+  with the error kind, making failure atomicity a contentful equation: an unfaithful
+  transcription could return a half-written store on an error path and the theorems
+  would catch it. The Rust paths satisfy it because every fallible step precedes the
+  first write.
+- **Split realization carries the epoch.** Stage 4's `splitState` models the published
+  control only and inherits the mutation epoch; the realized post-split state is
+  therefore `{ splitState st g with mutationEpoch := st.mutationEpoch + 2 }`,
+  mirroring apply_split's order: block images (L1665-L1667), then control
+  (L1668-L1675), then the fence closes (L1676). The stage-3 transformers already bake
+  in the net "+2", so they realize verbatim.
+- **Byte layer split.** `RawStore` (physical, unclamped — stale history survives
+  there by design, map.rs L721-L724 / L781-L784 zero only INITIAL_BUCKETS blocks) vs
+  `publishedView` (clamped to the published extent, what `scan_physical_window`
+  L1088-L1119 and `entries_from_image` L1787-L1806 enumerate). Stages 3–4 model only
+  `publishedView`; `write_before_publish` shows why that abstraction is sound.
+  The coverage hypothesis — every newly exposed bucket is rewritten before
+  publication — is exactly apply_split's two-phase commit (L1665-L1675).
+- **Axiom hygiene fix.** An early draft proved the ite lemmas with
+  `exact if_pos (by omega)`: elaborating the tactic proof before the condition
+  metavariable resolved made Lean fall back to `Classical.propDecidable`, pulling
+  `Classical.choice` into `published_view_inside` and everything downstream. Supplying
+  the condition explicitly (`if_pos ⟨hb, hj⟩`, lambda proofs for negations) removed
+  the dependency; every stage-5 headline now rests on `propext` / `Quot.sound` only.
+- **u64 ceiling.** `begin_mutation_at`'s `checked_add(2)` overflow
+  (`EpochExhausted`, map.rs L1237) is modeled as the explicit bound
+  `mutationEpoch + 2 ≤ U64Max` per SCOPE.md A3.
+
 ## Assumption list (see SCOPE.md for full statements)
 
 - A1 hash opacity — rapidhash is uninterpreted; P1–P5 hold for arbitrary hashes. No
@@ -146,7 +199,7 @@ No new axioms were introduced. All headline theorems depend only on Lean's stand
 
 ## `sorry` list
 
-None. Stage A, stage 3, and stage 4 proofs are complete.
+None. Stage A, stage 3, stage 4, and stage 5 proofs are complete.
 
 ## Findings
 
@@ -183,12 +236,20 @@ Severity scale: Critical / High / Medium / Low / Info.
    written by earlier growth remain until reused. Safe today because a later
    `apply_split` writes complete block images before publishing the larger geometry
    (map.rs L1662-L1677), so stale bytes are never readable under a published control.
-   Stage 5 should encode this write-before-publish ordering explicitly.
+   Formalized in stage 5: the write-before-publish ordering is encoded as
+   `write_before_publish` in `Lhm/Abs/Epoch.lean`, with `zero_initial_blocks_keeps_stale`
+   capturing the premise and `cleared_published_empty` proving the published surface
+   empty after clear despite surviving physical bytes.
 5. **[Info] `insert` retry-loop termination is informal.**
    map.rs L886-L964: after a maintenance split the loop re-reads control and retries.
    Termination relies on `physical_buckets` increasing monotonically toward the
    geometry cap where `next_geometry` fails closed. True, but worth a stage-5 lemma
    (progress measure) rather than prose.
+   Formalized in stage 5: `remSplits level cursor = 2^63 − (2^level + cursor)` in
+   `Lhm/Abs/Epoch.lean` strictly decreases per successful split
+   (`next_geometry_rem_splits`), bounds every retry-loop chain
+   (`geom_chain_bounded`, so `retry_loop_terminates`), and at zero the geometry step
+   fails closed (`rem_splits_zero_fails`).
 
 ## Conclusion
 
@@ -205,6 +266,13 @@ shown complete under it. The stage-4 addendum closes split preservation: a succe
 maintenance split relocates entries only to `source` or `source + base(level)`,
 re-packs both destination blocks without loss, and keeps `len` / `overflow_entries`
 consistent with per-bucket occupancy — so `Inv` survives every split the control
-layer can publish. Remaining stages per SCOPE.md: epoch fencing / failure atomicity
-(stage 5), which should encode finding 4's write-before-publish ordering and finding
-5's termination progress measure explicitly.
+layer can publish.
+
+The stage-5 addendum closes the remaining obligations: the mutation fence is modeled
+as explicit state transitions whose failures provably carry the store untouched (ADR
+0067's prewrite atomicity), committed operations realize the stage-3/4 states exactly,
+an interrupted window fences every entry point and reopen until recovery,
+`apply_split`'s write-before-publish ordering makes stale bytes beyond the published
+extent permanently unreadable (finding 4), and the insert retry loop terminates by an
+explicit progress measure that fails closed at the geometry cap (finding 5). All
+stages of the SCOPE.md roadmap are now verified with no `sorry`.

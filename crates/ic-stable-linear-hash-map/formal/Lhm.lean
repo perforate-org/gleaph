@@ -1,10 +1,12 @@
 /-
 Permanent Lean verification project for `ic-stable-linear-hash-map`.
 
-Stage 1-2 (routing mathematics + control-region invariants) and Stage 3 (logical map
+Stage 1-2 (routing mathematics + control-region invariants), Stage 3 (logical map
 specification: transfer principle, insert-update / insert-place / remove / clear /
-reset preservation, and the top-level `opInsert` / `opRemove` contracts) are verified
-here with no `sorry`. See SCOPE.md for the contract and REPORT.md for audit findings.
+reset preservation, and the top-level `opInsert` / `opRemove` contracts), Stage 4
+(split preservation), and Stage 5 (mutation-epoch fencing, failure atomicity,
+write-before-publish ordering, retry-loop progress measure) are verified here with
+no `sorry`. See SCOPE.md for the contract and REPORT.md for audit findings.
 
 The `#print axioms` lines below make every build print the axiom dependencies of each
 headline theorem: a regression to `sorry` shows up as `sorryAx` in `lake build` output.
@@ -18,6 +20,7 @@ import Lhm.Abs.Place
 import Lhm.Abs.Cleared
 import Lhm.Abs.OpPreserve
 import Lhm.Abs.Split
+import Lhm.Abs.Epoch
 
 namespace Lhm
 
@@ -41,5 +44,15 @@ namespace Lhm
 #print axioms Lhm.Abs.opInsert_preserves
 #print axioms Lhm.Abs.opRemove_preserves
 #print axioms Lhm.Abs.inv_split_transfer
+#print axioms Lhm.Abs.run_guarded_fail_atomic
+#print axioms Lhm.Abs.run_guarded_ok_epoch
+#print axioms Lhm.Abs.run_guarded_placeAt_realizes
+#print axioms Lhm.Abs.apply_split_call_fail_atomic
+#print axioms Lhm.Abs.apply_split_call_ok_realizes
+#print axioms Lhm.Abs.entry_gate_odd_fails
+#print axioms Lhm.Abs.write_before_publish
+#print axioms Lhm.Abs.cleared_published_empty
+#print axioms Lhm.Abs.next_geometry_rem_splits
+#print axioms Lhm.Abs.retry_loop_terminates
 
 end Lhm

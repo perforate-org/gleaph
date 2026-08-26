@@ -43,8 +43,8 @@ which makes automated extraction high-effort and low-coverage for this target.
 5. **Epoch fencing** — even/odd mutation epoch protocol; failure atomicity claims in
    ADR 0067 ("a prewrite error leaves logical bytes and the even epoch unchanged").
 
-Stages 1–4 are **in scope now** (see Status). Stage 5 is planned follow-up
-work; it is listed here so the roadmap survives agent handoffs.
+Stages 1–5 are **in scope and verified** (see Status); the roadmap below records
+what each stage covers so it survives agent handoffs.
 
 ## Properties verified (stage 1–2 contract)
 
@@ -101,12 +101,30 @@ work; it is listed here so the roadmap survives agent handoffs.
 | 1–2 | Routing math + control invariants (P1–P5) | Verified, no `sorry` |
 | 3a | Transfer principle + `setValue` (insert-update) preservation; occupancy-level `hisSome` abstraction (`Lhm/Abs/`) | Verified, no `sorry` |
 | 3b | `placeAt` / `clearSlot` preservation via counter deltas and the generalized transfer core (`inv_transfer_core`) in `Lhm/Abs/Place.lean`, `Deltas.lean`, `Preserve.lean` | Verified, no `sorry` |
-| 3c | Cleared-state preservation (`inv_cleared`, `inv_reset`, `Lhm/Abs/Cleared.lean`). Modeling decision: at the logical layer `clearedState` wipes every flattened slot; physical stale bytes beyond the initial extent (REPORT.md finding 4) are unreachable under any published control because a later `apply_split` writes complete block images before publishing growth — that write-before-publish ordering remains the stage-5 obligation | Verified, no `sorry` |
+| 3c | Cleared-state preservation (`inv_cleared`, `inv_reset`, `Lhm/Abs/Cleared.lean`). Modeling decision: at the logical layer `clearedState` wipes every flattened slot; physical stale bytes beyond the initial extent (REPORT.md finding 4) are unreachable under any published control because a later `apply_split` writes complete block images before publishing growth — an ordering formalized in stage 5 as `write_before_publish` (with `cleared_published_empty`) | Verified, no `sorry` |
 | 3d | Top-level operation contracts: `opInsert_preserves` / `opRemove_preserves` plus result-state computation lemmas and the free-slot choice fact (`Lhm/Abs/OpPreserve.lean`) | Verified, no `sorry` |
 | 4 | Split preservation: `inv_split_transfer` in `Lhm/Abs/Split.lean` — one successful maintenance split (map.rs `plan_split` L1453-L1557 with `insert = none`, counters recomputed as in `finish_split_plan` L1575-L1620) preserves `Inv`. Covers candidate routing corollaries off the source (`route_fixed_step`), destination choice (`splitDest`), the re-packing transformer (`splitState` via `packImg`), load partition of the source block between the two images, and len/overflow counter recomputation. Placement and key-uniqueness are transported through the re-packed images; entries whose candidates miss both destinations model Rust's fail-closed `TablePressure` and are shown unreachable for old-source entries | Verified, no `sorry`; headline depends only on `propext`/`Quot.sound` |
-| 5 | Epoch fencing / failure atomicity | Planned |
+| 5 | Epoch fencing / failure atomicity: guard transitions (`beginMutationAt`, `guardFinish`, `runGuarded`, `entryGate`), store-carrying failure atomicity per ADR 0067 (`run_guarded_fail_atomic`, `apply_split_call_fail_atomic`) with exact realization of the stage-3/4 committed states (`*_realizes`), entry-point fencing and cross-message recovery (`entry_gate_odd_fails`), write-before-publish byte layer (`write_before_publish`, `cleared_published_empty`), insert retry-loop progress measure (`remSplits`, `next_geometry_rem_splits`, `geom_chain_bounded`, `retry_loop_terminates`) in `Lhm/Abs/Epoch.lean` | Verified, no `sorry`; headline depends only on `propext`/`Quot.sound` |
 
 Stage-4 modeling notes: Rust's `SPLIT_ENTRY_BUDGET`/`SPLIT_BYTE_BUDGET` rejection and the `split_debt` recomputation (map.rs L1596–L1613) are not modeled — `Inv` does not constrain `splitDebt`, so this is out of the preservation claim. A split that carries an insert (`plan_split(control, Some(…))`, map.rs L953) is covered by neither stage 3 nor 4; it remains unlisted work.
+
+Stage-5 modeling notes: call results carry the store in the failure branch too
+(`CallResult.fail err state`), so "a prewrite error leaves logical bytes and the even
+epoch unchanged" is a contentful equation rather than a vacuity — an unfaithful
+transcription could return a half-written store on an error path and the atomicity
+theorems would catch it. The guarded commit composes as begin (epoch → odd) → body →
+close (epoch := observed + 2, written absolutely), which realizes every stage-3/4
+transformer exactly; `splitState` inherits the epoch, so its realized state is
+`{ splitState st g with mutationEpoch := st.mutationEpoch + 2 }`. The byte layer is
+split into `RawStore` (physical, unclamped) and `publishedView` (clamped to the
+published extent — what stages 3–4 model); finding 4's ordering appears as the
+coverage hypothesis of `write_before_publish`: the only growth `nextGeometry` permits
+is +1 and `apply_split` rewrites the newly exposed bucket before publishing. The u64
+ceiling of `begin_mutation_at`'s `checked_add(2)` is modeled explicitly as `U64Max`
+(`EpochExhausted`). Finding 5's progress measure is the closed form
+`remSplits level cursor = 2^63 − (2^level + cursor)` (= `2^63 − physical_buckets`
+under the control equation); it strictly decreases per successful split and at zero
+`nextGeometry` fails closed.
 
 Stage-3 files: `Lhm/Abs/Base.lean`, `State.lean`, `Ops.lean`, `Search.lean`,
 `Transfer.lean`, `Deltas.lean`, `Preserve.lean`, `Place.lean`, `Cleared.lean`,
@@ -115,3 +133,6 @@ Stage-3 files: `Lhm/Abs/Base.lean`, `State.lean`, `Ops.lean`, `Search.lean`,
 Stage-4 file: `Lhm/Abs/Split.lean` (imports `Lhm.Abs.OpPreserve`; re-packing tools
 `blockPred`/`scanTo`/`nthPack`/`packImg` and the additive counting lemmas live in
 stage-3's `Base.lean`).
+
+Stage-5 file: `Lhm/Abs/Epoch.lean` (imports `Lhm.Abs.Split`; guard transitions,
+failure atomicity, the published-view byte layer, and the retry-loop measure).
