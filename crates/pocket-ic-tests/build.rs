@@ -10,6 +10,9 @@ fn main() {
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     println!("cargo:rerun-if-changed=Cargo.toml");
+    // Declared so flipping the skip toggle re-runs this script; otherwise
+    // skip-mode output cached by one invocation is reused by normal-mode runs.
+    println!("cargo:rerun-if-env-changed=POCKET_IC_SKIP_FEDERATION_WASM");
 
     let pocket_ic_version = pocket_ic_version_from_manifest(&manifest_dir);
     let pocket_ic_bin = ensure_pocket_ic_binary(&manifest_dir, &pocket_ic_version);
