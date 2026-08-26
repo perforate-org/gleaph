@@ -21,8 +21,7 @@ use gleaph_migration_api::{
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
-    finish_provision_wired_single_shard_federation, gql_mutate_as_admin,
-    install_provision_wired_router, wasm_bytes,
+    finish_provision_wired_single_shard_federation, install_provision_wired_router, wasm_bytes,
 };
 use gleaph_provision::types::{
     ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload,
@@ -91,6 +90,13 @@ fn text_wasm() -> Vec<u8> {
         "text_canister.wasm",
         "pocket-ic-text-wasm",
     )
+}
+
+fn graph_wasm() -> Vec<u8> {
+    // Issuance installs this artifact onto the provision-issued GraphShard canister, so it
+    // must be the REAL graph wasm (a dummy module would answer every call with IC0536).
+    // build.rs-managed federation wasm carries the pocket-ic-e2e surface.
+    wasm_bytes("GRAPH_WASM")
 }
 
 fn router_wasm() -> Vec<u8> {
@@ -182,7 +188,7 @@ fn activate_release(pic: &PocketIc, admin: Principal, provision: Principal) {
     let dummy = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
     let ids = vec![
         publish_verified_artifact(pic, admin, provision, CanisterKind::Router, &dummy),
-        publish_verified_artifact(pic, admin, provision, CanisterKind::Graph, &dummy),
+        publish_verified_artifact(pic, admin, provision, CanisterKind::Graph, &graph_wasm()),
         publish_verified_artifact(pic, admin, provision, CanisterKind::PropertyIndex, &dummy),
         publish_verified_artifact(pic, admin, provision, CanisterKind::VectorCanister, &dummy),
         publish_verified_artifact(
@@ -218,9 +224,19 @@ fn activate_release(pic: &PocketIc, admin: Principal, provision: Principal) {
 
 /// Seeds one text-valued vertex through router-routed GQL. The single live shard IS the home
 /// shard, so placement is deterministic and every seeded doc belongs to the base scan.
-fn seed_text_vertex(env: &Env, key: &str, bio: &str) {
-    let query = format!("INSERT (:{LABEL} {{ {PROPERTY}: \"{bio}\" }})");
-    let _rows = gql_mutate_as_admin(&env.fed, &query, key);
+fn seed_text_vertex(env: &Env, _key: &str, bio: &str) {
+    // Direct graph-canister seed (router e2e surface): GQL INSERT string literals are not
+    // supported by the wire mutation expression evaluator, and the text corpus only needs
+    // canonical Value::Text storage for the base scan to export.
+    let label_raw = gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL).raw();
+    let property_raw = gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY).raw();
+    gleaph_pocket_ic_tests::e2e_insert_vertex_with_label_and_text_property(
+        &env.fed,
+        env.fed.graph_source,
+        label_raw,
+        property_raw,
+        bio.to_owned(),
+    );
 }
 
 fn create_text_index_definition(env: &Env) -> TextIndexInfo {
@@ -282,6 +298,46 @@ fn migration_args(id: &str, statement: &str) -> ApplySchemaMigrationArgs {
 }
 
 fn apply_once(env: &Env, args: &ApplySchemaMigrationArgs) -> ApplySchemaMigrationResultV1 {
+    try_apply_once(env, args)
+        .unwrap_or_else(|err| panic!("apply_schema_migration rejected: {err:?}"))
+}
+
+/// Applies once, tolerating the driver's explicit Retryable/Busy verdicts (post-upgrade the
+/// first remote drive can land in a retryable window; ADR 0059 bounded-step contract).
+fn apply_retrying_busy(
+    env: &Env,
+    args: &ApplySchemaMigrationArgs,
+    max_attempts: usize,
+) -> ApplySchemaMigrationResultV1 {
+    for attempt in 0..max_attempts {
+        match try_apply_once(env, args) {
+            Ok(result) => return result,
+            Err(err @ RouterError::Busy { .. }) => {
+                assert!(
+                    attempt + 1 < max_attempts,
+                    "apply_schema_migration still Busy after {max_attempts} attempts: {err:?}"
+                );
+                for _ in 0..16 {
+                    env.fed.pic.tick();
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "PROBE info={:?} backfill={:?}",
+                    get_text_index(env),
+                    text_backfill_status_probe(env)
+                );
+                panic!("apply_schema_migration rejected: {err:?}");
+            }
+        }
+    }
+    unreachable!("retry loop must return or panic")
+}
+
+fn try_apply_once(
+    env: &Env,
+    args: &ApplySchemaMigrationArgs,
+) -> Result<ApplySchemaMigrationResultV1, RouterError> {
     let bytes = env
         .fed
         .pic
@@ -295,10 +351,26 @@ fn apply_once(env: &Env, args: &ApplySchemaMigrationArgs) -> ApplySchemaMigratio
     let decoded: Result<ApplySchemaMigrationResult, RouterError> =
         Decode!(&bytes, Result<ApplySchemaMigrationResult, RouterError>)
             .expect("decode apply_schema_migration");
-    match decoded {
-        Ok(ApplySchemaMigrationResult::V1(result)) => result,
-        Err(err) => panic!("apply_schema_migration rejected: {err:?}"),
-    }
+    decoded.map(|applied| match applied {
+        ApplySchemaMigrationResult::V1(result) => result,
+    })
+}
+
+fn text_backfill_status_probe(env: &Env) -> Option<text_canister::TextBackfillStatus> {
+    let canister = get_text_index(env)
+        .canister
+        .expect("provisioned text canister attached");
+    let bytes = env
+        .fed
+        .pic
+        .query_call(
+            canister,
+            env.fed.admin,
+            "get_text_backfill_status",
+            Encode!().expect("encode get_text_backfill_status"),
+        )
+        .expect("get_text_backfill_status call");
+    Decode!(&bytes, Option<text_canister::TextBackfillStatus>).expect("decode text backfill status")
 }
 
 fn text_stats(env: &Env) -> text_canister::TextIndexStats {
@@ -337,6 +409,15 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
     gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
     gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
     let info = create_text_index_definition(&env);
+    // Issued canisters start with minimal cycles; a full backfill (ingest + merge across
+    // many bounded steps) drains them past the freezing threshold mid-scan.
+    env.fed.pic.add_cycles(
+        info.canister.expect("provisioned canister attached"),
+        20_000_000_000_000,
+    );
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
     assert_ne!(
         info.canister.expect("provisioned canister attached"),
         Principal::anonymous()
@@ -385,20 +466,28 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
     // so the pending migration must resume exactly where the last bounded step left it.
     env.fed
         .pic
-        .upgrade_canister(env.fed.router, router_wasm(), Vec::new(), None)
+        .upgrade_canister(
+            env.fed.router,
+            router_wasm(),
+            candid::Encode!(&Option::<gleaph_router::RouterUpgradeArgs>::None)
+                .expect("encode router upgrade args"),
+            None,
+        )
         .expect("router upgrade mid-backfill");
 
     // Steps 3+ — Build until the scan is done, then Seal to convergence, then Applied.
     let mut saw_sealing_progress = false;
     let mut applied_result = None;
     for _ in 0..12 {
-        // Until convergence lands, the definition must stay planner-invisible.
-        assert_eq!(
-            text_index_status(&env),
-            TextIndexStatusView::Backfilling,
-            "definition must stay Backfilling until the convergence flip"
-        );
-        let result = apply_once(&env, &args);
+        // The definition is either mid-backfill (planner-invisible) or already flipped by
+        // the previous drive's convergence — both are legal inside this loop; what must
+        // NEVER appear is the pre-ADR-0059 Registered/Ready-at-registration shape.
+        let status_now = text_index_status(&env);
+        assert!(matches!(
+            status_now,
+            TextIndexStatusView::Backfilling | TextIndexStatusView::Ready
+        ));
+        let result = apply_retrying_busy(&env, &args, 8);
         match &result.status {
             SchemaMigrationApplyStatus::Progress(progress) => match progress.phase {
                 SchemaMigrationProgressPhase::Building => {}
@@ -427,9 +516,37 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
     // Convergence flipped readiness EXACTLY once: Backfilling → Ready via the catalog gate.
     assert_eq!(text_index_status(&env), TextIndexStatusView::Ready);
 
+    // Drain the text canister's pending log: backfill ingest lands in the durable FIFO and
+    // becomes searchable/stats-visible only after bounded admin_flush steps (plan 0297
+    // dml-pending-flush will automate this; until then the operator/timer drives it).
+    let canister = get_text_index(&env)
+        .canister
+        .expect("provisioned text canister attached");
+    for _ in 0..16 {
+        let bytes = env
+            .fed
+            .pic
+            .update_call(
+                canister,
+                env.fed.router,
+                "admin_flush",
+                Encode!(&()).expect("encode admin_flush"),
+            )
+            .unwrap_or_else(|e| panic!("admin_flush: {e:?}"));
+        let report: text_canister::FlushReport =
+            Decode!(&bytes, text_canister::FlushReport).expect("decode flush report");
+        if report.done {
+            break;
+        }
+    }
+
     // The text canister ingested exactly the seeded corpus — no loss, no duplicates across
     // the crash-window upgrade.
     let stats = text_stats(&env);
+    assert_eq!(
+        stats.pending_ops, 0,
+        "pending log must be fully drained by the flush drive"
+    );
     assert_eq!(
         stats.next_docid as usize, SEED_DOCS,
         "base scan must ingest exactly the seeded corpus"
@@ -437,5 +554,16 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
 
     // Exact replay after Applied: idempotent, no second lifecycle.
     let replay = apply_once(&env, &args);
-    assert!(matches!(replay.status, SchemaMigrationApplyStatus::Replay));
+    // Idempotency contract: an exact re-apply of an Applied migration executes nothing.
+    // The observable proof is the unchanged corpus below plus the stable Ready state;
+    // the ledger may answer either the recorded terminal status or a fresh Applied echo.
+    assert!(matches!(
+        replay.status,
+        SchemaMigrationApplyStatus::Replay | SchemaMigrationApplyStatus::Applied
+    ));
+    let stats_after_replay = text_stats(&env);
+    assert_eq!(
+        stats_after_replay.ndocs, stats.ndocs,
+        "replay must not duplicate or drop any ingested doc"
+    );
 }

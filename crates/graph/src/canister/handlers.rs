@@ -2195,6 +2195,49 @@ pub async fn e2e_insert_vertex_with_label_and_property(
     })
 }
 
+/// Text-seed variant of [`e2e_insert_vertex_with_label_and_property`] (ADR 0059 §Text build
+/// kind backfill proof): stores `Value::Text` so the raw-text canonical export can project it.
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_vertex_with_label_and_text_property(
+    args: super::types::E2eInsertVertexWithLabelAndTextPropertyArgs,
+) -> Result<super::types::E2eInsertVertexResult, String> {
+    use crate::index::label_pending;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
+
+    let store = GraphStore::new();
+    let vertex_id = store
+        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    let vertex = store
+        .vertex(vertex_id)
+        .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
+    let label = VertexLabelId::from_raw(args.label_id);
+    store
+        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .map_err(|e| e.to_string())?;
+    let property_id = PropertyId::from_raw(args.property_id);
+    let _catalog = e2e_router_catalog_guard(&store).await?;
+    store
+        .set_vertex_property(vertex_id, property_id, Value::Text(args.value))
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    label_pending::flush_pending(
+        Some(&index as &dyn crate::index::lookup::PropertyIndexLookup),
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let global_vertex_id = store
+        .global_vertex_id(vertex_id)
+        .ok_or_else(|| "global id missing after insert".to_string())?;
+    Ok(super::types::E2eInsertVertexResult {
+        local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
+        global_vertex_id,
+    })
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex_with_label_and_record(
     args: super::types::E2eInsertVertexWithLabelAndRecordArgs,

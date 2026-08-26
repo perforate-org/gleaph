@@ -178,6 +178,12 @@ pub struct E2eInsertVertexWithLabelAndPropertyArgs {
     pub value: i64,
 }
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelAndTextPropertyArgs {
+    pub label_id: u16,
+    pub property_id: u32,
+    pub value: String,
+}
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
     pub label_id: u16,
     pub property_a: u32,
@@ -678,9 +684,11 @@ pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
 pub fn finish_provision_wired_single_shard_federation(
     wired: ProvisionWiredRouterEnv,
 ) -> FederationEnv {
-    let graph_source = create_funded_canister(&wired.pic);
     // Provision-wired routers require at least one requested resource at registration; this
-    // stack requests the shard it installs.
+    // stack requests the shard it installs. Issuance then creates a NEW empty canister for
+    // the requested GraphShard and the router records THAT principal as the shard target —
+    // so the fixture must discover the issued principal and install GRAPH_WASM on it,
+    // never on a locally pre-created canister.
     register_graph_intent(
         &wired.pic,
         wired.admin,
@@ -692,7 +700,7 @@ pub fn finish_provision_wired_single_shard_federation(
             is_home: false,
             shards: vec![RegisterGraphShard {
                 shard_id: SOURCE_SHARD,
-                graph_canister: graph_source,
+                graph_canister: Principal::anonymous(),
                 index_canister: wired.index,
             }],
             requested_resources: vec![
@@ -704,6 +712,7 @@ pub fn finish_provision_wired_single_shard_federation(
         },
     );
     let graph_id = lookup_graph_id(&wired.pic, wired.admin, wired.router, GRAPH_NAME);
+    let graph_source = issued_shard_canister(&wired.pic, wired.admin, wired.router, GRAPH_NAME);
     attach_index_shard_canister(
         &wired.pic,
         graph_id,
@@ -715,18 +724,27 @@ pub fn finish_provision_wired_single_shard_federation(
         graph_source,
     );
 
-    wired.pic.install_canister(
-        graph_source,
-        wasm_bytes("GRAPH_WASM"),
-        Encode!(&GraphInitArgs {
-            logical_graph_name: Some(GRAPH_NAME.into()),
-            router_canister: Some(wired.router),
-            shard_id: Some(SOURCE_SHARD),
-            index_canister: Some(wired.index),
-        })
-        .expect("encode graph init"),
-        None,
-    );
+    // Issuance already created this canister and installed the release artifact, but its
+    // generic init args carry no per-shard index wiring (label flushes would dial the
+    // anonymous principal). Reinstall the same graph wasm with full shard init args —
+    // stable memory is empty at this point, so reinstall is lossless.
+    wired
+        .pic
+        .reinstall_canister(
+            graph_source,
+            wasm_bytes("GRAPH_WASM"),
+            Encode!(&GraphInitArgs {
+                logical_graph_name: Some(GRAPH_NAME.into()),
+                router_canister: Some(wired.router),
+                shard_id: Some(SOURCE_SHARD),
+                index_canister: Some(wired.index),
+            })
+            .expect("encode graph init"),
+            // Issuance provisions shard canisters with controllers [provision, governance
+            // principal]; the install helper needs a controller as sender.
+            Some(wired.admin),
+        )
+        .expect("reinstall graph wasm with full shard init args");
 
     FederationEnv {
         pic: wired.pic,
@@ -793,6 +811,47 @@ fn lookup_graph_id(
         Ok(Ok(graph_id)) => graph_id,
         Ok(Err(err)) => panic!("lookup_graph_id rejected: {err:?}"),
         Err(err) => panic!("decode lookup_graph_id: {err}"),
+    }
+}
+
+/// Discovers the PROVISION-ISSUED graph shard principal from the router registry.
+///
+/// Requesting a `GraphShard` resource at registration makes issuance create a fresh, empty
+/// canister and the router records THAT principal as the shard's graph target (the declared
+/// `shards` entries are ignored in provisioned mode). Tests must therefore install
+/// GRAPH_WASM on the issued canister instead of a locally pre-created one — journal reads
+/// dial whatever the registry recorded (ADR 0059 §Text build kind E2E finding).
+fn issued_shard_canister(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    graph_name: &str,
+) -> Principal {
+    let bytes = pic
+        .query_call(
+            router,
+            admin,
+            "list_shards",
+            Encode!(&graph_name.to_string()).expect("encode list_shards"),
+        )
+        .expect("list_shards");
+    let entries = match Decode!(
+        &bytes,
+        Result<Vec<gleaph_graph_kernel::federation::ShardRegistryEntry>, RouterError>
+    ) {
+        Ok(Ok(entries)) => entries,
+        Ok(Err(err)) => panic!("list_shards rejected: {err:?}"),
+        Err(err) => panic!("decode list_shards: {err}"),
+    };
+    let mut issued = entries
+        .iter()
+        .filter(|entry| entry.shard_id == SOURCE_SHARD)
+        .map(|entry| entry.graph_canister);
+    match (issued.next(), issued.next()) {
+        (Some(principal), None) => principal,
+        _ => panic!(
+            "expected exactly one issued GraphShard({SOURCE_SHARD}) entry in list_shards: {entries:?}"
+        ),
     }
 }
 
@@ -1162,6 +1221,26 @@ pub fn e2e_insert_vertex_with_label_and_property(
         graph,
         "e2e_insert_vertex_with_label_and_property",
         E2eInsertVertexWithLabelAndPropertyArgs {
+            label_id,
+            property_id,
+            value,
+        },
+    )
+}
+
+/// Text-seed variant (ADR 0059 §Text build kind backfill proof): stores `Value::Text`.
+pub fn e2e_insert_vertex_with_label_and_text_property(
+    env: &FederationEnv,
+    graph: Principal,
+    label_id: u16,
+    property_id: u32,
+    value: String,
+) -> E2eInsertVertexResult {
+    update_as_router(
+        env,
+        graph,
+        "e2e_insert_vertex_with_label_and_text_property",
+        E2eInsertVertexWithLabelAndTextPropertyArgs {
             label_id,
             property_id,
             value,

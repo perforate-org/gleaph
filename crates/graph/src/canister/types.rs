@@ -37,6 +37,14 @@ pub struct E2eInsertVertexWithLabelAndPropertyArgs {
     pub property_id: u32,
     pub value: i64,
 }
+/// Arguments for the text-seed E2E variant (ADR 0059 §Text build kind backfill proof).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelAndTextPropertyArgs {
+    pub label_id: u16,
+    pub property_id: u32,
+    pub value: String,
+}
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
