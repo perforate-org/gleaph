@@ -25,6 +25,13 @@
 > store; grant/revoke/caps history and a unified time-ordered view are deferred until DAO
 > governance is designed.
 
+> **EXPLAIN AUTHORIZATION (proposed, not implemented):**
+> [ADR 0084](../adr/0084-explain-authorization-diagnosis.md) designs the privileged-only
+> diagnosis statement reserved by [ADR 0074] §4 — a prepared query's requirement set
+> joined with coverage, in self mode (source-class redaction) or owner mode (full
+> identities), gated purely by visibility. Execution-path uniform errors are unchanged;
+> the diagnostic itself fails with indistinguishable `NotFound` on invisible graphs.
+
 ## Purpose
 
 Document Gleaph’s **in-canister access model** and how Prepared Queries fit the threat model.

@@ -2255,8 +2255,10 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-08-26-002 — No privileged authorization diagnosis surface; uniform Forbidden leaves "why denied" to trial-and-error
 
-- **Status:** Open — raised 2026-08-26 while closing the [ADR 0074] follow-up list;
-  design item (named `EXPLAIN AUTHORIZATION`), not a regression.
+- **Status:** Planned — designed as
+  [ADR 0084](adr/0084-explain-authorization-diagnosis.md) (proposed, 2026-08-26), which
+  answers the three questions below via its §5 redaction model; entry closes when the
+  statement lands with its PocketIC suite.
 - **Owner:** Router authorization seam (`crates/router/src/authz.rs`
   `enforce_data_plane_authorization`, requirement walker `walk_ops`/`requirements_cover`)
   together with the grammar surface in `crates/gql`; introspection precedent in
