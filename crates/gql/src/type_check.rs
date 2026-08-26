@@ -323,6 +323,9 @@ fn check_statement(env: &mut TypeEnv<'_>, stmt: &Statement) {
         Statement::Set(s) => check_set(env, s),
         Statement::Remove(r) => check_remove(env, r),
         Statement::Delete(d) => check_delete(env, d),
+        // EXPLAIN AUTHORIZATION (ADR 0084) reads no query variables.
+        #[cfg(feature = "gleaph")]
+        Statement::ExplainAuthorization(_) => {}
         Statement::CreateSchema(_)
         | Statement::DropSchema(_)
         | Statement::CreateGraph(_)

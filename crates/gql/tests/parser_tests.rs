@@ -2725,3 +2725,95 @@ fn missing_return_expr() {
     // Empty RETURN with no * or NO BINDINGS should fail
     parse_err("MATCH (n) RETURN");
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// EXPLAIN AUTHORIZATION (Gleaph extension, ADR 0084)
+// ════════════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn explain_authorization_self_mode_parses() {
+    let program = parse_program_ok("EXPLAIN AUTHORIZATION FOR PREPARED QUERY share_feed");
+    let body = program
+        .transaction_activity
+        .as_ref()
+        .unwrap()
+        .body
+        .as_ref()
+        .unwrap();
+    let Statement::ExplainAuthorization(stmt) = &body.first else {
+        panic!("expected ExplainAuthorization, got {:?}", body.first)
+    };
+    assert_eq!(stmt.query_name, "share_feed");
+    assert_eq!(stmt.by_principal, None);
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn explain_authorization_owner_mode_parses() {
+    let program = parse_program_ok(
+        "EXPLAIN AUTHORIZATION FOR PREPARED QUERY share_feed BY PRINCIPAL 'w7x7r-cok77-xa'",
+    );
+    let body = program
+        .transaction_activity
+        .as_ref()
+        .unwrap()
+        .body
+        .as_ref()
+        .unwrap();
+    let Statement::ExplainAuthorization(stmt) = &body.first else {
+        panic!("expected ExplainAuthorization")
+    };
+    assert_eq!(stmt.query_name, "share_feed");
+    assert_eq!(stmt.by_principal, Some("w7x7r-cok77-xa".to_string()));
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn explain_authorization_by_own_principal_is_allowed_but_redundant() {
+    // BY naming yourself is grammatically valid; it stays owner mode and the
+    // authority gate treats it as such (ADR 0084 §1).
+    let program =
+        parse_program_ok("EXPLAIN AUTHORIZATION FOR PREPARED QUERY q BY PRINCIPAL 'self'");
+    let body = program
+        .transaction_activity
+        .as_ref()
+        .unwrap()
+        .body
+        .as_ref()
+        .unwrap();
+    let Statement::ExplainAuthorization(stmt) = &body.first else {
+        panic!("expected ExplainAuthorization")
+    };
+    assert_eq!(stmt.by_principal, Some("self".to_string()));
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn explain_authorization_missing_for_clause_is_a_distinct_error() {
+    let err =
+        parser::parse("EXPLAIN AUTHORIZATION PREPARED QUERY q").expect_err("missing FOR must fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("FOR"),
+        "error must name the missing FOR keyword: {message}"
+    );
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn explain_authorization_by_without_principal_is_a_distinct_error() {
+    let err = parser::parse("EXPLAIN AUTHORIZATION FOR PREPARED QUERY q BY")
+        .expect_err("BY without a principal must fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("PRINCIPAL"),
+        "error must name the required PRINCIPAL spelling: {message}"
+    );
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
+fn explain_authorization_by_with_missing_string_literal_fails() {
+    parse_err("EXPLAIN AUTHORIZATION FOR PREPARED QUERY q BY PRINCIPAL");
+}

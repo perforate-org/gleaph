@@ -886,8 +886,9 @@ fn scan_statement(scan: &mut ProjectionScan, statement: &Statement) {
         Statement::Insert(insert) => scan_insert(scan, insert),
         Statement::Set(set) => scan_set(scan, set),
         Statement::Delete(delete) => delete.items.iter().for_each(|e| scan_expr(scan, e)),
-        // REMOVE names existing properties/labels; DDL and session commands carry no
-        // element-id reads or pattern bindings.
+        // REMOVE names existing properties/labels; DDL, session commands, and the
+        // EXPLAIN AUTHORIZATION diagnostic (ADR 0084) carry no element-id reads or
+        // pattern bindings.
         Statement::Remove(_)
         | Statement::CreateSchema(_)
         | Statement::DropSchema(_)
@@ -896,6 +897,9 @@ fn scan_statement(scan: &mut ProjectionScan, statement: &Statement) {
         | Statement::CreateGraphType(_)
         | Statement::DropGraphType(_)
         | Statement::Session(_) => {}
+        // This crate always enables `gleaph-gql/gleaph`, so the diagnostic statement
+        // exists here unconditionally; it names no element ids or bindings.
+        Statement::ExplainAuthorization(_) => {}
     }
 }
 

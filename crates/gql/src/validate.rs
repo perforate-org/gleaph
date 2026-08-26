@@ -123,6 +123,11 @@ fn validate_statement_with_scope(
         Statement::Remove(rem) => validate_remove_items(&rem.items),
         Statement::Delete(del) => validate_delete(del),
 
+        // EXPLAIN AUTHORIZATION (ADR 0084) names a prepared operation, not catalog
+        // objects or query variables — nothing to validate here.
+        #[cfg(feature = "gleaph")]
+        Statement::ExplainAuthorization(_) => Ok(()),
+
         // — Session (§7) — already validated at the program level.
         Statement::Session(_) => Ok(()),
     }

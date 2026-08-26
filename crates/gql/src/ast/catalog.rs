@@ -58,8 +58,33 @@ pub enum Statement {
     /// inline procedure calls routed through the linear-query path.
     Query(Box<CompositeQueryExpr>),
 
+    // — Diagnostics (Gleaph extension, ADR 0084) —
+    #[cfg(feature = "gleaph")]
+    ExplainAuthorization(ExplainAuthorizationStatement),
+
     // — Session (§7) —
     Session(SessionCommand),
+}
+
+/// `EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> [BY <principal>]` — the privileged
+/// authorization-diagnosis statement ([ADR 0084]). A pure diagnostic read: it never
+/// dispatches the explained program and never mutates state.
+///
+/// [ADR 0084]: https://github.com/gleaph/gleaph/blob/main/design/adr/0084-explain-authorization-diagnosis.md
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg(feature = "gleaph")]
+pub struct ExplainAuthorizationStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    /// Router-global prepared operation name (ADR 0063).
+    pub query_name: String,
+    /// Owner-mode subject (`BY PRINCIPAL '<text>'`). `None` is self mode (default):
+    /// the asker explains their own coverage.
+    pub by_principal: Option<String>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

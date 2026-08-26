@@ -91,6 +91,10 @@ fn walk_statement(stmt: &Statement, flags: &mut ProgramModificationFlags) {
             flags.has_catalog_modification = true;
         }
         Statement::Query(q) => walk_composite(q, flags),
+        // EXPLAIN AUTHORIZATION (ADR 0084) is a pure diagnostic read: non-DML,
+        // non-catalog-modification, no procedure call.
+        #[cfg(feature = "gleaph")]
+        Statement::ExplainAuthorization(_) => {}
         Statement::Session(_) => {}
     }
 }
@@ -212,6 +216,22 @@ mod tests {
         let f = classify_program(&p);
         assert!(f.has_authorization_modification);
         assert!(f.requires_write_path());
+    }
+
+    #[cfg(feature = "gleaph")]
+    #[test]
+    fn explain_authorization_is_a_pure_diagnostic_read() {
+        // ADR 0084 §3: the diagnostic produces zero modification flags, so write-detection
+        // agreement and catalog-DDL gating never see it as executable content.
+        for query in [
+            "EXPLAIN AUTHORIZATION FOR PREPARED QUERY share_feed",
+            "EXPLAIN AUTHORIZATION FOR PREPARED QUERY share_feed BY PRINCIPAL 'w7x7r'",
+        ] {
+            let p = parser::parse(query).expect("parse");
+            let f = classify_program(&p);
+            assert_eq!(f, ProgramModificationFlags::default());
+            assert!(!f.requires_write_path());
+        }
     }
 
     fn dml_statement_count(query: &str) -> usize {

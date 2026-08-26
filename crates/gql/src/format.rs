@@ -154,8 +154,27 @@ impl<'a> Formatter<'a> {
     fn statement(&mut self, s: &Statement) -> Result<String, FormatError> {
         match s {
             Statement::Query(q) => self.composite(q),
+            #[cfg(feature = "gleaph")]
+            Statement::ExplainAuthorization(x) => self.explain_authorization(x),
             _ => self.unsupported("statement"),
         }
+    }
+    #[cfg(feature = "gleaph")]
+    fn explain_authorization(
+        &mut self,
+        x: &ExplainAuthorizationStatement,
+    ) -> Result<String, FormatError> {
+        let mut out = self.kw("EXPLAIN AUTHORIZATION");
+        out.push('\n');
+        out.push_str(&self.kw("FOR PREPARED QUERY"));
+        out.push(' ');
+        out.push_str(&x.query_name);
+        if let Some(principal) = &x.by_principal {
+            out.push('\n');
+            out.push_str(&self.kw("BY PRINCIPAL"));
+            out.push_str(&format!(" '{principal}'"));
+        }
+        Ok(out)
     }
     fn composite(&mut self, q: &CompositeQueryExpr) -> Result<String, FormatError> {
         let mut out = self.linear(&q.left)?;

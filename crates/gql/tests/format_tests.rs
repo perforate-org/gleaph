@@ -226,6 +226,33 @@ fn formats_grant_and_revoke_round_trip_with_canonical_nodes_keyword() {
 
 #[cfg(feature = "gleaph")]
 #[test]
+fn formats_explain_authorization_round_trip() {
+    let options = FormatOptions::default();
+    let self_mode = format_query(
+        "EXPLAIN AUTHORIZATION FOR PREPARED QUERY share_feed",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        self_mode,
+        "EXPLAIN AUTHORIZATION\nFOR PREPARED QUERY share_feed"
+    );
+    assert_eq!(format_query(&self_mode, &options).unwrap(), self_mode);
+
+    let owner_mode = format_query(
+        "EXPLAIN AUTHORIZATION FOR PREPARED QUERY share_feed BY PRINCIPAL 'w7x7r-cok77-xa'",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        owner_mode,
+        "EXPLAIN AUTHORIZATION\nFOR PREPARED QUERY share_feed\nBY PRINCIPAL 'w7x7r-cok77-xa'"
+    );
+    assert_eq!(format_query(&owner_mode, &options).unwrap(), owner_mode);
+}
+
+#[cfg(feature = "gleaph")]
+#[test]
 fn formats_conditional_policy_selector_round_trips_canonically() {
     let options = FormatOptions::default();
     let grant = format_query(

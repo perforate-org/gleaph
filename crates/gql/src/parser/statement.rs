@@ -13,11 +13,11 @@ use crate::ast::{
 };
 #[cfg(feature = "gleaph")]
 use crate::ast::{
-    Expr, ExprKind, GrantChain, GrantChainDirection, GrantChainHop, GrantComparison,
-    GrantCondition, GrantConditionSelector, GrantDirection, GrantMetadataScope, GrantPredicate,
-    GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral, GrantTarget,
-    GrantValueExpr, RevokeStatement, SearchOutputBinding, SearchOutputKind, SearchProvider,
-    SearchStatement, VectorSearchSpec,
+    ExplainAuthorizationStatement, Expr, ExprKind, GrantChain, GrantChainDirection, GrantChainHop,
+    GrantComparison, GrantCondition, GrantConditionSelector, GrantDirection, GrantMetadataScope,
+    GrantPredicate, GrantPrivilege, GrantResourceSelector, GrantStatement, GrantSubjectLiteral,
+    GrantTarget, GrantValueExpr, RevokeStatement, SearchOutputBinding, SearchOutputKind,
+    SearchProvider, SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -156,6 +156,14 @@ impl Parser<'_> {
         if self.at_keyword("SESSION") {
             let cmd = self.parse_session_command()?;
             return Ok(Statement::Session(cmd));
+        }
+
+        // EXPLAIN AUTHORIZATION (Gleaph extension, ADR 0084): pure diagnostic read.
+        #[cfg(feature = "gleaph")]
+        if self.at_keyword("EXPLAIN") {
+            return Ok(Statement::ExplainAuthorization(
+                self.parse_explain_authorization_statement()?,
+            ));
         }
 
         // Data modification statements.
@@ -1027,6 +1035,43 @@ impl Parser<'_> {
                 condition,
             },
             subject,
+        })
+    }
+
+    /// Parses `EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> [BY PRINCIPAL '<text>']`
+    /// ([ADR 0084] §1). Omitting `BY` selects self mode (the asker explains their own
+    /// coverage); `BY` selects owner mode and requires the grant-grammar principal
+    /// spelling. Malformed shapes fail with distinct errors.
+    ///
+    /// [ADR 0084]: https://github.com/gleaph/gleaph/blob/main/design/adr/0084-explain-authorization-diagnosis.md
+    #[cfg(feature = "gleaph")]
+    pub fn parse_explain_authorization_statement(
+        &mut self,
+    ) -> Result<ExplainAuthorizationStatement, GqlError> {
+        let start = self.save();
+        self.expect_keyword("EXPLAIN")?;
+        self.expect_keyword("AUTHORIZATION")?;
+        self.expect_keyword("FOR")?;
+        self.expect_keyword("PREPARED")?;
+        self.expect_keyword("QUERY")?;
+        let query_name = self.expect_ident()?.to_owned();
+        let by_principal = if self.eat_keyword("BY") {
+            self.expect_keyword("PRINCIPAL")?;
+            match self.peek() {
+                Some(Token::StringLit(text)) => {
+                    let text = text.clone();
+                    self.advance();
+                    Some(text)
+                }
+                _ => return Err(self.expected("a principal string literal after BY PRINCIPAL")),
+            }
+        } else {
+            None
+        };
+        Ok(ExplainAuthorizationStatement {
+            span: self.span_since(start),
+            query_name,
+            by_principal,
         })
     }
 
