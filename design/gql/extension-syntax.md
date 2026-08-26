@@ -935,31 +935,54 @@ EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> BY PRINCIPAL '<p>'; -- owner mod
 
 ## Full-text, property, and hybrid search
 
-`SEARCH` is a general search shape, but only vector search is in scope for the first implementation.
-Future providers may include:
+`SEARCH` is a general search shape, but only vector search is in scope for that clause.
+Full-text relevance uses the scalar `text_score(prop, query)` function instead (plan 0297),
+which rides the ordinary generic function-call syntax — it parses as a standard function
+call and carries no dedicated grammar. Covered uses are lowered by `gql-planner` into a
+leading `PlanOp::TextScan`; the Router owns all remaining TEXT-specific semantics
+(definition resolution, composite dispatch to the definition canister, deterministic
+merge, seed emission); `gleaph-gql` stays provider-neutral.
+
+### TEXT_SCORE
 
 ```gql
+-- Top-k mode
 MATCH (d:Document)
-  SEARCH d IN (
-    FULLTEXT INDEX document_text
-    FOR "distributed graph database"
-    LIMIT 20
-  ) SCORE AS text_score
-RETURN d, text_score
+RETURN d, text_score(d.document_text, $query) AS score
+ORDER BY text_score(d.document_text, $query) DESC
+LIMIT 20
+
+-- Threshold mode
+MATCH (d:Document)
+WHERE text_score(d.document_text, $query) > 0.5
+RETURN d
 ```
 
-```gql
-MATCH (d:Document)
-  SEARCH d IN (
-    HYBRID {
-      VECTOR INDEX document_embedding WEIGHT 0.7,
-      FULLTEXT INDEX document_text WEIGHT 0.3
-    }
-    FOR $query
-    LIMIT 20
-  ) SCORE AS hybrid_score
-RETURN d, hybrid_score
-```
+The TEXT definition itself is declared with the vendor DDL
+`CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)`
+and removed with `DROP TEXT INDEX <name> [IF EXISTS]`.
+
+Contract:
+
+- `text_score(v.<prop>, <query>)` resolves against a `Ready` TEXT definition covering
+  `(v`'s label, `<prop>`)` for the current graph. Non-`Ready` definitions (`Registered`,
+  `Backfilling`) are invisible to queries by catalog contract, so an unmatched call resolves
+  as "function unknown" — fail-closed, with no sequential-scan fallback.
+- Both ranked modes execute (planner 0297 lowering + Router execution): **top-k**
+  (`ORDER BY text_score(...) DESC LIMIT k`) lowers into a bounded ranked scan, and
+  **threshold** (`WHERE text_score(...) > t`, `>= t`, reversed operand forms included)
+  lowers into a filtered scan inside the bounded canister window; results beyond that
+  window mark the result truncated. Results rank by engine score descending with
+  deterministic key tie-breaks `(score DESC, element-key ASC)`.
+- A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
+  mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
+- Non-leading/nested placements and aggregates over scores remain deferred until their
+  triggers land; multi-shard text fan-out is likewise deferred (a single live shard is
+  required today rather than silently returning partial results).
+- The graph executor never evaluates `text_score`: covered calls lower into `TextScan`
+  seeds (same-subnet composite query to the definition canister), and any unlowered
+  residual mention is rejected fail-closed by the Router before dispatch instead of
+  reaching the graph executor.
 
 Property equality/range lookup should usually remain ordinary GQL (`MATCH` pattern predicates and
 `WHERE`) rather than being forced into `SEARCH`. A future `PROPERTY INDEX` provider must justify why
@@ -1030,6 +1053,7 @@ This expresses the intended flow:
 | 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
 | 9     | Add the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar: feature-gated parsing, owner-only Router execution with catalog/schema validation, grant introspection, and revoke; plan-time enforcement stays deferred to slice 2b | Implemented                                                                                                          |
 | 10    | Add the ADR 0074 slice 3 `GRANT`/`REVOKE EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded authority gates and the synthesized implicit-root introspection marker | Implemented                                                                                                          |
+| 11    | Add the `text_score(prop, query)` scalar function (plan 0297): generic function-call syntax end-to-end; planner lowering of covered uses into `PlanOp::TextScan` (top-k and threshold modes) with TEXT-coverage-gated seed selection; Router execution resolves `Ready` TEXT definitions, dispatches the definition canister as a same-subnet composite query, merges deterministically under `(score desc, key asc)`, and binds projected score aliases; fail-closed absent resolution with no sequential-scan fallback; vendor DDL `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)` / `DROP TEXT INDEX <name> [IF EXISTS]`. Nested placements, aggregates over scores, and multi-shard text fan-out remain deferred with triggers | Implemented (top-k + threshold)                                                                                      |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 
@@ -1037,8 +1061,10 @@ Every stage that changes public syntax must update this document and add parser/
 
 - Do not add IC canister calls, shard ids, stable-memory concepts, or vector-canister routing to
   `gleaph-gql`.
-- Do not make `gleaph-gql-planner` depend on GraphStore, Router stable state, or vector-index canister
-  clients.
+- Do not make `gql-planner` depend on GraphStore, Router stable state, or index/vector canister
+  clients. `text_score(...)` is an ordinary generic function call to both crates: `gql-planner`
+  lowers covered uses into a structured `PlanOp::TextScan`, and its TEXT semantics live entirely
+  in the Router execution layer (`router/src/gql_text_scan.rs`).
 - Router resolves logical vector-index names and owns their typed embedding-field metadata, graph
   context, activation gates, and target-canister routing.
 - Graph executes shard-local property access, inline property bytes decode, runtime functions, and

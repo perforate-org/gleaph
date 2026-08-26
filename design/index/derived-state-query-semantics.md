@@ -202,6 +202,40 @@ pending deltas before trusting count-only results.
 See also [label-index.md](label-index.md) path **B** and
 [stable-memory-inventory.md](../storage/stable-memory-inventory.md) (router regions 25–29).
 
+### Text index flush lag (`text_score`)
+
+TEXT definitions ingest through a canister-side pending log: backfill pages and DML pending
+flushes enqueue `(key, upsert/delete)` entries, and bounded `admin_flush` steps apply them into
+the searchable active segment ([text-index.md](text-index.md), ADR 0059 §Text build kind). A
+definition becomes query-visible only at `Ready` (backfill converged + sealed); before that,
+`text_score(...)` resolves as function unknown — fail-closed, never a degraded scan.
+
+**Query behavior while `Ready`:**
+
+| Event                                     | Visible to `text_score` when                          |
+| ----------------------------------------- | ------------------------------------------------------- |
+| New/updated document (DML or backfill)    | After the pending-log entry is applied by `admin_flush` |
+| Deleted document                          | After its tombstone is applied by `admin_flush`         |
+| Definition under (re)build                | Never (invisible; calls fail closed)                    |
+
+Between a mutation and the next flush step, `text_score` may miss fresh documents and may still
+rank just-deleted ones — the same eventual-visibility contract as property posting lag, carried
+by the shard-side ack-watermarked flush rather than a router cursor. Flush steps are idempotent;
+repeat `admin_flush` until `FlushReport.done` before relying on completeness for ranked reads.
+
+**Execution surface:** `text_score(...)` executes on the `gql_query` read path only
+(mutation programs are rejected); both ranked modes run — top-k
+(`ORDER BY text_score(...) DESC LIMIT k`) and threshold (`WHERE text_score(...) > t`,
+`>= t`, reversed operand forms included). Results are ordered by the deterministic
+`(score desc, key asc)` contract, so repeated reads are stable regardless of wire-level tie
+presentation; when the bounded canister search window clamps completeness the result carries
+the truncated marker. Until multi-shard text fan-out lands, a graph with more than one live
+shard rejects text-score queries with a conflict rather than returning silently partial
+rankings. The `ReadMode` barrier semantics of the enclosing `gql_query` call are unchanged:
+text hits are served from the definition canister's active segment at dispatch time and are
+not additionally gated by label-stats or graph-index watermarks beyond what `gql_query`
+already enforces for the rest of the plan.
+
 ### Upgrade / ephemeral loss
 
 Heap-only pending queues and router ephemeral planner catalogs are lost on upgrade ([stable-memory-inventory.md](../storage/stable-memory-inventory.md)). The Router direct-vector-ingestion outbox is stable and re-armed after `post_upgrade`; its recovery contract is documented in [vector-index.md](vector-index.md). Stable backfill cursors and projection cursors survive on router; graph delta log survives on shard.
@@ -217,6 +251,8 @@ count completeness is required.
 | Index-backed seed/`MATCH` misses a live vertex after a large batch | Batch drain deferred to the durable outbox or repair journal (ADR 0023/0024)                    | Poll `get_graph_sync_status` until `converged`; run `advance_backfill` (kind = VertexProperty / Label) if it stalls |
 | Extra index hit for deleted vertex                                 | Remove posting not synced                                                                       | Flush/retry pending; verify DML index path                                                                          |
 | `COUNT(*)` under-counts for label after router restart             | Projection lag on read path (DML would have failed instead)                                     | Drain `admin_label_stats_projection_step` per shard until `done`; verify cursor vs log head                         |
+| `text_score` misses fresh docs / ranks deleted ones                | TEXT pending-log flush lag (ack-watermarked shard flush; see text flush lag section)             | `admin_flush` on the definition canister until `done`; re-run the query                                             |
+| `text_score(...)` errors "no ready TEXT index"                     | Definition not yet `Ready` (backfill unconverged) or wrong label/property                        | Drive the schema migration to Applied; verify `(label, property)` coverage                                          |
 | DML fails with `label stats projection lag`                        | Inline advance could not reach journal `emitted_delta_last_seq`                                 | Drain projection for that shard; retry mutation                                                                     |
 | DML fails with `label stats projection gap`                        | Missing seq in graph delta log                                                                  | Fix graph log continuity before advancing cursor                                                                    |
 | Expand equality wrong                                              | graph-index edge posting lag or unregistered property                                           | `backfill_edge_property_postings`; verify index registry                                                            |
