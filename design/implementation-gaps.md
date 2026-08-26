@@ -270,10 +270,10 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-006 — Pure-CLI platform bring-up fails on the Gleaph-owned launcher network
 
-- **Status:** Open — blocks the `gleaph network start` self-contained bring-up path
-  (Account/Provision deploy + ADR 0068 lazy Router issuance + ADR 0070/0071 provisioned
-  topology) on a machine-local network without icp-cli; surfaced while executing plan
-  0296's quickstart (2026-08-24)
+- **Status:** (a) Resolved (2026-08-26, operator bootstrap tier); (b) Open — blocks the
+  `gleaph network start` self-contained bring-up path (Account/Provision deploy + ADR 0068
+  lazy Router issuance + ADR 0070/0071 provisioned topology) on a machine-local network
+  without icp-cli; surfaced while executing plan 0296's quickstart (2026-08-24)
 - **Owner:** `crates/cli/src/network.rs` (launcher lifecycle, management-canister transport)
   and the launcher's HTTP gateway contract (`icp-cli-network-launcher` v15.0.0);
   Account/Provision deployment flow in `network::start`
@@ -315,6 +315,18 @@ defect from being rediscovered without its prior reasoning.
   upload surface today). Decided 2026-08-26 ([ADR 0087](adr/0087-wasm-ingestion-operations-model.md)):
   the catalog-upload surface lives in `gleaph-operator` over a shared ingestion client library,
   not the developer CLI; pure-CLI bring-up seeds the local catalog through that library.
+
+  **(a) resolved 2026-08-26.** The launcher gateway *can* route management-canister updates;
+  the two observed failures were operator-side effective-canister-id routing, not a gateway
+  limitation. `gleaph-operator bootstrap deploy` now (1) uses `provisional_create_canister_with_cycles`
+  for local/PocketIC endpoints (ingress-level `create_canister` has no derived-effective-id
+  routing there), and (2) sets the effective canister id per call: the target canister for
+  `upload_chunk`/`install_chunked_code`/`stop`/`start`/`canister_status`, and the network's
+  default effective canister id (read from the `/_/topology` endpoint, the same source dfx's
+  `dfx info default-effective-canister-id` uses) for the provisional create, whose response
+  certification requires the effective id to fall within the target subnet's canister ranges.
+  Verified end to end against a locally launched launcher network: create → chunked install →
+  stop → upgrade → start with exact module-hash match. (b) daemonization remains open.
 
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 

@@ -30,7 +30,9 @@
 //!   by decoding one live reply both ways during development.
 //! - Ingress `create_canister` has no derived-effective-id routing in PocketIC; its local
 //!   equivalent is `provisional_create_canister_with_cycles` (what the pocket-ic crate
-//!   itself uses), carrying the same controllers setting.
+//!   itself uses), carrying the same controllers setting. The ic-agent
+//!   [`ManagementClient`] selects that method for every non-mainnet connection
+//!   (GAP-2026-08-24-006(a)); the PocketIC E2E adapter mirrors the same choice.
 //!
 //! # Safety model
 //!
@@ -54,10 +56,10 @@
 
 use std::future::Future;
 
-use candid::{CandidType, Encode, Principal};
+use candid::{CandidType, Decode, Encode, Principal};
 use ic_management_canister_types::{
     CanisterIdRecord, CanisterInstallMode, CanisterSettings, ChunkHash, CreateCanisterArgs,
-    InstallChunkedCodeArgs, UploadChunkArgs,
+    InstallChunkedCodeArgs, ProvisionalCreateCanisterWithCyclesArgs, UploadChunkArgs,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -170,9 +172,15 @@ impl<'a> ManagementClient<'a> {
         &self,
         method: &'static str,
         encoded: Vec<u8>,
+        effective_canister_id: Principal,
     ) -> Result<(), ManagementError> {
         self.ingress
-            .update_raw(management_canister(), method, encoded)
+            .update_raw_with_effective_canister_id(
+                management_canister(),
+                method,
+                encoded,
+                effective_canister_id,
+            )
             .await
             .map(|_| ())
             .map_err(|error| transport_or_reject(method, error.to_string()))
@@ -201,21 +209,70 @@ impl ManagementTransport for ManagementClient<'_> {
         args: CreateCanisterArgs,
         cycles: u128,
     ) -> Result<Principal, ManagementError> {
-        // ic-agent 0.49.2 has no way to attach cycles to an ingress request (see module
-        // docs); deploys on the mainnet selector are refused earlier for exactly this
-        // reason. Fee-free replicas accept the call without attached cycles.
-        let _ = cycles;
-        let record: CanisterIdRecord = self
-            .ingress
-            .update_value(management_canister(), "create_canister", &args)
-            .await
-            .map_err(|error| transport_or_reject("create_canister", error.to_string()))?;
-        Ok(record.canister_id)
+        if self.ingress.is_mainnet() {
+            // ic-agent 0.49.2 has no way to attach cycles to an ingress request (see module
+            // docs); deploys on the mainnet selector are refused earlier for exactly this
+            // reason. Fee-free replicas accept the call without attached cycles.
+            let _ = cycles;
+            let record: CanisterIdRecord = self
+                .ingress
+                .update_value(management_canister(), "create_canister", &args)
+                .await
+                .map_err(|error| transport_or_reject("create_canister", error.to_string()))?;
+            Ok(record.canister_id)
+        } else {
+            // Local/PocketIC endpoints cannot route an ingress-level `create_canister` (the
+            // real IC derives the target subnet from the caller+nonce; there is no such
+            // derived-id path here — the replica decodes it against the wrong signature).
+            // The local equivalent is `provisional_create_canister_with_cycles`, which is
+            // exactly what the pocket-ic crate itself uses for creation, carrying the same
+            // controllers setting. Its response certification requires the effective canister
+            // id to fall within the target subnet's canister ranges, so we use the network's
+            // default effective canister id from `/_/topology` (GAP-2026-08-24-006(a)).
+            let effective = self
+                .ingress
+                .default_effective_canister_id()
+                .ok_or_else(|| ManagementError::Transport {
+                    method: "provisional_create_canister_with_cycles",
+                    reason: "local network did not expose a default effective canister id \
+                                 (/_/topology); cannot route the provisional create"
+                        .to_owned(),
+                })?;
+            let reply = self
+                .ingress
+                .update_raw_with_effective_canister_id(
+                    management_canister(),
+                    "provisional_create_canister_with_cycles",
+                    Encode!(&ProvisionalCreateCanisterWithCyclesArgs {
+                        amount: Some(cycles.into()),
+                        settings: args.settings,
+                        specified_id: None,
+                        sender_canister_version: args.sender_canister_version,
+                    })
+                    .expect("encode provisional create args"),
+                    effective,
+                )
+                .await
+                .map_err(|error| {
+                    transport_or_reject(
+                        "provisional_create_canister_with_cycles",
+                        error.to_string(),
+                    )
+                })?;
+            let record =
+                Decode!(&reply, CanisterIdRecord).expect("decode provisional create reply");
+            Ok(record.canister_id)
+        }
     }
 
     async fn upload_chunk(&self, args: UploadChunkArgs) -> Result<ChunkHash, ManagementError> {
         self.ingress
-            .update_value(management_canister(), "upload_chunk", &args)
+            .update_value_with_effective_canister_id(
+                management_canister(),
+                "upload_chunk",
+                &args,
+                args.canister_id,
+            )
             .await
             .map_err(|error| transport_or_reject("upload_chunk", error.to_string()))
     }
@@ -227,6 +284,7 @@ impl ManagementTransport for ManagementClient<'_> {
         self.unit_call(
             "install_chunked_code",
             Encode!(&args).expect("encode InstallChunkedCodeArgs"),
+            args.target_canister,
         )
         .await
     }
@@ -238,6 +296,7 @@ impl ManagementTransport for ManagementClient<'_> {
                 canister_id: target
             })
             .expect("encode CanisterIdRecord"),
+            target,
         )
         .await
     }
@@ -249,6 +308,7 @@ impl ManagementTransport for ManagementClient<'_> {
                 canister_id: target
             })
             .expect("encode CanisterIdRecord"),
+            target,
         )
         .await
     }
@@ -258,12 +318,13 @@ impl ManagementTransport for ManagementClient<'_> {
         target: Principal,
     ) -> Result<CanisterStatusReply, ManagementError> {
         self.ingress
-            .query_value(
+            .query_value_with_effective_canister_id(
                 management_canister(),
                 "canister_status",
                 &CanisterIdRecord {
                     canister_id: target,
                 },
+                target,
             )
             .await
             .map_err(|error| transport_or_reject("canister_status", error.to_string()))

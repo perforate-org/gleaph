@@ -14,11 +14,13 @@ name = "gleaph-operator"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 candid.workspace = true
 clap.workspace = true
 gleaph-artifact-api.workspace = true
 ic-agent.workspace = true
 ic-management-canister-types.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

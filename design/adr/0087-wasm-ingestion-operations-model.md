@@ -157,6 +157,16 @@ replica ingress calls. Environment finding recorded there: PocketIC cannot route
 ingress-level `create_canister` (the adapter's local equivalent is
 `provisional_create_canister_with_cycles` with identical controllers).
 
+**GAP-2026-08-24-006(a) resolved (2026-08-26).** The launcher gateway *can* route
+management-canister updates; the observed failures were operator-side effective-canister-id
+routing. `gleaph-operator bootstrap deploy` now uses `provisional_create_canister_with_cycles`
+for local/PocketIC endpoints and sets the effective canister id per call: the target canister
+for `upload_chunk`/`install_chunked_code`/`stop`/`start`/`canister_status`, and the network's
+default effective canister id (read from the `/_/topology` endpoint, the same source dfx's
+`dfx info default-effective-canister-id` uses) for the provisional create, whose response
+certification requires the effective id to fall within the target subnet's canister ranges.
+Verified end to end against a locally launched launcher network.
+
 **Upgrade-durability defect found by this slice, root cause verified
 (GAP-2026-08-26-005).** Provision's seeded authority (MemoryId 4) and active-release
 pointer (MemoryId 10) do not survive any real wasm upgrade. The cause is provision-side,
