@@ -274,10 +274,13 @@ Destructive, pre-production clean replacement:
   into plans/index scans; authorization-aware vector search; JIT completion — delete the
   remaining ADR 0028 Admin metadata bypass in favor of time-boxed
   `GraphMetadata`/`ControlPlane` grants issued through the approval loop (§1b).
-- **Deferred ADRs**: ReBAC/policy traversal; internal-caller allowlist contract write-up
-  (documents current guards); audit log (bounded-append contract and expired-grant GC);
-  admission/billing; stored-procedure bundles and canister-calling procedures (execution
-  model first; then `EXECUTE Procedure(id)` downgrades the caps gate).
+- **Deferred ADRs**: ReBAC/policy traversal (delivered by [ADR 0082]); internal-caller
+  allowlist contract write-up (documents current guards); ~~audit log (bounded-append
+  contract and expired-grant GC)~~ expired-grant GC delivered by [ADR 0083] in the grant
+  store, with the bounded-append audit-log contract itself still deferred until DAO
+  governance is designed; admission/billing; stored-procedure bundles and
+  canister-calling procedures (execution model first; then `EXECUTE Procedure(id)`
+  downgrades the caps gate).
 
 ## Alternatives considered
 
@@ -309,3 +312,5 @@ Destructive, pre-production clean replacement:
 [ADR 0034]: 0034-gleaph-gql-extension-syntax.md
 [ADR 0048]: 0048-lara-counterpart-resolution.md
 [ADR 0050]: 0050-lara-traverse-read-api.md
+[ADR 0082]: 0082-rebac-bounded-exists-traversal.md
+[ADR 0083]: 0083-authorization-audit-log.md

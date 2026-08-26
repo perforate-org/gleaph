@@ -1,7 +1,7 @@
 # 0083. Expired elevation-row retention and GC in the grant store
 
 Date: 2026-08-25
-Status: proposed
+Status: implemented (2026-08-26)
 Last revised: 2026-08-26
 
 ## Context
@@ -159,15 +159,17 @@ Trade-offs accepted:
 ## Migration
 
 - Add the GC driver and retention window; **no layout change** (GC only removes
-  rows, so fresh state is not required).
-- New PocketIC suite: expired rows (elevation and a grammar-written expiring
-  metadata grant) are GC'd after the review window; standing data-plane grants
-  are never touched; **re-issuing the same (requester, scope) elevation
+  rows, so fresh state is not required). Implemented as `GrantState::sweep_expired_rows`
+  in `crates/auth` plus the autonomous driver in `crates/router/src/retention.rs`.
+- New PocketIC suite (`adr0083_elevation_retention`): expired loop-issued elevation
+  rows are GC'd only after the review window; grammar-written standing grants (data-plane
+  and `READ_METADATA`) are never touched — `GRANT` writes standing rows only ([ADR 0080]
+  §5), so the sweep rule's genericity over an expiring evidence-free metadata row is
+  pinned at unit level instead; **re-issuing the same (requester, scope) elevation
   replaces the prior row's evidence (supersession semantics)**; the review
-  surface is preserved within the window; GC is idempotent across ticks and
-  drains a backlog over multiple ticks; `list_elevations` /
-  `list_graph_grants` are unchanged; adversarial walk asserts no public read
-  path.
+  surface is preserved within the window; GC drains a backlog over multiple ticks behind
+  its resumable cursor; `list_elevations` /
+  `list_graph_grants` are unchanged; adversarial walk asserts no public mutation path.
 - `design/security/rbac-and-prepared.md` updated in the same patch.
 
 ## Design documentation impact

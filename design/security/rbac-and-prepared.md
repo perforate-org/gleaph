@@ -19,11 +19,12 @@
 > ([ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md)) is a
 > separate domain and is out of scope.
 
-> **Elevation retention (proposed, not implemented):** [ADR 0083](../adr/0083-authorization-audit-log.md)
-> formalizes expired elevation-row retention and GC in the grant store: a bounded review
-> window (default 90 days) with an autonomous-timer GC driver. It adds no separate audit
-> store; grant/revoke/caps history and a unified time-ordered view are deferred until DAO
-> governance is designed.
+> **Elevation retention (implemented, 2026-08-26):** [ADR 0083](../adr/0083-authorization-audit-log.md)
+> formalizes expired elevation-row retention and GC in the grant store: a constant 90-day
+> review window with an autonomous-timer GC driver (`crates/router/src/retention.rs`) that
+> sweeps canonical-order bounded slices behind a heap-resident resume cursor. It adds no
+> separate audit store; grant/revoke/caps history and a unified time-ordered view remain
+> deferred until DAO governance is designed.
 
 > **EXPLAIN AUTHORIZATION (implemented, 2026-08-26):**
 > [ADR 0084](../adr/0084-explain-authorization-diagnosis.md) ships the privileged-only
@@ -385,7 +386,8 @@ Five stages, each leaving evidence in the issued row:
    complete evidence payload (requester as subject, approver, justification, emergency flag).
 4. **Use** — every authorized metadata evaluation inside the window resolves through the row;
    expired rows read as absent automatically, so reversion needs no human action.
-5. **Review** — expired rows stay stored until GC; `list_elevations`
+5. **Review** — expired rows stay stored for the constant 90-day review window
+   (`EXPIRED_ROW_RETENTION_NS`, [ADR 0083] §2); `list_elevations`
    (`MANAGE_AUTHORIZATION`) lists active and recently-expired rows with their evidence, and
    `list_graph_grants` shows graph-scoped elevations to the owner plus the review audience.
 
@@ -394,6 +396,27 @@ writes the same row shape flagged emergency with approver = requester, visible a
 introspection. Silent bypass paths do not exist. Grammar-written standing rows
 (`GRANT READ_METADATA …`, owner-or-`MANAGE_AUTHORIZATION` authority) are the documented
 pre-authorized-grant form; the loop remains the friction-bearing default window path.
+
+### Elevation retention GC ([ADR 0083] — implemented)
+
+The grant store's expired-row tail is bounded by construction. An autonomous,
+always-on timer (`crates/router/src/retention.rs`, armed at router `init`/`post_upgrade`)
+runs one bounded sweep step per tick at daily scale: it walks grant keys in canonical
+order behind a heap-resident resume cursor (16 keys per tick) and removes rows whose
+`expires_at + EXPIRED_ROW_RETENTION_NS` passed, so a large backlog drains across
+successive ticks without a single long call. The sweep lives in `crates/auth`
+(`GrantState::sweep_expired_rows`) — the crate that owns the grant-store invariant — and
+the Router only drives it; there is no caller-facing trigger.
+
+The rule is generic over `expires_at`: every time-boxed row shape is swept once its
+window passed (loop-issued elevation evidence rows today; any future grammar-written
+expiring row), while standing non-expiring rows — data-plane grants and grammar-form
+metadata rows alike — are never touched. Enforcement reads rows through expiry-aware
+`holds`, so sweeping already-absent rows changes no verdict, dispatch, error text, or
+wire; only the introspection surfaces shrink when a swept row leaves the review window.
+Reissuing the same (requester, scope) elevation replaces the prior evidence even inside
+its review window (`GrantKey` carries no issuance time — accepted v1 supersession
+semantics).
 
 ## Anonymous-principal invariant
 
