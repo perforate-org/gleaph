@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: implemented
-Last revised: 2026-07-09
-Anchor timestamp: 2026-07-09 15:33:09 UTC +0000
+Last revised: 2026-08-26
+Anchor timestamp: 2026-08-26 03:57:36 UTC +0000
 
 ## Context
 
@@ -120,6 +120,8 @@ archive / HTTP outcall (still deferred to a future slice).
 
 - [ADR 0035](0035-provision-canister-and-issuance-protocol.md) — jobs pin the selected release.
 - [ADR 0037](0037-provisioned-canister-lifecycle-and-controllers.md) — target controller policy.
+- [ADR 0087](0087-wasm-ingestion-operations-model.md) — operational model for ingesting artifacts
+  into this catalog: surfaces (`gleaph-operator`), stage model, publisher-role deferral.
 - [IC management canister](https://docs.internetcomputer.org/references/management-canister/) — authoritative chunk and install operations.
 - Plan 0061b (release manifest + active-release pointer + activation) — builds on Slice 8a.
 - Plan 0061c (install transfer + artifact audit log + PocketIC) — builds on Slices 8a and 8b.

@@ -46,6 +46,11 @@ User canisters are issued by **Provision** from the artifact catalog
 ([ADR 0036](../adr/0036-versioned-wasm-artifact-catalog.md)). The user does not build wasm, manage
 subnets, or run `icp deploy`.
 
+Catalog ingestion itself is a **platform-operator** concern
+([ADR 0087](../adr/0087-wasm-ingestion-operations-model.md), planned): its surfaces are the
+`gleaph-operator` tool and, after decentralization, SNS proposals over the same Provision
+endpoints — never the developer CLI.
+
 ### Lazy Router issuance (replaces `gleaph deploy`)
 
 Router issuance is **on demand**, driven by the first operation that needs a Router. There is no

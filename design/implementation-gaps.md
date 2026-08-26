@@ -312,7 +312,9 @@ defect from being rediscovered without its prior reasoning.
   installed via a different entrypoint), (b) daemonize/supervise the launcher chain so `-d`
   outlives the CLI (setsid + optional supervisor), (c) then revisit whether lazy issuance
   plus provisioned topology completes without catalog-upload plumbing (ADR 0036 has no CLI
-  upload surface today).
+  upload surface today). Decided 2026-08-26 ([ADR 0087](adr/0087-wasm-ingestion-operations-model.md)):
+  the catalog-upload surface lives in `gleaph-operator` over a shared ingestion client library,
+  not the developer CLI; pure-CLI bring-up seeds the local catalog through that library.
 
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 
@@ -2373,6 +2375,41 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   execution after publication).
 - **Next decision:** none open. Multi-shard label-only-multi seeding returns with the
   federated-traversal restoration ADR.
+
+### GAP-2026-08-26-005 — Real Provision upgrades wipe the bootstrap authority and active release: eager `StableCell::new` constructors clobber durable cells on every process restart
+
+- **Status:** Open — blocks Provision's first production upgrade and the ADR 0037
+  lifecycle slice. Surfaced by the ADR 0087 bootstrap-tier E2E
+  (`adr0087_bootstrap_tier`, 2026-08-26); root cause verified against vendored
+  `ic-stable-structures` source the same day.
+- **Owner:** `crates/provision/src/stable/bootstrap_auth.rs:26-38` (`BOOTSTRAP_AUTH`
+  thread-local, MemoryId 4) and `crates/provision/src/stable/memory.rs:111-116`
+  (`init_active_release`, MemoryId 10).
+- **Observed behavior:** after a real chunked upgrade of a deployed Provision (PocketIC
+  replica ingress through the `gleaph-operator` transport), governance readback that
+  succeeded pre-upgrade returns `Unauthorized` because
+  `ProvisionBootstrapAuthStore::get_authority()` reads `None`. Stable memory is preserved
+  byte-for-byte across the upgrade (25,231,360 bytes unchanged, measured via canister
+  status), so the loss happens in the store layer, not the replica.
+- **Root cause:** `StableCell::new(memory, value)` writes on construction
+  (`ic-stable-structures` cell.rs:174-176). Both cells are built inside eager
+  thread_local initializers with `None` defaults, so every new process (install or
+  upgrade) rewrites the durable cells empty before any handler runs. The same module set
+  already uses the safe read-or-create form elsewhere
+  (`init_artifact_storage_id`, `stable/memory.rs:100-105`), and the hazard is described in
+  `bootstrap_auth.rs:58-60`'s own comment. The unit test
+  `bootstrap_authority_singleton_survives_upgrade` passes because it never restarts the
+  process, so the writing constructors never run again.
+- **Expected or needed behavior:** an upgraded Provision must retain its seeded authority
+  and active release without re-running `init`; a fresh install must still start empty.
+  Blast radius if unfixed: a post-upgrade Provision rejects every catalog write as
+  unauthorized and aborts every issuance at the no-active-release guard while remaining
+  live.
+- **Next decision:** fix = switch the two constructors to `StableCell::init(memory,
+  default)` (read-or-create), then strengthen `adr0087_bootstrap_tier` to assert
+  post-upgrade authorized readback and active-release survival instead of liveness only.
+  Small dedicated slice required before Provision's first production upgrade; pairs with
+  ADR 0037.
 
 ## Review cadence
 
