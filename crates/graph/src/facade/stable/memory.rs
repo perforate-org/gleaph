@@ -644,6 +644,7 @@ mod tests {
                 epoch: 11,
                 admitted_through: 4,
                 drained_through: 2,
+                authorized_puller: candid::Principal::from_slice(&[0x5E, 0x11]),
             };
             init_canonical_export_scopes().insert(physical, record.clone());
 

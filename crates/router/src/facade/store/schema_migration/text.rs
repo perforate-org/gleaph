@@ -372,7 +372,7 @@ async fn advance_one_text<D: IndexMigrationDriver>(
         lifecycle_epoch,
         text_registration(graph_id, &def, &build),
         build.home_shard_id,
-        build.home_graph_canister,
+        def.target.expect("provisioned definition"),
         action,
     );
     let response = driver.drive_text_backfill(request).await?;
@@ -451,7 +451,8 @@ fn text_registration(
 ) -> crate::facade::store::schema_migration::text_backfill::RegisterTextBackfillRequest {
     crate::facade::store::schema_migration::text_backfill::RegisterTextBackfillRequest {
         text_index_id: TextIndexId::new(def.text_index_id),
-        graph_canister: def.target.expect("provisioned definition"),
+        // The GRAPH shard serving canonical export pages to the text canister's pull.
+        graph_canister: build.home_graph_canister,
         graph_id,
         index_name_id: def.index_name_id,
         physical_index_id: build.physical_index_id,

@@ -599,6 +599,96 @@ pub fn install_single_shard_federation_with_graph_admins(
     }
 }
 
+/// Single-shard federation whose Router is born wired to a Provision canister (ADR 0035
+/// issuance active) — plan 0297 text-backfill E2E support. Returns the env plus the
+/// Provision principal so tests can publish/activate a release before issuing resources.
+pub fn install_single_shard_federation_with_provision() -> (FederationEnv, Principal) {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    // `deployment_id` derives from the admin principal (ADR 0068), matching the Router's
+    // issuance caller.
+    let binding = DeploymentBinding {
+        deployment_id: admin.to_text(),
+        router_principal: router,
+        governance_principal: admin,
+        binding_version: 1,
+        bootstrap_principal: None,
+    };
+    let provision = create_funded_canister(&pic);
+    pic.add_cycles(provision, 100_000_000_000_000);
+    pic.install_canister(
+        provision,
+        wasm_bytes("PROVISION_WASM"),
+        Encode!(&ProvisionInitArgs {
+            bootstrap_bindings: vec![binding],
+        })
+        .expect("encode provision init"),
+        None,
+    );
+
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            provision_canister: Some(provision),
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index = create_funded_canister(&pic);
+    pic.install_canister(
+        index,
+        wasm_bytes("INDEX_WASM"),
+        Encode!(&IndexInitArgs {
+            router_canister: router,
+        })
+        .expect("encode index init"),
+        None,
+    );
+
+    let graph_source = create_funded_canister(&pic);
+    register_graph_single_shard_with_admins(
+        &pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        SOURCE_SHARD,
+        Default::default(),
+    );
+
+    pic.install_canister(
+        graph_source,
+        wasm_bytes("GRAPH_WASM"),
+        Encode!(&GraphInitArgs {
+            logical_graph_name: Some(GRAPH_NAME.into()),
+            router_canister: Some(router),
+            shard_id: Some(SOURCE_SHARD),
+            index_canister: Some(index),
+        })
+        .expect("encode graph init"),
+        None,
+    );
+
+    (
+        FederationEnv {
+            pic,
+            admin,
+            router,
+            index_dest: index,
+            index,
+            graph_source,
+            graph_dest: Principal::anonymous(),
+        },
+        provision,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn attach_index_shard_canister(
     pic: &PocketIc,

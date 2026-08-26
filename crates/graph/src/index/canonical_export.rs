@@ -5,6 +5,7 @@
 
 use super::catalog_context;
 use crate::facade::stable::CANONICAL_EXPORT_SCOPES;
+use candid::Principal;
 use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
 use crate::facade::stable::edge_properties::EdgePropertyKey;
 use crate::facade::stable::vertex_properties::VertexPropertyKey;
@@ -37,15 +38,20 @@ const CURSOR_SOURCE_DIRECTED: u8 = 0;
 const CURSOR_SOURCE_UNDIRECTED: u8 = 1;
 
 /// Registers one immutable Graph-owned scope. Exact replay is idempotent; a different contract
-/// for an existing physical namespace is rejected before any stable write.
+/// (scope identity OR authorized puller) for an existing physical namespace is rejected before
+/// any stable write.
 pub fn register_scope(
     physical_index_id: PhysicalIndexId,
     scope: CanonicalExportScope,
+    authorized_puller: Principal,
 ) -> Result<(), CanonicalExportError> {
+    if authorized_puller == Principal::anonymous() {
+        return Err(CanonicalExportError::InvalidRequest);
+    }
     validate_scope(&scope)?;
     CANONICAL_EXPORT_SCOPES.with_borrow_mut(|scopes| {
         if let Some(existing) = scopes.get(physical_index_id) {
-            return if existing.scope == scope {
+            return if existing.scope == scope && existing.authorized_puller == authorized_puller {
                 Ok(())
             } else {
                 Err(CanonicalExportError::ScopeConflict)
@@ -57,10 +63,31 @@ pub fn register_scope(
             phase: CanonicalExportPhase::Building,
             admitted_through: 0,
             drained_through: 0,
+            authorized_puller,
         };
         scopes.insert(physical_index_id, record);
         Ok(())
     })
+}
+
+/// Fail-closed export-page admission: the caller must be exactly the frozen scope's bound
+/// puller. An unregistered namespace reports `ScopeNotFound` (identical to the data-plane
+/// lookup that would follow), so admission state leaks nothing extra.
+pub fn authorize_page_pull(
+    caller: Principal,
+    physical_index_id: PhysicalIndexId,
+) -> Result<(), CanonicalExportError> {
+    let record = CANONICAL_EXPORT_SCOPES.with_borrow(|scopes| scopes.get(physical_index_id));
+    match record {
+        None => Err(CanonicalExportError::ScopeNotFound),
+        Some(record) => {
+            if caller == Principal::anonymous() || caller != record.authorized_puller {
+                Err(CanonicalExportError::UnauthorizedPuller)
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Router-authorized seal transition. The logical/physical scope identity is checked exactly;
@@ -1659,7 +1686,7 @@ mod tests {
             label_id: label.raw(),
             property_id: property,
         };
-        register_scope(physical, scope(target.clone())).expect("register");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let mut request = request_with(target.clone(), physical);
         request.limit = 1_000;
 
@@ -1710,7 +1737,7 @@ mod tests {
             label_id: label.raw(),
             property_id: property,
         };
-        register_scope(physical, scope(target.clone())).expect("register");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let mut request = request_with(target.clone(), physical);
         // The limit must not be the splitter: the RAW-byte budget decides the page break.
         request.limit = 1_000;
@@ -1846,12 +1873,12 @@ mod tests {
             property_id: PropertyId::from_raw(2),
             record_source: None,
         });
-        register_scope(physical, scope.clone()).expect("register");
-        register_scope(physical, scope.clone()).expect("exact replay");
+        register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
+        register_scope(physical, scope.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("exact replay");
         let mut conflict = scope.clone();
         conflict.catalog_epoch += 1;
         assert_eq!(
-            register_scope(physical, conflict.clone()),
+            register_scope(physical, conflict.clone(), candid::Principal::from_slice(&[0x5E, 0x11])),
             Err(CanonicalExportError::ScopeConflict)
         );
         // Seal advances `record.epoch` to 2 while `record.scope.catalog_epoch` stays frozen at
@@ -1924,7 +1951,7 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen).expect("register");
+        register_scope(physical, frozen, candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let facts = drain(request_with(target, physical));
         let matching: Vec<_> = facts
             .into_iter()
@@ -2003,7 +2030,7 @@ mod tests {
                 field_tail: "score".to_owned(),
             }),
         };
-        register_scope(physical, scope(target.clone())).expect("register");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let mut request = request_with(target, physical);
         request.limit = 1_000;
 
@@ -2041,7 +2068,7 @@ mod tests {
         )
         .expect("cleanup first scope");
         let physical = PhysicalIndexId::new(900_010).unwrap();
-        register_scope(physical, scope(target.clone())).expect("register deep scope");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register deep scope");
         let mut request = request_with(target, physical);
         request.limit = 1_000;
 
@@ -2096,7 +2123,7 @@ mod tests {
             property_id: property,
             record_source: None,
         };
-        register_scope(physical, scope(target.clone())).expect("register");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let mut request = request_with(target, physical);
         request.limit = 1_000;
 
@@ -2169,7 +2196,7 @@ mod tests {
             property_id: property,
             record_source: None,
         };
-        register_scope(physical, scope(target.clone())).expect("register");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let mut changed = request_with(target.clone(), physical);
         changed.graph_id = GraphId::from_raw(2);
         assert!(matches!(
@@ -2260,7 +2287,7 @@ mod tests {
             source_profile: profile.clone(),
             value_profile: profile,
         });
-        register_scope(physical, frozen).expect("register inline scope");
+        register_scope(physical, frozen, candid::Principal::from_slice(&[0x5E, 0x11])).expect("register inline scope");
         let facts = drain(request_with(target, physical));
         let edge_facts: Vec<_> = facts
             .into_iter()
@@ -2367,7 +2394,7 @@ mod tests {
             direction: EdgeIndexDirection::Any,
         };
         let physical = PhysicalIndexId::new(900_007).unwrap();
-        register_scope(physical, scope(target.clone())).expect("register sidecar scope");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register sidecar scope");
         let facts = drain(request_with(target, physical));
         let values: Vec<_> = facts
             .into_iter()
@@ -2483,7 +2510,7 @@ mod tests {
             property_id: property,
             record_source: None,
         };
-        register_scope(physical, scope(target.clone())).expect("register");
+        register_scope(physical, scope(target.clone()), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let facts = drain(request_with(target.clone(), physical));
         let exported: Vec<_> = facts
             .iter()
@@ -2524,7 +2551,7 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone()).expect("register");
+        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         seal_scope(physical, frozen.clone(), 2).expect("seal");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
@@ -2583,7 +2610,7 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone()).expect("register");
+        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         seal_scope(physical, frozen.clone(), 2).expect("seal");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
@@ -2628,7 +2655,7 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target);
-        register_scope(physical, frozen.clone()).expect("register");
+        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         seal_scope(physical, frozen.clone(), 2).expect("seal");
         let proof = IndexBuildSealStatus {
             base_complete: true,
@@ -2698,7 +2725,7 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone()).expect("register");
+        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
                 physical,
@@ -2856,7 +2883,7 @@ mod tests {
             record_source: None,
         };
         let frozen = scope(target.clone());
-        register_scope(physical, frozen.clone()).expect("register");
+        register_scope(physical, frozen.clone(), candid::Principal::from_slice(&[0x5E, 0x11])).expect("register");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
             vertex_indexes: vec![build_membership(
                 physical,
@@ -2944,5 +2971,73 @@ mod tests {
         ack_build_dml(physical, 1, 1).expect("ack retained envelope");
         abort_scope(physical, frozen.clone()).expect("abort");
         remove_scope(physical, &frozen).expect("cleanup");
+    }
+
+    /// Scope-bound export admission (plan 0297 text backfill): the frozen scope names exactly
+    /// one authorized puller; everyone else — including anonymous and the formerly
+    /// hardcoded graph-index identity — fails closed without leaking scope state.
+    #[test]
+    fn page_pulls_are_admitted_only_for_the_bound_puller() {
+        use candid::Principal;
+
+        let physical = PhysicalIndexId::new(940_101).expect("non-zero physical id");
+        let puller = Principal::from_slice(&[0x5E, 0xAD]);
+        let interloper = Principal::from_slice(&[0x0B, 0xAD]);
+
+        // No scope yet: unknown namespaces fail closed identically for any caller.
+        assert_eq!(
+            authorize_page_pull(puller, physical),
+            Err(CanonicalExportError::ScopeNotFound)
+        );
+
+        register_scope(physical, scope(CanonicalExportTarget::Vertex {
+            label_id: 1,
+            property_id: PropertyId::from_raw(2),
+            record_source: None,
+        }), puller)
+        .expect("register with explicit puller");
+
+        assert_eq!(authorize_page_pull(puller, physical), Ok(()));
+        assert_eq!(
+            authorize_page_pull(interloper, physical),
+            Err(CanonicalExportError::UnauthorizedPuller)
+        );
+        assert_eq!(
+            authorize_page_pull(Principal::anonymous(), physical),
+            Err(CanonicalExportError::UnauthorizedPuller)
+        );
+
+        // Replay exactness covers the puller too: same contract replays, a different
+        // puller conflicts before any durable write.
+        let bound = CANONICAL_EXPORT_SCOPES.with_borrow(|scopes| scopes.get(physical));
+        drop(bound);
+        register_scope(
+            physical,
+            scope(CanonicalExportTarget::Vertex {
+                label_id: 1,
+                property_id: PropertyId::from_raw(2),
+                record_source: None,
+            }),
+            puller,
+        )
+        .expect("exact replay with same puller");
+        assert_eq!(
+            register_scope(
+                physical,
+                scope(CanonicalExportTarget::Vertex {
+                    label_id: 1,
+                    property_id: PropertyId::from_raw(2),
+                    record_source: None,
+                }),
+                interloper,
+            ),
+            Err(CanonicalExportError::ScopeConflict)
+        );
+        remove_scope(physical, &scope(CanonicalExportTarget::Vertex {
+            label_id: 1,
+            property_id: PropertyId::from_raw(2),
+            record_source: None,
+        }))
+        .expect("cleanup");
     }
 }

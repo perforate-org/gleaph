@@ -131,6 +131,7 @@ pub(crate) trait GraphScopeClient {
         canister: Principal,
         physical_index_id: PhysicalIndexId,
         scope: CanonicalExportScope,
+        authorized_puller: Option<Principal>,
     ) -> Pin<Box<dyn Future<Output = Result<(), GraphScopeCallError>> + '_>>;
 
     fn seal_scope(
@@ -214,6 +215,9 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                     scope.graph_canister,
                     request.registration.physical_index_id,
                     scope.scope.clone(),
+                    // Posting builds keep the Graph default: the shard's configured
+                    // graph-index canister stays the authorized puller.
+                    None,
                 )
                 .await
                 .map_err(classify_graph_scope_call)?;
@@ -493,15 +497,16 @@ pub(crate) struct TextBackfillStepResponse {
     pub result: TextBackfillStepResult,
 }
 
-/// Builds the immutable text step envelope from the durable build identity. The text canister
-/// and home shard come from the SAME registration/record pair the caller persisted at prepare,
-/// so every downstream call derives exactly from durable state.
+/// Builds the immutable text step envelope from the durable build identity. Principals are
+/// carried separately and never derived from each other: `text_canister` is the control-plane
+/// target for Register/Build/Seal/Cleanup, while the registration's `graph_canister` is the
+/// HOME GRAPH shard whose canonical pages the text canister pulls during Build.
 pub(crate) fn text_step_request(
     migration_id: String,
     lifecycle_catalog_epoch: u64,
     registration: RegisterTextBackfillRequest,
     home_shard_id: u32,
-    home_graph_canister: Principal,
+    text_canister: Principal,
     action: IndexMigrationStepAction,
 ) -> TextBackfillStepRequest {
     let scope = CanonicalExportScope {
@@ -514,10 +519,11 @@ pub(crate) fn text_step_request(
         },
         inline: None,
     };
+    let home_graph_canister = registration.graph_canister;
     TextBackfillStepRequest {
         migration_id,
         lifecycle_catalog_epoch,
-        text_canister: registration.graph_canister,
+        text_canister,
         home_graph_canister,
         registration,
         export_scopes: vec![IndexMigrationExportScope {
@@ -581,6 +587,9 @@ impl<TB: TextBackfillClient, GS: GraphScopeClient, IB> RealIndexMigrationDriver<
                     scope.graph_canister,
                     request.registration.physical_index_id,
                     scope.scope.clone(),
+                    // The TEXT canister pulls its own pages: bind it explicitly as the
+                    // frozen scope's authorized puller (Graph fails every other caller).
+                    Some(request.text_canister),
                 )
                 .await
                 .map_err(classify_graph_scope_call)?;
@@ -953,12 +962,13 @@ impl GraphScopeClient for IcGraphScopeClient {
         canister: Principal,
         physical_index_id: PhysicalIndexId,
         scope: CanonicalExportScope,
+        authorized_puller: Option<Principal>,
     ) -> Pin<Box<dyn Future<Output = Result<(), GraphScopeCallError>> + '_>> {
         Box::pin(async move {
             call_typed::<_, (), CanonicalExportError>(
                 canister,
                 "admin_register_index_export_scope",
-                (physical_index_id, scope),
+                (physical_index_id, scope, authorized_puller),
             )
             .await?
             .map_err(GraphScopeCallError::Typed)
@@ -1936,6 +1946,7 @@ mod tests {
             canister: Principal,
             physical_index_id: PhysicalIndexId,
             scope: CanonicalExportScope,
+            _authorized_puller: Option<Principal>,
         ) -> Pin<Box<dyn Future<Output = Result<(), GraphScopeCallError>> + '_>> {
             Box::pin(async move { self.register(canister, physical_index_id, scope) })
         }
@@ -3342,6 +3353,7 @@ mod tests {
             _: Principal,
             _: PhysicalIndexId,
             _: CanonicalExportScope,
+            _: Option<Principal>,
         ) -> Pin<Box<dyn Future<Output = Result<(), GraphScopeCallError>> + '_>> {
             self.calls.borrow_mut().push("register_scope");
             Box::pin(std::future::ready(Ok(())))

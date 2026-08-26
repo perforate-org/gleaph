@@ -6,42 +6,9 @@ pub fn guard_router_canister() -> Result<(), String> {
     Ok(())
 }
 
-/// Native unit tests call handlers directly without a graph-index caller principal.
-#[cfg(not(target_family = "wasm"))]
-pub fn guard_index_canister() -> Result<(), String> {
-    Ok(())
-}
-
-/// Production canonical exports accept calls only from the configured graph-index canister.
-#[cfg(target_family = "wasm")]
-pub fn guard_index_canister() -> Result<(), String> {
-    use crate::facade::GraphStore;
-    use ic_cdk::api::msg_caller;
-
-    let caller = msg_caller();
-    let routing = GraphStore::new()
-        .federation_routing()
-        .ok_or("federation routing not configured")?;
-    authorize_index_caller(caller, routing.index_canister)
-}
-
-#[cfg(any(target_family = "wasm", test))]
-fn authorize_index_caller(
-    caller: candid::Principal,
-    configured_index: candid::Principal,
-) -> Result<(), String> {
-    if caller == candid::Principal::anonymous() {
-        return Err("anonymous caller is not the configured graph-index canister".to_string());
-    }
-    if caller == configured_index {
-        Ok(())
-    } else {
-        Err(format!(
-            "caller {caller} is not the configured graph-index canister {}",
-            configured_index
-        ))
-    }
-}
+/// Canonical export page reads are admitted per-scope inside the handler: every frozen scope
+/// names exactly one authorized puller (`authorize_page_pull`), replacing the former
+/// single-canister fn guard.
 
 /// Production graph shards accept plan execution only from the configured router.
 #[cfg(target_family = "wasm")]
@@ -85,14 +52,6 @@ pub fn guard_control_plane_admin() -> Result<(), String> {
 mod tests {
     use super::*;
     use candid::Principal;
-
-    #[test]
-    fn index_authorization_rejects_anonymous_and_wrong_callers() {
-        let configured = Principal::from_slice(&[7; 29]);
-        assert!(authorize_index_caller(Principal::anonymous(), configured).is_err());
-        assert!(authorize_index_caller(Principal::from_slice(&[8; 29]), configured).is_err());
-        assert_eq!(authorize_index_caller(configured, configured), Ok(()));
-    }
 
     /// Router-only authorization: every index-export control endpoint is guarded by
     /// `guard_router_canister`, and the shared authorization primitive rejects a non-router

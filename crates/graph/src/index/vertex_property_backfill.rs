@@ -412,6 +412,7 @@ mod tests {
                 },
                 inline: None,
             },
+            candid::Principal::from_slice(&[0x5E, 0x11]),
         )
         .expect("register building scope");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {

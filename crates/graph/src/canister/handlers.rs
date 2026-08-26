@@ -1796,8 +1796,21 @@ pub fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(
 pub fn admin_register_index_export_scope(
     physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+    authorized_puller: Option<candid::Principal>,
 ) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
-    crate::index::canonical_export::register_scope(physical_index_id, scope)
+    // Posting builds keep today's admission exactly: an omitted puller binds this shard's
+    // configured graph-index canister. The TEXT backfill lane passes its text canister
+    // explicitly so its pulls are authorized without widening the fn-level guard.
+    let authorized_puller = match authorized_puller {
+        Some(puller) => puller,
+        None => match GraphStore::new().federation_routing() {
+            Some(routing) => routing.index_canister,
+            None => {
+                return Err(gleaph_graph_kernel::canonical_export::CanonicalExportError::Storage)
+            }
+        },
+    };
+    crate::index::canonical_export::register_scope(physical_index_id, scope, authorized_puller)
 }
 
 /// Router → graph: remove an export scope only under its complete current owner contract.
@@ -1887,6 +1900,13 @@ pub fn index_export_page(
     gleaph_graph_kernel::canonical_export::CanonicalExportPage,
     gleaph_graph_kernel::canonical_export::CanonicalExportError,
 > {
+    // Scope-bound admission replaces the single-canister fn guard: every frozen scope names
+    // exactly one authorized puller and reads fail closed for everyone else.
+    #[cfg(target_family = "wasm")]
+    crate::index::canonical_export::authorize_page_pull(
+        ic_cdk::api::msg_caller(),
+        request.physical_index_id,
+    )?;
     crate::index::canonical_export::export_page(request)
 }
 

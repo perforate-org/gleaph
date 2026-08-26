@@ -84,6 +84,7 @@ mod tests {
             epoch: 4,
             admitted_through: 5,
             drained_through: 3,
+            authorized_puller: candid::Principal::from_slice(&[0x5E, 0x11]),
         };
         let mut first = CanonicalExportScopeStore::init(VectorMemory::default());
         first.insert(physical, record.clone());

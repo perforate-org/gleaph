@@ -237,8 +237,12 @@ mod tests {
             },
             inline: None,
         };
-        crate::index::canonical_export::register_scope(physical_index_id, scope.clone())
-            .expect("register scope");
+        crate::index::canonical_export::register_scope(
+            physical_index_id,
+            scope.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register scope");
         scope
     }
 

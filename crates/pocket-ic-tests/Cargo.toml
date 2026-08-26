@@ -121,3 +121,13 @@ harness = true
 name = "text_index_lifecycle"
 path = "tests/text_index_lifecycle.rs"
 harness = true
+
+[[test]]
+name = "text_index_provisioning"
+path = "tests/text_index_provisioning.rs"
+harness = true
+
+[[test]]
+name = "adr0059_text_backfill_migration"
+path = "tests/adr0059_text_backfill_migration.rs"
+harness = true

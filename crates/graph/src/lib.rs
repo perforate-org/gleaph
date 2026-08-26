@@ -63,7 +63,7 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use crate::canister::guards::guard_control_plane_admin;
 use crate::canister::{
     GraphInitArgs,
-    guards::{guard_index_canister, guard_router_canister},
+    guards::{guard_router_canister},
 };
 
 #[init]
@@ -251,12 +251,15 @@ fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), S
 }
 
 /// Router → graph: freeze one immutable canonical export scope for a physical index namespace.
+/// `authorized_puller` binds the ONE principal allowed to pull pages for this namespace;
+/// `None` defaults to the shard's configured graph-index canister (posting builds).
 #[update(guard = "guard_router_canister")]
 fn admin_register_index_export_scope(
     physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+    authorized_puller: Option<candid::Principal>,
 ) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
-    canister::handlers::admin_register_index_export_scope(physical_index_id, scope)
+    canister::handlers::admin_register_index_export_scope(physical_index_id, scope, authorized_puller)
 }
 
 /// Router → graph: remove an export scope under its complete current owner contract.
@@ -327,8 +330,9 @@ async fn admin_drain_index_build_outbox(
     canister::handlers::admin_drain_index_build_outbox(request).await
 }
 
-/// Graph-index → graph: read one bounded page from canonical Graph storage.
-#[update(guard = "guard_index_canister")]
+/// Graph-index/text-puller → graph: read one bounded page from canonical Graph storage.
+/// Admission is scope-bound: the caller must equal the frozen scope's authorized puller.
+#[update]
 fn index_export_page(
     request: gleaph_graph_kernel::canonical_export::CanonicalExportRequest,
 ) -> Result<

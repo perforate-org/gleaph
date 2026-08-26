@@ -6,7 +6,7 @@
 
 use crate::entry::{EdgeInlinePropertyProfile, EdgeLabelId, GraphId, IndexNameId, PropertyId};
 use crate::index::{EdgeIndexDirection, PhysicalIndexId};
-use candid::{CandidType, Decode, Encode};
+use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_structures::{Storable, storable::Bound};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -55,6 +55,10 @@ pub enum CanonicalExportError {
     NotConverged,
     /// Removal would discard admitted work that has not reached the contiguous drain watermark.
     UnsafeRemoval,
+    /// The caller is not the frozen scope's authorized puller. Graph owns export-scope
+    /// admission: every registered namespace names exactly one puller principal and page
+    /// reads fail closed for anyone else.
+    UnauthorizedPuller,
     CursorMalformed,
     UnsupportedInlineProfile,
     FactTooLarge {
@@ -91,6 +95,7 @@ impl fmt::Display for CanonicalExportError {
                 "canonical export graph-index convergence proof is incomplete"
             ),
             Self::UnsafeRemoval => write!(f, "canonical export scope has pending admitted work"),
+            Self::UnauthorizedPuller => write!(f, "caller is not the scope's authorized puller"),
             Self::CursorMalformed => write!(f, "malformed canonical export cursor"),
             Self::UnsupportedInlineProfile => {
                 write!(f, "canonical export inline profile is unsupported")
@@ -219,6 +224,11 @@ pub struct CanonicalExportRecord {
     pub epoch: u64,
     pub admitted_through: u64,
     pub drained_through: u64,
+    /// Graph-owned export admission: the ONE principal allowed to pull canonical pages for
+    /// this namespace. Posting builds bind the shard's configured graph-index canister; the
+    /// TEXT backfill lane binds the provisioned text canister when its scope registers.
+    /// Reads fail closed for every other caller.
+    pub authorized_puller: Principal,
 }
 
 /// Graph-local status projection for Router and maintenance callers.
@@ -409,6 +419,7 @@ mod tests {
             epoch: 12,
             admitted_through: 9,
             drained_through: 7,
+            authorized_puller: Principal::from_slice(&[0x5E, 0x11]),
         }
     }
 
