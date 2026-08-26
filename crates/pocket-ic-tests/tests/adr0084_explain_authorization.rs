@@ -351,9 +351,12 @@ fn invisible_graph_probe_is_an_indistinguishable_not_found() {
 
     // The record exists, but the stranger holds no visibility arm on its bound graph:
     // the ask must fail exactly like an unknown name (existence-oracle dead end).
-    let stranger_ask =
-        explain(&env, stranger(), "EXPLAIN AUTHORIZATION FOR PREPARED QUERY feed")
-            .expect_err("invisible touched graph must fail");
+    let stranger_ask = explain(
+        &env,
+        stranger(),
+        "EXPLAIN AUTHORIZATION FOR PREPARED QUERY feed",
+    )
+    .expect_err("invisible touched graph must fail");
     let absent_ask = explain(
         &env,
         stranger(),
@@ -394,8 +397,11 @@ fn invisible_graph_probe_is_an_indistinguishable_not_found() {
     let g = GRAPH_NAME;
     gql_mutate_as_admin(
         &env,
-        format!("GRANT MATCH ON GRAPH {g} NODES Person TO PRINCIPAL '{}'", collaborator().to_text())
-            .as_str(),
+        format!(
+            "GRANT MATCH ON GRAPH {g} NODES Person TO PRINCIPAL '{}'",
+            collaborator().to_text()
+        )
+        .as_str(),
         "adr0084-oracle-control-grant",
     );
     let visible = explain(
