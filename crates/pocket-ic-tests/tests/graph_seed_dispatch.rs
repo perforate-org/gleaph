@@ -23,6 +23,7 @@ fn index_scan_project_plan() -> PhysicalPlan {
             value: ScanValue::Literal(Value::Int64(5)),
             cmp: CmpOp::Eq,
             property_projection: None,
+            ordered_by_sort: None,
         },
         PlanOp::Project {
             columns: vec![ProjectColumn {
