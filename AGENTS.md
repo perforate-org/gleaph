@@ -52,7 +52,7 @@ atomicity, variant, test-contract, and code-quality checks happen before handoff
 
 The design/ directory contains active design contracts, not archival notes.
 
-When a code change affects architecture, storage layout, query semantics, public APIs, canister boundaries, indexing behavior, benchmark assumptions, migration requirements, or failure modes, update the relevant design documents in the same patch.
+When a code change alters a contract that a design document describes (architecture, storage layout, query semantics, public APIs, canister boundaries, indexing behavior, benchmark assumptions, migration requirements, or failure modes), update that document in the same patch. Do not update design documents for changes that do not affect their contracts.
 
 If a design document describes planned behavior rather than implemented behavior, mark that status explicitly.
 
@@ -62,19 +62,7 @@ Use the `adr-review` skill for major architectural decisions, especially storage
 
 ## Date Accuracy in Documents
 
-When creating, editing, or reviewing documents that include dates, relative time,
-timelines, release dates, deadlines, schedules, milestones, or words such as
-`today`, `recent`, `latest`, `current`, `now`, `as of`, `last`, or `next`, use the
-`document-date-accuracy` skill.
-
-Do not rely on model memory for the current date. Use UTC for document time
-notation. Get the anchor timestamp from the OS with:
-
-    date -u +"%Y-%m-%d %H:%M:%S UTC %z"
-
-Convert relative dates to exact calendar dates where possible. Verify unstable
-current-state claims before writing them as fact, and mark uncertain or planned
-dates explicitly.
+Use the `document-date-accuracy` skill when creating, editing, or reviewing documents with dates, relative time, or words like `today`, `recent`, `latest`, `current`, `now`, `as of`, `last`, or `next`. Never rely on model memory for the current date — get it with `date -u +"%Y-%m-%d %H:%M:%S UTC %z"`.
 
 ## Test-First Contract
 
@@ -107,19 +95,9 @@ Use the underlying commands directly by default:
 
 Do not route ordinary PocketIC or canbench runs through `just` when the direct commands work.
 
-Some macOS editor-hosted terminals cannot run PocketIC's canister-sandbox process chain (server → sandbox launcher → canister sandbox): `install_canister` may hang or the processes may fail to communicate under that terminal/pty context. Use the `just` recipes that delegate to Terminal.app **only as a fallback in an environment where direct PocketIC/canbench execution is known not to work or has failed for that environment-specific reason**:
-
-- `just ic-e2e` — run the full PocketIC E2E suite in Terminal.app (window stays open)
-- `just ic-e2e --close` — run the full suite and close the window when done
-- `just ic-e2e --all` — alias for the full suite (same as no target)
-- `just ic-e2e smoke` — run only the smoke test
-- `just ic-e2e smoke --close` — run only the smoke test and close the window when done
-- `just ic-e2e <test-name>` — run a specific PocketIC test file in Terminal.app, e.g. `just ic-e2e router_graph_resolution`
-- `just ic-e2e <test-name> --close` — run a specific test file and close the window when done
-- `just canbench <crate>` — run an affected crate's full canbench suite in Terminal.app
-- `just canbench <crate> <pattern>` — run matching benchmarks in Terminal.app
-
 When the direct command fails for an unrelated code, build, or test reason, diagnose that failure normally; do not use `just` merely to bypass it.
+
+Use the `pocketic-just-fallback` skill when direct execution fails due to macOS sandbox issues.
 
 ### Long-running validation budget
 
@@ -168,13 +146,7 @@ canbench runs for explicitly required final validation. Use ordinary
 
 ## gql and gql-planner
 
-The gleaph-gql and gleaph-gql-planner crates contain the name Gleaph as an identifier, but they should remain general-purpose crates for GQL (ISO/IEC 39075).
-
-Gleaph-specific, Internet Computer-specific, or ICP-specific implementations and terminology must not encroach upon these crates.
-
-Do not introduce Gleaph-only syntax, ICP-specific built-ins, canister assumptions, or project-specific semantic rules into these crates.
-
-Project-specific behavior should live outside these crates, typically in planning, execution, integration, or extension layers that are explicitly owned by Gleaph.
+gleaph-gql and gleaph-gql-planner must remain general-purpose GQL crates (ISO/IEC 39075). Do not introduce Gleaph-specific, ICP-specific, or canister-specific implementations, terminology, syntax, or semantic rules into them. Project-specific behavior belongs in planning, execution, integration, or extension layers owned by Gleaph.
 
 ## Internet Computer
 
@@ -188,13 +160,4 @@ https://skills.internetcomputer.org/.well-known/skills/{name}/SKILL.md
 Skills contain correct dependency versions, configuration formats, and common pitfalls that prevent build failures.
 Always prefer skill guidance over general documentation when both cover the same topic.
 
-## Expected Completion Summary
 
-At the end of a meaningful change, report:
-
-- What changed
-- Which skills were used, if any
-- Which tests were added or updated
-- Which design documents were checked or updated
-- Which format, test, and benchmark commands were run
-- Any remaining risks or skipped checks
