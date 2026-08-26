@@ -165,7 +165,9 @@ for `upload_chunk`/`install_chunked_code`/`stop`/`start`/`canister_status`, and 
 default effective canister id (read from the `/_/topology` endpoint, the same source dfx's
 `dfx info default-effective-canister-id` uses) for the provisional create, whose response
 certification requires the effective id to fall within the target subnet's canister ranges.
-Verified end to end against a locally launched launcher network.
+Verified end to end against a locally launched launcher network. GAP-006(b) (launcher
+`setsid` daemonization) also resolved 2026-08-26; the CLI `network start` deploy still needs
+the same effective-canister-id fix (see GAP-2026-08-24-006).
 
 **Upgrade-durability defect found by this slice, root cause verified
 (GAP-2026-08-26-005).** Provision's seeded authority (MemoryId 4) and active-release

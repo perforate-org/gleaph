@@ -270,10 +270,12 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-006 — Pure-CLI platform bring-up fails on the Gleaph-owned launcher network
 
-- **Status:** (a) Resolved (2026-08-26, operator bootstrap tier); (b) Open — blocks the
-  `gleaph network start` self-contained bring-up path (Account/Provision deploy + ADR 0068
-  lazy Router issuance + ADR 0070/0071 provisioned topology) on a machine-local network
-  without icp-cli; surfaced while executing plan 0296's quickstart (2026-08-24)
+- **Status:** (a) operator tier Resolved (2026-08-26); (b) Resolved (2026-08-26, daemonization);
+  CLI `network start` deploy still blocked by the same effective-canister-id routing defect
+  (see below) — blocks the `gleaph network start` self-contained bring-up path
+  (Account/Provision deploy + ADR 0068 lazy Router issuance + ADR 0070/0071 provisioned
+  topology) on a machine-local network without icp-cli; surfaced while executing plan
+  0296's quickstart (2026-08-24)
 - **Owner:** `crates/cli/src/network.rs` (launcher lifecycle, management-canister transport)
   and the launcher's HTTP gateway contract (`icp-cli-network-launcher` v15.0.0);
   Account/Provision deployment flow in `network::start`
@@ -327,6 +329,18 @@ defect from being rediscovered without its prior reasoning.
   certification requires the effective id to fall within the target subnet's canister ranges.
   Verified end to end against a locally launched launcher network: create → chunked install →
   stop → upgrade → start with exact module-hash match. (b) daemonization remains open.
+
+  **(b) resolved 2026-08-26.** `spawn_launcher` now calls `setsid()` (via `Command::pre_exec`)
+  in background mode, creating a new session so the launcher (and its PocketIC process chain)
+  survives the CLI's exit and a terminal close. Verified: `gleaph network start -d` run inside a
+  pseudo-terminal leaves the launcher alive after the pty closes (previously it died on SIGHUP).
+
+  **Remaining: CLI `network start` deploy still fails.** The operator's bootstrap tier is fixed,
+  but `crates/cli/src/network.rs` `deploy_canister` still calls `create_canister` (no
+  `provisional_create_canister_with_cycles`, no per-call effective canister id), so the
+  pure-CLI bring-up deploy rejects with `canister_not_found` on the launcher network. The same
+  GAP-2026-08-24-006(a) fix must be applied to the CLI's `RemoteTransport` management calls
+  before `gleaph network start` completes.
 
 ### GAP-2026-08-24-002 — Edge-index anchors do not accept `ScanValue::InList` (symmetric extension of the vertex IN-list anchor)
 

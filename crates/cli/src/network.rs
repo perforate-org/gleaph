@@ -12,6 +12,7 @@ use ic_management_canister_types::{
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 
@@ -221,10 +222,21 @@ fn spawn_launcher(
         status_dir.to_str().unwrap(),
     ]);
     if background {
-        // Detach: redirect stdio so the child outlives the parent.
+        // Detach: redirect stdio and create a new session so the launcher (and its PocketIC
+        // process chain) survives the CLI's exit and a terminal close. Without `setsid` the
+        // launcher stays in the CLI's session and dies on SIGHUP when the controlling
+        // terminal closes (GAP-2026-08-24-006(b)).
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
         cmd.stdin(std::process::Stdio::null());
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     let child = cmd.spawn().map_err(|e| format!("spawn launcher: {e}"))?;
 
