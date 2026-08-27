@@ -61,26 +61,38 @@ pub fn start(
     let mut gateway_port = None;
     let mut gateway_url: Option<String> = None;
     if crate::identity::has_icp_yaml(project_root) {
-        // Delegate network start to icp-cli.
-        let mut cmd = std::process::Command::new("icp");
-        cmd.args(["network", "start", network]);
-        if background {
-            cmd.arg("-d");
-        }
-        let status = cmd
-            .status()
-            .map_err(|e| format!("run `icp network start`: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "`icp network start {network}` failed with status {status}"
-            ));
+        // icp-cli-managed network: reuse a running instance when one exists — `icp network
+        // start` fails on an already-running network, so probe the status endpoint first and
+        // only start when it is down.
+        let already_running = crate::remote::icp_gateway_url(network);
+        if already_running.is_none() {
+            // Delegate network start to icp-cli.
+            let mut cmd = std::process::Command::new("icp");
+            cmd.args(["network", "start", network]);
+            if background {
+                cmd.arg("-d");
+            }
+            let status = cmd
+                .status()
+                .map_err(|e| format!("run `icp network start`: {e}"))?;
+            if !status.success() {
+                return Err(format!(
+                    "`icp network start {network}` failed with status {status}"
+                ));
+            }
         }
         // icp-cli networks bind the gateway on a dynamic port: resolve the real endpoint once
         // here and hand it to the deploy transport as the network selector (a URL —
         // `resolve_network` routes it unchanged). Data-plane commands re-resolve `"local"`
         // through the same `icp network status` path in `resolve_network`.
         match crate::remote::icp_gateway_url(network) {
-            Some(url) => gateway_url = Some(url),
+            Some(url) => {
+                println!(
+                    "using icp network '{network}' at {url}{}",
+                    if already_running.is_some() { " (already running)" } else { "" }
+                );
+                gateway_url = Some(url);
+            }
             None => eprintln!(
                 "warning: `icp network status {network}` reported no Api Url; \
                  falling back to {}",
@@ -533,6 +545,63 @@ enum UpsertDeploymentGrantErrorMirror {
 /// canister's first-Router issuance, which requests `release_id = "default"` (hardcoded in
 /// `send_issuance_request`, `crates/account/src/canister.rs`).
 const SEED_RELEASE_ID: &str = "default";
+
+/// All conventional platform wasm file names inside the platform wasm directory.
+const PLATFORM_WASM_NAMES: [&str; 7] = [
+    "gleaph_account.wasm",
+    "gleaph_provision.wasm",
+    "gleaph_router.wasm",
+    "gleaph_graph.wasm",
+    "gleaph_graph_index.wasm",
+    "gleaph_vector_canister.wasm",
+    "text_canister.wasm",
+];
+
+const BUILD_PLATFORM_WASM_HINT: &str = "build the platform wasms with:\n  cargo build \
+     -p gleaph-account -p gleaph-provision -p gleaph-router -p gleaph-graph-index \
+     -p gleaph-graph -p gleaph-vector-canister -p text-canister --release \
+     --target wasm32-unknown-unknown --target-dir target/pocket-ic-wasm";
+
+/// Resolve the platform wasm directory. An explicit `--platform-wasm-dir` must contain every
+/// conventional wasm; without one, the project-root ancestors are walked looking for a
+/// repo-checkout build (`target/pocket-ic-wasm/wasm32-unknown-unknown/release`) containing
+/// all of them — so `gleaph network start` works from inside the repo with no wasm flags.
+pub fn resolve_platform_wasm_dir(
+    explicit: Option<&Path>,
+    project_root: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(dir) = explicit {
+        for name in PLATFORM_WASM_NAMES {
+            if !dir.join(name).is_file() {
+                return Err(format!(
+                    "--platform-wasm-dir {}: missing {name}; {}",
+                    dir.display(),
+                    BUILD_PLATFORM_WASM_HINT
+                ));
+            }
+        }
+        return Ok(dir.to_path_buf());
+    }
+    let mut looked_in = Vec::new();
+    let mut cursor = Some(project_root);
+    while let Some(dir) = cursor {
+        let candidate = dir.join("target/pocket-ic-wasm/wasm32-unknown-unknown/release");
+        if PLATFORM_WASM_NAMES
+            .iter()
+            .all(|name| candidate.join(name).is_file())
+        {
+            return Ok(candidate);
+        }
+        looked_in.push(candidate.display().to_string());
+        cursor = dir.parent();
+    }
+    Err(format!(
+        "no platform wasm directory found (looked for target/pocket-ic-wasm/\
+         wasm32-unknown-unknown/release under: {}); pass --platform-wasm-dir <DIR> or {}",
+        looked_in.join(", "),
+        BUILD_PLATFORM_WASM_HINT
+    ))
+}
 
 /// Conventional platform wasm file names per catalog kind inside `--platform-wasm-dir`.
 /// The graph-index crate produces the PropertyIndex-kind artifact (`gleaph_graph_index.wasm`).

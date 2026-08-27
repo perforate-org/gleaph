@@ -384,6 +384,14 @@ pub fn merge_remote(
         .map(str::to_owned)
         .or_else(|| env.canister.clone())
         .or_else(|| profile.and_then(|profile| profile.canister.clone()));
+    // Last resort: the active session's signing source (the same resolution
+    // `network start` auto-registration uses), so data-plane commands work without
+    // a repeated --identity after `gleaph identity new` / `login` / `import`.
+    let has_icp_yaml = loaded
+        .as_ref()
+        .and_then(|loaded| loaded.path.parent())
+        .map(crate::identity::has_icp_yaml)
+        .unwrap_or(false);
     let identity = identity_flag
         .map(Path::to_path_buf)
         .or_else(|| env.identity.as_ref().map(PathBuf::from))
@@ -394,6 +402,14 @@ pub fn merge_remote(
                     .as_ref()
                     .map(|path| resolve_config_path(&loaded.path, path))
             })
+        })
+        // Last resort: the active session's signing source (the same resolution
+        // `network start` auto-registration uses), so data-plane commands work without
+        // a repeated --identity after `gleaph identity new` / `login` / `import`.
+        .or_else(|| {
+            crate::auth::load_session()
+                .and_then(|session| crate::identity::session_pem(&session, has_icp_yaml).ok())
+                .map(PathBuf::from)
         });
     // `--fetch-root-key` is a SetTrue flag, so it can only express "true": clap yields
     // `Some(false)` when the flag is absent, which must not shadow an env/config value.
@@ -709,13 +725,33 @@ canister = \"config-local\"
         assert_eq!(opts.network, "ic");
         assert!(!opts.fetch_root_key);
 
-        // Nothing supplied: built-in defaults.
+        // Nothing supplied: built-in defaults. The active session must NOT leak an identity
+        // here, so the test runs against an isolated (empty) config home.
+        let guard = crate::identity::test_support::lock_config_home();
+        let isolated = std::env::temp_dir().join(format!(
+            "gleaph-merge-remote-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&isolated).expect("temp config home");
+        let prior = std::env::var_os("GLEAPH_CONFIG_HOME");
+        // SAFETY: single-threaded here — the config-home lock is held.
+        #[allow(unsafe_op_in_unsafe_fn)]
+        unsafe {
+            std::env::set_var("GLEAPH_CONFIG_HOME", &isolated)
+        };
         let opts =
             merge_remote(None, None, None, None, &ConfigEnv::default(), None).expect("merge");
         assert_eq!(opts.canister, None);
         assert_eq!(opts.network, "ic");
         assert_eq!(opts.identity, None);
         assert!(!opts.fetch_root_key);
+        let _ = std::fs::remove_dir_all(&isolated);
+        // SAFETY: single-threaded test (config-home lock held); restoring prior state.
+        match prior {
+            Some(value) => unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") },
+        }
+        drop(guard);
     }
 
     #[test]

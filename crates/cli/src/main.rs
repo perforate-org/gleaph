@@ -102,18 +102,23 @@ struct NetworkStartArgs {
     /// Network name (ic/local) or an HTTP(S) endpoint URL.
     #[arg(short = 'n', long, value_name = "NETWORK", default_value = "local")]
     network: String,
-    /// Path to the Account canister wasm.
+    /// Path to the Account canister wasm. Defaults to `gleaph_account.wasm` inside the
+    /// auto-discovered platform wasm directory (see --platform-wasm-dir).
     #[arg(long, value_name = "PATH")]
-    account_wasm: PathBuf,
-    /// Path to the Provision canister wasm.
+    account_wasm: Option<PathBuf>,
+    /// Path to the Provision canister wasm. Defaults to `gleaph_provision.wasm` inside the
+    /// auto-discovered platform wasm directory.
     #[arg(long, value_name = "PATH")]
-    provision_wasm: PathBuf,
+    provision_wasm: Option<PathBuf>,
     /// Directory holding the platform wasm artifacts under their conventional names
-    /// (gleaph_router.wasm, gleaph_graph.wasm, gleaph_graph_index.wasm,
-    /// gleaph_vector_canister.wasm, text_canister.wasm). When given, `network start` seeds
-    /// the Provision artifact catalog and activates release "default" (ADR 0087), so lazy
-    /// Router issuance (ADR 0068) installs the Router from the catalog. Without it the
-    /// catalog seed is skipped and Router issuance fails until a release is activated.
+    /// (gleaph_account.wasm, gleaph_provision.wasm, gleaph_router.wasm, gleaph_graph.wasm,
+    /// gleaph_graph_index.wasm, gleaph_vector_canister.wasm, text_canister.wasm). When omitted,
+    /// `network start` auto-discovers it by walking up from the project root looking for
+    /// `target/pocket-ic-wasm/wasm32-unknown-unknown/release` (a repo-checkout build). When
+    /// found, `network start` seeds the Provision artifact catalog and activates release
+    /// "default" (ADR 0087), so lazy Router issuance (ADR 0068) installs the Router from the
+    /// catalog. When neither a directory nor a discovery hit is available, the catalog seed
+    /// is skipped and Router issuance fails until a release is activated.
     #[arg(long, value_name = "DIR")]
     platform_wasm_dir: Option<PathBuf>,
     /// Run the launcher attached to this terminal: the command blocks until the launcher
@@ -453,16 +458,28 @@ fn execute_network(
             // returns once the network is up. --foreground opts back into the attached
             // session (blocks until the launcher exits, e.g. Ctrl-C stops the network).
             let background = !args.foreground;
+            let platform_dir =
+                network::resolve_platform_wasm_dir(args.platform_wasm_dir.as_deref(), project_root)
+                    .map_err(CliError::Message)?;
+            println!("platform wasms: {}", platform_dir.display());
+            let account_wasm = args
+                .account_wasm
+                .clone()
+                .unwrap_or_else(|| platform_dir.join("gleaph_account.wasm"));
+            let provision_wasm = args
+                .provision_wasm
+                .clone()
+                .unwrap_or_else(|| platform_dir.join("gleaph_provision.wasm"));
             let result = network::start(
                 &args.network,
                 project_root,
                 loaded,
-                &args.account_wasm,
-                &args.provision_wasm,
+                &account_wasm,
+                &provision_wasm,
                 background,
                 identity.as_deref(),
             )
-            .map_err(CliError::Message)?;;
+            .map_err(CliError::Message)?;
             if let Some(port) = result.gateway_port {
                 println!("Network started on port {port}");
             }
@@ -506,12 +523,13 @@ fn execute_network(
             // five platform kinds idempotently through the shared ingestion library, then
             // publish + activate release "default" so lazy Router issuance (ADR 0068) can
             // install the Router from the catalog. The operator tool remains the operations
-            // entry point for the same surfaces. Without a wasm dir, skip with a warning.
-            if let Some(dir) = &args.platform_wasm_dir {
+            // entry point for the same surfaces. The wasm directory is auto-discovered (a
+            // repo-checkout build) or passed via --platform-wasm-dir.
+            {
                 // On an icp-cli-managed network the gateway binds a dynamic port; seed through
                 // the endpoint `network::start` resolved (a URL), not the raw "local" selector.
                 let endpoint = result.gateway_url.as_deref().unwrap_or(&args.network);
-                network::seed_catalog(endpoint, &result.mapping, identity.as_deref(), dir)
+                network::seed_catalog(endpoint, &result.mapping, identity.as_deref(), &platform_dir)
                     .map_err(CliError::Message)?;
                 println!("next: gleaph migration apply");
                 println!(
@@ -520,11 +538,6 @@ fn execute_network(
                 println!(
                     "next: gleaph embed ingest --vertices seeds/vertices.jsonl \
                      --embeddings seeds/embeddings.jsonl --graph knowledge"
-                );
-            } else {
-                eprintln!(
-                    "warning: no --platform-wasm-dir; skipping Provision catalog seed \
-                     (Router issuance requires an active release)"
                 );
             }
 
