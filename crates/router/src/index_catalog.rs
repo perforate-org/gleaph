@@ -56,11 +56,15 @@ pub(crate) async fn execute_vector_index_ddl_for_graph(
     stmt: VectorIndexDdlStatement,
 ) -> Result<(), RouterError> {
     match stmt {
+        // `if_not_exists` is admitted by the parser but carries no creation semantics: an exact
+        // re-declaration converges the definition + attach handshake either way, and any differing
+        // declaration conflicts (the vector admission mirrors the TEXT admission's exact-replay
+        // idempotency, ADR 0071).
         VectorIndexDdlStatement::Create {
             index_name,
-            if_not_exists,
+            if_not_exists: _,
             target,
-        } => create_vector_index(graph_id, &index_name, if_not_exists, &target).await,
+        } => create_vector_index(graph_id, &index_name, &target).await,
     }
 }
 
@@ -86,7 +90,6 @@ pub(crate) fn ensure_vector_index_name_available(
 async fn create_vector_index(
     graph_id: GraphId,
     index_name: &str,
-    if_not_exists: bool,
     target: &crate::index_ddl::VectorIndexTarget,
 ) -> Result<(), RouterError> {
     if index_name.is_empty() || target.embedding_name.is_empty() {
@@ -130,12 +133,23 @@ async fn create_vector_index(
                 && existing.metric == target.metric
                 && existing.encoding == target.encoding
                 && existing.dims == target.dims;
-            if exact && if_not_exists {
-                return Ok(());
+            if !exact {
+                return Err(RouterError::Conflict(format!(
+                    "vector index definition already exists with a different declaration: {index_name}"
+                )));
             }
-            return Err(RouterError::Conflict(format!(
-                "vector index definition already exists with a different declaration: {index_name}"
-            )));
+            // Exact re-declaration (ADR 0071 admission idempotency, mirroring the TEXT admission's
+            // exact-replay contract): converge the attach handshake instead of conflicting. The
+            // ledger-level replay of an APPLIED vector migration never re-executes this statement;
+            // a re-execution happens only after a mid-handshake failure, where the definition
+            // survives and the per-shard attach must resume. Idempotent per shard via the durable
+            // vector-attach claim; dev mode is targetless and stays a pure no-op.
+            if let Some(canister) = vector_index_catalog::graph_single_target(graph_id) {
+                store
+                    .attach_live_shards_to_vector_target(graph_id, canister)
+                    .await?;
+            }
+            return Ok(());
         }
     }
 
@@ -171,6 +185,17 @@ async fn create_vector_index(
         provisioned_target.map(|canister| vector_index_catalog::VectorIndexTarget { canister }),
         false,
     )?;
+
+    // ADR 0071 (provisioned mode): drive the shard-attach handshake for every live shard so the
+    // migration/GQL-completed definition is dispatch-ready — embedding ingest requires the exact
+    // target lane on each shard. Idempotent per shard via the durable vector-attach claim (a
+    // replay converges without double-attaching). Dev mode stays targetless: the operator attaches
+    // through the admin command (ADR 0071 non-goal — no automatic attach without a provisioner).
+    if let Some(canister) = provisioned_target {
+        store
+            .attach_live_shards_to_vector_target(graph_id, canister)
+            .await?;
+    }
     Ok(())
 }
 

@@ -853,6 +853,102 @@ impl RouterStore {
         result
     }
 
+    /// Attach one registered, index-attached shard to the given vector canister (the body of
+    /// `admin_attach_vector_index_shard` minus its admin-command auth/validation shell). Driven
+    /// both by the admin command (ADR 0031 Slice 4 operational attach) and by the provisioned
+    /// `CREATE VECTOR INDEX` admission (ADR 0071: the migration/GQL creation attaches every live
+    /// shard so embedding ingest works without a separate manual attach). Idempotent: a shard
+    /// already attached to the same target is a claim-reuse no-op; a different target conflicts
+    /// (one vector-index target per graph).
+    async fn attach_shard_to_vector_target(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        vector_canister: Principal,
+    ) -> Result<(), RouterError> {
+        let entry =
+            lookup_shard_entry(graph_id, shard_id).ok_or(RouterError::ShardNotRegistered)?;
+        // A shard must be index-attached (i.e. fully registered) before it can host a derived index.
+        if !entry.index_attached {
+            return Err(RouterError::Conflict(
+                "shard is not index-attached; complete shard registration before vector attach"
+                    .into(),
+            ));
+        }
+        // One vector-index target per graph: any other shard already attached to a *different*
+        // vector canister is a misconfiguration that would split dispatch across targets.
+        if let Some(conflict) = list_shards_for_graph_id(graph_id)?
+            .into_iter()
+            .find(|other| {
+                other.shard_id != shard_id
+                    && other.vector_canister.is_some()
+                    && other.vector_canister != Some(vector_canister)
+            })
+        {
+            return Err(RouterError::Conflict(format!(
+                "graph already targets vector canister {:?}; one vector-index target per graph",
+                conflict.vector_canister,
+            )));
+        }
+        let key = GraphShardKey::new(graph_id, shard_id);
+        if entry.vector_index_attached && entry.vector_canister == Some(vector_canister) {
+            Self::ensure_unique_attached_vector_lane(key, vector_canister)?;
+            // An idempotent attach is still a valid wake-up boundary: a prior timer may have
+            // stopped while this durable lane remained attached.
+            crate::recovery::arm_if_needed();
+            return Ok(());
+        }
+        // Scan the complete stable catalog before claiming the candidate row. The final attach
+        // commit repeats this preflight after the remote handshake because another shard can
+        // complete concurrently while this request awaits; this first check keeps a known lane
+        // conflict atomic for the public attach operation.
+        Self::ensure_unique_attached_vector_lane(key, vector_canister)?;
+        // Claim the exact definition target in the existing durable shard row before the first
+        // await. A second concurrent request therefore observes the claim synchronously and can
+        // only replay the same target; a different target is rejected without any remote call.
+        let claim = Self::commit_claim_shard_vector_target(graph_id, shard_id, vector_canister)?;
+        let result = self
+            .complete_shard_vector_attach(graph_id, shard_id, claim, entry.graph_canister)
+            .await;
+        if result.is_ok() {
+            // The catalog row is fully vector-attached only after the remote handshake and the
+            // durable readiness bit commit. Wake the existing recovery timer at that boundary;
+            // no separate marker or timer is needed for markerless Graph-owned lanes.
+            crate::recovery::arm_if_needed();
+        }
+        result
+    }
+
+    /// Attach every live shard of `graph_id` to the graph's resolved vector-index target (ADR 0071:
+    /// the provisioned `CREATE VECTOR INDEX` admission drives the full shard-attach handshake so
+    /// the definition is dispatch-ready without a separate manual attach). Idempotent per shard via
+    /// the durable vector-attach claim — a replay converges without double-attaching.
+    pub async fn attach_live_shards_to_vector_target(
+        &self,
+        graph_id: GraphId,
+        vector_canister: Principal,
+    ) -> Result<(), RouterError> {
+        // Fail closed unless the definition target already resolves to the same canister: the
+        // admission registers the definition before driving this handshake.
+        let definition_target =
+            vector_index_catalog::graph_single_target(graph_id).ok_or_else(|| {
+                RouterError::Conflict(
+                    "vector index definition target must be assigned before shard attach".into(),
+                )
+            })?;
+        if definition_target != vector_canister {
+            return Err(RouterError::Conflict(format!(
+                "vector shard attach target {requested} does not match immutable definition target {definition_target}",
+                requested = vector_canister
+            )));
+        }
+        for shard in list_live_shards_for_graph_id(graph_id)? {
+            self.attach_shard_to_vector_target(graph_id, shard.shard_id, vector_canister)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Wires (or retrofits) a derived vector-index target onto an already-registered, index-attached
     /// shard and drives the attach handshake (ADR 0031 Slice 4). Idempotent: a shard already
     /// attached to the same target is a no-op. Enforces **one vector-index target per graph** —
@@ -882,58 +978,8 @@ impl RouterStore {
                 requested = args.vector_canister
             )));
         }
-        let entry =
-            lookup_shard_entry(graph_id, args.shard_id).ok_or(RouterError::ShardNotRegistered)?;
-        // A shard must be index-attached (i.e. fully registered) before it can host a derived index.
-        if !entry.index_attached {
-            return Err(RouterError::Conflict(
-                "shard is not index-attached; complete shard registration before vector attach"
-                    .into(),
-            ));
-        }
-        // One vector-index target per graph: any other shard already attached to a *different*
-        // vector canister is a misconfiguration that would split dispatch across targets.
-        if let Some(conflict) = list_shards_for_graph_id(graph_id)?
-            .into_iter()
-            .find(|other| {
-                other.shard_id != args.shard_id
-                    && other.vector_canister.is_some()
-                    && other.vector_canister != Some(args.vector_canister)
-            })
-        {
-            return Err(RouterError::Conflict(format!(
-                "graph already targets vector canister {:?}; one vector-index target per graph",
-                conflict.vector_canister,
-            )));
-        }
-        let key = GraphShardKey::new(graph_id, args.shard_id);
-        if entry.vector_index_attached && entry.vector_canister == Some(args.vector_canister) {
-            Self::ensure_unique_attached_vector_lane(key, args.vector_canister)?;
-            // An idempotent attach is still a valid wake-up boundary: a prior timer may have
-            // stopped while this durable lane remained attached.
-            crate::recovery::arm_if_needed();
-            return Ok(());
-        }
-        // Scan the complete stable catalog before claiming the candidate row. The final attach
-        // commit repeats this preflight after the remote handshake because another shard can
-        // complete concurrently while this request awaits; this first check keeps a known lane
-        // conflict atomic for the public attach operation.
-        Self::ensure_unique_attached_vector_lane(key, args.vector_canister)?;
-        // Claim the exact definition target in the existing durable shard row before the first
-        // await. A second concurrent request therefore observes the claim synchronously and can
-        // only replay the same target; a different target is rejected without any remote call.
-        let claim =
-            Self::commit_claim_shard_vector_target(graph_id, args.shard_id, args.vector_canister)?;
-        let result = self
-            .complete_shard_vector_attach(graph_id, args.shard_id, claim, entry.graph_canister)
-            .await;
-        if result.is_ok() {
-            // The catalog row is fully vector-attached only after the remote handshake and the
-            // durable readiness bit commit. Wake the existing recovery timer at that boundary;
-            // no separate marker or timer is needed for markerless Graph-owned lanes.
-            crate::recovery::arm_if_needed();
-        }
-        result
+        self.attach_shard_to_vector_target(graph_id, args.shard_id, args.vector_canister)
+            .await
     }
 
     /// Predicate gating production vector dispatch/backfill for a graph (ADR 0031 Slice 4). True
