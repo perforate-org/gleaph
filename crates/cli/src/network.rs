@@ -9,6 +9,8 @@ use crate::config::{self, LoadedConfig};
 use crate::remote::RemoteTransport;
 use ic_agent::Identity;
 use candid::Encode;
+#[cfg(test)]
+use candid::Decode;
 use ic_management_canister_types::{
     CanisterIdRecord, CanisterInstallMode, CreateCanisterArgs, InstallCodeArgs,
     ProvisionalCreateCanisterWithCyclesArgs,
@@ -79,6 +81,13 @@ pub fn start(
         .ok_or("no active identity; run `gleaph login` or `gleaph identity new` first")?;
     let init_arg = provision_init_args(governance_principal)?;
     let provision_id = install_canister(&transport, provision_wasm, init_arg)?;
+
+    // Seed the Account canister as an authorized deployment-grant issuer. The user's first
+    // Router issuance flows through the Account canister (`authorize_router_issuance` →
+    // provision `accept_envelope`), so without this grant that first issuance is rejected
+    // with NotAuthorized. Seeding is mandatory for the production bootstrap flow, so a
+    // failure aborts `network start`.
+    seed_deployment_grant(&transport, &provision_id, &account_id)?;
 
     let mut mapping = BTreeMap::new();
     mapping.insert("account".to_owned(), account_id.to_text());
@@ -427,6 +436,59 @@ fn provision_init_args(governance_principal: candid::Principal) -> Result<Vec<u8
     .map_err(|e| format!("encode provision init args: {e}"))
 }
 
+/// Candid mirror of the Provision canister's `UpsertDeploymentGrantArgs`
+/// (`crates/provision/provision.did`). Field names must match the did exactly.
+#[derive(candid::CandidType, serde::Deserialize)]
+struct UpsertDeploymentGrantArgsMirror {
+    issuer: candid::Principal,
+}
+
+/// Candid mirror of the Provision canister's `BootstrapAuthEntry` return value.
+#[derive(candid::CandidType, serde::Deserialize)]
+struct BootstrapAuthEntryMirror {
+    caller: candid::Principal,
+    deployment_id: Option<String>,
+    action: BootstrapAuthActionMirror,
+    timestamp_ns: u64,
+}
+
+/// Candid mirror of the Provision canister's `BootstrapAuthAction`.
+#[derive(candid::CandidType, serde::Deserialize)]
+enum BootstrapAuthActionMirror {
+    InitialSeed,
+    Upsert,
+    RejectNotSeeded,
+    RejectUnauthorized,
+}
+
+/// Candid mirror of the Provision canister's `UpsertDeploymentGrantError`.
+#[derive(candid::CandidType, serde::Deserialize, Debug)]
+enum UpsertDeploymentGrantErrorMirror {
+    NoBootstrapAuthority,
+    Unauthorized,
+}
+
+/// Seed the given issuer as an authorized deployment-grant holder on the Provision canister.
+/// Called as the CLI governance identity immediately after Provision deploy; the Account
+/// canister must be an authorized issuer for the user's first Router issuance to succeed.
+fn seed_deployment_grant(
+    transport: &RemoteTransport,
+    provision_id: &candid::Principal,
+    issuer: &candid::Principal,
+) -> Result<(), String> {
+    let args = UpsertDeploymentGrantArgsMirror { issuer: *issuer };
+    let result: Result<BootstrapAuthEntryMirror, UpsertDeploymentGrantErrorMirror> = transport
+        .update_on(provision_id, "upsert_deployment_grant", &args)
+        .map_err(|e| format!("upsert_deployment_grant: {e}"))?;
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "seed deployment grant for issuer {}: {e:?}",
+            issuer.to_text()
+        )),
+    }
+}
+
 /// Create a canister and install the given wasm with the given Candid-encoded init argument,
 /// returning its id.
 ///
@@ -592,5 +654,32 @@ mod tests {
                 .expect_err("absent binary must fail");
 
         assert!(error.contains("contained no icp-cli-network-launcher"));
+    }
+
+    #[test]
+    fn upsert_grant_mirror_encodes_issuer_field() {
+        // The mirror must round-trip through Candid with the exact field name `issuer` that
+        // `crates/provision/provision.did` declares for `UpsertDeploymentGrantArgs`.
+        let issuer = candid::Principal::from_text("aaaaa-aa").expect("principal");
+        let args = UpsertDeploymentGrantArgsMirror { issuer };
+        let encoded = candid::Encode!(&args).expect("encode");
+        let decoded: UpsertDeploymentGrantArgsMirror =
+            Decode!(&encoded, UpsertDeploymentGrantArgsMirror).expect("decode");
+        assert_eq!(decoded.issuer, issuer);
+    }
+
+    #[test]
+    fn upsert_grant_mirror_fails_closed_on_field_drift() {
+        // A field-name drift (e.g. `issuer` renamed) must fail closed rather than silently
+        // decode a mismatched argument. Candid field names come from the Rust identifiers, so
+        // a struct expecting a different field name must reject the `issuer`-encoded bytes.
+        let issuer = candid::Principal::from_text("aaaaa-aa").expect("principal");
+        let args = UpsertDeploymentGrantArgsMirror { issuer };
+        let encoded = candid::Encode!(&args).expect("encode");
+        #[derive(candid::CandidType, serde::Deserialize, Debug)]
+        struct WrongFieldMirror {
+            other: candid::Principal,
+        }
+        let _ = Decode!(&encoded, WrongFieldMirror).expect_err("field mismatch must fail");
     }
 }
