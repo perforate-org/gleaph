@@ -116,8 +116,15 @@ struct NetworkStartArgs {
     /// catalog seed is skipped and Router issuance fails until a release is activated.
     #[arg(long, value_name = "DIR")]
     platform_wasm_dir: Option<PathBuf>,
-    /// Start the network in the background; the command exits once it is running.
-    #[arg(short = 'd', long)]
+    /// Run the launcher attached to this terminal: the command blocks until the launcher
+    /// exits (Ctrl-C stops the network). This is the opt-in; the default detaches the
+    /// launcher (setsid + PID file) so the command returns once the network is running
+    /// and `gleaph network stop` tears it down later.
+    #[arg(long, conflicts_with = "background")]
+    foreground: bool,
+    /// Deprecated: detached is now the default; accepted as a no-op for script
+    /// compatibility.
+    #[arg(short = 'd', long, hide = true)]
     background: bool,
     /// Do not auto-register the caller's Personal account after deploying the platform.
     #[arg(long)]
@@ -441,16 +448,20 @@ fn execute_network(
                     .transpose()
                     .map_err(CliError::Message)?
             };
+            // Detached by default: the launcher runs via setsid + PID file and the command
+            // returns once the network is up. --foreground opts back into the attached
+            // session (blocks until the launcher exits, e.g. Ctrl-C stops the network).
+            let background = !args.foreground;
             let result = network::start(
                 &args.network,
                 project_root,
                 loaded,
                 &args.account_wasm,
                 &args.provision_wasm,
-                args.background,
+                background,
                 identity.as_deref(),
             )
-            .map_err(CliError::Message)?;
+            .map_err(CliError::Message)?;;
             if let Some(port) = result.gateway_port {
                 println!("Network started on port {port}");
             }
@@ -513,11 +524,11 @@ fn execute_network(
                 );
             }
 
-            // For a Gleaph-owned network, keep the launcher child alive so the network persists.
-            // In background mode the child is detached and the command returns; otherwise it
-            // blocks until the launcher exits (e.g. Ctrl-C).
+            // For a Gleaph-owned network: detached (default) returns immediately after
+            // recording the PID; --foreground keeps the launcher child attached so the
+            // command blocks until the launcher exits (e.g. Ctrl-C).
             if let Some(mut child) = result.launcher_child {
-                if args.background {
+                if background {
                     println!("network running in the background; `gleaph network stop` to stop");
                 } else {
                     println!("network running; press Ctrl-C to stop");
