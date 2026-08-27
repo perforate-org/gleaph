@@ -14,10 +14,11 @@
 // Gateway URL precedence (mirrors README):
 //   1. --gateway-url <URL> flag
 //   2. GLEAPH_GATEWAY_URL environment variable
-//   3. The Gleaph-owned launcher status file ($TMPDIR/gleaph-local-status/status.json),
-//      which `gleaph network start` writes with the real gateway_port (future pure-CLI
-//      path, GAP-2026-08-24-006)
-//   4. Built-in default: http://localhost:8000 (the port the launcher is spawned with)
+//   3. An icp-cli-managed network (`icp network status <env>` "Api Url:", run from the demo
+//      root where the project icp.yaml lives) — the icp.yaml deployment shape, dynamic port
+//   4. The Gleaph-owned launcher status file ($TMPDIR/gleaph-local-status/status.json),
+//      which `gleaph network start` writes with the real gateway_port
+//   5. Built-in default: http://localhost:8000 (the port the launcher is spawned with)
 //
 // State inputs (only consulted when no explicit canister is supplied):
 //   .gleaph/data/mappings/<env>.ids.json     written by `gleaph network start`
@@ -28,6 +29,7 @@
 // Run with `node --test scripts/write-env.test.mjs` for the assertions.
 
 import { parseArgs } from "node:util";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -47,15 +49,17 @@ export function buildEnvContent({ routerCanisterId, icHost, fetchRootKey }) {
   ].join("\n");
 }
 
-/** Pure: gateway URL precedence flag > env > launcher status file > default. */
+/** Pure: gateway URL precedence flag > env > icp-cli status > launcher status file > default. */
 export function resolveGatewayUrl({
   flagUrl,
   envUrl,
+  icpCliUrl,
   launcherStatusPath,
   readFile = readFileSync,
 }) {
   if (flagUrl) return stripTrailingSlash(flagUrl);
   if (envUrl) return stripTrailingSlash(envUrl);
+  if (icpCliUrl) return stripTrailingSlash(icpCliUrl);
   let raw;
   try {
     raw = readFile(launcherStatusPath, "utf8");
@@ -85,6 +89,29 @@ export function resolveGatewayUrl({
 
 function stripTrailingSlash(url) {
   return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+/** Resolve the gateway URL of a running icp-cli-managed network, or undefined when the
+ * environment is not one (the status call fails fast for a stopped/absent network, so a
+ * successful parse is authoritative for the icp.yaml deployment shape). Runs from the demo
+ * root: icp-cli scopes the network to the project's icp.yaml. */
+export function resolveIcpCliGatewayUrl({
+  demoRoot,
+  environment,
+  exec = execFileSync,
+}) {
+  let out;
+  try {
+    out = exec("icp", ["network", "status", environment], {
+      cwd: demoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return undefined;
+  }
+  const match = /Api Url:\s*(\S+)/.exec(out);
+  return match ? stripTrailingSlash(match[1]) : undefined;
 }
 
 /** Pure: locate the CLI-written state inputs. The mapping file is only required when the
@@ -166,6 +193,7 @@ export async function writeEnvFile({
   envCanisterId,
   flagGatewayUrl,
   envGatewayUrl,
+  exec,
   readFile = readFileSync,
   writeFile = writeFileSync,
 }) {
@@ -188,6 +216,7 @@ export async function writeEnvFile({
   const icHost = resolveGatewayUrl({
     flagUrl: flagGatewayUrl,
     envUrl: envGatewayUrl,
+    icpCliUrl: resolveIcpCliGatewayUrl({ demoRoot, environment, exec }),
     launcherStatusPath,
     readFile,
   });

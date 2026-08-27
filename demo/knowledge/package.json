@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vp dev --port 3000",
+    "dev": "node scripts/write-env.mjs || echo 'note: write-env skipped (no network state yet — run gleaph network start + migration apply first)'; vp dev --port 3000",
     "generate-routes": "tsr generate",
     "generate:client": "gleaph codegen",
     "write-env": "node scripts/write-env.mjs",
