@@ -429,13 +429,24 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
                 types::AdminRegisterShardArgs {
                     shard_id: shard.shard_id,
                     graph_canister: shard.graph_canister,
-                    index_canister: shard.index_canister,
                     logical_graph_name: args.graph_name.clone(),
                 },
             )
             .await?;
     }
     Ok(())
+}
+
+/// Admin: wire a graph-index canister onto an already-registered shard (ADR 0054 indexless
+/// bootstrap). Registration carries no index target; dev mode and operations attach one
+/// explicitly here, provisioned mode through `ensure_index_canisters_provisioned`.
+#[update]
+async fn admin_attach_index_shard(
+    args: types::AdminAttachIndexShardArgs,
+) -> Result<(), RouterError> {
+    RouterStore::new()
+        .admin_attach_index_shard(msg_caller(), args)
+        .await
 }
 
 /// Provisioned-mode `register_graph`: derive the provisioning envelope from the intent, send it

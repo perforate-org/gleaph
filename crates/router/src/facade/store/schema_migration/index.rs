@@ -237,6 +237,11 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
         )?;
         definitions.push(definition);
     }
+    // Provisioned mode: ensure every live shard group has an index canister before capturing
+    // migration targets, mirroring the direct GQL CREATE INDEX path (ADR 0035 Slice 10). Dev
+    // mode is a no-op here — operators wire index targets explicitly via
+    // `admin_attach_index_shard`; capture_targets still fails closed on an unattached target.
+    crate::index_catalog::ensure_index_canisters_provisioned(graph_id).await?;
     let (targets, topology_epoch) = capture_targets(store, graph_id)?;
     let prepared_at_ns = super::super::ic_time_ns();
     let mut prepare_args_list = Vec::with_capacity(builds.len());
@@ -1419,11 +1424,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(1),
                 graph_canister: Principal::from_slice(&[3]),
-                index_canister,
                 logical_graph_name: GRAPH.into(),
             },
         ))
         .expect("register second shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: GRAPH.into(),
+                shard_id: ShardId::new(1),
+                index_canister,
+            },
+        ))
+        .expect("attach index");
     }
 
     fn setup_index_fixture(two_shards: bool) -> (RouterStore, Principal, GraphId) {

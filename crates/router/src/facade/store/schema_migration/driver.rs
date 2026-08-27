@@ -215,9 +215,14 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                     scope.graph_canister,
                     request.registration.physical_index_id,
                     scope.scope.clone(),
-                    // Posting builds keep the Graph default: the shard's configured
-                    // graph-index canister stays the authorized puller.
-                    None,
+                    // The migration lane names the index canister explicitly. The Graph default
+                    // (resolve the puller from the shard's local FederationRouting) resolves to
+                    // the anonymous sentinel on an ADR 0054 indexless-bootstrap shard — the
+                    // graph canister is installed indexless in provisioned mode and its local
+                    // routing is never re-pointed — so the default would bind (or reject) an
+                    // anonymous puller. The retrofit attach made `request.index_canister` the
+                    // exact puller of this scope's pages.
+                    Some(request.index_canister),
                 )
                 .await
                 .map_err(classify_graph_scope_call)?;
@@ -2857,11 +2862,19 @@ mod tests {
                 AdminRegisterShardArgs {
                     shard_id: ShardId::new(1),
                     graph_canister: graph_1(),
-                    index_canister: index_canister(),
                     logical_graph_name: GRAPH.into(),
                 },
             ))
             .expect("register second shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: GRAPH.into(),
+                    shard_id: ShardId::new(1),
+                    index_canister: index_canister(),
+                },
+            ))
+            .expect("attach index");
         }
         (store, admin, graph_id)
     }

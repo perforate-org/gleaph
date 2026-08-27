@@ -584,11 +584,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph,
-                index_canister: index,
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: index,
+            },
+        ))
+        .expect("attach index");
 
         let result = futures::executor::block_on(store.admin_label_backfill_step(
             admin,
@@ -635,11 +643,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
-                index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(2),
+            },
+        ))
+        .expect("attach index");
 
         let err = futures::executor::block_on(store.admin_label_backfill_step(
             admin,
@@ -668,11 +684,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
-                index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(2),
+            },
+        ))
+        .expect("attach index");
 
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
             let graph_id = lookup_graph_id("tenant.main").expect("graph id");
@@ -716,11 +740,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph,
-                index_canister: index,
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: index,
+            },
+        ))
+        .expect("attach index");
 
         let result = futures::executor::block_on(store.admin_vertex_property_backfill_step(
             admin,
@@ -768,11 +800,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph,
-                index_canister: index,
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: index,
+            },
+        ))
+        .expect("attach index");
 
         let status = futures::executor::block_on(store.admin_index_sync_status(
             admin,
@@ -807,11 +847,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
-                index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(2),
+            },
+        ))
+        .expect("attach index");
 
         let err = futures::executor::block_on(store.admin_index_sync_status(
             Principal::from_slice(&[9; 29]),
@@ -840,11 +888,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph,
-                index_canister: index,
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: index,
+            },
+        ))
+        .expect("attach index");
 
         let key = vec![7u8; gleaph_graph_kernel::federation::EDGE_PROPERTY_KEY_BYTES];
         let expected_key = key.clone();
@@ -895,11 +951,19 @@ mod tests {
                 AdminRegisterShardArgs {
                     shard_id: ShardId::new(0),
                     graph_canister: graph_principal(graph_byte),
-                    index_canister: graph_principal(graph_byte + 1),
                     logical_graph_name: name.into(),
                 },
             ))
             .expect("register shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: name.into(),
+                    shard_id: ShardId::new(0),
+                    index_canister: graph_principal(graph_byte + 1),
+                },
+            ))
+            .expect("attach index");
         }
 
         let graph_a = lookup_graph_id("graph_a").expect("graph a");
@@ -1007,11 +1071,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(21),
-                index_canister: graph_principal(22),
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(22),
+            },
+        ))
+        .expect("attach index");
 
         let graph_id = lookup_graph_id("tenant.main").expect("graph id");
         ROUTER_SHARDS.with_borrow_mut(|shards| {
@@ -1046,11 +1118,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
-                index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(2),
+            },
+        ))
+        .expect("attach index");
         let graph_id = lookup_graph_id("tenant.main").expect("graph id");
         (store, admin, GraphShardKey::new(graph_id, ShardId::new(0)))
     }

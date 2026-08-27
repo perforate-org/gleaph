@@ -6451,21 +6451,37 @@ mod tests {
             crate::types::AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: make_principal(1),
-                index_canister: make_principal(2),
                 logical_graph_name: catalog_test_support::GRAPH.into(),
             },
         ))
         .unwrap();
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: catalog_test_support::GRAPH.into(),
+                shard_id: ShardId::new(0),
+                index_canister: make_principal(2),
+            },
+        ))
+        .expect("attach index");
         futures::executor::block_on(store.admin_register_shard(
             admin,
             crate::types::AdminRegisterShardArgs {
                 shard_id: ShardId::new(1),
                 graph_canister: make_principal(3),
-                index_canister: make_principal(4),
                 logical_graph_name: catalog_test_support::GRAPH.into(),
             },
         ))
         .unwrap();
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: catalog_test_support::GRAPH.into(),
+                shard_id: ShardId::new(1),
+                index_canister: make_principal(4),
+            },
+        ))
+        .expect("attach index");
         (store, admin, graph_id)
     }
 

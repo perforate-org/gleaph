@@ -83,12 +83,14 @@ pub struct RegisterGraphArgs {
 }
 
 /// One dev-mode shard placement, mirroring `AdminRegisterShardArgs`. The Router validates
-/// `shard_id` against its graph-local dense allocation (mismatch is `Conflict`).
+/// `shard_id` against its graph-local dense allocation (mismatch is `Conflict`). Shards
+/// bootstrap indexless (ADR 0054): the index target is wired afterwards through the attach
+/// flow (`admin_attach_index_shard` in dev mode, `ensure_index_canisters_provisioned` in
+/// provisioned mode), never through registration arguments.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
 pub struct RegisterGraphShard {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
-    pub index_canister: Principal,
 }
 
 /// Operator/SDK-facing status of a federated mutation (ADR 0029 Phase 4).
@@ -1561,8 +1563,20 @@ pub struct AdminSweepMutationKeysStepResult {
 pub struct AdminRegisterShardArgs {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
-    pub index_canister: Principal,
     pub logical_graph_name: String,
+}
+
+/// Admin: attach (or re-point) a graph-index canister onto an already-registered shard
+/// (ADR 0054 indexless bootstrap). Registration never wires an index target; dev mode and
+/// operations attach one explicitly through this command, while provisioned mode gets the
+/// same wiring through `ensure_index_canisters_provisioned` (ADR 0035 issuance + retrofit
+/// attach). Mirrors `AdminAttachVectorIndexShardArgs`, which carries the derived vector
+/// target through the same attach-after-registration shape.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminAttachIndexShardArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+    pub index_canister: Principal,
 }
 
 /// Admin: wire (or retrofit) a derived vector-index target onto an already-registered shard and

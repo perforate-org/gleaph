@@ -431,11 +431,19 @@ mod tests {
             AdminRegisterShardArgs {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(9),
-                index_canister: graph_principal(10),
                 logical_graph_name: "g".into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: "g".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(10),
+            },
+        ))
+        .expect("attach index");
 
         let deltas = vec![
             LabelStatsDeltaEventWire {
@@ -516,11 +524,19 @@ mod tests {
                 AdminRegisterShardArgs {
                     shard_id: ShardId::new(0),
                     graph_canister: graph_principal(graph_byte),
-                    index_canister: graph_principal(graph_byte + 10),
                     logical_graph_name: name.into(),
                 },
             ))
             .expect("register shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: name.into(),
+                    shard_id: ShardId::new(0),
+                    index_canister: graph_principal(graph_byte + 10),
+                },
+            ))
+            .expect("attach index");
         }
 
         let graph_a = lookup_graph_id("graph_a").expect("graph a");

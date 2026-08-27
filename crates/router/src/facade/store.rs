@@ -195,11 +195,19 @@ pub(crate) mod catalog_test_support {
             AdminRegisterShardArgs {
                 shard_id,
                 graph_canister: Principal::from_slice(&[1]),
-                index_canister: Principal::from_slice(&[2]),
                 logical_graph_name: GRAPH.into(),
             },
         ))
         .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            crate::types::AdminAttachIndexShardArgs {
+                logical_graph_name: GRAPH.into(),
+                shard_id,
+                index_canister: Principal::from_slice(&[2]),
+            },
+        ))
+        .expect("attach index");
     }
 
     pub fn setup() -> (RouterStore, Principal, GraphId) {

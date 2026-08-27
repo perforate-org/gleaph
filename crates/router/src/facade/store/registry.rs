@@ -22,8 +22,8 @@ use crate::facade::stable::{vector_index_catalog, vector_ingest_outbox};
 use crate::index_sync;
 use crate::state::RouterError;
 use crate::types::{
-    AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
-    ProvisioningState, ShardId,
+    AdminAttachIndexShardArgs, AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs,
+    GraphRegistryEntry, GraphStatus, ProvisioningState, ShardId,
 };
 use crate::vector_sync;
 use candid::Principal;
@@ -204,19 +204,6 @@ fn reconcile_index_cluster_after_shard_removal(graph_id: GraphId) -> Result<(), 
         cfg.insert(graph_id, runtime);
         Ok(())
     })
-}
-
-#[cfg(not(feature = "pocket-ic-e2e"))]
-fn rollback_failed_shard_registration(
-    graph_id: GraphId,
-    shard_id: ShardId,
-) -> Result<(), RouterError> {
-    let key = GraphShardKey::new(graph_id, shard_id);
-    let state = ROUTER_SHARDS
-        .with_borrow(|shards| shards.get(&key))
-        .ok_or(RouterError::ShardNotRegistered)?;
-    let _ = RouterStore::commit_remove_shard_registry_row(graph_id, shard_id, state)?;
-    reconcile_index_cluster_after_shard_removal(graph_id)
 }
 
 /// Whether any registered graph is marked home (ADR 0070). Global, not caller-scoped: there is at
@@ -550,7 +537,7 @@ impl RouterStore {
     }
 
     /// Retrofit an existing (indexless) shard's index target to a newly provisioned index canister.
-    /// Unlike `complete_shard_index_attach`, a failed remote attach does NOT unregister the shard —
+    /// A failed remote attach does NOT unregister the shard —
     /// the shard stays indexless and the error propagates for the caller to retry.
     fn commit_set_shard_index_canister(
         graph_id: GraphId,
@@ -590,60 +577,6 @@ impl RouterStore {
         .map_err(RouterError::Internal)
     }
 
-    #[cfg(not(feature = "pocket-ic-e2e"))]
-    async fn detach_shard_from_index(
-        index_canister: Principal,
-        shard_id: ShardId,
-    ) -> Result<(), RouterError> {
-        index_sync::admin_detach_shard_canister(index_canister, shard_id)
-            .await
-            .map_err(RouterError::Internal)
-    }
-
-    #[cfg(not(feature = "pocket-ic-e2e"))]
-    async fn finish_shard_index_attach(
-        &self,
-        graph_id: GraphId,
-        shard_id: ShardId,
-        index_canister: Principal,
-        graph_canister: Principal,
-    ) -> Result<(), RouterError> {
-        if let Err(err) =
-            Self::attach_shard_to_index(graph_id, shard_id, index_canister, graph_canister).await
-        {
-            let _ = rollback_failed_shard_registration(graph_id, shard_id);
-            return Err(err);
-        }
-        if let Err(err) = Self::commit_set_shard_index_attached(graph_id, shard_id, true) {
-            let _ = Self::detach_shard_from_index(index_canister, shard_id).await;
-            if lookup_shard_entry(graph_id, shard_id).is_some() {
-                let _ = rollback_failed_shard_registration(graph_id, shard_id);
-            }
-            return Err(err);
-        }
-        Ok(())
-    }
-
-    async fn complete_shard_index_attach(
-        &self,
-        graph_id: GraphId,
-        shard_id: ShardId,
-        index_canister: Principal,
-        graph_canister: Principal,
-    ) -> Result<(), RouterError> {
-        #[cfg(feature = "pocket-ic-e2e")]
-        {
-            let _ = (index_canister, graph_canister);
-            Self::commit_set_shard_index_attached(graph_id, shard_id, true)
-        }
-
-        #[cfg(not(feature = "pocket-ic-e2e"))]
-        {
-            self.finish_shard_index_attach(graph_id, shard_id, index_canister, graph_canister)
-                .await
-        }
-    }
-
     /// Re-establishes the property-index attachment for a retained unregister row. The remote
     /// attach must succeed before the existing row is made index-ready and its pre-unregister
     /// Vector claim is invalidated in one no-await commit.
@@ -669,8 +602,8 @@ impl RouterStore {
 
     /// Retrofit an existing (indexless) shard onto a newly provisioned index canister (ADR 0035
     /// Slice 10). The remote attach runs first so a failure leaves the shard indexless (no partial
-    /// state); only a successful attach flips the shard's index target. Unlike
-    /// `complete_shard_index_attach`, a failed remote attach does NOT unregister the shard.
+    /// state); only a successful attach flips the shard's index target. A failed remote attach
+    /// does NOT unregister the shard.
     async fn retrofit_attach_shard_to_index(
         &self,
         graph_id: GraphId,
@@ -862,6 +795,55 @@ impl RouterStore {
             self.finish_shard_vector_attach(graph_id, shard_id, claim, graph_canister)
                 .await
         }
+    }
+
+    /// Wires a graph-index canister onto an already-registered shard (ADR 0054 indexless
+    /// bootstrap). Registration never carries an index target; dev mode and operations attach
+    /// one explicitly here, while provisioned mode gets the same wiring through
+    /// `ensure_index_canisters_provisioned` (ADR 0035 issuance + retrofit attach). Idempotent:
+    /// attaching the canister the shard already points at is a no-op; re-pointing an attached
+    /// shard is a conflict. The index-group assignment is committed before the remote handshake
+    /// so dispatch fan-out sees a consistent cluster view.
+    pub async fn admin_attach_index_shard(
+        &self,
+        caller: Principal,
+        args: AdminAttachIndexShardArgs,
+    ) -> Result<(), RouterError> {
+        auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
+        if args.index_canister == Principal::anonymous() {
+            return Err(RouterError::InvalidArgument(
+                "index_canister must not be the anonymous principal".into(),
+            ));
+        }
+        validate_metadata_name(&args.logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(&args.logical_graph_name)?;
+        let entry =
+            lookup_shard_entry(graph_id, args.shard_id).ok_or(RouterError::ShardNotRegistered)?;
+        if entry.index_canister == args.index_canister {
+            // Idempotent attach: the shard already runs this exact target.
+            return Ok(());
+        }
+        if entry.index_canister != Principal::anonymous() {
+            return Err(RouterError::Conflict(format!(
+                "shard {shard:?} already claims index canister {current}; re-pointing is not supported",
+                shard = args.shard_id,
+                current = entry.index_canister,
+            )));
+        }
+        validate_index_group_canister_assignment(graph_id, args.shard_id, args.index_canister)?;
+        commit_index_group_canister_assignment(graph_id, args.shard_id, args.index_canister)?;
+        let result = self
+            .retrofit_attach_shard_to_index(
+                graph_id,
+                args.shard_id,
+                args.index_canister,
+                entry.graph_canister,
+            )
+            .await;
+        if result.is_ok() {
+            crate::recovery::arm_if_needed();
+        }
+        result
     }
 
     /// Wires (or retrofits) a derived vector-index target onto an already-registered, index-attached
@@ -1504,9 +1486,6 @@ impl RouterStore {
             let existing = ROUTER_SHARDS
                 .with_borrow(|s| s.get(&key))
                 .ok_or(RouterError::ShardNotRegistered)?;
-            if existing.index_canister != args.index_canister {
-                return Err(RouterError::ShardAlreadyRegistered);
-            }
             if existing.graph_id != graph_id {
                 return Err(RouterError::Conflict(format!(
                     "graph canister already registered to graph {:?}, not `{logical_graph}`",
@@ -1525,7 +1504,7 @@ impl RouterStore {
                     .complete_shard_index_reregistration(
                         graph_id,
                         existing.shard_id,
-                        args.index_canister,
+                        existing.index_canister,
                         args.graph_canister,
                     )
                     .await;
@@ -1556,17 +1535,15 @@ impl RouterStore {
                 allocated_shard_id, args.logical_graph_name, args.shard_id,
             )));
         }
-        validate_index_group_canister_assignment(
-            graph_id,
-            allocated_shard_id,
-            args.index_canister,
-        )?;
-
         let registered_at_ns = ic_time_ns();
         let entry = ShardRegistryEntry {
             shard_id: allocated_shard_id,
             graph_canister: args.graph_canister,
-            index_canister: args.index_canister,
+            // ADR 0054: shards bootstrap indexless. Registration records the anonymous
+            // sentinel; the attach flow (`admin_attach_index_shard` in dev mode,
+            // `ensure_index_canisters_provisioned` in provisioned mode) re-points it at a
+            // real canister. The stable entry layout (V2) is unchanged.
+            index_canister: Principal::anonymous(),
             graph_id,
             registered_at_ns,
             index_attached: false,
@@ -1575,33 +1552,15 @@ impl RouterStore {
             vector_canister: None,
             vector_index_attached: false,
         };
-
-        if args.index_canister != Principal::anonymous() {
-            commit_index_group_canister_assignment(
-                graph_id,
-                allocated_shard_id,
-                args.index_canister,
-            )?;
-        }
         if let Err(err) = Self::commit_register_shard(entry) {
             let _ = reconcile_index_cluster_after_shard_removal(graph_id);
             return Err(err);
         }
 
-        if args.index_canister != Principal::anonymous() {
-            self.complete_shard_index_attach(
-                graph_id,
-                allocated_shard_id,
-                args.index_canister,
-                args.graph_canister,
-            )
-            .await?;
-        } else {
-            // Indexless shard (ADR 0054): no index canister to attach, so mark the shard ready
-            // immediately. Dispatch fan-out and index reads treat a non-anonymous index target as
-            // absent, which matches an indexless first shard.
-            Self::commit_set_shard_index_attached(graph_id, allocated_shard_id, true)?;
-        }
+        // Indexless shard (ADR 0054): no index canister to attach at registration, so mark the
+        // shard ready immediately. Dispatch fan-out and index reads treat a non-anonymous index
+        // target as absent, which matches an indexless first shard.
+        Self::commit_set_shard_index_attached(graph_id, allocated_shard_id, true)?;
 
         #[cfg(target_family = "wasm")]
         crate::peer_sync::sync_peers_after_shard_register(

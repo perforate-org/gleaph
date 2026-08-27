@@ -237,7 +237,6 @@ fn jit_elevation_loop_end_to_end() {
             shards: vec![RegisterGraphShard {
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
                 graph_canister: Principal::management_canister(),
-                index_canister: env.index,
             }],
             requested_resources: Vec::new(),
         },
@@ -395,7 +394,6 @@ fn jit_elevation_loop_end_to_end() {
             shards: vec![RegisterGraphShard {
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
                 graph_canister: Principal::management_canister(),
-                index_canister: env.index,
             }],
             requested_resources: Vec::new(),
         },

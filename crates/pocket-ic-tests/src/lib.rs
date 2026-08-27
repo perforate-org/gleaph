@@ -10,9 +10,9 @@ use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::types::UpsertDeploymentGrantArgs;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
-    AdminAttachVectorIndexShardArgs, AtomicInsertRequest, AtomicInsertResponse, BulkLoadCommand,
-    BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs, RegisterGraphShard,
-    RegisterVectorIndexArgs,
+    AdminAttachIndexShardArgs, AdminAttachVectorIndexShardArgs, AtomicInsertRequest,
+    AtomicInsertResponse, BulkLoadCommand, BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs,
+    RegisterGraphShard, RegisterVectorIndexArgs,
 };
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use std::collections::BTreeSet;
@@ -713,7 +713,6 @@ pub fn finish_provision_wired_single_shard_federation(
             shards: vec![RegisterGraphShard {
                 shard_id: SOURCE_SHARD,
                 graph_canister: Principal::anonymous(),
-                index_canister: wired.index,
             }],
             requested_resources: vec![
                 gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
@@ -766,6 +765,38 @@ pub fn finish_provision_wired_single_shard_federation(
         index: wired.index,
         graph_source,
         graph_dest: Principal::anonymous(),
+    }
+}
+
+/// Wires the graph-index canister onto an already-registered shard through the Router's
+/// admin attach command (ADR 0054: registration carries no index target; dev-mode fixtures
+/// attach explicitly after `register_graph_intent`). Pairs with the index-side handshake in
+/// [`attach_index_shard_canister`].
+pub fn attach_index_canister_to_shard(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    graph_name: &str,
+    shard_id: ShardId,
+    index: Principal,
+) {
+    let args = AdminAttachIndexShardArgs {
+        logical_graph_name: graph_name.to_owned(),
+        shard_id,
+        index_canister: index,
+    };
+    let bytes = pic
+        .update_call(
+            router,
+            admin,
+            "admin_attach_index_shard",
+            Encode!(&args).expect("encode admin_attach_index_shard"),
+        )
+        .expect("admin_attach_index_shard");
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("admin_attach_index_shard rejected: {err:?}"),
+        Err(err) => panic!("decode admin_attach_index_shard: {err}"),
     }
 }
 
@@ -958,12 +989,12 @@ fn register_graph_single_shard_with_admins(
             shards: vec![RegisterGraphShard {
                 shard_id,
                 graph_canister: graph,
-                index_canister: index,
             }],
             requested_resources: Vec::new(),
         },
     );
     let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
+    attach_index_canister_to_shard(pic, admin, router, GRAPH_NAME, shard_id, index);
     attach_index_shard_canister(pic, graph_id, 1, 0, router, index, shard_id, graph);
 }
 
@@ -989,12 +1020,10 @@ pub fn register_graph_and_shards(
                 RegisterGraphShard {
                     shard_id: SOURCE_SHARD,
                     graph_canister: graph_source,
-                    index_canister: source_index,
                 },
                 RegisterGraphShard {
                     shard_id: DEST_SHARD,
                     graph_canister: graph_dest,
-                    index_canister: dest_index,
                 },
             ],
             requested_resources: Vec::new(),
@@ -1007,6 +1036,7 @@ pub fn register_graph_and_shards(
     ] {
         let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
         let group_index = shard.raw();
+        attach_index_canister_to_shard(pic, admin, router, GRAPH_NAME, shard, index);
         attach_index_shard_canister(pic, graph_id, 1, group_index, router, index, shard, graph);
     }
 }
@@ -1036,12 +1066,12 @@ pub fn register_two_graphs_and_shards(
                 shards: vec![RegisterGraphShard {
                     shard_id: SOURCE_SHARD,
                     graph_canister: graph,
-                    index_canister: index,
                 }],
                 requested_resources: Vec::new(),
             },
         );
         let graph_id = lookup_graph_id(pic, admin, router, name);
+        attach_index_canister_to_shard(pic, admin, router, name, SOURCE_SHARD, index);
         attach_index_shard_canister(pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
     }
 }
@@ -1096,13 +1126,13 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
                 shards: vec![RegisterGraphShard {
                     shard_id: SOURCE_SHARD,
                     graph_canister: graph,
-                    index_canister: index,
                 }],
                 requested_resources: Vec::new(),
             },
         );
 
         let graph_id = lookup_graph_id(&pic, admin, router, name);
+        attach_index_canister_to_shard(&pic, admin, router, name, SOURCE_SHARD, index);
         attach_index_shard_canister(&pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
     }
 

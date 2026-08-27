@@ -716,8 +716,11 @@ async fn create_index(
 /// In provisioned mode, ensure every live shard group of `graph_id` has an index canister
 /// assigned. Unassigned groups are provisioned through the shared admission flow and their
 /// canisters assigned to `index_cluster` + retrofit-attached to the group's shards. Dev mode (no
-/// `provision_canister`) is a no-op (indexless).
-async fn ensure_index_canisters_provisioned(graph_id: GraphId) -> Result<(), RouterError> {
+/// `provision_canister`) is a no-op (indexless). Also drives the migration lane's CREATE INDEX
+/// precondition (`apply_index_migration`), which captures per-shard index targets.
+pub(crate) async fn ensure_index_canisters_provisioned(
+    graph_id: GraphId,
+) -> Result<(), RouterError> {
     if crate::provisioning::config::get().is_none() {
         return Ok(());
     }
@@ -1948,7 +1951,6 @@ mod tests {
             crate::types::AdminRegisterShardArgs {
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(shard_id),
                 graph_canister: candid::Principal::from_slice(&[graph_byte; 29]),
-                index_canister: candid::Principal::anonymous(),
                 logical_graph_name: graph_name.into(),
             },
         ))

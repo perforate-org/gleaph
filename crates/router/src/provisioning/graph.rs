@@ -522,7 +522,6 @@ async fn reconcile_provisioned_graph(
                 types::AdminRegisterShardArgs {
                     shard_id,
                     graph_canister,
-                    index_canister: Principal::anonymous(),
                     logical_graph_name: graph_name.clone(),
                 },
             )
@@ -1804,7 +1803,6 @@ mod tests {
                     crate::types::AdminRegisterShardArgs {
                         shard_id: ShardId::new(0),
                         graph_canister: wrong_shard_canister,
-                        index_canister: Principal::anonymous(),
                         logical_graph_name: wrong_shard_args.graph_name.clone(),
                     },
                 )

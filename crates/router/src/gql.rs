@@ -6566,11 +6566,19 @@ mod tests {
                 AdminRegisterShardArgs {
                     shard_id: *shard_id,
                     graph_canister: graph_principal(*graph_byte),
-                    index_canister: graph_principal(2),
                     logical_graph_name: "tenant.main".into(),
                 },
             ))
             .expect("register shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id: *shard_id,
+                    index_canister: graph_principal(2),
+                },
+            ))
+            .expect("attach index");
         }
         store
     }

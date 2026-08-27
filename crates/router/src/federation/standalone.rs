@@ -79,7 +79,8 @@ mod tests {
     use crate::federation::ShardingPolicy;
     use crate::init::RouterInitArgs;
     use crate::types::{
-        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+        AdminAttachIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
+        ProvisioningState,
     };
     use gleaph_graph_kernel::entry::GraphId;
     use std::collections::BTreeSet;
@@ -121,11 +122,19 @@ mod tests {
         let entry = AdminRegisterShardArgs {
             shard_id: ShardId::new(0),
             graph_canister: graph_principal(1),
-            index_canister: graph_principal(2),
             logical_graph_name: "tenant.main".into(),
         };
         futures::executor::block_on(store.admin_register_shard(admin, entry.clone()))
             .expect("register shard");
+        futures::executor::block_on(store.admin_attach_index_shard(
+            admin,
+            AdminAttachIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                index_canister: graph_principal(2),
+            },
+        ))
+        .expect("attach index");
         let shards = store
             .list_shards_for_graph("tenant.main")
             .expect("list shards");
@@ -150,11 +159,19 @@ mod tests {
                 AdminRegisterShardArgs {
                     shard_id,
                     graph_canister: graph_principal(graph_byte),
-                    index_canister: graph_principal(2),
                     logical_graph_name: "tenant.main".into(),
                 },
             ))
             .expect("register shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id,
+                    index_canister: graph_principal(2),
+                },
+            ))
+            .expect("attach index");
         }
         let shards = store
             .list_shards_for_graph("tenant.main")
@@ -327,11 +344,19 @@ mod tests {
                 AdminRegisterShardArgs {
                     shard_id,
                     graph_canister: graph_principal(graph_byte),
-                    index_canister: graph_principal(2),
                     logical_graph_name: "tenant.main".into(),
                 },
             ))
             .expect("register shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id,
+                    index_canister: graph_principal(2),
+                },
+            ))
+            .expect("attach index");
         }
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")

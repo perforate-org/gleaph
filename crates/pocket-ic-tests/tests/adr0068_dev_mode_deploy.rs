@@ -82,7 +82,8 @@ fn dev_mode_deploy_installs_platform_and_registers_router() {
         None,
     );
 
-    // 5. Register the graph + shard through Router `register_graph` (dev mode).
+    // 5. Register the graph + shard through Router `register_graph` (dev mode, indexless), then
+    // wire the index canister through the admin attach command (ADR 0054).
     let bytes = pic
         .update_call(
             router,
@@ -96,7 +97,6 @@ fn dev_mode_deploy_installs_platform_and_registers_router() {
                 shards: vec![RegisterGraphShard {
                     shard_id: ShardId::new(0),
                     graph_canister: graph,
-                    index_canister: index,
                 }],
                 requested_resources: Vec::new(),
             })
@@ -108,6 +108,14 @@ fn dev_mode_deploy_installs_platform_and_registers_router() {
     assert!(
         result.is_ok(),
         "dev-mode register_graph must succeed: {result:?}"
+    );
+    gleaph_pocket_ic_tests::attach_index_canister_to_shard(
+        &pic,
+        user,
+        router,
+        "social",
+        ShardId::new(0),
+        index,
     );
 
     // 6. Register the Router under the caller's account.
