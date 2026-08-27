@@ -4,6 +4,14 @@
 //! network is used). Without one, Gleaph downloads and runs the `icp-cli-network-launcher`
 //! (a PocketIC-based local subnet) as a child process. The platform canisters (Account,
 //! Provision) are then deployed by calling the management canister directly via `ic-agent`.
+//!
+//! With `--platform-wasm-dir`, bring-up additionally seeds the Provision artifact catalog
+//! through the shared ingestion library ([`gleaph_ingress_client`] + [`gleaph_artifact_api`],
+//! the ADR 0087 decision that pure-CLI bring-up seeds the local catalog): the five platform
+//! kinds are ingested idempotently from their conventional file names, then release
+//! `"default"` is published and activated so lazy Router issuance (ADR 0068) can install the
+//! Router from the catalog. The operator tool remains the mainnet/operations entry point for
+//! the same surfaces.
 
 use crate::config::{self, LoadedConfig};
 use crate::remote::RemoteTransport;
@@ -492,6 +500,223 @@ enum UpsertDeploymentGrantErrorMirror {
     Unauthorized,
 }
 
+// === Provision catalog seeding (ADR 0087) ====================================
+
+/// The release identifier pure-CLI bring-up seeds. Must stay in lockstep with the Account
+/// canister's first-Router issuance, which requests `release_id = "default"` (hardcoded in
+/// `send_issuance_request`, `crates/account/src/canister.rs`).
+const SEED_RELEASE_ID: &str = "default";
+
+/// Conventional platform wasm file names per catalog kind inside `--platform-wasm-dir`.
+/// The graph-index crate produces the PropertyIndex-kind artifact (`gleaph_graph_index.wasm`).
+const PLATFORM_WASM_FILES: &[(gleaph_artifact_api::types::CanisterKind, &str)] = &[
+    (gleaph_artifact_api::types::CanisterKind::Router, "gleaph_router.wasm"),
+    (gleaph_artifact_api::types::CanisterKind::Graph, "gleaph_graph.wasm"),
+    (
+        gleaph_artifact_api::types::CanisterKind::PropertyIndex,
+        "gleaph_graph_index.wasm",
+    ),
+    (
+        gleaph_artifact_api::types::CanisterKind::VectorCanister,
+        "gleaph_vector_canister.wasm",
+    ),
+    (
+        gleaph_artifact_api::types::CanisterKind::TextCanister,
+        "text_canister.wasm",
+    ),
+];
+
+/// How many times a still-verifying artifact is polled before the seed gives up (the caller
+/// can re-run `network start`; ingestion resumes). Server-side verification normally
+/// completes inside the final chunk upload; the loop only covers the resumed edge.
+const SEED_VERIFICATION_POLLS: u32 = 10;
+/// Delay between verification polls.
+const SEED_VERIFICATION_POLL_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Outcome of [`seed_catalog`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum SeedOutcome {
+    /// The five kinds were ingested and release "default" published + activated.
+    Seeded,
+    /// An active release already existed; the seed was skipped (idempotent no-op).
+    AlreadyActive,
+}
+
+/// Seed the Provision artifact catalog from a directory of platform wasms, then publish and
+/// activate the [`SEED_RELEASE_ID`] release (ADR 0087: pure-CLI bring-up seeds the local
+/// catalog through the shared ingestion library).
+///
+/// Idempotent: an existing active release short-circuits the whole seed, artifact ingestion
+/// resumes from server-reported state, and an already-published `"default"` manifest (publish
+/// succeeded, activation did not run yet) proceeds straight to activation.
+///
+/// `identity_pem` is the session identity that deployed the platform; it is Provision's
+/// governance authority, so it is the caller authorized to publish and activate releases.
+pub fn seed_catalog(
+    network: &str,
+    mapping: &BTreeMap<String, String>,
+    identity_pem: Option<&Path>,
+    platform_wasm_dir: &Path,
+) -> Result<SeedOutcome, String> {
+    let provision_text = mapping.get("provision").ok_or_else(|| {
+        "no provision canister in the platform mapping; the platform must be deployed first"
+            .to_owned()
+    })?;
+    let provision = candid::Principal::from_text(provision_text)
+        .map_err(|e| format!("invalid provision canister id {provision_text:?}: {e}"))?;
+
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("create async runtime: {e}"))?;
+    runtime.block_on(async {
+        let ingress = gleaph_ingress_client::IcIngress::connect(network, identity_pem)
+            .await
+            .map_err(|e| format!("connect to {network}: {e}"))?;
+        let mut client = gleaph_ingress_client::ProvisionClient::new(&ingress, provision);
+
+        // Typed preflight + idempotence gate: an active release means the catalog seed of a
+        // previous run (or an operator) already completed.
+        if let Some(active) = client
+            .release_get_active()
+            .await
+            .map_err(|e| format!("release_get_active: {e}"))?
+        {
+            println!(
+                "active release {:?} already present; skipping catalog seed",
+                active.release_id.0
+            );
+            return Ok(SeedOutcome::AlreadyActive);
+        }
+
+        // Ingest the five kinds through the shared idempotent driver (resume on re-run).
+        let mut artifact_ids = Vec::with_capacity(PLATFORM_WASM_FILES.len());
+        for (kind, file) in PLATFORM_WASM_FILES {
+            let path = platform_wasm_dir.join(file);
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("read wasm {}: {e}", path.display()))?;
+            let plan = gleaph_artifact_api::plan_artifact(&bytes, *kind, env!("CARGO_PKG_VERSION"))
+                .map_err(|e| format!("plan {} artifact: {e:?}", kind_name(*kind)))?;
+            if plan.chunk_count() > 1 {
+                let total = plan.chunk_count();
+                client.set_on_chunk_uploaded(std::sync::Arc::new(move |chunk_index| {
+                    println!("  chunk {}/{} uploaded", chunk_index + 1, total);
+                }));
+            }
+            match gleaph_artifact_api::ingest_artifact(&plan, &client)
+                .await
+                .map_err(|e| format!("ingest {} artifact: {e:?}", kind_name(*kind)))?
+            {
+                gleaph_artifact_api::IngestOutcome::Verified { .. } => {}
+                gleaph_artifact_api::IngestOutcome::AwaitingVerification { artifact_id } => {
+                    poll_seed_verification(&client, &artifact_id).await?;
+                }
+            }
+            println!(
+                "ingested {} {} sha256:{} ({} chunks)",
+                kind_name(*kind),
+                plan.artifact_id.semantic_version,
+                to_hex(&plan.artifact_id.sha256),
+                plan.chunk_count(),
+            );
+            artifact_ids.push(plan.artifact_id);
+        }
+
+        // Publish the "default" release manifest; an equal-identity conflict means a previous
+        // run published it but did not activate — proceed to activation.
+        let publish_args = gleaph_artifact_api::types::ReleasePublishArgs {
+            release_id: gleaph_artifact_api::types::ReleaseId(SEED_RELEASE_ID.to_owned()),
+            artifact_ids: artifact_ids.clone(),
+        };
+        match client.release_publish(publish_args).await {
+            Ok(Ok(manifest)) => {
+                println!(
+                    "published release {:?} with {} artifacts",
+                    manifest.release_id.0,
+                    artifact_ids.len(),
+                );
+            }
+            Ok(Err(gleaph_artifact_api::types::ReleaseError::ConflictingRelease {
+                existing,
+                requested,
+            }))
+                if existing == requested
+                    && requested
+                        == gleaph_artifact_api::types::ReleaseId(SEED_RELEASE_ID.to_owned()) => {}
+            Ok(Err(e)) => return Err(format!("release_publish: {e:?}")),
+            Err(e) => return Err(format!("release_publish: {e}")),
+        }
+
+        let activated = client
+            .release_activate(gleaph_artifact_api::types::ReleaseActivateArgs {
+                release_id: gleaph_artifact_api::types::ReleaseId(SEED_RELEASE_ID.to_owned()),
+            })
+            .await
+            .map_err(|e| format!("release_activate: {e}"))?
+            .map_err(|e| format!("release_activate: {e:?}"))?;
+        println!(
+            "activated release {:?} (previous active: {})",
+            activated.release_id.0,
+            activated
+                .previous_release_id
+                .as_ref()
+                .map_or("none".to_owned(), |id| format!("{:?}", id.0)),
+        );
+        Ok(SeedOutcome::Seeded)
+    })
+}
+
+/// Poll a fully-chunked-but-unverified seed artifact until the server reports a terminal
+/// state (same policy as the operator's `artifact ingest`).
+async fn poll_seed_verification(
+    client: &gleaph_ingress_client::ProvisionClient<'_>,
+    artifact_id: &gleaph_artifact_api::types::ArtifactId,
+) -> Result<(), String> {
+    for _ in 0..SEED_VERIFICATION_POLLS {
+        tokio::time::sleep(SEED_VERIFICATION_POLL_DELAY).await;
+        let status = client
+            .artifact_status(artifact_id.clone())
+            .await
+            .map_err(|e| format!("artifact_get_status: {e}"))?;
+        match status {
+            // Verified uploads reclaim their row: `None` means done.
+            None => return Ok(()),
+            Some(upload) => match upload.state {
+                gleaph_artifact_api::types::ArtifactUploadState::Verified { .. } => return Ok(()),
+                gleaph_artifact_api::types::ArtifactUploadState::Failed { reason } => {
+                    return Err(format!("artifact verification failed: {reason}"));
+                }
+                gleaph_artifact_api::types::ArtifactUploadState::Receiving
+                | gleaph_artifact_api::types::ArtifactUploadState::Verifying => continue,
+            },
+        }
+    }
+    Err(
+        "artifact verification is still running server-side; re-run `gleaph network start` \
+         to resume the idempotent seed"
+            .to_owned(),
+    )
+}
+
+/// Lowercase-hex of `bytes` (seed output only; the catalog identity is the canonical form).
+fn to_hex(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
+}
+
+/// Human name of a catalog kind, matching the did variant names (operator `encoding.rs`).
+fn kind_name(kind: gleaph_artifact_api::types::CanisterKind) -> &'static str {
+    use gleaph_artifact_api::types::CanisterKind;
+    match kind {
+        CanisterKind::Router => "Router",
+        CanisterKind::Graph => "Graph",
+        CanisterKind::PropertyIndex => "PropertyIndex",
+        CanisterKind::VectorCanister => "VectorCanister",
+        CanisterKind::TextCanister => "TextCanister",
+    }
+}
+
 /// Seed the given issuer as an authorized deployment-grant holder on the Provision canister.
 /// Called as the CLI governance identity immediately after Provision deploy; the Account
 /// canister must be an authorized issuer for the user's first Router issuance to succeed.
@@ -705,5 +930,51 @@ mod tests {
             other: candid::Principal,
         }
         let _ = Decode!(&encoded, WrongFieldMirror).expect_err("field mismatch must fail");
+    }
+
+    #[test]
+    fn platform_wasm_files_cover_every_release_kind_exactly_once() {
+        // The seeded release manifest must cover every non-Provision kind exactly once (the
+        // server rejects incomplete/duplicate manifests), and the file names must match the
+        // cargo wasm output names so `--platform-wasm-dir target/.../release` works unmodified.
+        use gleaph_artifact_api::types::CanisterKind;
+        use std::collections::BTreeSet;
+        let kinds: BTreeSet<CanisterKind> = PLATFORM_WASM_FILES.iter().map(|(k, _)| *k).collect();
+        let expected: BTreeSet<CanisterKind> = [
+            CanisterKind::Router,
+            CanisterKind::Graph,
+            CanisterKind::PropertyIndex,
+            CanisterKind::VectorCanister,
+            CanisterKind::TextCanister,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(kinds, expected, "seed kinds must cover every release kind");
+        let files: BTreeSet<&str> = PLATFORM_WASM_FILES.iter().map(|(_, f)| *f).collect();
+        assert_eq!(
+            files,
+            BTreeSet::from([
+                "gleaph_router.wasm",
+                "gleaph_graph.wasm",
+                "gleaph_graph_index.wasm",
+                "gleaph_vector_canister.wasm",
+                "text_canister.wasm",
+            ]),
+            "seed file names must match the conventional wasm output names"
+        );
+    }
+
+    #[test]
+    fn seed_release_id_matches_account_issuance_request() {
+        // The Account canister's `send_issuance_request` requests `release_id = "default"`
+        // (`crates/account/src/canister.rs`); a different seed id would strand first-Router
+        // issuance on a catalog the release never activated.
+        assert_eq!(SEED_RELEASE_ID, "default");
+    }
+
+    #[test]
+    fn to_hex_renders_lowercase_sha256() {
+        assert_eq!(to_hex(&[0x00, 0xab, 0xff]), "00abff");
+        assert_eq!(to_hex(&[]), "");
     }
 }

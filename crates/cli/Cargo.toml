@@ -18,6 +18,7 @@ base64.workspace = true
 candid.workspace = true
 clap.workspace = true
 gleaph-account.workspace = true
+gleaph-artifact-api.workspace = true
 gleaph-bulk-load-api.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true, features = ["gleaph", "serde"] }
@@ -30,6 +31,7 @@ gleaph-gql-ic-wire = { workspace = true, features = ["f256", "nightly-f128"] }
 gleaph-gql-params.workspace = true
 gleaph-router-wire.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-ingress-client.workspace = true
 gleaph-index-ddl.workspace = true
 gleaph-message-sizing.workspace = true
 gleaph-migration-api.workspace = true

@@ -108,6 +108,14 @@ struct NetworkStartArgs {
     /// Path to the Provision canister wasm.
     #[arg(long, value_name = "PATH")]
     provision_wasm: PathBuf,
+    /// Directory holding the platform wasm artifacts under their conventional names
+    /// (gleaph_router.wasm, gleaph_graph.wasm, gleaph_graph_index.wasm,
+    /// gleaph_vector_canister.wasm, text_canister.wasm). When given, `network start` seeds
+    /// the Provision artifact catalog and activates release "default" (ADR 0087), so lazy
+    /// Router issuance (ADR 0068) installs the Router from the catalog. Without it the
+    /// catalog seed is skipped and Router issuance fails until a release is activated.
+    #[arg(long, value_name = "DIR")]
+    platform_wasm_dir: Option<PathBuf>,
     /// Start the network in the background; the command exits once it is running.
     #[arg(short = 'd', long)]
     background: bool,
@@ -401,12 +409,16 @@ fn dispatch(
         TopLevelCommand::Login(args) => execute_login(args, loaded),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
         TopLevelCommand::Identity(command) => execute_identity(command),
-        TopLevelCommand::Network(command) => execute_network(command, loaded),
+        TopLevelCommand::Network(command) => execute_network(command, env, loaded),
     }
 }
 
 /// `gleaph network`: start the local network and deploy the platform canisters.
-fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Result<(), CliError> {
+fn execute_network(
+    command: NetworkCommand,
+    env: &ConfigEnv,
+    loaded: Option<&LoadedConfig>,
+) -> Result<(), CliError> {
     match command {
         NetworkCommand::Start(args) => {
             let loaded = loaded.ok_or_else(|| {
@@ -444,6 +456,24 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
             }
             println!("platform mapping: {:?}", result.mapping);
 
+            // A fresh start created brand-new canisters: any cached Router id points into a
+            // dead network incarnation, so invalidate it before the next data-plane command
+            // re-resolves the Router from the fresh Account canister (ADR 0068).
+            let environment = config::effective_environment(env, &args.network);
+            let cache_path = config::router_cache_path(loaded, &environment);
+            if cache_path.exists() {
+                std::fs::remove_file(&cache_path).map_err(|e| {
+                    CliError::Message(format!(
+                        "remove stale router cache {}: {e}",
+                        cache_path.display()
+                    ))
+                })?;
+                println!(
+                    "invalidated cached Router id ({})",
+                    cache_path.display()
+                );
+            }
+
             // Auto-register the caller's Personal account unless --no-auto-register. A fresh
             // developer can then run data-plane/DDL commands without a separate `signup`.
             if !args.no_auto_register
@@ -458,6 +488,29 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                         return Err(CliError::Message(format!("auto-register account: {e}")));
                     }
                 }
+            }
+
+            // Seed the Provision artifact catalog (ADR 0087 pure-CLI bring-up): ingest the
+            // five platform kinds idempotently through the shared ingestion library, then
+            // publish + activate release "default" so lazy Router issuance (ADR 0068) can
+            // install the Router from the catalog. The operator tool remains the operations
+            // entry point for the same surfaces. Without a wasm dir, skip with a warning.
+            if let Some(dir) = &args.platform_wasm_dir {
+                network::seed_catalog(&args.network, &result.mapping, identity.as_deref(), dir)
+                    .map_err(CliError::Message)?;
+                println!("next: gleaph migration apply");
+                println!(
+                    "next: gleaph load seeds/vertices.jsonl seeds/edges.jsonl --graph knowledge"
+                );
+                println!(
+                    "next: gleaph embed ingest --vertices seeds/vertices.jsonl \
+                     --embeddings seeds/embeddings.jsonl --graph knowledge"
+                );
+            } else {
+                eprintln!(
+                    "warning: no --platform-wasm-dir; skipping Provision catalog seed \
+                     (Router issuance requires an active release)"
+                );
             }
 
             // For a Gleaph-owned network, keep the launcher child alive so the network persists.
