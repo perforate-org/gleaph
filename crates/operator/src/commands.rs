@@ -171,7 +171,7 @@ async fn run_ingest(
     let mut client = ProvisionClient::new(&ingress, connection.provision());
     // Typed preflight: surfaces endpoint/identity/authorization problems through the normal
     // error channel before the driver takes over.
-    let _preflight = client.artifact_status(plan.artifact_id.clone()).await??;
+    let _preflight = client.artifact_status(plan.artifact_id.clone()).await?;
 
     if plan.chunk_count() > 1 {
         let total = plan.chunk_count();
@@ -198,7 +198,7 @@ async fn poll_verification(
 ) -> Result<(), OperatorError> {
     for _ in 0..VERIFICATION_POLLS {
         tokio::time::sleep(VERIFICATION_POLL_DELAY).await;
-        let status = client.artifact_status(artifact_id.clone()).await??;
+        let status = client.artifact_status(artifact_id.clone()).await?;
         match status {
             // Verified uploads reclaim their row: `None` means done.
             None => {
@@ -244,7 +244,7 @@ async fn run_status(
     let artifact_id = parse_identity_triple(&args.kind, &args.version, &args.sha256)?;
     let ingress = connection.connect_ingress().await?;
     let client = ProvisionClient::new(&ingress, connection.provision());
-    let status = client.artifact_status(artifact_id.clone()).await??;
+    let status = client.artifact_status(artifact_id.clone()).await?;
     match status {
         None => println!(
             "no upload row for {} — either never published, or already verified (rows are \

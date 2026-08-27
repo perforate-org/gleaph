@@ -664,11 +664,20 @@ fn execute_signup(
     .map_err(CliError::Message)?;
     let account_principal = candid::Principal::from_text(account_canister)
         .map_err(|e| CliError::Message(format!("invalid account canister id: {e}")))?;
-    let result: Result<candid::Principal, String> = transport
-        .update_on(&account_principal, "create_account", &(args.name))
-        .map_err(|e| CliError::Message(format!("create_account: {e}")))?;
-    result.map_err(|e| CliError::Message(format!("create_account: {e}")))?;
-    println!("registered account for {principal}");
+    // `create_account` returns Result<Account, AccountError>; a Personal account for an
+    // existing principal fails with AlreadyExists, which is an idempotent no-op here
+    // (matching `network start` auto-registration).
+    let result: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        transport
+            .update_on(&account_principal, "create_account", &(args.name))
+            .map_err(|e| CliError::Message(format!("create_account: {e}")))?;
+    match result {
+        Ok(_) => println!("registered account for {principal}"),
+        Err(gleaph_account::types::AccountError::AlreadyExists) => {
+            println!("account already registered for {principal}")
+        }
+        Err(e) => return Err(CliError::Message(format!("create_account: {e:?}"))),
+    }
     Ok(())
 }
 
@@ -781,7 +790,31 @@ fn issue_router_lazy(
     router_name: &str,
     provision_canister: &str,
 ) -> Result<candid::Principal, CliError> {
-    // `authorize_router_issuance` takes (account_id, router_id, provision_canister).
+    // `authorize_router_issuance` takes (account_id: principal, router_id: text,
+    // provision_canister: principal) as separate Candid arguments.
+    // The account RECORD id (the caller's Personal account), not the Account canister id:
+    // `authorize_router_issuance` looks the account up by id. Resolve it from the caller's
+    // registered accounts (`resolve_my_accounts` returns `vec principal`).
+    let accounts: Vec<candid::Principal> = transport
+        .query_plain(
+            account_principal,
+            "resolve_my_accounts",
+            &(),
+        )
+        .map_err(|e| CliError::Message(format!("resolve_my_accounts: {e}")))?;
+    let account_id = match accounts.as_slice() {
+        [single] => *single,
+        [] => {
+            return Err(CliError::Message(
+                "no account registered for this identity; run `gleaph signup` first".into(),
+            ))
+        }
+        _ => {
+            return Err(CliError::Message(
+                "multiple accounts registered; account disambiguation is a later slice".into(),
+            ))
+        }
+    };
     let result: Result<
         gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse,
         gleaph_account::types::AccountError,
@@ -790,7 +823,7 @@ fn issue_router_lazy(
             account_principal,
             "authorize_router_issuance",
             (
-                &account_principal.to_text(),
+                &account_id,
                 &router_name.to_owned(),
                 &candid::Principal::from_text(provision_canister)
                     .map_err(|e| CliError::Message(format!("invalid provision canister: {e}")))?,
@@ -828,10 +861,10 @@ fn issue_router_lazy(
         router_canister,
     };
     let reg: Result<(), gleaph_account::types::AccountError> = transport
-        .update_on(
+        .update_args_on(
             account_principal,
             "register_router",
-            &(account_principal.to_text(), entry),
+            (&account_id, &entry),
         )
         .map_err(|e| CliError::Message(format!("register_router: {e}")))?;
     reg.map_err(|e| CliError::Message(format!("register_router: {e:?}")))?;

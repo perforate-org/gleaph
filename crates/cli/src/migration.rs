@@ -914,32 +914,21 @@ pub fn apply<T: MigrationTransport>(
 ) -> Result<Vec<SchemaMigrationApplyStatus>, MigrationError> {
     let local = discover(root)?;
     let current = status_for_plan(&local, transport)?;
-    // The indexed properties across all pending CREATE INDEX migrations are interned once per
-    // graph in a single batch call before any migration is applied (Router rejects missing
-    // properties in Preparing, ADR 0059). This is one update per graph instead of one per
-    // (graph, property) — the demo's index migrations share `demo_id`. A missing property is
-    // an admin-only interning call.
-    let mut ensured_properties: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut seen_properties = BTreeSet::new();
-    for artifact in local.migrations.iter().skip(current.applied_count) {
-        for property in artifact.index_properties()? {
-            if let SchemaMigrationGraphSelector::Named(graph) = &artifact.graph_selector
-                && seen_properties.insert((graph.clone(), property.clone()))
-            {
-                ensured_properties
-                    .entry(graph.clone())
-                    .or_default()
-                    .push(property);
-            }
-        }
-    }
-    for (graph, properties) in &ensured_properties {
-        transport
-            .ensure_properties(graph, properties)
-            .map_err(MigrationError::Remote)?;
-    }
+    // Indexed properties for a CREATE INDEX migration are interned just before that migration is
+    // applied (Router rejects missing properties in Preparing, ADR 0059) — not up front: an
+    // earlier migration in the same apply run may create the target graph (the demo's 000001
+    // CREATE GRAPH precedes 000002's CREATE INDEX), so interning before any apply would fail
+    // with NotFound(graph).
     let mut outcomes = Vec::new();
     for artifact in local.migrations.iter().skip(current.applied_count) {
+        if let SchemaMigrationGraphSelector::Named(graph) = &artifact.graph_selector {
+            let properties = artifact.index_properties()?;
+            if !properties.is_empty() {
+                transport
+                    .ensure_properties(graph, &properties)
+                    .map_err(MigrationError::Remote)?;
+            }
+        }
         let exact_args = artifact.apply_args();
         let mut rounds = 0usize;
         let mut active_index = 0u32;
@@ -2471,11 +2460,13 @@ mod tests {
         let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("pending migrations apply");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 3]);
-        // The property is interned once per graph in a single batch call, before the first
-        // migration.
+        // Each index migration interns its own property just before its apply round.
         assert_eq!(
             transport.ensured_properties,
-            vec![("social".to_owned(), vec!["age".to_owned()])]
+            vec![
+                ("social".to_owned(), vec!["age".to_owned()]),
+                ("social".to_owned(), vec!["age".to_owned()])
+            ]
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -2547,13 +2538,13 @@ mod tests {
         let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("pending migrations apply");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 3]);
-        // Distinct properties are interned in one batch call per graph, in first-seen order.
+        // Distinct properties are interned per index migration, in chain order.
         assert_eq!(
             transport.ensured_properties,
-            vec![(
-                "social".to_owned(),
-                vec!["age".to_owned(), "demo_id".to_owned()]
-            )]
+            vec![
+                ("social".to_owned(), vec!["age".to_owned()]),
+                ("social".to_owned(), vec!["demo_id".to_owned()])
+            ]
         );
         fs::remove_dir_all(root).expect("cleanup");
     }

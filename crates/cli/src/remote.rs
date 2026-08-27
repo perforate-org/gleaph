@@ -22,15 +22,19 @@ pub fn resolve_router_id(
     account_canister: &candid::Principal,
     router_id: &str,
 ) -> Result<Option<candid::Principal>, String> {
-    let accounts: Vec<String> = transport
+    // `resolve_my_accounts` returns `vec principal` (account ids), not text.
+    let accounts: Vec<candid::Principal> = transport
         .query_plain(account_canister, "resolve_my_accounts", &())
         .map_err(|e| format!("resolve_my_accounts: {e}"))?;
-    let account_id = select_account(&accounts)?;
+    let account_id = select_account(&accounts.iter().map(|p| p.to_text()).collect::<Vec<_>>())?;
+    // `resolve_router` takes (principal, text): pass the account id as a principal.
+    let account = candid::Principal::from_text(&account_id)
+        .map_err(|e| format!("invalid account id {account_id}: {e}"))?;
     let result: Result<candid::Principal, gleaph_account::types::AccountError> = transport
-        .query_on(
+        .query_args_on(
             account_canister,
             "resolve_router",
-            &(account_id, router_id.to_owned()),
+            (&account, &router_id.to_owned()),
         )
         .map_err(|e| format!("resolve_router: {e}"))?;
     match result {
@@ -239,6 +243,24 @@ impl RemoteTransport {
         let encoded =
             candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
         self.query_raw_on(&self.canister, method, encoded)
+    }
+
+    /// Query one method on an arbitrary canister with multiple separate Candid arguments,
+    /// decoding the candid `Result<T, E>` envelope. Mirrors [`Self::update_args_on`]: a tuple
+    /// would encode as one record, but multi-argument canister methods need separate values.
+    pub fn query_args_on<T, E>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        args: impl candid::utils::ArgumentEncoder,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let encoded =
+            candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.query_raw_on(canister, method, encoded)
     }
 
     fn query_raw_on<T, E>(

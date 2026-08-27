@@ -298,6 +298,7 @@ fn spawn_launcher(
                     // Record the PID so `gleaph network stop` can terminate it.
                     let _ = std::fs::write(pid_file(network), child.id().to_string());
                 }
+                wait_for_gateway(status.gateway_port)?;
                 return Ok((child, status.gateway_port));
             }
         }
@@ -314,6 +315,29 @@ fn spawn_launcher(
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     Err("launcher did not become ready within 30s".into())
+}
+
+/// Poll the gateway's HTTP status endpoint until it accepts connections. The launcher writes its
+/// status file just before the PocketIC gateway binds, so a caller that connects immediately can
+/// race it and fail the root-key fetch; probing the real endpoint removes the window.
+fn wait_for_gateway(port: u16) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{port}/api/v2/status");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut last_error = String::from("gateway not polled");
+    while std::time::Instant::now() < deadline {
+        match reqwest::blocking::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => last_error = e.to_string(),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Err(format!(
+        "launcher gateway did not accept connections within 30s ({url}): {last_error}"
+    ))
 }
 
 /// The PID file for a background network, under the user config dir.

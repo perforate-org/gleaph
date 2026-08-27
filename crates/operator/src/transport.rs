@@ -435,12 +435,15 @@ impl<'a> ProvisionClient<'a> {
 
     /// Typed `artifact_get_status` (query). Distinct from the trait method so transport
     /// failures keep their own error channel outside driver runs.
+    ///
+    /// The did declares `(ArtifactId) -> (opt ArtifactUpload)` — a plain option, not a
+    /// `Result` envelope — so the only failure mode is transport.
     pub async fn artifact_status(
         &self,
         artifact_id: ArtifactId,
-    ) -> Result<Result<Option<ArtifactUpload>, ArtifactError>, IngressError> {
+    ) -> Result<Option<ArtifactUpload>, IngressError> {
         self.ingress
-            .query_result(self.provision, "artifact_get_status", &artifact_id)
+            .query_value(self.provision, "artifact_get_status", &artifact_id)
             .await
     }
 
@@ -555,12 +558,16 @@ impl ArtifactTransport for ProvisionClient<'_> {
     ) -> impl Future<Output = Result<Option<ArtifactUpload>, ArtifactError>> + Send {
         async move {
             // The did declares `(ArtifactId) -> (opt ArtifactUpload)`: the wire carries a
-            // plain option, so the only failure mode here is transport, which terminates the
-            // run per the module-level policy.
-            self.ingress
+            // plain option — there is no server error channel on this method. Decode the
+            // option explicitly (a Result target here would decode-fail against the plain
+            // opt) and lift into the trait's error channel; any transport failure
+            // terminates the run per the module-level policy.
+            let status: Option<ArtifactUpload> = self
+                .ingress
                 .query_value(self.provision, "artifact_get_status", &artifact_id)
                 .await
-                .unwrap_or_else(|error| self.fail_transport("artifact_get_status", error))
+                .unwrap_or_else(|error| self.fail_transport("artifact_get_status", error));
+            Ok(status)
         }
     }
 
