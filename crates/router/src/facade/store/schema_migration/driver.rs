@@ -18,8 +18,8 @@ use gleaph_graph_kernel::canonical_export::{
 };
 use gleaph_graph_kernel::index::{
     IndexBuildCleanupStatus, IndexBuildControlRequest, IndexBuildError, IndexBuildSealRequest,
-    IndexBuildSealStatus, IndexBuildSealTarget, IndexBuildStatus, IndexBuildTarget,
-    MAX_INDEX_BUILD_ADVANCE_PAGES, PhysicalIndexId, RegisterIndexBuildRequest,
+    IndexBuildSealStatus, IndexBuildSealTarget, IndexBuildStatus, IndexBuildStoreError,
+    IndexBuildTarget, MAX_INDEX_BUILD_ADVANCE_PAGES, PhysicalIndexId, RegisterIndexBuildRequest,
 };
 use gleaph_migration_api::MigrationFailureCode;
 
@@ -356,8 +356,16 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                 IndexMigrationStepResult::CleanupProgress { done: false },
             ));
         }
-        // 2. graph-index bounded cleanup (idempotent, resumable).
-        let cleanup = self
+        // 2. graph-index bounded cleanup (idempotent, resumable). A target that never
+        //    registered the build — the registration was rejected before any build state
+        //    existed (e.g. TargetRejected at Register) — has nothing to purge, so the typed
+        //    `UnknownIndexBuild` answer counts as already-cleaned. Treating it as terminal
+        //    here would leave the lifecycle targets stuck in `Cleaning` forever: the abort
+        //    could never converge and the migration could never reach its honest terminal
+        //    `Failed` state (every re-run would report unchanged 'aborting' progress until
+        //    the caller's bounded-round guard fired). Same contract as the missing Graph
+        //    scope tolerance below: unknown on the cleanup path means already clean.
+        let cleanup = match self
             .index_build
             .abort_index_build(
                 request.index_canister,
@@ -366,7 +374,13 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                 },
             )
             .await
-            .map_err(classify_index_build_call)?;
+        {
+            Ok(cleanup) => cleanup,
+            Err(IndexBuildCallError::Typed(IndexBuildError::Store(
+                IndexBuildStoreError::UnknownBuild,
+            ))) => IndexBuildCleanupStatus { done: true },
+            Err(error) => return Err(classify_index_build_call(error)),
+        };
         // 3. Abort every Graph scope under the frozen registration identity. A deterministic
         //    abort rejection is terminal; a missing scope is already cleaned.
         for scope in &request.export_scopes {
@@ -2775,6 +2789,70 @@ mod tests {
                 .iter()
                 .take(abort_position)
                 .any(|event| { *event == TimelineEvent::GraphDrain(1) })
+        );
+    }
+
+    #[test]
+    fn driver_cleanup_treats_a_never_registered_index_build_as_already_cleaned() {
+        // A register-time rejection (e.g. TargetRejected at Register) enters Aborting with NO
+        // build state on the graph-index target: its `abort_index_build` answers the typed
+        // `UnknownIndexBuild`. The cleanup must count that as already-cleaned and converge —
+        // treating it as terminal would leave the lifecycle targets in `Cleaning` forever, so
+        // the migration could never reach its honest terminal `Failed` state and every re-run
+        // would report unchanged 'aborting' progress until the caller's round guard fired.
+        let (index_fake, graph_fake, timeline, _) = new_harness();
+        graph_fake.seed_shard(graph_0(), 0);
+        graph_fake.seed_shard(graph_1(), 1);
+        let driver = RealIndexMigrationDriver::new(
+            index_fake.clone(),
+            graph_fake.clone(),
+            FakeTextBackfillClient::default(),
+        );
+        let request = step_request(IndexMigrationStepAction::Cleanup);
+        let pid = request.registration.physical_index_id;
+        graph_fake.seed_scope(
+            graph_0(),
+            0,
+            pid,
+            seeded_scope(&request.export_scopes[0], &request),
+            23,
+            23,
+        );
+        graph_fake.seed_scope(
+            graph_1(),
+            1,
+            pid,
+            seeded_scope(&request.export_scopes[1], &request),
+            23,
+            23,
+        );
+        // NO seed_build: the target never registered this build (the registration was
+        // rejected), so its build-state row does not exist.
+        index_fake.fail_next(
+            IndexCallKind::Abort,
+            IndexBuildCallError::Typed(IndexBuildError::Store(
+                IndexBuildStoreError::UnknownBuild,
+            )),
+        );
+
+        let response = drive(&driver, request).expect("cleanup must converge");
+        assert_eq!(
+            response.result,
+            IndexMigrationStepResult::CleanupProgress { done: true }
+        );
+        // Drain first, then the rejected abort (counted as cleaned), then scope aborts and
+        // removals all complete in ONE drive instead of looping on 'aborting' forever.
+        assert_eq!(
+            *timeline.borrow(),
+            vec![
+                TimelineEvent::GraphDrain(0),
+                TimelineEvent::GraphDrain(1),
+                TimelineEvent::IndexAbort,
+                TimelineEvent::GraphAbort(0),
+                TimelineEvent::GraphAbort(1),
+                TimelineEvent::GraphRemove(0),
+                TimelineEvent::GraphRemove(1),
+            ]
         );
     }
 
