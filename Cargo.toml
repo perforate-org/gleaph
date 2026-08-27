@@ -38,6 +38,7 @@ members = [
     "crates/text-index-fts5-arm",
     "crates/index-ddl",
     "crates/instruction-budget",
+    "crates/ingress-client",
     "crates/account",
     "crates/pocket-ic-tests",
     "crates/prepared-api",
@@ -75,6 +76,7 @@ gleaph-gql-value = { path = "crates/gql-value", default-features = false }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
+gleaph-ingress-client = { path = "crates/ingress-client" }
 gpui-graph = { path = "crates/gpui-graph" }
 gleaph-theme = { path = "crates/gleaph-theme" }
 # GPUI pinned to the Zed revision that gpui-component's git main depends on,

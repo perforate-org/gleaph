@@ -1,0 +1,15 @@
+[package]
+name = "gleaph-ingress-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared IC ingress transport (any canister/method) and typed Provision client implementing the ADR 0087 ingestion transport trait"
+
+[dependencies]
+base64.workspace = true
+candid.workspace = true
+gleaph-artifact-api.workspace = true
+ic-agent.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true

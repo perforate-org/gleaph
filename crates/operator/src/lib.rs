@@ -7,15 +7,16 @@
 //! self-deploy/upgrade through the IC management canister, delivered before first
 //! production operation per ADR 0087 §Explicitly deferred. All protocol logic (chunk
 //! splitting, hashing, ordering, idempotent resume) lives in the shared [`gleaph_artifact_api`]
-//! library; this crate owns the command surface, the IC transport, and the wire mirrors for
-//! the operations outside the ingestion pipeline (`release_install`,
-//! `upsert_deployment_grant`, `artifact_audit_history`).
+//! library, and the IC ingress transport plus the wire mirrors for the operations outside
+//! the ingestion pipeline (`release_install`, `upsert_deployment_grant`,
+//! `artifact_audit_history`) live in the shared [`gleaph_ingress_client`] crate
+//! (re-exported through [`transport`] / [`wire`]); this crate owns the command surface.
 //!
 //! Module map:
 //! - [`cli`]: clap definitions (pure parsing, unit-tested offline).
 //! - [`commands`]: command → logic mapping and output printing.
-//! - [`transport`]: the generic any-canister/any-method IC ingress layer plus the typed
-//!   Provision client implementing [`gleaph_artifact_api::ArtifactTransport`].
+//! - [`transport`]: re-export of the shared IC ingress layer and typed Provision client
+//!   ([`gleaph_ingress_client`]); the dev CLI's catalog seeding consumes the same layer.
 //! - [`bootstrap`]: bootstrap-tier Account/Provision self-deploy/upgrade through the IC
 //!   management canister (ADR 0087 §Explicitly deferred), reusing [`transport`].
 //! - [`net`]: network/endpoint resolution and PEM identity handling (dev-CLI conventions).

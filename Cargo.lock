@@ -3904,6 +3904,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-ingress-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.0",
+ "candid",
+ "gleaph-artifact-api",
+ "ic-agent",
+ "reqwest 0.13.4",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gleaph-instruction-budget"
 version = "0.1.0"
 dependencies = [
@@ -3928,15 +3941,13 @@ dependencies = [
 name = "gleaph-operator"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.0",
  "candid",
  "clap",
  "gleaph-artifact-api",
+ "gleaph-ingress-client",
  "gleaph-provision",
- "ic-agent",
  "ic-management-canister-types 0.9.0",
  "pollster 1.0.1",
- "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
