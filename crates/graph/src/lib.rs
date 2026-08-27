@@ -178,9 +178,12 @@ fn get_mutation_journal_entries(
 
 /// Router → graph: smallest tracked mutation id with unapplied index postings, or
 /// `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
-/// Update-semantics export: the Router awaits this cross-canister as the ADR 0029 Phase 2
-/// read-your-writes barrier.
-#[update(guard = "guard_router_canister")]
+/// Query-semantics export: the Router reads this cross-canister as the ADR 0029 Phase 3
+/// projection floor. It must be a `query` because the barrier runs inside the Router's
+/// composite `gql_query` (crates/router/src/api/client.rs), whose inter-canister calls are
+/// query-only on the IC; the floor's logical guarantee is carried by its value, and the
+/// certified read-your-writes boundary lives with the Phase 4 mutation receipt.
+#[query(guard = "guard_router_canister")]
 fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
     canister::handlers::index_pending_min_mutation_id()
 }

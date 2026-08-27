@@ -54,14 +54,18 @@ fn catalog_create_graph_unregistered_name_rejected() {
     let env = install_two_graph_federation();
     let type_ddl = format!("CREATE GRAPH TYPE gt {{ {PERSON_KNOWS} }}");
     gql_mutate_as_admin(&env, &type_ddl, "catalog_unregistered_type");
+    // ADR 0070: an unregistered graph name is not a graph-context error — catalog DDL runs
+    // without resolving a graph context (the very first CREATE GRAPH has no home graph) and
+    // routes through the shared admission flow. Without a configured provision canister in
+    // dev mode that admission fails closed as NotImplemented rather than silently binding.
     let bind_ddl = "CREATE GRAPH missing_graph TYPED gt";
     let err = gql_mutate_as_admin_expect_err(&env, bind_ddl, "catalog_unregistered_bind");
     assert!(
         matches!(
             err,
-            gleaph_graph_kernel::federation::RouterError::NotFound(_)
+            gleaph_graph_kernel::federation::RouterError::NotImplemented(_)
         ),
-        "expected NotFound for unregistered graph name, got {err:?}"
+        "expected NotImplemented for unregistered graph name without a provisioner, got {err:?}"
     );
 }
 

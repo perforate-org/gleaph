@@ -276,6 +276,14 @@ acknowledged prefix removes only its exact keys. An unmet floor returns retryabl
 `RouterError::ProjectionLag` without serving stale state. `Canonical` is reserved on the wire but
 rejected (`InvalidArgument`) until owner-side scan routing and the unsupported-shape catalog land.
 
+  > *Floor read semantics.* The `index_pending_min_mutation_id` floor is read with **query**
+  > semantics (exported as `#[query]`, not `#[update]`): it is consumed inside the Router's
+  > composite `gql_query`, whose inter-canister calls are query-only on the IC, and the barrier's
+  > logical guarantee (the projection floor has reached the token) is carried by the floor value.
+  > The certified read-your-writes boundary sits with the Phase 4 mutation receipt
+  > (`mutation_status`), not the floor. A future Canonical mode that reads on an owner-side
+  > update path may add a separately-named `#[update]` floor export.
+
 ### 6. Restrict multi-DML until its boundary is explicit
 
 Federated multi-DML programs are not advertised as atomic. The first implementation phase

@@ -1516,11 +1516,12 @@ pub fn graph_index_pending_min_mutation_id(
 ) -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
     use gleaph_graph_kernel::plan_exec::MutationId;
 
-    // Update-semantics export (ADR 0029 read-your-writes barrier): the graph canister exports
-    // `index_pending_min_mutation_id` as an `#[update]`, not a query.
+    // Query-semantics export (ADR 0029 Phase 3 projection floor): the graph canister exports
+    // `index_pending_min_mutation_id` as a `query` (not an update) because the Router reads it
+    // inside its composite `gql_query`, whose inter-canister calls are query-only on the IC.
     let bytes = env
         .pic
-        .update_call(
+        .query_call(
             graph,
             env.router,
             "index_pending_min_mutation_id",
