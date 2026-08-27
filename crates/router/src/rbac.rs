@@ -58,6 +58,13 @@ pub fn authorize_adhoc_gql(
         // resolution below must not pre-empt them.
         return Ok(());
     }
+    if program_is_catalog_ddl_only(program) {
+        // Catalog DDL only (ADR 0070): a pure `CREATE GRAPH`/`CREATE GRAPH TYPE` program must
+        // not require a resolvable graph context — the very first `CREATE GRAPH` runs while
+        // no home graph exists. The CALL_PROCEDURE / authorization-modification gates above
+        // still apply; only the graph-context resolution is skipped.
+        return Ok(());
+    }
     let store = crate::facade::store::RouterStore::new();
     crate::graph_context::resolve_graph_context(&store, program, *caller)
         .map(|_| ())
@@ -74,6 +81,20 @@ pub(crate) fn program_is_explain_authorization(program: &GqlProgram) -> bool {
         return false;
     };
     block.next.is_empty() && matches!(&block.first, Statement::ExplainAuthorization(_))
+}
+
+/// Whether the program is a pure catalog-DDL block (`CREATE GRAPH` / `CREATE GRAPH TYPE` /
+/// `DROP GRAPH` / `DROP GRAPH TYPE` only, [ADR 0070]). Such a program must not require a
+/// resolvable graph context, since the very first `CREATE GRAPH` runs while no home graph
+/// exists.
+pub(crate) fn program_is_catalog_ddl_only(program: &GqlProgram) -> bool {
+    let Some(tx) = &program.transaction_activity else {
+        return false;
+    };
+    let Some(block) = &tx.body else {
+        return false;
+    };
+    crate::facade::stable::graph_type_catalog::block_is_catalog_ddl_only(block)
 }
 
 /// Index DDL (`CREATE INDEX` / `DROP INDEX` ordinary parse path, vector-index DDL, and the
@@ -201,6 +222,28 @@ mod tests {
         // graph exists, so the denial surfaces as the resolver's NotFound.
         assert!(matches!(
             authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &program),
+            Err(RouterError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn catalog_ddl_only_skips_graph_context_resolution() {
+        // ADR 0070: a pure `CREATE GRAPH` program must not require a resolvable graph
+        // context — the very first `CREATE GRAPH` runs while no home graph exists. A
+        // caps-less caller with no tenancy is admitted past the pre-plan gate (the
+        // CALL_PROCEDURE / authorization-modification gates still apply).
+        let p = principal(1);
+        let program = parser_program("CREATE GRAPH g");
+        assert!(program_is_catalog_ddl_only(&program));
+        authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &program)
+            .expect("catalog-DDL-only program must not require graph context");
+
+        // A mixed program (catalog DDL + data) is not catalog-DDL-only and still requires
+        // graph context, so a caps-less caller is denied.
+        let mixed = parser_program("CREATE GRAPH g NEXT MATCH (n) RETURN n");
+        assert!(!program_is_catalog_ddl_only(&mixed));
+        assert!(matches!(
+            authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &mixed),
             Err(RouterError::NotFound(_))
         ));
     }
