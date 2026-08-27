@@ -259,6 +259,16 @@ fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), S
     canister::handlers::admin_set_vector_canister(vector_canister)
 }
 
+/// Router → graph (ADR 0054 retrofit): set (or re-point) this shard's local property-index target
+/// within its existing federation routing. The Router calls this as the graph leg of the retrofit
+/// attach handshake — an indexless-bootstrap shard is installed with the anonymous index sentinel,
+/// so the Router writes the real target here before index flushes, the canonical-export default
+/// puller resolution, and the maintenance timer can use it.
+#[update(guard = "guard_router_canister")]
+fn admin_set_index_canister(index_canister: candid::Principal) -> Result<(), String> {
+    canister::handlers::admin_set_index_canister(index_canister)
+}
+
 /// Router → graph: freeze one immutable canonical export scope for a physical index namespace.
 /// `authorized_puller` binds the ONE principal allowed to pull pages for this namespace;
 /// `None` defaults to the shard's configured graph-index canister (posting builds).

@@ -1792,6 +1792,21 @@ pub fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(
         .map_err(|e| e.to_string())
 }
 
+/// Router → graph (ADR 0054 retrofit): set this shard's local property-index target within its
+/// existing federation routing. The Router calls this as the graph leg of the retrofit attach
+/// handshake — an indexless-bootstrap shard is installed with the anonymous index sentinel in its
+/// local routing, so the Router re-points it here before index flushes, the canonical-export
+/// default puller resolution, and the maintenance timer can use it. Rejects an anonymous target;
+/// the router guard already rejects a graph with no federation routing.
+pub fn admin_set_index_canister(index_canister: candid::Principal) -> Result<(), String> {
+    if index_canister == candid::Principal::anonymous() {
+        return Err("index_canister must not be the anonymous principal".to_string());
+    }
+    GraphStore::new()
+        .set_index_canister(index_canister)
+        .map_err(|e| e.to_string())
+}
+
 /// Router → graph: freeze one immutable canonical export scope for a physical index namespace.
 pub fn admin_register_index_export_scope(
     physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,

@@ -302,6 +302,28 @@ pub async fn backfill_edge_property_postings(
     call_graph_result(graph, "backfill_edge_property_postings", req).await
 }
 
+/// Router → graph shard: set the shard's local property-index target (the graph leg of the
+/// retrofit attach handshake, ADR 0054). An indexless-bootstrap graph is installed with the
+/// anonymous index sentinel in its local FederationRouting, so the Router re-points it before the
+/// shard's index flushes, the canonical-export default puller resolution, and the maintenance
+/// timer can use it. Driven only by the non-e2e retrofit leg (the e2e harness manages shard
+/// attachments itself and provisions graphs with the real index target at install time).
+#[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
+pub async fn admin_set_index_canister(
+    graph: Principal,
+    index_canister: Principal,
+) -> Result<(), String> {
+    call_graph_result(graph, "admin_set_index_canister", index_canister).await
+}
+
+#[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
+pub async fn admin_set_index_canister(
+    _graph: Principal,
+    _index_canister: Principal,
+) -> Result<(), String> {
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
     not(target_family = "wasm"),

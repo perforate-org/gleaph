@@ -601,9 +601,13 @@ impl RouterStore {
     }
 
     /// Retrofit an existing (indexless) shard onto a newly provisioned index canister (ADR 0035
-    /// Slice 10). The remote attach runs first so a failure leaves the shard indexless (no partial
-    /// state); only a successful attach flips the shard's index target. A failed remote attach
-    /// does NOT unregister the shard.
+    /// Slice 10, ADR 0054 indexless bootstrap). Non-e2e: the graph leg runs first (re-point the
+    /// shard's local FederationRouting away from the anonymous index sentinel), then the index-side
+    /// attach, then the durable registry commit — every leg is idempotent, so any failure leaves
+    /// the ROUTER's registry indexless and the whole handshake can be retried exactly. A failed
+    /// remote attach does NOT unregister the shard. E2E: the harness manages remote shard/canister
+    /// attachments itself (dev-mode fixtures install graph shards with the real index target at
+    /// init), so only the durable commit runs.
     async fn retrofit_attach_shard_to_index(
         &self,
         graph_id: GraphId,
@@ -618,6 +622,9 @@ impl RouterStore {
         }
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
+            crate::graph_client::admin_set_index_canister(graph_canister, index_canister)
+                .await
+                .map_err(RouterError::Internal)?;
             Self::attach_shard_to_index(graph_id, shard_id, index_canister, graph_canister).await?;
             Self::commit_set_shard_index_canister(graph_id, shard_id, index_canister)
         }

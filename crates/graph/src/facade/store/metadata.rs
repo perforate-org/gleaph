@@ -68,4 +68,23 @@ impl GraphStore {
             m.set(metadata)
         })
     }
+
+    /// Sets this shard's local property-index target within its existing federation routing
+    /// (ADR 0054 retrofit). The router-guarded `admin_set_index_canister` endpoint calls this as
+    /// the graph leg of the retrofit attach handshake: an indexless-bootstrap shard is installed
+    /// with the anonymous index sentinel in its local routing, so the Router re-points it here
+    /// before the shard's index flushes, the canonical-export default puller resolution, and the
+    /// maintenance timer can use it. Errors if the shard has no federation routing (a standalone
+    /// graph has no router to flush through).
+    pub fn set_index_canister(&self, index_canister: Principal) -> Result<(), GraphMetadataError> {
+        METADATA.with_borrow_mut(|m| {
+            let mut metadata = m.get().clone();
+            let mut routing = metadata
+                .federation_routing()
+                .ok_or(GraphMetadataError::MissingFederationRouting)?;
+            routing.index_canister = index_canister;
+            metadata.set_federation_routing(Some(routing));
+            m.set(metadata)
+        })
+    }
 }

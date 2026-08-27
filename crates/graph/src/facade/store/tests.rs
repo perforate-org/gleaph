@@ -2721,3 +2721,42 @@ fn updating_indexed_inline_bytes_with_wrong_width_rejects_before_write() {
     );
     store.set_federation_routing(None).expect("clear routing");
 }
+
+#[test]
+fn set_index_canister_repoints_the_local_federation_routing() {
+    use gleaph_graph_kernel::federation::ShardId;
+    // ADR 0054: a provisioned indexless-bootstrap shard is installed with the anonymous index
+    // sentinel in its local routing; the Router's retrofit handshake re-points it via
+    // `admin_set_index_canister` so index flushes and the maintenance timer dial the real target.
+    let store = GraphStore::new();
+    store
+        .set_federation_routing(Some(crate::facade::FederationRouting {
+            router_canister: candid::Principal::from_slice(&[7; 29]),
+            index_canister: candid::Principal::anonymous(),
+            shard_id: ShardId::new(0),
+            vector_canister: None,
+        }))
+        .expect("configure indexless routing");
+
+    let target = candid::Principal::from_slice(&[8; 29]);
+    store.set_index_canister(target).expect("retrofit attach");
+    assert_eq!(
+        store.federation_routing().expect("routing").index_canister,
+        target,
+        "the graph leg must re-point the local index target away from the sentinel"
+    );
+    store.set_federation_routing(None).expect("clear routing");
+}
+
+#[test]
+fn set_index_canister_rejects_a_graph_without_federation_routing() {
+    let store = GraphStore::new();
+    let err = store
+        .set_index_canister(candid::Principal::from_slice(&[8; 29]))
+        .expect_err("a standalone graph has no routing to re-point");
+    assert!(matches!(
+        err,
+        crate::facade::GraphMetadataError::MissingFederationRouting
+    ));
+    assert!(store.federation_routing().is_none());
+}

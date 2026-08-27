@@ -70,7 +70,7 @@ impl fmt::Display for GraphMetadataError {
             ),
             GraphMetadataError::MissingFederationRouting => write!(
                 f,
-                "graph has no federation routing; cannot set a derived vector-index target"
+                "graph has no federation routing; cannot set a derived-index or vector target"
             ),
         }
     }
