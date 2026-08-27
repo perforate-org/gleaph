@@ -395,6 +395,15 @@ pub struct ArtifactMetadata {
 
 /// Mutable upload-progress state for an artifact. Reclaimed from stable memory once the artifact
 /// reaches `Verified`; verified canonical chunks remain in region 8 until explicit GC is designed.
+///
+/// Retention policy (design decision 2026-08-27, ADR 0036 follow-up): Provision is the
+/// distribution ORIGIN and keeps only the active release's artifacts resident (install pushes
+/// chunks from here to the target's management chunk store). Superseded versions are evicted;
+/// the full version history lives in content-addressed replicas (Arweave / IPFS / IC blob
+/// canisters — selection deferred), fetched back on demand for rollback or re-install. Dev
+/// environments download from a pinned release source and cache locally (the launcher-download
+/// pattern). Artifact/chunk SHA-256 identity is the trust anchor for replica fetches; release
+/// signing remains an open question.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ArtifactUpload {
     pub artifact_id: ArtifactId,
