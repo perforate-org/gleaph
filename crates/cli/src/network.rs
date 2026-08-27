@@ -35,6 +35,10 @@ pub struct StartResult {
     pub mapping: BTreeMap<String, String>,
     /// The gateway port, for a Gleaph-owned network.
     pub gateway_port: Option<u16>,
+    /// The resolved gateway endpoint for an icp-cli-managed network (dynamic port, read from
+    /// `icp network status`). `None` for a Gleaph-owned network (whose endpoint is the
+    /// launcher's fixed port) or when icp could not report one.
+    pub gateway_url: Option<String>,
     /// The launcher child process, for a Gleaph-owned network (caller must keep it alive).
     pub launcher_child: Option<Child>,
 }
@@ -55,6 +59,7 @@ pub fn start(
 ) -> Result<StartResult, String> {
     let mut launcher_child = None;
     let mut gateway_port = None;
+    let mut gateway_url: Option<String> = None;
     if crate::identity::has_icp_yaml(project_root) {
         // Delegate network start to icp-cli.
         let mut cmd = std::process::Command::new("icp");
@@ -70,6 +75,18 @@ pub fn start(
                 "`icp network start {network}` failed with status {status}"
             ));
         }
+        // icp-cli networks bind the gateway on a dynamic port: resolve the real endpoint once
+        // here and hand it to the deploy transport as the network selector (a URL —
+        // `resolve_network` routes it unchanged). Data-plane commands re-resolve `"local"`
+        // through the same `icp network status` path in `resolve_network`.
+        match crate::remote::icp_gateway_url(network) {
+            Some(url) => gateway_url = Some(url),
+            None => eprintln!(
+                "warning: `icp network status {network}` reported no Api Url; \
+                 falling back to {}",
+                crate::remote::DEFAULT_LOCAL_URL
+            ),
+        }
     } else {
         // Gleaph-owned local network: download and run the launcher.
         let launcher = download_launcher()?;
@@ -77,10 +94,19 @@ pub fn start(
         launcher_child = Some(child);
         gateway_port = Some(port);
     }
+    // The icp delegation branch passes the resolved gateway URL as the network selector;
+    // `resolve_network` routes URLs through unchanged (root key still fetched).
+    let network_endpoint = gateway_url.as_deref().unwrap_or(network);
 
     // Connect to the management canister (aaaaa-aa) on the local network. The session identity
     // signs the deploy calls; its principal is Provision's governance authority at init.
-    let transport = RemoteTransport::connect("aaaaa-aa", network, identity_pem, true)?;
+    let transport = RemoteTransport::connect(
+        "aaaaa-aa",
+        network_endpoint,
+        identity_pem,
+        true,
+        Some(project_root),
+    )?;
 
     let account_id = deploy_canister(&transport, account_wasm)?;
     let governance_principal = identity_pem
@@ -104,6 +130,7 @@ pub fn start(
     Ok(StartResult {
         mapping,
         gateway_port,
+        gateway_url,
         launcher_child,
     })
 }

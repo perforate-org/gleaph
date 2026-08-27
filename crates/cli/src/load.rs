@@ -963,9 +963,11 @@ impl RemoteBulkLoadTransport {
         network: &str,
         identity: Option<&Path>,
         fetch_root_key: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, LoadError> {
-        let remote = RemoteTransport::connect(canister, network, identity, fetch_root_key)
-            .map_err(LoadError::Remote)?;
+        let remote =
+            RemoteTransport::connect(canister, network, identity, fetch_root_key, project_root)
+                .map_err(LoadError::Remote)?;
         Ok(Self { remote })
     }
 }
@@ -1665,8 +1667,9 @@ fn effective_key(args: &LoadArgs) -> Result<String, LoadError> {
     Ok(base_key(args).to_owned())
 }
 
-/// Validate and run one `gleaph load` invocation.
-pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
+/// Validate and run one `gleaph load` invocation. `project_root` (the `gleaph.toml` directory)
+/// selects the icp-cli gateway resolution for the `"local"` network.
+pub fn execute(args: &LoadArgs, project_root: Option<&Path>) -> Result<LoadOutcome, LoadError> {
     let canister = args
         .canister
         .as_deref()
@@ -1681,6 +1684,7 @@ pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
             .unwrap_or(crate::config::DEFAULT_NETWORK),
         args.identity.as_deref(),
         args.fetch_root_key.unwrap_or(false),
+        project_root,
     )?;
     let outcome = run_load(
         &mut transport,

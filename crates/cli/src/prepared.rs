@@ -156,9 +156,11 @@ impl RouterPreparedTransport {
         network: &str,
         identity: Option<&Path>,
         fetch_root_key: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, PreparedError> {
-        let remote = RemoteTransport::connect(canister, network, identity, fetch_root_key)
-            .map_err(PreparedError::Remote)?;
+        let remote =
+            RemoteTransport::connect(canister, network, identity, fetch_root_key, project_root)
+                .map_err(PreparedError::Remote)?;
         Ok(Self { remote })
     }
 }
@@ -1071,6 +1073,8 @@ fn scan_element_pattern(
 fn scan_return_body(scan: &mut ProjectionScan, body: &ReturnBody) {
     match body {
         ReturnBody::Star => {}
+        // Cypher-dialect construct; the cli enables gleaph-gql's cypher feature.
+        ReturnBody::NoBindings => {}
         ReturnBody::Items {
             items,
             group_by,

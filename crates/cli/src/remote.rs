@@ -139,21 +139,22 @@ impl RemoteTransport {
         network: &str,
         identity: Option<&Path>,
         fetch_root_key: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, String> {
-        let (url, should_fetch_root_key) = resolve_network(network, fetch_root_key)?;
+        let (url, should_fetch_root_key) = resolve_network(network, fetch_root_key, project_root)?;
         let canister = candid::Principal::from_text(canister)
             .map_err(|error| format!("invalid canister principal: {error}"))?;
         let agent = if let Some(identity) = identity {
             let identity = ic_agent::identity::Secp256k1Identity::from_pem_file(identity)
                 .map_err(|error| format!("read identity {}: {error}", identity.display()))?;
             Agent::builder()
-                .with_url(url)
+                .with_url(&url)
                 .with_identity(identity)
                 .build()
                 .map_err(|error| format!("create IC agent: {error}"))?
         } else {
             Agent::builder()
-                .with_url(url)
+                .with_url(&url)
                 .build()
                 .map_err(|error| format!("create IC agent: {error}"))?
         };
@@ -169,7 +170,7 @@ impl RemoteTransport {
             None
         } else {
             runtime
-                .block_on(fetch_default_effective_canister_id(url))
+                .block_on(fetch_default_effective_canister_id(&url))
         };
         Ok(Self {
             agent,
@@ -361,20 +362,73 @@ impl RemoteTransport {
     }
 }
 
-fn resolve_network(network: &str, fetch_root_key: bool) -> Result<(&str, bool), String> {
+fn resolve_network(
+    network: &str,
+    fetch_root_key: bool,
+    project_root: Option<&Path>,
+) -> Result<(String, bool), String> {
     match network {
-        "ic" => Ok((DEFAULT_IC_URL, false)),
-        "local" => Ok((DEFAULT_LOCAL_URL, true)),
+        "ic" => Ok((DEFAULT_IC_URL.to_owned(), false)),
+        "local" => {
+            // An icp.yaml project manages its "local" network through icp-cli, whose gateway
+            // binds a dynamic port — the Gleaph launcher default below would point at a port
+            // nobody listens on. Ask `icp network status` for the real endpoint; fall back to
+            // the launcher default with a warning when icp cannot answer (the icp.yaml may be
+            // stale, or the network may be a Gleaph-owned one after all).
+            if let Some(root) = project_root
+                && crate::identity::has_icp_yaml(root)
+            {
+                match icp_gateway_url(network) {
+                    Some(url) => return Ok((url, true)),
+                    None => eprintln!(
+                        "warning: `icp network status {network}` reported no Api Url; \
+                         falling back to {DEFAULT_LOCAL_URL}"
+                    ),
+                }
+            }
+            Ok((DEFAULT_LOCAL_URL.to_owned(), true))
+        }
         url if url.starts_with("http://") || url.starts_with("https://") => {
             if !fetch_root_key {
                 return Err("a custom network URL requires --fetch-root-key".to_string());
             }
-            Ok((url, true))
+            Ok((url.to_owned(), true))
         }
         other => Err(format!(
             "unknown network {other:?}; expected \"ic\", \"local\", or an http(s) URL"
         )),
     }
+}
+
+/// Resolve the gateway URL of an icp-cli-managed network by running `icp network status
+/// <network>` and parsing the `Api Url:` line. icp-cli networks bind their gateway on a
+/// dynamic port, so the endpoint must be read from icp-cli rather than assumed.
+///
+/// Returns `None` when the `icp` command is unavailable, fails, or reports no URL — callers
+/// fall back to [`DEFAULT_LOCAL_URL`] with a warning (a missing/failing `icp` must not turn
+/// every command into a hard error).
+pub fn icp_gateway_url(network: &str) -> Option<String> {
+    let output = std::process::Command::new("icp")
+        .args(["network", "status", network])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_icp_api_url(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse the `Api Url: <url>` line out of `icp network status` output (the gateway endpoint
+/// icp-cli binds on a dynamic port). The trailing slash icp-cli prints is trimmed so callers
+/// appending paths (e.g. `/_/topology`) do not produce a double slash (which the gateway
+/// rejects with `canister_id_not_resolved`).
+fn parse_icp_api_url(status_output: &str) -> Option<String> {
+    status_output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.to_ascii_lowercase().starts_with("api url:"))
+        .map(|line| line["api url:".len()..].trim().trim_end_matches('/').to_owned())
+        .filter(|url| !url.is_empty())
 }
 
 /// Fetch the local network's default effective canister id from the `/_/topology` endpoint
@@ -536,5 +590,51 @@ mod tests {
         let encoded = Encode!(&ids).expect("encode");
         let decoded = candid::Decode!(&encoded, Vec<PropertyId>).expect("decode");
         assert_eq!(decoded, ids);
+    }
+
+    #[test]
+    fn parses_the_api_url_line_from_icp_network_status() {
+        // Real `icp network status local` shape: the gateway URL on the first line (icp-cli
+        // binds a dynamic port), followed by unrelated lines.
+        let output = "Api Url: http://localhost:32768/\n\
+                      Gateway Url: http://localhost:32768/\n\
+                      Root Key: 308182…\n\
+                      Candid UI Principal: 4mc4g-43777-77775-aaaaa-cai\n";
+        assert_eq!(
+            parse_icp_api_url(output).as_deref(),
+            // The trailing slash icp-cli prints is trimmed: callers append paths like
+            // `/_/topology`, and `…:32770//_/topology` is rejected by the gateway.
+            Some("http://localhost:32768")
+        );
+    }
+
+    #[test]
+    fn api_url_parse_is_tolerant_of_case_and_surrounding_whitespace() {
+        assert_eq!(
+            parse_icp_api_url("  API URL:   http://localhost:4321/  \n").as_deref(),
+            Some("http://localhost:4321")
+        );
+        assert_eq!(parse_icp_api_url("Gateway Url: http://localhost:4321/\n"), None);
+        assert_eq!(parse_icp_api_url(""), None);
+        assert_eq!(parse_icp_api_url("Api Url:   \n"), None, "empty URL is absent");
+    }
+
+    #[test]
+    fn local_without_icp_yaml_keeps_the_launcher_default_without_spawning_icp() {
+        // No project root / no icp.yaml: the Gleaph launcher default applies and the `icp`
+        // subprocess is never consulted (hermetic test).
+        let (url, fetch) = resolve_network("local", false, None).expect("local");
+        assert_eq!(url, DEFAULT_LOCAL_URL);
+        assert!(fetch);
+
+        let root = std::env::temp_dir().join("gleaph-remote-no-icp-yaml");
+        let _ = std::fs::create_dir_all(&root);
+        let (url, fetch) = resolve_network("local", false, Some(&root)).expect("local");
+        assert_eq!(url, DEFAULT_LOCAL_URL);
+        assert!(fetch);
+
+        let (url, fetch) = resolve_network("ic", false, Some(Path::new("/nonexistent"))).expect("ic");
+        assert_eq!(url, DEFAULT_IC_URL);
+        assert!(!fetch);
     }
 }

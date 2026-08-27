@@ -2,7 +2,7 @@
 
 use clap::{CommandFactory, Parser, Subcommand};
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use thiserror::Error;
 
@@ -400,7 +400,8 @@ fn dispatch(
         TopLevelCommand::Migration(command) => execute_migration(command, env, loaded),
         TopLevelCommand::Load(args) => {
             let args = resolve_load(args, env, loaded)?;
-            let outcome = load::execute(&args)?;
+            let project_root = loaded.and_then(|l| l.path.parent()).map(Path::to_path_buf);
+            let outcome = load::execute(&args, project_root.as_deref())?;
             match outcome {
                 load::LoadOutcome::Loaded { key } => {
                     println!("bulk load completed (job key: {key})")
@@ -507,7 +508,10 @@ fn execute_network(
             // install the Router from the catalog. The operator tool remains the operations
             // entry point for the same surfaces. Without a wasm dir, skip with a warning.
             if let Some(dir) = &args.platform_wasm_dir {
-                network::seed_catalog(&args.network, &result.mapping, identity.as_deref(), dir)
+                // On an icp-cli-managed network the gateway binds a dynamic port; seed through
+                // the endpoint `network::start` resolved (a URL), not the raw "local" selector.
+                let endpoint = result.gateway_url.as_deref().unwrap_or(&args.network);
+                network::seed_catalog(endpoint, &result.mapping, identity.as_deref(), dir)
                     .map_err(CliError::Message)?;
                 println!("next: gleaph migration apply");
                 println!(
@@ -591,8 +595,10 @@ fn auto_register_account(
                 .into(),
         ));
     };
-    let transport = remote::RemoteTransport::connect(account, network, Some(&pem), true)
-        .map_err(CliError::Message)?;
+    let project_root = loaded.path.parent();
+    let transport =
+        remote::RemoteTransport::connect(account, network, Some(&pem), true, project_root)
+            .map_err(CliError::Message)?;
     let account_principal = candid::Principal::from_text(account)
         .map_err(|e| CliError::Message(format!("invalid account canister id: {e}")))?;
     // `create_account` returns Result<Account, AccountError>; a Personal account for an
@@ -724,6 +730,7 @@ fn execute_signup(
         &network,
         identity.as_deref(),
         args.fetch_root_key.unwrap_or(false),
+        loaded.path.parent(),
     )
     .map_err(CliError::Message)?;
     let account_principal = candid::Principal::from_text(account_canister)
@@ -751,6 +758,9 @@ struct ResolvedRemote {
     network: String,
     identity: Option<PathBuf>,
     fetch_root_key: bool,
+    /// The `gleaph.toml` directory, for icp-cli-aware network resolution (dynamic gateway
+    /// port). `None` without a project config.
+    project_root: Option<PathBuf>,
 }
 
 fn required_remote(
@@ -781,6 +791,7 @@ fn required_remote(
         network: options.network,
         identity: options.identity,
         fetch_root_key: options.fetch_root_key,
+        project_root: loaded.and_then(|l| l.path.parent()).map(Path::to_path_buf),
     })
 }
 
@@ -817,6 +828,7 @@ fn resolve_router_from_account(
         &options.network,
         options.identity.as_deref(),
         options.fetch_root_key,
+        loaded.path.parent(),
     )
     .map_err(CliError::Message)?;
 
@@ -1075,7 +1087,8 @@ fn execute_embed(
     match command {
         EmbedCommand::Ingest(args) => {
             let args = resolve_embed(args, env, loaded)?;
-            let summary = embed::execute(&args)?;
+            let project_root = loaded.and_then(|l| l.path.parent()).map(Path::to_path_buf);
+            let summary = embed::execute(&args, project_root.as_deref())?;
             println!(
                 "embed ingest: {} applied, {} pending, {} failed",
                 summary.applied,
@@ -1140,6 +1153,7 @@ fn execute_prepared(
                 &remote.network,
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
+                remote.project_root.as_deref(),
             )?;
             let status = prepared::status(&dir, &mut transport)?;
             for name in &status.missing {
@@ -1178,6 +1192,7 @@ fn execute_prepared(
                 &remote.network,
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
+                remote.project_root.as_deref(),
             )?;
             let outcome = prepared::apply(&dir, &mut transport)?;
             if outcome.registered.is_empty() {
@@ -1203,6 +1218,7 @@ fn execute_prepared(
                 &remote.network,
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
+                remote.project_root.as_deref(),
             )?;
             prepared::drop(&args.name, &mut transport)?;
             println!("dropped {}", args.name);
@@ -1241,6 +1257,7 @@ fn execute_prepared(
                 &remote.network,
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
+                remote.project_root.as_deref(),
             )?;
             let result = prepared::run(&args.name, params_blob, read_mode, &mut transport)?;
             if args.json {
@@ -1280,6 +1297,7 @@ fn execute_prepared_publication(
         &remote.network,
         remote.identity.as_deref(),
         remote.fetch_root_key,
+        remote.project_root.as_deref(),
     )?;
     if publish {
         prepared::publish(name, &mut transport)?;
@@ -1331,6 +1349,7 @@ fn execute_migration(
                 &remote.network,
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
+                remote.project_root.as_deref(),
             )?;
             let status = migration::status(&dir, &mut transport)?;
             println!("applied {}/{}", status.applied_count, status.total_count);
@@ -1351,6 +1370,7 @@ fn execute_migration(
                 &remote.network,
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
+                remote.project_root.as_deref(),
             )?;
             let mut renderer =
                 migration::MigrationProgressRenderer::new(std::io::stdout().is_terminal());

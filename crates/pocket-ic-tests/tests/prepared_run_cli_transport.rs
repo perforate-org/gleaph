@@ -63,7 +63,7 @@ fn publish_tag_rows_to_public(env: &FederationEnv, operation: &str) {
 /// which is the PocketIC test root key here.
 fn cli_transport(env: &mut FederationEnv) -> RouterPreparedTransport {
     let url = env.pic.make_live(None);
-    RouterPreparedTransport::connect(&env.router.to_text(), url.as_str(), None, true)
+    RouterPreparedTransport::connect(&env.router.to_text(), url.as_str(), None, true, None)
         .expect("connect CLI prepared transport")
 }
 

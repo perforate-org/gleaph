@@ -144,9 +144,11 @@ impl RouterEmbedTransport {
         network: &str,
         identity: Option<&Path>,
         fetch_root_key: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, EmbedError> {
-        let remote = RemoteTransport::connect(canister, network, identity, fetch_root_key)
-            .map_err(EmbedError::Remote)?;
+        let remote =
+            RemoteTransport::connect(canister, network, identity, fetch_root_key, project_root)
+                .map_err(EmbedError::Remote)?;
         Ok(Self { remote })
     }
 }
@@ -601,8 +603,9 @@ pub fn run_with_transport<T: EmbedIngestTransport>(
     Ok(summary)
 }
 
-/// Validate and run one `gleaph embed ingest` invocation.
-pub fn execute(args: &EmbedIngestArgs) -> Result<IngestSummary, EmbedError> {
+/// Validate and run one `gleaph embed ingest` invocation. `project_root` is the `gleaph.toml`
+/// directory, used to detect an icp-cli-managed network (dynamic gateway port).
+pub fn execute(args: &EmbedIngestArgs, project_root: Option<&Path>) -> Result<IngestSummary, EmbedError> {
     let canister = args
         .canister
         .as_deref()
@@ -626,6 +629,7 @@ pub fn execute(args: &EmbedIngestArgs) -> Result<IngestSummary, EmbedError> {
             .unwrap_or(crate::config::DEFAULT_NETWORK),
         args.identity.as_deref(),
         args.fetch_root_key.unwrap_or(false),
+        project_root,
     )?;
 
     let plan = IngestPlan {

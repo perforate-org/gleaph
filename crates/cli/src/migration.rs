@@ -270,14 +270,19 @@ pub struct RouterMigrationTransport {
 
 impl RouterMigrationTransport {
     /// Build a transport using the same network and identity conventions as codegen.
+    ///
+    /// `project_root` (the `gleaph.toml` directory) selects the icp-cli network resolution
+    /// for `"local"` (an `icp.yaml` project's gateway binds a dynamic port).
     pub fn connect(
         canister: &str,
         network: &str,
         identity: Option<&Path>,
         fetch_root_key: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, MigrationError> {
-        let remote = RemoteTransport::connect(canister, network, identity, fetch_root_key)
-            .map_err(MigrationError::Remote)?;
+        let remote =
+            RemoteTransport::connect(canister, network, identity, fetch_root_key, project_root)
+                .map_err(MigrationError::Remote)?;
         Ok(Self { remote })
     }
 }
