@@ -705,14 +705,17 @@ pub(crate) fn init_schema_migrations() -> StableSchemaMigrationMap {
 }
 
 // --- control ---
-/// Global derived-vector-dispatch activation flag (ADR 0031 Slice 4). `false` (default, off) keeps
-/// production dispatch/backfill fail-closed; an RBAC-gated admin endpoint flips it. Reversible.
+/// Global derived-vector-dispatch activation flag (ADR 0031 Slice 4). Defaults to `true`: an
+/// index's lifecycle (target + shard attach, tracked per index) determines usability, and the
+/// flag is only the fleet-level circuit breaker — `set_vector_dispatch_enabled(false)` is the
+/// incident-response step, not a required setup step. `Cell::init` keeps an existing value on
+/// upgrade, so a Router deliberately disabled by an operator stays disabled. Reversible.
 pub(crate) type StableVectorDispatchActivation = Cell<bool, Memory>;
 
 pub(crate) fn init_vector_dispatch_activation() -> StableVectorDispatchActivation {
     Cell::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_DISPATCH_ACTIVATION)),
-        false,
+        true,
     )
 }
 

@@ -1,13 +1,11 @@
 //! `gleaph vector activate` / `deactivate` — the global vector-dispatch kill-switch
 //! (ADR 0031 Slice 4).
 //!
-//! The flag is fleet-level and deliberate: default fail-closed, so a freshly deployed
-//! Router never dispatches vector work until an operator flips it. It stays OUT of the
-//! migration lane (migrations are schema, and silently enabling a production kill-switch
-//! as a schema side effect would defeat the switch) and out of `network start` (the
-//! Router does not exist yet at bring-up; the flag is runtime state on an issued Router).
-//! The command is the explicit operator intent, mirroring the bootstrap-era
-//! `set_vector_dispatch_enabled(true)` wire call.
+//! The flag is fleet-level and defaults to ENABLED (dispatch readiness is the per-index
+//! lifecycle's job — target + shard attach): `deactivate` is the incident-response circuit
+//! breaker, not a required setup step. The flag is stable-memory state with an operator-set
+//! value preserved across upgrades, and it stays OUT of the migration lane (migrations are
+//! schema; a kill-switch is runtime ops state).
 
 use std::path::{Path, PathBuf};
 

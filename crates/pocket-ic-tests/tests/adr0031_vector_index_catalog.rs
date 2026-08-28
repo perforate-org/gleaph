@@ -377,7 +377,9 @@ fn catalog_lifecycle_keeps_activation_fail_closed_and_rejects_anonymous_target()
         "embedding name id 0 is reserved/unset"
     );
 
-    // The activation gate stays fail-closed while the global dispatch flag is off.
+    // The dispatch flag defaults to enabled; assert the breaker path by disabling it
+    // (incident-response position) and checking the reason mapping.
+    set_dispatch_activation(&env, false).expect("disable dispatch flag");
     assert_activation_blocked(
         &env,
         INDEX_ID,
