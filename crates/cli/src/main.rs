@@ -10,6 +10,7 @@ use gleaph_cli::{
     auth,
     config::{self, ConfigEnv, DirKey, LoadedConfig},
     embed, grants, identity,
+    vector,
     load::{self, LoadArgs, LoadError},
     migration::{self, MigrationDirArgs, MigrationError},
     network,
@@ -27,6 +28,8 @@ enum CliError {
     Prepared(#[from] prepared::PreparedError),
     #[error(transparent)]
     Grants(#[from] grants::GrantsError),
+    #[error(transparent)]
+    Vector(#[from] vector::VectorError),
     #[error(transparent)]
     Load(#[from] LoadError),
     #[error(transparent)]
@@ -73,6 +76,9 @@ enum TopLevelCommand {
     /// Apply the declarative data-plane grant policy (ADR 0074).
     #[command(subcommand)]
     Grants(grants::GrantsCommand),
+    /// Vector dispatch fleet controls (ADR 0031 Slice 4).
+    #[command(subcommand)]
+    Vector(vector::VectorCommand),
     /// Resolve the caller's principal and store the active session.
     Login(LoginArgs),
     /// Register an Account for the caller's principal.
@@ -390,6 +396,7 @@ fn is_dispatchable_top_level(token: &str) -> bool {
             | "embed"
             | "prepared"
             | "grants"
+            | "vector"
             | "identity"
             | "login"
             | "signup"
@@ -425,6 +432,35 @@ fn dispatch(
         }
         TopLevelCommand::Embed(command) => execute_embed(command, env, loaded),
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
+        TopLevelCommand::Vector(command) => {
+            let (args, enabled) = match command {
+                vector::VectorCommand::Activate(args) => (args, true),
+                vector::VectorCommand::Deactivate(args) => (args, false),
+            };
+            let remote = required_remote(
+                args.canister.as_deref(),
+                args.network.as_deref(),
+                args.identity.as_deref(),
+                args.fetch_root_key,
+                env,
+                loaded,
+            )?;
+            vector::set_dispatch_enabled(
+                enabled,
+                &remote.canister,
+                &remote.network,
+                remote.identity.as_deref(),
+                remote.fetch_root_key,
+                remote.project_root.as_deref(),
+                loaded,
+            )
+            .map_err(CliError::Vector)?;
+            println!(
+                "vector dispatch {}",
+                if enabled { "activated" } else { "deactivated (fail-closed)" }
+            );
+            Ok(())
+        }
         TopLevelCommand::Grants(grants::GrantsCommand::Apply(args)) => {
             let remote = required_remote(
                 args.canister.as_deref(),

@@ -15,3 +15,4 @@ pub mod network;
 pub mod prepared;
 pub mod progress;
 pub mod remote;
+pub mod vector;
