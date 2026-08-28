@@ -42,6 +42,11 @@ pub struct FindUsersRow {
     pub user_name: String,
 }
 
+/// Declared result columns of the prepared operation find-users.
+pub const FIND_USERS_COLUMNS: &[gleaph_sdk::rows::Column] = &[
+    gleaph_sdk::rows::Column { name: "user_name".to_owned(), semantic_type: gleaph_sdk::rows::SemanticType::Text, nullable: false, },
+]
+
 /// Marker enabling generated prepared operations on `gleaph_sdk::GleaphClient<Prepared>`.
 pub struct Prepared;
 
@@ -72,6 +77,7 @@ impl PreparedExt for gleaph_sdk::GleaphClient<Prepared> {
         let result = self
             .prepared_query("find-users", params, None, gleaph_sdk::ReadMode::Eventual)
             .await?;
+        gleaph_sdk::rows::validate_result_rows(&result, FIND_USERS_COLUMNS)?;
         Ok(PreparedResponse {
             row_count: result.row_count,
             rows: result

@@ -149,6 +149,7 @@ pub struct PreparedResponse<Row> {
             "/// One result row from the prepared operation {}.\n#[derive({row_derive})]\npub struct {}Row {{\n",
             operation.name, type_name
         ));
+        let columns_const = operation.name.to_uppercase().replace('-', "_");
         for column in &operation.result.columns {
             let field = rust_field(&column.name);
             let ty = if column.nullable {
@@ -162,6 +163,22 @@ pub struct PreparedResponse<Row> {
             ));
         }
         out.push_str("}\n\n");
+        // The declared columns ride with the generated client so the SDK can validate
+        // decoded wire rows against the manifest before serde projection (the Rust mirror
+        // of the JS SDK's decodeRow schema checks).
+        out.push_str(&format!(
+            "/// Declared result columns of the prepared operation {}.\npub const {columns_const}_COLUMNS: &[{rt}::rows::Column] = &[\n",
+            operation.name
+        ));
+        for column in &operation.result.columns {
+            out.push_str(&format!(
+                "    {rt}::rows::Column {{ name: {:?}.to_owned(), semantic_type: {}, nullable: {}, }},\n",
+                column.name,
+                semantic_type_tokens(&column.semantic_type, rt),
+                column.nullable
+            ));
+        }
+        out.push_str("]\n\n");
     }
 
     out.push_str(&format!(
@@ -227,8 +244,9 @@ pub trait PreparedExt {{
         let encode = encode_statement(rt);
         let call = call_statement(router_method, &call_args);
         let rows = rows_field(row);
+        let columns_const = operation.name.to_uppercase().replace('-', "_");
         out.push_str(&format!(
-            "    async fn {method}(\n        &self,\n        params: {params}{key_line}\n    ) -> Result<PreparedResponse<{row}>, {rt}::CallError> {{\n        {encode}\n        {call}\n        Ok(PreparedResponse {{\n            row_count: result.row_count,\n            {rows}\n        }})\n    }}\n\n",
+            "    async fn {method}(\n        &self,\n        params: {params}{key_line}\n    ) -> Result<PreparedResponse<{row}>, {rt}::CallError> {{\n        {encode}\n        {call}\n        {rt}::rows::validate_result_rows(&result, {columns_const}_COLUMNS)?;\n        Ok(PreparedResponse {{\n            row_count: result.row_count,\n            {rows}\n        }})\n    }}\n\n",
         ));
     }
     if out.ends_with("\n\n") {
@@ -370,6 +388,67 @@ fn row_rust_type(semantic_type: &SemanticType, rt: &str) -> String {
         }
         SemanticType::List { element } => format!("Vec<{}>", row_rust_type(element, rt)),
         _ => super::client::rust_type(semantic_type),
+    }
+}
+
+/// Render the semantic-type constructor tokens for the generated `{OP}_COLUMNS` consts.
+/// The generated code references the SDK's re-exports (`{rt}::rows::SemanticType`), so no
+/// host-crate import is needed and every language target maps the same manifest data.
+fn semantic_type_tokens(semantic_type: &SemanticType, rt: &str) -> String {
+    let prefix = format!("{rt}::rows::SemanticType");
+    let simple = |tag: &str| format!("{prefix}::{tag}");
+    match semantic_type {
+        SemanticType::Null => simple("Null"),
+        SemanticType::Bool => simple("Bool"),
+        SemanticType::Int8 => simple("Int8"),
+        SemanticType::Int16 => simple("Int16"),
+        SemanticType::Int32 => simple("Int32"),
+        SemanticType::Int64 => simple("Int64"),
+        SemanticType::Int128 => simple("Int128"),
+        SemanticType::Int256 => simple("Int256"),
+        SemanticType::Uint8 => simple("Uint8"),
+        SemanticType::Uint16 => simple("Uint16"),
+        SemanticType::Uint32 => simple("Uint32"),
+        SemanticType::Uint64 => simple("Uint64"),
+        SemanticType::Uint128 => simple("Uint128"),
+        SemanticType::Uint256 => simple("Uint256"),
+        SemanticType::Float16 => simple("Float16"),
+        SemanticType::Float32 => simple("Float32"),
+        SemanticType::Float64 => simple("Float64"),
+        SemanticType::Float128 => simple("Float128"),
+        SemanticType::Float256 => simple("Float256"),
+        SemanticType::Decimal => simple("Decimal"),
+        SemanticType::Text => simple("Text"),
+        SemanticType::Bytes => simple("Bytes"),
+        SemanticType::Date => simple("Date"),
+        SemanticType::Time => simple("Time"),
+        SemanticType::LocalTime => simple("LocalTime"),
+        SemanticType::DateTime => simple("DateTime"),
+        SemanticType::LocalDateTime => simple("LocalDateTime"),
+        SemanticType::ZonedDateTime => simple("ZonedDateTime"),
+        SemanticType::ZonedTime => simple("ZonedTime"),
+        SemanticType::Duration => simple("Duration"),
+        SemanticType::Principal => simple("Principal"),
+        SemanticType::Path => simple("Path"),
+        SemanticType::List { element } => format!(
+            "{prefix}::List {{ element: Box::new({}) }}",
+            semantic_type_tokens(element, rt)
+        ),
+        SemanticType::Record { fields } => {
+            let rendered = fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{prefix}::RecordField {{ name: {:?}.to_owned(), semantic_type: {}, nullable: {} }}",
+                        field.name,
+                        semantic_type_tokens(&field.semantic_type, rt),
+                        field.nullable
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{prefix}::Record {{ fields: vec![{rendered}] }}")
+        }
     }
 }
 

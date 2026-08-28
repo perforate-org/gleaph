@@ -9,6 +9,7 @@
 use candid::{CandidType, Deserialize, Principal};
 use std::marker::PhantomData;
 
+pub use gleaph_router_wire::rows;
 pub mod types;
 
 /// Query-building helpers re-exported from `gleaph-gql-params`.
@@ -371,6 +372,7 @@ mod tests {
             rows_blob: Some(vec![1, 2, 3]),
             phase: None,
             token: None,
+            truncated: None,
         };
         let bytes = candid::encode_one(&result).expect("encode result");
         let decoded: GqlQueryResult = candid::decode_one(&bytes).expect("decode result");
@@ -387,6 +389,7 @@ mod tests {
             rows_blob: None,
             phase: Some(MutationLifecyclePhase::Completed),
             token: None,
+            truncated: None,
         });
         let bytes = candid::encode_one(&ok).expect("encode ok envelope");
         let decoded: Result<GqlQueryResult, RouterError> =
@@ -552,6 +555,7 @@ mod tests {
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
             phase: None,
             token: None,
+            truncated: None,
         };
         assert_eq!(response.decode_rows().unwrap(), Some(rows));
     }
@@ -589,6 +593,7 @@ mod tests {
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
             phase: None,
             token: None,
+            truncated: None,
         };
         assert_eq!(
             response.decode_serde_rows::<SerdeRow>().unwrap(),
@@ -608,6 +613,7 @@ mod tests {
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
             phase: None,
             token: None,
+            truncated: None,
         };
         assert_eq!(
             response.decode_typed_rows::<TypedRow>().unwrap(),
@@ -777,6 +783,7 @@ mod tests {
             raw: Float256,
             data: Vec<u8>,
             owner: Principal,
+        truncated: None,
         }
 
         let response = GqlQueryResult {
@@ -784,6 +791,7 @@ mod tests {
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
             phase: None,
             token: None,
+            truncated: None,
         };
         assert_eq!(
             response.decode_serde_rows::<WireRow>().unwrap(),

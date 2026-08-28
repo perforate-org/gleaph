@@ -20,6 +20,7 @@ pub mod transport;
 pub mod types {
     pub use gleaph_prepared_api::{PreparedManifest, PreparedRegistration, PreparedSortSpec};
     pub use gleaph_router_wire::types::*;
+pub use gleaph_router_wire::rows;
 
     /// GQL `Date` row binding used by generated client bindings.
     #[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
@@ -87,6 +88,14 @@ pub enum CallError {
     },
     /// The call succeeded and the Router rejected it with a structured error.
     Router(RouterError),
+}
+
+impl From<gleaph_router_wire::rows::RowSchemaError> for CallError {
+    fn from(error: gleaph_router_wire::rows::RowSchemaError) -> Self {
+        Self::Decode {
+            message: error.to_string(),
+        }
+    }
 }
 
 impl core::fmt::Display for CallError {

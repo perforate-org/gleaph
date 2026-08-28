@@ -2,10 +2,10 @@
 
 #![allow(dead_code)]
 
-use gleaph_cdk::GqlParams;
-use gleaph_cdk::GqlValue;
 use gleaph_cdk::candid::CandidType;
 use gleaph_cdk::serde::{Deserialize, Serialize};
+use gleaph_cdk::GqlParams;
+use gleaph_cdk::GqlValue;
 use std::future::Future;
 
 pub const GLEAPH_GRAPH_ID: &str = "fixture-graph";
@@ -38,14 +38,19 @@ impl FindUsersParams {
 }
 
 /// One result row from the prepared operation find-users.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType
 #[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
+#[serde(crate = "gleaph_cdk::serde")])]
 pub struct FindUsersRow {
     /// Wire column user_name.
     #[serde(rename = "user_name")]
     pub user_name: String,
 }
+
+/// Declared result columns of the prepared operation find-users.
+pub const FIND_USERS_COLUMNS: &[gleaph_cdk::rows::Column] = &[
+    gleaph_cdk::rows::Column { name: "user_name".to_owned(), semantic_type: gleaph_cdk::rows::SemanticType::Text, nullable: false, },
+]
 
 /// Marker enabling generated prepared operations on `gleaph_cdk::GleaphClient<Prepared>`.
 pub struct Prepared;
@@ -77,6 +82,7 @@ impl PreparedExt for gleaph_cdk::GleaphClient<Prepared> {
         let result = self
             .prepared_query("find-users", params, None, gleaph_cdk::ReadMode::Eventual)
             .await?;
+        gleaph_cdk::rows::validate_result_rows(&result, FIND_USERS_COLUMNS)?;
         Ok(PreparedResponse {
             row_count: result.row_count,
             rows: result

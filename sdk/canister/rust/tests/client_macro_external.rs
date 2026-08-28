@@ -48,6 +48,7 @@ fn gql_query_result_envelope_decodes_without_rows() {
         rows_blob: None,
         phase: None,
         token: None,
+        truncated: None,
     };
     assert!(response.decode_rows().unwrap().is_none());
 }

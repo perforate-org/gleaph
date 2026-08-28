@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(feature = "nightly-f128", feature(f128))]
 
+pub mod rows;
 pub mod types;
 
 #[cfg(feature = "nightly-f128")]

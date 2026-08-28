@@ -10,6 +10,8 @@ candid.workspace = true
 ethnum = { workspace = true, optional = true }
 f256 = { workspace = true, optional = true }
 gleaph-gql-ic-wire.workspace = true
+gleaph-prepared-api.workspace = true
+thiserror.workspace = true
 gleaph-gql-params = { workspace = true, features = [
     "i256",
     "u256",
