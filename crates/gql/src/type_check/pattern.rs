@@ -133,7 +133,7 @@ fn bind_edge(
     env: &mut TypeEnv<'_>,
     edge: &EdgePattern,
     optional: bool,
-    quantifier: &Option<PathQuantifier>,
+    _quantifier: &Option<PathQuantifier>,
     group: bool,
 ) {
     let Some(ref var) = edge.variable else {

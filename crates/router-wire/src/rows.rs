@@ -1,5 +1,5 @@
 //! Row-schema validation: decoded wire rows checked against a prepared operation's
-//! declared result columns (ADR 0074 metadata).
+//! declared result columns.
 //!
 //! The Rust mirror of the JS SDK's `decodeRow`/`decodeRows` schema checks. A generated
 //! Rust client calls [`validate_result_rows`] before serde projection so a row whose

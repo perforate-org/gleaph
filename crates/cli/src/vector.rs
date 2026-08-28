@@ -1,5 +1,4 @@
-//! `gleaph vector activate` / `deactivate` — the global vector-dispatch kill-switch
-//! (ADR 0031 Slice 4).
+//! `gleaph vector activate` / `deactivate` — the global vector-dispatch kill-switch.
 //!
 //! The flag is fleet-level and defaults to ENABLED (dispatch readiness is the per-index
 //! lifecycle's job — target + shard attach): `deactivate` is the incident-response circuit
@@ -31,7 +30,7 @@ pub struct VectorActivateArgs {
 /// `gleaph vector` subcommands.
 #[derive(Debug, clap::Subcommand)]
 pub enum VectorCommand {
-    /// Enable global vector dispatch (ADR 0031 Slice 4; requires MANAGE_FEDERATION).
+    /// Enable global vector dispatch (requires MANAGE_FEDERATION).
     Activate(VectorActivateArgs),
     /// Disable global vector dispatch (fail-closed across all graphs).
     Deactivate(VectorActivateArgs),

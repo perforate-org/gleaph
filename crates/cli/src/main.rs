@@ -72,10 +72,10 @@ enum TopLevelCommand {
     /// Register prepared queries from local .gql files.
     #[command(subcommand)]
     Prepared(PreparedCommand),
-    /// Apply the declarative data-plane grant policy (ADR 0074).
+    /// Apply the declarative data-plane grant policy.
     #[command(subcommand)]
     Grants(grants::GrantsCommand),
-    /// Vector dispatch fleet controls (ADR 0031 Slice 4).
+    /// Vector dispatch fleet controls.
     #[command(subcommand)]
     Vector(vector::VectorCommand),
     /// Resolve the caller's principal and store the active session.
@@ -126,8 +126,7 @@ struct NetworkStartArgs {
     /// `network start` auto-discovers it by walking up from the project root looking for
     /// `target/pocket-ic-wasm/wasm32-unknown-unknown/release` (a repo-checkout build). When
     /// found, `network start` seeds the Provision artifact catalog and activates release
-    /// "default" (ADR 0087), so lazy Router issuance (ADR 0068) installs the Router from the
-    /// catalog. When neither a directory nor a discovery hit is available, the catalog seed
+    /// "default", so lazy Router issuance installs the Router from the catalog. When neither a directory nor a discovery hit is available, the catalog seed
     /// is skipped and Router issuance fails until a release is activated.
     #[arg(long, value_name = "DIR")]
     platform_wasm_dir: Option<PathBuf>,
@@ -238,9 +237,9 @@ enum PreparedCommand {
     Apply(RemotePreparedArgs),
     /// Remove one named prepared operation from Router storage.
     Drop(DropPreparedArgs),
-    /// Grant PUBLIC execute on one registered prepared operation (ADR 0074).
+    /// Grant PUBLIC execute on one registered prepared operation.
     Publish(PublicationPreparedArgs),
-    /// Remove the PUBLIC execute grant, restoring default-deny (ADR 0074).
+    /// Remove the PUBLIC execute grant, restoring default-deny.
     Unpublish(PublicationPreparedArgs),
     /// Execute a registered read-only prepared operation with shell parameters.
     Run(RunPreparedArgs),
@@ -310,7 +309,7 @@ struct RunPreparedArgs {
     /// Parameter binding `NAME=VALUE` where VALUE is a JSON scalar or array; repeatable.
     #[arg(long, value_name = "NAME=VALUE")]
     param: Vec<String>,
-    /// Read-consistency contract (ADR 0029 §5): `eventual` (default), or
+    /// Read-consistency contract: `eventual` (default), or
     /// `at-least <TOKEN>` where TOKEN is the mutation token issued by an idempotent
     /// write, as JSON (`{"mutation_id":...,"shards":[...]}`).
     #[arg(long, value_name = "MODE", num_args = 1..=2, default_value = "eventual")]
@@ -563,7 +562,7 @@ fn execute_network(
 
             // A fresh start created brand-new canisters: any cached Router id points into a
             // dead network incarnation, so invalidate it before the next data-plane command
-            // re-resolves the Router from the fresh Account canister (ADR 0068).
+            // re-resolves the Router from the fresh Account canister.
             let environment = config::effective_environment(env, &args.network);
             let cache_path = config::router_cache_path(loaded, &environment);
             if cache_path.exists() {
@@ -592,9 +591,9 @@ fn execute_network(
                 }
             }
 
-            // Seed the Provision artifact catalog (ADR 0087 pure-CLI bring-up): ingest the
+            // Seed the Provision artifact catalog (pure-CLI bring-up): ingest the
             // five platform kinds idempotently through the shared ingestion library, then
-            // publish + activate release "default" so lazy Router issuance (ADR 0068) can
+            // publish + activate release "default" so lazy Router issuance can
             // install the Router from the catalog. The operator tool remains the operations
             // entry point for the same surfaces. The wasm directory is auto-discovered (a
             // repo-checkout build) or passed via --platform-wasm-dir.
@@ -873,7 +872,7 @@ fn required_remote(
     let canister = match options.canister {
         Some(c) => c,
         // No explicit canister: resolve the Router id from the Account canister
-        // (ADR 0068). The explicit `--canister` / GLEAPH_CANISTER / config path is
+        // The explicit `--canister` / GLEAPH_CANISTER / config path is
         // preserved for backward compatibility.
         None => resolve_router_from_account(&options, env, loaded)?,
     };
@@ -923,7 +922,7 @@ fn resolve_router_from_account(
     )
     .map_err(CliError::Message)?;
 
-    // Lazy Router issuance (ADR 0068): if the Router is not yet issued, auto-issue it on demand.
+    // Lazy Router issuance: if the Router is not yet issued, auto-issue it on demand.
     let router = match remote::resolve_router_id(&transport, &account_principal, router_name)
         .map_err(CliError::Message)?
     {
@@ -948,7 +947,7 @@ fn resolve_router_from_account(
     Ok(router_text)
 }
 
-/// Auto-issue the first Router on demand (ADR 0068 lazy issuance): drive the Account bootstrap
+/// Auto-issue the first Router on demand (lazy issuance): drive the Account bootstrap
 /// handover (`authorize_router_issuance`) through the Provision canister, then register the
 /// returned Router canister under the caller's account and return its id.
 fn issue_router_lazy(
@@ -1032,7 +1031,7 @@ fn issue_router_lazy(
 }
 
 /// Merge `gleaph.toml` and `GLEAPH_*` defaults into the parsed codegen args. The manifest source
-/// is never created by config: `--manifest` suppresses the deployment canister (ADR 0062 §5).
+/// is never created by config: `--manifest` suppresses the deployment canister.
 fn resolve_codegen(
     mut args: gleaph_codegen::CodegenArgs,
     env: &ConfigEnv,
@@ -1056,7 +1055,7 @@ fn resolve_codegen(
         };
     }
     // The graph selects the Router-side manifest source, so `--manifest` suppresses it
-    // exactly like it suppresses the deployment canister (ADR 0062 §5).
+    // exactly like it suppresses the deployment canister.
     if args.manifest.is_none() && args.graph.is_none() {
         args.graph = config
             .and_then(|config| config.codegen())
@@ -1376,7 +1375,7 @@ fn execute_prepared(
 }
 
 /// Shared body of `prepared publish` / `unpublish`: connect with the caller's identity and
-/// send the ADR 0074 PUBLIC publication statement for one registered operation.
+/// send the PUBLIC publication statement for one registered operation.
 fn execute_prepared_publication(
     name: &str,
     remote_args: &RemotePreparedArgs,

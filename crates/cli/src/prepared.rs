@@ -1,4 +1,4 @@
-//! `gleaph prepared` — file-based prepared-query registration (ADR 0061).
+//! `gleaph prepared` — file-based prepared-query registration.
 //!
 //! Owns the `prepared/` artifact format (one `<name>.gql` per operation, optional `<name>.toml`
 //! sidecar), local validation, and the Router transport for `plan` / `status` / `apply` /
@@ -37,8 +37,8 @@ use crate::remote::RemoteTransport;
 /// Maximum prepared-source size, matching the migration statement bound (65,536 bytes).
 pub const MAX_PREPARED_SOURCE_BYTES: usize = 65_536;
 
-/// Maximum operations per `prepare` batch, mirroring the Router's `MAX_PREPARED_BATCH`
-/// (ADR 0061). Keep in sync with the Router constant.
+/// Maximum operations per `prepare` batch, mirroring the Router's `MAX_PREPARED_BATCH`.
+/// Keep in sync with the Router constant.
 pub const MAX_PREPARED_BATCH: usize = 32;
 
 /// Default artifact directory name.
@@ -48,7 +48,7 @@ pub const DEFAULT_PREPARED_DIR: &str = "prepared";
 #[derive(Clone, Debug, clap::Args)]
 pub struct PreparedDirArgs {
     /// Prepared-query directory; defaults to `./prepared` (configurable via `[dirs]` in
-    /// `gleaph.toml`, ADR 0062).
+    /// `gleaph.toml`).
     #[arg(long, value_name = "PATH")]
     pub dir: Option<PathBuf>,
 }
@@ -59,7 +59,7 @@ const TOML_EXTENSION: &str = ".toml";
 /// Strict explicit-metadata sidecar (`<name>.toml`).
 ///
 /// Parameter types and the result schema are NOT authorable here; the Router completes them from
-/// the program (ADR 0061 §6).
+/// the program.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedSidecar {
@@ -136,8 +136,8 @@ pub trait PreparedTransport {
         read_mode: &ReadMode,
     ) -> Result<Result<GqlQueryResult, RouterError>, String>;
     /// Execute one standalone authorization statement through the generic `gql_mutate`
-    /// entrypoint (ADR 0074 §5: GRANT/REVOKE ride the host control path; there is no
-    /// dedicated publication endpoint). The payload result carries no rows.
+    /// entrypoint (GRANT/REVOKE ride the host control path; there is no dedicated
+    /// publication endpoint). The payload result carries no rows.
     fn authorization_statement(
         &mut self,
         statement: &str,
@@ -324,7 +324,7 @@ pub fn discover(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedE
 ///
 /// The envelope **always** carries `metadata: Some(...)`: `list_prepared` (the codegen input)
 /// surfaces metadata-bearing records only, and the Router completes parameters and result
-/// columns (ADR 0061 §4/§6).
+/// columns.
 pub fn build_registration(artifact: &PreparedOperationArtifact) -> PreparedRegistration {
     PreparedRegistration {
         name: artifact.name.clone(),
@@ -537,7 +537,7 @@ pub fn drop<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), P
     }
 }
 
-// ──── prepared publish / unpublish (ADR 0074 §5 PUBLIC publication) ────
+// ──── prepared publish / unpublish (PUBLIC publication) ────
 
 /// Build the PUBLIC publication statement for one prepared operation.
 ///
@@ -546,7 +546,7 @@ pub fn drop<T: PreparedTransport>(name: &str, transport: &mut T) -> Result<(), P
 /// binds `TO PUBLIC`, a revoke removes with `FROM PUBLIC`, and revoking an absent row is an
 /// exact-key `RouterError::NotFound`.
 ///
-/// The op name is emitted as a double-quoted identifier. ADR 0061 names are kebab-case and
+/// The op name is emitted as a double-quoted identifier. Prepared-op names are kebab-case and
 /// the bare lexer splits them at `-`, which rejected every real demo op live
 /// (GAP-2026-08-24-005); the quoted form rides `expect_ident`'s QuotedIdent arm and parses
 /// identically for hyphen-free names.
@@ -559,7 +559,7 @@ fn publication_statement(name: &str, publish: bool) -> Result<String, PreparedEr
     })
 }
 
-/// Grant PUBLIC execute on one registered prepared operation (ADR 0074 §1b).
+/// Grant PUBLIC execute on one registered prepared operation.
 ///
 /// The caller must own the op's bound graph or hold `PREPARE_REGISTER`, and the op's stored
 /// requirement set must be covered by the caller's effective privileges — both enforced by
@@ -889,7 +889,7 @@ fn scan_statement(scan: &mut ProjectionScan, statement: &Statement) {
         Statement::Set(set) => scan_set(scan, set),
         Statement::Delete(delete) => delete.items.iter().for_each(|e| scan_expr(scan, e)),
         // REMOVE names existing properties/labels; DDL, session commands, and the
-        // EXPLAIN AUTHORIZATION diagnostic (ADR 0084) carry no element-id reads or
+        // EXPLAIN AUTHORIZATION diagnostic carries no element-id reads or
         // pattern bindings.
         Statement::Remove(_)
         | Statement::CreateSchema(_)

@@ -1,4 +1,4 @@
-//! Project-scoped `gleaph.toml` configuration (ADR 0062).
+//! Project-scoped `gleaph.toml` configuration.
 //!
 //! Owns config discovery (walk-up from the working directory, `GLEAPH_CONFIG` override), strict
 //! TOML parsing, per-network `[deployment.<network>]` profiles, and the field-level merge that
@@ -13,7 +13,7 @@ use thiserror::Error;
 /// Config file name discovered by walking up from the working directory.
 pub const CONFIG_FILE: &str = "gleaph.toml";
 
-/// `.gleaph/` directory name, located in the same directory as `gleaph.toml` (ADR 0062 §13).
+/// `.gleaph/` directory name, located in the same directory as `gleaph.toml`.
 pub const GLEAPH_DIR: &str = ".gleaph";
 
 /// Platform-fixed canister-id mapping directory under `.gleaph/` (committed).
@@ -34,7 +34,7 @@ pub const DEFAULT_MIGRATIONS_DIR: &str = "migrations";
 /// Built-in prepared directory default (working-directory-relative).
 pub const DEFAULT_PREPARED_DIR: &str = "prepared";
 
-/// Built-in default for the `[dirs] grants` entry (ADR 0074 policy surface).
+/// Built-in default for the `[dirs] grants` entry (the grants policy surface).
 pub const DEFAULT_GRANTS_DIR: &str = "grants";
 
 #[derive(Debug, Error)]
@@ -138,7 +138,7 @@ struct Dirs {
 }
 
 /// One `[deployment.<network>]` entry. `fetch_root_key` is valid only for custom-URL keys
-/// (ADR 0062 §7); the presence check happens in [`Config::validate`].
+/// The presence check happens in [`Config::validate`].
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentProfile {
@@ -372,7 +372,7 @@ pub struct RemoteOptions {
 ///
 /// `fetch_root_key` uses the network resolution in `remote.rs` unchanged: the effective value here
 /// is the flag/env/URL-entry value (default `false`), and `local` still fetches the root key
-/// regardless (ADR 0062 §7).
+/// regardless.
 pub fn merge_remote(
     canister_flag: Option<&str>,
     network_flag: Option<&str>,

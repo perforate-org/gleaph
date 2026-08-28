@@ -1,10 +1,9 @@
-//! `gleaph grants apply` — apply the project's declarative data-plane grant policy
-//! (ADR 0074).
+//! `gleaph grants apply` — apply the project's declarative data-plane grant policy.
 //!
 //! `grants/*.gql` files hold GRANT/REVOKE statements; each file is one program sent
-//! through the same `gql_mutate` control path `prepared publish` uses (ADR 0074 §5:
-//! there is no dedicated publication endpoint — GRANT/REVOKE ride the host control path
-//! and the executor enforces registry-owner-only per statement). Application is additive
+//! through the same `gql_mutate` control path `prepared publish` uses (there is no
+//! dedicated publication endpoint — GRANT/REVOKE ride the host control path and the
+//! executor enforces registry-owner-only per statement). Application is additive
 //! and idempotent: grant rows are upserts (re-granting replaces the row), so re-running
 //! an unchanged policy converges; the policy file is a floor, never a reconcile — runtime
 //! grants made by the registry owner are not revoked by absence from the file.

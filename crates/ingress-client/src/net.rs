@@ -4,7 +4,7 @@
 //! (`crates/cli/src/remote.rs`): `ic` targets mainnet without a root-key fetch, `local`
 //! targets the default gateway with an automatic root-key fetch, and a custom http(s) URL is
 //! accepted only together with an explicit root-key fetch. One persona difference by design
-//! (recorded in ADR 0087 §Problem): platform tooling takes a raw PEM path instead of the dev
+//! (recorded in the ingress crate history): platform tooling takes a raw PEM path instead of the dev
 //! identity store, because governance key material must not live in developer-tool
 //! conventions.
 

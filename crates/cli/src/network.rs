@@ -6,10 +6,10 @@
 //! Provision) are then deployed by calling the management canister directly via `ic-agent`.
 //!
 //! With `--platform-wasm-dir`, bring-up additionally seeds the Provision artifact catalog
-//! through the shared ingestion library ([`gleaph_ingress_client`] + [`gleaph_artifact_api`],
-//! the ADR 0087 decision that pure-CLI bring-up seeds the local catalog): the five platform
+//! through the shared ingestion library ([`gleaph_ingress_client`] + [`gleaph_artifact_api`];
+//! pure-CLI bring-up seeds the local catalog): the five platform
 //! kinds are ingested idempotently from their conventional file names, then release
-//! `"default"` is published and activated so lazy Router issuance (ADR 0068) can install the
+//! `"default"` is published and activated so lazy Router issuance can install the
 //! Router from the catalog. The operator tool remains the mainnet/operations entry point for
 //! the same surfaces.
 
@@ -546,7 +546,7 @@ enum UpsertDeploymentGrantErrorMirror {
     Unauthorized,
 }
 
-// === Provision catalog seeding (ADR 0087) ====================================
+// === Provision catalog seeding ================================================
 
 /// The release identifier pure-CLI bring-up seeds. Must stay in lockstep with the Account
 /// canister's first-Router issuance, which requests `release_id = "default"` (hardcoded in
@@ -717,7 +717,7 @@ pub enum SeedOutcome {
 }
 
 /// Seed the Provision artifact catalog from a directory of platform wasms, then publish and
-/// activate the [`SEED_RELEASE_ID`] release (ADR 0087: pure-CLI bring-up seeds the local
+/// activate the [`SEED_RELEASE_ID`] release (pure-CLI bring-up seeds the local
 /// catalog through the shared ingestion library).
 ///
 /// Idempotent: an existing active release short-circuits the whole seed, artifact ingestion

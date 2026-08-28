@@ -72,7 +72,7 @@ and canisters share one generated shape.
 - `gleaph-cdk` crate created at `sdk/canister/rust` and adopted by `gleaph-codegen` output and the
   `examples/rust-canister-app` example (the social-demo gateway, its former consumer, was removed in
   2026-08-06 with the SDK-direct frontend).
-- `gleaph-sdk` crate created at `sdk/client/rust` (2026-08-20, ADR 0069) with the shared
+- `gleaph-sdk` crate created at `sdk/client/rust` (2026-08-20) with the shared
   `gleaph-router-wire` contract crate; the Rust codegen client profile was unified with the canister
   profile onto `PreparedExt`.
 - Admin SDK boundary documented above but not implemented.

@@ -252,7 +252,7 @@ pub fn gql_param_value<T: IntoGqlParam>(value: T) -> GqlValue {
 /// Opaque 8-byte vertex id in a GQL path value.
 ///
 /// Mirrors `gleaph_graph_kernel::federation::encoded::EncodedVertexId`; the fixed 8-byte
-/// length is part of the Router's path-value wire contract (ADR 0005).
+/// length is part of the Router's path-value wire contract.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Deserialize, Serialize,
 )]
@@ -261,7 +261,7 @@ pub struct VertexPathElementId(pub [u8; 8]);
 /// Opaque 12-byte edge id in a GQL path value.
 ///
 /// Mirrors `gleaph_graph_kernel::federation::encoded::EncodedEdgeId`; the fixed 12-byte
-/// length is part of the Router's path-value wire contract (ADR 0005).
+/// length is part of the Router's path-value wire contract.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Deserialize, Serialize,
 )]
@@ -270,7 +270,7 @@ pub struct EdgePathElementId(pub [u8; 12]);
 /// One vertex or edge in a GQL path value, with the fixed-length element id typed per kind.
 ///
 /// The Candid shape is `variant { Vertex: vec nat8, Edge: vec nat8 }` — identical to the
-/// Router's path element wire representation (ADR 0005). The distinct id types prevent
+/// Router's path element wire representation. The distinct id types prevent
 /// mixing a vertex id into an edge slot and vice versa, and enforce the byte lengths.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
 pub enum PathElement {

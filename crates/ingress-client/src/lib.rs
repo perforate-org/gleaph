@@ -1,12 +1,11 @@
-//! Shared IC ingress transport and typed Provision client (ADR 0087).
+//! Shared IC ingress transport and typed Provision client.
 //!
 //! Two layers with distinct owners:
 //!
 //! 1. [`ingress::IcIngress`] — the generic "any destination canister + any method" caller. It
 //!    owns the ic-agent setup (network resolution, PEM identity, root-key fetch) and exposes
-//!    raw and candid-typed update/query calls. This is the seam ADR 0087 §Explicitly deferred
-//!    requires for the bootstrap-tier management-canister commands: they reuse this layer
-//!    unchanged.
+//!    raw and candid-typed update/query calls. This is the seam the bootstrap-tier
+//!    management-canister commands require: they reuse this layer unchanged.
 //! 2. [`client::ProvisionClient`] — the typed Provision surface. Its inherent methods return
 //!    `Result<Result<T, E>, IngressError>` so callers can distinguish server rejections from
 //!    transport failures, and its [`gleaph_artifact_api::ArtifactTransport`] implementation
@@ -21,8 +20,7 @@
 //! `reqwest`, and the network-resolution conventions, so the neutrality contract survives
 //! while the transport stops being private to one consumer. Consumers today:
 //! `gleaph-operator` (re-exported unchanged) and `gleaph network start`'s catalog seeding —
-//! the ADR 0087 decision that pure-CLI bring-up seeds the local catalog through the shared
-//! ingestion library. A future online wasm-distribution path (replica fetch + local cache,
+//! pure-CLI bring-up seeds the local catalog through the shared ingestion library. A future online wasm-distribution path (replica fetch + local cache,
 //! the launcher download pattern) replaces the directory-based source without touching this
 //! layer.
 //!

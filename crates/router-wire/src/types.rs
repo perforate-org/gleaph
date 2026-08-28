@@ -27,7 +27,7 @@ pub use gleaph_gql_params::GqlValue;
 /// Typed path element binding used by generated bindings.
 ///
 /// Path element ids are fixed-length opaque bytes on the Router wire (vertex 8 bytes,
-/// edge 12 bytes; ADR 0005), enforced by [`VertexPathElementId`] / [`EdgePathElementId`].
+/// edge 12 bytes), enforced by [`VertexPathElementId`] / [`EdgePathElementId`].
 pub use gleaph_gql_params::{EdgePathElementId, PathElement, VertexPathElementId};
 
 /// Upstream binary256 value used by generated parameter bindings; serde is unavailable upstream,
@@ -74,7 +74,7 @@ pub type GqlRecord = GqlParams;
 /// One GQL result row.
 pub type GqlRow = GqlParams;
 
-/// Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
+/// Federated mutation lifecycle phase for idempotent mutations.
 ///
 /// Mirrors `gleaph_graph_kernel::plan_exec::MutationLifecyclePhase`; variant order is part of
 /// the Candid wire contract and must stay in lockstep.
@@ -98,7 +98,7 @@ pub enum MutationLifecyclePhase {
 ///
 /// Mirrors `gleaph_graph_kernel::plan_exec::GqlQueryResult` (Candid variant order and field
 /// names are the wire contract). `phase`/`token` are only populated for idempotent mutations;
-/// reads always yield `None`. `truncated` is an additive optional field (ADR 0078 §4):
+/// reads always yield `None`. `truncated` is an additive optional field:
 /// receivers built against older contracts ignore it, and older senders decode as `None`.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GqlQueryResult {
@@ -106,12 +106,12 @@ pub struct GqlQueryResult {
     pub row_count: u64,
     /// Optional compact Candid rows blob.
     pub rows_blob: Option<Vec<u8>>,
-    /// Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
+    /// Federated mutation lifecycle phase for idempotent mutations.
     pub phase: Option<MutationLifecyclePhase>,
-    /// Read-your-writes token for idempotent mutations (ADR 0029 §5, Phase 2). `None`
+    /// Read-your-writes token for idempotent mutations (Phase 2). `None`
     /// for reads and untracked escape-hatch writes.
     pub token: Option<MutationToken>,
-    /// ADR 0078 §4 explicit truncation indicator for authz-aware vector search:
+    /// Explicit truncation indicator for authz-aware vector search:
     /// `Some(true)` when iterative deepening stopped before finding `k` authorized rows;
     /// `Some(false)` when the search converged; `None` for every non-search result.
     pub truncated: Option<bool>,
@@ -487,7 +487,7 @@ pub fn gql_principal_from_value(value: GqlValue) -> Result<PrincipalValue, GqlWi
     }
 }
 
-/// Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
+/// Why production vector-index dispatch/backfill is fail-closed.
 ///
 /// Mirrors `gleaph_graph_kernel::federation::RouterError::VectorActivationBlockReason`;
 /// variant order is part of the Candid wire contract.
@@ -631,7 +631,7 @@ pub struct AtomicInsertPropertyV1 {
     pub value: Vec<u8>,
 }
 
-/// Public durable bulk-load command family (ADR 0057).
+/// Public durable bulk-load command family.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BulkLoadCommand {
     /// Open a new durable bulk-load job for a graph.

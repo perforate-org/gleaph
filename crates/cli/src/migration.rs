@@ -111,7 +111,7 @@ fn file_snapshot(metadata: &fs::Metadata) -> Result<FileSnapshot, MigrationError
 #[derive(Args, Clone, Debug)]
 pub struct MigrationDirArgs {
     /// Migration directory; defaults to `./migrations` (configurable via `[dirs]` in
-    /// `gleaph.toml`, ADR 0062).
+    /// `gleaph.toml`).
     #[arg(long, value_name = "PATH")]
     pub dir: Option<PathBuf>,
 }
@@ -185,7 +185,7 @@ impl MigrationArtifact {
 
     /// Indexed property names across the whole payload, in statement order. Catalog migrations
     /// return an empty list. The Router requires every property to already be interned in the
-    /// target graph (ADR 0059 Preparing rejects missing properties), so `apply` interns them first.
+    /// target graph (Preparing rejects missing properties), so `apply` interns them first.
     pub fn index_properties(&self) -> Result<Vec<String>, MigrationError> {
         if !self
             .profile
@@ -250,8 +250,8 @@ pub trait MigrationTransport {
     ) -> Result<ApplySchemaMigrationResult, String>;
 
     /// Intern one batch of property names in the target graph. A `CREATE INDEX` migration
-    /// references properties that the Router requires to already exist (ADR 0059 Preparing
-    /// rejects missing properties), so the CLI interns them before applying the migration. The
+    /// references properties that the Router requires to already exist (Preparing rejects
+    /// missing properties), so the CLI interns them before applying the migration. The
     /// Router interns all names in one update and returns the ids in input order.
     fn ensure_properties(
         &mut self,
@@ -920,7 +920,7 @@ pub fn apply<T: MigrationTransport>(
     let local = discover(root)?;
     let current = status_for_plan(&local, transport)?;
     // Indexed properties for a CREATE INDEX migration are interned just before that migration is
-    // applied (Router rejects missing properties in Preparing, ADR 0059) — not up front: an
+    // applied (the Router rejects missing properties in Preparing) — not up front: an
     // earlier migration in the same apply run may create the target graph (the demo's 000001
     // CREATE GRAPH precedes 000002's CREATE INDEX), so interning before any apply would fail
     // with NotFound(graph).

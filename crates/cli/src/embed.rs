@@ -1,6 +1,6 @@
 //! `gleaph embed ingest` — push deterministic vertex embeddings into a registered vector index
-//! through Router's existing admin batch API (ADR 0064 §6 ingestion path; the B案 decision
-//! keeps the durable bulk-load wire free of embedding bytes).
+//! through Router's existing admin batch API (the ingestion path; the B案 decision keeps
+//! the durable bulk-load wire free of embedding bytes).
 //!
 //! The command runs strictly after a Completed bulk-load job: it re-reads the load's vertices
 //! NDJSON for the `source_id` order, pages the job's chunk receipts, and reconstructs the

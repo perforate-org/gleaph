@@ -201,7 +201,7 @@ impl<Prepared> GleaphClient<Prepared> {
     /// Execute an idempotent dynamic GQL mutation.
     ///
     /// Reuse `client_mutation_key` only for retries of the same mutation. The returned
-    /// [`GqlQueryResult`] carries the ADR 0029 federated mutation lifecycle `phase` and the
+    /// [`GqlQueryResult`] carries the federated mutation lifecycle `phase` and the
     /// read-your-writes [`MutationToken`].
     pub async fn gql_mutate(
         &self,
@@ -245,7 +245,7 @@ impl<Prepared> GleaphClient<Prepared> {
             .await
     }
 
-    /// Execute one durable Router bulk-load command (ADR 0057).
+    /// Execute one durable Router bulk-load command.
     pub async fn bulk_load(&self, command: BulkLoadCommand) -> Result<BulkLoadResponse, CallError> {
         self.transport.bulk_load(command).await
     }
@@ -269,7 +269,7 @@ impl<Prepared> GleaphClient<Prepared> {
     }
 
     /// Register or replace named prepared operations in one atomic batch (idempotent upsert).
-    /// Per-operation `metadata` is optional (ADR 0061).
+    /// Per-operation `metadata` is optional.
     pub async fn prepare(&self, operations: Vec<PreparedRegistration>) -> Result<(), CallError> {
         self.transport.prepare(operations).await
     }

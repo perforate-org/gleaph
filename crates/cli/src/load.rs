@@ -1,5 +1,5 @@
 //! `gleaph load`: load initial vertices and edges into an existing logical graph through the
-//! durable Router `bulk_load` lifecycle (ADR 0057, ADR 0060 Decision 4).
+//! durable Router `bulk_load` lifecycle.
 //!
 //! The artifact is a YAML/JSON single file (`format_version: 1`, `vertices` + `edges`) or two
 //! NDJSON files (`vertices.jsonl` + `edges.jsonl`). NDJSON files are read as a row stream: a
@@ -286,7 +286,7 @@ impl PreparedLoad {
     }
 
     /// Distinct property names referenced by any vertex or edge row. Data-driven properties are
-    /// interned before the first chunk (ADR 0059: the Router rejects missing properties).
+    /// interned before the first chunk (the Router rejects missing properties).
     fn property_names(&self) -> &BTreeSet<String> {
         match self {
             PreparedLoad::SingleFile { property_names, .. }
@@ -944,8 +944,8 @@ trait BulkLoadTransport {
     ) -> Result<Result<BulkLoadResponse, RouterError>, String>;
 
     /// Intern the data-driven property vocabulary before the first chunk. `bulk_load` admission
-    /// resolves every property name against the Router catalog and rejects missing properties
-    /// (ADR 0059), so the CLI declares the artifact's property names up front in one batch call.
+    /// resolves every property name against the Router catalog and rejects missing properties,
+/// so the CLI declares the artifact's property names up front in one batch call.
     fn ensure_properties(
         &mut self,
         graph: &str,
@@ -1090,7 +1090,7 @@ fn send_command(
     }
 }
 
-/// Drive one durable bulk-load job to `Completed` (ADR 0060 §3 client loop).
+/// Drive one durable bulk-load job to `Completed` (the client-side loop).
 fn run_load(
     transport: &mut impl BulkLoadTransport,
     prepared: &PreparedLoad,
@@ -1135,7 +1135,7 @@ fn run_load(
     }
 
     // The artifact's data-driven properties are interned in one batch call before the first chunk
-    // (ADR 0059: bulk_load admission rejects missing properties). Interning is idempotent, so a
+    // bulk_load admission rejects missing properties. Interning is idempotent, so a
     // resumed job re-declares them safely. Without a graph name the CLI cannot declare properties,
     // so a property-carrying artifact fails fast with guidance instead of a cryptic Router
     // rejection mid-load.
@@ -2241,7 +2241,7 @@ mod tests {
 
     #[test]
     fn loader_interns_artifact_properties_before_start() {
-        // Data-driven properties must be declared (interned) before the first chunk (ADR 0059);
+        // Data-driven properties must be declared (interned) before the first chunk;
         // run_load issues one batch ensure_properties call before Start.
         let mut artifact = sample_artifact(2, 1);
         artifact.vertices[0].properties = Properties(vec![

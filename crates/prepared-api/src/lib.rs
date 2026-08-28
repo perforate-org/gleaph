@@ -70,7 +70,7 @@ pub struct PreparedOperation {
 /// One operation in a batch prepared-query registration request.
 ///
 /// The Router resolves the target graph from the program (`USE GRAPH`) or the caller's home
-/// graph (ADR 0011 / ADR 0061), so the envelope carries no graph selector. Metadata is optional:
+/// graph, so the envelope carries no graph selector. Metadata is optional:
 /// when supplied, Router-owned completion fills parameters and result columns from the program.
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedRegistration {
@@ -142,7 +142,7 @@ pub struct PreparedSortSpec {
 /// The stored source and metadata of one registered prepared operation.
 ///
 /// Returned by the Router's `get_prepared` query so operators can diff a local artifact against
-/// the durable catalog without re-fetching the whole manifest (ADR 0061).
+/// the durable catalog without re-fetching the whole manifest.
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedOperationRecord {
     /// The exact registered query source.

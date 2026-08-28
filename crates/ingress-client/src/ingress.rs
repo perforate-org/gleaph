@@ -1,7 +1,7 @@
 //! The generic any-canister/any-method IC ingress layer.
 //!
 //! This is the reuse seam for the operator's bootstrap-tier management-canister commands
-//! (ADR 0087 §Explicitly deferred) and for the dev CLI's platform bring-up seeding.
+//! and for the dev CLI's platform bring-up seeding.
 
 use std::path::Path;
 
@@ -117,8 +117,7 @@ impl IcIngress {
 
     /// Raw update call to any destination canister and method. Returns the raw reply bytes.
     ///
-    /// This is the reuse seam for future bootstrap-tier management-canister commands
-    /// (ADR 0087 §Explicitly deferred).
+    /// This is the reuse seam for future bootstrap-tier management-canister commands.
     pub async fn update_raw(
         &self,
         target: candid::Principal,
@@ -253,7 +252,7 @@ impl IcIngress {
     /// Update any canister method returning a plain (non-`Result`) value.
     ///
     /// This is the reuse seam for management-canister calls whose replies are plain values
-    /// (`create_canister` → `CanisterIdRecord`, `upload_chunk` → `chunk_hash`; ADR 0087
+    /// (`create_canister` → `CanisterIdRecord`, `upload_chunk` → `chunk_hash`;
     /// bootstrap tier).
     pub async fn update_value<A, T>(
         &self,
