@@ -46,8 +46,8 @@ ic-management-canister-types.workspace = true
 # ic-agent (whose PEM parser reads these PKCS#8 files back); default features provide
 # arithmetic + pkcs8/PEM encoding, rand_core 0.6 is the CryptoRngCore surface that
 # `SecretKey::random` consumes.
-k256 = { version = "0.13", features = ["pem"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+k256 = { version = "0.14", features = ["pem"] }
+rand = "0.10"
 flate2.workspace = true
 libc.workspace = true
 reqwest.workspace = true

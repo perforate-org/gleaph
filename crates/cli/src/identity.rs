@@ -74,13 +74,15 @@ pub struct CreatedIdentity {
 /// the stored PEM back through the same path [`principal_from_pem`] uses for `login`, so
 /// the printed principal and every later session resolution agree.
 pub fn create(name: &str) -> Result<CreatedIdentity, String> {
+    use k256::elliptic_curve::Generate;
+
     validate_store_name(name)?;
     let dest = store_pem_path(name)?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create identity dir {}: {e}", parent.display()))?;
     }
-    let secret_key = k256::SecretKey::random(&mut rand_core::OsRng);
+    let secret_key = k256::SecretKey::generate_from_rng(&mut rand::rng());
     use k256::elliptic_curve::pkcs8::EncodePrivateKey as _;
     let pem = secret_key
         .to_pkcs8_pem(k256::elliptic_curve::pkcs8::LineEnding::LF)
