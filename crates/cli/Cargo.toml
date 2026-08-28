@@ -21,10 +21,13 @@ gleaph-account.workspace = true
 gleaph-artifact-api.workspace = true
 gleaph-bulk-load-api.workspace = true
 gleaph-codegen.workspace = true
-gleaph-gql = { workspace = true, features = ["gleaph", "serde"] }
+# `cypher` must stay enabled unconditionally: prepared.rs matches over AST variants
+# (e.g. `ReturnBody::NoBindings`) that only exist with the cypher dialect, and no
+# consumer of this crate toggles a cli-level feature flag.
+gleaph-gql = { workspace = true, features = ["gleaph", "serde", "cypher"] }
 # `for_each_immediate_child_expr` — the canonical Expr child traversal — powers the
 # prepared-source element-id projection detector below.
-gleaph-gql-planner.workspace = true
+gleaph-gql-planner = { workspace = true, features = ["cypher"] }
 # Numeric vocabulary must match the rest of the cli graph (prepared-runtime enables
 # gleaph-gql f128/f256), so the shared wire enum compiles its matching variant arms.
 gleaph-gql-ic-wire = { workspace = true, features = ["f256", "nightly-f128"] }
