@@ -1442,6 +1442,72 @@ mod publication_tests {
         );
     }
 
+    /// The exact citation-reach demand multiset: `Match(Document)` + `Read(Document)` +
+    /// `Traverse(None, CITES)` + `ReadProperty(Document, title)`×2. The two duplicate
+    /// ReadProperty rows are the point: src and dst both attribute their `title` read
+    /// through the Document label fact, while ELEMENT_ID projections add no row at all.
+    fn citation_reach_expected_rows(store: &RouterStore, graph: GraphId) -> Vec<Privilege> {
+        let g = graph.raw();
+        // Catalog ids are u16 in the Router catalogs and widen to the grant-row u32.
+        let doc = u32::from(
+            store
+                .lookup_vertex_label_id(graph, "Document")
+                .expect("Document id")
+                .raw(),
+        );
+        let cites = u32::from(
+            store
+                .lookup_edge_label_id(graph, "CITES")
+                .expect("CITES id")
+                .raw(),
+        );
+        let title = store
+            .lookup_property_id(graph, "title")
+            .expect("title id")
+            .raw();
+        let row = |operation, resource| {
+            Privilege::Graph(GraphPrivilege {
+                graph: g,
+                operation,
+                resource,
+            })
+        };
+        vec![
+            row(GraphOperation::Match, GraphResource::VertexLabel(doc)),
+            row(GraphOperation::Read, GraphResource::VertexLabel(doc)),
+            row(
+                GraphOperation::Traverse(None),
+                GraphResource::EdgeLabel(cites),
+            ),
+            row(
+                GraphOperation::ReadProperty,
+                GraphResource::VertexProperty {
+                    label: doc,
+                    property: title,
+                },
+            ),
+            row(
+                GraphOperation::ReadProperty,
+                GraphResource::VertexProperty {
+                    label: doc,
+                    property: title,
+                },
+            ),
+        ]
+    }
+
+    /// Exact demand-row multiset lock: every expected row must be matched and removed.
+    fn assert_exact_row_multiset(expected: &[Privilege], actual: &mut Vec<Privilege>) {
+        for expected_row in expected {
+            let pos = actual
+                .iter()
+                .position(|r| *r == *expected_row)
+                .unwrap_or_else(|| panic!("missing demand row {expected_row:?}"));
+            actual.remove(pos);
+        }
+        assert!(actual.is_empty(), "unexpected extra demand rows {actual:?}");
+    }
+
     /// Plan 0306 / closes GAP-2026-08-24-008 residual follow-up (a): an ELEMENT_ID
     /// projection on a MATCH-bound edge variable demands nothing beyond the traversal row
     /// its label facts already cover — symmetric with vertex element-id reads; pinned
@@ -1482,65 +1548,76 @@ mod publication_tests {
         assert_eq!(conj, 5, "Match + Read + Traverse + ReadProperty×2");
         assert_eq!(alts, 0);
 
-        // Exact demand-row multiset. The two duplicate ReadProperty rows are the point:
-        // src and dst both attribute their `title` read through the Document label fact,
-        // while ELEMENT_ID(dst)/ELEMENT_ID(e) add no row at all.
-        let g = graph.raw();
-        // Catalog ids are u16 in the Router catalogs and widen to the grant-row u32.
-        let doc = u32::from(
-            store
-                .lookup_vertex_label_id(graph, "Document")
-                .expect("Document id")
-                .raw(),
+        let mut actual = reqs
+            .test_graph_rows(graph.raw())
+            .expect("graph demands present");
+        assert_exact_row_multiset(&citation_reach_expected_rows(&store, graph), &mut actual);
+    }
+
+    /// Live-diagnosis regression (2026-08-24 demo network, index present): an index-
+    /// anchored citation-reach (Document.title actively indexed, the demo's exact shape)
+    /// previously extracted an UNATTRIBUTED demand — the `IndexScan` arm deferred the
+    /// anchor's property read without noting any label fact, and no later NodeScan ever
+    /// supplied one, so every non-tenant was denied Forbidden despite holding the PUBLIC
+    /// grant surface. The index-anchored shape must extract the SAME multiset as the
+    /// indexless shape above: the unique active vertex index on the anchor property pins
+    /// the scan's bound label, so the anchor attributes like a labeled NodeScan.
+    #[test]
+    fn index_anchored_citation_reach_demands_match_the_indexless_shape() {
+        let owner = Principal::from_slice(&[7; 29]);
+        let registrar = Principal::from_slice(&[255; 29]); // has MANAGE_CATALOG via grant_admins
+        let graph = owned_graph(owner, "diag_cite_idx");
+        let store = crate::facade::store::RouterStore::new();
+        store
+            .admin_intern_vertex_label(registrar, "diag_cite_idx", "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_edge_label(registrar, "diag_cite_idx", "CITES")
+            .expect("intern CITES");
+        store
+            .admin_intern_properties(registrar, "diag_cite_idx", &["title".to_owned()])
+            .expect("intern properties");
+
+        // Demo migration 000002 equivalent: Document.title is the demo's only active
+        // vertex index (Concept.name intentionally unindexed — no fixture here).
+        let label_id = store
+            .lookup_vertex_label_id(graph, "Document")
+            .expect("Document label id");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            graph,
+            label_id.raw(),
+            "title",
         );
-        let cites = u32::from(
-            store
-                .lookup_edge_label_id(graph, "CITES")
-                .expect("CITES id")
-                .raw(),
+
+        // Byte-identical to demo/knowledge/prepared/citation-reach.gql modulo whitespace.
+        let source = "MATCH (src:Document {title: 'GraphRAG retrieval'})\
+                      -[e:CITES]->{1,3}(dst:Document) \
+                      RETURN ELEMENT_ID(dst) AS document_id, dst.title AS title, \
+                      ELEMENT_ID(e) AS cite_edge_id";
+        let (cache, bound_graph) =
+            crate::prepared::build_prepared_cache(source, owner, Some(graph))
+                .expect("plan citation-reach shape");
+        assert_eq!(bound_graph, graph);
+        // The fixture must exercise the IndexScan path: with the active index the anchor
+        // lowers to an index scan instead of a labeled NodeScan.
+        assert!(
+            format!("{:?}", cache.plan).contains("IndexScan"),
+            "active Document.title index must lower the anchor to IndexScan"
         );
-        let title = store
-            .lookup_property_id(graph, "title")
-            .expect("title id")
-            .raw();
-        let row = |operation, resource| {
-            Privilege::Graph(GraphPrivilege {
-                graph: g,
-                operation,
-                resource,
-            })
-        };
-        let expected = vec![
-            row(GraphOperation::Match, GraphResource::VertexLabel(doc)),
-            row(GraphOperation::Read, GraphResource::VertexLabel(doc)),
-            row(
-                GraphOperation::Traverse(None),
-                GraphResource::EdgeLabel(cites),
-            ),
-            row(
-                GraphOperation::ReadProperty,
-                GraphResource::VertexProperty {
-                    label: doc,
-                    property: title,
-                },
-            ),
-            row(
-                GraphOperation::ReadProperty,
-                GraphResource::VertexProperty {
-                    label: doc,
-                    property: title,
-                },
-            ),
-        ];
-        let mut actual = reqs.test_graph_rows(g).expect("graph demands present");
-        for expected_row in expected {
-            let pos = actual
-                .iter()
-                .position(|r| *r == expected_row)
-                .unwrap_or_else(|| panic!("missing demand row {expected_row:?}"));
-            actual.remove(pos);
-        }
-        assert!(actual.is_empty(), "unexpected extra demand rows {actual:?}");
+        let reqs = crate::authz::extract_live(&store, &cache.plan, bound_graph);
+        let (unattributed, conj, alts) = reqs
+            .test_demand_summary(graph.raw())
+            .expect("graph demands present");
+        assert!(
+            !unattributed,
+            "index-anchored scan must attribute through the index-bound label, not fall back"
+        );
+        assert_eq!(conj, 5, "Match + Read + Traverse + ReadProperty×2");
+        assert_eq!(alts, 0);
+
+        let mut actual = reqs.test_graph_rows(graph.raw()).expect("graph demands present");
+        assert_exact_row_multiset(&citation_reach_expected_rows(&store, graph), &mut actual);
     }
 
     /// Plan 0303 / GAP-2026-08-24-008 contract lock: the element-id-bearing demo

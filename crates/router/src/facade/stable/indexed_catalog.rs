@@ -230,6 +230,36 @@ pub(crate) fn active_vertex_physical_index(
     unique_active_physical_index(ids, "vertex", property_id)
 }
 
+/// Bound vertex label of the unique Active vertex property index on `property_id`.
+///
+/// Authorization-side mirror of [`active_vertex_physical_index`]'s label-agnostic probe
+/// (ADR 0009): exactly one matching Active Vertex-kind catalog row projects its bound
+/// label id. Zero or multiple rows — including duplicate rows bound to the same label —
+/// are catalog ambiguity and project `None`, so plan-time requirement extraction keeps
+/// the read unattributed (fail closed) instead of guessing a label the plan never proved.
+pub(crate) fn unique_active_vertex_index_label(
+    graph_id: GraphId,
+    property_id: PropertyId,
+) -> Option<u16> {
+    let mut bound_labels: Vec<u16> = Vec::new();
+    ROUTER_NAMED_INDEXES.with_borrow(|map| {
+        let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+        for entry in map.range((Bound::Included(start), named_index_graph_upper(graph_id))) {
+            let def = entry.value();
+            if def.lifecycle.is_active()
+                && def.kind == IndexedPropertyKind::Vertex
+                && def.property_id == property_id
+            {
+                bound_labels.push(def.label_id);
+            }
+        }
+    });
+    match bound_labels.as_slice() {
+        [label_id] => Some(*label_id),
+        _ => None,
+    }
+}
+
 /// Resolve the one active edge posting namespace for a logical property scope.
 ///
 /// `query_direction` is used to retain only indexes whose stored direction covers every storage
@@ -1621,6 +1651,113 @@ mod tests {
             IndexedPropertyKind::Vertex,
             property
         ));
+    }
+
+    /// The authorization-side label projection ([`unique_active_vertex_index_label`])
+    /// mirrors the executor's namespace resolution: only ONE Active Vertex-kind row on the
+    /// property projects its bound label; zero rows, non-active lifecycle rows, and
+    /// multiple rows (even bound to the same label) all fail closed to `None`.
+    #[test]
+    fn unique_vertex_index_label_follows_active_lifecycle_and_uniqueness() {
+        let graph = GraphId::from_raw(700_007);
+        let graph_name = "authz_label_resolution";
+        register_graph(graph, graph_name);
+        let property = PropertyId::from_raw(7);
+        assert_eq!(unique_active_vertex_index_label(graph, property), None);
+
+        // Non-active lifecycle records bind nothing — the projection is executor-faithful:
+        // Preparing/Building/Sealing namespaces never authorize a label fact.
+        let index_name = IndexNameId::from_raw(1);
+        prepare_named_index(graph, index_name, prepare_args(graph, graph_name))
+            .expect("prepare index");
+        assert_eq!(unique_active_vertex_index_label(graph, property), None);
+
+        transition_index_lifecycle(
+            graph,
+            index_name,
+            IndexLifecycleState::Preparing {
+                targets: target(IndexLifecycleTargetState::Registered),
+            },
+        )
+        .expect("register target");
+        transition_index_lifecycle(
+            graph,
+            index_name,
+            IndexLifecycleState::Building {
+                targets: target(IndexLifecycleTargetState::Building { seeded_items: 0 }),
+            },
+        )
+        .expect("start building");
+        transition_index_lifecycle(
+            graph,
+            index_name,
+            IndexLifecycleState::Building {
+                targets: target(IndexLifecycleTargetState::Built { seeded_items: 4 }),
+            },
+        )
+        .expect("finish building");
+        transition_index_lifecycle(
+            graph,
+            index_name,
+            IndexLifecycleState::Sealing {
+                catalog_epoch: 11,
+                targets: target(IndexLifecycleTargetState::Sealing),
+                started_at_ns: 21,
+            },
+        )
+        .expect("seal");
+        transition_index_lifecycle(
+            graph,
+            index_name,
+            IndexLifecycleState::Sealing {
+                catalog_epoch: 11,
+                targets: target(IndexLifecycleTargetState::Converged {
+                    watermarks: vec![
+                        IndexShardWatermark {
+                            shard_id: 1,
+                            admitted_through: 8,
+                            drained_through: 8,
+                        },
+                        IndexShardWatermark {
+                            shard_id: 4,
+                            admitted_through: 8,
+                            drained_through: 8,
+                        },
+                    ],
+                }),
+                started_at_ns: 21,
+            },
+        )
+        .expect("converge targets");
+        transition_index_lifecycle(
+            graph,
+            index_name,
+            IndexLifecycleState::Active {
+                catalog_epoch: 11,
+                activated_at_ns: 22,
+            },
+        )
+        .expect("activate");
+        // prepare_args binds the vertex index to label id 5.
+        assert_eq!(unique_active_vertex_index_label(graph, property), Some(5));
+
+        // A second active namespace on the same property — a conflicting label binding —
+        // is catalog ambiguity, not one provable label: fail closed to None.
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(2),
+            vertex_entry(),
+            property,
+            6,
+            None,
+            false,
+        )
+        .expect("create conflicting vertex index");
+        assert_eq!(unique_active_vertex_index_label(graph, property), None);
+        drop_named_index(graph, IndexNameId::from_raw(2), false).expect("drop conflict");
+        assert_eq!(unique_active_vertex_index_label(graph, property), Some(5));
+        drop_named_index(graph, index_name, false).expect("cleanup");
+        assert_eq!(unique_active_vertex_index_label(graph, property), None);
     }
 
     #[test]

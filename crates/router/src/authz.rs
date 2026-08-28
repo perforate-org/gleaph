@@ -26,6 +26,12 @@
 //!   (`property_projection: None`) additionally demands `READ` on that label; an explicit
 //!   non-empty projection demands `READ_PROPERTY` per listed key; an empty projection
 //!   demands nothing beyond `MATCH`.
+//! - An index-anchored vertex scan binds only vertices of the probe property's bound
+//!   label: when the catalog resolves a unique Active vertex index for the property
+//!   (same uniqueness the executor applies to its posting namespace), the anchor notes
+//!   that label fact and demands the same rows as a labeled scan. Zero or multiple
+//!   active namespaces — or resolutions that disagree with a conditional scan's fallback
+//!   label — leave the anchor unattributed (fail closed).
 //! - Traversal demands derive from pattern direction × schema directedness: declared
 //!   directed labels probe one directional row per orientation (undirected patterns over a
 //!   directed label need both), while undirected or undeclared labels take the unoriented
@@ -75,6 +81,14 @@ pub(crate) trait PlanCatalogView {
     /// set it spans and the property id of its embedding source when that embedding name is
     /// backed by a projected graph property. `None` for an unregistered index name.
     fn vector_index_source(&self, graph: GraphId, index_name: &str) -> Option<VectorIndexSource>;
+    /// Label name bound by the unique Active vertex property index on `property_id`
+    /// (ADR 0009): the same uniqueness resolution the executor applies when it lowers a
+    /// property-anchored probe to a posting namespace. Zero or multiple active namespaces
+    /// resolve to `None` so callers keep the read unattributed (fail closed).
+    fn vertex_property_index_label(&self, _graph: GraphId, _property_id: u32) -> Option<String> {
+        // Default keeps ad-hoc test catalogs fail-closed: no index-derived label fact.
+        None
+    }
 }
 
 /// Vector-index search source facts for layer-1 requirement extraction (ADR 0078 §1).
@@ -153,6 +167,16 @@ impl PlanCatalogView for RouterCatalogView<'_> {
             labels,
             embedding_property_id,
         })
+    }
+
+    fn vertex_property_index_label(&self, graph: GraphId, property_id: u32) -> Option<String> {
+        let label_id = crate::facade::stable::indexed_catalog::unique_active_vertex_index_label(
+            graph,
+            PropertyId::from_raw(property_id),
+        )?;
+        self.store
+            .reverse_vertex_label_name(graph, VertexLabelId::from_raw(label_id))
+            .ok()
     }
 }
 
@@ -318,6 +342,20 @@ impl Scope {
     }
 
     fn defer_vertex_property(&mut self, variable: &str, property: &str) {
+        // One (variable, property) read per scope, whatever plan sites mention it: an
+        // index anchor defers its probe read AND keeps the residual equality filter, so
+        // the same value read would otherwise extract identical duplicate demand rows.
+        // Coverage semantics are unchanged — a repeated row adds nothing to satisfy.
+        let already_pending = self.pending.iter().any(|read| {
+            matches!(
+                read,
+                PendingRead::VertexProperty { variable: seen_variable, property: seen_property }
+                    if seen_variable.as_ref() == variable && seen_property == property
+            )
+        });
+        if already_pending {
+            return;
+        }
         self.pending.push(PendingRead::VertexProperty {
             variable: Rc::from(variable),
             property: property.to_owned(),
@@ -656,6 +694,22 @@ fn note_bound_edge(
     }
 }
 
+/// The one label name shared by every resolved index-bound label, or `None` when the
+/// inputs are empty, any input fails to resolve, or the resolutions disagree — every
+/// ambiguous shape fails closed instead of attributing reads to a guessed label.
+fn unique_index_bound_label(resolved: impl Iterator<Item = Option<String>>) -> Option<String> {
+    let mut unique: Option<String> = None;
+    for label in resolved {
+        let label = label?;
+        match &unique {
+            Some(seen) if *seen == label => {}
+            Some(_) => return None,
+            None => unique = Some(label),
+        }
+    }
+    unique
+}
+
 fn walk_op(
     op: &PlanOp,
     scope: &mut Scope,
@@ -689,7 +743,24 @@ fn walk_op(
             ..
         } => {
             // The equality/range probe reads one property value of the scanned variable;
-            // its label fact arrives later (post-anchor filters or scans).
+            // its reads stay deferred and resolve at scope end. The scan itself binds only
+            // vertices of the indexed property's bound label, so a catalog-provable unique
+            // active vertex index attributes the anchor exactly like a labeled NodeScan
+            // (same demand rows). An ambiguous or missing index leaves no label fact and
+            // the deferred reads fail closed at scope resolution.
+            if let Some(label_name) = catalog
+                .property(graph, property)
+                .and_then(|property_id| catalog.vertex_property_index_label(graph, property_id))
+            {
+                scope.note_vertex_label(variable, &label_name);
+                require_vertex_scan_rows(
+                    reqs,
+                    graph,
+                    catalog,
+                    Some(&NodeLabelRef::new(label_name.as_str())),
+                    property_projection.as_deref(),
+                );
+            }
             scope.defer_vertex_property(variable, property);
             for name in property_projection.iter().flat_map(|p| p.iter()) {
                 scope.defer_vertex_property(variable, name);
@@ -755,8 +826,36 @@ fn walk_op(
             for candidate in candidates {
                 scope.defer_vertex_property(&candidate.variable, &candidate.property);
             }
-            if let Some(label) = fallback_label {
-                scope.note_vertex_label(fallback_variable, &label.name);
+            // Every candidate binds the variable the fallback scan binds, so a consistent
+            // index-derived resolution attributes the deferred reads like a labeled scan:
+            // all candidate properties must resolve to ONE uniquely-indexed label that
+            // agrees with the fallback label when one exists. Any disagreement — or a
+            // candidate property with no unique active index — is catalog ambiguity the
+            // plan never resolved, so no label fact is noted (fail closed).
+            let agreed_label = unique_index_bound_label(candidates.iter().map(|candidate| {
+                catalog
+                    .property(graph, &candidate.property)
+                    .and_then(|property_id| catalog.vertex_property_index_label(graph, property_id))
+            }));
+            match (agreed_label, fallback_label) {
+                (Some(label), None) => {
+                    scope.note_vertex_label(fallback_variable, &label);
+                    for candidate in candidates {
+                        scope.note_vertex_label(&candidate.variable, &label);
+                    }
+                }
+                (Some(label), Some(fallback)) if fallback.name.as_ref() == label => {
+                    scope.note_vertex_label(fallback_variable, &label);
+                    for candidate in candidates {
+                        scope.note_vertex_label(&candidate.variable, &label);
+                    }
+                }
+                // No index-derived fact: only a candidate-free conditional scan keeps the
+                // pre-existing fallback-label attribution (nothing contradicts it).
+                (None, Some(fallback)) if candidates.is_empty() => {
+                    scope.note_vertex_label(fallback_variable, &fallback.name);
+                }
+                _ => {}
             }
             for name in property_projection.iter().flat_map(|p| p.iter()) {
                 scope.defer_vertex_property(fallback_variable, name);
@@ -979,6 +1078,17 @@ fn walk_op(
         } => {
             for spec in scans {
                 scope.defer_vertex_property(variable, &spec.property);
+            }
+            // Intersected index scans all bind the same variable, so the deferred reads
+            // attribute like a labeled scan only when EVERY scanned property resolves to
+            // the same uniquely-indexed label; any disagreement or unresolvable property
+            // leaves no label fact (fail closed).
+            if let Some(label) = unique_index_bound_label(scans.iter().map(|spec| {
+                catalog
+                    .property(graph, &spec.property)
+                    .and_then(|property_id| catalog.vertex_property_index_label(graph, property_id))
+            })) {
+                scope.note_vertex_label(variable, &label);
             }
             for name in property_projection.iter().flat_map(|p| p.iter()) {
                 scope.defer_vertex_property(variable, name);
@@ -1921,6 +2031,7 @@ mod tests {
             ],
             properties: vec![("age", 20), ("name", 21), ("secret", 22)],
             vector_indexes: Vec::new(),
+            property_index_labels: Vec::new(),
         }
     }
 
@@ -1929,6 +2040,10 @@ mod tests {
         edges: Vec<(&'static str, u32, Option<bool>)>,
         properties: Vec<(&'static str, u32)>,
         vector_indexes: Vec<(&'static str, VectorIndexSource)>,
+        /// Active vertex property index bindings: property id → the one label the index
+        /// is bound to. Empty by default; multiple entries for one id model an ambiguous
+        /// (conflicting) index catalog.
+        property_index_labels: Vec<(u32, &'static str)>,
     }
 
     impl PlanCatalogView for FakeCatalog {
@@ -1978,6 +2093,22 @@ mod tests {
                 .iter()
                 .find(|(candidate, _)| *candidate == index_name)
                 .map(|(_, source)| source.clone())
+        }
+
+        fn vertex_property_index_label(&self, graph: GraphId, property_id: u32) -> Option<String> {
+            if graph.raw() != GRAPH_RAW {
+                return None;
+            }
+            let matches: Vec<&&'static str> = self
+                .property_index_labels
+                .iter()
+                .filter(|(candidate_property, _)| *candidate_property == property_id)
+                .map(|(_, label)| label)
+                .collect();
+            match matches.as_slice() {
+                [label] => Some((*label).to_string()),
+                _ => None,
+            }
         }
     }
 
@@ -2386,6 +2517,257 @@ mod tests {
             op: gleaph_gql::ast::CmpOp::Gt,
             right: Box::new(Expr::new(ExprKind::Variable("x".into()))),
         })
+    }
+
+    // ───── Index-anchored vertex scans: label resolution from the index catalog ─────
+
+    /// Catalog whose `age` (20) carries one active vertex index bound to `label`.
+    fn indexed_catalog(label: &'static str) -> FakeCatalog {
+        let mut catalog = catalog();
+        catalog.property_index_labels = vec![(20, label)];
+        catalog
+    }
+
+    fn index_scan(var: &str, property: &str, projection_keys: Option<&[&str]>) -> PlanOp {
+        PlanOp::IndexScan {
+            variable: var.into(),
+            property: property.into(),
+            value: gleaph_gql_planner::plan::ScanValue::Parameter("p".into()),
+            cmp: gleaph_gql::ast::CmpOp::Eq,
+            property_projection: projection_keys.map(|keys| {
+                keys.iter().map(|k| Rc::from(*k)).collect::<Rc<[Str]>>()
+            }),
+            ordered_by_sort: None,
+        }
+    }
+
+    fn extract_with(ops: Vec<PlanOp>, catalog: &FakeCatalog) -> RequirementSet {
+        extract(&PhysicalPlan::from_ops(ops), graph(), catalog)
+    }
+
+    #[test]
+    fn index_anchored_scan_attributes_like_a_labeled_node_scan() {
+        // age=20 is uniquely bound to a Person index: the anchor demands the NodeScan
+        // contract rows (Match + full-map Read) and its deferred probe read attributes
+        // through the index-bound label. The residual equality filter re-defers the same
+        // read; identical pending reads collapse to one demand row.
+        let reqs = extract_with(
+            vec![
+                index_scan("n", "age", None),
+                PlanOp::PropertyFilter {
+                    predicates: vec![property_access("n", "age")],
+                    stage: 0,
+                },
+            ],
+            &indexed_catalog("Person"),
+        );
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            demands.conjunctive,
+            vec![
+                vertex_row(GRAPH_RAW, GraphOperation::Match, 1),
+                vertex_row(GRAPH_RAW, GraphOperation::Read, 1),
+                vertex_property_row(GRAPH_RAW, 1, 20),
+            ]
+        );
+
+        // A non-owner holding exactly those rows executes; missing any one denies.
+        let mut grants = GrantTable::default();
+        grants.vertex(GrantSubject::Public, GraphOperation::Match, 1);
+        grants.vertex(GrantSubject::Public, GraphOperation::Read, 1);
+        grants.vertex_property(GrantSubject::Public, 1, 20);
+        assert!(allowed(&reqs, &principal(1), &grants, &[]));
+        let mut partial = GrantTable::default();
+        partial.vertex(GrantSubject::Public, GraphOperation::Match, 1);
+        partial.vertex_property(GrantSubject::Public, 1, 20);
+        assert!(!allowed(&reqs, &principal(1), &partial, &[]));
+    }
+
+    #[test]
+    fn index_anchored_scan_projection_demands_per_key_rows() {
+        // An explicit hydration list keeps Match, drops the full-map Read, and demands
+        // one ReadProperty per projected key. The arm's own projection deferral resolves
+        // again at scope end, so the projected key extracts twice — the same benign
+        // duplicate a labeled NodeScan projection plus a downstream read of the same key
+        // produces; coverage is per-row, so the duplicate changes no admission outcome.
+        let reqs = extract_with(
+            vec![index_scan("n", "age", Some(&["name"]))],
+            &indexed_catalog("Person"),
+        );
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            demands.conjunctive,
+            vec![
+                vertex_row(GRAPH_RAW, GraphOperation::Match, 1),
+                vertex_property_row(GRAPH_RAW, 1, 21),
+                vertex_property_row(GRAPH_RAW, 1, 20),
+                vertex_property_row(GRAPH_RAW, 1, 21),
+            ]
+        );
+    }
+
+    #[test]
+    fn unresolvable_index_label_keeps_the_anchor_tenancy_only() {
+        // No index on the probe property: no label fact, no scan rows, deferred probe
+        // read fails closed — today's pre-fix behavior is preserved fail-closed.
+        let reqs = extract_ops(vec![index_scan("n", "age", None)]);
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(demands.unattributed);
+        assert!(demands.conjunctive.is_empty());
+    }
+
+    #[test]
+    fn conflicting_index_labels_fail_closed() {
+        // Two active indexes bind the same property to DIFFERENT labels — the catalog
+        // cannot prove which label the scan binds, so no label fact is noted.
+        let mut catalog = catalog();
+        catalog.property_index_labels = vec![(20, "Person"), (20, "Employee")];
+        let reqs = extract_with(vec![index_scan("n", "age", None)], &catalog);
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(demands.unattributed);
+        assert!(demands.conjunctive.is_empty());
+    }
+
+    #[test]
+    fn index_intersection_demands_one_consistent_label() {
+        // Every intersected scan resolves to the same uniquely-indexed label: the shared
+        // variable's reads attribute like a labeled scan.
+        let mut catalog = indexed_catalog("Person");
+        catalog.property_index_labels.push((21, "Person"));
+        let reqs = extract_with(
+            vec![PlanOp::IndexIntersection {
+                variable: "n".into(),
+                scans: vec![intersect_spec("age"), intersect_spec("name")],
+                property_projection: projection(&["age"]),
+            }],
+            &catalog,
+        );
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            demands.conjunctive,
+            vec![
+                vertex_property_row(GRAPH_RAW, 1, 20),
+                vertex_property_row(GRAPH_RAW, 1, 21),
+            ]
+        );
+    }
+
+    #[test]
+    fn index_intersection_with_conflicting_labels_fails_closed() {
+        let mut catalog = catalog();
+        catalog.property_index_labels = vec![(20, "Person"), (21, "Employee")];
+        let reqs = extract_with(
+            vec![PlanOp::IndexIntersection {
+                variable: "n".into(),
+                scans: vec![intersect_spec("age"), intersect_spec("name")],
+                property_projection: None,
+            }],
+            &catalog,
+        );
+        assert!(reqs.graphs.get(&GRAPH_RAW).expect("demands").unattributed);
+    }
+
+    fn intersect_spec(property: &str) -> gleaph_gql_planner::plan::IndexScanSpec {
+        gleaph_gql_planner::plan::IndexScanSpec {
+            property: property.into(),
+            value: gleaph_gql_planner::plan::ScanValue::Parameter("p".into()),
+            cmp: gleaph_gql::ast::CmpOp::Eq,
+        }
+    }
+
+    #[test]
+    fn conditional_index_scan_notes_one_agreed_label() {
+        // All candidate properties resolve to the one label the fallback scan also binds:
+        // deferred reads attribute through it.
+        let mut catalog = indexed_catalog("Person");
+        catalog.property_index_labels.push((21, "Person"));
+        let reqs = extract_with(
+            vec![PlanOp::ConditionalIndexScan {
+                candidates: vec![conditional_candidate("age"), conditional_candidate("name")],
+                fallback_label: Some(NodeLabelRef::new("Person")),
+                fallback_variable: "n".into(),
+                property_projection: None,
+            }],
+            &catalog,
+        );
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            demands.conjunctive,
+            vec![
+                vertex_property_row(GRAPH_RAW, 1, 20),
+                vertex_property_row(GRAPH_RAW, 1, 21),
+            ]
+        );
+    }
+
+    #[test]
+    fn conditional_index_scan_without_fallback_notes_resolved_label() {
+        let reqs = extract_with(
+            vec![PlanOp::ConditionalIndexScan {
+                candidates: vec![conditional_candidate("age")],
+                fallback_label: None,
+                fallback_variable: "n".into(),
+                property_projection: None,
+            }],
+            &indexed_catalog("Person"),
+        );
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            demands.conjunctive,
+            vec![vertex_property_row(GRAPH_RAW, 1, 20)]
+        );
+    }
+
+    #[test]
+    fn conditional_index_scan_disagreement_fails_closed() {
+        // Candidate resolutions disagree with the fallback label: the variable may bind
+        // vertices of either label, so no label fact is noted (fail closed).
+        let catalog = indexed_catalog("Employee");
+        let reqs = extract_with(
+            vec![PlanOp::ConditionalIndexScan {
+                candidates: vec![conditional_candidate("age")],
+                fallback_label: Some(NodeLabelRef::new("Person")),
+                fallback_variable: "n".into(),
+                property_projection: None,
+            }],
+            &catalog,
+        );
+        assert!(reqs.graphs.get(&GRAPH_RAW).expect("demands").unattributed);
+
+        // Two candidates resolving to DIFFERENT labels are equally ambiguous.
+        let split = split_catalog();
+        let multi = extract_with(
+            vec![PlanOp::ConditionalIndexScan {
+                candidates: vec![conditional_candidate("age"), conditional_candidate("name")],
+                fallback_label: None,
+                fallback_variable: "n".into(),
+                property_projection: None,
+            }],
+            &split,
+        );
+        assert!(multi.graphs.get(&GRAPH_RAW).expect("demands").unattributed);
+    }
+
+    fn conditional_candidate(property: &str) -> gleaph_gql_planner::plan::ConditionalScanCandidate {
+        gleaph_gql_planner::plan::ConditionalScanCandidate {
+            param_name: "p".into(),
+            property: property.into(),
+            variable: "n".into(),
+            cmp: gleaph_gql::ast::CmpOp::Eq,
+        }
+    }
+
+    /// Fresh vocabulary catalog with one index binding per property (Person→age,
+    /// Employee→name) modeling a split-index catalog.
+    fn split_catalog() -> FakeCatalog {
+        let mut catalog = catalog();
+        catalog.property_index_labels = vec![(20, "Person"), (21, "Employee")];
+        catalog
     }
 
     #[test]

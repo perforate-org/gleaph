@@ -19,13 +19,21 @@
 //!    source (B=1, C=2, D=3).
 //! 3. The traversal-only companion pins the identical authorization behavior when the edge
 //!    identity projection is absent, isolating the projection as the only difference.
+//! 4. The index-anchored companion registers the demo's active `Document.title` vertex
+//!    index (migration 000002 equivalent) BEFORE seeding, so the op's leading op lowers
+//!    to an `IndexScan`. This pins the live 2026-08-24 Forbidden regression: the index-
+//!    anchored op must extract the same attributed demand multiset as the indexless
+//!    shape (static half: `index_anchored_citation_reach_demands_match_the_indexless_shape`
+//!    in the router lib tests), so the identical PUBLIC surface admits the same non-owner.
 //!
 //! Expected counts stated before running (per plan contract):
-//! - 2 `#[test]` functions; one PocketIC environment EACH (`install_single_shard_federation`:
+//! - 3 `#[test]` functions; one PocketIC environment EACH (`install_single_shard_federation`:
 //!   3 funded creations + 3 canister installs per environment). No extra installs/upgrades.
 //! - Per environment: 1 schema bind mutate, 7 seeded INSERTs (each maintenance-drained),
 //!   1 prepare batch, 4 authorization statements (3 PUBLIC data rows + 1 quoted EXECUTE
 //!   publication), 2 `prepared_query` probes (deny leg, then post-publication leg).
+//! - The index-anchored environment additionally issues 1 `CREATE INDEX` DDL mutate with
+//!   its own maintenance drain before seeding.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql_ic::{GqlWireRow, GqlWireRows, GqlWireValue};
@@ -147,6 +155,81 @@ fn register_and_seed(env: &FederationEnv, source: &str) {
         }],
     )
     .expect("register prepared op");
+}
+
+/// Demo migration 000002 equivalent: register the active `Document.title` vertex index so
+/// the literal anchor lowers the op to an `IndexScan`. Created BEFORE seeding so the anchor
+/// probe finds postings; the maintenance lane is drained to its Active quiescent state.
+fn create_active_document_title_index(env: &FederationEnv) {
+    gql_mutate_as_admin(
+        env,
+        "CREATE INDEX document_title FOR (n:Document) ON (n.title)",
+        "citation-reach-create-index",
+    );
+    drain_maintenance_via_timer(env, env.graph_source);
+}
+
+/// Non-owner runs the index-anchored flow: create the active title index before seeding,
+/// then the exact demo op registration and publication surface. Pre-fix, the index alone
+/// flipped the op to Forbidden for every non-tenant (the IndexScan arm deferred the anchor
+/// read without a label fact); the same grant surface must admit it now.
+#[test]
+fn non_owner_executes_citation_reach_anchored_through_the_active_title_index() {
+    let env = install_single_shard_federation();
+    bind_typed_schema(&env);
+    create_active_document_title_index(&env);
+    seed_citation_chain(&env);
+    prepare_batch_as_admin(
+        &env,
+        &[PreparedRegistration {
+            name: OP_NAME.into(),
+            query: CITATION_REACH_SOURCE.into(),
+            metadata: None,
+        }],
+    )
+    .expect("register prepared op");
+
+    // Negative control — default deny: before ANY publication the non-owner is rejected.
+    let denied = forbidden_prepared_query_err(&env, dev());
+    assert!(matches!(denied, RouterError::Forbidden), "got {denied:?}");
+
+    grant_public_surface(&env);
+    publish_execute_row(&env);
+
+    // The same non-owner now executes end-to-end through the index-anchored plan and
+    // receives exactly the reachable documents with populated identities.
+    let result = prepared_query_with_params_as(&env, dev(), OP_NAME, Vec::new());
+    assert_eq!(result.row_count, 3, "B/C/D are reachable within 1..3 hops");
+    let blob = result.rows_blob.expect("rows blob");
+    let rows = GqlWireRows::decode_blob(&blob).expect("decode rows");
+    assert_eq!(rows.rows.len(), 3, "decoded rows match the reported count");
+
+    let mut titles: Vec<String> = Vec::new();
+    for row in &rows.rows {
+        let title = column_text(row, "title");
+        assert_non_empty_identity(column(row, "document_id"), "document_id");
+        match column(row, "cite_edge_id") {
+            GqlWireValue::List(hops) => {
+                assert_eq!(
+                    hops.len(),
+                    expected_hops(&title),
+                    "{title} sits at a fixed distance from the source"
+                );
+            }
+            other => panic!("cite_edge_id must be a list of hop ids, got {other:?}"),
+        }
+        titles.push(title);
+    }
+    titles.sort();
+    assert_eq!(
+        titles,
+        vec![
+            "Chain B".to_owned(),
+            "Chain C".to_owned(),
+            "Chain D".to_owned()
+        ],
+        "exactly the reachable documents within 1..3 hops come back"
+    );
 }
 
 #[test]
