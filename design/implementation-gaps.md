@@ -115,7 +115,8 @@ defect from being rediscovered without its prior reasoning.
 - **Evidence:** artifacts sections 13-14 in
   `design/investigations/artifacts/0296-knowledge-demo-bringup-evidence.txt`; probe scripts
   `scripts/register-probe.sh`, `scripts/direct-grant-probe.sh`,
-  `scripts/apply-public-grants.sh`; contract-locking test
+  `scripts/apply-public-grants.sh` (all removed 2026-08-28 — superseded by
+  `gleaph grants apply` and the grants policy file); contract-locking test
   `element_id_projection_demands_are_coverable_property_reads`.
 - **Impact:** resolved for vertex scenarios. Two residual follow-ups: (a) RESOLVED by the
   plan 0306 diagnosis (2026-08-26) — this follow-up's original framing was a

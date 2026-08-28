@@ -6,17 +6,15 @@ citation reach.
 
 ## Status of this quickstart
 
-**The browser page and every CLI step run against a real local network**, brought up by
-`scripts/bootstrap.sh` on a dedicated managed network owned by this directory's `icp.yaml`
-project. A fully automated clean-checkout bring-up **without** that script is not achieved yet:
-the pure-CLI path (`gleaph network start` deploying Account/Provision and provisioning the
-platform) is blocked by GAP-2026-08-24-006 (`design/implementation-gaps.md`) — launcher gateway
-management-call rejection plus launcher lifetime coupling — so this bootstrap script performs the
-documented dev-mode topology sequence instead (ADR 0056 `register_graph`, ADR 0071 targetless
-index + admin attachment).
+**The browser page and every CLI step run against a real local network**, brought up entirely by
+the Gleaph CLI on the icp-cli network this directory's `icp.yaml` owns. There is no shell
+bootstrap: `gleaph network start` detects the platform workspace, builds the wasm set from source
+if stale, deploys Account/Provision, seeds the artifact catalog, and lets the migration lane issue
+the Router (GAP-2026-08-24-006 is resolved; the old `scripts/bootstrap.sh` and grant/probe scripts
+were removed on 2026-08-28 — everything they did is now CLI steps below).
 
 Prerequisites: Rust toolchain with the `wasm32-unknown-unknown` target, Docker (OrbStack on
-macOS) for icp-cli managed networks, Node ≥ 22 and pnpm, and a debug build of the CLI
+macOS) for icp-cli managed networks, Node ≥ 22 and pnpm, and a build of the CLI
 (`cargo build -p gleaph-cli` from the repository root).
 
 ## Quickstart
@@ -24,47 +22,41 @@ macOS) for icp-cli managed networks, Node ≥ 22 and pnpm, and a debug build of 
 All commands run from this directory (`demo/knowledge`).
 
 ```bash
-# 0. Bring up the platform on a fresh demo-local network (wasm32 builds; long on first run).
-#    The final banner prints and exports:
-#      GLEAPH_NETWORK / GLEAPH_FETCH_ROOT_KEY / GLEAPH_CANISTER
-#    GLEAPH_CANISTER is the single Router-id SSOT for everything below.
-scripts/bootstrap.sh
-
-# In a NEW shell, re-create those exports (values differ per machine):
-export GLEAPH_NETWORK=http://localhost:<port>   # printed by the banner
-export GLEAPH_FETCH_ROOT_KEY=true
-export GLEAPH_CANISTER=<router principal>       # printed by the banner
-
-# 1. Non-owner identity for the access-control story (and completion of criterion flows).
+# 0. Non-owner identity for the access-control story. `network start` registers the
+#    session principal's Account automatically.
 gleaph identity new dev && gleaph login
 
-# 2. Bulk load vertices + edges (durable job; state recorded in .load-state.json).
-gleaph load --vertices seeds/vertices.jsonl --edges seeds/edges.jsonl
+# 1. Bring up the platform on a fresh demo-local network (wasm32 builds; long on first run).
+#    Builds from source when the checkout is stale, deploys Account/Provision, seeds the
+#    artifact catalog, and prints the next-step banner. The Router id is cached in
+#    .gleaph/cache/ — no environment exports needed.
+gleaph network start
 
-# 3. Ingest deterministic Document embeddings into the registered vector index.
+# 2. Apply the migration chain: graph type, graph, property indexes, vector index definition.
+gleaph migration apply
+
+# 3. Bulk load vertices + edges (durable job; state recorded in .load-state.json).
+gleaph load seeds/vertices.jsonl seeds/edges.jsonl --graph knowledge
+
+# 4. Ingest deterministic Document embeddings into the registered vector index.
 node scripts/gen-embeddings.mjs   # byte-stable regeneration of seeds/embeddings.jsonl
 gleaph embed ingest \
   --vertices seeds/vertices.jsonl \
   --embeddings seeds/embeddings.jsonl \
   --graph knowledge
 
-# 4. Register the prepared queries (including the scenario-3 semantic search).
+# 5. Register the prepared queries, then apply the grant policy: data-plane rows and the
+#    EXECUTE publication of all four ops in one declarative file (grants/knowledge.gql).
+#    grants apply must follow prepared apply (EXECUTE rows reference registered op names).
 gleaph prepared apply
-gleaph prepared status
+gleaph grants apply
 
-# 5. Publish all four scenarios for PUBLIC (owner action; ADR 0074 publication).
-for op in variable-length-reach shortest-path team-readable-documents citation-reach; do
-  gleaph prepared publish "$op"
-done
+# 6. Regenerate the browser client from the live manifest, or run `pnpm dev` (it chains
+#    the gateway-port resolution).
+gleaph codegen
 
-# 6. Grant the PUBLIC data-plane surface the scenarios traverse (ADR 0074 separates
-#    EXECUTE on the op from match/traverse/read on the graph).
-bash scripts/apply-public-grants.sh
-
-# 7. Smoke-test three registered queries from the shell as the NON-owner (`dev`) —
-#    this is the post-publication contrast proof. Scenario 3 is not expressible here
-#    because its `$query` parameter is Value::Bytes (768 f32s); `prepared run --param`
-#    accepts JSON scalars/arrays only (see Later work). The browser page runs it.
+# 7. Smoke-test the registered queries from the shell (session = graph owner; the browser
+#    page additionally runs them as an anonymous visitor through the generated client).
 for op in variable-length-reach shortest-path citation-reach; do
   gleaph prepared run "$op"
 done
@@ -73,6 +65,15 @@ done
 #   gleaph prepared unpublish variable-length-reach
 ```
 
+# Unpublishing restores default-deny (non-owner runs start failing again):
+#   gleaph prepared unpublish variable-length-reach
+```
+
+> **Resolved (2026-08-28):** all four scenarios execute for anonymous visitors on a freshly
+> brought-up network, and `cite_edge_id` is now declared as `List(Bytes)` so the generated
+> clients validate the trail rows. The chain below is the diagnosis history; the probe and
+> grant scripts it mentions were removed with the CLI supersession.
+>
 > **Known issue (2026-08-24, plan 0303 diagnosis):** the pass/deny boundary for
 > non-owner execution is the ELEMENT_ID projection. Ops without it execute as dev
 > (`variable-length-reach` after re-registration: 7 rows); `citation-reach` denies
