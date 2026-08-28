@@ -168,10 +168,23 @@ pub(crate) fn infer_expr(env: &TypeEnv<'_>, expr: &Expr) -> Type {
             keyword: Keyword::new("LOCAL_TIMESTAMP"),
         }),
 
-        // Element ID — always present for the referenced element, so never null.
-        ExprKind::ElementId(_) => Type::NonNull(Box::new(Type::Scalar(ValueType::Bytes {
-            max_length: None,
-        }))),
+        // Element ID — always present for the referenced element, so never null. Over a
+        // quantified-path group variable the binding is the whole hop trail: the runtime
+        // returns one element id per hop in traversal order (empty group → empty list), so
+        // the inferred column type is a list of the singleton encoding.
+        ExprKind::ElementId(arg) => {
+            let singleton = || {
+                Type::NonNull(Box::new(Type::Scalar(ValueType::Bytes {
+                    max_length: None,
+                })))
+            };
+            match infer_expr(env, arg) {
+                Type::TypedList(_) => {
+                    Type::NonNull(Box::new(Type::TypedList(Box::new(singleton()))))
+                }
+                _ => singleton(),
+            }
+        }
 
         // Datetime constructors
         ExprKind::DateLiteral(_) | ExprKind::DateFunction(_) => Type::Scalar(ValueType::Date),
@@ -1020,6 +1033,31 @@ mod tests {
             Type::NonNull(Box::new(Type::Scalar(ValueType::Bytes {
                 max_length: None
             })))
+        );
+    }
+
+    #[test]
+    fn element_id_over_a_group_variable_infers_a_list() {
+        // ELEMENT_ID over a quantified-path group variable (e.g. `-[e:CITES]->{1,3}`) binds
+        // the whole hop trail: the runtime returns one element id per hop, so the declared
+        // column type must be a list — the wire list otherwise fails every prepared-client
+        // decoder that validates rows against the declared schema.
+        let mut env = TypeEnv::new(&NoSchema);
+        env.bind(
+            "e".to_owned(),
+            Type::TypedList(Box::new(Type::Edge(EdgeTypeInfo::from_label(None)))),
+        );
+        let expr = Expr::new(ExprKind::ElementId(Box::new(Expr::new(
+            ExprKind::Variable("e".to_owned()),
+        ))));
+
+        assert_eq!(
+            infer_expr(&env, &expr),
+            Type::NonNull(Box::new(Type::TypedList(Box::new(Type::NonNull(Box::new(
+                Type::Scalar(ValueType::Bytes {
+                    max_length: None
+                })
+            ))))))
         );
     }
 }

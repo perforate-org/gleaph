@@ -65,7 +65,12 @@ fn extract_from_path_primary(
 ) {
     match primary {
         PathPrimary::Node(node) => bind_node(env, node, optional, group),
-        PathPrimary::Edge(edge) => bind_edge(env, edge, optional, quantifier, group),
+        // A quantified edge term itself (`-[e:CITES]->{1,3}`) is a group hop: the runtime
+        // binds the edge variable to the whole trail (EdgeGroup), so the type-checker env
+        // must bind it as a list — exactly like a quantified parenthesized sub-pattern.
+        PathPrimary::Edge(edge) => {
+            bind_edge(env, edge, optional, quantifier, group || quantifier.is_some())
+        }
         PathPrimary::Parenthesized { expr, variable, .. } => {
             let is_quantified = quantifier.is_some();
             if let Some(var) = variable {
@@ -146,34 +151,11 @@ fn bind_edge(
         env.optional_vars.insert(var.clone());
     }
 
-    // If the edge has a quantifier (variable-length path), bind as Path type.
-    if quantifier.is_some() {
-        let info = match quantifier {
-            Some(PathQuantifier::Fixed(n)) => PathTypeInfo {
-                min_hops: Some(*n as u32),
-                max_hops: Some(*n as u32),
-            },
-            Some(PathQuantifier::Range { lower, upper }) => PathTypeInfo {
-                min_hops: Some(*lower as u32),
-                max_hops: upper.map(|u| u as u32),
-            },
-            Some(PathQuantifier::Star) => PathTypeInfo {
-                min_hops: Some(0),
-                max_hops: None,
-            },
-            Some(PathQuantifier::Plus) => PathTypeInfo {
-                min_hops: Some(1),
-                max_hops: None,
-            },
-            Some(PathQuantifier::Optional) => PathTypeInfo {
-                min_hops: Some(0),
-                max_hops: Some(1),
-            },
-            None => PathTypeInfo::unbounded(),
-        };
-        env.bind(var.clone(), Type::Path(info));
-        return;
-    }
+    // NOTE: a quantified edge variable no longer binds as a Path. Since the runtime gained
+    // group-variable bindings (GAP-2026-08-26-001), the executor hands the variable to
+    // expressions as an EdgeGroup — the whole hop trail as a list of edges in traversal
+    // order — so the binding below is `TypedList(Edge)`. Path types belong to explicitly
+    // declared path variables (`p = (...)`), which the caller binds before this walk.
 
     let (endpoints, properties) = if let Some(ref l) = label {
         (
