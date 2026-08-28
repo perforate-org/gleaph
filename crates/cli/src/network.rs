@@ -14,7 +14,9 @@
 //! the same surfaces.
 
 use crate::config::{self, LoadedConfig};
+use crate::progress::{bar, ProgressLine};
 use crate::remote::RemoteTransport;
+use std::io::IsTerminal;
 #[cfg(test)]
 use candid::Decode;
 use candid::Encode;
@@ -760,6 +762,12 @@ pub fn seed_catalog(
         }
 
         // Ingest the five kinds through the shared idempotent driver (resume on re-run).
+        // Per-chunk progress rides the same one-line renderer family as the migration bar:
+        // rewritten in place on a terminal, percent-deduplicated when captured. One bar per
+        // artifact; the "ingested" line terminates each unit.
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(ProgressLine::new(
+            std::io::stdout().is_terminal(),
+        )));
         let mut artifact_ids = Vec::with_capacity(PLATFORM_WASM_FILES.len());
         for (kind, file) in PLATFORM_WASM_FILES {
             let path = platform_wasm_dir.join(file);
@@ -769,8 +777,19 @@ pub fn seed_catalog(
                 .map_err(|e| format!("plan {} artifact: {e:?}", kind_name(*kind)))?;
             if plan.chunk_count() > 1 {
                 let total = plan.chunk_count();
+                let label = kind_name(*kind);
+                let progress = std::sync::Arc::clone(&progress);
                 client.set_on_chunk_uploaded(std::sync::Arc::new(move |chunk_index| {
-                    println!("  chunk {}/{} uploaded", chunk_index + 1, total);
+                    let uploaded = chunk_index.saturating_add(1);
+                    let percent = ((uploaded * 100) / total).min(100) as u8;
+                    let mut line = progress.lock().expect("progress lock");
+                    line.render(
+                        percent,
+                        &format!(
+                            "ingesting {label:<14} [{}] chunk {uploaded}/{total}",
+                            bar(percent)
+                        ),
+                    );
                 }));
             }
             match gleaph_artifact_api::ingest_artifact(&plan, &client)
@@ -781,6 +800,11 @@ pub fn seed_catalog(
                 gleaph_artifact_api::IngestOutcome::AwaitingVerification { artifact_id } => {
                     poll_seed_verification(&client, &artifact_id).await?;
                 }
+            }
+            {
+                let mut line = progress.lock().expect("progress lock");
+                line.close();
+                line.reset();
             }
             println!(
                 "ingested {} {} sha256:{} ({} chunks)",
