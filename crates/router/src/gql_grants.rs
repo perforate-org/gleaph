@@ -1463,7 +1463,7 @@ mod publication_tests {
             .expect("intern properties");
 
         // Byte-identical to demo/knowledge/prepared/citation-reach.gql modulo whitespace.
-        let source = "MATCH (src:Document {title: 'Introduction to graph databases'})\
+        let source = "MATCH (src:Document {title: 'GraphRAG retrieval'})\
                       -[e:CITES]->{1,3}(dst:Document) \
                       RETURN ELEMENT_ID(dst) AS document_id, dst.title AS title, \
                       ELEMENT_ID(e) AS cite_edge_id";

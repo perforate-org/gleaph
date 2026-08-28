@@ -40,7 +40,7 @@ use gleaph_prepared_api::PreparedRegistration;
 const OP_NAME: &str = "citation-reach";
 
 /// Byte-identical to demo/knowledge/prepared/citation-reach.gql modulo whitespace.
-const CITATION_REACH_SOURCE: &str = "MATCH (src:Document {title: 'Introduction to graph databases'})\
+const CITATION_REACH_SOURCE: &str = "MATCH (src:Document {title: 'GraphRAG retrieval'})\
                                      -[e:CITES]->{1,3}(dst:Document) \
                                      RETURN ELEMENT_ID(dst) AS document_id, dst.title AS title, \
                                      ELEMENT_ID(e) AS cite_edge_id";
@@ -87,7 +87,7 @@ fn seed_citation_chain(env: &FederationEnv) {
     insert_document(
         env,
         "citation-reach-seed-a",
-        "Introduction to graph databases",
+        "GraphRAG retrieval",
     );
     insert_document(env, "citation-reach-seed-b", "Chain B");
     insert_document(env, "citation-reach-seed-c", "Chain C");
@@ -95,7 +95,7 @@ fn seed_citation_chain(env: &FederationEnv) {
     insert_cites_edge(
         env,
         "citation-reach-seed-ab",
-        "Introduction to graph databases",
+        "GraphRAG retrieval",
         "Chain B",
     );
     insert_cites_edge(env, "citation-reach-seed-bc", "Chain B", "Chain C");
@@ -211,7 +211,7 @@ fn non_owner_executes_citation_reach_after_publication_and_is_denied_before() {
 fn non_owner_executes_citation_reach_traversal_and_gets_reachable_rows() {
     // Identical flow minus the edge-identity projection — isolates ELEMENT_ID(e) as the
     // only difference between the two flows while pinning the shared authorization path.
-    let source = "MATCH (src:Document {title: 'Introduction to graph databases'})\
+    let source = "MATCH (src:Document {title: 'GraphRAG retrieval'})\
                   -[e:CITES]->{1,3}(dst:Document) \
                   RETURN ELEMENT_ID(dst) AS document_id, dst.title AS title";
     let env = install_single_shard_federation();

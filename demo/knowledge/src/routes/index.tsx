@@ -82,7 +82,7 @@ const SCENARIOS: Scenario[] = [
     id: 'citation-reach',
     label: 'Citation reach',
     description:
-      'Documents reachable from "Introduction to graph databases" through CITES up to depth 3.',
+      'Documents reachable from "GraphRAG retrieval" through CITES up to depth 3.',
     run: async (client) =>
       project(await client.citationReach(), ['document_id', 'title', 'cite_edge_id']),
   },
