@@ -15,3 +15,12 @@ GRANT TRAVERSE ON GRAPH knowledge EDGES AUTHORED_BY TO PUBLIC
 GRANT TRAVERSE ON GRAPH knowledge EDGES OWNS TO PUBLIC
 GRANT TRAVERSE ON GRAPH knowledge EDGES BELONGS_TO TO PUBLIC
 GRANT TRAVERSE ON GRAPH knowledge EDGES ROUTED_VIA TO PUBLIC
+
+// Prepared-op publication (ADR 0074 §5): EXECUTE on each registered op. These rows
+// reference prepared-op names, so `gleaph grants apply` must run AFTER `gleaph prepared
+// apply` — the Router rejects a missing op with NotFound. `gleaph prepared publish/unpublish`
+// remains the imperative ops surface (default-deny restore, non-PUBLIC subjects).
+GRANT EXECUTE ON PREPARED QUERY "citation-reach" TO PUBLIC
+GRANT EXECUTE ON PREPARED QUERY "shortest-path" TO PUBLIC
+GRANT EXECUTE ON PREPARED QUERY "team-readable-documents" TO PUBLIC
+GRANT EXECUTE ON PREPARED QUERY "variable-length-reach" TO PUBLIC
