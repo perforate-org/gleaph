@@ -15,10 +15,10 @@
 
 use crate::config::{self, LoadedConfig};
 use crate::remote::RemoteTransport;
-use ic_agent::Identity;
-use candid::Encode;
 #[cfg(test)]
 use candid::Decode;
+use candid::Encode;
+use ic_agent::Identity;
 use ic_management_canister_types::{
     CanisterIdRecord, CanisterInstallMode, CreateCanisterArgs, InstallCodeArgs,
     ProvisionalCreateCanisterWithCyclesArgs,
@@ -89,7 +89,11 @@ pub fn start(
             Some(url) => {
                 println!(
                     "using icp network '{network}' at {url}{}",
-                    if already_running.is_some() { " (already running)" } else { "" }
+                    if already_running.is_some() {
+                        " (already running)"
+                    } else {
+                        ""
+                    }
                 );
                 gateway_url = Some(url);
             }
@@ -350,7 +354,10 @@ fn spawn_launcher(
             }
         }
         // If the launcher exited before writing a ready status file, surface its stderr.
-        if let Some(status) = child.try_wait().map_err(|e| format!("wait launcher: {e}"))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("wait launcher: {e}"))?
+        {
             let stderr_log = state_dir.join("launcher.stderr.log");
             let tail = std::fs::read_to_string(&stderr_log)
                 .unwrap_or_else(|_| "<stderr log unavailable>".to_string());
@@ -486,9 +493,7 @@ struct ProvisionInitArgsMirror {
 fn identity_principal(pem: &Path) -> Result<candid::Principal, String> {
     let identity = ic_agent::identity::Secp256k1Identity::from_pem_file(pem)
         .map_err(|e| format!("read identity {}: {e}", pem.display()))?;
-    Ok(identity
-        .sender()
-        .unwrap_or(candid::Principal::anonymous()))
+    Ok(identity.sender().unwrap_or(candid::Principal::anonymous()))
 }
 
 /// Encode the Provision init argument: the CLI user's principal becomes the single governance
@@ -606,8 +611,14 @@ pub fn resolve_platform_wasm_dir(
 /// Conventional platform wasm file names per catalog kind inside `--platform-wasm-dir`.
 /// The graph-index crate produces the PropertyIndex-kind artifact (`gleaph_graph_index.wasm`).
 const PLATFORM_WASM_FILES: &[(gleaph_artifact_api::types::CanisterKind, &str)] = &[
-    (gleaph_artifact_api::types::CanisterKind::Router, "gleaph_router.wasm"),
-    (gleaph_artifact_api::types::CanisterKind::Graph, "gleaph_graph.wasm"),
+    (
+        gleaph_artifact_api::types::CanisterKind::Router,
+        "gleaph_router.wasm",
+    ),
+    (
+        gleaph_artifact_api::types::CanisterKind::Graph,
+        "gleaph_graph.wasm",
+    ),
     (
         gleaph_artifact_api::types::CanisterKind::PropertyIndex,
         "gleaph_graph_index.wasm",
@@ -661,8 +672,8 @@ pub fn seed_catalog(
     let provision = candid::Principal::from_text(provision_text)
         .map_err(|e| format!("invalid provision canister id {provision_text:?}: {e}"))?;
 
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("create async runtime: {e}"))?;
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| format!("create async runtime: {e}"))?;
     runtime.block_on(async {
         let ingress = gleaph_ingress_client::IcIngress::connect(network, identity_pem)
             .await
@@ -687,8 +698,8 @@ pub fn seed_catalog(
         let mut artifact_ids = Vec::with_capacity(PLATFORM_WASM_FILES.len());
         for (kind, file) in PLATFORM_WASM_FILES {
             let path = platform_wasm_dir.join(file);
-            let bytes = std::fs::read(&path)
-                .map_err(|e| format!("read wasm {}: {e}", path.display()))?;
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("read wasm {}: {e}", path.display()))?;
             let plan = gleaph_artifact_api::plan_artifact(&bytes, *kind, env!("CARGO_PKG_VERSION"))
                 .map_err(|e| format!("plan {} artifact: {e:?}", kind_name(*kind)))?;
             if plan.chunk_count() > 1 {
@@ -733,10 +744,9 @@ pub fn seed_catalog(
             Ok(Err(gleaph_artifact_api::types::ReleaseError::ConflictingRelease {
                 existing,
                 requested,
-            }))
-                if existing == requested
-                    && requested
-                        == gleaph_artifact_api::types::ReleaseId(SEED_RELEASE_ID.to_owned()) => {}
+            })) if existing == requested
+                && requested
+                    == gleaph_artifact_api::types::ReleaseId(SEED_RELEASE_ID.to_owned()) => {}
             Ok(Err(e)) => return Err(format!("release_publish: {e:?}")),
             Err(e) => return Err(format!("release_publish: {e}")),
         }

@@ -10,12 +10,11 @@ use gleaph_cli::{
     auth,
     config::{self, ConfigEnv, DirKey, LoadedConfig},
     embed, grants, identity,
-    vector,
     load::{self, LoadArgs, LoadError},
     migration::{self, MigrationDirArgs, MigrationError},
     network,
     prepared::{self, PreparedDirArgs},
-    remote,
+    remote, vector,
 };
 
 #[derive(Debug, Error)]
@@ -457,7 +456,11 @@ fn dispatch(
             .map_err(CliError::Vector)?;
             println!(
                 "vector dispatch {}",
-                if enabled { "activated" } else { "deactivated (fail-closed)" }
+                if enabled {
+                    "activated"
+                } else {
+                    "deactivated (fail-closed)"
+                }
             );
             Ok(())
         }
@@ -560,10 +563,7 @@ fn execute_network(
                         cache_path.display()
                     ))
                 })?;
-                println!(
-                    "invalidated cached Router id ({})",
-                    cache_path.display()
-                );
+                println!("invalidated cached Router id ({})", cache_path.display());
             }
 
             // Auto-register the caller's Personal account unless --no-auto-register. A fresh
@@ -592,8 +592,13 @@ fn execute_network(
                 // On an icp-cli-managed network the gateway binds a dynamic port; seed through
                 // the endpoint `network::start` resolved (a URL), not the raw "local" selector.
                 let endpoint = result.gateway_url.as_deref().unwrap_or(&args.network);
-                network::seed_catalog(endpoint, &result.mapping, identity.as_deref(), &platform_dir)
-                    .map_err(CliError::Message)?;
+                network::seed_catalog(
+                    endpoint,
+                    &result.mapping,
+                    identity.as_deref(),
+                    &platform_dir,
+                )
+                .map_err(CliError::Message)?;
                 println!("next: gleaph migration apply");
                 println!(
                     "next: gleaph load seeds/vertices.jsonl seeds/edges.jsonl --graph knowledge"
@@ -948,23 +953,19 @@ fn issue_router_lazy(
     // `authorize_router_issuance` looks the account up by id. Resolve it from the caller's
     // registered accounts (`resolve_my_accounts` returns `vec principal`).
     let accounts: Vec<candid::Principal> = transport
-        .query_plain(
-            account_principal,
-            "resolve_my_accounts",
-            &(),
-        )
+        .query_plain(account_principal, "resolve_my_accounts", &())
         .map_err(|e| CliError::Message(format!("resolve_my_accounts: {e}")))?;
     let account_id = match accounts.as_slice() {
         [single] => *single,
         [] => {
             return Err(CliError::Message(
                 "no account registered for this identity; run `gleaph signup` first".into(),
-            ))
+            ));
         }
         _ => {
             return Err(CliError::Message(
                 "multiple accounts registered; account disambiguation is a later slice".into(),
-            ))
+            ));
         }
     };
     let result: Result<
@@ -1013,11 +1014,7 @@ fn issue_router_lazy(
         router_canister,
     };
     let reg: Result<(), gleaph_account::types::AccountError> = transport
-        .update_args_on(
-            account_principal,
-            "register_router",
-            (&account_id, &entry),
-        )
+        .update_args_on(account_principal, "register_router", (&account_id, &entry))
         .map_err(|e| CliError::Message(format!("register_router: {e}")))?;
     reg.map_err(|e| CliError::Message(format!("register_router: {e:?}")))?;
     println!("auto-issued Router {router_canister} ({router_name})");
@@ -1862,7 +1859,11 @@ mod tests {
             Some(crate::remote::DEFAULT_LOCAL_URL),
             "no icp.yaml: launcher default applies, as a concrete URL"
         );
-        assert_eq!(args.fetch_root_key, Some(true), "local always fetches the root key");
+        assert_eq!(
+            args.fetch_root_key,
+            Some(true),
+            "local always fetches the root key"
+        );
 
         // Mainnet keeps its name: codegen's URL arm would demand --fetch-root-key for it.
         let mut args = codegen_args();

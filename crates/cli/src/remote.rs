@@ -169,8 +169,7 @@ impl RemoteTransport {
         let default_effective_canister_id = if mainnet {
             None
         } else {
-            runtime
-                .block_on(fetch_default_effective_canister_id(&url))
+            runtime.block_on(fetch_default_effective_canister_id(&url))
         };
         Ok(Self {
             agent,
@@ -427,7 +426,12 @@ fn parse_icp_api_url(status_output: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| line.to_ascii_lowercase().starts_with("api url:"))
-        .map(|line| line["api url:".len()..].trim().trim_end_matches('/').to_owned())
+        .map(|line| {
+            line["api url:".len()..]
+                .trim()
+                .trim_end_matches('/')
+                .to_owned()
+        })
         .filter(|url| !url.is_empty())
 }
 
@@ -614,9 +618,16 @@ mod tests {
             parse_icp_api_url("  API URL:   http://localhost:4321/  \n").as_deref(),
             Some("http://localhost:4321")
         );
-        assert_eq!(parse_icp_api_url("Gateway Url: http://localhost:4321/\n"), None);
+        assert_eq!(
+            parse_icp_api_url("Gateway Url: http://localhost:4321/\n"),
+            None
+        );
         assert_eq!(parse_icp_api_url(""), None);
-        assert_eq!(parse_icp_api_url("Api Url:   \n"), None, "empty URL is absent");
+        assert_eq!(
+            parse_icp_api_url("Api Url:   \n"),
+            None,
+            "empty URL is absent"
+        );
     }
 
     #[test]
@@ -633,7 +644,8 @@ mod tests {
         assert_eq!(url, DEFAULT_LOCAL_URL);
         assert!(fetch);
 
-        let (url, fetch) = resolve_network("ic", false, Some(Path::new("/nonexistent"))).expect("ic");
+        let (url, fetch) =
+            resolve_network("ic", false, Some(Path::new("/nonexistent"))).expect("ic");
         assert_eq!(url, DEFAULT_IC_URL);
         assert!(!fetch);
     }

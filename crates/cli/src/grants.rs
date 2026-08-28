@@ -96,8 +96,8 @@ fn validate(display: &str, source: &str) -> Result<(), GrantsError> {
 /// Collect policy files: sorted `*.gql` of the directory (deterministic order, like the
 /// migration lane's numbered ordering — the filename controls application order).
 fn collect_policies(dir: &Path) -> Result<Vec<PolicyFile>, GrantsError> {
-    let meta =
-        std::fs::symlink_metadata(dir).map_err(|e| GrantsError::Read(dir.display().to_string(), e))?;
+    let meta = std::fs::symlink_metadata(dir)
+        .map_err(|e| GrantsError::Read(dir.display().to_string(), e))?;
     if !meta.is_dir() {
         return Err(GrantsError::Invalid(
             dir.display().to_string(),
@@ -147,7 +147,8 @@ pub fn apply(
 ) -> Result<(), GrantsError> {
     let policies: Vec<PolicyFile> = if let Some(file) = &args.file {
         let display = file.display().to_string();
-        let program = std::fs::read_to_string(file).map_err(|e| GrantsError::Read(display.clone(), e))?;
+        let program =
+            std::fs::read_to_string(file).map_err(|e| GrantsError::Read(display.clone(), e))?;
         vec![PolicyFile {
             path: file.clone(),
             display,
@@ -169,34 +170,31 @@ pub fn apply(
         validate(&policy.display, &policy.program)?;
     }
 
-    let remote = RemoteTransport::connect(
-        canister,
-        network,
-        identity,
-        fetch_root_key,
-        project_root,
-    )
-    .map_err(GrantsError::Remote)?;
+    let remote =
+        RemoteTransport::connect(canister, network, identity, fetch_root_key, project_root)
+            .map_err(GrantsError::Remote)?;
     for policy in &policies {
         // Same control path and idempotency-key convention as `prepared publish`
         // (gleaph-authorization:<deterministic suffix>); the key derives from the policy
         // content so an unchanged re-apply replays the same (caller, graph, key) scope
         // while a changed file is a new mutation.
         let mutation_key = format!("gleaph-authorization:grants:{}", policy.program);
-        let decoded: Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError> =
-            remote
-                .update_args(
-                    "gql_mutate",
-                    (&policy.program, &Vec::<u8>::new(), &mutation_key),
-                )
-                .map_err(GrantsError::Remote)?;
+        let decoded: Result<
+            gleaph_graph_kernel::plan_exec::GqlQueryResult,
+            gleaph_graph_kernel::federation::RouterError,
+        > = remote
+            .update_args(
+                "gql_mutate",
+                (&policy.program, &Vec::<u8>::new(), &mutation_key),
+            )
+            .map_err(GrantsError::Remote)?;
         match decoded {
             Ok(_) => println!("applied {}", policy.display),
             Err(error) => {
                 return Err(GrantsError::Invalid(
                     policy.display.clone(),
                     format!("router rejected the policy: {error:?}"),
-                ))
+                ));
             }
         }
     }
@@ -235,10 +233,12 @@ mod tests {
     fn rejects_insert_grant_sequence_as_parse_error() {
         // The parser itself refuses the sequence; validate() surfaces it as an error
         // either way — no data modification passes the policy surface.
-        assert!(validate_str(
-            "INSERT (n:Person)\nGRANT MATCH ON GRAPH knowledge NODES Person TO PUBLIC"
-        )
-        .is_err());
+        assert!(
+            validate_str(
+                "INSERT (n:Person)\nGRANT MATCH ON GRAPH knowledge NODES Person TO PUBLIC"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -262,8 +262,16 @@ mod tests {
     fn collect_policies_sorts_and_filters_gql() {
         let tmp = std::env::temp_dir().join(format!("gleaph-grants-test-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("b.gql"), "GRANT MATCH ON GRAPH g NODES N TO PUBLIC").unwrap();
-        std::fs::write(tmp.join("a.gql"), "GRANT TRAVERSE ON GRAPH g NODES N TO PUBLIC").unwrap();
+        std::fs::write(
+            tmp.join("b.gql"),
+            "GRANT MATCH ON GRAPH g NODES N TO PUBLIC",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("a.gql"),
+            "GRANT TRAVERSE ON GRAPH g NODES N TO PUBLIC",
+        )
+        .unwrap();
         std::fs::write(tmp.join("notes.txt"), "ignored").unwrap();
         let policies = collect_policies(&tmp).unwrap();
         let names: Vec<String> = policies

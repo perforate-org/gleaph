@@ -605,7 +605,10 @@ pub fn run_with_transport<T: EmbedIngestTransport>(
 
 /// Validate and run one `gleaph embed ingest` invocation. `project_root` is the `gleaph.toml`
 /// directory, used to detect an icp-cli-managed network (dynamic gateway port).
-pub fn execute(args: &EmbedIngestArgs, project_root: Option<&Path>) -> Result<IngestSummary, EmbedError> {
+pub fn execute(
+    args: &EmbedIngestArgs,
+    project_root: Option<&Path>,
+) -> Result<IngestSummary, EmbedError> {
     let canister = args
         .canister
         .as_deref()
