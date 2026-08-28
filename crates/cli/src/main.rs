@@ -9,7 +9,7 @@ use thiserror::Error;
 use gleaph_cli::{
     auth,
     config::{self, ConfigEnv, DirKey, LoadedConfig},
-    embed, identity,
+    embed, grants, identity,
     load::{self, LoadArgs, LoadError},
     migration::{self, MigrationDirArgs, MigrationError},
     network,
@@ -25,6 +25,8 @@ enum CliError {
     Migration(#[from] MigrationError),
     #[error(transparent)]
     Prepared(#[from] prepared::PreparedError),
+    #[error(transparent)]
+    Grants(#[from] grants::GrantsError),
     #[error(transparent)]
     Load(#[from] LoadError),
     #[error(transparent)]
@@ -68,6 +70,9 @@ enum TopLevelCommand {
     /// Register prepared queries from local .gql files.
     #[command(subcommand)]
     Prepared(PreparedCommand),
+    /// Apply the declarative data-plane grant policy (ADR 0074).
+    #[command(subcommand)]
+    Grants(grants::GrantsCommand),
     /// Resolve the caller's principal and store the active session.
     Login(LoginArgs),
     /// Register an Account for the caller's principal.
@@ -384,6 +389,7 @@ fn is_dispatchable_top_level(token: &str) -> bool {
             | "load"
             | "embed"
             | "prepared"
+            | "grants"
             | "identity"
             | "login"
             | "signup"
@@ -419,6 +425,27 @@ fn dispatch(
         }
         TopLevelCommand::Embed(command) => execute_embed(command, env, loaded),
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
+        TopLevelCommand::Grants(grants::GrantsCommand::Apply(args)) => {
+            let remote = required_remote(
+                args.canister.as_deref(),
+                args.network.as_deref(),
+                args.identity.as_deref(),
+                args.fetch_root_key,
+                env,
+                loaded,
+            )?;
+            grants::apply(
+                &args,
+                loaded,
+                remote.project_root.as_deref(),
+                &remote.canister,
+                &remote.network,
+                remote.identity.as_deref(),
+                remote.fetch_root_key,
+            )
+            .map_err(CliError::Grants)?;
+            Ok(())
+        }
         TopLevelCommand::Login(args) => execute_login(args, loaded),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
         TopLevelCommand::Identity(command) => execute_identity(command),

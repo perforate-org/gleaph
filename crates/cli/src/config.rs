@@ -34,6 +34,9 @@ pub const DEFAULT_MIGRATIONS_DIR: &str = "migrations";
 /// Built-in prepared directory default (working-directory-relative).
 pub const DEFAULT_PREPARED_DIR: &str = "prepared";
 
+/// Built-in default for the `[dirs] grants` entry (ADR 0074 policy surface).
+pub const DEFAULT_GRANTS_DIR: &str = "grants";
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("read config {path}: {error}")]
@@ -131,6 +134,7 @@ pub struct Config {
 struct Dirs {
     migrations: Option<PathBuf>,
     prepared: Option<PathBuf>,
+    grants: Option<PathBuf>,
 }
 
 /// One `[deployment.<network>]` entry. `fetch_root_key` is valid only for custom-URL keys
@@ -431,6 +435,7 @@ pub fn merge_remote(
 pub enum DirKey {
     Migrations,
     Prepared,
+    Grants,
 }
 
 /// `--dir` precedence: flag > `[dirs]` (config-relative) > built-in cwd-relative default.
@@ -450,6 +455,11 @@ pub fn resolved_dir(flag: Option<&Path>, loaded: Option<&LoadedConfig>, key: Dir
                 .dirs
                 .as_ref()
                 .and_then(|dirs| dirs.prepared.as_ref()),
+            DirKey::Grants => loaded
+                .config
+                .dirs
+                .as_ref()
+                .and_then(|dirs| dirs.grants.as_ref()),
         };
         if let Some(value) = value {
             return resolve_config_path(&loaded.path, value);
@@ -458,6 +468,7 @@ pub fn resolved_dir(flag: Option<&Path>, loaded: Option<&LoadedConfig>, key: Dir
     match key {
         DirKey::Migrations => PathBuf::from(DEFAULT_MIGRATIONS_DIR),
         DirKey::Prepared => PathBuf::from(DEFAULT_PREPARED_DIR),
+        DirKey::Grants => PathBuf::from(DEFAULT_GRANTS_DIR),
     }
 }
 
