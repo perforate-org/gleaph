@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@gleaph/sdk": "workspace:*",
-    "@icp-sdk/core": "^6.0.0",
     "@solidjs/web": "next",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/solid-router": "rc",
