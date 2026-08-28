@@ -19,7 +19,14 @@ macOS) for icp-cli managed networks, Node ≥ 22 and pnpm, and a build of the CL
 
 ## Quickstart
 
-All commands run from this directory (`demo/knowledge`).
+All commands run from this directory (`demo/knowledge`). The whole chain is one command:
+
+```bash
+pnpm quickstart
+```
+
+which runs the annotated steps below — every line is the CLI's own idempotent surface, so the
+script is safe to re-run (a re-run re-brings-up a fresh demo state). The steps, annotated:
 
 ```bash
 # 0. Non-owner identity for the access-control story. `network start` registers the
