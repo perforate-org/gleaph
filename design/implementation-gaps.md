@@ -1683,6 +1683,49 @@ typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
 
+### GAP-2026-08-28-001 — RESOLVED: index-anchored scans are unattributed in authz requirement extraction (grants silently stop working when an index exists)
+
+- **Status:** Resolved (2026-08-28). Fixing commit `0aebf4513`; Router suite 1045 → 1056 green.
+- **Severity:** P1 authorization-semantics defect (availability + plan-dependence)
+- **Owner:** Router authz requirement walker (`crates/router/src/authz.rs` `walk_op`,
+  `PlanCatalogView`, `RouterCatalogView`) with the index catalog seam
+  (`crates/router/src/facade/stable/indexed_catalog.rs`)
+- **Observed behavior:** On the demo network — the one environment with an active property
+  index (`document_title`, demo migration 000002) — every index-anchored read was denied to
+  non-tenants regardless of grants: `MATCH (d:Document {title: 'X'}) RETURN 1` → uniform
+  `Forbidden` for anonymous, while the identical shape over the deliberately unindexed
+  `Concept.name` executed, and the registry owner (tenancy root) always passed. The walker's
+  `PlanOp::IndexScan` arm deferred the anchor's property read without noting any label fact;
+  an index anchor never receives a later `NodeScan`, so the deferred read resolved with
+  `unique_vertex_label == None` → `require_unattributed` → fail-closed tenancy-only. The
+  same gap existed in the `IndexIntersection` arm and the `ConditionalIndexScan` candidate
+  path (only `fallback_label` was noted). Every extraction contract test ran indexless
+  fixtures (ADR 0054 indexless bootstrap), so the planner always emitted `NodeScan` and the
+  `IndexScan` arms had zero walker coverage — the bug was invisible to the suite and only
+  the live demo network surfaced it.
+- **Why it matters (design invariant):** authorization demands must not depend on which
+  physical plan the planner chooses. Before the fix, creating an index silently changed who
+  could run an existing prepared query — physical layout leaking into logical access
+  control. Removing the demo's index would have hidden the defect, not fixed it.
+- **Implemented behavior:** `PlanCatalogView` gained a catalog-driven label resolution for
+  the unique active vertex property index covering a property (same unique/fail-closed
+  semantics as the executor's `active_vertex_physical_index`); the `IndexScan`,
+  `IndexIntersection`, and `ConditionalIndexScan` walker arms now note the resolved label
+  fact and demand the same scan-side rows an equivalent `NodeScan` would (`Match` +
+  `Read`/`ReadProperty` via `require_vertex_scan_rows`). Ambiguous or inactive index
+  resolution stays unattributed (fail-closed, unchanged). The PocketIC citation-reach flow
+  fixture now creates `document_title` and drains maintenance to active, pinning the
+  index-anchored path end-to-end: a non-owner executes the op after the same PUBLIC grant
+  surface.
+- **Evidence:** live bisection on the demo network (indexed `Document.title` filter denies,
+  unindexed `Concept.name` filter passes; plain scans, traversal, quantified paths, and
+  `ELEMENT_ID` projections all pass) + indexless-vs-indexed extraction tests in
+  `crates/router/src/gql_grants.rs` and walker unit tests in `crates/router/src/authz.rs`.
+- **Next decision:** none open for the walker. Long-term, the planner could carry the label
+  in `PlanOp::IndexScan` (self-describing plan) — planner-stream territory, deferred until
+  the next plan-wire revision; the catalog-driven resolution matches executor semantics and
+  needs no wire change.
+
 ### GAP-2026-08-26-001 — RESOLVED: `ELEMENT_ID` over quantified-path group variables fail-closed as "requires element indexing"
 
 - **Status:** Resolved (plan 0307 slice A, 2026-08-26) — executor completeness for GQL
@@ -2443,6 +2486,27 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   execution after publication).
 - **Next decision:** none open. Multi-shard label-only-multi seeding returns with the
   federated-traversal restoration ADR.
+
+### GAP-2026-08-28-002 — HEAD does not compile `gleaph-cli` standalone: committed `prepared.rs` matches `ReturnBody::NoBindings` (a `cfg(cypher)` variant) while the `cli/Cargo.toml` cypher-feature line is uncommitted (half-commit recurrence)
+
+- **Status:** Open (2026-08-28) — same class as GAP-2026-08-26-003, different crate pair.
+- **Severity:** P1 implementation-integrity recurrence
+- **Owner:** cli stream (the pane holding the uncommitted `crates/cli/Cargo.toml` +
+  `crates/cli/src/identity.rs` dependency-migration work)
+- **Observed behavior:** A clean worktree at HEAD (2026-08-28, post `00c94208e`) fails to
+  compile `gleaph-cli`: `crates/cli/src/prepared.rs:1077` matches
+  `ReturnBody::NoBindings`, which exists only under gleaph-gql's `cfg(feature = "cypher")`,
+  and the committed `cli/Cargo.toml` declares `gleaph-gql` features `["gleaph", "serde"]`.
+  The main working tree compiles only because the stream's uncommitted Cargo.toml WIP adds
+  the `cypher` feature (plus a `gleaph-gql-planner` cypher feature and the k256/rand
+  dependency migration). Isolated-worktree probes (e.g. `git worktree add` for a baseline
+  build) therefore cannot build the cli at HEAD.
+- **Expected or needed behavior:** the cli stream lands its Cargo.toml feature lines in the
+  same commit window as any prepared.rs AST matching; until then, per-commit validation
+  gates on clean checkouts stay blind for the cli crate.
+- **Next decision:** the owning stream commits the feature lines (the workspace comment in
+  the WIP already explains why `cypher` must stay enabled unconditionally); afterwards a
+  clean-worktree build check closes this entry.
 
 ### GAP-2026-08-26-005 — Real Provision upgrades wipe the bootstrap authority and active release: eager `StableCell::new` constructors clobber durable cells on every process restart
 
