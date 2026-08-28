@@ -567,6 +567,71 @@ const BUILD_PLATFORM_WASM_HINT: &str = "build the platform wasms with:\n  cargo 
      -p gleaph-graph -p gleaph-vector-canister -p text-canister --release \
      --target wasm32-unknown-unknown --target-dir target/pocket-ic-wasm";
 
+/// Detect the gleaph platform workspace above `project_root`: the first ancestor whose
+/// `Cargo.toml` sits beside the platform crates. Presence of the workspace is the
+/// developer/consumer boundary — a consumer whose installed CLI has no source tree must not
+/// be asked to run cargo (there is nothing to build; platform wasms reach them as released
+/// artifacts, not as a local build).
+pub fn find_platform_workspace(project_root: &Path) -> Option<PathBuf> {
+    let mut cursor = Some(project_root);
+    while let Some(dir) = cursor {
+        if dir.join("Cargo.toml").is_file() && dir.join("crates/router/Cargo.toml").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        cursor = dir.parent();
+    }
+    None
+}
+
+/// Build the platform wasm set from source (developer mode). Delegates staleness to cargo's
+/// fingerprinting — running the build is a no-op check on a warm tree and rebuilds exactly
+/// the crates that moved, so `network start` never deploys wasm older than the checked-out
+/// sources. Output streams (cargo prints `Compiling`/`Finished` on stderr); a build failure
+/// is fail-closed: the caller aborts bring-up instead of deploying stale artifacts.
+pub fn build_platform_wasms(workspace_root: &Path) -> Result<(), String> {
+    let target_dir = workspace_root.join("target/pocket-ic-wasm");
+    println!(
+        "platform wasms: building from source (incremental) in {}",
+        workspace_root.display()
+    );
+    let status = std::process::Command::new("cargo")
+        .current_dir(workspace_root)
+        .args([
+            "build",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--target-dir",
+        ])
+        .arg(&target_dir)
+        .args([
+            "-p",
+            "gleaph-account",
+            "-p",
+            "gleaph-provision",
+            "-p",
+            "gleaph-router",
+            "-p",
+            "gleaph-graph-index",
+            "-p",
+            "gleaph-graph",
+            "-p",
+            "gleaph-vector-canister",
+            "-p",
+            "text-canister",
+        ])
+        .status()
+        .map_err(|error| format!("spawn cargo build: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cargo build failed ({status}); fix the build error and retry — \
+             refusing to deploy possibly-stale platform wasms"
+        ))
+    }
+}
+
 /// Resolve the platform wasm directory. An explicit `--platform-wasm-dir` must contain every
 /// conventional wasm; without one, the project-root ancestors are walked looking for a
 /// repo-checkout build (`target/pocket-ic-wasm/wasm32-unknown-unknown/release`) containing
@@ -910,7 +975,66 @@ pub(crate) fn install_canister(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn find_platform_workspace_detects_the_gleaph_workspace_and_ignores_ordinary_cargo_projects()
+    {
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "gleaph-ws-detect-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("crates/router")).expect("mkdir");
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").expect("write");
+        std::fs::write(root.join("crates/router/Cargo.toml"), "").expect("write");
+
+        // A nested project inside the workspace resolves up to the workspace root...
+        let project = root.join("demo/knowledge");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        assert_eq!(
+            find_platform_workspace(&project).as_deref(),
+            Some(root.as_path()),
+            "the workspace above a nested project is the developer-mode root"
+        );
+
+        // ...an ordinary cargo project without the platform crates is NOT the workspace:
+        // its owner is a consumer and must not be asked to build platform wasms.
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let plain = std::env::temp_dir().join(format!(
+            "gleaph-ws-plain-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&plain).expect("mkdir");
+        std::fs::write(plain.join("Cargo.toml"), "[package]\n").expect("write");
+        assert_eq!(find_platform_workspace(&plain), None);
+        assert_eq!(find_platform_workspace(&plain.join("sub")), None);
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(plain).expect("cleanup");
+    }
+
+    #[test]
+    fn build_platform_wasms_targets_the_isolated_pocket_ic_dir() {
+        // The developer-mode build must land in the same isolated target directory the
+        // wasm discovery reads (target/pocket-ic-wasm under the workspace root), mirroring
+        // the PocketIC suite's build (shared isolation, never the host target/).
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "gleaph-ws-build-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("crates/router")).expect("mkdir");
+        // A build failure must be fail-closed: an empty workspace cannot build the canister
+        // crates, so the runner surfaces cargo's failure instead of deploying stale wasm.
+        let error = build_platform_wasms(&root).expect_err("no canister crates in fake root");
+        assert!(
+            error.contains("cargo build failed"),
+            "fail-closed wording must name the refused deployment: {error}"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 

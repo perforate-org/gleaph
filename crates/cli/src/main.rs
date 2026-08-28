@@ -524,9 +524,19 @@ fn execute_network(
             // returns once the network is up. --foreground opts back into the attached
             // session (blocks until the launcher exits, e.g. Ctrl-C stops the network).
             let background = !args.foreground;
-            let platform_dir =
+            let platform_dir = {
+                // Developer mode: when the source workspace is present, build (incrementally)
+                // before deploying so the artifacts can never be older than the checkout. An
+                // explicit --platform-wasm-dir is the escape hatch (prebuilt artifacts must
+                // not be silently rebuilt); without a workspace there is nothing to build.
+                if args.platform_wasm_dir.is_none()
+                    && let Some(workspace_root) = network::find_platform_workspace(project_root)
+                {
+                    network::build_platform_wasms(&workspace_root).map_err(CliError::Message)?;
+                }
                 network::resolve_platform_wasm_dir(args.platform_wasm_dir.as_deref(), project_root)
-                    .map_err(CliError::Message)?;
+                    .map_err(CliError::Message)?
+            };
             println!("platform wasms: {}", platform_dir.display());
             let account_wasm = args
                 .account_wasm
