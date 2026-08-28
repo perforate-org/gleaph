@@ -362,7 +362,7 @@ impl RemoteTransport {
     }
 }
 
-fn resolve_network(
+pub fn resolve_network(
     network: &str,
     fetch_root_key: bool,
     project_root: Option<&Path>,

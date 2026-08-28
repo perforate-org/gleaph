@@ -1069,8 +1069,26 @@ fn resolve_codegen(
         }
     }
     args.identity = remote.identity;
-    args.fetch_root_key = Some(remote.fetch_root_key);
-    args.network = Some(remote.network);
+    // Codegen's own resolver maps the network NAME "local" to the Gleaph-launcher default
+    // (port 8000) and has no project context, so an icp.yaml project's icp-cli-managed
+    // dynamic gateway would be missed. Resolve to the concrete endpoint here, where the
+    // project root is known, and hand codegen a URL (fetch flag included). Mainnet keeps
+    // its name: codegen's URL arm would otherwise demand --fetch-root-key for it.
+    let project_root = loaded
+        .and_then(|loaded| loaded.path.parent())
+        .map(Path::to_path_buf);
+    let (url, fetch_root_key) = remote::resolve_network(
+        &remote.network,
+        remote.fetch_root_key,
+        project_root.as_deref(),
+    )
+    .map_err(CliError::Message)?;
+    if remote.network == "ic" {
+        args.network = Some("ic".to_owned());
+    } else {
+        args.network = Some(url);
+    }
+    args.fetch_root_key = Some(fetch_root_key);
     Ok(args)
 }
 
@@ -1819,6 +1837,51 @@ mod tests {
     }
 
     #[test]
+    fn resolve_codegen_resolves_the_local_network_to_a_concrete_endpoint() {
+        // A bare network NAME must not reach codegen: its own resolver maps "local" to the
+        // launcher default (port 8000) with no project context, so an icp-cli-managed
+        // dynamic gateway (icp.yaml projects) would be missed. The CLI resolves the
+        // concrete endpoint (project root known) and hands codegen a URL + fetch flag.
+        let root = temporary_root("codegen-local");
+        let config_path = root.join("gleaph.toml");
+        fs::write(&config_path, "").expect("config write");
+        let loaded = loaded_config(&config_path);
+        let mut args = codegen_args();
+        args.canister = Some("aaaaa-aa".into());
+        let args = resolve_codegen(
+            args,
+            &ConfigEnv {
+                network: Some("local".into()),
+                ..ConfigEnv::default()
+            },
+            Some(&loaded),
+        )
+        .expect("merge");
+        assert_eq!(
+            args.network.as_deref(),
+            Some(crate::remote::DEFAULT_LOCAL_URL),
+            "no icp.yaml: launcher default applies, as a concrete URL"
+        );
+        assert_eq!(args.fetch_root_key, Some(true), "local always fetches the root key");
+
+        // Mainnet keeps its name: codegen's URL arm would demand --fetch-root-key for it.
+        let mut args = codegen_args();
+        args.canister = Some("aaaaa-aa".into());
+        let args = resolve_codegen(
+            args,
+            &ConfigEnv {
+                network: Some("ic".into()),
+                ..ConfigEnv::default()
+            },
+            Some(&loaded),
+        )
+        .expect("merge");
+        assert_eq!(args.network.as_deref(), Some("ic"));
+        assert_eq!(args.fetch_root_key, Some(false));
+        fs::remove_dir_all(root).expect("temporary root cleanup");
+    }
+
+    #[test]
     fn resolve_codegen_never_creates_a_manifest_source() {
         let root = temporary_root("codegen-source");
         let config_path = root.join("gleaph.toml");
@@ -1860,7 +1923,9 @@ mod tests {
         let mut args = codegen_args();
         args.graph = Some("g".into());
         args.target = Some("typescript".into());
-        let args = resolve_codegen(
+        // The root-key requirement now fires at merge time (the CLI resolves the concrete
+        // endpoint and refuses a fetch-less custom URL itself), not inside codegen's runner.
+        let error = resolve_codegen(
             args,
             &ConfigEnv {
                 network: Some("https://example.com".into()),
@@ -1868,9 +1933,7 @@ mod tests {
             },
             Some(&loaded_config(&config_path)),
         )
-        .expect("merge");
-        assert_eq!(args.fetch_root_key, Some(false));
-        let error = gleaph_codegen::run(args).expect_err("omitted fetch_root_key must fail closed");
+        .expect_err("omitted fetch_root_key must fail closed at merge");
         assert!(
             error.to_string().contains("requires --fetch-root-key"),
             "the existing root-key-required error must fire: {error}"
