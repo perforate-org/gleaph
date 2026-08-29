@@ -240,6 +240,9 @@ enum ResolvedResource {
         /// `None` undeclared (open graph or label absent from the binding).
         undirected: Option<bool>,
     },
+    /// Wildcard `NODES *` ([ADR 0089] §5). Catalog resolution is a no-op: the wildcard
+    /// covers every vertex label, so no label lookup is needed.
+    AllVertexLabels,
 }
 
 fn resolve_resource(
@@ -262,6 +265,7 @@ fn resolve_resource(
                 undirected,
             })
         }
+        GrantResourceSelector::AllVertexLabels => Ok(ResolvedResource::AllVertexLabels),
     }
 }
 
@@ -533,14 +537,24 @@ fn compile_condition(
         ));
     }
     // A vertex-form selector paired with an edge resource cannot bind.
-    let ResolvedResource::VertexLabel(label_raw) = resource else {
-        return Err(RouterError::InvalidArgument(
-            "conditional selectors require a NODES/VERTICES resource; \
-             edge-label grants stay unconditional in this phase"
-                .into(),
-        ));
+    let label_raw = match resource {
+        ResolvedResource::VertexLabel(label_raw) => *label_raw,
+        ResolvedResource::AllVertexLabels => {
+            return Err(RouterError::InvalidArgument(
+                "conditional selectors require a concrete NODES/VERTICES label; \
+                 `NODES *` is unconditional in this phase"
+                    .into(),
+            ));
+        }
+        ResolvedResource::EdgeLabel { .. } => {
+            return Err(RouterError::InvalidArgument(
+                "conditional selectors require a NODES/VERTICES resource; \
+                 edge-label grants stay unconditional in this phase"
+                    .into(),
+            ));
+        }
     };
-    let Ok(label_u16) = u16::try_from(*label_raw) else {
+    let Ok(label_u16) = u16::try_from(label_raw) else {
         return Err(RouterError::Internal(
             "conditional selector label id exceeds catalog space".into(),
         ));
@@ -587,7 +601,7 @@ fn compile_condition(
         Some(chain) => Some(compile_chain(store, graph_id, chain.as_ref(), variable)?),
     };
     Ok(Rc::new(CompiledPredicate {
-        label: *label_raw,
+        label: label_raw,
         conjuncts,
         chain,
     }))
@@ -856,6 +870,9 @@ fn is_approximate_or_decimal_type(value_type: &ValueType) -> bool {
 /// - An omitted direction on a declared DIRECTED edge label normalizes to BOTH directional
 ///   rows (evaluation probes one direction at a time); undirected or undeclared labels
 ///   reject directional modifiers and store the unoriented form.
+/// - `NODES *` ([ADR 0089] §5) lowers to a single `GraphResource::AllVertexLabels` row;
+///   it is rejected for `READ` (no single label to bind properties to) and for
+///   `TRAVERSE` with a direction modifier (vertex traversal has no direction).
 ///
 /// Pure over its inputs so catalog resolution stays outside.
 fn lower_privileges(
@@ -895,6 +912,13 @@ fn lower_privileges(
         GrantPrivilege::Read { .. } => {
             let vertex_label = match resource {
                 ResolvedResource::VertexLabel(id) => *id,
+                ResolvedResource::AllVertexLabels => {
+                    return Err(RouterError::InvalidArgument(
+                        "READ with `NODES *` is not supported; specify a concrete label to \
+                         bind the property list"
+                            .into(),
+                    ));
+                }
                 ResolvedResource::EdgeLabel { .. } => {
                     return Err(RouterError::InvalidArgument(
                         "property lists attach only to vertex selectors".into(),
@@ -929,6 +953,18 @@ fn lower_privileges(
                     graph,
                     GraphOperation::Traverse(None),
                     GraphResource::VertexLabel(*id),
+                )])
+            }
+            ResolvedResource::AllVertexLabels => {
+                if direction.is_some() {
+                    return Err(RouterError::InvalidArgument(
+                        "directional modifiers apply only to edge selectors".into(),
+                    ));
+                }
+                Ok(vec![op(
+                    graph,
+                    GraphOperation::Traverse(None),
+                    GraphResource::AllVertexLabels,
                 )])
             }
             ResolvedResource::EdgeLabel { id, undirected } => {
@@ -977,6 +1013,7 @@ fn whole_label_resource(resource: &ResolvedResource) -> Result<GraphResource, Ro
     match resource {
         ResolvedResource::VertexLabel(id) => Ok(GraphResource::VertexLabel(*id)),
         ResolvedResource::EdgeLabel { id, .. } => Ok(GraphResource::EdgeLabel(*id)),
+        ResolvedResource::AllVertexLabels => Ok(GraphResource::AllVertexLabels),
     }
 }
 
@@ -1275,6 +1312,11 @@ fn resource_view(
                     .ok()?,
             ),
         }),
+        GraphResource::AllVertexLabels => Some(GrantResourceView {
+            kind: GrantResourceKindView::Vertex,
+            label: "*".to_owned(),
+            property: None,
+        }),
     }
 }
 
@@ -1312,6 +1354,7 @@ fn privilege_key_description(subject: GrantSubject, privilege: &Privilege) -> St
                 GraphResource::VertexProperty { label, property } => {
                     format!("NODES <label {label}> {{ property <{property}> }}")
                 }
+                GraphResource::AllVertexLabels => "NODES *".to_owned(),
             };
             format!(
                 "{operation} ON GRAPH <{}> {resource} for subject {subject_text}",
@@ -1616,7 +1659,9 @@ mod publication_tests {
         assert_eq!(conj, 5, "Match + Read + Traverse + ReadProperty×2");
         assert_eq!(alts, 0);
 
-        let mut actual = reqs.test_graph_rows(graph.raw()).expect("graph demands present");
+        let mut actual = reqs
+            .test_graph_rows(graph.raw())
+            .expect("graph demands present");
         assert_exact_row_multiset(&citation_reach_expected_rows(&store, graph), &mut actual);
     }
 

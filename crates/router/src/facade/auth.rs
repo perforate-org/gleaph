@@ -13,6 +13,7 @@ use gleaph_auth::{
     AdminCaps, AuthWriteError, ElevationEvidence, GrantKey, GrantRowEntry, GrantSubject,
     MetadataScope, Privilege, RetentionSweepStep,
 };
+use std::collections::BTreeSet;
 
 use crate::state::RouterError;
 
@@ -237,6 +238,44 @@ pub fn holds_any_graph_grant(graph_raw: u32, caller: &Principal) -> bool {
     ROUTER_AUTH_GRANTS.with_borrow(|grants| {
         grants.holds_any_graph_grant(GrantSubject::effective_for(caller), graph_raw, now_ns)
             || grants.holds_any_graph_grant(GrantSubject::Public, graph_raw, now_ns)
+    })
+}
+
+/// Whether `caller` (or the `PUBLIC` baseline) holds at least one unexpired
+/// vertex-label `MATCH` grant on `graph`, including the wildcard `NODES *` row
+/// ([ADR 0089] §5).
+///
+/// Backs the unconstrained-scan marker demand: a caller may run an unconstrained vertex
+/// scan only when they hold `MATCH` on at least one vertex label (or the wildcard
+/// equivalent). The anonymous principal evaluates as the `PUBLIC` subject only.
+pub fn holds_any_vertex_label_match(graph_raw: u32, caller: &Principal) -> bool {
+    let now_ns = crate::facade::store::ic_time_ns();
+    ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+        grants.holds_any_vertex_label_match(GrantSubject::effective_for(caller), graph_raw, now_ns)
+            || grants.holds_any_vertex_label_match(GrantSubject::Public, graph_raw, now_ns)
+    })
+}
+
+/// Collect every unexpired vertex-label `MATCH` grant `caller` (or `PUBLIC`) holds on
+/// `graph`, including the wildcard `NODES *` row ([ADR 0089] §5).
+///
+/// Returns `(concrete_labels, has_wildcard)`: the set of concrete vertex label ids the
+/// caller can match, plus whether the wildcard row is present. Used by the request-build
+/// bucket restriction to intersect the plan's resolved vertex labels with the caller's
+/// grantable set. Expired rows are excluded (fail closed).
+pub fn collect_vertex_label_match_set(graph_raw: u32, caller: &Principal) -> (BTreeSet<u32>, bool) {
+    let now_ns = crate::facade::store::ic_time_ns();
+    ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+        let (own_labels, own_wildcard) = grants.collect_vertex_label_match_set(
+            GrantSubject::effective_for(caller),
+            graph_raw,
+            now_ns,
+        );
+        let (public_labels, public_wildcard) =
+            grants.collect_vertex_label_match_set(GrantSubject::Public, graph_raw, now_ns);
+        let mut labels = own_labels;
+        labels.extend(public_labels);
+        (labels, own_wildcard || public_wildcard)
     })
 }
 

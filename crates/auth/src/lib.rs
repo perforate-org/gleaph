@@ -22,6 +22,7 @@
 use candid::{CandidType, Principal};
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::rc::Rc;
 
@@ -334,11 +335,21 @@ impl Direction {
 ///
 /// Ids are opaque graph-scoped catalog ids assigned by the embedding system. Phase 1 has
 /// no edge-property resource; property-level reads attach to vertex labels only.
+///
+/// `AllVertexLabels` is the wildcard resource for `NODES *` ([ADR 0089] §5): a single
+/// grant row covering "match any vertex label" instead of enumerating every label. The
+/// resource carries no payload (zero bytes after the kind byte), so its key sorts
+/// before any concrete `VertexLabel(u32)` for the same subject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, serde::Serialize, serde::Deserialize)]
 pub enum GraphResource {
     VertexLabel(u32),
     EdgeLabel(u32),
-    VertexProperty { label: u32, property: u32 },
+    VertexProperty {
+        label: u32,
+        property: u32,
+    },
+    /// Wildcard: covers every vertex label in the graph (`NODES *`, [ADR 0089] §5).
+    AllVertexLabels,
 }
 
 /// Resource scope of a metadata-plane elevation ([ADR 0080] §1).
@@ -390,6 +401,7 @@ impl GraphResource {
             GraphResource::VertexLabel(_) => 0,
             GraphResource::EdgeLabel(_) => 1,
             GraphResource::VertexProperty { .. } => 2,
+            GraphResource::AllVertexLabels => 3,
         }
     }
 
@@ -404,6 +416,7 @@ impl GraphResource {
                 v.extend_from_slice(&property.to_le_bytes());
                 v
             }
+            GraphResource::AllVertexLabels => Vec::new(),
         }
     }
 
@@ -422,7 +435,8 @@ impl GraphResource {
                 label: read_u32(0),
                 property: read_u32(4),
             },
-            (kind @ 0..=2, n) => {
+            (3, 0) => GraphResource::AllVertexLabels,
+            (kind @ 0..=3, n) => {
                 panic!("corrupt grant key: resource kind {kind} with {n} payload bytes")
             }
             (kind, _) => panic!("corrupt grant key: unknown resource kind {kind}"),
@@ -1554,6 +1568,85 @@ impl<M: Memory> GrantState<M> {
                 _ => false,
             }
         })
+    }
+
+    /// Whether `subject` holds at least one unexpired vertex-label `MATCH` grant on
+    /// `graph`, including the wildcard `NODES *` row ([ADR 0089] §5).
+    ///
+    /// Backs the unconstrained-scan marker demand: a caller may run an unconstrained
+    /// vertex scan only when they hold `MATCH` on at least one vertex label (or the
+    /// wildcard equivalent). Expired rows confer nothing (fail closed, same semantics as
+    /// [`Self::holds`]).
+    pub fn holds_any_vertex_label_match(
+        &self,
+        subject: GrantSubject,
+        graph: u32,
+        now_ns: u64,
+    ) -> bool {
+        self.grants.iter().any(|entry| {
+            let row = entry.value();
+            if row.expires_at_ns.is_some_and(|expiry| expiry < now_ns) {
+                return false;
+            }
+            match entry.key().decode() {
+                (
+                    Privilege::Graph(GraphPrivilege {
+                        graph: target,
+                        operation: GraphOperation::Match,
+                        resource: GraphResource::VertexLabel(_) | GraphResource::AllVertexLabels,
+                    }),
+                    key_subject,
+                ) => target == graph && key_subject == subject,
+                _ => false,
+            }
+        })
+    }
+
+    /// Collect every unexpired vertex-label `MATCH` grant `subject` holds on `graph`,
+    /// including the wildcard `NODES *` row ([ADR 0089] §5).
+    ///
+    /// Returns `(concrete_labels, has_wildcard)`: the set of concrete vertex label ids
+    /// the subject can match, plus whether the wildcard row is present. Used by the
+    /// request-build bucket restriction to intersect the plan's resolved vertex labels
+    /// with the caller's grantable set. Expired rows are excluded (fail closed).
+    pub fn collect_vertex_label_match_set(
+        &self,
+        subject: GrantSubject,
+        graph: u32,
+        now_ns: u64,
+    ) -> (BTreeSet<u32>, bool) {
+        let mut labels = BTreeSet::new();
+        let mut wildcard = false;
+        for entry in self.grants.iter() {
+            let row = entry.value();
+            if row.expires_at_ns.is_some_and(|expiry| expiry < now_ns) {
+                continue;
+            }
+            match entry.key().decode() {
+                (
+                    Privilege::Graph(GraphPrivilege {
+                        graph: target,
+                        operation: GraphOperation::Match,
+                        resource: GraphResource::VertexLabel(label),
+                    }),
+                    key_subject,
+                ) if target == graph && key_subject == subject => {
+                    labels.insert(label);
+                }
+                (
+                    Privilege::Graph(GraphPrivilege {
+                        graph: target,
+                        operation: GraphOperation::Match,
+                        resource: GraphResource::AllVertexLabels,
+                    }),
+                    key_subject,
+                ) if target == graph && key_subject == subject => {
+                    wildcard = true;
+                }
+                _ => {}
+            }
+        }
+        (labels, wildcard)
     }
 
     /// Remove every stored row whose privilege targets graph `graph`, returning the count.

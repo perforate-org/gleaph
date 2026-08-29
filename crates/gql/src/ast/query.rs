@@ -767,6 +767,9 @@ pub enum GrantDirection {
 ///
 /// Both `NODES <label>` and `VERTICES <label>` parse into [`GrantResourceSelector::Vertex`]
 /// (the canonical codebase term is vertex); the source keyword is not preserved.
+/// `NODES *` parses into [`GrantResourceSelector::AllVertexLabels`] ([ADR 0089] §5) and
+/// must be paired with a privilege that operates on vertex labels (MATCH, READ,
+/// CREATE, UPDATE, DELETE, TRAVERSE without direction).
 #[cfg(feature = "gleaph")]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
@@ -788,8 +791,15 @@ pub enum GrantDirection {
     )
 )]
 pub enum GrantResourceSelector {
-    Vertex { label: String },
-    Edge { label: String },
+    Vertex {
+        label: String,
+    },
+    Edge {
+        label: String,
+    },
+    /// Wildcard: `NODES *` ([ADR 0089] §5). The integration layer lowers this to a
+    /// single grant row covering every vertex label in the target graph.
+    AllVertexLabels,
 }
 
 /// Subject literal of a `GRANT ... TO` / `REVOKE ... FROM` clause ([ADR 0074] §5).

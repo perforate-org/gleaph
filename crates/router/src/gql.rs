@@ -5,14 +5,18 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use candid::{Encode, Principal};
+use gleaph_gql::Value;
+use gleaph_gql::ast::{Expr, ExprKind, SetOp};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::GqlWireRows;
 use gleaph_gql_ic::decode_gql_params_blob;
+use gleaph_gql_planner::plan::NodeLabelRef;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::entry::VertexLabelId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PhysicalIndexId,
@@ -175,6 +179,228 @@ use crate::state::RouterError;
 
 fn mutation_key_for(caller: Principal, graph_id: GraphId, client_key: &str) -> ClientMutationKey {
     ClientMutationKey::new(caller, graph_id, client_key.to_owned())
+}
+
+/// Plan specialization for ADR 0089 §1: rewrite an unconstrained or positive
+/// multi-label vertex scan (`NodeScan { label: None, .. }`) into per-label scans
+/// restricted to the caller's effective `MATCH`-granted vertex labels.
+///
+/// The executor already filters by label when `NodeScan { label: Some(name) }` (it
+/// iterates only vertices carrying that label), so restricting the plan's scan set
+/// to the caller's grantable labels is sufficient — no executor change.
+///
+/// Returns `None` when the plan needs no rewrite (caller holds the wildcard `NODES *`
+/// row, or the plan has no unconstrained vertex scans). Returns `Some(rewritten_plan)`
+/// otherwise. A caller with zero grantable vertex labels produces a plan that yields
+/// zero rows (a `Filter` that always rejects) so the query returns an empty result
+/// without erroring.
+pub(crate) fn specialize_plan_for_caller(
+    plan: &PhysicalPlan,
+    store: &RouterStore,
+    graph_id: GraphId,
+    caller: &Principal,
+) -> Result<Option<PhysicalPlan>, RouterError> {
+    // Skip DML plans: writes are authorized by CREATE/UPDATE/DELETE, not MATCH, and
+    // the request-build restriction only applies to read scans.
+    if plan.has_dml() {
+        return Ok(None);
+    }
+    // Collect every unconstrained NodeScan variable. If none, the plan is already
+    // labeled-bounded and the executor's per-label filter suffices.
+    let unconstrained_vars: Vec<Rc<str>> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::NodeScan {
+                variable,
+                label: None,
+                ..
+            } => Some(Rc::clone(variable)),
+            _ => None,
+        })
+        .collect();
+    if unconstrained_vars.is_empty() {
+        return Ok(None);
+    }
+    // Resolve the caller's grantable vertex label set (label ids) plus the wildcard.
+    let (granted_ids, has_wildcard) =
+        crate::facade::auth::collect_vertex_label_match_set(graph_id.raw(), caller);
+    if has_wildcard {
+        return Ok(None);
+    }
+    // Reverse-resolve label ids to names; skip ids that no longer resolve (dead
+    // monotonic ids, see ADR 0074 invariant 4). A caller with zero grantable labels
+    // yields an empty plan — the executor will scan zero buckets.
+    let granted_names: Vec<String> = granted_ids
+        .iter()
+        .filter_map(|id_raw| {
+            let id_u16 = u16::try_from(*id_raw).ok()?;
+            store
+                .reverse_vertex_label_name(graph_id, VertexLabelId::from_raw(id_u16))
+                .ok()
+        })
+        .collect();
+    if granted_names.is_empty() {
+        // Build a plan that always yields zero rows: keep the unconstrained NodeScan
+        // (so its presence does not change downstream wiring) and inject a
+        // `Filter { condition: false }` after it. The executor's per-vertex filter
+        // rejects every row, producing an empty result without touching the
+        // authorization path (Filter does not introduce a new property-read demand).
+        //
+        // In practice this path is unreachable: the marker demand in
+        // `require_vertex_scan_rows` already rejects a caller with zero vertex grants
+        // before dispatch, so a zero-grant caller never reaches this specialization.
+        // We keep the unreachable code as defense-in-depth.
+        let mut rewritten_ops = plan.ops.clone();
+        let insert_pos = rewritten_ops
+            .iter()
+            .position(|op| !matches!(op, PlanOp::NodeScan { label: None, .. }))
+            .unwrap_or(rewritten_ops.len());
+        rewritten_ops.insert(
+            insert_pos,
+            PlanOp::Filter {
+                condition: Expr::new(ExprKind::Literal(Value::Bool(false))),
+            },
+        );
+        let mut rewritten = plan.clone();
+        rewritten.ops = rewritten_ops;
+        return Ok(Some(rewritten));
+    }
+    // Expand each unconstrained NodeScan into a UnionAll of per-label scans, one for
+    // every grantable label. Multiple unconstrained variables produce a nested cartesian
+    // expansion: each combination of label choices forms one sub-plan.
+    let expansions = expand_unconstrained_scans(&plan.ops, &unconstrained_vars, &granted_names);
+    let mut rewritten = plan.clone();
+    rewritten.ops = expansions;
+    Ok(Some(rewritten))
+}
+
+/// Replace every unconstrained `NodeScan { label: None }` in `ops` with a cartesian
+/// product of per-label NodeScan variants, one combination per output sub-plan. The
+/// combinations are combined via `SetOperation { op: UnionAll, right: ... }`.
+///
+/// `unconstrained_vars` lists the variable names of every unconstrained NodeScan.
+/// `granted_names` lists the caller's grantable label names.
+///
+/// The output `ops` is a sequence: optional `UnionAll` wrappers followed by the
+/// remaining downstream ops (Expand, Filter, Project, ...). The first
+/// `unconstrained_vars.len()` ops of the original are replaced by the expansion.
+fn expand_unconstrained_scans(
+    ops: &[PlanOp],
+    unconstrained_vars: &[Rc<str>],
+    granted_names: &[String],
+) -> Vec<PlanOp> {
+    // Split ops at the boundary: the leading slice holds the unconstrained NodeScans
+    // and any ops between them; everything after is the downstream pipeline shared
+    // by every combination.
+    let n_unconstrained = unconstrained_vars.len();
+    // The downstream pipeline starts at the first op whose variable is not an
+    // unconstrained one. For the explorer's `MATCH (a)-[e]->(b)` shape this is the
+    // Expand that binds `b` from `a`.
+    let downstream_start = ops
+        .iter()
+        .position(|op| !matches!(op, PlanOp::NodeScan { label: None, .. }))
+        .unwrap_or(ops.len());
+    let leading = &ops[..downstream_start];
+    let downstream = &ops[downstream_start..];
+    // Rebuild the leading ops for one combination: replace each unconstrained
+    // NodeScan with the per-label variant for the chosen label.
+    let build_leading = |combo: &[String]| -> Vec<PlanOp> {
+        let mut label_iter = combo.iter();
+        leading
+            .iter()
+            .map(|op| match op {
+                PlanOp::NodeScan {
+                    variable,
+                    label,
+                    property_projection: _,
+                } if label.is_none() => {
+                    // Specialization rewrites an unconstrained scan into a labeled
+                    // scan restricted to one grantable label. We also force
+                    // `property_projection: Some([])` when the planner left it
+                    // `None`: the walker trusts `property_projection` for labeled
+                    // scans, and a `None` here would demand a full READ row that
+                    // a MATCH-only caller cannot satisfy — breaking the explorer's
+                    // edge-load shape after specialization. The walker's topology-
+                    // only analysis on the *original* plan (via
+                    // `collect_property_reading_vars`) already proved the scan
+                    // reads no physical property; the rewritten plan simply
+                    // communicates that to the authorization walker via the
+                    // planner's own `property_projection` field.
+                    let name = label_iter.next().cloned().unwrap_or_default();
+                    PlanOp::NodeScan {
+                        variable: Rc::clone(variable),
+                        label: Some(NodeLabelRef::new(name)),
+                        property_projection: Some(Rc::from([] as [Rc<str>; 0])),
+                    }
+                }
+                other => other.clone(),
+            })
+            .collect()
+    };
+    // Generate every combination of grantable labels for the unconstrained variables.
+    let combos = cartesian_product(granted_names, n_unconstrained);
+    // Build sub-plans and combine with UnionAll. The first sub-plan's leading ops
+    // replace the original leading ops; subsequent sub-plans are appended as
+    // SetOperation { op: UnionAll, right: <sub-plan> }.
+    let total = combos.len();
+    let mut out: Vec<PlanOp> = Vec::new();
+    for (i, combo) in combos.into_iter().enumerate() {
+        let leading_combined = build_leading(&combo);
+        // Append downstream ops to the leading for this combination.
+        let mut sub_ops = leading_combined;
+        sub_ops.extend(downstream.iter().cloned());
+        if i == 0 {
+            out.extend(sub_ops);
+        } else {
+            // Wrap the sub-plan in a SetOperation: the previous `out` is the left
+            // side, the new sub-plan is the right side. We insert the SetOperation
+            // at the end of `out`, but SetOperation is binary and `out` may already
+            // contain many ops. The cleanest representation: replace the previous
+            // trailing SetOperation chain with a nested binary tree, or just emit a
+            // new SetOperation whose left is the previous combined result wrapped
+            // as a sub-plan. We use the latter.
+            let mut right_ops = sub_ops;
+            let left_ops = std::mem::take(&mut out);
+            // The previous result may itself end with a SetOperation that wraps an
+            // earlier left; we want to keep the left's downstream ops shared, so
+            // wrap the entire previous result as the new left.
+            let sub_plan = PhysicalPlan {
+                ops: std::mem::take(&mut right_ops),
+                diagnostics: Default::default(),
+                annotations: Default::default(),
+                output: Default::default(),
+                binding_layout: Default::default(),
+            };
+            out = left_ops;
+            out.push(PlanOp::SetOperation {
+                op: SetOp::UnionAll,
+                right: Box::new(sub_plan),
+            });
+        }
+        let _ = total;
+    }
+    out
+}
+
+/// Cartesian product of `items` repeated `n` times, yielding `items^n` rows.
+fn cartesian_product(items: &[String], n: usize) -> Vec<Vec<String>> {
+    if n == 0 {
+        return vec![vec![]];
+    }
+    let mut out: Vec<Vec<String>> = vec![vec![]];
+    for _ in 0..n {
+        let mut next = Vec::with_capacity(out.len() * items.len());
+        for prefix in &out {
+            for item in items {
+                let mut row = prefix.clone();
+                row.push(item.clone());
+                next.push(row);
+            }
+        }
+        out = next;
+    }
+    out
 }
 
 pub(crate) type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
@@ -3459,6 +3685,17 @@ async fn run_gql_unchecked(
         &mut typed,
     )?;
     let plan = build_router_block_plan(&dispatch.plan_block, schema, &stats)?;
+    // ADR 0089 §1: rewrite unconstrained vertex scans into per-label scans restricted
+    // to the caller's effective `MATCH`-granted vertex labels. The plan cache is keyed
+    // by `(caller, graph_id, query)` so per-caller specialization stays per-caller.
+    // Specialization runs BEFORE plan-time authorization so the walker sees the
+    // per-label NodeScan ops and emits concrete MATCH demands on the grantable
+    // labels (the unconstrained marker demand is only valid for callers with at
+    // least one grant; the per-label demands are the per-bucket enforcement).
+    let plan = match specialize_plan_for_caller(&plan, &store, resolved.graph_id, &caller)? {
+        Some(specialized) => specialized,
+        None => plan,
+    };
     // ADR 0074 slice 2b: plan-time data-plane enforcement. Every vertex label, edge
     // label × direction, projected property, and mutation the plan demands must be covered
     // by the caller's effective privileges (`caller ∪ PUBLIC`, ownership-derived tenancy);
@@ -10664,5 +10901,41 @@ mod chunk_budget_tests {
         // guard must stop so finalization, journal reads, and the response fit.
         let used = MAX_UPDATE_CALL_INSTRUCTIONS - ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM;
         assert!(!graph_batch_chunk_within_update_budget(used));
+    }
+}
+
+#[cfg(test)]
+mod specialize_plan_tests {
+    use super::*;
+    use gleaph_gql_planner::plan::NodeLabelRef;
+    use std::rc::Rc;
+
+    /// ADR 0089 §1: a plan with no unconstrained vertex scans needs no rewrite.
+    #[test]
+    fn specialize_plan_no_op_when_all_scans_labeled() {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("a"),
+                label: Some(NodeLabelRef::new("Person")),
+                property_projection: Some(Rc::from([] as [Rc<str>; 0])),
+            },
+            PlanOp::Filter {
+                condition: Expr::new(ExprKind::Literal(Value::Bool(true))),
+            },
+        ]);
+        let store = RouterStore::new();
+        let graph_id = GraphId::from_raw(1);
+        let caller = candid::Principal::from_slice(&[7; 29]);
+        let result =
+            specialize_plan_for_caller(&plan, &store, graph_id, &caller).expect("specialize");
+        assert!(result.is_none(), "labeled plan must not be rewritten");
+    }
+
+    /// ADR 0089 §1: cartesian product expansion produces one sub-plan per combination
+    /// of grantable labels across the unconstrained variables.
+    #[test]
+    fn specialize_plan_cartesian_product_size() {
+        let combos = cartesian_product(&["L1".to_string(), "L2".to_string()], 2);
+        assert_eq!(combos.len(), 4);
     }
 }

@@ -198,6 +198,13 @@ struct GraphDemands {
     /// Set when some read could not be attributed to exactly one grantable resource; only
     /// implicit-root (registry) coverage admits such a plan (Phase 1 grants enumerate labels).
     unattributed: bool,
+    /// Marker for an unconstrained or positive multi-label vertex scan with an empty
+    /// property projection ([ADR 0089] §2). When set, evaluation requires the caller to
+    /// hold `MATCH` on at least one vertex label (or the wildcard `NODES *` row); the
+    /// per-bucket restriction is then applied at request build. When unset, an
+    /// unconstrained scan with property reads stays `unattributed` (tenancy-only, fail
+    /// closed) because property values are atomic.
+    unconstrained_vertex_match: bool,
 }
 
 /// Every data-plane demand of one plan, grouped by target graph.
@@ -228,6 +235,15 @@ impl RequirementSet {
             .map(|d| (d.unattributed, d.conjunctive.len(), d.alternatives.len()))
     }
 
+    /// Test-only summary of the unconstrained-vertex-match marker for a graph.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn test_unconstrained_vertex_match(&self, graph_raw: u32) -> bool {
+        self.graphs
+            .get(&graph_raw)
+            .is_some_and(|d| d.unconstrained_vertex_match)
+    }
+
     /// Test-only clones of one graph's conjunctive rows, for exact-multiset contract
     /// locks (plan 0306); [`Privilege`] already implements `PartialEq`, so equality
     /// needs no parallel summary vocabulary.
@@ -250,6 +266,15 @@ impl RequirementSet {
 
     fn require_unattributed(&mut self, graph: GraphId) {
         self.demands(graph).unattributed = true;
+    }
+
+    /// Marker demand for an unconstrained or positive multi-label vertex scan with an
+    /// empty property projection ([ADR 0089] §2). The caller must hold `MATCH` on at
+    /// least one vertex label; the per-bucket restriction is then applied at request
+    /// build. Property projections stay `unattributed` (tenancy-only) because property
+    /// values are atomic.
+    fn require_unconstrained_vertex_match(&mut self, graph: GraphId) {
+        self.demands(graph).unconstrained_vertex_match = true;
     }
 }
 
@@ -280,6 +305,150 @@ fn edge_row(graph: u32, operation: GraphOperation, label_id: u32) -> Privilege {
     })
 }
 
+/// Compute the set of vertex variables whose physical properties are read by some
+/// downstream expression in the plan ([ADR 0089] §4, Gap 2 follow-up). A variable is
+/// "property-reading" if any expression reachable from the plan output references a
+/// `PropertyAccess` rooted at that variable, or hydrates the variable as a vertex record
+/// (bare `Variable(v)` reference in the output, or a property-filter that reads a named
+/// property off the variable).
+///
+/// Variables that are only consumed by `ElementId(v)`, `count(v)`, `id(v)`, label
+/// predicates, or traversal bindings (e.g., the source of an `Expand`) are not
+/// property-reading: the executor needs only the vertex identity, not its property
+/// values, to serve them. Such variables are *topology-only* and the unconstrained
+/// scan that binds them takes the marker + per-bucket path, not the tenancy-only
+/// full-map path.
+fn collect_property_reading_vars(plan: &PhysicalPlan) -> std::collections::BTreeSet<Rc<str>> {
+    let mut out = std::collections::BTreeSet::new();
+    for op in &plan.ops {
+        collect_property_reading_vars_in_op(op, &mut out);
+    }
+    out
+}
+
+fn collect_property_reading_vars_in_op(op: &PlanOp, out: &mut std::collections::BTreeSet<Rc<str>>) {
+    match op {
+        PlanOp::Filter { condition } => {
+            if expr_reads_vertex_property(condition) {
+                mark_expr_vars_as_reading(condition, out);
+            }
+        }
+        PlanOp::PropertyFilter { predicates, .. } => {
+            for pred in predicates {
+                mark_expr_vars_as_reading(pred, out);
+            }
+        }
+        PlanOp::ExpandFilter { dst_filter, .. } => {
+            for pred in dst_filter {
+                mark_expr_vars_as_reading(pred, out);
+            }
+        }
+        PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
+            for col in columns {
+                if col_has_vertex_hydration(col)
+                    && let Some(var) = project_column_var(col)
+                {
+                    out.insert(Rc::from(var.as_str()));
+                }
+                mark_expr_vars_as_reading(&col.expr, out);
+            }
+        }
+        PlanOp::Aggregate {
+            group_by,
+            aggregates,
+        } => {
+            for expr in group_by {
+                mark_expr_vars_as_reading(expr, out);
+            }
+            for agg in aggregates {
+                if let Some(expr) = &agg.expr {
+                    mark_expr_vars_as_reading(expr, out);
+                }
+                if let Some(expr) = &agg.filter {
+                    mark_expr_vars_as_reading(expr, out);
+                }
+                if let Some(ob) = &agg.order_by {
+                    for item in &ob.items {
+                        mark_expr_vars_as_reading(&item.expr, out);
+                    }
+                }
+            }
+        }
+        PlanOp::Sort { order_by } => {
+            for item in &order_by.items {
+                mark_expr_vars_as_reading(&item.expr, out);
+            }
+        }
+        PlanOp::TopK { order_by, .. } => {
+            for item in &order_by.items {
+                mark_expr_vars_as_reading(&item.expr, out);
+            }
+        }
+        PlanOp::Let { bindings } => {
+            for b in bindings {
+                mark_expr_vars_as_reading(&b.value, out);
+            }
+        }
+        PlanOp::For { list, .. } => {
+            mark_expr_vars_as_reading(list, out);
+        }
+        _ => {}
+    }
+}
+
+/// Whether the expression reads a physical vertex property. A `PropertyAccess` rooted
+/// at any variable, or any expression that recursively contains one, qualifies.
+fn expr_reads_vertex_property(expr: &Expr) -> bool {
+    expr_contains_property_access(expr)
+}
+
+fn expr_contains_property_access(expr: &Expr) -> bool {
+    if matches!(expr.kind, ExprKind::PropertyAccess { .. }) {
+        return true;
+    }
+    let mut found = false;
+    for_each_immediate_child_expr(expr, |child| {
+        if !found && expr_contains_property_access(child) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Mark every vertex variable reachable through `expr` that participates in a
+/// property-reading sub-expression. A bare `Variable(v)` reference does NOT
+/// automatically mark `v` here — the caller decides via [`col_has_vertex_hydration`]
+/// for `Project` columns whether the variable is being hydrated as a vertex record.
+fn mark_expr_vars_as_reading(expr: &Expr, out: &mut std::collections::BTreeSet<Rc<str>>) {
+    if let Some(root) = property_access_root(expr) {
+        out.insert(Rc::from(root.as_str()));
+    }
+}
+
+/// If `expr` is or contains a `PropertyAccess`, return the root variable name of the
+/// leftmost access chain. Otherwise `None`. A bare `Variable(v)` reference is NOT a
+/// property access — it must be detected separately as a vertex-hydration.
+fn property_access_root(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::PropertyAccess { expr: inner, .. } => property_access_root(inner),
+        _ => None,
+    }
+}
+
+/// Whether a `ProjectColumn` hydrates a vertex record (bare `Variable(v)` reference with
+/// no alias) — this is the shape `RETURN a` and `RETURN b, c` take, and it forces a full
+/// property read.
+fn col_has_vertex_hydration(col: &gleaph_gql_planner::plan::ProjectColumn) -> bool {
+    matches!(col.expr.kind, ExprKind::Variable(_)) && col.alias.is_none()
+}
+
+fn project_column_var(col: &gleaph_gql_planner::plan::ProjectColumn) -> Option<String> {
+    match &col.expr.kind {
+        ExprKind::Variable(v) => Some(v.to_string()),
+        _ => None,
+    }
+}
+
 // ──── Extraction ────
 
 /// Per-scope variable label facts accumulated while walking one op list.
@@ -291,6 +460,13 @@ struct Scope {
     edge_labels: BTreeMap<Rc<str>, BTreeSet<String>>,
     /// Reads deferred to scope end, when label facts are complete.
     pending: Vec<PendingRead>,
+    /// Vertex variables whose physical properties are read by some downstream
+    /// expression ([ADR 0089] §4 follow-up). Variables NOT in this set are
+    /// topology-only consumers: they need only identity (element_id, traversal
+    /// source, count, label predicates), not the full property map. The unconstrained
+    /// scan that binds such a variable takes the marker + per-bucket path; scans
+    /// that bind a property-reading variable stay tenancy-only.
+    property_reading_vars: BTreeSet<Rc<str>>,
 }
 
 enum PendingRead {
@@ -308,6 +484,7 @@ impl Scope {
             var_labels: BTreeMap::new(),
             edge_labels: BTreeMap::new(),
             pending: Vec::new(),
+            property_reading_vars: BTreeSet::new(),
         }
     }
 
@@ -377,6 +554,7 @@ pub(crate) fn extract(
 ) -> RequirementSet {
     let mut reqs = RequirementSet::default();
     let mut scope = Scope::new(root_graph);
+    scope.property_reading_vars = collect_property_reading_vars(plan);
     walk_ops(&plan.ops, &mut scope, &mut reqs, catalog);
     resolve_pending(&mut scope, &mut reqs, catalog);
     reqs
@@ -537,11 +715,43 @@ fn require_vertex_scan_rows(
     catalog: &dyn PlanCatalogView,
     label: Option<&NodeLabelRef>,
     property_projection: Option<&[Rc<str>]>,
+    variable: &str,
+    scope: &Scope,
 ) {
     let Some(label) = label else {
-        // Unlabeled scans enumerate every vertex; Phase 1 grants enumerate labels, so
-        // only registry-tenant coverage admits them.
-        reqs.require_unattributed(graph);
+        // Unlabeled scans ([ADR 0089] §1–§4 follow-up): the topology-only shape binds
+        // a vertex variable whose downstream output reads no physical properties (the
+        // plan's output is `ElementId(a)`, `count(a)`, label predicates, or a
+        // traversal source binding). The scan is pure topology and is restricted at
+        // request build time to the caller's grantable vertex labels via the marker
+        // demand. The walker must take this branch for any unlabeled scan whose
+        // variable is not in `property_reading_vars` — the planner frequently leaves
+        // `property_projection: None` even when no property is read, because traversal
+        // sources keep the full property map. We do NOT trust the planner's
+        // `property_projection` alone for the topology-only decision: we use the
+        // downstream expression analysis ([`collect_property_reading_vars`]) as the
+        // authoritative signal. Any other shape (property access, full vertex
+        // hydration, or a labeled scan) keeps the atomic-reads contract: it stays
+        // tenancy-only (fail closed) because property values are atomic.
+        let variable_reads_properties = scope
+            .property_reading_vars
+            .contains::<str>(variable.as_ref());
+        match property_projection {
+            // Explicit empty projection: planner is telling us no property read.
+            Some([]) => reqs.require_unconstrained_vertex_match(graph),
+            // Explicit non-empty projection: planner is asking for these properties
+            // to be read. Even if the downstream output doesn't reference them
+            // (e.g., a no-op `RETURN` that omits the result), the executor must hydrate
+            // them. Atomic.
+            Some(_) => reqs.require_unattributed(graph),
+            // Planner left the projection unspecified. Defer to the downstream
+            // expression analysis: if no expression reads a physical property of
+            // this variable, the scan is topology-only and takes the marker path.
+            None if !variable_reads_properties => {
+                reqs.require_unconstrained_vertex_match(graph);
+            }
+            None => reqs.require_unattributed(graph),
+        }
         return;
     };
     let Some(label_id) = catalog.vertex_label(graph, &label.name) else {
@@ -553,6 +763,18 @@ fn require_vertex_scan_rows(
         graph,
         vertex_row(graph_raw, GraphOperation::Match, label_id),
     );
+    // Property read demand ([ADR 0089] §4 follow-up): the planner's
+    // `property_projection` is the authoritative signal for a labeled scan. A bare
+    // `Variable(v)` reference in the output (vertex hydration, `RETURN v`) hydrates
+    // the full property map, so the planner sets `property_projection: None` and we
+    // demand READ. A `property_projection: Some([...])` demands READ_PROPERTY for
+    // every listed key. A `property_projection: Some([])` (empty list) is the
+    // planner's explicit "no property read" signal — the scan is topology-only and
+    // MATCH alone covers it. This keeps the explorer's edge-load shape working
+    // for a MATCH-only caller: specialization rewrites the unconstrained endpoint
+    // into `NodeScan { label: Some(L) }` whose `property_projection` the planner
+    // already set to `Some([])` because the output reads no physical property of
+    // the endpoint variable.
     match property_projection {
         None => reqs.require(graph, vertex_row(graph_raw, GraphOperation::Read, label_id)),
         Some([]) => {}
@@ -730,6 +952,8 @@ fn walk_op(
                 catalog,
                 label.as_ref(),
                 property_projection.as_deref(),
+                variable,
+                scope,
             );
             if let Some(label) = label {
                 scope.note_vertex_label(variable, &label.name);
@@ -759,6 +983,8 @@ fn walk_op(
                     catalog,
                     Some(&NodeLabelRef::new(label_name.as_str())),
                     property_projection.as_deref(),
+                    variable,
+                    scope,
                 );
             }
             scope.defer_vertex_property(variable, property);
@@ -1373,6 +1599,11 @@ fn resolve_vertex_property_read(
 /// expiry-aware). Deliberately exposes no administrative-capability input.
 pub(crate) trait EffectiveGrants {
     fn covers(&self, caller: &Principal, privilege: &Privilege) -> bool;
+
+    /// Whether `caller` (or `PUBLIC`) holds at least one unexpired vertex-label `MATCH`
+    /// grant on `graph`, including the wildcard `NODES *` row ([ADR 0089] §2). Backs
+    /// the unconstrained-scan marker demand.
+    fn holds_any_vertex_label_match(&self, caller: &Principal, graph: u32) -> bool;
 }
 
 /// Implicit-root coverage (ADR 0074 §3 invariant 3): the registry owner's (and admins')
@@ -1399,6 +1630,14 @@ pub(crate) fn authorize_requirements(
             continue;
         }
         if demands.unattributed {
+            return false;
+        }
+        // Unconstrained-vertex-match marker ([ADR 0089] §2): the caller must hold `MATCH`
+        // on at least one vertex label (or the wildcard `NODES *` row) on this graph.
+        // The per-bucket restriction is applied at request build time.
+        if demands.unconstrained_vertex_match
+            && !grants.holds_any_vertex_label_match(caller, *graph_raw)
+        {
             return false;
         }
         if !demands
@@ -1429,10 +1668,37 @@ struct StoredGrants;
 impl EffectiveGrants for StoredGrants {
     fn covers(&self, caller: &Principal, privilege: &Privilege) -> bool {
         let now_ns = crate::facade::store::ic_time_ns();
-        crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+        let exact = crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow(|grants| {
             grants.holds(GrantSubject::effective_for(caller), privilege, now_ns)
                 || grants.holds(GrantSubject::Public, privilege, now_ns)
-        })
+        });
+        if exact {
+            return true;
+        }
+        // Wildcard `NODES *` ([ADR 0089] §5): a `Match` on a concrete `VertexLabel`
+        // resource is also covered by the `AllVertexLabels` row for the same graph.
+        if let Privilege::Graph(GraphPrivilege {
+            graph: priv_graph,
+            operation: GraphOperation::Match,
+            resource: GraphResource::VertexLabel(_),
+        }) = privilege
+        {
+            let wildcard = Privilege::Graph(GraphPrivilege {
+                graph: *priv_graph,
+                operation: GraphOperation::Match,
+                resource: GraphResource::AllVertexLabels,
+            });
+            crate::facade::stable::ROUTER_AUTH_GRANTS.with_borrow(|grants| {
+                grants.holds(GrantSubject::effective_for(caller), &wildcard, now_ns)
+                    || grants.holds(GrantSubject::Public, &wildcard, now_ns)
+            })
+        } else {
+            false
+        }
+    }
+
+    fn holds_any_vertex_label_match(&self, caller: &Principal, graph: u32) -> bool {
+        crate::facade::auth::holds_any_vertex_label_match(graph, caller)
     }
 }
 
@@ -1702,6 +1968,7 @@ fn describe_resource(
                 .property(graph_raw, property)
                 .unwrap_or_else(|| format!("#{property}"))
         ),
+        GraphResource::AllVertexLabels => "NODES *".to_owned(),
     }
 }
 
@@ -2179,6 +2446,16 @@ mod tests {
                 .holds(GrantSubject::effective_for(caller), privilege, NOW_NS)
                 || self.state.holds(GrantSubject::Public, privilege, NOW_NS)
         }
+
+        fn holds_any_vertex_label_match(&self, caller: &Principal, graph: u32) -> bool {
+            self.state.holds_any_vertex_label_match(
+                GrantSubject::effective_for(caller),
+                graph,
+                NOW_NS,
+            ) || self
+                .state
+                .holds_any_vertex_label_match(GrantSubject::Public, graph, NOW_NS)
+        }
     }
 
     struct TenantSet(BTreeSet<u32>);
@@ -2214,6 +2491,10 @@ mod tests {
 
     impl EffectiveGrants for AlwaysAllow {
         fn covers(&self, _: &Principal, _: &Privilege) -> bool {
+            true
+        }
+
+        fn holds_any_vertex_label_match(&self, _: &Principal, _: u32) -> bool {
             true
         }
     }
@@ -2416,15 +2697,171 @@ mod tests {
         assert!(allowed(&reverse, &caller, &AlwaysAllow, &[]));
     }
 
+    /// ADR 0089 §4 follow-up: an unconstrained scan whose downstream output reads no
+    /// physical properties is a topology-only scan even when the planner leaves
+    /// `property_projection: None` (no output at all). It takes the marker path.
     #[test]
-    fn unlabeled_scan_is_tenancy_only() {
+    fn unlabeled_scan_with_no_output_emits_marker() {
         let reqs = extract_ops(vec![full_map_scan("n", None)]);
         let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
-        assert!(demands.unattributed);
-        // Even a grantee of every listed row cannot pass; tenancy does.
-        let everything = grants_state_with_all_listed_rows();
-        assert!(!allowed(&reqs, &principal(1), &everything, &[]));
-        assert!(allowed(&reqs, &principal(1), &everything, &[GRAPH_RAW]));
+        assert!(
+            demands.unconstrained_vertex_match,
+            "unconstrained scan with no output must set the marker (topology-only)"
+        );
+        assert!(
+            !demands.unattributed,
+            "unconstrained scan with no output must NOT be tenancy-only"
+        );
+    }
+
+    /// ADR 0089 §2: an unconstrained scan with an empty property projection emits the
+    /// marker demand ("caller must hold `MATCH` on at least one vertex label") instead
+    /// of tenancy-only. The per-bucket restriction is applied at request build time.
+    #[test]
+    fn unconstrained_empty_projection_scan_emits_marker() {
+        let reqs = extract_ops(vec![scan("n", None, &[])]);
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(
+            demands.unconstrained_vertex_match,
+            "empty-projection unconstrained scan must set the marker"
+        );
+        assert!(
+            !demands.unattributed,
+            "empty-projection unconstrained scan must NOT be tenancy-only"
+        );
+        assert!(demands.conjunctive.is_empty());
+
+        // A caller with no vertex-label MATCH is rejected by the marker.
+        let grants = GrantTable::default();
+        assert!(!allowed(&reqs, &principal(1), &grants, &[]));
+
+        // A caller with a concrete vertex-label MATCH row passes the marker.
+        let mut grants = GrantTable::default();
+        grants.vertex(
+            GrantSubject::Principal(principal(1)),
+            GraphOperation::Match,
+            1,
+        );
+        assert!(allowed(&reqs, &principal(1), &grants, &[]));
+    }
+
+    /// ADR 0089 §4: an explicit non-empty `property_projection` keeps the scan
+    /// tenancy-only (fail closed) because the planner is asking the executor to
+    /// hydrate those properties. Even if the downstream output doesn't reference
+    /// them, the values are atomic.
+    #[test]
+    fn unconstrained_explicit_property_projection_stays_tenancy_only() {
+        let reqs = extract_ops(vec![scan("n", None, &["name"])]);
+        assert!(
+            reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed,
+            "explicit non-empty property_projection must stay tenancy-only"
+        );
+    }
+
+    /// ADR 0089 §4: an unconstrained scan whose downstream output references a
+    /// vertex property (`RETURN a.name`) stays tenancy-only because the property
+    /// value is atomic and must be covered by a `READ_PROPERTY` row.
+    #[test]
+    fn unconstrained_output_with_property_access_stays_tenancy_only() {
+        use gleaph_gql::ast::Expr;
+        let plan = PhysicalPlan::from_ops(vec![
+            full_map_scan("n", None),
+            PlanOp::Project {
+                columns: vec![gleaph_gql_planner::plan::ProjectColumn {
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::var("n")),
+                        property: "name".into(),
+                    }),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ]);
+        let reqs = extract(&plan, graph(), &catalog());
+        assert!(
+            reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed,
+            "RETURN a.name on an unconstrained scan must stay tenancy-only"
+        );
+    }
+
+    /// ADR 0089 §4: an unconstrained scan whose downstream output is `ElementId(a)`
+    /// reads no physical property — it is topology-only and takes the marker path.
+    #[test]
+    fn unconstrained_output_with_element_id_takes_marker() {
+        use gleaph_gql::ast::Expr;
+        let plan = PhysicalPlan::from_ops(vec![
+            full_map_scan("a", None),
+            PlanOp::Project {
+                columns: vec![gleaph_gql_planner::plan::ProjectColumn {
+                    expr: Expr::new(ExprKind::ElementId(Box::new(Expr::var("a")))),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ]);
+        let reqs = extract(&plan, graph(), &catalog());
+        assert!(
+            reqs.graphs
+                .get(&GRAPH_RAW)
+                .unwrap()
+                .unconstrained_vertex_match,
+            "RETURN element_id(a) on an unconstrained scan must take the marker path"
+        );
+        assert!(
+            !reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed,
+            "RETURN element_id(a) must NOT be tenancy-only"
+        );
+    }
+
+    /// ADR 0089 §4: `RETURN count(a)` on an unconstrained scan reads no property —
+    /// it is topology-only and takes the marker path.
+    #[test]
+    fn unconstrained_output_with_count_takes_marker() {
+        use gleaph_gql::ast::Expr;
+        let plan = PhysicalPlan::from_ops(vec![
+            full_map_scan("a", None),
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![gleaph_gql_planner::plan::AggregateSpec {
+                    func: gleaph_gql::ast::AggregateFunc::Count,
+                    expr: Some(Expr::var("a")),
+                    expr2: None,
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: None,
+                }],
+            },
+        ]);
+        let reqs = extract(&plan, graph(), &catalog());
+        assert!(
+            reqs.graphs
+                .get(&GRAPH_RAW)
+                .unwrap()
+                .unconstrained_vertex_match,
+            "RETURN count(a) on an unconstrained scan must take the marker path"
+        );
+        assert!(
+            !reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed,
+            "RETURN count(a) must NOT be tenancy-only"
+        );
+    }
+
+    /// ADR 0089 §5: the wildcard `NODES *` row covers any vertex-label MATCH check.
+    #[test]
+    fn wildcard_vertex_label_grant_covers_marker() {
+        let reqs = extract_ops(vec![scan("n", None, &[])]);
+        let mut grants = GrantTable::default();
+        // Grant the wildcard AllVertexLabels row instead of any concrete label.
+        grants.grant(
+            GrantSubject::Principal(principal(1)),
+            &Privilege::Graph(GraphPrivilege {
+                graph: GRAPH_RAW,
+                operation: GraphOperation::Match,
+                resource: GraphResource::AllVertexLabels,
+            }),
+        );
+        assert!(allowed(&reqs, &principal(1), &grants, &[]));
     }
 
     fn grants_state_with_all_listed_rows() -> GrantTable {
@@ -2534,9 +2971,8 @@ mod tests {
             property: property.into(),
             value: gleaph_gql_planner::plan::ScanValue::Parameter("p".into()),
             cmp: gleaph_gql::ast::CmpOp::Eq,
-            property_projection: projection_keys.map(|keys| {
-                keys.iter().map(|k| Rc::from(*k)).collect::<Rc<[Str]>>()
-            }),
+            property_projection: projection_keys
+                .map(|keys| keys.iter().map(|k| Rc::from(*k)).collect::<Rc<[Str]>>()),
             ordered_by_sort: None,
         }
     }
@@ -3550,6 +3986,19 @@ mod tests {
         fn covers(&self, caller: &Principal, privilege: &Privilege) -> bool {
             self.0.holds_own_row(caller, privilege) || self.0.holds_public_row(privilege)
         }
+
+        fn holds_any_vertex_label_match(&self, _caller: &Principal, _graph: u32) -> bool {
+            // The snapshot stores concrete rows only; the fixture's own/public lists carry
+            // vertex-label MATCH rows directly, so the caller-agnostic scan suffices. The
+            // `Privilege::Graph` arm of `covers` already proves per-row coverage; this
+            // marker is only set on unconstrained scans where per-row evaluation is not
+            // needed.
+            self.0
+                .own
+                .iter()
+                .chain(self.0.public.iter())
+                .any(is_vertex_label_match)
+        }
     }
 
     struct FakeTenancy {
@@ -3560,6 +4009,20 @@ mod tests {
         fn is_tenant(&self, graph_raw: u32, _c: &Principal) -> bool {
             self.tenants.contains(&graph_raw)
         }
+    }
+
+    /// Whether a privilege is a vertex-label `MATCH` row covering a concrete label or
+    /// the wildcard `NODES *` resource. Used by the test probe to evaluate the
+    /// unconstrained-vertex-match marker.
+    fn is_vertex_label_match(privilege: &Privilege) -> bool {
+        matches!(
+            privilege,
+            Privilege::Graph(GraphPrivilege {
+                operation: GraphOperation::Match,
+                resource: GraphResource::VertexLabel(_) | GraphResource::AllVertexLabels,
+                ..
+            })
+        )
     }
 
     fn match_person(graph: u32) -> Privilege {

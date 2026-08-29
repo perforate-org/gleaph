@@ -1258,6 +1258,12 @@ impl Parser<'_> {
             return Err(self.expected("NODES, VERTICES, or EDGES"));
         }
         self.advance();
+        // `NODES *` — the wildcard vertex-label resource ([ADR 0089] §5). It must not
+        // be followed by a `{...}` property list, since the wildcard has no single
+        // label to bind properties to.
+        if self.eat_token(&Token::Star) {
+            return Ok(GrantResourceSelector::AllVertexLabels);
+        }
         let label = self.expect_ident()?.to_owned();
         if matches!(self.peek(), Some(Token::LBrace)) {
             if !matches!(privilege, GrantPrivilege::Read { .. }) {
@@ -2373,6 +2379,26 @@ mod grant_parser_tests {
             stmt.subject,
             GrantSubjectLiteral::Principal("w7x7r-cok77-xa".to_string())
         );
+    }
+
+    /// `NODES *` parses into the wildcard `AllVertexLabels` resource ([ADR 0089] §5).
+    #[test]
+    fn parse_grant_match_nodes_wildcard() {
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT MATCH ON GRAPH social NODES * TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::Graph {
+                privilege: GrantPrivilege::Match,
+                graph: crate::ast::ObjectName::simple("social"),
+                resource: GrantResourceSelector::AllVertexLabels,
+                condition: None,
+            }
+        );
+        assert_eq!(stmt.subject, GrantSubjectLiteral::Public);
     }
 
     #[test]
