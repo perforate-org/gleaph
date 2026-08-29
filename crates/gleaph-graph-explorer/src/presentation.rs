@@ -19,7 +19,7 @@ use crate::mapping::{EdgeIdentity, GraphIdentityMap, VertexIdentity};
 ///
 /// The presentation is derived from a query result plus the identity map. It is
 /// applied to the view's overlay resolvers without rebuilding the scene.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Presentation {
     /// Rendered nodes to emphasize.
     pub emphasized_nodes: HashSet<NodeId>,

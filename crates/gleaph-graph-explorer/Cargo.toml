@@ -14,3 +14,9 @@ glam = "0.33"
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 rapidhash.workspace = true
+gleaph-gql-ic-wire.workspace = true
+gleaph-router-wire.workspace = true
+gpui-platform.workspace = true
+candid.workspace = true
+ic-agent.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
