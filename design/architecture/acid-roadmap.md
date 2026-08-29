@@ -212,9 +212,10 @@ Exit criteria:
 - **Met.** Every supported shard-local DML either commits all owner-local state or commits none:
   the canonical segment has no intermediate inter-canister `await`, so it is one atomic message
   segment.
-- **Met.** No remote call occurs inside the named canonical critical section: enforced structurally
-  by `apply_canonical_mutation_segment` taking no index handle and running CALL procedures
-  synchronously.
+- **Met.** No remote call occurs inside the named canonical critical section: enforced
+  path-independently by `CanonicalSegmentGuard` (RAII thread-local depth counter +
+  `assert_no_canonical_segment(...)` at every inter-canister chokepoint, [ADR 0091](../adr/0091-path-independent-canonical-segment-guard.md)),
+  with the original "segment takes no index handle" guarantee retained as defense-in-depth.
 
 ## Phase 2: Mutation-linked projection watermarks
 
@@ -502,6 +503,13 @@ Candidate future contracts:
    cross-shard visibility is possible while a saga is mid-flight; this is the explicit semantic
    promise (no global rollback).
 3. **Staged distributed commit:** reserve for a named cross-shard all-or-nothing requirement.
+   _Frozen contract set: contracts 1 and 2 above are the full multi-DML contract today. Contract 3
+   is **not** a parameterized engine — its only instance is
+   [ADR 0030](../adr/0030-cross-shard-uniqueness-tcc-reservation.md) (cross-shard uniqueness).
+   Any future contract-3 instance (quota, schema publication, multi-version CAS, ...) must land
+   via its own ADR under the [ADR 0029 §7](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
+   template; the contract is not generalized into a reusable engine. This freezes the Phase 5
+   multi-DML contract set at 1 and 2._
 
 Tests:
 
@@ -569,6 +577,17 @@ Required gate:
 
 Cluster-wide MVCC, a timestamp oracle, and general two-phase commit remain out of scope until this
 gate is met.
+
+_Note on canonical-row versioning (MVCC versioning): the canonical storage does not retain
+multiple versions of a row today. `MutationToken` is a per-shard watermark set, not a snapshot
+timestamp, and the ICP-message-atomicity contract on the canonical segment makes time-travel
+reads and multi-version CAS unnecessary for every contract currently in scope. A future Phase-6+
+invariant that requires cluster-wide point-in-time read or multi-version CAS MAY introduce MVCC
+versioning through a dedicated ADR; we do not pre-reserve version fields in stable storage
+because reservation cost must be paid forever for a need that may never materialize. Layout
+versioning for stable-memory schema evolution (magic \| layout_version header) and logical
+versioning for canister upgrade are out of scope for this note and continue to be governed by
+[`stable-memory-inventory.md`](../storage/stable-memory-inventory.md)._
 
 ## Validation matrix
 

@@ -915,6 +915,24 @@ pub enum MutationLifecyclePhase {
 /// applied once its combined outbox/repair floor passes it), and label-stats freshness by each
 /// shard's delta [`ShardEventSeq`]. Phase 2 *issues* the token; Phase 3 enforces it via
 /// [`ReadMode::AtLeast`].
+///
+/// ## Scope
+///
+/// `MutationToken` is a **per-shard watermark set, not a global snapshot timestamp**. It
+/// does not give cluster-wide point-in-time read semantics; federated reads may still observe
+/// skew across shards (ADR 0029 Context).
+///
+/// ## Composing tokens for multi-mutation reads
+///
+/// When a caller issues mutation A and then mutation B and wants a read that observes both,
+/// there is no built-in token. The caller composes one:
+///
+/// - `mutation_id`: `max(a.mutation_id, b.mutation_id)`,
+/// - per-shard `label_stats_seq`: `max(a.label_stats_seq, b.label_stats_seq)`.
+///
+/// Graph-index freshness is satisfied per shard when its `index_pending_min_mutation_id`
+/// is `None` or `< max(...)`. The SDK is expected to expose this composition; the kernel
+/// does not own it.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct MutationToken {
     pub mutation_id: MutationId,
@@ -932,6 +950,16 @@ pub struct MutationToken {
 /// - [`ReadMode::AtLeast`] enforces a read barrier: the read is served only once every
 ///   shard in the token has caught its label-stats and graph-index watermarks; otherwise
 ///   the router returns a retryable projection-lag error without serving stale state.
+///
+/// ## Barrier scope
+///
+/// `AtLeast(token)` measures the freshness of the **ordinary graph-index** projection
+/// (ADR 0029 Phase 2, [`index_pending_min_mutation_id`](crate::index) on each shard) plus
+/// the label-stats projection. It does **not** measure vector index or text index
+/// freshness. A read served under `AtLeast(token)` may therefore observe stale vector /
+/// text projections for the same `mutation_id`. Vector / text freshness barriers are out
+/// of scope until per-index `index_pending_*_mutation_id` lands; extending `AtLeast` to
+/// cover them will require a dedicated ADR.
 #[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Serialize, Deserialize)]
 pub enum ReadMode {
     /// Non-blocking; may observe documented projection lag.

@@ -402,13 +402,17 @@ model makes that durable rather than fragile:
 
 Enforcement note. Today the boundary is enforced structurally but narrowly: the canonical mutation
 segment is constructed without a `PropertyIndexLookup` handle and runs `CALL` procedures
-synchronously, so it cannot reach the only existing inter-canister paths. When a peer-shard client
-is introduced, that narrow construction is no longer sufficient on its own. Enforcement must then
-generalize to a path-independent guard — assert "no canonical segment is active" at every
-inter-canister chokepoint (graph-index client, Router call, and any peer-shard client) — so a new
-call path added inside the segment fails loudly instead of silently extending the critical section
-across a commit point. This guard is expected when a second inter-canister path first appears
-(peer-shard client or the Phase 4/6 cross-shard coordination work), not before.
+synchronously, so it cannot reach the only existing inter-canister paths. The path-independent
+guard named in the second paragraph of this Enforcement note has been adopted ahead of the
+peer-shard-client trigger: see
+[ADR 0091 — Path-independent guard for the canonical mutation segment](0091-path-independent-canonical-segment-guard.md).
+ADR 0091 implements the `CanonicalSegmentGuard` RAII (thread-local depth counter + Drop balance
+check) entered at the first statement of `apply_canonical_mutation_segment`, and the
+`assert_no_canonical_segment(...)` chokepoint helper placed at every inter-canister acquisition
+boundary (`ExecutorContext::new` for `PropertyIndexLookup` today; future peer-shard client,
+subgraph client, and Router call client additions must call the helper per ADR 0091 Decision 4).
+The original "no `PropertyIndexLookup` handle" / "synchronous `CALL` procedures" guarantees
+remain in place as defense-in-depth.
 
 ## Invariants
 
@@ -417,7 +421,7 @@ across a commit point. This guard is expected when a second inter-canister path 
 | Canonical graph state changes atomically within the supported local boundary | Graph | Synchronous canonical mutation segment |
 | A recoverable shard-local mutation error leaves canonical and same-canister derived state logically unchanged | Owning LARA store or `GraphStore` facade | Preflight before the first canonical write; trap on impossible post-preflight failure |
 | Canonical adjacency, reverse rows, aliases, properties, local indexes, and maintenance intent have one Graph-owned update path | Graph | `GraphStore` mutation facade; storage details remain encapsulated in LARA |
-| The canonical mutation segment carries no inter-canister call/commit point, including after graph-shard splitting | Graph | Segment constructed without a cross-canister client handle today; path-independent "no active segment" guard once a peer-shard client exists |
+| The canonical mutation segment carries no inter-canister call/commit point, including after graph-shard splitting | Graph | Segment constructed without a cross-canister client handle today; `CanonicalSegmentGuard` RAII (ADR 0091) at segment start + `assert_no_canonical_segment(...)` at every inter-canister chokepoint |
 | A committed canonical mutation has durable replay/repair metadata before cross-canister work can be lost | Graph | Mutation journal and projection-intent write boundary |
 | One client key and fingerprint reuse one mutation identity | Router | Client mutation reservation |
 | One mutation id is not applied twice on a graph shard | Graph | Graph mutation journal lookup before execution |
@@ -501,3 +505,4 @@ or read-consistency decisions.
 - [ADR 0025: Client mutation journal retention](0025-client-mutation-journal-retention-sweep.md)
 - [ADR 0027: Graph mutation journal retention](0027-graph-mutation-journal-retention.md)
 - [ADR 0039: Production stable-memory evolution and canister upgrade safety](0039-production-stable-memory-evolution-and-upgrade-safety.md)
+- [ADR 0091: Path-independent guard for the canonical mutation segment](0091-path-independent-canonical-segment-guard.md) (formalizes the §8 enforcement note)

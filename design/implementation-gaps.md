@@ -2621,6 +2621,52 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   quantified-path group variable execute, but the underlying identity collision was not
   in scope and is resolved here.
 
+### GAP-2026-08-29-007 — PARTIALLY RESOLVED: Canonical mutation segment enforcement was not path-independent
+
+- **Status:** Partially Resolved (2026-08-29; design and doc comments land in this commit;
+  implementation slice pending)
+- **Severity:** P1 latent invariant enforcement gap
+- **Owner:** Graph (`crates/graph/src/gql_run.rs::apply_canonical_mutation_segment`)
+- **Observed behavior:** The canonical mutation segment relied on two narrow structural
+  properties to keep inter-canister calls out of the segment: (a) it takes no
+  `PropertyIndexLookup` handle, and (b) the only `CALL` procedures it executes are
+  synchronous. These are not path-independent — a second inter-canister chokepoint (peer-shard
+  client, subgraph client, Phase 6 cross-shard coordination) added inside the segment would
+  silently extend the critical section across a commit point. ADR 0029 §8 explicitly named this
+  as a deferred guard.
+- **Expected or needed behavior:** A new inter-canister chokepoint added inside the segment must
+  fail loudly at its acquisition boundary. The canonical segment must trap and roll back the
+  whole message (Property 5) when a chokepoint is reached from inside the segment.
+- **Resolution (design):** Adopted [`CanonicalSegmentGuard`](../adr/0091-path-independent-canonical-segment-guard.md)
+  (RAII thread-local depth counter + Drop balance check + chokepoint-side
+  `assert_no_canonical_segment(...)` trap). The guard is entered at the first statement of
+  `apply_canonical_mutation_segment`; the existing `ExecutorContext::new` chokepoint for
+  `PropertyIndexLookup` acquisition calls `assert_no_canonical_segment("executor_context_new")`.
+  The original "no `PropertyIndexLookup` handle" / "synchronous `CALL`" guarantees are retained
+  as defense-in-depth.
+- **Resolution (implementation):** Pending. The implementation slice (new
+  `crates/graph/src/facade/canonical_segment.rs` module, one-line `enter()` at the segment
+  start, `assert_no_canonical_segment` at chokepoints, host + PocketIC tests) must land before
+  any second inter-canister chokepoint is added. Until then, [ADR 0091](../adr/0091-path-independent-canonical-segment-guard.md)
+  Decision 4 (PR-review checklist) is the active guard.
+- **Evidence (post-implementation):** New host unit tests in
+  `crates/graph/src/facade/canonical_segment.rs` will cover depth-balance, outside-guard pass,
+  inside-guard trap, and nested-enter depth. New PocketIC test file
+  `crates/pocket-ic-tests/tests/adr0091_path_independent_guard.rs` will cover whole-message
+  rollback when the trap fires. Existing tests are unaffected
+  (`canonical_segment_trap_rolls_back_whole_message` passes without modification because
+  Property 5 guarantees message-wide rollback on trap).
+- **Impact:** The canonical segment atomicity boundary is now formally defensible from any new
+  inter-canister chokepoint by a single line of defense at the chokepoint boundary, ahead of
+  the second-chokepoint trigger named in ADR 0029 §8.
+- **Related contracts:** [ADR 0091](../adr/0091-path-independent-canonical-segment-guard.md)
+  (new); [ADR 0029 §8](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
+  (referenced from ADR 0091); [ACID roadmap Phase 1](../architecture/acid-roadmap.md) exit
+  criteria (updated to cite ADR 0091); [`MutationToken` /
+  `ReadMode::AtLeast` doc comments](../../crates/graph-kernel/src/plan_exec.rs) (clarified
+  scope; see `gleaph-mvcc-and-ic-atomicity.md` and `gleaph-mvcc-design-review.md` for the
+  underlying review).
+
 ## Review cadence
 
 - The primary agent checks this ledger before final approval of a meaningful slice.
