@@ -155,7 +155,7 @@ Privilege {
   readable; property-level read grants are enumerated per label. A query that explicitly
   projects an unauthorized property fails; unauthorized properties are never substituted
   with NULL.
-- Wildcard label traversal is not granted in Phase 1; grants enumerate labels.
+- Wildcard label traversal is not granted in Phase 1; grants enumerate labels. (Refined 2026-08-29 by ADR 0089: unconstrained and positive multi-label vertex scans are marker-gated and bucket-restricted to the caller's grantable labels, and a wildcard `NODES *` vertex-label grant is added; `NOT`/wildcard label expressions remain tenancy-only.)
 
 ### 3. Invariants
 
