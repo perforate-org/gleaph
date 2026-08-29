@@ -386,6 +386,35 @@ Deliverables:
 - Bound work per timer message and avoid unsafe lease expiry. **Done** (per-tick scan budget;
   `routing_lease_ns` / `ROUTING_LEASE_TTL_NS` reclaim is safe only pre-envelope).
 
+#### Per-tick budget and back-off schedule
+
+The autonomous recovery timer is parameterized by per-tick scan budgets and reschedule delays
+that bound the instruction cost of each timer message and shape the convergence cadence. The
+normative source for these values is
+[`crates/router/src/recovery.rs`](../../crates/router/src/recovery.rs); the table below is a
+summary that names the value and the rationale so the parameters can be traced from a design
+review without reading the code.
+
+| Constant | Value | Rationale (per the doc comments in `recovery.rs`) |
+|----------|-------|--------------------------------------------------|
+| `RECOVERY_SCAN_BUDGET` | 16 rows / tick | Bounds the per-tick instruction cost for the projection-convergence scan; the round-robin cursor resumes on the next tick so a large journal is still fully covered. |
+| `RECLAIM_SCAN_BUDGET` | 8 rows / tick (ADR 0030 slice-6 reclaim reconciler, Driver 1) | Smaller than the projection budget because each candidate can fan out cross-canister `Acquire` proof reads. |
+| `EFFECT_SCAN_BUDGET` | 8 rows / tick (ADR 0030 slice-6 unified effect reconciler, Driver 2) | Same small-budget rationale as reclaim; each row can page a shard's effects and ack. |
+| `VECTOR_INGEST_OUTBOX_SCAN_BUDGET` | 16 rows / tick (direct vector-ingestion suffix recovery) | Each exact `(target, shard)` group issues one bounded typed batch call; after resolution, one rotated Vector lane is attempted per pass. |
+| `CONSTRAINT_DROP_SCAN_BUDGET` | 8 rows / tick (ADR 0030 slice-9 drop-drain driver, Driver 3) | Each `Dropping` constraint can purge a reservation page and page each shard's outbox. |
+| `INDEX_RETIREMENT_SCAN_BUDGET` | 8 rows / tick (ADR 0023 D6 retirement drain driver, Driver 4) | Each record issues at most one bounded inter-canister purge step per pending target. |
+| `RECOVERY_FLOOR_DELAY` | 2 s | Reschedule delay while a lap is still in progress (more keyspace to scan, more work found, or an arm request was latched). Keeps the cursor moving promptly without hot-looping. |
+| `RECOVERY_RELAXED_DELAY` | 30 s | Reschedule delay after a fully-scanned lap that still found work on any driver; backs off so a persistently lagging shard is retried without hot-looping. |
+
+The floor/relaxed dichotomy encodes two operational regimes: an actively-progressing lap is
+polled on the floor (every `RECOVERY_FLOOR_DELAY`), and a lap that completed a full scan but
+still surfaced recoverable work is retried on the relaxed cadence. The timer stops entirely
+when a lap finds no recoverable work on any driver and no quarantined effect row is parked
+behind a backoff; the next mutation re-arms it. Per-tick instruction cost is bounded by the
+union of the six scan budgets; round-robin cursors make a large keyspace still fully covered
+without enlarging any single tick. Changing any of these values is a Phase 4 design change
+and must update both `recovery.rs` and this table in the same commit.
+
 Tests:
 
 - Drop the original client after one shard commits; recovery completes remaining shards. **Done** —
