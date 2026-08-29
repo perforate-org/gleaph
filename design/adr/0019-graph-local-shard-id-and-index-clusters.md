@@ -132,7 +132,7 @@ key shapes **unchanged**:
 
 ```text
 GlobalVertexId { shard_id: ShardId, local_vertex_id: LocalVertexId }     // 8 bytes LE
-GlobalEdgeId   { shard_id, owner_vertex_id, edge_slot_index }          // 12 bytes LE
+GlobalEdgeId   { shard_id, owner_vertex_id, label_id, edge_slot_index }  // 16 bytes LE (ADR 0090)
 ```
 
 **Semantic change:** **`Global`** means **within one logical graph partition** (across that

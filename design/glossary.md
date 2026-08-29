@@ -1,11 +1,11 @@
 # Glossary
 
-Last updated: 2026-06-17
-Anchor timestamp: 2026-06-17 10:34:31 UTC +0000
+Last updated: 2026-08-29
+Anchor timestamp: 2026-08-29 12:32:54 UTC +0000
 
 Terms used across Gleaph design documents. Canonical types live in **`gleaph-graph-kernel`** unless noted.
 
-See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md), [adr/0006-pre-federation-foundation.md](adr/0006-pre-federation-foundation.md), and [adr/0017-graph-vertex-existence-ssot.md](adr/0017-graph-vertex-existence-ssot.md) for identity and existence policies.
+See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md), [adr/0006-pre-federation-foundation.md](adr/0006-pre-federation-foundation.md), [adr/0017-graph-vertex-existence-ssot.md](adr/0017-graph-vertex-existence-ssot.md), and [adr/0090-edge-element-id-label-attribution.md](adr/0090-edge-element-id-label-attribution.md) for identity and existence policies.
 
 ## Identity and liveness
 
@@ -14,9 +14,9 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md), [adr/0006-pre-fe
 | **Shard id** | `ShardId` (`u32` newtype) | Partition of a logical graph. Semantics are graph-local (`GraphId`-scoped), so `ShardId(0)` exists per graph. Standalone sole shard is **`ShardId(0)`**. |
 | **Local vertex id** | `LocalVertexId` / LARA `VertexId` | Dense id within one graph shard’s CSR store; not reused after delete. |
 | **Global vertex id** | `GlobalVertexId` | Canonical graph-scoped key: `{ shard_id, local_vertex_id }` (8 bytes LE). Interpreted only under an explicit `GraphId` context. |
-| **Global edge id** | `GlobalEdgeId` | Query-time graph-scoped physical edge handle: `{ shard_id, owner_local, edge_slot_index }` (12 bytes). Interpreted only with graph context; not stable across compaction. |
+| **Global edge id** | `GlobalEdgeId` | Query-time graph-scoped physical edge handle: `{ shard_id, owner_local, label_id, edge_slot_index }` (16 bytes LE; label widened to `u32` for alignment, [ADR 0090](adr/0090-edge-element-id-label-attribution.md)). Interpreted only with graph context; not stable across compaction. |
 | **Encoded vertex id** | `EncodedVertexId` (`[u8; 8]`) | Opaque client wire id for vertices (`ELEMENT_ID`, path elements). Bijective encoding of `GlobalVertexId` under a per-graph `ElementIdEncodingKey`; encoded bytes are graph-context-bound handles. |
-| **Encoded edge id** | `EncodedEdgeId` (`[u8; 12]`) | Opaque client wire id for edges in paths and `ELEMENT_ID`; encoded bytes are graph-context-bound handles. |
+| **Encoded edge id** | `EncodedEdgeId` (`[u8; 16]`) | Opaque client wire id for edges in paths and `ELEMENT_ID`; bijective encoding of `GlobalEdgeId` (16 bytes, [ADR 0090](adr/0090-edge-element-id-label-attribution.md)). |
 | **Vertex liveness** | Graph CSR tombstone bit | Authoritative existence on a shard: row in range and not tombstoned ([ADR 0017](adr/0017-graph-vertex-existence-ssot.md)). |
 | **Physical placement key** | `PhysicalPlacementKey` | Type alias for `GlobalVertexId` (deprecated name). |
 | **Remote vertex id** | `RemoteVertexId` | Shard-local 30-bit handle inside `VertexRef` for remote CSR endpoints — kernel type only; **no graph stable yet**. |

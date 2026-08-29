@@ -2550,6 +2550,77 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   `artifact_audit_history` authorized with the pre-upgrade successful activation row intact,
   anonymous still unauthorized, and `release_get_active` equal to the pre-upgrade release id.
 
+### GAP-2026-08-29-001 — RESOLVED: `ELEMENT_ID(e)` / `GraphPathEdgeId` bytes collide across edge labels under the same owner (router/storage edge-identity bug)
+
+- **Status:** Resolved (plan 0312 / [ADR 0090](adr/0090-edge-element-id-label-attribution.md),
+  2026-08-29). Identity fix; no data loss.
+- **Severity:** P2 explorer display / cross-caller identity collision; not data loss.
+- **Owner:** `crates/graph-kernel/src/federation/{global_edge_id,encoded}.rs` and
+  `crates/graph-kernel/src/path.rs` (canonical identity + Feistel encoder/decoder);
+  `crates/graph/src/plan/query/executor/path/materialize.rs` and `eval.rs` (call sites).
+- **Observed behavior:** Knowledge demo seed has 37 unique edges. `MATCH (a)-[e:L]->(b)
+  RETURN element_id(e)` returned 25 unique element_ids, not 37. The native graph explorer
+  dedups by element_id and rendered 25 edges, missing 12. No data loss: storage is
+  correct; the wire id is not. The collision is masked in graphs where every owner has at
+  most one label (e.g. simple seeds), so the bug only surfaced against a multi-label
+  source vertex (the demo's alice has `AUTHORED_BY slot0`, `BELONGS_TO slot0`, `OWNS slot0`,
+  `ROUTED_VIA slot0` — all four encode to the same `(shard, alice, 0)`).
+- **Expected or needed behavior:** `ELEMENT_ID(e)` / `PathElement::Edge` bytes must be
+  unique per edge under the per-graph `ElementIdEncodingKey`. The CLI stderr warning
+  (introduced 2026-08-25) already states that edge ids are unstable physical handles
+  unstable across compaction; this bug is the same kind of instability in a different
+  dimension (cross-label collision at the same compaction), so the warning covers the
+  fix surface; no new warning is needed.
+- **Resolution:** `GlobalEdgeId` extended from `(shard, owner, slot)` to
+  `(shard, owner, label, slot)` with the label widened from `u16` to `u32` for 4-byte
+  alignment and bijection. `EncodedEdgeId` wire layout grew from 12 to 16 bytes. The
+  Feistel encoder/decoder is updated to a 16-byte canonical form (head: 8-byte Feistel-4,
+  tail: 8-byte XOR under a key-derived mask that mixes the encoded head and the per-graph
+  key tail). `GraphPathEdgeId::new` is now 5-arg and takes the label; the 3-arg form is
+  removed. Caller sites in `materialize.rs` (encoder + path materialization) and `eval.rs`
+  (singleton + `EdgeGroup` + host test helper) read the label from `EdgeHandle.label_id`
+  (already populated at insert time in `edge_insert.rs:203,331`). A new pure helper
+  `catalog_label_from_lara` translates the LARA bucket label to the catalog label space
+  for the wire encoder. The remote-edge default-label `0` matches the existing
+  label-free reverse-edge pattern.
+- **Pinned tests:** host — `gleaph-graph` lib tests
+  `edge_element_id_distinguishes_per_label_same_owner_slot`,
+  `edge_element_id_distinguishes_within_same_label`,
+  `edge_element_id_distinguishes_per_owner_same_label_slot`,
+  `edge_element_id_encoded_length_is_16_bytes`,
+  `edge_element_id_encoded_differs_from_canonical`,
+  `edge_element_id_label_zero_is_distinct_from_label_nonzero`;
+  `gleaph-graph-kernel` lib tests `global_edge_id::round_trip`,
+  `global_edge_id::label_widening_is_lossless_for_catalog_range`,
+  `encoded::edge_encode_decode_roundtrip`,
+  `encoded::edge_tail_changes_when_head_unchanged`,
+  `path::edge_path_id_roundtrips`,
+  `path::edge_path_id_distinguishes_per_label`. The plan 0307 group-binding
+  executor tests (`element_id_on_edge_group_lists_hop_ids_in_traversal_order`,
+  `element_id_on_vertex_group_preserves_order_and_empty_group_yields_empty_list`,
+  `element_id_on_path_group_stays_fail_closed_with_guidance`) still pass; the per-hop
+  list form inherits the fix automatically because the singleton and list arms share
+  the encoder.
+- **Evidence:** detection run during knowledge demo validation against the native graph
+  explorer (2026-08-29); root cause read of
+  `crates/graph/src/plan/query/executor/path/materialize.rs:116,145`,
+  `crates/graph/src/plan/query/executor/eval.rs:1010,1024,2214`,
+  `crates/graph-kernel/src/federation/global_edge_id.rs`,
+  `crates/graph-kernel/src/federation/encoded.rs`. Post-fix validation: `cargo test -p
+  gleaph-graph --lib` (1124 passed, 0 failed), `cargo test -p gleaph-graph-kernel --lib`
+  (184 passed, 0 failed), `cargo clippy -p gleaph-graph --lib --all-targets -- -D
+  warnings` and the same for `gleaph-graph-kernel` (exit 0).
+- **Related contracts:** [ADR 0090](adr/0090-edge-element-id-label-attribution.md) (new);
+  [ADR 0005](adr/0005-vertex-identity.md) (amended — 12 → 16 bytes for `GlobalEdgeId` /
+  `EncodedEdgeId`, 12-byte form marked SUPERSEDED); [ADR 0006](adr/0006-pre-federation-foundation.md)
+  § 4 (amended); [ADR 0019](adr/0019-graph-local-shard-id-and-index-clusters.md) § 3
+  (amended); [glossary](glossary.md) rows for `Global edge id` and `Encoded edge id`
+  (amended); [group-variables](execution/group-variables.md) ELEMENT_ID rules row
+  (amended with cross-link to ADR 0090). Distinct from GAP-2026-08-26-001 (plan 0307,
+  group-binding executor implementation): the 0307 fix made `ELEMENT_ID(e)` over a
+  quantified-path group variable execute, but the underlying identity collision was not
+  in scope and is resolved here.
+
 ## Review cadence
 
 - The primary agent checks this ledger before final approval of a meaningful slice.

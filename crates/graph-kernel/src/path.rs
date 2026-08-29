@@ -3,6 +3,7 @@
 //! `gleaph-gql` treats path element IDs as opaque bytes. This module defines
 //! the graph-kernel interpretation of those bytes for Gleaph runtimes.
 
+use crate::entry::EdgeLabelId;
 use crate::entry::EdgeSlotIndex;
 use crate::federation::{
     ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,
@@ -86,6 +87,7 @@ impl GraphPathEdgeId {
         key: &ElementIdEncodingKey,
         shard_id: ShardId,
         owner_vertex_id: VertexId,
+        label_id: EdgeLabelId,
         edge_slot_index: EdgeSlotIndex,
     ) -> Self {
         Self::from_global(
@@ -93,6 +95,7 @@ impl GraphPathEdgeId {
             GlobalEdgeId::new(
                 shard_id,
                 u32::from_le_bytes(owner_vertex_id.to_le_bytes()),
+                label_id,
                 edge_slot_index,
             ),
         )
@@ -169,10 +172,33 @@ mod tests {
             &key,
             ShardId::new(0),
             VertexId::from(7),
+            EdgeLabelId::from_raw(0x42),
             EdgeSlotIndex::from_raw(9),
         );
         assert_eq!(GraphPathEdgeId::from_bytes(id.to_bytes()), id);
         assert_eq!(GraphPathEdgeId::try_from_slice(&id.to_bytes()), Ok(id));
+    }
+
+    #[test]
+    fn edge_path_id_distinguishes_per_label() {
+        // Two edges from the same owner with coincident slot indices but different labels
+        // must encode to distinct bytes (the bug fixed by ADR 0090).
+        let key = ElementIdEncodingKey::host_test_fixture();
+        let a = GraphPathEdgeId::new(
+            &key,
+            ShardId::new(0),
+            VertexId::from(7),
+            EdgeLabelId::from_raw(1),
+            EdgeSlotIndex::from_raw(0),
+        );
+        let b = GraphPathEdgeId::new(
+            &key,
+            ShardId::new(0),
+            VertexId::from(7),
+            EdgeLabelId::from_raw(2),
+            EdgeSlotIndex::from_raw(0),
+        );
+        assert_ne!(a.to_bytes(), b.to_bytes());
     }
 
     #[test]

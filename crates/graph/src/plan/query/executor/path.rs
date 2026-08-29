@@ -31,11 +31,14 @@ mod search;
 pub mod weighted;
 
 pub(crate) use materialize::{
-    edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
+    catalog_label_from_lara, edge_element_id_bytes, local_shard_id, path_binding_to_value,
+    vertex_element_id_bytes,
 };
 pub(crate) use search::shortest_paths_between;
 pub(crate) use weighted::{weighted_shortest_can_use_hop_count, weighted_shortest_paths_between};
 
+#[cfg(test)]
+mod element_id_per_label;
 #[cfg(test)]
 mod tests;
 

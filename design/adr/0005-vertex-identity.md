@@ -2,8 +2,13 @@
 
 Date: 2026-06-11  
 Status: accepted  
-Last revised: 2026-08-04
-Anchor timestamp: 2026-08-04 18:18:33 UTC +0000
+Last revised: 2026-08-29
+Anchor timestamp: 2026-08-29 12:32:54 UTC +0000
+
+> **Note (2026-08-29):** the `GlobalEdgeId` / `EncodedEdgeId` wire layout changed from 12 to
+> 16 bytes in [ADR 0090](0090-edge-element-id-label-attribution.md) to include the bucket
+> label. The 12-byte form below is preserved as the historical record of the prior
+> decision; the 16-byte form is the fresh identity decision. See ADR 0090 § *Decision*.
 
 > **Placement registry:** Router `ROUTER_PLACEMENTS` and placement APIs were removed in
 > [0017](0017-graph-vertex-existence-ssot.md). Vertex existence is authoritative on the graph
@@ -32,10 +37,12 @@ This design has several problems:
 3. **Information leakage on the client wire.** Raw `(shard_id, local_vertex_id)` or monotonic
    logical ids reveal insertion order and shard layout. Clients need stable, round-trippable ids
    that look opaque.
-4. **Oversized edge path ids.** `GraphPathEdgeId` uses 16 bytes on the wire but only 12 bytes
-   carry semantics (bytes 4–7 are zero padding). GQL and Candid already treat path element ids as
-   variable-length opaque bytes (`PathElementId`, `Value::Bytes`); there is no need for a
-   128-bit numeric type.
+4. ~~**Oversized edge path ids.**~~ `GraphPathEdgeId` previously used 16 bytes on the wire but
+   only 12 bytes carried semantics (bytes 4–7 were zero padding). GQL and Candid already treat
+   path element ids as variable-length opaque bytes (`PathElementId`, `Value::Bytes`). This
+   observation is **superseded by [ADR 0090](0090-edge-element-id-label-attribution.md)**,
+   which re-adopts the 16-byte form and uses every byte for semantic content (label widening
+   in bytes 8–12). No padding remains.
 5. **Premature federation stable regions.** `VERTEX_LOGICAL_IDS`, remote↔logical maps,
    `REMOTE_FORWARD_IN`, and related tables encode the old model and should not be carried forward.
 
@@ -60,7 +67,8 @@ bytes** for client-visible `ELEMENT_ID` and path elements.
 ┌─────────────────────────────────────────────────────────────────┐
 │ Internal (router, index, placement, federation APIs)            │
 │   GlobalVertexId { shard_id, local_vertex_id }     8 bytes      │
-│   GlobalEdgeId   { shard_id, owner_local, slot }  12 bytes      │
+│   GlobalEdgeId   { shard_id, owner_local, label,   16 bytes     │
+│                    slot }                          (ADR 0090)   │
 │   RemoteVertexId (shard-local only, 30-bit)        never exported│
 └─────────────────────────────────────────────────────────────────┘
                               │ encode(key) / decode(key)
@@ -68,7 +76,7 @@ bytes** for client-visible `ELEMENT_ID` and path elements.
 ┌─────────────────────────────────────────────────────────────────┐
 │ Client wire (ELEMENT_ID, path vertices/edges, GQL Value::Bytes) │
 │   EncodedVertexId   [u8; 8]   — no Storable                    │
-│   EncodedEdgeId     [u8; 12]  — no Storable                     │
+│   EncodedEdgeId     [u8; 16]  — no Storable (ADR 0090)         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -89,15 +97,24 @@ bytes** for client-visible `ELEMENT_ID` and path elements.
 ### Global edge identity (query-time)
 
 - **`GlobalEdgeId`** identifies an edge at query time:
-  `{ shard_id, owner_vertex_id: LocalVertexId, edge_slot_index: EdgeSlotIndex }` (12 bytes).
+  `{ shard_id, owner_vertex_id: LocalVertexId, label_id: EdgeLabelId, edge_slot_index: EdgeSlotIndex }`
+  (16 bytes LE; label widened from `u16` to `u32` for 4-byte alignment and bijection,
+  [ADR 0090](0090-edge-element-id-label-attribution.md)). The 12-byte form that omitted the
+  label was the prior decision recorded in this ADR's first revision; it is preserved as
+  historical record and is no longer the canonical layout.
 - This is a **physical CSR handle**, not a stable logical edge id across compaction — same
   limitation as today’s `GraphPathEdgeId`.
+- The label is part of the identity because LARA's `edge_slot_index` is per-(owner, label)
+  bucket; without the label, two edges from the same source under different labels with
+  coincident per-bucket slot indices would collide. See ADR 0090 § *Context*.
 - There is no global “logical edge id” in this ADR.
 
 ### Encoded wire ids (client-facing)
 
 - **`EncodedVertexId`**: 8-byte opaque, bijectively encoded from **`GlobalVertexId`**.
-- **`EncodedEdgeId`**: 12-byte opaque, bijectively encoded from **`GlobalEdgeId`** (not 16 bytes).
+- **`EncodedEdgeId`**: 16-byte opaque, bijectively encoded from **`GlobalEdgeId`** (the
+  pre-0090 12-byte form was the prior decision; see the rejected-alternative note below and
+  [ADR 0090](0090-edge-element-id-label-attribution.md) for the 16-byte re-adoption).
 - Encoding uses a **fixed-key bijection** (e.g. Feistel rounds) with a **per-graph key** held by
   the router in `ROUTER_GRAPH_RUNTIME_CONFIG` (derived at graph registration; production uses IC
   `raw_rand()` — [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md) §3.1).
@@ -115,9 +132,9 @@ Constants:
 
 ```text
 ENCODED_VERTEX_ID_BYTES = 8
-ENCODED_EDGE_ID_BYTES   = 12
+ENCODED_EDGE_ID_BYTES   = 16   // ADR 0090 (was 12)
 GLOBAL_VERTEX_ID_BYTES  = 8
-GLOBAL_EDGE_ID_BYTES    = 12
+GLOBAL_EDGE_ID_BYTES    = 16   // ADR 0090 (was 12)
 ```
 
 ### Remote vertex handles (shard-internal)
@@ -194,7 +211,8 @@ CLIENT  → sends EncodedVertexId bytes (or SDK-decoded bytes)
 - One global vertex key aligned with index postings and physical storage.
 - Remote handles stay shard-local; router and clients never see `RemoteVertexId`.
 - Client ids are stable and round-trippable without revealing monotonic local allocation.
-- 12-byte edge ids save wire space and match information content.
+- 16-byte edge ids (ADR 0090) match information content; the prior 12-byte form saved wire
+  space at the cost of cross-label identity collisions (now fixed).
 - Clear separation: **`Storable`** canonical types vs non-persistent encoded wire types.
 
 ### Negative / migration
@@ -235,8 +253,13 @@ Rejected. Clients must send ids back; encoding must be **bijective**, not hashed
 
 ### 16-byte `EncodedEdgeId` (pad to `u128`)
 
-Rejected. Wastes 4 bytes; no Candid or GQL requirement for 16-byte edge ids. Canonical edge
-identity is 12 bytes; encoded form matches.
+Rejected at the time of this ADR (2026-06-11). The argument was: wastes 4 bytes; no Candid
+or GQL requirement for 16-byte edge ids. Canonical edge identity was 12 bytes; encoded
+form matched. **Re-adopted in [ADR 0090](0090-edge-element-id-label-attribution.md)
+(2026-08-29)** as a fresh decision: the 16-byte form is now the canonical identity, with
+every byte carrying semantics (the `label_id` widens to `u32` and occupies bytes 8–12). The
+prior 12-byte form did not drop bytes; it dropped the label field. This row is preserved
+as the rejected-alternative record of the original decision.
 
 ### `RemoteVertexId::INVALID` sentinel (0)
 

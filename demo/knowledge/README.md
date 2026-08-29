@@ -127,6 +127,19 @@ done
 > `knowledge_demo_shortest_path_flow.rs`). All four demo scenarios execute as dev after
 > grants.
 
+> **Update (2026-08-29, plan 0312 / ADR 0090):** the explorer used to under-render edges
+> because the router's edge element-id encoding dropped the bucket label — `(shard, owner,
+> slot)` only — so two edges from the same source under different labels with coincident
+> per-bucket slot indices collided on the wire (37 seeded edges, 25 distinct ids in the
+> demo). [ADR 0090](../design/adr/0090-edge-element-id-label-attribution.md) extends
+> `GlobalEdgeId` to `(shard, owner, label, slot)` and bumps the wire layout from 12 to 16
+> bytes. The CLI stderr warning still applies (edge ids are physical handles unstable
+> across compaction), but two distinct edges no longer claim each other's ids. Host-level
+> contract tests in `crates/graph/src/plan/query/executor/path/element_id_per_label.rs`
+> pin the new identity; the PocketIC target
+> `crates/pocket-ic-tests/tests/edge_element_id_per_label_uniqueness.rs` pins the demo
+> shape end-to-end.
+
 ### Browser host
 
 ```bash

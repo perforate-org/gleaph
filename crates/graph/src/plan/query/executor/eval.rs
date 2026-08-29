@@ -28,7 +28,8 @@ use super::bindings::{
 };
 use super::context::QueryExprEvaluator;
 use super::path::{
-    edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
+    catalog_label_from_lara, edge_element_id_bytes, local_shard_id, path_binding_to_value,
+    vertex_element_id_bytes,
 };
 use crate::facade::GraphStore;
 use crate::gql_execution_context::try_eval_runtime_function_call;
@@ -1011,6 +1012,7 @@ impl QueryExprEvaluator<'_> {
                     &self.element_id_key,
                     local_shard_id(self.store),
                     edge.handle.owner_vertex_id,
+                    catalog_label_from_lara(edge.handle.label_id),
                     EdgeSlotIndex::from_raw(edge.handle.slot_index.raw()),
                 )?)),
                 // A quantified-path variable binds the whole hop trail; its element ids form
@@ -1025,6 +1027,7 @@ impl QueryExprEvaluator<'_> {
                                 &self.element_id_key,
                                 shard_id,
                                 edge.handle.owner_vertex_id,
+                                catalog_label_from_lara(edge.handle.label_id),
                                 EdgeSlotIndex::from_raw(edge.handle.slot_index.raw()),
                             )
                             .map(Value::Bytes)
@@ -2216,6 +2219,7 @@ mod tests {
                 &key,
                 super::local_shard_id(&store),
                 handle.owner_vertex_id,
+                super::catalog_label_from_lara(handle.label_id),
                 EdgeSlotIndex::from_raw(handle.slot_index.raw()),
             )
             .expect("hop element id")

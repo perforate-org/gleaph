@@ -162,15 +162,18 @@ encoded opaque bytes**:
 | Type | Canonical | Wire (`ELEMENT_ID`, paths) | `Storable` |
 |------|-----------|----------------------------|------------|
 | Vertex | `GlobalVertexId` (8 B) | `EncodedVertexId` (8 B) | canonical only |
-| Edge | `GlobalEdgeId` (12 B) | `EncodedEdgeId` (12 B) | canonical only |
+| Edge | `GlobalEdgeId` (16 B, [ADR 0090](0090-edge-element-id-label-attribution.md)) | `EncodedEdgeId` (16 B) | canonical only |
 
 - Deterministic per-graph encoding key (router stable).
 - Obfuscates insertion order; reversible for client round-trip; not a security boundary.
 - GQL / execution: `Value::Bytes`; Candid: `vec nat8` via `IcWireValue::Bytes`.
 - Optional SDK hex/base64 **presentation** only.
 
-`GlobalEdgeId` = `{ shard_id, owner_local, edge_slot_index }` — query-time physical CSR handle,
-not stable across compaction.
+`GlobalEdgeId` = `{ shard_id, owner_local, label_id, edge_slot_index }` (16 bytes LE; label
+widened to `u32`) — query-time physical CSR handle, not stable across compaction. The label
+field is required for identity because LARA's `edge_slot_index` is per-(owner, label) bucket
+and two edges under different labels with coincident per-bucket slot indices would otherwise
+collide on the wire (see ADR 0090 § *Context*).
 
 ---
 

@@ -51,7 +51,7 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | Expression | Status |
 |------------|--------|
 | `RETURN e`, `RETURN u` | OK → list of records |
-| `ELEMENT_ID(e)`, `ELEMENT_ID(u)` on group edge/node variables | OK → `Value::List` of `Value::Bytes`, one element-id per hop in traversal (group) order; each entry uses the singleton-edge/vertex encoding. Empty group (`min = 0`) → empty list. |
+| `ELEMENT_ID(e)`, `ELEMENT_ID(u)` on group edge/node variables | OK → `Value::List` of `Value::Bytes`, one element-id per hop in traversal (group) order; each entry uses the singleton-edge/vertex encoding (now label-bearing per [ADR 0090](../adr/0090-edge-element-id-label-attribution.md); semantics unchanged). Empty group (`min = 0`) → empty list. |
 | `ELEMENT_ID(p)` on a group PATH variable | Rejected: paths are not elements; use `CARDINALITY(p)` or path element access. |
 | `RETURN e__hop_aux` | OK → `Value::Bytes` (single hop) or `Value::List` of bytes (var_len) |
 | `RETURN p` | OK → `Value::Path` (singleton) or `Value::List` of paths (`SHORTEST k GROUP`) |

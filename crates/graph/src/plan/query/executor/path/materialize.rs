@@ -2,9 +2,10 @@ use std::cell::RefCell;
 
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
-use gleaph_graph_kernel::entry::EdgeSlotIndex;
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
+use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 
 use super::{PathBinding, PathSearchNode};
@@ -20,6 +21,17 @@ thread_local! {
 /// lookup + `RefCell` borrow win nothing on tiny paths and showed up as instruction regressions in
 /// `plan_query_materialize_value_rows` benches.
 const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
+
+/// Catalog [`EdgeLabelId`] recovered from a LARA bucket label key.
+///
+/// The label index bits (lower 15) of `BucketLabelKey` are the catalog label index;
+/// the directed MSB is bucket wiring only. The reverse direction is lossless for
+/// catalog labels because `EdgeLabelId::from_raw` masks to the catalog range and the
+/// high bit is not used by catalog identity. See ADR 0090.
+#[inline]
+pub(crate) fn catalog_label_from_lara(lara: LaraLabelId) -> EdgeLabelId {
+    EdgeLabelId::from_raw(lara.label_index())
+}
 
 pub(crate) fn path_binding_to_value(
     store: &GraphStore,
@@ -117,10 +129,11 @@ pub(crate) fn edge_element_id_bytes(
     key: &ElementIdEncodingKey,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     owner_vertex_id: VertexId,
+    label_id: gleaph_graph_kernel::entry::EdgeLabelId,
     edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex,
 ) -> Result<Vec<u8>, PlanQueryError> {
     Ok(
-        GraphPathEdgeId::new(key, shard_id, owner_vertex_id, edge_slot_index)
+        GraphPathEdgeId::new(key, shard_id, owner_vertex_id, label_id, edge_slot_index)
             .to_bytes()
             .to_vec(),
     )
@@ -152,6 +165,7 @@ fn edge_path_element(
             key,
             shard_id,
             handle.owner_vertex_id,
+            catalog_label_from_lara(handle.label_id),
             EdgeSlotIndex::from_raw(handle.slot_index.raw()),
         )
         .to_bytes()

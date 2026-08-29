@@ -37,7 +37,7 @@ pub use expand::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
     MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH,
 };
-pub use global_edge_id::GlobalEdgeId;
+pub use global_edge_id::{GLOBAL_EDGE_ID_BYTES, GlobalEdgeId};
 pub use graph_shard_key::GraphShardKey;
 pub use index_posting_purge::{
     IndexPostingPurgeCursor, IndexPostingPurgeStepResult, IndexPurgeKind,
