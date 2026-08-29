@@ -1,6 +1,6 @@
 //! Parse, plan, and execute GQL against [`GraphStore`] (library / unit tests; RBAC on router).
 
-use crate::facade::GraphStore;
+use crate::facade::{CanonicalSegmentGuard, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::pending;
@@ -1253,6 +1253,10 @@ async fn apply_canonical_mutation_segment(
     emitted_delta_last_seq: &mut Option<ShardEventSeq>,
     next_release_ordinal: &mut u32,
 ) -> Result<PlanMutationBindings, GqlRunError> {
+    // ADR 0091: pin the canonical mutation segment as no-inter-canister-call.
+    // Drop balances the depth counter; the trap-on-Drop-mismatch catches any
+    // future re-entry that violates the no-`await`-between-writes invariant.
+    let _canonical_segment_guard = CanonicalSegmentGuard::enter();
     let write_journal = execution.write_journal;
     let unique_claims = execution.unique_claims.clone();
     let local_unique_claims = execution.local_unique_claims.clone();

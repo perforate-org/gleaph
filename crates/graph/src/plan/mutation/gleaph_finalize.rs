@@ -24,6 +24,25 @@ pub fn is_gleaph_finalize_procedure(name: &[Str]) -> bool {
     GLEAPH_FINALIZE_BULK_INGEST.matches_exact(name)
         || GLEAPH_FINALIZE_FORWARD_EDGE_SPAN.matches_exact(name)
         || GLEAPH_DRAIN_DEFERRED_MAINTENANCE.matches_exact(name)
+        || is_gleaph_e2e_segment_trap_procedure(name)
+}
+
+/// True when `name` is the PocketIC E2E seam procedure
+/// `GLEAPH.E2E_SIMULATE_INTER_CANISTER_CALL`. The procedure runs inside a
+/// canonical mutation segment and traps via `assert_no_canonical_segment` so
+/// the whole-message rollback is observable end-to-end. The check is only
+/// available in `pocket-ic-e2e` builds; production builds reject the
+/// procedure name as `UnknownGleaphProcedure`.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn is_gleaph_e2e_segment_trap_procedure(name: &[Str]) -> bool {
+    name.len() == 2
+        && name[0].as_ref() == "GLEAPH"
+        && name[1].as_ref() == "E2E_SIMULATE_INTER_CANISTER_CALL"
+}
+
+#[cfg(not(feature = "pocket-ic-e2e"))]
+pub fn is_gleaph_e2e_segment_trap_procedure(_name: &[Str]) -> bool {
+    false
 }
 
 pub fn execute_call_procedure(
@@ -41,6 +60,27 @@ pub fn execute_call_procedure(
         return Err(PlanMutationError::UnknownGleaphProcedure {
             name: format_procedure_name(name),
         });
+    }
+
+    // PocketIC E2E seam: `CALL GLEAPH.E2E_SIMULATE_INTER_CANISTER_CALL()` is
+    // executed inside the canonical mutation segment and traps via
+    // `assert_no_canonical_segment`. The trap is only reachable in
+    // `pocket-ic-e2e` builds; production builds reject the procedure name
+    // before this branch.
+    #[cfg(feature = "pocket-ic-e2e")]
+    if is_gleaph_e2e_segment_trap_procedure(name) {
+        if !args.is_empty() {
+            return Err(invalid_args(
+                "GLEAPH.E2E_SIMULATE_INTER_CANISTER_CALL",
+                "no arguments",
+            ));
+        }
+        // The seam function asserts the depth is 0; when called from inside a
+        // canonical segment the assertion fails, the message traps, and the
+        // canonical segment rolls back atomically (Property 5).
+        crate::facade::canonical_segment::e2e::e2e_simulate_inter_canister_call_inside_segment();
+        // Unreachable: the assertion inside the seam function traps.
+        return Ok(());
     }
 
     let report = if GLEAPH_FINALIZE_BULK_INGEST.matches_exact(name) {

@@ -1,5 +1,6 @@
 //! Public coordination layer over stable storage.
 
+pub(crate) mod canonical_segment;
 pub(crate) mod derived_state;
 mod ic_budget;
 mod ic_gql_extensions;
@@ -14,6 +15,9 @@ mod batch_write;
 
 pub mod mutation_executor;
 
+pub use canonical_segment::{
+    CanonicalSegmentGuard, assert_no_canonical_segment, canonical_segment_depth,
+};
 pub use stable::property_catalog::PropertyCatalogError;
 pub use stable::vertex_labels::VertexLabelStoreError;
 pub use stable::vertex_properties::VertexPropertyStoreError;

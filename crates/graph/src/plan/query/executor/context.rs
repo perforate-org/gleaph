@@ -8,7 +8,7 @@ use gleaph_gql_planner::plan::AggregateSpec;
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
-use crate::facade::GraphStore;
+use crate::facade::{GraphStore, assert_no_canonical_segment};
 use crate::federation::StandaloneFederation;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
@@ -31,6 +31,12 @@ impl<'a> ExecuteCtx<'a> {
         index: Option<&'a dyn PropertyIndexLookup>,
         execution: GqlExecutionContext,
     ) -> Self {
+        // ADR 0091: the per-query `ExecuteCtx` is the chokepoint that hands a
+        // `PropertyIndexLookup` to the read path. Acquiring an inter-canister
+        // handle from inside a canonical segment would silently extend the
+        // critical section across a commit point. Trap at the acquisition
+        // boundary so the whole message rolls back.
+        assert_no_canonical_segment("executor_context_new");
         Self {
             store,
             parameters,
