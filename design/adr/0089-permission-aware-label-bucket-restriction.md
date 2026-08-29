@@ -38,19 +38,27 @@ multi-label vertex scans, plus an optional **wildcard vertex-label grant**. Enfo
 plan-time-static on the specialized request; the caller-dependence is confined to request
 construction.
 
-### 1. Request-build bucket restriction (the core mechanism)
+### 1. Plan specialization at the router (the core mechanism)
 
-When the Router constructs a Graph request for a scan, it intersects the scan's
-`resolved_vertex_labels` with the caller's effective `MATCH`-granted vertex labels. The
-executor scans only the resulting buckets. A caller with `MATCH` on labels `{A, B}` running
-`MATCH (n)` sees exactly the `A` and `B` vertices — the Neo4j "smaller graph" behavior — with
-no per-row check and no executor change.
+When the Router builds the physical plan for a query, it rewrites an unconstrained or positive
+multi-label vertex scan into a set of per-label scans restricted to the caller's effective
+`MATCH`-granted vertex labels. The executor then scans only those labels. A caller with `MATCH`
+on labels `{A, B}` running `MATCH (n)` sees exactly the `A` and `B` vertices — the Neo4j
+"smaller graph" behavior — with no executor change.
 
-- The restriction applies to unconstrained scans and to positive multi-label scans whose
+- The specialization applies to unconstrained scans and to positive multi-label scans whose
   candidate set is a union of concrete labels.
 - `NOT`/wildcard label expressions (a complement, not a bucket union) remain tenancy-only
   (fail closed), unchanged.
 - A caller with zero grantable vertex labels scans zero buckets and sees an empty result.
+
+> **Correction (2026-08-29):** the original wording of this ADR said the restriction is applied
+> by intersecting the request's `resolved_labels.vertex` with the caller's grantable labels.
+> That is wrong: the graph shard uses `resolved_labels` only for name→id resolution, and the
+> executor's unconstrained `NodeScan { label: None }` scans every vertex regardless of that
+> table (`execute_node_scan`). The restriction must therefore be applied at the **plan** level
+> (rewrite the unconstrained scan into per-label scans of the caller's grantable labels), not
+> at the request's resolved-label table.
 
 ### 2. Walker marker for unconstrained scans
 
