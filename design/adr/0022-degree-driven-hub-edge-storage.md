@@ -275,6 +275,13 @@ B-tree tier (high degree, Terrace-style).
    `large_friends_of_friends_setup_and_execute` to 256 × 64 (undo `f4c93bc3`).
 
 ### Stage 2 — degree-driven hub edge storage (deferred; separate ADR on evidence)
+
+> **Closed by [ADR 0088](0088-tree-csr-mode-for-high-degree-label-buckets.md)
+> (2026-08-29).** The dedicated-span tier (2a) is subsumed by ADR 0088's
+> Tree-CSR mode (bounded per-bucket leaf footprint, fixed-size LTB blocks);
+> the B-tree tier (2b) remains rejected on the measured verdicts below. The
+> material below is retained as the evidence record.
+
 Escalation is per labeled bucket `(vertex, label)`; benchmarks decide both the
 necessity and the thresholds of *each* tier (the dedicated span included).
 
