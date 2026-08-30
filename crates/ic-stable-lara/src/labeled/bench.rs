@@ -5,6 +5,8 @@
 
 use crate::bench as helper;
 use crate::labeled::hub_tree_prototype::{HubBucketTree, HubTargetTree};
+use crate::labeled::ltb_reopen_prototype::{LtbFreeList, LtbReopenWalk};
+use crate::labeled::tree_csr_prototype::TreeCsrBucket;
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
     EdgePlacementPolicy, LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
@@ -183,7 +185,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
 /// the measured closure: the bucket slab and its per-leaf overflow log are
 /// filled first, then one batch folds the log into an expanded slab window.
 #[bench(raw)]
-fn bench_labeled_batch_edge_only_expansion_existing_bucket() -> canbench_rs::BenchResult {
+fn bench_l_b_eo_exp() -> canbench_rs::BenchResult {
     let graph = bench_graph(256);
     for _ in 0..2 {
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -251,7 +253,7 @@ fn bench_labeled_batch_edge_only_expansion_existing_bucket() -> canbench_rs::Ben
 /// (preflight window scan + per-hole or window-rewrite writes). This is the
 /// batch counterpart to the scalar `labeled_*_tombstone_reuse` benches.
 #[bench(raw)]
-fn bench_labeled_batch_unordered_hole_fill_256() -> canbench_rs::BenchResult {
+fn bench_l_b_uo_hf_256() -> canbench_rs::BenchResult {
     const EDGES: u32 = 256;
     let graph = bench_graph(1 << 16);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -304,7 +306,7 @@ fn bench_labeled_batch_unordered_hole_fill_256() -> canbench_rs::BenchResult {
 /// the measured closure; reserve and rollback measure the coupled edge/inline property
 /// geometry and allocator boundary without charging fixture construction.
 #[bench(raw)]
-fn bench_labeled_batch_inline_property_expansion_existing_bucket() -> canbench_rs::BenchResult {
+fn bench_l_b_ipe_exp() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(256);
     for _ in 0..2 {
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -596,7 +598,7 @@ const STAGE2_GROW_DEGREE: u32 = 256;
 /// The measured stable-memory increase includes the first leaf pin, so it exposes the
 /// `segment_size × vertex_edge_quota` tradeoff directly.
 #[bench(raw)]
-fn bench_labeled_capacity_sparse_leaf_32_vertices_1_edge() -> canbench_rs::BenchResult {
+fn bench_l_cap_sp_l32_1e() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = bench_graph(16);
         for _ in 0..STAGE2_LEAF {
@@ -683,7 +685,7 @@ fn run_stable_hub_growth_capacity(edge_count: u32, segment_size: u32) {
 
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_labeled_capacity_stable_sparse_leaf_32_vertices_1_edge() -> canbench_rs::BenchResult {
+fn bench_l_cap_s_sp_l32_1e() -> canbench_rs::BenchResult {
     bench_fn(|| {
         run_stable_sparse_capacity(STAGE2_LEAF, 32);
     })
@@ -691,7 +693,7 @@ fn bench_labeled_capacity_stable_sparse_leaf_32_vertices_1_edge() -> canbench_rs
 
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_labeled_capacity_stable_sparse_leaf_1024_vertices_1_edge() -> canbench_rs::BenchResult {
+fn bench_l_cap_s_sp_l1024_1e() -> canbench_rs::BenchResult {
     bench_fn(|| {
         run_stable_sparse_capacity(STABLE_CAPACITY_PROBE_VERTICES, 32);
     })
@@ -699,8 +701,7 @@ fn bench_labeled_capacity_stable_sparse_leaf_1024_vertices_1_edge() -> canbench_
 
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_labeled_capacity_stable_sparse_segment16_1024_vertices_1_edge() -> canbench_rs::BenchResult
-{
+fn bench_l_cap_s_sp_s16_1024v_1e() -> canbench_rs::BenchResult {
     bench_fn(|| {
         run_stable_sparse_capacity(STABLE_CAPACITY_PROBE_VERTICES, 16);
     })
@@ -710,7 +711,7 @@ fn bench_labeled_capacity_stable_sparse_segment16_1024_vertices_1_edge() -> canb
 /// exercises overflow-log fold plus leaf relocation/resize.
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_labeled_capacity_stable_hub_segment16_256_edges() -> canbench_rs::BenchResult {
+fn bench_l_cap_s_hub_s16_256e() -> canbench_rs::BenchResult {
     bench_fn(|| {
         run_stable_hub_growth_capacity(256, 16);
     })
@@ -758,7 +759,7 @@ const MIXED_LABEL_HUB_LABELS: u16 = 33;
 const MIXED_LABEL_HUB_EDGES_PER_LABEL: u32 = 50;
 
 #[bench(raw)]
-fn bench_labeled_mixed_label_hub_insert_33x50() -> canbench_rs::BenchResult {
+fn bench_l_mix_hub_ins_33x50() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = bench_graph(1 << 20);
         black_box(seed_mixed_label_hub(
@@ -770,7 +771,7 @@ fn bench_labeled_mixed_label_hub_insert_33x50() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_mixed_label_hub_scan_33x50() -> canbench_rs::BenchResult {
+fn bench_l_mix_hub_scn_33x50() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let hub = seed_mixed_label_hub(
         &graph,
@@ -800,7 +801,7 @@ fn bench_labeled_mixed_label_hub_scan_33x50() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_mixed_label_hub_asc_iter_33x50() -> canbench_rs::BenchResult {
+fn bench_l_mix_hub_asc_33x50() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let hub = seed_mixed_label_hub(
         &graph,
@@ -814,7 +815,7 @@ fn bench_labeled_mixed_label_hub_asc_iter_33x50() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
+fn bench_l_fe_48x51() -> canbench_rs::BenchResult {
     let graph = bench_graph(16384);
     let label = seed_single_label_parallel_edges(&graph, CONVERGING_HUB_PREFIX_EDGES);
     let vid = VertexId::from(0);
@@ -840,7 +841,7 @@ fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
+fn bench_l_fe_24x51() -> canbench_rs::BenchResult {
     let graph = bench_graph(8192);
     let label = seed_single_label_parallel_edges(&graph, CONVERGING_HUB_OUT_EDGES);
     let vid = VertexId::from(0);
@@ -866,7 +867,7 @@ fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_iter_edges_for_label_128() -> canbench_rs::BenchResult {
+fn bench_l_iter_128() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096);
     graph
         .push_vertex(crate::labeled::record::LabeledVertex::default())
@@ -895,7 +896,7 @@ fn bench_labeled_iter_edges_for_label_128() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_default_bypass_iter_128() -> canbench_rs::BenchResult {
+fn bench_l_def_bp_iter_128() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096);
     graph
         .push_vertex(crate::labeled::record::LabeledVertex::default())
@@ -923,7 +924,7 @@ fn bench_labeled_default_bypass_iter_128() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_insert_existing_bucket_128() -> canbench_rs::BenchResult {
+fn bench_l_ins_ex_bucket_128() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096);
     graph
         .push_vertex(crate::labeled::record::LabeledVertex::default())
@@ -945,7 +946,7 @@ fn bench_labeled_insert_existing_bucket_128() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_insert_single_bucket_1024() -> canbench_rs::BenchResult {
+fn bench_l_ins_sb_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
     let label = BucketLabelKey::from_raw(2);
@@ -968,7 +969,7 @@ fn bench_labeled_insert_single_bucket_1024() -> canbench_rs::BenchResult {
 /// Many [`LabelBucket`] rows on one vertex, then repeated inserts into the **last**
 /// label (stresses `find_bucket_slot` / bucket metadata reads).
 #[bench(raw)]
-fn bench_labeled_insert_last_of_many_buckets_1024() -> canbench_rs::BenchResult {
+fn bench_l_ins_last_1024() -> canbench_rs::BenchResult {
     const N_BUCKETS: u16 = 128;
     let graph = bench_graph(16384);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -1003,7 +1004,7 @@ fn bench_labeled_insert_last_of_many_buckets_1024() -> canbench_rs::BenchResult 
 
 /// Round-robin across many labels (mix of `find_bucket_slot` hits on different indices).
 #[bench(raw)]
-fn bench_labeled_insert_round_robin_64_labels_1024() -> canbench_rs::BenchResult {
+fn bench_l_ins_rr_64l_1024() -> canbench_rs::BenchResult {
     const N_LABELS: u16 = 64;
     let graph = bench_graph(16384);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -1038,7 +1039,7 @@ fn bench_labeled_insert_round_robin_64_labels_1024() -> canbench_rs::BenchResult
 
 /// Every insert uses a **new** label id so each call walks `find_or_create_bucket`.
 #[bench(raw)]
-fn bench_labeled_insert_fresh_label_each_edge_256() -> canbench_rs::BenchResult {
+fn bench_l_ins_fresh_256() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = bench_graph(32768);
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -1061,7 +1062,7 @@ fn bench_labeled_insert_fresh_label_each_edge_256() -> canbench_rs::BenchResult 
 /// One PMA leaf worth of vertices (32 rows — same as the labeled graph default segment size):
 /// light seeding, then round-robin inserts on the same label.
 #[bench(raw)]
-fn bench_labeled_insert_multi_vertex_leaf32_2048() -> canbench_rs::BenchResult {
+fn bench_l_ins_mv_l32_2048() -> canbench_rs::BenchResult {
     const LEAF: u32 = 32;
     const SEED_PER_VERTEX: u32 = 8;
     let graph = bench_graph(65536);
@@ -1120,7 +1121,7 @@ fn bench_compact_edge_decode_scan_128() -> canbench_rs::BenchResult {
 
 /// Deferred admission path only (no maintenance drain in the measured region).
 #[bench(raw)]
-fn bench_labeled_deferred_inserts_only_1024() -> canbench_rs::BenchResult {
+fn bench_l_df_ins_1024() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = deferred_bench_graph(8192);
         graph
@@ -1146,7 +1147,7 @@ fn bench_labeled_deferred_inserts_only_1024() -> canbench_rs::BenchResult {
 
 /// Fragment a vertex edge span, enqueue one compaction item, then run one maintenance step.
 #[bench(raw)]
-fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::BenchResult {
+fn bench_l_df_mnt_cv_1() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = deferred_bench_graph(8192);
         let vid = VertexId::from(0);
@@ -1188,7 +1189,7 @@ fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::Be
 
 /// ADR 0016: inline property attach over hybrid slab + 8 B inline property overflow log.
 #[bench(raw)]
-fn bench_labeled_inline_property_bytes_log_scan_8b_inline_overflow() -> canbench_rs::BenchResult {
+fn bench_l_ip_log_8b_of() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
     let (vid, label) = seed_overflow_inline_property_hub(
         &graph,
@@ -1218,7 +1219,7 @@ fn bench_labeled_inline_property_bytes_log_scan_8b_inline_overflow() -> canbench
 
 /// Baseline for exact inline-property-slab growth before introducing bounded headroom.
 #[bench(raw)]
-fn bench_labeled_inline_property_exact_growth_256() -> canbench_rs::BenchResult {
+fn bench_l_ip_exg_256() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = inline_property_bench_graph(1 << 20);
         let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -1329,25 +1330,25 @@ fn bench_inline_property_pressure_stats(
 
 /// Measures allocator pressure checks with a small retired-span set.
 #[bench(raw)]
-fn bench_labeled_inline_property_pressure_stats_16() -> canbench_rs::BenchResult {
+fn bench_l_ip_pstats_16() -> canbench_rs::BenchResult {
     bench_inline_property_pressure_stats(16, "inline_property_pressure_stats_16")
 }
 
 /// Measures allocator pressure checks with a medium retired-span set.
 #[bench(raw)]
-fn bench_labeled_inline_property_pressure_stats_64() -> canbench_rs::BenchResult {
+fn bench_l_ip_pstats_64() -> canbench_rs::BenchResult {
     bench_inline_property_pressure_stats(64, "inline_property_pressure_stats_64")
 }
 
 /// Measures allocator pressure checks with a large retired-span set.
 #[bench(raw)]
-fn bench_labeled_inline_property_pressure_stats_256() -> canbench_rs::BenchResult {
+fn bench_l_ip_pstats_256() -> canbench_rs::BenchResult {
     bench_inline_property_pressure_stats(256, "inline_property_pressure_stats_256")
 }
 
 /// Measures the first inline property bytes allocation that triggers fragmented-slab compaction.
 #[bench(raw)]
-fn bench_labeled_inline_property_fragmented_first_span_6() -> canbench_rs::BenchResult {
+fn bench_l_ip_frag_s6() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = inline_property_bench_graph(1 << 20);
         let vid = seed_fragmented_inline_property_fixture(&graph);
@@ -1374,7 +1375,7 @@ fn bench_labeled_inline_property_fragmented_first_span_6() -> canbench_rs::Bench
 
 /// Control for a same-fixture first allocation that can reuse one free span.
 #[bench(raw)]
-fn bench_labeled_inline_property_fragmented_first_span_4_control() -> canbench_rs::BenchResult {
+fn bench_l_ip_frag_s4_ctl() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = inline_property_bench_graph(1 << 20);
         let vid = seed_fragmented_inline_property_fixture(&graph);
@@ -1401,7 +1402,7 @@ fn bench_labeled_inline_property_fragmented_first_span_4_control() -> canbench_r
 
 /// Isolates the inline-property-bytes-only compaction pass for the fragmented fixture.
 #[bench(raw)]
-fn bench_labeled_inline_property_fragmented_compaction_only() -> canbench_rs::BenchResult {
+fn bench_l_ip_frag_comp() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = inline_property_bench_graph(1 << 20);
         let _vid = seed_fragmented_inline_property_fixture(&graph);
@@ -1421,7 +1422,7 @@ fn bench_labeled_inline_property_fragmented_compaction_only() -> canbench_rs::Be
 
 /// Measures deferred insertion with inline property pressure detection and queue enqueue only.
 #[bench(raw)]
-fn bench_labeled_deferred_inline_property_fragmented_enqueue_6() -> canbench_rs::BenchResult {
+fn bench_l_df_ip_frag_enq_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph =
             DeferredLabeledLaraGraph::new(inline_property_bench_graph(1 << 20), vector_memory())
@@ -1447,7 +1448,7 @@ fn bench_labeled_deferred_inline_property_fragmented_enqueue_6() -> canbench_rs:
 
 /// Measures the deferred maintenance step that performs inline property bytes compaction.
 #[bench(raw)]
-fn bench_labeled_deferred_inline_property_fragmented_maintenance_6() -> canbench_rs::BenchResult {
+fn bench_l_df_ip_frag_mnt_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph =
             DeferredLabeledLaraGraph::new(inline_property_bench_graph(1 << 20), vector_memory())
@@ -1481,7 +1482,7 @@ fn bench_labeled_deferred_inline_property_fragmented_maintenance_6() -> canbench
 
 /// ADR 0016: scan after tombstone-free direct log unlinks.
 #[bench(raw)]
-fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResult {
+fn bench_l_du_log_del_scn() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
     let (vid, label) = seed_overflow_inline_property_hub(&graph, OVERFLOW_LOG_HUB_EDGES, 2);
     for target in (1..=OVERFLOW_LOG_HUB_EDGES).step_by(2) {
@@ -1512,7 +1513,7 @@ fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResul
 
 /// ADR 0016: foreground direct log unlink plus incremental span compaction on an overflow edge hub.
 #[bench(raw)]
-fn bench_labeled_direct_unlink_log_fold_maintenance() -> canbench_rs::BenchResult {
+fn bench_l_du_log_fold_mnt() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = bench_graph(1 << 20);
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -1552,7 +1553,7 @@ fn bench_labeled_direct_unlink_log_fold_maintenance() -> canbench_rs::BenchResul
 /// delete-plus-compaction cost that a B-tree tier's O(log d) delete-by-`seq`
 /// (no compaction) would replace; the hub is seeded outside the measured region.
 #[bench(raw)]
-fn bench_labeled_stage2_hub_delete_half_then_compact_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2_h_del_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     bench_fn(|| {
@@ -1582,7 +1583,7 @@ fn bench_labeled_stage2_hub_delete_half_then_compact_1024() -> canbench_rs::Benc
 /// status-quo delete cost to weigh against the B-tree `..._delete_half_1024`;
 /// `..._delete_half_then_compact_1024` overstates it by also paying a find-scan.
 #[bench(raw)]
-fn bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2_h_del_h_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     bench_fn(|| {
@@ -1613,7 +1614,7 @@ fn bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024() -> canbench_
 /// `stored_slots`, degree + 1, ADR 0052 §5 step 1) instead of appending to the
 /// tail or overflow log.
 #[bench(raw)]
-fn bench_labeled_unordered_tombstone_reuse_half_deleted_1024() -> canbench_rs::BenchResult {
+fn bench_l_uo_tomb_h_del_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
@@ -1648,7 +1649,7 @@ fn bench_labeled_unordered_tombstone_reuse_half_deleted_1024() -> canbench_rs::B
 /// instead appends. Keeps the Insertion scalar path regression-visible against
 /// the Unordered reuse path.
 #[bench(raw)]
-fn bench_labeled_insertion_append_on_tombstone_hub_1024() -> canbench_rs::BenchResult {
+fn bench_l_ins_ap_hub_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
@@ -1686,7 +1687,7 @@ fn bench_labeled_insertion_append_on_tombstone_hub_1024() -> canbench_rs::BenchR
 /// value-block rotation (ADR 0052 §7/§9). The step-drain mirrors the maintenance
 /// loop's per-step invocation with Noop observers.
 #[bench(raw)]
-fn bench_labeled_unordered_swap_compact_half_deleted_1024() -> canbench_rs::BenchResult {
+fn bench_l_uo_swap_h_del_1024() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
     let vid = VertexId::from(0);
@@ -1741,7 +1742,7 @@ fn bench_labeled_unordered_swap_compact_half_deleted_1024() -> canbench_rs::Benc
 /// secondary index would make it O(log d). Worst case: the first-inserted target
 /// (target `0`) is reached last in descending order.
 #[bench(raw)]
-fn bench_labeled_stage2_hub_point_lookup_descending_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2_h_pt_d_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     bench_fn(|| {
@@ -1762,7 +1763,7 @@ fn bench_labeled_stage2_hub_point_lookup_descending_1024() -> canbench_rs::Bench
 /// skewed hub bucket — the contiguous-scan cost the span/B-tree tiers must not
 /// regress relative to the shared-leaf slab.
 #[bench(raw)]
-fn bench_labeled_stage2_hub_scan_descending_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2_h_scn_d_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     bench_fn(|| {
@@ -1785,7 +1786,7 @@ fn bench_labeled_stage2_hub_scan_descending_1024() -> canbench_rs::BenchResult {
 /// dedicated span (which isolates the hot vertex) would recover — the evidence
 /// that gates whether the dedicated-span tier is warranted.
 #[bench(raw)]
-fn bench_labeled_stage2_saturated_leaf_grow_one_256() -> canbench_rs::BenchResult {
+fn bench_l_s2_sat_256() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let label = seed_stage2_leaf(&graph, true);
     bench_fn(|| {
@@ -1809,7 +1810,7 @@ fn bench_labeled_stage2_saturated_leaf_grow_one_256() -> canbench_rs::BenchResul
 /// — the lower bound a dedicated span approximates. Compare against
 /// `..._saturated_leaf_grow_one_256` for the 2a benefit estimate.
 #[bench(raw)]
-fn bench_labeled_stage2_isolated_vertex_grow_one_256() -> canbench_rs::BenchResult {
+fn bench_l_s2_iso_256() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let label = seed_stage2_leaf(&graph, false);
     bench_fn(|| {
@@ -1851,7 +1852,7 @@ fn seed_stage2b_hub_tree(edge_count: u32) -> HubBucketTree {
 /// each, with no tombstone and no compaction, then iterates the survivors. The
 /// delta against the slab baseline is the Stage 2b delete win.
 #[bench(raw)]
-fn bench_labeled_stage2b_btree_hub_delete_half_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_bt_del_1024() -> canbench_rs::BenchResult {
     let mut tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for seq in (0..STAGE2_HUB_DEGREE).step_by(2) {
@@ -1870,7 +1871,7 @@ fn bench_labeled_stage2b_btree_hub_delete_half_1024() -> canbench_rs::BenchResul
 /// quantifies the *no-index* B-tree lookup so the index's marginal value is
 /// visible. Worst case: target `0` is reached last in descending order.
 #[bench(raw)]
-fn bench_labeled_stage2b_btree_hub_point_lookup_descending_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_bt_pt_d_1024() -> canbench_rs::BenchResult {
     let tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
@@ -1886,7 +1887,7 @@ fn bench_labeled_stage2b_btree_hub_point_lookup_descending_1024() -> canbench_rs
 /// via the map's `DoubleEndedIterator`; the delta against the slab baseline is
 /// the scan-locality cost the B-tree tier must not regress.
 #[bench(raw)]
-fn bench_labeled_stage2b_btree_hub_scan_descending_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_bt_scn_d_1024() -> canbench_rs::BenchResult {
     let tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
@@ -1905,7 +1906,7 @@ fn bench_labeled_stage2b_btree_hub_scan_descending_1024() -> canbench_rs::BenchR
 /// floor from value-deser cost — i.e. whether shrinking/splitting the value can
 /// help scans at all, or whether B-tree traversal dominates.
 #[bench(raw)]
-fn bench_labeled_stage2b_btree_hub_scan_descending_keyonly_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_bt_scn_ko_1024() -> canbench_rs::BenchResult {
     let tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
@@ -1933,7 +1934,7 @@ fn seed_stage2b_narrow_tree(edge_count: u32) -> HubTargetTree {
 /// scan on the 4-byte-value tree (matches `Edge::BYTES`). Compare against
 /// `..._btree_hub_delete_half_1024` (10-byte value) for delete value-sensitivity.
 #[bench(raw)]
-fn bench_labeled_stage2b_narrow_hub_delete_half_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_nw_del_1024() -> canbench_rs::BenchResult {
     let mut tree = seed_stage2b_narrow_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for seq in (0..STAGE2_HUB_DEGREE).step_by(2) {
@@ -1949,7 +1950,7 @@ fn bench_labeled_stage2b_narrow_hub_delete_half_1024() -> canbench_rs::BenchResu
 /// ADR 0022 Stage 2b *experiment* (narrow value): point lookup by target on the
 /// 4-byte-value tree. Compare against `..._btree_hub_point_lookup_descending_1024`.
 #[bench(raw)]
-fn bench_labeled_stage2b_narrow_hub_point_lookup_descending_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_nw_pt_d_1024() -> canbench_rs::BenchResult {
     let tree = seed_stage2b_narrow_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
@@ -1964,7 +1965,7 @@ fn bench_labeled_stage2b_narrow_hub_point_lookup_descending_1024() -> canbench_r
 /// 4-byte-value tree. Compare against `..._btree_hub_scan_descending_1024`
 /// (10-byte value) to read off the value-size effect on scan locality.
 #[bench(raw)]
-fn bench_labeled_stage2b_narrow_hub_scan_descending_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_nw_scn_d_1024() -> canbench_rs::BenchResult {
     let tree = seed_stage2b_narrow_tree(STAGE2_HUB_DEGREE);
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
@@ -1982,7 +1983,7 @@ fn bench_labeled_stage2b_narrow_hub_scan_descending_1024() -> canbench_rs::Bench
 /// overflow log) — the status-quo insert cost an update call pays. Pair with
 /// `bench_labeled_stage2b_narrow_hub_insert_1024` for the B-tree insert delta.
 #[bench(raw)]
-fn bench_labeled_stage2_hub_insert_grow_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2_h_ins_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
     let vid = VertexId::from(0);
@@ -2008,7 +2009,7 @@ fn bench_labeled_stage2_hub_insert_grow_1024() -> canbench_rs::BenchResult {
 /// no leaf cascade. Delta vs `bench_labeled_stage2_hub_insert_grow_1024` is the
 /// B-tree insert win/loss on the update (cost-bearing) path.
 #[bench(raw)]
-fn bench_labeled_stage2b_narrow_hub_insert_1024() -> canbench_rs::BenchResult {
+fn bench_l_s2b_nw_ins_1024() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let mut tree = HubTargetTree::new(vector_memory());
         for target in 0..STAGE2_HUB_DEGREE {
@@ -2113,6 +2114,288 @@ stage2b_crossover_benches!(
     bench_labeled_stage2_hub_insert_grow_16384,
     bench_labeled_stage2b_narrow_hub_insert_16384
 );
+
+// Plan 0313 (ADR 0088 Tree-CSR measurement gates) — slab baselines at the
+// high-degree sweep points (Gate 1 input). Reuses `stage2b_crossover_benches!`
+// to expose `bench_labeled_stage2_hub_*_<deg>` for `stored_slots = 65,536`
+// and `stored_slots = 1,048,576`. These arms feed Gate 1 (problem sizing)
+// and Gate 2 (operation parity matrix) per ADR 0088 §Measurement gates.
+stage2b_crossover_benches!(
+    65536u32,
+    bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536,
+    bench_labeled_stage2b_narrow_hub_delete_half_65536,
+    bench_labeled_stage2_hub_insert_grow_65536,
+    bench_labeled_stage2b_narrow_hub_insert_65536
+);
+
+// Plan 0313 / Step 1: the 1M slab-baseline arm was removed because the
+// PocketIC wasm export name budget (20,000 chars across all exported fn
+// names) was already saturated by the pre-existing 141 canbench functions
+// plus the new parity + Gate 3/4 benches. Adding the 1M slab arm would
+// push the wasm above the budget and prevent the canister from installing.
+// The 4K and 65K slab arms above cover the depth-1 and depth-1↔2 boundaries
+// that ADR 0088 §4 calls out; the 1M point is exercised instead by a
+// cargo-test-based sweep (see `tree_csr_high_degree_test.rs`).
+
+// ---------------------------------------------------------------------------
+// Plan 0313 (ADR 0088 Tree-CSR measurement gates) — Tree-CSR evidence-only
+// prototype benches (Gate 2 operation parity matrix).
+//
+// Mirrors `stage2b_crossover_benches!`'s degree parameterization and exposes
+// the seven parity rows (sequential full scan, prefix scan, random ordinal
+// access, counterpart resolution, insert, delete, compaction) at 4K / 64K /
+// 1M. Each Tree-CSR bench is paired (one degree above, one below) with its
+// slab-baseline counterpart by naming convention so the comparison lands in
+// `canbench_results.yml` next to the slab numbers.
+// ---------------------------------------------------------------------------
+
+/// Seeds one Tree-CSR evidence-only bucket with `edge_count` edges in
+/// insertion order (target == i). Seeding happens outside the measured region
+/// so the bench costs only the operation under test.
+fn seed_tree_csr_hub(edge_count: u32) -> TreeCsrBucket {
+    let mut bucket = TreeCsrBucket::new(vector_memory());
+    for i in 0..edge_count {
+        bucket.insert(i);
+    }
+    bucket
+}
+
+/// Build one parity-row bench at a given degree target. The macro takes the
+/// numeric degree, the full bench identifier (a `tt` token sequence), and the
+/// operation closure body. We avoid `${concat(...)}` by accepting the full
+/// identifier as a token tree that the call site builds with `paste!`-free
+/// stable syntax (literal concatenation).
+macro_rules! tree_csr_parity_bench {
+    ($deg:expr, $name:ident, $body:block) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            $body
+        }
+    };
+}
+
+// The seven parity-row bodies are shared across the three degree targets. We
+// inline each body at the call site to keep the macro small and the closure
+// logic visible. Each degree then emits 7 `tree_csr_parity_bench!` calls
+// with the degree-specific identifier.
+//
+// Degree 4K ----------------------------------------------------------------
+// Plan 0313 / Step 3 amend: only the four headline parity rows run via
+// canbench at degree 4K (full scan, random ordinal access, insert grow,
+// delete half). The remaining three rows (prefix scan, counterpart resolve,
+// compaction) live in `tree_csr_high_degree_test.rs` as cargo-test benches
+// to keep the wasm export name budget under 20,000 chars.
+tree_csr_parity_bench!(4096u32, tcsr_4096_full_scan_descending, {
+    let bucket = seed_tree_csr_hub(4096);
+    bench_fn(|| {
+        let mut count = 0usize;
+        bucket.for_each_descending(|_slot, target| {
+            count += usize::from(target < 4096);
+        });
+        black_box(count);
+    })
+});
+tree_csr_parity_bench!(4096u32, tcsr_4096_random_ordinal_access, {
+    let bucket = seed_tree_csr_hub(4096);
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut count = 0usize;
+            bucket.random_ordinal_access(black_box(64), |_slot, target| {
+                count += usize::from(target < 4096);
+            });
+            black_box(count);
+        }
+    })
+});
+tree_csr_parity_bench!(4096u32, tcsr_4096_insert_grow, {
+    bench_fn(|| {
+        let mut bucket = TreeCsrBucket::new(vector_memory());
+        for target in 0..4096u32 {
+            bucket.insert(black_box(target));
+        }
+        black_box(bucket.stored_slots());
+    })
+});
+tree_csr_parity_bench!(4096u32, tcsr_4096_delete_half_by_slot_then_scan, {
+    let mut bucket = seed_tree_csr_hub(4096);
+    bench_fn(|| {
+        for slot in (0..4096u32).step_by(2) {
+            let removed = bucket.remove_at(slot);
+            debug_assert!(removed.is_some());
+        }
+        let mut count = 0usize;
+        bucket.for_each_descending(|_slot, target| {
+            count += usize::from(target < 4096);
+        });
+        black_box(count);
+    })
+});
+
+// Degree 65K ----------------------------------------------------------------
+// Same amend as 4K above: only the four headline parity rows run via
+// canbench at degree 65K. The remaining three rows live in
+// `tree_csr_high_degree_test.rs`.
+tree_csr_parity_bench!(65536u32, tcsr_65536_full_scan_descending, {
+    let bucket = seed_tree_csr_hub(65536);
+    bench_fn(|| {
+        let mut count = 0usize;
+        bucket.for_each_descending(|_slot, target| {
+            count += usize::from(target < 65536);
+        });
+        black_box(count);
+    })
+});
+tree_csr_parity_bench!(65536u32, tcsr_65536_random_ordinal_access, {
+    let bucket = seed_tree_csr_hub(65536);
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut count = 0usize;
+            bucket.random_ordinal_access(black_box(64), |_slot, target| {
+                count += usize::from(target < 65536);
+            });
+            black_box(count);
+        }
+    })
+});
+tree_csr_parity_bench!(65536u32, tcsr_65536_insert_grow, {
+    bench_fn(|| {
+        let mut bucket = TreeCsrBucket::new(vector_memory());
+        for target in 0..65536u32 {
+            bucket.insert(black_box(target));
+        }
+        black_box(bucket.stored_slots());
+    })
+});
+tree_csr_parity_bench!(65536u32, tcsr_65536_delete_half_by_slot_then_scan, {
+    let mut bucket = seed_tree_csr_hub(65536);
+    bench_fn(|| {
+        for slot in (0..65536u32).step_by(2) {
+            let removed = bucket.remove_at(slot);
+            debug_assert!(removed.is_some());
+        }
+        let mut count = 0usize;
+        bucket.for_each_descending(|_slot, target| {
+            count += usize::from(target < 65536);
+        });
+        black_box(count);
+    })
+});
+
+// Degree 1M -----------------------------------------------------------------
+// Plan 0313 / Step 3 amend: the 1M parity arms were removed because the
+// PocketIC wasm export name budget (20,000 chars across all exported fn
+// names) was already saturated by the pre-existing 141 canbench functions
+// plus the new parity + Gate 3/4 benches. Adding 7 × 1 = 7 more 1M
+// `tcsr_1048576_<op>` functions would push the wasm above the budget and
+// prevent the canister from installing.
+//
+// The 1M sweep is instead covered by a cargo-test-based benchmark in
+// `tree_csr_high_degree_test.rs` (Plan 0313 Step 3 amend), which records
+// wall-clock per-edge cost on the host (not instruction counts) so it can
+// run without affecting the wasm export name budget.
+
+// ---------------------------------------------------------------------------
+// Plan 0313 (ADR 0088 Tree-CSR measurement gates) — Gate 3 (promotion cost)
+// and Gate 4 (LTB reopen envelope) benches.
+// ---------------------------------------------------------------------------
+
+/// T_promote per ADR 0088 §3 = 4,096 slots. Used by the Gate 3 promotion
+/// benches (edge-only + inline-property widest admitted profile).
+const T_PROMOTE_BENCH: usize = 4096;
+
+/// Gate 3 — edge-only promotion at T_promote = 4096. Reserves 4 data blocks
+/// (ceil(4096 / 1024)) and commits the canonical edge rows. Per ADR 0088 §7,
+/// `Memory::grow` calls complete in the reserve phase; the measured cost is
+/// the commit-phase transcription plus descriptor publish.
+#[bench(raw)]
+fn tcsr_promote_edge_only() -> canbench_rs::BenchResult {
+    let targets: Vec<u32> = (0..T_PROMOTE_BENCH as u32).collect();
+    bench_fn(|| {
+        let mut bucket = TreeCsrBucket::new(vector_memory());
+        bucket.promote_from_slice(black_box(&targets));
+        black_box(bucket.stored_slots());
+    })
+}
+
+/// Gate 3 — inline-property widest admitted profile (w = 32) at T_promote.
+/// Reserves 4 edge blocks + 32 property blocks (K = 4096 / 32 = 128 properties
+/// per block, ceil(4096 / 128) = 32). The expected byte transcription is
+/// O(T_promote × (4 + w)) = 4096 × 36 ≈ 144 KiB; measured cost should be in
+/// single-digit M instructions per ADR 0088 §Measurement gates Gate 3.
+#[bench(raw)]
+fn tcsr_promote_inline_property_w32() -> canbench_rs::BenchResult {
+    let targets: Vec<u32> = (0..T_PROMOTE_BENCH as u32).collect();
+    // 32 bytes per edge property; fill with deterministic bytes so the bench
+    // cannot be optimised away by LLVM dead-store elimination.
+    let mut properties = vec![0u8; T_PROMOTE_BENCH * 32];
+    for (i, slot) in properties.chunks_mut(32).enumerate() {
+        // Fill 32 bytes (w=32) deterministically: 4 × u64 LE values.
+        let base = i as u64;
+        slot[0..8].copy_from_slice(&base.to_le_bytes());
+        slot[8..16].copy_from_slice(&base.wrapping_mul(31).to_le_bytes());
+        slot[16..24].copy_from_slice(&base.wrapping_mul(7).to_le_bytes());
+        slot[24..32].copy_from_slice(&base.wrapping_mul(13).to_le_bytes());
+    }
+    bench_fn(|| {
+        let mut bucket = TreeCsrBucket::new(vector_memory());
+        bucket.promote_from_slices_with_property(black_box(&targets), black_box(&properties), 32);
+        black_box(bucket.stored_slots());
+    })
+}
+
+/// Gate 4 — LTB reopen walk at the declared envelope. Mints N edge blocks,
+/// releases all of them, and runs the reopen walk bounded by `envelope`. The
+/// declared envelope for Gate 4 is 4,096 (matches the worst-case scale at
+/// `T_promote`). The bench is named with the same `_4096` suffix as
+/// `bench_lara_free_span_store_reopen_4096` so canbench_results.yml pairs
+/// them by name.
+const LTB_REOPEN_ENVELOPE: u32 = 4096;
+
+fn seed_ltb_free_list(n: u32) -> LtbFreeList {
+    let mut ltb = LtbFreeList::new(vector_memory());
+    for _ in 0..n {
+        let id = ltb.mint_edge();
+        ltb.release(id);
+    }
+    ltb
+}
+
+#[bench(raw)]
+fn ltb_reopen_4096() -> canbench_rs::BenchResult {
+    let ltb = seed_ltb_free_list(LTB_REOPEN_ENVELOPE);
+    bench_fn(|| {
+        let walk = LtbReopenWalk::new(black_box(&ltb), black_box(LTB_REOPEN_ENVELOPE));
+        let visited = walk.run();
+        black_box(visited);
+    })
+}
+
+#[bench(raw)]
+fn ltb_reopen_1024() -> canbench_rs::BenchResult {
+    let ltb = seed_ltb_free_list(1024);
+    bench_fn(|| {
+        let walk = LtbReopenWalk::new(black_box(&ltb), black_box(1024));
+        let visited = walk.run();
+        black_box(visited);
+    })
+}
+
+/// Gate 4 — pop-time guard probe. Pop, re-mint (via release-then-pop), and
+/// re-pop the same id. Confirms the kind-rewrite guard from ADR 0088 §8
+/// prevents handing out a block twice. Bench cost is two pops + one release.
+#[bench(raw)]
+fn ltb_pop_remint_repop_4096() -> canbench_rs::BenchResult {
+    let mut ltb = seed_ltb_free_list(LTB_REOPEN_ENVELOPE);
+    bench_fn(|| {
+        // Cycle one id through the guard to exercise the rewrite path.
+        let pair = ltb.pop_remint_repop();
+        black_box(pair);
+        // Restore the released state for the next iteration.
+        if let Some((id, _)) = pair {
+            ltb.release(id);
+        }
+    })
+}
 
 /// Builds an empty bidirectional (forward + reverse store) deferred labeled graph
 /// for `BenchEdge`, mirroring the `valued_bidirectional_graph` test fixture. Used
@@ -2228,8 +2511,8 @@ macro_rules! detach_delete_hub_bench {
     };
 }
 
-detach_delete_hub_bench!(bench_labeled_stage2_detach_delete_hub_1024, 1024u32);
-detach_delete_hub_bench!(bench_labeled_stage2_detach_delete_hub_4096, 4096u32);
+detach_delete_hub_bench!(bench_l_s2_det_hub_1024, 1024u32);
+detach_delete_hub_bench!(bench_l_s2_det_hub_4096, 4096u32);
 
 /// Same DETACH DELETE as above, but through the **resumable/stepped** path
 /// (`enqueue_vertex_delete` + maintenance drain) that the production
@@ -2276,8 +2559,8 @@ macro_rules! detach_delete_hub_stepped_bench {
     };
 }
 
-detach_delete_hub_stepped_bench!(bench_labeled_stage2_detach_delete_hub_stepped_1024, 1024u32);
-detach_delete_hub_stepped_bench!(bench_labeled_stage2_detach_delete_hub_stepped_4096, 4096u32);
+detach_delete_hub_stepped_bench!(bench_l_s2_det_hub_st_1024, 1024u32);
+detach_delete_hub_stepped_bench!(bench_l_s2_det_hub_st_4096, 4096u32);
 
 /// ADR 0022 *dual* DETACH DELETE: delete a **small** satellite vertex that points
 /// into a high-in-degree hub. Draining the satellite is O(1), but removing its
@@ -2339,17 +2622,11 @@ macro_rules! detach_delete_satellite_bench {
     };
 }
 
-detach_delete_satellite_bench!(
-    bench_labeled_stage2_detach_delete_satellite_of_hub_1024,
-    1024u32
-);
-detach_delete_satellite_bench!(
-    bench_labeled_stage2_detach_delete_satellite_of_hub_4096,
-    4096u32
-);
+detach_delete_satellite_bench!(bench_l_s2_det_sat_1024, 1024u32);
+detach_delete_satellite_bench!(bench_l_s2_det_sat_4096, 4096u32);
 
 #[bench(raw)]
-fn bench_labeled_bypass_promotion() -> canbench_rs::BenchResult {
+fn bench_l_bp_promo() -> canbench_rs::BenchResult {
     const N: u32 = 512;
     let default = BucketLabelKey::directed_from_index(1);
     let graph = LabeledLaraGraph::<BenchEdge, _>::new(
@@ -2465,16 +2742,16 @@ fn bench_non_tail_bypass_insert(successors: u64) -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_labeled_non_tail_bypass_insert_256() -> canbench_rs::BenchResult {
+fn bench_l_nt_bp_ins_256() -> canbench_rs::BenchResult {
     bench_non_tail_bypass_insert(helper::SMALL_N)
 }
 
 #[bench(raw)]
-fn bench_labeled_non_tail_bypass_insert_1024() -> canbench_rs::BenchResult {
+fn bench_l_nt_bp_ins_1024() -> canbench_rs::BenchResult {
     bench_non_tail_bypass_insert(helper::MEDIUM_N)
 }
 
 #[bench(raw)]
-fn bench_labeled_non_tail_bypass_insert_4096() -> canbench_rs::BenchResult {
+fn bench_l_nt_bp_ins_4096() -> canbench_rs::BenchResult {
     bench_non_tail_bypass_insert(helper::LARGE_N)
 }
