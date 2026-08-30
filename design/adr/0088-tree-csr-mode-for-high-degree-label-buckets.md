@@ -134,6 +134,65 @@ Sub-decisions resolved within D:
 
 ## Decision
 
+### Decision (2026-08-29)
+
+Initial acceptance with amendments recorded by [Plan 0313](../../plans/0313-adr0088-tree-csr-measurement-gates.md). Gate verdicts were recorded as `defer` because the prototype used a `StableBTreeMap<BlockId, Vec<u8>>` scaffold whose `O(log n)` block-write cost dominated every measurement; the design's amortization claim was plausible but unproven.
+
+### Decision (2026-08-30) — Plan 0315: raw-block LTB backend
+
+The prototype's block storage was replaced with a raw-block `LtbRawBlockStore<M>` that talks directly to stable memory (`memory.read` / `memory.write` against fixed-stride 4 KiB blocks). Gate verdicts after [Plan 0315](../../plans/0315-adr0088-raw-block-ltb-revalidation.md):
+
+| Gate | Verdict | Notes |
+|------|---------|-------|
+| Gate 1 (problem sizing) | amend | Slab 4K insert_grow = 28.74M, 65K = 424.41M. 1M anchored by cargo-test host-wall-clock. |
+| Gate 2 (parity matrix)   | amend | full_scan at 4K = 14,540 ins/edge (down from 41,540 at 1024-edge baseline); random_ordinal / insert_grow at 4K comparable to slab baseline within 1.5×–6×. |
+| Gate 3 (promotion cost)  | reject | Edge-only = 52.44M ins, w=32 = 105.39M. Per-write payload constant (~13K ins/edge in `write_payload`) is the remaining fixed cost. |
+| Gate 4 (LTB reopen)      | pass | `ltb_reopen_4096` = 1.30M ins for 4096-block envelope = **~317 ins/block**, 8.9× cheaper than `bench_r_fs_ro_4096` precedent (~2,830 ins/block). |
+
+Plan 0315 closed Gate 4 and moved Gates 1/2 to amend, but Gate 3's per-write constant required a follow-up slice.
+
+### Decision (2026-08-30) — Plan 0316: per-write payload constant fix
+
+The `promote_from_slice` and `promote_from_slices_with_property` commit phases were rewritten from per-slot read-modify-write (1024× I/O amplification) to block-batched writes (one `Memory::write(4096)` per block). A new `LtbRawBlockStore::write_payload_partial(id, offset, src)` API was added for sub-block writes. Gate 3 verdicts after [Plan 0316](../../plans/0316-adr0088-per-write-payload-constant-fix.md):
+
+| Bench | Plan 0313 (StableBTreeMap) | Plan 0315 (raw-block) | **Plan 0316 (block-batched)** | Target | Improvement |
+|-------|---------------------------:|----------------------:|-----------------------------:|-------:|------------:|
+| `tcsr_promote_edge_only` | 315.74 M | 52.44 M | **152.82 K** | ≤ 9 M | **2,066× vs scaffold**, **59× margin** |
+| `tcsr_promote_inline_property_w32` | 987.88 M | 105.39 M | **1.16 M** | ≤ 30 M | **851× vs scaffold**, **26× margin** |
+
+The I/O amplification collapse from `O(S)` per slot (4 KiB read + 4 KiB write per slot) to `O(B)` per block (one 4 KiB write per block) confirmed the design's amortization claim (`O(T_promote × (4 + w))` bytes, not `O(T_promote)`).
+
+### Decision (2026-08-30) — Plan 0322: partial read and chunk iter
+
+The read side was brought to parity with the write side per [Plan 0316 §Notes](../../plans/0316-adr0088-per-write-payload-constant-fix.md):
+
+- `LtbRawBlockStore::read_payload_partial(id, offset, &mut [u8])` — sub-block read for point lookups and conditional reads.
+- `LtbRawBlockStore::for_each_chunk<F>(&self, f)` — chunk-buffer iterator that yields `(start_slot, &[u8])` slices, mirroring the CSR-slab leaf-chunk-buffer pattern. Callers decode `u32::from_le_bytes(slice[i..i+4])` directly with no per-slot stack allocation.
+- `TreeCsrBucket::range_target(slot)` — point lookup consuming `read_payload_partial`; `random_ordinal_access` refactored to call `range_target` (no public API change).
+
+No new canbench benches added; wasm export-name budget preserved at **16,776 chars / 20,000 limit** (3,224 chars of structural headroom from [Plan 0314](../../plans/0314-canbench-name-rationalization.md)).
+
+### Final verdict
+
+| Gate | Verdict | Status |
+|------|---------|--------|
+| Gate 1 (problem sizing) | amend | slab 4K / 65K measured, 1M cargo-test host-wall-clock anchored |
+| Gate 2 (parity matrix)   | amend | full_scan collapse from 14,540 → 41 ins/edge at 4K = 351×; random_ordinal / insert_grow / delete_half within target bounds or documented as prototype-only |
+| Gate 3 (promotion cost)  | pass  | edge-only = 152.82 K (59× under single-digit M target); w=32 = 1.16 M (26× under 30 M target) |
+| Gate 4 (LTB reopen)      | pass  | 317 ins/block, 8.9× cheaper than FreeSpanStore precedent |
+
+The Tree-CSR design is **validated against a faithful LTB backend**: block-internal reads match CSR-slab scan locality (chunk-buffer iter, amortized O(1) per slot), and promotion cost is bounded by `O(T_promote × (4 + w))` bytes (Plan 0316 verified at 152.82 K ins for edge-only 4096-edge promotion).
+
+Implementation slice (Plan 0317) is unblocked from the cost side. The full-canister wire-up of `LtbRawBlockStore<VirtualMemory>` per orientation (forward + reverse) into `LabeledLaraGraph` is the next step. The implementation slice must re-run Gate 2 against the production `VirtualMemory` backend (numbers above are on the `VectorMemory` test backend; production `Memory::write` may differ in constant cost by ±20%) and run a PocketIC-backed 1M-degree sweep to close Gate 1's deferred row.
+
+Per Plan 0316 §Notes and Plan 0322 §Notes, the following remain explicitly deferred to later slices:
+
+- [Plan 0318](./0318-tree-csr-demotion-tree-to-slab.md) — Demotion (tree → slab), a benchmark-gated maintenance operation.
+- Plan 0319 — `materialize_inline_property_stream` migration primitive (currently recorded as planned).
+- Plan 0320 — Batch admission widening to tree-mode buckets.
+- Plan 0317 — Tree-CSR implementation in `LabeledLaraGraph`. Wires `LtbRawBlockStore<VirtualMemory>` per orientation (forward + reverse), adds the descriptor mode-flag bit, promotion / deepen / flatten transitions, mode dispatch in the bucket access constructor. Plan 0322 must close before Plan 0317 starts so the production code paths can use `range_target` and `for_each_chunk` from day one.
+- Plan 0321 — Normal LARA (unlabeled) tree mode as a second instance of the same contract.
+
 ### 1. LTB block store
 
 One new store per orientation (forward, reverse): the **LARA Tree Block (LTB)
