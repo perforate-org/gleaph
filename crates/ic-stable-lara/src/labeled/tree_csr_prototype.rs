@@ -165,6 +165,15 @@ impl<M: Memory> TreeCsrBucket<M> {
     ///
     /// The bench wraps this in a `VectorMemory` region to make the
     /// `Memory::grow`-equivalent cost observable at the canbench layer.
+    ///
+    /// **Plan 0316 (block-batched writes):** the commit phase is rewritten
+    /// to build one `[u8; BLOCK_PAYLOAD_BYTES]` per block in a stack
+    /// buffer and call `write_payload` once per block, instead of the
+    /// previous per-slot `read_block_into` + `write_payload` pair. The
+    /// I/O amplification drops from `O(S)` per slot (4 KiB read + 4 KiB
+    /// write per slot) to `O(B)` per block (one 4 KiB write per block),
+    /// which removes the per-write payload constant that Gate 3 was
+    /// measuring.
     pub(crate) fn promote_from_slice(&mut self, targets: &[u32]) {
         debug_assert_eq!(
             self.stored_slots, 0,
@@ -186,20 +195,20 @@ impl<M: Memory> TreeCsrBucket<M> {
         }
         debug_assert_eq!(reserved.len(), new_root_len);
 
-        // Commit phase: walk the targets and write into the right block at the
-        // right in-block offset. All `Memory::grow`-equivalent allocations are
-        // done; we only write to already-reserved blocks here, mirroring the
-        // reserve/commit ordering.
-        let depth = derive_depth(new_stored_slots);
-        for (i, &t) in targets.iter().enumerate() {
-            let slot = u32::try_from(i).expect("slot fits u32");
-            let (block_id, in_block_offset) = physical_address(slot, depth);
-            // `block_id` indexes the reserved root array; the payload lives in
-            // the LTB store at that block id.
+        // Commit phase (block-batched): for each reserved block, fill the
+        // slots that fall in that block from `targets[]` in-stack, then
+        // call `write_payload` once. The previous per-slot read-modify-
+        // write (one `read_block_into` + one `write_payload` per slot,
+        // each touching 4 KiB) collapsed to one `write_payload` per block.
+        for (root_index, &block_id) in reserved.iter().enumerate() {
+            let block_first_slot = root_index as u32 * B as u32;
+            let block_last_slot_excl = (block_first_slot + B as u32).min(new_stored_slots);
             let mut payload = [0u8; BLOCK_PAYLOAD_BYTES];
-            self.read_block_into(block_id, &mut payload);
-            let offset = in_block_offset * 4;
-            payload[offset..offset + 4].copy_from_slice(&t.to_le_bytes());
+            for s in block_first_slot..block_last_slot_excl {
+                let in_block_offset = ((s - block_first_slot) as usize) * 4;
+                payload[in_block_offset..in_block_offset + 4]
+                    .copy_from_slice(&targets[s as usize].to_le_bytes());
+            }
             self.write_payload(block_id, &payload);
         }
 
@@ -219,6 +228,12 @@ impl<M: Memory> TreeCsrBucket<M> {
     /// wired into any other path; bench-only probe.
     ///
     /// `targets` and `properties` must have the same length.
+    ///
+    /// **Plan 0316 (block-batched writes):** both the edge commit and the
+    /// property commit fill one `[u8; BLOCK_PAYLOAD_BYTES]` per block in a
+    /// stack buffer and call `write_payload` once per block. The previous
+    /// per-slot read-modify-write loop was the source of Gate 3's per-write
+    /// payload constant; this rewrite removes it for both streams.
     pub(crate) fn promote_from_slices_with_property(
         &mut self,
         targets: &[u32],
@@ -261,25 +276,35 @@ impl<M: Memory> TreeCsrBucket<M> {
             property_reserved.push(id);
         }
 
-        // Commit phase: write each edge row and its `w` property bytes.
-        let depth = derive_depth(new_stored_slots);
-        for (i, &t) in targets.iter().enumerate() {
-            let slot = u32::try_from(i).expect("slot fits u32");
-            let (eblock, eoffset) = physical_address(slot, depth);
-            let mut ep = [0u8; BLOCK_PAYLOAD_BYTES];
-            self.read_block_into(eblock, &mut ep);
-            let ebyte = eoffset * 4;
-            ep[ebyte..ebyte + 4].copy_from_slice(&t.to_le_bytes());
-            self.write_payload(eblock, &ep);
+        // Commit phase (block-batched for both streams).
+        //
+        // Edge stream: same shape as `promote_from_slice` — one stack
+        // buffer per block, one `write_payload` per block.
+        for (root_index, &block_id) in edge_reserved.iter().enumerate() {
+            let block_first_slot = root_index as u32 * B as u32;
+            let block_last_slot_excl = (block_first_slot + B as u32).min(new_stored_slots);
+            let mut payload = [0u8; BLOCK_PAYLOAD_BYTES];
+            for s in block_first_slot..block_last_slot_excl {
+                let in_block_offset = ((s - block_first_slot) as usize) * 4;
+                payload[in_block_offset..in_block_offset + 4]
+                    .copy_from_slice(&targets[s as usize].to_le_bytes());
+            }
+            self.write_payload(block_id, &payload);
+        }
 
-            let pslot = u32::try_from(i).expect("pslot fits u32");
-            let pblock_index = (pslot / k_u32) as usize;
-            let pblock_in_offset = (pslot % k_u32) as usize * w;
-            let pid = property_reserved[pblock_index];
+        // Property stream: one stack buffer per property block, `K = B*4/w`
+        // properties per block. For `w = 32` that's 128 properties per
+        // block; for `w = 16` it's 256. The last block may be partial
+        // (the same `min` clamp as the edge stream).
+        for (pblock_index, &pid) in property_reserved.iter().enumerate() {
+            let block_first_pslot = pblock_index as u32 * k_u32;
+            let block_last_pslot_excl = (block_first_pslot + k_u32).min(new_stored_slots);
             let mut pp = [0u8; BLOCK_PAYLOAD_BYTES];
-            self.read_block_into(pid, &mut pp);
-            pp[pblock_in_offset..pblock_in_offset + w]
-                .copy_from_slice(&properties[i * w..(i + 1) * w]);
+            for p in block_first_pslot..block_last_pslot_excl {
+                let in_block_offset = ((p - block_first_pslot) as usize) * w;
+                pp[in_block_offset..in_block_offset + w]
+                    .copy_from_slice(&properties[(p as usize) * w..(p as usize + 1) * w]);
+            }
             self.write_payload(pid, &pp);
         }
 

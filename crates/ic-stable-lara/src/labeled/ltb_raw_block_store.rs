@@ -118,6 +118,11 @@ pub(crate) enum BlockError {
     NotMinted { id: u32 },
     /// Block id is past the allocated memory envelope (unbacked page).
     OutOfRange { id: u32 },
+    /// `offset + len` exceeds the 4096-byte payload envelope (or
+    /// `offset.checked_add(len)` overflowed). Raised by
+    /// [`LtbRawBlockStore::write_payload_partial`] for callers that exceed
+    /// the block's payload capacity.
+    OutOfBounds { id: u32, offset: usize, len: usize },
     /// Reopen header failed magic / reserved / wire-truth / counter checks.
     Init(InitError),
 }
@@ -447,6 +452,40 @@ impl<M: Memory> LtbRawBlockStore<M> {
         }
         let offset = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64;
         self.memory.write(offset, src);
+        Ok(())
+    }
+
+    /// Writes `src.len()` bytes starting at `offset` within the payload of
+    /// block `id`. Use this when only a small portion of a block has changed
+    /// (e.g. one slot within a 4 KiB block) to avoid the read-modify-write
+    /// cost of [`Self::write_payload`]. Bounds check: `offset + src.len()
+    /// <= BLOCK_PAYLOAD_BYTES`. The kind/owner/ordinal/level fields in the
+    /// 16-byte block header are not touched.
+    pub(crate) fn write_payload_partial(
+        &mut self,
+        id: u32,
+        offset: usize,
+        src: &[u8],
+    ) -> Result<(), BlockError> {
+        if id >= self.tail_next {
+            return Err(BlockError::NotMinted { id });
+        }
+        let end = offset
+            .checked_add(src.len())
+            .ok_or(BlockError::OutOfBounds {
+                id,
+                offset,
+                len: src.len(),
+            })?;
+        if end > BLOCK_PAYLOAD_BYTES {
+            return Err(BlockError::OutOfBounds {
+                id,
+                offset,
+                len: src.len(),
+            });
+        }
+        let base = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64 + offset as u64;
+        self.memory.write(base, src);
         Ok(())
     }
 
@@ -873,6 +912,52 @@ mod tests {
         let memory: crate::VectorMemory = vector_memory();
         let err = LtbRawBlockStore::init(memory).err().unwrap();
         assert!(matches!(err, InitError::TruncatedHeader), "got {err:?}");
+    }
+
+    #[test]
+    fn write_payload_partial_writes_only_offset_range() {
+        let mut ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        // Pre-fill the block with a known pattern via write_payload.
+        let baseline: [u8; BLOCK_PAYLOAD_BYTES] = std::array::from_fn(|i| (i % 251) as u8);
+        ltb.write_payload(id, &baseline).expect("write payload");
+        // Overwrite 4 bytes at offset 100..104.
+        let patch: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+        ltb.write_payload_partial(id, 100, &patch)
+            .expect("write_payload_partial");
+        let mut dst = [0u8; BLOCK_PAYLOAD_BYTES];
+        ltb.read_payload(id, &mut dst).expect("read payload");
+        assert_eq!(dst[100..104], patch);
+        // Surrounding bytes unchanged.
+        assert_eq!(&dst[..100], &baseline[..100]);
+        assert_eq!(&dst[104..], &baseline[104..]);
+    }
+
+    #[test]
+    fn write_payload_partial_rejects_out_of_bounds() {
+        let mut ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let src = [0u8; 4];
+        // offset == BLOCK_PAYLOAD_BYTES → end == BLOCK_PAYLOAD_BYTES
+        // is *not* out of bounds (an empty write at the very end is valid),
+        // but a 4-byte write at the very end is.
+        let err = ltb
+            .write_payload_partial(id, BLOCK_PAYLOAD_BYTES - 2, &src)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, BlockError::OutOfBounds { id: _, offset, len } if offset == BLOCK_PAYLOAD_BYTES - 2 && len == 4),
+            "expected OutOfBounds, got {err:?}"
+        );
+        // offset + len overflow guard: huge offset should be rejected.
+        let err = ltb
+            .write_payload_partial(id, usize::MAX, &src)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, BlockError::OutOfBounds { .. }),
+            "expected OutOfBounds on overflow, got {err:?}"
+        );
     }
 
     /// Plan 0315 / Step 3 (carried over from `ltb_reopen_prototype`):

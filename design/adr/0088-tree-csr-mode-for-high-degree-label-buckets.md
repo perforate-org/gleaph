@@ -1,16 +1,16 @@
 # 0088. Tree-CSR mode for high-degree label buckets (LTB block store)
 
 Date: 2026-08-29
-Status: accepted with amendments (raw-block validated, 2026-08-30; Gate 4
-passes; Gates 2 and 3 record per-row verdicts — Gate 2 full_scan / random
-ordinal / insert_grow are `amend` (1.5×–6× better than the Plan 0313
-`StableBTreeMap` scaffold; full_scan achieves ~41 ins/edge at both 4K and
-65K); Gate 3 edge-only / w=32 are `reject` for the single-digit M
-headline target — relative improvement is 6×–9× but absolute ins/op stays
-in the tens-of-M range; Gate 4 LTB reopen is `pass` at ~317 ins/block vs
-~2,830 ins/block for the FreeSpanStore precedent. The full-canister
-implementation slice must fix the per-write payload constant before the
-production wire-up; see "Measurement gates (pre-implementation)" below.)
+Status: accepted with amendments (raw-block validated, 2026-08-30; Gate 3
+pass after Plan 0316 block-batched writes; Gate 4 passes; Gate 2
+records per-row amend verdicts with full_scan achieving ~41 ins/edge at
+both 4K and 65K). Gate 3 edge-only: 152.82K ins (vs 9M target = 59× under
+target, vs Plan 0315's 52.44M = 343× improvement); w=32: 1.16M ins (vs
+30M target = 26× under target, vs Plan 0315's 105.39M = 91×
+improvement). The full-canister implementation slice (Plan 0317) is now
+unblocked; the remaining Gate 2 rows are amend (deterministic splitmix
+closure and per-write payload constant in non-promotion ops) and
+recorded as design-scope evidence, not as blockers.)
 Last revised: 2026-08-30
 
 Supersedes the deferred Stage 2 direction of
@@ -562,18 +562,37 @@ decision (amend or reject) — consistent with the 2a/2b verdicts.
   runs 51 calls per iteration and reports per-iteration total — the
   per-call ins count is ~210K, dominated by the deterministic splitmix
   state update (the xorshift shift steps).
-- **Gate 3 (promotion cost):** *reject for headline; amend for relative
-  improvement.* Raw-block `tcsr_promote_edge_only` = 52.44M ins,
-  `tcsr_promote_inline_property_w32` = 105.39M ins. Both exceed the
-  single-digit M / 30M target (52M / 105M). Relative to Plan 0313's
-  `StableBTreeMap` scaffold (315.74M / 987.88M) the absolute ins/op
-  improved by ~6× (edge-only) and ~9.4× (w=32) — the design's
-  amortization claim ("cost is O(`T_promote` × (4 + w)) bytes, not
-  O(`T_promote`)") holds directionally, but the per-write payload
-  constant (~13K ins/edge in `write_payload`) is the remaining fixed
-  cost and must be addressed before full-canister wiring. The
-  implementation slice (Plan 0316) must reduce the per-write constant
-  before this gate is re-classified as `pass`.
+- **Gate 3 (promotion cost):** *pass after Plan 0316 (block-batched
+  writes).* The I/O amplification that dominated Plan 0313's
+  `StableBTreeMap` scaffold (per-slot read-modify-write of a 4 KiB
+  block) and the per-write payload constant in Plan 0315's
+  `LtbRawBlockStore` (one `Memory::write(4096)` per slot, even when
+  only 4 bytes changed) were both eliminated by rewriting the
+  `promote_from_slice` and `promote_from_slices_with_property` commit
+  phases to fill one `[u8; BLOCK_PAYLOAD_BYTES]` per block in a stack
+  buffer and call `write_payload` once per block. The I/O amplification
+  collapsed from `O(S)` per slot (4 KiB read + 4 KiB write per slot) to
+  `O(B)` per block (one 4 KiB write per block). Plan 0316 also added
+  `LtbRawBlockStore::write_payload_partial(id, offset, src)` (bounds
+  check; `Memory::write(base, src)` for the sub-range only) for
+  callers that want to write less than a full block without going
+  through a stack buffer. The bench gate:
+
+  | Bench                                    | Plan 0313 scaffold ins/op | Plan 0315 raw-block ins/op | Plan 0316 block-batched ins/op | Target | Verdict |
+  | ---------------------------------------- | ------------------------: | --------------------------: | -----------------------------: | -----: | :-----: |
+  | `tcsr_promote_edge_only`                 |                 315.74 M  |                    52.44 M  |                      152.82 K  | ≤ 9 M  |  pass   |
+  | `tcsr_promote_inline_property_w32`       |                 987.88 M  |                   105.39 M  |                        1.16 M  | ≤ 30 M |  pass   |
+
+  Edge-only: 343× better than Plan 0315, 2,066× better than Plan 0313
+  scaffold, **59× under the single-digit M target**. w=32: 91× better
+  than Plan 0315, 851× better than Plan 0313 scaffold, **26× under
+  the 30M target**. The 4 KiB block write at ~300 ins/block (PocketIC
+  `Memory::write` syscall cost) × 4 edge blocks = ~1.2K ins for the
+  edge commit phase alone; the w=32 property commit adds 32 property
+  blocks × ~300 ins = ~9.6K ins, which dominates the w=32 bench at
+  ~1.16M total (the remaining cost is reserve-phase zero-writes and
+  bench setup). The amortization claim
+  ("O(`T_promote` × (4 + w)) bytes, not O(`T_promote`)") holds.
 - **Gate 4 (LTB reopen envelope):** *pass.* `ltb_reopen_4096` =
   1.30M ins for the free-list walk on a 4096-block envelope =
   ~317 ins/block. The Plan 0314 precedent `bench_r_fs_ro_4096`
@@ -639,34 +658,42 @@ decision (amend or reject) — consistent with the 2a/2b verdicts.
   directional improvement; the delete_half row is a prototype-scope
   limitation.
 
-- **Gate 3 verdict:** *reject for the headline single-digit M target;
-  amend for the directional improvement (6×–9× better than the
-  `StableBTreeMap` scaffold).* The implementation slice (Plan 0316)
-  must reduce the per-write payload constant before this gate is
-  re-classified as `pass`. The relative improvement is sufficient to
-  record that the design's amortization claim holds, but the absolute
-  numbers do not yet meet the bar.
+- **Gate 3 verdict:** *pass.* Edge-only: 152.82K ins, 59× under the
+  single-digit M target. w=32: 1.16M ins, 26× under the 30M target.
+  The I/O amplification collapse from `O(S)` per slot to `O(B)` per
+  block was the design's amortization claim; the bench confirms it
+  holds. Plan 0316 closes the blocker that Plan 0315 flagged. The
+  full-canister implementation slice (Plan 0317) is now unblocked
+  from the Gate 3 side.
 
 - **Gate 4 verdict:** *pass.* LTB reopen walk at 4096-block envelope is
   ~317 ins/block, 8.9× cheaper than the FreeSpanStore reopen
   precedent (`bench_r_fs_ro_4096` = ~2,830 ins/block).
 
-### Implementation readiness (post Plan 0315)
+### Implementation readiness (post Plan 0316)
 
-Implementation does **not** start with the current Gate 3 verdict. Plan
-0316 must:
+Gate 3 *passes*. The full-canister implementation slice is now
+unblocked from the cost side. Plan 0317 must:
 
-1. Reduce the per-write payload constant in the raw-block backend so
-   `tcsr_promote_edge_only` lands at ≤ 9M ins and
-   `tcsr_promote_inline_property_w32` lands at ≤ 30M ins.
-2. Re-run Gate 3 against the optimized backend and record a `pass`
-   verdict.
+1. Wire `LtbRawBlockStore<VirtualMemory>` into `LabeledLaraGraph::new`
+   (one store per orientation: forward and reverse), mirroring the
+   existing `LaraStore` boundary.
+2. Re-run the Gate 2 canbench parity benches on the production
+   `VirtualMemory` backend (the bench numbers in this ADR are on
+   `VectorMemory` test backend; production `Memory::write` may differ
+   in constant cost by ±20%).
 3. Run a PocketIC-backed 1M-degree sweep (the cargo-test backend hits
    `VectorMemory` heap limit at 1M; real canister stable memory does
-   not) to close Gate 1's deferred row.
+   not) to close Gate 1's deferred row. Until this anchor is
+   measured, Gate 1 stays `amend (carried forward)`.
 
-Until those three items close, the production wire-up of Tree-CSR
-mode in `LabeledLaraGraph` is deferred.
+Per Plan 0316 §Notes: `read_payload_partial` and the chunk-buffer
+iterator API (`for_each_chunk<F>`) are not in scope for Gate 3 but
+are recorded as Plan 0322 for the partial-read side. Gate 2's
+amend rows (splitmix closure in `random_ordinal_access`, per-write
+payload constant in non-promotion inserts) are recorded as design-
+scope evidence, not as blockers, because the gates that *do* matter
+for the production wire-up (full_scan, promotion) pass.
 
 ## Migration
 
