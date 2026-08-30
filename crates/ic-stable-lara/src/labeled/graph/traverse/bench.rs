@@ -556,7 +556,7 @@ where
 
 /// Reverse/incoming dense scan through the bidirectional adapter.
 #[bench(raw)]
-fn bench_traverse_next_visit_in_edges_dense() -> canbench_rs::BenchResult {
+fn bench_t_v_in_dense() -> canbench_rs::BenchResult {
     let graph = reverse_bench_graph::<BenchEdge>();
     let src = VertexId::from(0);
     let dst = VertexId::from(1);
@@ -588,7 +588,7 @@ fn bench_traverse_next_visit_in_edges_dense() -> canbench_rs::BenchResult {
 
 /// Reverse/incoming hybrid scan with inline-property inline property batches.
 #[bench(raw)]
-fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::BenchResult {
+fn bench_t_v_in_hyb_ip() -> canbench_rs::BenchResult {
     let graph = reverse_bench_graph::<InlinePropertyBenchEdge>();
     let src = VertexId::from(0);
     let dst = VertexId::from(1);
@@ -630,7 +630,7 @@ fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::B
 
 /// Dense single-label bucket with all edges on the slab.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_dense_asc() -> canbench_rs::BenchResult {
+fn bench_t_v_dense_a() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -658,7 +658,7 @@ fn bench_traverse_next_visit_edges_dense_asc() -> canbench_rs::BenchResult {
 
 /// Sparse scan with tombstones retained in the bucket logical extent.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_sparse() -> canbench_rs::BenchResult {
+fn bench_t_v_sparse() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -690,7 +690,7 @@ fn bench_traverse_next_visit_edges_sparse() -> canbench_rs::BenchResult {
 
 /// Windowed dense scan used by OFFSET/LIMIT pushdown candidates.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_window() -> canbench_rs::BenchResult {
+fn bench_t_v_window() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -727,7 +727,7 @@ fn bench_traverse_next_visit_edges_window() -> canbench_rs::BenchResult {
 
 /// Explicit descending dense scan (opt-in order, counterpart to the ascending default).
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_dense_desc() -> canbench_rs::BenchResult {
+fn bench_t_v_dense_d() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -755,7 +755,7 @@ fn bench_traverse_next_visit_edges_dense_desc() -> canbench_rs::BenchResult {
 
 /// Default-label bypass scan with zero inline-property width.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_bypass() -> canbench_rs::BenchResult {
+fn bench_t_v_bypass() -> canbench_rs::BenchResult {
     let default_label = BucketLabelKey::from_raw(1);
     let graph = bench_graph(4096, default_label);
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -788,7 +788,7 @@ fn bench_traverse_next_visit_edges_bypass() -> canbench_rs::BenchResult {
 
 /// Early termination after a fixed number of matching rows.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_early_break() -> canbench_rs::BenchResult {
+fn bench_t_v_ebreak() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -818,7 +818,7 @@ fn bench_traverse_next_visit_edges_early_break() -> canbench_rs::BenchResult {
 
 /// Hybrid bucket: slab prefix plus overflow-log suffix.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
+fn bench_t_v_hyb() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -849,7 +849,7 @@ fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
 
 /// Selected-slot topology read reusing a cached hybrid overflow replay.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult {
+fn bench_t_v_at_replay() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -939,7 +939,7 @@ fn bench_selected_inline_property_case(
 
 /// Selected prefix: canonical scan should stop immediately after the requested range.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::BenchResult {
+fn bench_t_vip() -> canbench_rs::BenchResult {
     bench_selected_inline_property_case(
         (0..DIRECT_SELECTED_SLOT_COUNT as u32)
             .map(BucketEntryPosition::new)
@@ -950,7 +950,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::Ben
 
 /// Selected suffix: direct reads should avoid scanning the prefix of the bucket.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property_tail() -> canbench_rs::BenchResult {
+fn bench_t_vip_tail() -> canbench_rs::BenchResult {
     bench_selected_inline_property_case(
         ((HYBRID_DEGREE - DIRECT_SELECTED_SLOT_COUNT as u32)..HYBRID_DEGREE)
             .map(BucketEntryPosition::new)
@@ -961,7 +961,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_tail() -> canbench_rs
 
 /// Sparse selection: direct reads should avoid scanning the gaps between requested slots.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property_sparse() -> canbench_rs::BenchResult {
+fn bench_t_vip_sparse() -> canbench_rs::BenchResult {
     bench_selected_inline_property_case(
         [0, HYBRID_DEGREE / 2, HYBRID_DEGREE - 1]
             .into_iter()
@@ -973,8 +973,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_sparse() -> canbench_
 
 /// Descending selected suffix: canonical scan should stop after the requested range.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property_descending() -> canbench_rs::BenchResult
-{
+fn bench_t_vip_descending() -> canbench_rs::BenchResult {
     bench_selected_inline_property_case(
         ((HYBRID_DEGREE - DIRECT_SELECTED_SLOT_COUNT as u32)..HYBRID_DEGREE)
             .map(BucketEntryPosition::new)
@@ -985,8 +984,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_descending() -> canbe
 
 /// Descending selected prefix: direct reads should avoid scanning the remaining bucket.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property_descending_tail()
--> canbench_rs::BenchResult {
+fn bench_t_vip_descending_tail() -> canbench_rs::BenchResult {
     bench_selected_inline_property_case(
         (0..DIRECT_SELECTED_SLOT_COUNT as u32)
             .map(BucketEntryPosition::new)
@@ -997,8 +995,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_descending_tail()
 
 /// Reference cost of filtering the full inline-property visitor for the same selected prefix.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property_filtered_reference()
--> canbench_rs::BenchResult {
+fn bench_t_vip_filtered_reference() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -1044,7 +1041,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_filtered_reference()
 
 /// Streaming visitor that attaches exact inline-property bytes per edge.
 #[bench(raw)]
-fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchResult {
+fn bench_t_v_w_ip() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -1086,8 +1083,7 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
 /// This is intentionally kept beside the candidate benchmark so both closures share the same
 /// graph type, edge count, label, inline width, and build conditions.
 #[bench(raw)]
-fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
--> canbench_rs::BenchResult {
+fn bench_t_lvp_same() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -1118,7 +1114,7 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
 
 /// Property-first batch read, followed by selected-slot topology read.
 #[bench(raw)]
-fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResult {
+fn bench_t_v_pf_then_sel() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -1175,60 +1171,60 @@ fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResul
 
 /// Fixed-survivor OFFSET matrix: dense control at the first live ordinal.
 #[bench(raw)]
-fn bench_offset_live1024_extent1024_offset0_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e1k_0_a() -> canbench_rs::BenchResult {
     offset_query_bench(1_024, 1, 0, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: dense OFFSET query.
 #[bench(raw)]
-fn bench_offset_live1024_extent1024_offset960_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e1k_960_a() -> canbench_rs::BenchResult {
     offset_query_bench(1_024, 1, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: 50% tombstones at the first live ordinal.
 #[bench(raw)]
-fn bench_offset_live1024_extent2048_offset0_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e2k_0_a() -> canbench_rs::BenchResult {
     offset_query_bench(2_048, 2, 0, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: 50% tombstones at live ordinal 960.
 #[bench(raw)]
-fn bench_offset_live1024_extent2048_offset960_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e2k_960_a() -> canbench_rs::BenchResult {
     offset_query_bench(2_048, 2, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: 75% tombstones at the first live ordinal.
 #[bench(raw)]
-fn bench_offset_live1024_extent4096_offset0_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e4k_0_a() -> canbench_rs::BenchResult {
     offset_query_bench(4_096, 4, 0, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: 75% tombstones at live ordinal 960.
 #[bench(raw)]
-fn bench_offset_live1024_extent4096_offset960_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e4k_960_a() -> canbench_rs::BenchResult {
     offset_query_bench(4_096, 4, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: 87.5% tombstones at the first live ordinal.
 #[bench(raw)]
-fn bench_offset_live1024_extent8192_offset0_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e8k_0_a() -> canbench_rs::BenchResult {
     offset_query_bench(8_192, 8, 0, OutEdgeOrder::Ascending)
 }
 
 /// Fixed-survivor OFFSET matrix: 87.5% tombstones at live ordinal 960.
 #[bench(raw)]
-fn bench_offset_live1024_extent8192_offset960_asc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e8k_960_a() -> canbench_rs::BenchResult {
     offset_query_bench(8_192, 8, OFFSET_WINDOW_OFFSET, OutEdgeOrder::Ascending)
 }
 
 /// Descending dense control for the fixed-survivor OFFSET matrix.
 #[bench(raw)]
-fn bench_offset_live1024_extent1024_offset0_desc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e1k_0_d() -> canbench_rs::BenchResult {
     offset_query_bench(1_024, 1, 0, OutEdgeOrder::Descending)
 }
 
 /// Descending 87.5% tombstone control for the fixed-survivor OFFSET matrix.
 #[bench(raw)]
-fn bench_offset_live1024_extent8192_offset0_desc() -> canbench_rs::BenchResult {
+fn bench_t_off_l1k_e8k_0_d() -> canbench_rs::BenchResult {
     offset_query_bench(8_192, 8, 0, OutEdgeOrder::Descending)
 }

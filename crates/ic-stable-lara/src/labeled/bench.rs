@@ -1100,7 +1100,7 @@ fn bench_l_ins_mv_l32_2048() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_compact_edge_decode_scan_128() -> canbench_rs::BenchResult {
+fn bench_cmp_edge_sc_128() -> canbench_rs::BenchResult {
     let mut bytes = Vec::with_capacity(128 * BenchEdge::BYTES);
     for i in 0..128u32 {
         let mut slot = [0u8; BenchEdge::BYTES];
