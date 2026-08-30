@@ -806,7 +806,7 @@ mod bench {
     /// Measures appending vertex rows to the stable vertex column. This guards
     /// the fixed-width row write path and length-header update cost.
     #[bench(raw)]
-    fn bench_lara_vertex_push_1024() -> canbench_rs::BenchResult {
+    fn bench_r_vx_p_1024() -> canbench_rs::BenchResult {
         let mut memories = helper::BenchMemoryFactory::new();
         let store = VertexStore::new(memories.memory()).expect("vertex store");
         canbench_rs::bench_fn(|| {
@@ -823,7 +823,7 @@ mod bench {
     /// intent is to catch regressions in row offset calculation and stable
     /// memory read/write overhead for update-side metadata.
     #[bench(raw)]
-    fn bench_lara_vertex_get_set_1024() -> canbench_rs::BenchResult {
+    fn bench_r_vx_gs_1024() -> canbench_rs::BenchResult {
         let store = populate_store(helper::MEDIUM_N);
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_vertex_get_set");

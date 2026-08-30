@@ -13,7 +13,7 @@ use crate::{
 /// append into existing vertex spans. This is the broad update-path smoke signal
 /// for regressions in insert accounting, segment counts, and light rebalancing.
 #[bench(raw)]
-fn bench_lara_graph_insert_append_heavy_1024() -> canbench_rs::BenchResult {
+fn bench_r_gr_ia_h_1024() -> canbench_rs::BenchResult {
     let graph = helper::lara_graph(4096, 16, 256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_insert_append_heavy");
@@ -31,7 +31,7 @@ fn bench_lara_graph_insert_append_heavy_1024() -> canbench_rs::BenchResult {
 /// The fixture uses the default zero initial slab width, so this may include
 /// overflow-log traversal; the benchmark is not a slab-only microbench.
 #[bench(raw)]
-fn bench_lara_graph_clean_scan_slot_order_1024() -> canbench_rs::BenchResult {
+fn bench_r_gr_cs_so_1024() -> canbench_rs::BenchResult {
     let graph = helper::populated_lara_graph(256, 4);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_slot_order");
@@ -50,7 +50,7 @@ fn bench_lara_graph_clean_scan_slot_order_1024() -> canbench_rs::BenchResult {
 /// streaming counterpart to `lara_graph_clean_scan_slot_order` and may include
 /// overflow-log traversal.
 #[bench(raw)]
-fn bench_lara_graph_clean_scan_iter_1024() -> canbench_rs::BenchResult {
+fn bench_r_gr_cs_i_1024() -> canbench_rs::BenchResult {
     let graph = helper::populated_lara_graph(256, 4);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_iter");
@@ -72,7 +72,7 @@ fn bench_lara_graph_clean_scan_iter_1024() -> canbench_rs::BenchResult {
 /// vertex. This stresses `out_edges_iter` and slab decoding without repeatedly
 /// paying per-vertex iterator setup across many small rows.
 #[bench(raw)]
-fn bench_lara_graph_clean_scan_iter_single_row_1024() -> canbench_rs::BenchResult {
+fn bench_r_gr_cs_i_sr_1024() -> canbench_rs::BenchResult {
     let graph = helper::populated_lara_graph(1, helper::MEDIUM_N as u32);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_iter_single_row");
@@ -91,7 +91,7 @@ fn bench_lara_graph_clean_scan_iter_single_row_1024() -> canbench_rs::BenchResul
 /// Pairs with [`bench_lara_graph_clean_scan_iter_single_row_1024`] to separate
 /// vector growth from streaming iteration.
 #[bench(raw)]
-fn bench_lara_graph_clean_scan_slot_order_single_row_1024() -> canbench_rs::BenchResult {
+fn bench_r_gr_cs_so_sr_1024() -> canbench_rs::BenchResult {
     let graph = helper::populated_lara_graph(1, helper::MEDIUM_N as u32);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_slot_order_single_row");
@@ -110,7 +110,7 @@ fn bench_lara_graph_clean_scan_slot_order_single_row_1024() -> canbench_rs::Benc
 /// tree. This protects the preflight/commit boundary where counts, span metadata,
 /// and the overflow log are reserved before the edge header is published.
 #[bench(raw)]
-fn bench_lara_edge_store_segment_tree_grow() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_stg() -> canbench_rs::BenchResult {
     let store = EdgeStore::<TestEdge, _>::new(
         vector_memory(),
         vector_memory(),
@@ -135,7 +135,7 @@ fn bench_lara_edge_store_segment_tree_grow() -> canbench_rs::BenchResult {
 /// This protects the expensive resize/relocation boundary where span metadata,
 /// counts, and free-span release are all updated together.
 #[bench(raw)]
-fn bench_lara_graph_root_relocation_1() -> canbench_rs::BenchResult {
+fn bench_r_gr_rt_rel_1() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_root_relocation");
         let graph = helper::lara_graph(4, 1, 2);
@@ -152,7 +152,7 @@ fn bench_lara_graph_root_relocation_1() -> canbench_rs::BenchResult {
 /// is the key LARA locality case: move one dense segment without forcing a full
 /// graph resize.
 #[bench(raw)]
-fn bench_lara_graph_local_relocation_1() -> canbench_rs::BenchResult {
+fn bench_r_gr_loc_rel_1() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_local_relocation");
         let graph = helper::lara_graph(12, 1, 2);
@@ -174,7 +174,7 @@ fn bench_lara_graph_local_relocation_1() -> canbench_rs::BenchResult {
 /// target is a small, stable cost for validating headers and resuming clean
 /// scans from the stored layout.
 #[bench(raw)]
-fn bench_lara_graph_reopen_after_relocation_1() -> canbench_rs::BenchResult {
+fn bench_r_gr_ro_rel_1() -> canbench_rs::BenchResult {
     let graph = helper::lara_graph(4, 1, 2);
     for dst in 10..14 {
         graph

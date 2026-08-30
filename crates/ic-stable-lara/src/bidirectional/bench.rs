@@ -11,7 +11,7 @@ use crate::{
 /// edge writes both forward and reverse LARA stores, so this tracks validation
 /// plus the two oriented insert paths.
 #[bench(raw)]
-fn bench_lara_bidirectional_insert_directed_1024() -> canbench_rs::BenchResult {
+fn bench_r_bd_ins_d_1024() -> canbench_rs::BenchResult {
     let graph = helper::bidirectional_graph::<TestEdge>(256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_bidirectional_insert_directed");
@@ -35,7 +35,7 @@ fn bench_lara_bidirectional_insert_directed_1024() -> canbench_rs::BenchResult {
 /// intentionally heavier than directed insert because one logical edge
 /// materializes symmetric adjacency in both forward and reverse stores.
 #[bench(raw)]
-fn bench_lara_bidirectional_insert_undirected_1024() -> canbench_rs::BenchResult {
+fn bench_r_bd_ins_u_1024() -> canbench_rs::BenchResult {
     let graph = helper::bidirectional_graph::<UndirectedTestEdge>(256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_bidirectional_insert_undirected");
@@ -59,7 +59,7 @@ fn bench_lara_bidirectional_insert_undirected_1024() -> canbench_rs::BenchResult
 /// to catch regressions where bidirectional APIs add overhead on top of the
 /// underlying clean LARA scans.
 #[bench(raw)]
-fn bench_lara_bidirectional_scan_in_out_1024() -> canbench_rs::BenchResult {
+fn bench_r_bd_sc_io_1024() -> canbench_rs::BenchResult {
     let graph = helper::bidirectional_graph::<TestEdge>(256);
     for i in 0..helper::MEDIUM_N {
         let src = (i % 256) as u32;

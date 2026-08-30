@@ -1153,7 +1153,7 @@ mod bench {
     /// urgent priority insertion, and draining. This isolates queue/bitmap cost
     /// from graph rebalancing work.
     #[bench(raw)]
-    fn bench_lara_maintenance_queue_mark_pop_1024() -> canbench_rs::BenchResult {
+    fn bench_r_mnt_q_mp_1024() -> canbench_rs::BenchResult {
         let mut memories = helper::BenchMemoryFactory::new();
         let queue = MaintenanceQueue::new(memories.memory(), memories.memory()).expect("queue");
         canbench_rs::bench_fn(|| {
@@ -1179,7 +1179,7 @@ mod bench {
     /// maintenance folding so changes here indicate admission-path or queue
     /// bookkeeping regressions.
     #[bench(raw)]
-    fn bench_lara_deferred_insert_dirty_1024() -> canbench_rs::BenchResult {
+    fn bench_r_df_ins_dr_1024() -> canbench_rs::BenchResult {
         let graph = helper::deferred_graph(256);
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_deferred_insert_dirty");
@@ -1199,7 +1199,7 @@ mod bench {
     /// Measures read-side reverse iteration while deferred inserts are still
     /// waiting in the overflow log.
     #[bench(raw)]
-    fn bench_lara_deferred_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
+    fn bench_r_df_oi_lb_128() -> canbench_rs::BenchResult {
         let graph = helper::deferred_graph(1);
         for i in 0..128 {
             graph
@@ -1224,7 +1224,7 @@ mod bench {
     /// is bounded cost for turning log-backed adjacency back into clean slab
     /// layout under a segment budget.
     #[bench(raw)]
-    fn bench_lara_deferred_maintenance_fold_1() -> canbench_rs::BenchResult {
+    fn bench_r_df_mnt_fd_1() -> canbench_rs::BenchResult {
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_deferred_maintenance_fold");
             let graph = helper::deferred_graph(16);

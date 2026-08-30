@@ -8,7 +8,7 @@ use crate::{MaintenanceBudget, VertexId, bench as helper, test_support::TestEdge
 /// benchmark includes dirty/urgent queue marking but excludes later maintenance
 /// work, so it isolates write admission cost.
 #[bench(raw)]
-fn bench_lara_deferred_bidirectional_insert_directed_1024() -> canbench_rs::BenchResult {
+fn bench_r_df_bd_ins_d_1024() -> canbench_rs::BenchResult {
     let graph = helper::deferred_bidirectional_graph(256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_deferred_bidirectional_insert_directed");
@@ -32,7 +32,7 @@ fn bench_lara_deferred_bidirectional_insert_directed_1024() -> canbench_rs::Benc
 /// an eye on the most expensive logical insert shape: symmetric adjacency plus
 /// deferred maintenance bookkeeping.
 #[bench(raw)]
-fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::BenchResult {
+fn bench_r_df_bd_ins_u_1024() -> canbench_rs::BenchResult {
     let graph =
         helper::deferred_bidirectional_graph::<crate::test_support::UndirectedTestEdge>(256);
     canbench_rs::bench_fn(|| {
@@ -57,7 +57,7 @@ fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::Be
 /// forward/reverse queues. The intent is to protect the scheduling loop and one
 /// maintenance fold per orientation from unexpected growth.
 #[bench(raw)]
-fn bench_lara_deferred_bidirectional_maintenance_drain_1() -> canbench_rs::BenchResult {
+fn bench_r_df_bd_mnt_dr_1() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_deferred_bidirectional_maintenance_drain");
         let graph = helper::deferred_bidirectional_graph(16);

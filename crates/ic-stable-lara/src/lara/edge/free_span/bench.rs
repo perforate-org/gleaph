@@ -52,7 +52,7 @@ fn bench_take_best_fit_split(n: u64) -> canbench_rs::BenchResult {
 /// a 256-span free-list population. This preserves the historical baseline name
 /// for tracking the small-population allocator path.
 #[bench(raw)]
-fn bench_lara_free_span_store_take_best_fit_split_256() -> canbench_rs::BenchResult {
+fn bench_r_fs_tkbfs_256() -> canbench_rs::BenchResult {
     bench_take_best_fit_split(helper::SMALL_N)
 }
 
@@ -60,7 +60,7 @@ fn bench_lara_free_span_store_take_best_fit_split_256() -> canbench_rs::BenchRes
 /// regression signal for bin scanning, by-start updates, and active-record
 /// relinking under typical allocator pressure.
 #[bench(raw)]
-fn bench_lara_free_span_store_take_best_fit_split_1024() -> canbench_rs::BenchResult {
+fn bench_r_fs_tkbfs_1024() -> canbench_rs::BenchResult {
     bench_take_best_fit_split(helper::MEDIUM_N)
 }
 
@@ -68,7 +68,7 @@ fn bench_lara_free_span_store_take_best_fit_split_1024() -> canbench_rs::BenchRe
 /// keep allocation cost mostly tied to bin locality rather than total free-span
 /// count.
 #[bench(raw)]
-fn bench_lara_free_span_store_take_best_fit_split_4096() -> canbench_rs::BenchResult {
+fn bench_r_fs_tkbfs_4096() -> canbench_rs::BenchResult {
     bench_take_best_fit_split(helper::LARGE_N)
 }
 
@@ -108,12 +108,12 @@ fn bench_best_fit_fallback_scan(n: u64) -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_best_fit_fallback_scan_256() -> canbench_rs::BenchResult {
+fn bench_r_fs_bff_sc_256() -> canbench_rs::BenchResult {
     bench_best_fit_fallback_scan(helper::SMALL_N)
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_best_fit_fallback_scan_4096() -> canbench_rs::BenchResult {
+fn bench_r_fs_bff_sc_4096() -> canbench_rs::BenchResult {
     bench_best_fit_fallback_scan(helper::LARGE_N)
 }
 
@@ -148,12 +148,12 @@ fn bench_largest_bin_recovery(n: u64) -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_largest_bin_recovery_256() -> canbench_rs::BenchResult {
+fn bench_r_fs_lbin_256() -> canbench_rs::BenchResult {
     bench_largest_bin_recovery(helper::SMALL_N)
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_largest_bin_recovery_4096() -> canbench_rs::BenchResult {
+fn bench_r_fs_lbin_4096() -> canbench_rs::BenchResult {
     bench_largest_bin_recovery(helper::LARGE_N)
 }
 
@@ -174,17 +174,17 @@ fn bench_reopen(n: u64) -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_reopen_256() -> canbench_rs::BenchResult {
+fn bench_r_fs_ro_256() -> canbench_rs::BenchResult {
     bench_reopen(helper::SMALL_N)
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_reopen_1024() -> canbench_rs::BenchResult {
+fn bench_r_fs_ro_1024() -> canbench_rs::BenchResult {
     bench_reopen(helper::MEDIUM_N)
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_reopen_4096() -> canbench_rs::BenchResult {
+fn bench_r_fs_ro_4096() -> canbench_rs::BenchResult {
     bench_reopen(helper::LARGE_N)
 }
 
@@ -226,12 +226,12 @@ const REOPEN_SCALE_LARGE: u64 = 65_536;
 const REOPEN_SCALE_DECLARED_MAX: u64 = 262_144;
 
 #[bench(raw)]
-fn bench_lara_free_span_store_reopen_16384() -> canbench_rs::BenchResult {
+fn bench_r_fs_ro_16384() -> canbench_rs::BenchResult {
     bench_reopen_scale(REOPEN_SCALE_MEDIUM)
 }
 
 #[bench(raw)]
-fn bench_lara_free_span_store_reopen_65536() -> canbench_rs::BenchResult {
+fn bench_r_fs_ro_65536() -> canbench_rs::BenchResult {
     bench_reopen_scale(REOPEN_SCALE_LARGE)
 }
 
@@ -239,7 +239,7 @@ fn bench_lara_free_span_store_reopen_65536() -> canbench_rs::BenchResult {
 /// release gate: if it exceeds 1.0B instructions, upgrade preflight needs a
 /// validator redesign rather than a higher threshold.
 #[bench(raw)]
-fn bench_lara_free_span_store_reopen_262144() -> canbench_rs::BenchResult {
+fn bench_r_fs_ro_262144() -> canbench_rs::BenchResult {
     bench_reopen_scale(REOPEN_SCALE_DECLARED_MAX)
 }
 
@@ -247,7 +247,7 @@ fn bench_lara_free_span_store_reopen_262144() -> canbench_rs::BenchResult {
 /// store. This protects predecessor/successor lookup plus replacement of
 /// neighboring records with a merged reusable range.
 #[bench(raw)]
-fn bench_lara_free_span_release_coalesce_1024() -> canbench_rs::BenchResult {
+fn bench_r_fs_rel_1024() -> canbench_rs::BenchResult {
     let store = populate_store(helper::MEDIUM_N);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_free_span_release_coalesce");

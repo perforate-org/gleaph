@@ -596,7 +596,7 @@ mod bench {
     /// segment release. This is the storage-layer baseline for overflow edges
     /// before graph maintenance folds them back into the slab.
     #[bench(raw)]
-    fn bench_lara_edge_log_write_read_release_1024() -> canbench_rs::BenchResult {
+    fn bench_r_ed_lwr_1024() -> canbench_rs::BenchResult {
         let mut memories = helper::BenchMemoryFactory::new();
         let store = LogStore::<TestEdge, _>::new(memories.memory(), HeaderV1::new(16, 4))
             .expect("log store");

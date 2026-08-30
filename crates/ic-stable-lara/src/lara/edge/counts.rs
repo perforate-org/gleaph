@@ -548,7 +548,7 @@ mod bench {
 
     /// Measures appending segment count rows.
     #[bench(raw)]
-    fn bench_lara_counts_push_plain_1024() -> canbench_rs::BenchResult {
+    fn bench_r_ct_pp_1024() -> canbench_rs::BenchResult {
         bench_counts_push("lara_counts_push_plain")
     }
 
@@ -556,7 +556,7 @@ mod bench {
     /// protects the common recount path that reads leaves, rewrites ancestors,
     /// and scans count ranges.
     #[bench(raw)]
-    fn bench_lara_counts_get_set_iter_1024() -> canbench_rs::BenchResult {
+    fn bench_r_ct_gs_i_1024() -> canbench_rs::BenchResult {
         let store = populate_plain(helper::MEDIUM_N);
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_counts_get_set_iter");

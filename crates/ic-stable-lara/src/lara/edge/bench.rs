@@ -107,7 +107,7 @@ fn edge_store_with_vertices<E: CsrEdge>(
 /// vertex-owned slab span. This isolates the update-side fast path before log
 /// spill or graph-level rebalance is involved.
 #[bench(raw)]
-fn bench_lara_edge_store_slab_insert_1024() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_si_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1024, 4);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_edge_store_slab_insert");
@@ -129,7 +129,7 @@ fn bench_lara_edge_store_slab_insert_1024() -> canbench_rs::BenchResult {
 /// workload stays below the per-segment log cap and watches for regressions in
 /// log-chain writes and vertex `log_head` updates.
 #[bench(raw)]
-fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_ls_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_edge_store_log_spill");
@@ -151,7 +151,7 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
 /// This protects the clean scan contract at the `EdgeStore` layer, including
 /// decoding fixed-width edge records into a caller-owned vector.
 #[bench(raw)]
-fn bench_lara_edge_store_out_edges_collect_1024() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_oi_col_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         edges
@@ -171,7 +171,7 @@ fn bench_lara_edge_store_out_edges_collect_1024() -> canbench_rs::BenchResult {
 /// Measures iteration over one large slab-backed neighborhood without
 /// materializing the whole row into a vector.
 #[bench(raw)]
-fn bench_lara_edge_store_out_edges_iter_1024() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_oi_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         edges
@@ -196,7 +196,7 @@ fn bench_lara_edge_store_out_edges_iter_1024() -> canbench_rs::BenchResult {
 /// slab prefix first, then replays the overflow chain in materialization order without
 /// allocating the collected edge vector.
 #[bench(raw)]
-fn bench_lara_edge_store_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_oi_lb_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     for i in 0..128 {
         edges
@@ -221,7 +221,7 @@ fn bench_lara_edge_store_out_edges_iter_log_backed_128() -> canbench_rs::BenchRe
 /// explicit-DESC counterpart to [`bench_lara_edge_store_out_edges_iter_log_backed_128`]
 /// so the hot-path iteration cost can be compared against the ascending default directly.
 #[bench(raw)]
-fn bench_lara_edge_store_desc_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_d_oi_lb_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     for i in 0..128 {
         edges
@@ -251,7 +251,7 @@ fn bench_lara_edge_store_desc_out_edges_iter_log_backed_128() -> canbench_rs::Be
 /// contains pure write/read cost without memory-growth noise. The IC charging layer adds
 /// ~1 instruction per byte on top, which the 24-byte `WideEdge` variant isolates.
 #[bench(raw)]
-fn bench_lara_slab_write_single_1() -> canbench_rs::BenchResult {
+fn bench_r_sl_ws_1() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         edges
@@ -273,7 +273,7 @@ fn bench_lara_slab_write_single_1() -> canbench_rs::BenchResult {
 /// One `write_slots_contiguous` call writing the same 1024 four-byte slots as
 /// [`bench_lara_slab_write_single_1`], isolating the per-call fixed cost of the batch path.
 #[bench(raw)]
-fn bench_lara_slab_write_contig_1() -> canbench_rs::BenchResult {
+fn bench_r_sl_wc_1() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices::<TestEdge>(1, helper::MEDIUM_N as u32);
     let edge_bytes: Vec<u8> = {
         let mut buf = vec![0u8; helper::MEDIUM_N as usize * TestEdge::BYTES];
@@ -298,7 +298,7 @@ fn bench_lara_slab_write_contig_1() -> canbench_rs::BenchResult {
 /// Same contiguous one-call path as [`bench_lara_slab_write_contig_1`] but with the
 /// 24-byte `WideEdge` row width, isolating the byte-length component of the slab write.
 #[bench(raw)]
-fn bench_lara_slab_write_contig_24() -> canbench_rs::BenchResult {
+fn bench_r_sl_wc_24() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices::<WideEdge>(1, helper::MEDIUM_N as u32);
     let base = WideEdge([0u8; 24]);
     let edge_bytes: Vec<u8> = {
@@ -327,7 +327,7 @@ fn bench_lara_slab_write_contig_24() -> canbench_rs::BenchResult {
 /// and the full window is written back in one contiguous call. This is the cost model for
 /// filling in-slab tombstones by rewriting a slab window instead of per-hole writes.
 #[bench(raw)]
-fn bench_lara_slab_patch_sparse_1() -> canbench_rs::BenchResult {
+fn bench_r_sl_ps_1() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         let edge = if i % 2 == 0 {

@@ -507,7 +507,7 @@ mod bench {
     /// lowest-level edge payload I/O baseline, below `EdgeStore` log and count
     /// bookkeeping.
     #[bench(raw)]
-    fn bench_lara_edge_slab_write_read_1024() -> canbench_rs::BenchResult {
+    fn bench_r_ed_swr_1024() -> canbench_rs::BenchResult {
         let mut memories = helper::BenchMemoryFactory::new();
         let store = EdgeSlabStore::<TestEdge, _>::new(
             memories.memory(),

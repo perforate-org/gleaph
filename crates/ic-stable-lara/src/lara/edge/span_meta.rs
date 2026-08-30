@@ -385,7 +385,7 @@ mod bench {
     /// protects the tiny placement-metadata store used by relocation while
     /// keeping query scans independent of it.
     #[bench(raw)]
-    fn bench_lara_span_meta_push_get_set_reopen_1024() -> canbench_rs::BenchResult {
+    fn bench_r_sp_pgs_ro_1024() -> canbench_rs::BenchResult {
         let mut memories = helper::BenchMemoryFactory::new();
         let memory = memories.memory();
         let store = SegmentSpanMetaStore::new(memory.clone()).expect("span meta");
