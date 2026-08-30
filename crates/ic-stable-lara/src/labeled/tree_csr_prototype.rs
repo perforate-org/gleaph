@@ -37,6 +37,24 @@
 //!
 //! Scope: bench-only; not wired into the production path. Mirrors
 //! `hub_tree_prototype.rs`'s evidence-only contract.
+//!
+//! # Read/Write API selection (Plan 0322)
+//!
+//! - `write_payload` (block-aligned, 4 KiB): the bulk path for promotion.
+//!   Use when committing a full block in one shot. Plan 0316 made
+//!   `promote_from_slice` and `promote_from_slices_with_property` use this
+//!   path (one write per block).
+//! - `write_payload_partial` (sub-block, `offset + src.len() ≤ BLOCK_PAYLOAD_BYTES`):
+//!   the per-slot sub-block escape hatch. Use for per-slot writes after
+//!   promotion (the "edge already exists, mutate one target" path).
+//! - `read_payload` (block-aligned, 4 KiB): use when the caller decodes the
+//!   whole block in one go (e.g. `for_each_descending` walks every slot
+//!   in the block's payload).
+//! - `read_payload_partial` (sub-block): use when only a slice of a block
+//!   is needed (e.g. `range_target(slot)` reads 4 bytes at `slot * 4`).
+//! - `for_each_chunk` (chunk-buffer iter): use when the caller wants to
+//!   walk the bucket without materializing a stack buffer per slot.
+//!   Mirrors the CSR-slab leaf-chunk-buffer pattern.
 
 use ic_stable_structures::Memory;
 
@@ -422,6 +440,61 @@ impl<M: Memory> TreeCsrBucket<M> {
         u32::from_le_bytes(payload[byte..byte + 4].try_into().unwrap())
     }
 
+    /// Point lookup at logical position `slot`: returns the target id, or
+    /// `None` if `slot >= stored_slots`. Uses [`LtbRawBlockStore::read_payload_partial`]
+    /// to read only the 4 bytes at `slot * 4`, avoiding a 4 KiB block
+    /// allocation per call.
+    ///
+    /// This is the production call site for `random_ordinal_access` and
+    /// `CounterpartScan::PairOrdinal` resolution paths. Tombstone semantics
+    /// (sentinel target values) live above this layer; this method returns
+    /// whatever 4 bytes are at that offset.
+    pub(crate) fn range_target(&self, slot: u32) -> Option<u32> {
+        if slot >= self.stored_slots {
+            return None;
+        }
+        let (block_root_index, in_block_offset) = physical_address(slot, self.depth());
+        let block_id = self.root[block_root_index as usize];
+        let byte_offset = in_block_offset * 4;
+        let mut buf = [0u8; 4];
+        self.store
+            .read_payload_partial(block_id, byte_offset, &mut buf)
+            .expect("range_target: read_payload_partial past tail_next (invariant violated)");
+        Some(u32::from_le_bytes(buf))
+    }
+
+    /// Chunk-buffer iterator: walks the bucket's root array in order,
+    /// yielding `(block_first_slot, &payload[..block_byte_len])` to the
+    /// callback. The yielded slice is the raw 4-byte rows in order; callers
+    /// can `u32::from_le_bytes(slice[i..i+4])` directly without copying.
+    /// Block boundaries are natural chunk boundaries. The tail block may be
+    /// partial.
+    ///
+    /// This mirrors the CSR-slab leaf-chunk-buffer iter pattern: a single
+    /// stack buffer (4 KiB) is reused per block, and the caller decodes the
+    /// rows in-place. It is the lower-level building block that
+    /// [`Self::for_each_descending`] / [`Self::for_each_ascending`] use
+    /// internally. Lives on `TreeCsrBucket` (not on `LtbRawBlockStore`)
+    /// because the bucket owns the `root` array and `stored_slots` count.
+    pub(crate) fn for_each_chunk<F>(&self, mut f: F)
+    where
+        F: FnMut(u32, &[u8]),
+    {
+        for (root_index, &block_id) in self.root.iter().enumerate() {
+            let mut payload = [0u8; BLOCK_PAYLOAD_BYTES];
+            self.read_block_into(block_id, &mut payload);
+            // Tail block may be partial: byte length is
+            // `min(B*4, (stored_slots - first_slot) * 4)`.
+            let block_first_slot = root_index as u32 * B as u32;
+            let remaining_slots = self
+                .stored_slots
+                .saturating_sub(block_first_slot)
+                .min(B as u32);
+            let block_byte_len = remaining_slots as usize * 4;
+            f(block_first_slot, &payload[..block_byte_len]);
+        }
+    }
+
     /// Sequential full scan (descending order = highest slot first; matches
     /// the production `OutEdgeOrder::Descending` slab scan).
     pub(crate) fn for_each_descending<F: FnMut(u32, u32)>(&self, mut f: F) {
@@ -491,6 +564,15 @@ impl<M: Memory> TreeCsrBucket<M> {
     /// Random ordinal access probe: visits `call_count` random slots, in a
     /// fixed pseudo-random order, to exercise the structure's real exposure
     /// per ADR 0088 §Measurement gates (Gate 2).
+    ///
+    /// **Plan 0322:** the inner read now goes through
+    /// [`Self::range_target`], which uses
+    /// [`LtbRawBlockStore::read_payload_partial`] to read only the 4 bytes
+    /// at `slot * 4` instead of materializing a 4 KiB block. The block-id
+    /// cache is removed because `read_payload_partial` is a single 4-byte
+    /// `Memory::read` per call — the bench closure cost (the deterministic
+    /// splitmix state update) dominates the dereference cost in the
+    /// per-call measurement.
     pub(crate) fn random_ordinal_access<F: FnMut(u32, u32)>(&self, call_count: u32, mut f: F) {
         if self.stored_slots == 0 {
             return;
@@ -499,29 +581,14 @@ impl<M: Memory> TreeCsrBucket<M> {
         // and keep bench runs reproducible. The visit order hits every block
         // boundary because the modulus is the stored slot count.
         let mut state: u64 = 0x9E3779B97F4A7C15;
-        let depth = self.depth();
-        // Block-id cache to amortise raw-block reads across same-block visits.
-        let mut last_root_index: usize = usize::MAX;
-        let mut last_block_id: u32 = u32::MAX;
-        let mut payload = [0u8; BLOCK_PAYLOAD_BYTES];
         for _ in 0..call_count {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
             let slot = (state % u64::from(self.stored_slots)) as u32;
-            let root_index = (slot / B as u32) as usize;
-            if root_index != last_root_index {
-                let block_id = self.root[root_index];
-                if block_id != last_block_id {
-                    self.read_block_into(block_id, &mut payload);
-                    last_block_id = block_id;
-                }
-                last_root_index = root_index;
+            if let Some(target) = self.range_target(slot) {
+                f(slot, target);
             }
-            let (_blk, off) = physical_address(slot, depth);
-            let byte = off * 4;
-            let target = u32::from_le_bytes(payload[byte..byte + 4].try_into().unwrap());
-            f(slot, target);
         }
     }
 
@@ -601,6 +668,41 @@ mod tests {
         assert_eq!(b.stored_slots(), 0);
         assert_eq!(b.depth(), 1);
         assert_eq!(b.root_len(), 0);
+    }
+
+    #[test]
+    fn for_each_chunk_walks_blocks_in_order_with_tail_trim() {
+        // Insert 1025 slots (1 full block + 1 partial tail block of size 1).
+        // The chunk-iter must yield (0, &payload[..4096]) for the first
+        // block and (1024, &payload[..4]) for the tail block.
+        let mut b = fresh();
+        for s in 0..1025u32 {
+            b.insert(s);
+        }
+        let mut visited: Vec<(u32, usize)> = Vec::new();
+        let mut first_chunk_bytes: Vec<u8> = Vec::new();
+        let mut second_chunk_bytes: Vec<u8> = Vec::new();
+        b.for_each_chunk(|start_slot, chunk| {
+            if visited.is_empty() {
+                first_chunk_bytes.extend_from_slice(chunk);
+            } else {
+                second_chunk_bytes.extend_from_slice(chunk);
+            }
+            visited.push((start_slot, chunk.len()));
+        });
+        assert_eq!(visited.len(), 2, "expected 2 chunks (1 full + 1 tail)");
+        assert_eq!(visited[0], (0, BLOCK_PAYLOAD_BYTES));
+        assert_eq!(visited[1], (1024, 4));
+        // First chunk: slots 0..1024 = targets 0..1024, decoded in order.
+        for s in 0..1024u32 {
+            let lo = (s as usize) * 4;
+            let hi = lo + 4;
+            let target = u32::from_le_bytes(first_chunk_bytes[lo..hi].try_into().unwrap());
+            assert_eq!(target, s, "first chunk slot {s} mismatch");
+        }
+        // Second chunk: slot 1024 = target 1024.
+        let target = u32::from_le_bytes(second_chunk_bytes[..4].try_into().unwrap());
+        assert_eq!(target, 1024);
     }
 
     #[test]
@@ -713,6 +815,26 @@ mod tests {
         // With 500 visits across 100 distinct slots, every slot is hit at least
         // 3 times on average; we just confirm we saw > 1 distinct target.
         assert!(!seen_targets.is_empty());
+    }
+
+    #[test]
+    fn range_target_reads_only_4_bytes_at_slot() {
+        // Fill 4096 slots (4 blocks at depth 1) so we exercise every block
+        // boundary in the point-lookup path.
+        let mut b = fresh();
+        for i in 0..4096u32 {
+            b.insert(i);
+        }
+        // Sample slot 0, the last slot of block 0, slot 1024 (first of block 1),
+        // slot 2047 (last of block 1), slot 4095 (last slot overall).
+        for slot in [0u32, 1023, 1024, 2047, 3072, 4095] {
+            assert_eq!(b.range_target(slot), Some(slot), "slot {slot} mismatch");
+        }
+        // Out-of-range.
+        assert_eq!(b.range_target(4096), None);
+        // Empty bucket.
+        let empty = fresh();
+        assert_eq!(empty.range_target(0), None);
     }
 
     #[test]

@@ -120,8 +120,9 @@ pub(crate) enum BlockError {
     OutOfRange { id: u32 },
     /// `offset + len` exceeds the 4096-byte payload envelope (or
     /// `offset.checked_add(len)` overflowed). Raised by
-    /// [`LtbRawBlockStore::write_payload_partial`] for callers that exceed
-    /// the block's payload capacity.
+    /// [`LtbRawBlockStore::read_payload_partial`] and
+    /// [`LtbRawBlockStore::write_payload_partial`] for callers that
+    /// exceed the block's payload capacity.
     OutOfBounds { id: u32, offset: usize, len: usize },
     /// Reopen header failed magic / reserved / wire-truth / counter checks.
     Init(InitError),
@@ -438,6 +439,41 @@ impl<M: Memory> LtbRawBlockStore<M> {
         }
         let offset = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64;
         self.memory.read(offset, dst);
+        Ok(())
+    }
+
+    /// Reads `dst.len()` bytes starting at `offset` within the payload of
+    /// block `id` into `dst`. Use this when only a small portion of a block
+    /// is needed (e.g. `random_ordinal_access` reads 4 bytes at
+    /// `slot * 4`) to avoid materializing a 4 KiB stack buffer per call.
+    /// Bounds check: `offset + dst.len() <= BLOCK_PAYLOAD_BYTES`. The
+    /// kind/owner/ordinal/level fields in the 16-byte block header are not
+    /// touched.
+    pub(crate) fn read_payload_partial(
+        &self,
+        id: u32,
+        offset: usize,
+        dst: &mut [u8],
+    ) -> Result<(), BlockError> {
+        if id >= self.tail_next {
+            return Err(BlockError::NotMinted { id });
+        }
+        let end = offset
+            .checked_add(dst.len())
+            .ok_or(BlockError::OutOfBounds {
+                id,
+                offset,
+                len: dst.len(),
+            })?;
+        if end > BLOCK_PAYLOAD_BYTES {
+            return Err(BlockError::OutOfBounds {
+                id,
+                offset,
+                len: dst.len(),
+            });
+        }
+        let base = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64 + offset as u64;
+        self.memory.read(base, dst);
         Ok(())
     }
 
@@ -957,6 +993,79 @@ mod tests {
         assert!(
             matches!(err, BlockError::OutOfBounds { .. }),
             "expected OutOfBounds on overflow, got {err:?}"
+        );
+    }
+
+    // ----- Plan 0322: read_payload_partial ---------------------------------
+
+    #[test]
+    fn read_payload_partial_reads_only_offset_range() {
+        let mut ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let baseline: [u8; BLOCK_PAYLOAD_BYTES] = std::array::from_fn(|i| (i % 251) as u8);
+        ltb.write_payload(id, &baseline).expect("write payload");
+        // Read 4 bytes at offset 100..104.
+        let mut dst = [0u8; 4];
+        ltb.read_payload_partial(id, 100, &mut dst)
+            .expect("read_payload_partial");
+        assert_eq!(dst, baseline[100..104]);
+    }
+
+    #[test]
+    fn read_payload_partial_zero_length_is_noop() {
+        let mut ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let baseline: [u8; BLOCK_PAYLOAD_BYTES] = [0xAB; BLOCK_PAYLOAD_BYTES];
+        ltb.write_payload(id, &baseline).expect("write payload");
+        // Zero-length read at any offset within the payload is a no-op.
+        let mut dst: [u8; 0] = [];
+        ltb.read_payload_partial(id, 0, &mut dst)
+            .expect("read_payload_partial at start");
+        ltb.read_payload_partial(id, 200, &mut dst)
+            .expect("read_payload_partial at middle");
+        ltb.read_payload_partial(id, BLOCK_PAYLOAD_BYTES, &mut dst)
+            .expect("read_payload_partial at exact end (empty is valid)");
+    }
+
+    #[test]
+    fn read_payload_partial_rejects_offset_out_of_bounds() {
+        let mut ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let mut dst = [0u8; 4];
+        let err = ltb
+            .read_payload_partial(id, BLOCK_PAYLOAD_BYTES, &mut dst)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, BlockError::OutOfBounds { .. }),
+            "expected OutOfBounds, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_payload_partial_rejects_length_overflow() {
+        let mut ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let mut dst = [0u8; 4];
+        // offset in-range, but offset + len > BLOCK_PAYLOAD_BYTES.
+        let err = ltb
+            .read_payload_partial(id, BLOCK_PAYLOAD_BYTES - 2, &mut dst)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, BlockError::OutOfBounds { id: _, offset, len } if offset == BLOCK_PAYLOAD_BYTES - 2 && len == 4),
+            "len overflow should reject, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_payload_partial_rejects_past_tail_next() {
+        let ltb = fresh();
+        let mut dst = [0u8; 4];
+        let err = ltb.read_payload_partial(0, 0, &mut dst).err().unwrap();
+        assert!(
+            matches!(err, BlockError::NotMinted { id: 0 }),
+            "expected NotMinted, got {err:?}"
         );
     }
 
