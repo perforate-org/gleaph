@@ -102,6 +102,15 @@ pub(crate) mod hub_tree_prototype;
     )
 )]
 pub(crate) mod invariants;
+/// ADR 0088 §1 LTB block store, raw stable-memory backend (Plan 0315).
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) mod ltb_raw_block_store;
+/// Plan 0313 amend: cargo-test high-degree sweep (host wall-clock, 1M edges).
+#[cfg(test)]
+mod tree_csr_high_degree_test;
+/// ADR 0088 Tree-CSR mode prototype (evidence-only; not wired into the graph).
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) mod tree_csr_prototype;
 
 /// Initial physical capacities for the labeled graph's independent storage slabs.
 ///

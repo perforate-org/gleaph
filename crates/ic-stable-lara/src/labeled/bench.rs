@@ -5,7 +5,7 @@
 
 use crate::bench as helper;
 use crate::labeled::hub_tree_prototype::{HubBucketTree, HubTargetTree};
-use crate::labeled::ltb_reopen_prototype::{LtbFreeList, LtbReopenWalk};
+use crate::labeled::ltb_raw_block_store::LtbRawBlockStore;
 use crate::labeled::tree_csr_prototype::TreeCsrBucket;
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
@@ -2152,7 +2152,7 @@ stage2b_crossover_benches!(
 /// Seeds one Tree-CSR evidence-only bucket with `edge_count` edges in
 /// insertion order (target == i). Seeding happens outside the measured region
 /// so the bench costs only the operation under test.
-fn seed_tree_csr_hub(edge_count: u32) -> TreeCsrBucket {
+fn seed_tree_csr_hub(edge_count: u32) -> TreeCsrBucket<crate::VectorMemory> {
     let mut bucket = TreeCsrBucket::new(vector_memory());
     for i in 0..edge_count {
         bucket.insert(i);
@@ -2351,11 +2351,14 @@ fn tcsr_promote_inline_property_w32() -> canbench_rs::BenchResult {
 /// them by name.
 const LTB_REOPEN_ENVELOPE: u32 = 4096;
 
-fn seed_ltb_free_list(n: u32) -> LtbFreeList {
-    let mut ltb = LtbFreeList::new(vector_memory());
+fn seed_ltb_free_list(n: u32) -> LtbRawBlockStore<crate::VectorMemory> {
+    let mut ltb = LtbRawBlockStore::new(vector_memory()).expect("ltb new");
+    let mut ids = Vec::with_capacity(n as usize);
     for _ in 0..n {
-        let id = ltb.mint_edge();
-        ltb.release(id);
+        ids.push(ltb.mint().expect("mint"));
+    }
+    for id in ids {
+        ltb.release(id).expect("release");
     }
     ltb
 }
@@ -2364,8 +2367,7 @@ fn seed_ltb_free_list(n: u32) -> LtbFreeList {
 fn ltb_reopen_4096() -> canbench_rs::BenchResult {
     let ltb = seed_ltb_free_list(LTB_REOPEN_ENVELOPE);
     bench_fn(|| {
-        let walk = LtbReopenWalk::new(black_box(&ltb), black_box(LTB_REOPEN_ENVELOPE));
-        let visited = walk.run();
+        let visited = ltb.walk_free_list(black_box(LTB_REOPEN_ENVELOPE));
         black_box(visited);
     })
 }
@@ -2374,26 +2376,28 @@ fn ltb_reopen_4096() -> canbench_rs::BenchResult {
 fn ltb_reopen_1024() -> canbench_rs::BenchResult {
     let ltb = seed_ltb_free_list(1024);
     bench_fn(|| {
-        let walk = LtbReopenWalk::new(black_box(&ltb), black_box(1024));
-        let visited = walk.run();
+        let visited = ltb.walk_free_list(black_box(1024));
         black_box(visited);
     })
 }
 
 /// Gate 4 — pop-time guard probe. Pop, re-mint (via release-then-pop), and
 /// re-pop the same id. Confirms the kind-rewrite guard from ADR 0088 §8
-/// prevents handing out a block twice. Bench cost is two pops + one release.
+/// prevents handing out a block twice. Bench cost is one mint (pop) + one
+/// release + one mint (pop) per iteration.
 #[bench(raw)]
 fn ltb_pop_remint_repop_4096() -> canbench_rs::BenchResult {
     let mut ltb = seed_ltb_free_list(LTB_REOPEN_ENVELOPE);
     bench_fn(|| {
-        // Cycle one id through the guard to exercise the rewrite path.
-        let pair = ltb.pop_remint_repop();
-        black_box(pair);
+        // Pop one id, release it, then pop again. The second pop should
+        // yield the same id (LIFO on the intrusive free list).
+        let id = ltb.mint().expect("pop");
+        ltb.release(id).expect("release");
+        let id2 = ltb.mint().expect("pop again");
+        debug_assert_eq!(id, id2);
         // Restore the released state for the next iteration.
-        if let Some((id, _)) = pair {
-            ltb.release(id);
-        }
+        ltb.release(id2).expect("restore");
+        black_box((id, id2));
     })
 }
 
