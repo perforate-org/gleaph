@@ -162,7 +162,7 @@ impl<M: Memory> TreeCsrBucket<M> {
     }
 
     /// Writes a block's 4096-byte payload from `src`.
-    fn write_payload(&mut self, id: u32, src: &[u8; BLOCK_PAYLOAD_BYTES]) {
+    fn write_payload(&self, id: u32, src: &[u8; BLOCK_PAYLOAD_BYTES]) {
         self.store
             .write_payload(id, src)
             .expect("TreeCsrBucket: write_payload past tail_next");

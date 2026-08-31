@@ -2357,7 +2357,7 @@ fn tcsr_promote_inline_property_w32() -> canbench_rs::BenchResult {
 const LTB_REOPEN_ENVELOPE: u32 = 4096;
 
 fn seed_ltb_free_list(n: u32) -> LtbRawBlockStore<crate::VectorMemory> {
-    let mut ltb = LtbRawBlockStore::new(vector_memory()).expect("ltb new");
+    let ltb = LtbRawBlockStore::new(vector_memory()).expect("ltb new");
     let mut ids = Vec::with_capacity(n as usize);
     for _ in 0..n {
         ids.push(ltb.mint().expect("mint"));
@@ -2392,7 +2392,7 @@ fn ltb_reopen_1024() -> canbench_rs::BenchResult {
 /// release + one mint (pop) per iteration.
 #[bench(raw)]
 fn ltb_pop_remint_repop_4096() -> canbench_rs::BenchResult {
-    let mut ltb = seed_ltb_free_list(LTB_REOPEN_ENVELOPE);
+    let ltb = seed_ltb_free_list(LTB_REOPEN_ENVELOPE);
     bench_fn(|| {
         // Pop one id, release it, then pop again. The second pop should
         // yield the same id (LIFO on the intrusive free list).

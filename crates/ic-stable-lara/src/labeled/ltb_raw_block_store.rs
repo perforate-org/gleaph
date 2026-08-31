@@ -42,6 +42,7 @@
 //! at `HEADER_SIZE + i * BLOCK_STRIDE`.
 
 use ic_stable_structures::Memory;
+use std::cell::Cell;
 
 use crate::GrowFailed;
 
@@ -113,7 +114,7 @@ impl BlockKind {
     dead_code,
     reason = "Wired into the prototype in Plan 0315 Step 2; not yet used at the crate root."
 )]
-pub(crate) enum BlockError {
+pub enum BlockError {
     /// Block id is past `tail_next` (never minted or already released).
     NotMinted { id: u32 },
     /// Block id is past the allocated memory envelope (unbacked page).
@@ -208,45 +209,45 @@ impl std::error::Error for InitError {}
 )]
 pub(crate) struct LtbRawBlockStore<M: Memory> {
     memory: M,
-    payload_bytes: u32,
-    r_max: u32,
-    block_capacity: u32,
-    tail_next: u32,
-    free_head: u32,
-    free_count: u32,
+    payload_bytes: Cell<u32>,
+    r_max: Cell<u32>,
+    block_capacity: Cell<u32>,
+    tail_next: Cell<u32>,
+    free_head: Cell<u32>,
+    free_count: Cell<u32>,
 }
 
 impl<M: Memory> LtbRawBlockStore<M> {
     // ----- header I/O ------------------------------------------------------
 
-    fn write_header(&mut self) -> Result<(), GrowFailed> {
+    fn write_header(&self) -> Result<(), GrowFailed> {
         crate::safe_write(&self.memory, OFFSET_MAGIC, &MAGIC)?;
         crate::safe_write(&self.memory, OFFSET_VERSION, &[LAYOUT_VERSION])?;
         crate::safe_write(
             &self.memory,
             OFFSET_PAYLOAD_BYTES,
-            &self.payload_bytes.to_le_bytes(),
+            &self.payload_bytes.get().to_le_bytes(),
         )?;
-        crate::safe_write(&self.memory, OFFSET_R_MAX, &self.r_max.to_le_bytes())?;
+        crate::safe_write(&self.memory, OFFSET_R_MAX, &self.r_max.get().to_le_bytes())?;
         crate::write_u64(
             &self.memory,
             crate::types::Address::from(OFFSET_BLOCK_CAPACITY),
-            u64::from(self.block_capacity),
+            u64::from(self.block_capacity.get()),
         );
         crate::write_u64(
             &self.memory,
             crate::types::Address::from(OFFSET_TAIL_NEXT),
-            u64::from(self.tail_next),
+            u64::from(self.tail_next.get()),
         );
         crate::safe_write(
             &self.memory,
             OFFSET_FREE_HEAD,
-            &self.free_head.to_le_bytes(),
+            &self.free_head.get().to_le_bytes(),
         )?;
         crate::safe_write(
             &self.memory,
             OFFSET_FREE_COUNT,
-            &self.free_count.to_le_bytes(),
+            &self.free_count.get().to_le_bytes(),
         )?;
         // Zero the reserved region explicitly. On real stable memory a
         // freshly-grown page reads as zero; on the VectorMemory test backend
@@ -371,14 +372,14 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// Create a fresh empty LTB store. Memory is grown to fit at least the
     /// 64-byte header (no block pages are minted up front).
     pub(crate) fn new(memory: M) -> Result<Self, GrowFailed> {
-        let mut store = Self {
+        let store = Self {
             memory,
-            payload_bytes: BLOCK_PAYLOAD_BYTES as u32,
-            r_max: R_MAX,
-            block_capacity: 0,
-            tail_next: 0,
-            free_head: NULL_BLOCK,
-            free_count: 0,
+            payload_bytes: Cell::new(BLOCK_PAYLOAD_BYTES as u32),
+            r_max: Cell::new(R_MAX),
+            block_capacity: Cell::new(0),
+            tail_next: Cell::new(0),
+            free_head: Cell::new(NULL_BLOCK),
+            free_count: Cell::new(0),
         };
         store.write_header()?;
         Ok(store)
@@ -397,39 +398,39 @@ impl<M: Memory> LtbRawBlockStore<M> {
         Self::validate_free_list(&memory, &header)?;
         Ok(Self {
             memory,
-            payload_bytes: header.payload_bytes,
-            r_max: header.r_max,
-            block_capacity: header.block_capacity,
-            tail_next: header.tail_next,
-            free_head: header.free_head,
-            free_count: header.free_count,
+            payload_bytes: Cell::new(header.payload_bytes),
+            r_max: Cell::new(header.r_max),
+            block_capacity: Cell::new(header.block_capacity),
+            tail_next: Cell::new(header.tail_next),
+            free_head: Cell::new(header.free_head),
+            free_count: Cell::new(header.free_count),
         })
     }
 
     // ----- accessors --------------------------------------------------------
 
     pub(crate) fn payload_bytes(&self) -> usize {
-        self.payload_bytes as usize
+        self.payload_bytes.get() as usize
     }
 
     pub(crate) fn r_max(&self) -> u32 {
-        self.r_max
+        self.r_max.get()
     }
 
     pub(crate) fn block_capacity(&self) -> u32 {
-        self.block_capacity
+        self.block_capacity.get()
     }
 
     pub(crate) fn tail_next(&self) -> u32 {
-        self.tail_next
+        self.tail_next.get()
     }
 
     pub(crate) fn free_count(&self) -> u32 {
-        self.free_count
+        self.free_count.get()
     }
 
     pub(crate) fn free_head(&self) -> u32 {
-        self.free_head
+        self.free_head.get()
     }
 
     /// Consumes the store and returns the backing [`Memory`]. Used by reopen
@@ -446,9 +447,9 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// (ADR 0088 §8 access-time invariant: never read unbacked ids).
     pub(crate) fn read_block_header(&self, id: u32) -> BlockHeader {
         assert!(
-            id < self.tail_next,
+            id < self.tail_next.get(),
             "LtbRawBlockStore::read_block_header({id}) past tail_next={}",
-            self.tail_next
+            self.tail_next.get()
         );
         let mut buf = [0u8; BLOCK_HEADER_BYTES];
         self.memory.read(Self::block_offset(id), &mut buf);
@@ -456,11 +457,11 @@ impl<M: Memory> LtbRawBlockStore<M> {
     }
 
     /// Writes the per-block header at id `id`. Panics if `id >= tail_next`.
-    pub(crate) fn write_block_header(&mut self, id: u32, header: &BlockHeader) {
+    pub(crate) fn write_block_header(&self, id: u32, header: &BlockHeader) {
         assert!(
-            id < self.tail_next,
+            id < self.tail_next.get(),
             "LtbRawBlockStore::write_block_header({id}) past tail_next={}",
-            self.tail_next
+            self.tail_next.get()
         );
         let bytes = header.to_bytes();
         self.memory.write(Self::block_offset(id), &bytes);
@@ -472,7 +473,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
         id: u32,
         dst: &mut [u8; BLOCK_PAYLOAD_BYTES],
     ) -> Result<(), BlockError> {
-        if id >= self.tail_next {
+        if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
         let offset = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64;
@@ -493,7 +494,7 @@ impl<M: Memory> LtbRawBlockStore<M> {
         offset: usize,
         dst: &mut [u8],
     ) -> Result<(), BlockError> {
-        if id >= self.tail_next {
+        if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
         let end = offset
@@ -517,11 +518,11 @@ impl<M: Memory> LtbRawBlockStore<M> {
 
     /// Writes the 4096-byte payload at id `id` from `src`.
     pub(crate) fn write_payload(
-        &mut self,
+        &self,
         id: u32,
         src: &[u8; BLOCK_PAYLOAD_BYTES],
     ) -> Result<(), BlockError> {
-        if id >= self.tail_next {
+        if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
         let offset = Self::block_offset(id) + BLOCK_HEADER_BYTES as u64;
@@ -536,12 +537,12 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// <= BLOCK_PAYLOAD_BYTES`. The kind/owner/ordinal/level fields in the
     /// 16-byte block header are not touched.
     pub(crate) fn write_payload_partial(
-        &mut self,
+        &self,
         id: u32,
         offset: usize,
         src: &[u8],
     ) -> Result<(), BlockError> {
-        if id >= self.tail_next {
+        if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
         let end = offset
@@ -569,9 +570,9 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// at `tail_next` and grows memory by [`BLOCK_STRIDE`] (rounded up to the
     /// nearest WASM page). The returned id has `kind = Free` until the caller
     /// writes a header via [`Self::write_block_header`].
-    pub(crate) fn mint(&mut self) -> Result<u32, GrowFailed> {
-        if self.free_head != NULL_BLOCK {
-            let id = self.free_head;
+    pub(crate) fn mint(&self) -> Result<u32, GrowFailed> {
+        if self.free_head.get() != NULL_BLOCK {
+            let id = self.free_head.get();
             // Pop the free list: read the next-free id from the popped block's
             // header (offset 4 within the 16-byte block header), advance
             // free_head, decrement free_count. The popped block's kind is
@@ -579,11 +580,13 @@ impl<M: Memory> LtbRawBlockStore<M> {
             // immediately re-releases it does not trip the pop-time guard.
             let mut next_buf = [0u8; 4];
             self.memory.read(Self::block_offset(id) + 4, &mut next_buf);
-            self.free_head = u32::from_le_bytes(next_buf);
-            self.free_count = self
-                .free_count
-                .checked_sub(1)
-                .expect("LtbRawBlockStore: free_count underflow");
+            self.free_head.set(u32::from_le_bytes(next_buf));
+            self.free_count.set(
+                self.free_count
+                    .get()
+                    .checked_sub(1)
+                    .expect("LtbRawBlockStore: free_count underflow"),
+            );
             // Default-populated header: caller may rewrite kind via
             // write_block_header once the canonical body is committed.
             let default_header = BlockHeader {
@@ -599,9 +602,10 @@ impl<M: Memory> LtbRawBlockStore<M> {
             self.write_header()?;
             Ok(id)
         } else {
-            let id = self.tail_next;
+            let id = self.tail_next.get();
             let new_tail = self
                 .tail_next
+                .get()
                 .checked_add(1)
                 .expect("LtbRawBlockStore: tail_next overflow");
             // Grow memory so the new block's stride fits.
@@ -622,11 +626,13 @@ impl<M: Memory> LtbRawBlockStore<M> {
             }
             // Advance counters before writing the default header so the
             // write_block_header precondition (`id < tail_next`) holds.
-            self.tail_next = new_tail;
-            self.block_capacity = self
-                .block_capacity
-                .checked_add(1)
-                .expect("LtbRawBlockStore: block_capacity overflow");
+            self.tail_next.set(new_tail);
+            self.block_capacity.set(
+                self.block_capacity
+                    .get()
+                    .checked_add(1)
+                    .expect("LtbRawBlockStore: block_capacity overflow"),
+            );
             // Initialize the per-block header so the block is immediately
             // releasable: a fresh mint defaults to `Edge` (the most common
             // kind in the prototype) with the rest of the metadata zeroed.
@@ -651,8 +657,8 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// be [`BlockKind::Free`]. Rewrites the block header to `kind = Free,
     /// owner = previous free_head, rest = 0` and pushes the id onto the
     /// intrusive list head.
-    pub(crate) fn release(&mut self, id: u32) -> Result<(), BlockError> {
-        if id >= self.tail_next {
+    pub(crate) fn release(&self, id: u32) -> Result<(), BlockError> {
+        if id >= self.tail_next.get() {
             return Err(BlockError::NotMinted { id });
         }
         let current = self.read_block_header(id);
@@ -666,17 +672,19 @@ impl<M: Memory> LtbRawBlockStore<M> {
         let new_header = BlockHeader {
             kind: BlockKind::Free,
             bucket_label_key_wire: 0,
-            owner_or_next_free: self.free_head,
+            owner_or_next_free: self.free_head.get(),
             ordinal: 0,
             level: 0,
             reserved: [0; 3],
         };
         self.write_block_header(id, &new_header);
-        self.free_head = id;
-        self.free_count = self
-            .free_count
-            .checked_add(1)
-            .expect("LtbRawBlockStore: free_count overflow");
+        self.free_head.set(id);
+        self.free_count.set(
+            self.free_count
+                .get()
+                .checked_add(1)
+                .expect("LtbRawBlockStore: free_count overflow"),
+        );
         self.write_header()
             .expect("LtbRawBlockStore: header write after release failed");
         Ok(())
@@ -688,12 +696,12 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// `min(free_count, envelope)` ids. Returns the visited ids in order.
     /// Used by reopen-time validation and the Gate 4 reopen walk.
     pub(crate) fn walk_free_list(&self, envelope: u32) -> Vec<u32> {
-        let limit = self.free_count.min(envelope);
+        let limit = self.free_count.get().min(envelope);
         let mut visited = Vec::with_capacity(limit as usize);
-        let mut current = self.free_head;
+        let mut current = self.free_head.get();
         let mut steps = 0u32;
         while current != NULL_BLOCK && visited.len() < limit as usize {
-            if steps > self.free_count {
+            if steps > self.free_count.get() {
                 break;
             }
             let header = self.read_block_header(current);
@@ -796,7 +804,7 @@ mod tests {
 
     #[test]
     fn header_round_trip_preserves_kind_owner_ordinal() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let header = round_trip_header();
         ltb.write_block_header(id, &header);
@@ -806,7 +814,7 @@ mod tests {
 
     #[test]
     fn reopen_validates_magic_version_payload_bytes_r_max_and_reserved() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         // Mintage a block to make the page-backed byte interesting.
         let id = ltb.mint().expect("mint");
         ltb.write_block_header(id, &round_trip_header());
@@ -853,7 +861,7 @@ mod tests {
 
     #[test]
     fn reopen_counter_consistency_free_count_must_not_exceed_tail_next() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         ltb.write_block_header(id, &round_trip_header());
         let memory = ltb.into_memory();
@@ -872,7 +880,7 @@ mod tests {
 
     #[test]
     fn mint_release_pop_round_trip_returns_lifo_ids() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let a = ltb.mint().expect("mint a");
         let b = ltb.mint().expect("mint b");
         let c = ltb.mint().expect("mint c");
@@ -894,7 +902,7 @@ mod tests {
 
     #[test]
     fn reopen_free_list_walk_validates_bounds_kind_and_cycle() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         // Build a free list of 4 entries.
         for _ in 0..4u32 {
             let id = ltb.mint().expect("mint");
@@ -925,7 +933,7 @@ mod tests {
 
     #[test]
     fn walk_free_list_returns_ids_in_lifo_order() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let ids: Vec<u32> = (0..5).map(|_| ltb.mint().expect("mint")).collect();
         for id in &ids {
             ltb.release(*id).expect("release");
@@ -940,7 +948,7 @@ mod tests {
 
     #[test]
     fn walk_free_list_respects_envelope() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         // Mint 10, then release all 10 without re-minting, so the free list
         // holds 10 entries and the walk is bounded by the envelope parameter.
         let mut ids = Vec::with_capacity(10);
@@ -957,7 +965,7 @@ mod tests {
 
     #[test]
     fn release_double_release_panics() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         ltb.write_block_header(id, &round_trip_header());
         ltb.release(id).expect("release once");
@@ -972,7 +980,7 @@ mod tests {
 
     #[test]
     fn payload_round_trip_4096_bytes() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let src: [u8; BLOCK_PAYLOAD_BYTES] = std::array::from_fn(|i| (i % 251) as u8);
         ltb.write_payload(id, &src).expect("write payload");
@@ -990,7 +998,7 @@ mod tests {
 
     #[test]
     fn write_payload_partial_writes_only_offset_range() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         // Pre-fill the block with a known pattern via write_payload.
         let baseline: [u8; BLOCK_PAYLOAD_BYTES] = std::array::from_fn(|i| (i % 251) as u8);
@@ -1009,7 +1017,7 @@ mod tests {
 
     #[test]
     fn write_payload_partial_rejects_out_of_bounds() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let src = [0u8; 4];
         // offset == BLOCK_PAYLOAD_BYTES → end == BLOCK_PAYLOAD_BYTES
@@ -1038,7 +1046,7 @@ mod tests {
 
     #[test]
     fn read_payload_partial_reads_only_offset_range() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let baseline: [u8; BLOCK_PAYLOAD_BYTES] = std::array::from_fn(|i| (i % 251) as u8);
         ltb.write_payload(id, &baseline).expect("write payload");
@@ -1051,7 +1059,7 @@ mod tests {
 
     #[test]
     fn read_payload_partial_zero_length_is_noop() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let baseline: [u8; BLOCK_PAYLOAD_BYTES] = [0xAB; BLOCK_PAYLOAD_BYTES];
         ltb.write_payload(id, &baseline).expect("write payload");
@@ -1067,7 +1075,7 @@ mod tests {
 
     #[test]
     fn read_payload_partial_rejects_offset_out_of_bounds() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let mut dst = [0u8; 4];
         let err = ltb
@@ -1082,7 +1090,7 @@ mod tests {
 
     #[test]
     fn read_payload_partial_rejects_length_overflow() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let mut dst = [0u8; 4];
         // offset in-range, but offset + len > BLOCK_PAYLOAD_BYTES.
@@ -1123,7 +1131,7 @@ mod tests {
     /// same id be re-acquired after a release/pop round trip.
     #[test]
     fn pop_remint_repop_yields_same_id() {
-        let mut ltb = fresh();
+        let ltb = fresh();
         let id = ltb.mint().expect("mint");
         ltb.release(id).expect("release");
         // Pop should yield the same id (LIFO on the free list head).
