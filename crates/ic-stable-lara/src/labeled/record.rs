@@ -161,6 +161,36 @@ impl LabelBucket {
         decode_bucket_label_key(self.word)
     }
 
+    /// Bit 63 of the packed `word`: 1 = tree mode (LTB-backed), 0 = slab mode.
+    ///
+    /// Plan 0318 §Step 1 / ADR 0088 §1. Slab-mode buckets (the historical
+    /// default) have bit 63 = 0 and reopen unchanged.
+    pub(crate) const TREE_MODE_BIT: u64 = crate::labeled::slot_index::BUCKET_TREE_MODE_BIT;
+
+    /// Returns `true` if this bucket is in tree mode (LTB-backed).
+    ///
+    /// The check is a single bit-test on the packed `word`. The wire format
+    /// (29 bytes) is unchanged: bit 63 lives in `bytes[7]`, the high byte of
+    /// the existing 8-byte `word` prefix.
+    #[inline]
+    pub fn is_tree_mode(&self) -> bool {
+        (self.word & Self::TREE_MODE_BIT) != 0
+    }
+
+    /// Returns a copy of this bucket with the tree-mode flag set or cleared.
+    ///
+    /// The other fields (`bucket_label_key`, `edge_start`, `overflow_log_head`,
+    /// `degree`, `stored_slots`, `inline_property_bytes_*`) are preserved.
+    #[inline]
+    pub fn with_tree_mode(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.word |= Self::TREE_MODE_BIT;
+        } else {
+            self.word &= !Self::TREE_MODE_BIT;
+        }
+        self
+    }
+
     /// Global edge-slot index where this bucket's slab prefix starts.
     #[inline]
     pub fn edge_start(self) -> u64 {
@@ -1327,10 +1357,13 @@ mod tests {
 
     #[test]
     fn label_bucket_rejects_nonzero_reserved_bits() {
+        // Plan 0318 §Step 1: byte 7 mask 0x80 is bit 63, the tree-mode flag,
+        // and is no longer a rejected reserved bit. Use 0x40 (bit 62) instead
+        // so this test stays focused on the still-reserved bits 60-62.
         let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        bytes[7] |= 0x80;
+        bytes[7] |= 0x40;
         let err = LabelBucket::try_read_from(&bytes).expect_err("reserved bits set");
         assert_eq!(err, LabelBucketFieldError::ReservedBitsSet);
     }
@@ -1350,6 +1383,79 @@ mod tests {
                 "word bit {word_bit} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn label_bucket_tree_mode_bit_round_trips() {
+        // Plan 0318 §Step 1: bit 63 round-trips through encode/decode.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1)
+            .with_tree_mode(true);
+        assert!(bucket.is_tree_mode());
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        // bit 63 = high bit of byte 7 = 0x80.
+        assert_eq!(bytes[7] & 0x80, 0x80, "bit 63 must be set in wire bytes");
+        let decoded = LabelBucket::try_read_from(&bytes).expect("tree-mode bucket must decode");
+        assert!(decoded.is_tree_mode(), "decoded bucket must be tree-mode");
+        assert_eq!(decoded, bucket, "round-trip preserves all fields");
+    }
+
+    #[test]
+    fn label_bucket_tree_mode_bit_cleared_default() {
+        // Plan 0318 §Step 1: default `LabelBucket` is slab-mode (bit 63 = 0).
+        let bucket = LabelBucket::default();
+        assert!(!bucket.is_tree_mode(), "default bucket must be slab-mode");
+        // `with_tree_mode(false)` is a no-op on a default bucket.
+        let still_default = bucket.with_tree_mode(false);
+        assert!(!still_default.is_tree_mode());
+        assert_eq!(still_default, bucket);
+    }
+
+    #[test]
+    fn label_bucket_tree_mode_bit_accepted_by_validator() {
+        // Plan 0318 §Step 1: bit 63 is NOT a ReservedBitsSet trigger. Building
+        // a bucket with bit 63 set and round-tripping through encode/decode
+        // must succeed and `is_tree_mode()` must return true.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        bytes[7] |= 0x80; // set bit 63 = tree-mode flag
+        let decoded = LabelBucket::try_read_from(&bytes)
+            .expect("bit 63 (tree-mode flag) must not trigger ReservedBitsSet");
+        assert!(decoded.is_tree_mode());
+    }
+
+    #[test]
+    fn label_bucket_with_tree_mode_toggles_and_preserves_other_fields() {
+        // Plan 0318 §Step 1: `with_tree_mode` is a single-bit mutation that
+        // preserves `bucket_label_key`, `edge_start`, `overflow_log_head`,
+        // `degree`, `stored_slots`, and `inline_property_bytes_*`.
+        let original = LabelBucket::from_parts_with_inline_property(
+            BucketLabelKey::from_raw(0xABCD),
+            0x1234_5678,
+            7,
+            11,
+            5,
+            32,
+            0x0000_1234_5678, // u40 range: < 2^40 = 0x100_0000_0000
+            9,
+            2,
+            4,
+        );
+        let tree = original.with_tree_mode(true);
+        assert!(tree.is_tree_mode());
+        assert_eq!(tree.bucket_label_key().raw(), 0xABCD);
+        assert_eq!(tree.edge_start(), 0x1234_5678);
+        assert_eq!(tree.degree, 7);
+        assert_eq!(tree.stored_slots, 11);
+        assert_eq!(tree.overflow_log_head(), 5);
+        assert_eq!(tree.inline_property_byte_width(), 32);
+        assert_eq!(tree.inline_property_bytes_slab_slots(), 9);
+        assert_eq!(tree.inline_property_bytes_log_len(), 4);
+
+        let slab_again = tree.with_tree_mode(false);
+        assert!(!slab_again.is_tree_mode());
+        assert_eq!(slab_again, original);
     }
 
     #[test]
