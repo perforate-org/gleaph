@@ -1388,8 +1388,8 @@ mod tests {
     #[test]
     fn label_bucket_tree_mode_bit_round_trips() {
         // Plan 0318 §Step 1: bit 63 round-trips through encode/decode.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1)
-            .with_tree_mode(true);
+        let bucket =
+            LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1).with_tree_mode(true);
         assert!(bucket.is_tree_mode());
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);

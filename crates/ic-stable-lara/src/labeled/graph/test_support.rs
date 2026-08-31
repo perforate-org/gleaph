@@ -131,6 +131,7 @@ pub fn test_graph_with_default(
         mem(),
         mem(),
         mem(),
+        mem(),
         crate::labeled::InitialCapacities::uniform(256),
         default_label,
         32,
@@ -146,6 +147,7 @@ pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
 
 pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::VectorMemory> {
     LabeledLaraGraph::new_with_segment_size(
+        mem(),
         mem(),
         mem(),
         mem(),
@@ -280,6 +282,7 @@ pub fn inline_property_test_graph_with_capacity(
         mem(),
         mem(),
         mem(),
+        mem(),
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::directed_from_index(1),
         32,
@@ -293,6 +296,7 @@ pub fn inline_property_test_graph_with_capacity(
 pub fn inline_property_test_graph_segment16()
 -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
     let graph = LabeledLaraGraph::new_with_segment_size(
+        mem(),
         mem(),
         mem(),
         mem(),
@@ -327,6 +331,7 @@ pub fn build_mixed_label_hub(
     VertexId,
 ) {
     let graph = LabeledLaraGraph::new(
+        mem(),
         mem(),
         mem(),
         mem(),
@@ -399,14 +404,14 @@ pub fn count_free_spans(graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>)
 /// Kept as owned handles so a graph can be built into them, dropped, and then
 /// re-opened from the same bytes — the storage-engine analogue of a canister
 /// upgrade boundary.
-pub fn labeled_memories() -> [crate::VectorMemory; 15] {
+pub fn labeled_memories() -> [crate::VectorMemory; 16] {
     std::array::from_fn(|_| mem())
 }
 
 /// Builds a fresh [`LabeledLaraGraph`] over `mems` (clones the handles so the
 /// caller retains them for a later [`reopen_labeled_graph`]).
 pub fn open_labeled_graph(
-    mems: &[crate::VectorMemory; 15],
+    mems: &[crate::VectorMemory; 16],
     elem_capacity: u64,
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
@@ -426,6 +431,7 @@ pub fn open_labeled_graph(
         mems[12].clone(),
         mems[13].clone(),
         mems[14].clone(),
+        mems[15].clone(),
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
     )
@@ -435,7 +441,7 @@ pub fn open_labeled_graph(
 /// Re-opens a [`LabeledLaraGraph`] from already-populated `mems`, modelling the
 /// implicit stable-memory reattach a canister performs on `post_upgrade`.
 pub fn reopen_labeled_graph(
-    mems: &[crate::VectorMemory; 15],
+    mems: &[crate::VectorMemory; 16],
     elem_capacity: u64,
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
@@ -455,6 +461,7 @@ pub fn reopen_labeled_graph(
         mems[12].clone(),
         mems[13].clone(),
         mems[14].clone(),
+        mems[15].clone(),
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
     )

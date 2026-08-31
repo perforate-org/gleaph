@@ -442,6 +442,7 @@ fn inline_property_bench_graph(
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
         vertices,
@@ -459,6 +460,7 @@ fn inline_property_bench_graph(
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
     )
@@ -485,6 +487,7 @@ fn bench_graph(
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
         vertices,
@@ -502,6 +505,7 @@ fn bench_graph(
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
     )
@@ -512,10 +516,42 @@ fn reverse_bench_graph<E>() -> DeferredBidirectionalLabeledLaraGraph<E, crate::V
 where
     E: CsrEdge + CsrEdgeTombstone,
 {
-    let (fv, fb, fbf, fbfs, fec, fe, fel, fsm, fefs, fefbs, fvs, fpfs, fpfbs, fpl, fpb) =
-        labeled_lara_memories();
-    let (rv, rb, rbf, rbfs, rec, re, rel, rsm, refs, refbs, rvs, rpfs, rpfbs, rpl, rpb) =
-        labeled_lara_memories();
+    let (
+        fv,
+        fb,
+        fbf,
+        fbfs,
+        fec,
+        fe,
+        fel,
+        fsm,
+        fefs,
+        fefbs,
+        fvs,
+        fpfs,
+        fpfbs,
+        fpl,
+        fpb,
+        forward_ltb,
+    ) = labeled_lara_memories();
+    let (
+        rv,
+        rb,
+        rbf,
+        rbfs,
+        rec,
+        re,
+        rel,
+        rsm,
+        refs,
+        refbs,
+        rvs,
+        rpfs,
+        rpfbs,
+        rpl,
+        rpb,
+        reverse_ltb,
+    ) = labeled_lara_memories();
     DeferredBidirectionalLabeledLaraGraph::new(
         fv,
         fb,
@@ -532,6 +568,7 @@ where
         fpfbs,
         fpl,
         fpb,
+        forward_ltb,
         rv,
         rb,
         rbf,
@@ -547,6 +584,7 @@ where
         rpfbs,
         rpl,
         rpb,
+        reverse_ltb,
         crate::VectorMemory::default(),
         crate::labeled::InitialCapacities::uniform(1 << 16),
         BucketLabelKey::from_raw(1),

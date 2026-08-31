@@ -198,7 +198,7 @@ mod tests {
         default_label: BucketLabelKey,
     ) -> (
         LabeledLaraGraph<TestEdge, FailpointMemory>,
-        [FailpointMemory; 15],
+        [FailpointMemory; 16],
     ) {
         let mems = failpoint_labeled_memories();
         let graph = LabeledLaraGraph::<TestEdge, _>::new(
@@ -217,6 +217,7 @@ mod tests {
             mems[12].clone(),
             mems[13].clone(),
             mems[14].clone(),
+            mems[15].clone(),
             crate::labeled::InitialCapacities::uniform(256),
             default_label,
         )
@@ -226,7 +227,7 @@ mod tests {
     }
 
     fn reopen_failpoint_labeled_graph(
-        mems: &[FailpointMemory; 15],
+        mems: &[FailpointMemory; 16],
         default_label: BucketLabelKey,
     ) -> LabeledLaraGraph<TestEdge, FailpointMemory> {
         LabeledLaraGraph::<TestEdge, _>::init(
@@ -245,6 +246,7 @@ mod tests {
             mems[12].clone(),
             mems[13].clone(),
             mems[14].clone(),
+            mems[15].clone(),
             crate::labeled::InitialCapacities::uniform(256),
             default_label,
         )
@@ -255,6 +257,7 @@ mod tests {
     fn homogeneous_bypass_append_extends_edge_capacity() {
         let default = BucketLabelKey::from_raw(7);
         let graph = LabeledLaraGraph::new(
+            mem(),
             mem(),
             mem(),
             mem(),
@@ -390,6 +393,7 @@ mod tests {
     #[test]
     fn bypass_grow_does_not_repoint_bucket_mode_successor_bucket_base() {
         let graph = LabeledLaraGraph::new_with_segment_size(
+            mem(),
             mem(),
             mem(),
             mem(),
@@ -706,7 +710,7 @@ mod tests {
     /// hit the same bucket-slab grow that we failed above.
     fn fill_bucket_slab_to_next_grow(
         graph: &LabeledLaraGraph<TestEdge, FailpointMemory>,
-        mems: &[FailpointMemory; 15],
+        mems: &[FailpointMemory; 16],
         default: BucketLabelKey,
     ) -> VertexId {
         let mut next: u32 = 1;
@@ -870,7 +874,7 @@ mod tests {
     /// exactly at the page boundary with no mutation performed.
     fn fill_bucket_free_spans_to_next_records_grow(
         graph: &LabeledLaraGraph<TestEdge, FailpointMemory>,
-        mems: &[FailpointMemory; 15],
+        mems: &[FailpointMemory; 16],
     ) {
         // Establish the initial free-span record page. This also lets the
         // by-start index acquire the pages it needs for the relatively small

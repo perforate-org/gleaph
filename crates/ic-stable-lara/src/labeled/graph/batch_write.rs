@@ -4068,6 +4068,7 @@ mod tests {
             vector_memory(),
             vector_memory(),
             vector_memory(),
+            vector_memory(),
             crate::labeled::InitialCapacities::uniform(256),
             BucketLabelKey::directed_from_index(1),
             16,

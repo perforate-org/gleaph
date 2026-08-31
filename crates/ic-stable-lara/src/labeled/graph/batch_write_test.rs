@@ -39,6 +39,7 @@ mod tests {
             vector_memory(),
             vector_memory(),
             vector_memory(),
+            vector_memory(),
             crate::labeled::InitialCapacities::uniform(256),
             BucketLabelKey::directed_from_index(1),
             16,
@@ -49,6 +50,7 @@ mod tests {
     -> LabeledLaraGraph<crate::labeled::graph::test_support::TestEdge, crate::VectorMemory> {
         use crate::test_support::vector_memory;
         LabeledLaraGraph::<crate::labeled::graph::test_support::TestEdge, crate::VectorMemory>::new_with_segment_size(
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             vector_memory(),

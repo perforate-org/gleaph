@@ -2921,6 +2921,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             crate::labeled::InitialCapacities::uniform(256),
             default,
         )
@@ -3174,6 +3175,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
@@ -3218,6 +3220,7 @@ mod tests {
     fn single_label_parallel_insert_survives_overflow_log_fold() {
         let started = std::time::Instant::now();
         let graph = LabeledLaraGraph::new(
+            mem(),
             mem(),
             mem(),
             mem(),
@@ -3313,6 +3316,7 @@ mod tests {
     #[test]
     fn mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log() {
         let graph = LabeledLaraGraph::new(
+            mem(),
             mem(),
             mem(),
             mem(),

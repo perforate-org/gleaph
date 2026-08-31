@@ -578,6 +578,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
@@ -722,6 +723,7 @@ mod tests {
             value_free_span_by_start.clone(),
             inline_property_bytes_log.clone(),
             value_blobs.clone(),
+            mem(),
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,
         )
@@ -739,6 +741,7 @@ mod tests {
             )
             .unwrap();
         let (pin_start, pin_len) = graph.labeled_leaf_physical_range(hub).unwrap();
+        let ltb = mem();
 
         let reopened = LabeledLaraGraph::init(
             vertices,
@@ -756,6 +759,7 @@ mod tests {
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,
         )

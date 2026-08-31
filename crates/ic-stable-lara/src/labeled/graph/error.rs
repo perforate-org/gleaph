@@ -2,7 +2,7 @@
 
 use crate::{
     VertexCount, VertexId,
-    labeled::record::LabeledVertexFieldError,
+    labeled::{ltb_raw_block_store, record::LabeledVertexFieldError},
     lara::{
         edge::InitError as EdgeInitError,
         edge_inline_property::{
@@ -14,6 +14,8 @@ use crate::{
     },
 };
 use std::fmt;
+
+pub(crate) use super::BucketMode;
 
 /// Errors returned by labeled graph operations.
 #[derive(Debug)]
@@ -42,6 +44,26 @@ pub enum LabeledOperationError {
     },
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
+    /// `alloc_space = stored_slots + alloc_gap` reached the mode cap. The caller
+    /// must trigger `promote_bypass_to_tree_mode` (slab mode) or `deepen` (tree
+    /// mode) before retrying. Plan 0318 §Step 3 cap enforcement.
+    AllocSpaceCapReached {
+        /// Current `alloc_space` (capped at the mode cap).
+        current_alloc_space: u32,
+        /// Mode cap (`T_PROMOTE` for slab, `R_MAX` for tree).
+        cap: u32,
+        /// Bucket mode at the time the cap was hit.
+        mode: BucketMode,
+    },
+    /// Vertex already holds `MAX_BUCKETS_PER_VERTEX` distinct edge-label-type
+    /// buckets. Caller must re-classify this vertex (split, federate, or fail).
+    /// Plan 0318 §Step 3 cap enforcement.
+    VertexBucketCountCapReached {
+        /// Current distinct-bucket count for the vertex.
+        current_count: u32,
+        /// `MAX_BUCKETS_PER_VERTEX`.
+        cap: u32,
+    },
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -65,6 +87,18 @@ impl fmt::Display for LabeledOperationError {
                 "edge inline property byte width {edge_inline_property_width} does not match label bucket inline property byte width {bucket_width}"
             ),
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
+            Self::AllocSpaceCapReached {
+                current_alloc_space,
+                cap,
+                mode,
+            } => write!(
+                f,
+                "labeled bucket alloc_space cap reached: current={current_alloc_space}, cap={cap}, mode={mode:?}"
+            ),
+            Self::VertexBucketCountCapReached { current_count, cap } => write!(
+                f,
+                "vertex bucket count cap reached: current_count={current_count}, cap={cap}"
+            ),
         }
     }
 }
@@ -78,7 +112,9 @@ impl std::error::Error for LabeledOperationError {
             Self::VertexOutOfRange { .. }
             | Self::InvalidDefaultBypass
             | Self::InlinePropertyBytesWidthMismatch { .. }
-            | Self::InvalidVertexRow(_) => None,
+            | Self::InvalidVertexRow(_)
+            | Self::AllocSpaceCapReached { .. }
+            | Self::VertexBucketCountCapReached { .. } => None,
         }
     }
 }
@@ -164,6 +200,11 @@ pub enum InitError {
     Edges(EdgeInitError),
     /// The edge-inline-property-bytes byte slab could not be reopened.
     InlinePropertyBytes(ValueInitError),
+    /// The LARA Tree Block (LTB) store could not be reopened. Per Plan 0318 §Step 2,
+    /// the LTB is lazily created; an empty LTB reopens via the asymmetric rule
+    /// (like `value_blobs`), but a populated LTB must have valid magic "LTB",
+    /// version 1, payload_bytes = 4096, R_max = 1024, and a consistent free list.
+    Ltb(ltb_raw_block_store::InitError),
     /// The graph-owned memories are partially initialized (some regions are empty
     /// while others are populated), so the graph must not be reopened or recreated.
     PartialLayout,
@@ -178,6 +219,7 @@ impl fmt::Display for InitError {
             Self::InlinePropertyBytes(e) => {
                 write!(f, "inline property bytes slab init failed: {e}")
             }
+            Self::Ltb(e) => write!(f, "ltb store init failed: {e}"),
             Self::PartialLayout => {
                 write!(
                     f,

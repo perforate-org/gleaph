@@ -131,7 +131,7 @@ mod tests {
     fn graph_with_segment_size(
         segment_size: u32,
     ) -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
-        let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs, vs, vffs, vffsbs, vlog, vblobs) =
+        let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs, vs, vffs, vffsbs, vlog, vblobs, ltb) =
             labeled_lara_memories();
         let inner = LabeledLaraGraph::new_with_segment_size(
             v,
@@ -149,6 +149,7 @@ mod tests {
             vffsbs,
             vlog,
             vblobs,
+            ltb,
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
             segment_size,
@@ -179,6 +180,7 @@ mod tests {
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
         ) = labeled_lara_memories();
         let inner = LabeledLaraGraph::new_with_segment_size(
             vertices,
@@ -196,6 +198,7 @@ mod tests {
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
             32,
@@ -880,6 +883,7 @@ mod tests {
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
         ) = labeled_lara_memories();
         let inner = LabeledLaraGraph::<TestEdge, _>::new(
             vertices.clone(),
@@ -897,6 +901,7 @@ mod tests {
             value_free_span_by_start.clone(),
             inline_property_bytes_log.clone(),
             value_blobs.clone(),
+            ltb.clone(),
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
         )
@@ -923,6 +928,7 @@ mod tests {
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
             queue_memory,
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
@@ -1375,6 +1381,7 @@ where
         value_free_span_by_start: M,
         inline_property_bytes_log: M,
         value_blobs: M,
+        ltb: M,
         queue_memory: M,
         capacities: crate::labeled::InitialCapacities,
         default_label: crate::labeled::BucketLabelKey,
@@ -1395,6 +1402,7 @@ where
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
             capacities,
             default_label,
         )?;

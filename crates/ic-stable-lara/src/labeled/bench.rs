@@ -158,6 +158,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
         vertices,
@@ -175,6 +176,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::from_raw(1),
     )
@@ -424,6 +426,7 @@ fn inline_property_bench_graph(
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
         vertices,
@@ -441,6 +444,7 @@ fn inline_property_bench_graph(
         value_free_span_by_start,
         inline_property_bytes_log,
         value_blob,
+        ltb,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::from_raw(1),
     )
@@ -625,6 +629,7 @@ fn bench_l_cap_sp_l32_1e() -> canbench_rs::BenchResult {
 fn stable_bench_graph(segment_size: u32) -> LabeledLaraGraph<BenchEdge, helper::BenchMemory> {
     let mut memories = helper::BenchMemoryFactory::new();
     LabeledLaraGraph::new_with_segment_size(
+        memories.memory(),
         memories.memory(),
         memories.memory(),
         memories.memory(),
@@ -2422,6 +2427,7 @@ fn bidirectional_bench_graph()
         fvffsbs,
         fvlog,
         fvblobs,
+        forward_ltb,
     ) = labeled_lara_memories();
     let (
         rv,
@@ -2439,6 +2445,7 @@ fn bidirectional_bench_graph()
         rvffsbs,
         rvlog,
         rvblobs,
+        reverse_ltb,
     ) = labeled_lara_memories();
     DeferredBidirectionalLabeledLaraGraph::new(
         fv,
@@ -2456,6 +2463,7 @@ fn bidirectional_bench_graph()
         fvffsbs,
         fvlog,
         fvblobs,
+        forward_ltb,
         rv,
         rb,
         rbfs,
@@ -2471,6 +2479,7 @@ fn bidirectional_bench_graph()
         rvffsbs,
         rvlog,
         rvblobs,
+        reverse_ltb,
         vector_memory(),
         crate::labeled::InitialCapacities::uniform(1 << 20),
         BucketLabelKey::UNLABELED_DIRECTED,
@@ -2634,6 +2643,7 @@ fn bench_l_bp_promo() -> canbench_rs::BenchResult {
     const N: u32 = 512;
     let default = BucketLabelKey::directed_from_index(1);
     let graph = LabeledLaraGraph::<BenchEdge, _>::new(
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),

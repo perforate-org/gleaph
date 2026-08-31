@@ -134,7 +134,7 @@ pub(crate) enum BlockError {
     dead_code,
     reason = "Wired into the prototype in Plan 0315 Step 2; not yet used at the crate root."
 )]
-pub(crate) enum InitError {
+pub enum InitError {
     /// Stored magic does not match `b"LTB"`.
     BadMagic { actual: [u8; 3] },
     /// Layout version is not the supported version.
@@ -158,6 +158,44 @@ pub(crate) enum InitError {
     /// non-Free kind, an out-of-range id, or a cycle.
     FreeListCorrupt,
 }
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadMagic { actual } => {
+                write!(
+                    f,
+                    "ltb header magic mismatch: got {actual:?}, expected b\"LTB\""
+                )
+            }
+            Self::IncompatibleVersion(v) => {
+                write!(f, "ltb header version {v} is not the supported version 1")
+            }
+            Self::NonZeroReserved => write!(f, "ltb header reserved bytes are not zero"),
+            Self::BadPayloadBytes(p) => {
+                write!(f, "ltb header payload_bytes {p} is not the supported 4096")
+            }
+            Self::BadRMax(r) => {
+                write!(f, "ltb header R_max {r} is not the supported 1024")
+            }
+            Self::CounterMismatch {
+                free_count,
+                tail_next,
+                block_capacity,
+            } => write!(
+                f,
+                "ltb counter inconsistency: free_count={free_count}, tail_next={tail_next}, block_capacity={block_capacity}"
+            ),
+            Self::TruncatedHeader => write!(f, "ltb memory is smaller than the header page"),
+            Self::FreeListCorrupt => write!(
+                f,
+                "ltb free-list walk exceeded declared envelope or hit a non-Free kind / out-of-range id / cycle"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InitError {}
 
 /// Raw-block LTB store, generic over [`Memory`].
 ///

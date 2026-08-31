@@ -1070,6 +1070,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )

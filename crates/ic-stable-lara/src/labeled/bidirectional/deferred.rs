@@ -778,6 +778,7 @@ where
         forward_inline_property_bytes_free_span_by_start: M,
         forward_inline_property_bytes_log: M,
         forward_inline_property_bytes_blobs: M,
+        forward_ltb: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -793,6 +794,7 @@ where
         reverse_inline_property_bytes_free_span_by_start: M,
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
+        reverse_ltb: M,
         maintenance_queue: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -813,6 +815,7 @@ where
             forward_inline_property_bytes_free_span_by_start,
             forward_inline_property_bytes_log,
             forward_inline_property_bytes_blobs,
+            forward_ltb,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -828,6 +831,7 @@ where
             reverse_inline_property_bytes_free_span_by_start,
             reverse_inline_property_bytes_log,
             reverse_inline_property_bytes_blobs,
+            reverse_ltb,
             maintenance_queue,
             capacities,
             default_label,
@@ -853,6 +857,7 @@ where
         forward_inline_property_bytes_free_span_by_start: M,
         forward_inline_property_bytes_log: M,
         forward_inline_property_bytes_blobs: M,
+        forward_ltb: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -868,6 +873,7 @@ where
         reverse_inline_property_bytes_free_span_by_start: M,
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
+        reverse_ltb: M,
         maintenance_queue: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -892,6 +898,7 @@ where
             forward_inline_property_bytes_free_span_by_start,
             forward_inline_property_bytes_log,
             forward_inline_property_bytes_blobs,
+            forward_ltb,
             capacities,
             default_label,
         )?;
@@ -911,6 +918,7 @@ where
             reverse_inline_property_bytes_free_span_by_start,
             reverse_inline_property_bytes_log,
             reverse_inline_property_bytes_blobs,
+            reverse_ltb,
             capacities,
             default_label,
         )?;
@@ -941,6 +949,7 @@ where
         forward_inline_property_bytes_free_span_by_start: M,
         forward_inline_property_bytes_log: M,
         forward_inline_property_bytes_blobs: M,
+        forward_ltb: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -956,6 +965,7 @@ where
         reverse_inline_property_bytes_free_span_by_start: M,
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
+        reverse_ltb: M,
         maintenance_queue: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -976,6 +986,7 @@ where
             forward_inline_property_bytes_free_span_by_start,
             forward_inline_property_bytes_log,
             forward_inline_property_bytes_blobs,
+            forward_ltb,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -991,6 +1002,7 @@ where
             reverse_inline_property_bytes_free_span_by_start,
             reverse_inline_property_bytes_log,
             reverse_inline_property_bytes_blobs,
+            reverse_ltb,
             maintenance_queue,
             capacities,
             default_label,
@@ -1016,6 +1028,7 @@ where
         forward_inline_property_bytes_free_span_by_start: M,
         forward_inline_property_bytes_log: M,
         forward_inline_property_bytes_blobs: M,
+        forward_ltb: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -1031,6 +1044,7 @@ where
         reverse_inline_property_bytes_free_span_by_start: M,
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
+        reverse_ltb: M,
         maintenance_queue: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -1055,6 +1069,7 @@ where
             forward_inline_property_bytes_free_span_by_start,
             forward_inline_property_bytes_log,
             forward_inline_property_bytes_blobs,
+            forward_ltb,
             capacities,
             default_label,
         )
@@ -1075,6 +1090,7 @@ where
             reverse_inline_property_bytes_free_span_by_start,
             reverse_inline_property_bytes_log,
             reverse_inline_property_bytes_blobs,
+            reverse_ltb,
             capacities,
             default_label,
         )
@@ -4256,6 +4272,7 @@ mod tests {
             fvffsbs,
             fvlog,
             fvblobs,
+            forward_ltb,
         ) = labeled_lara_memories();
         let (
             rv,
@@ -4273,6 +4290,7 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            reverse_ltb,
         ) = labeled_lara_memories();
         let maintenance_queue = vector_memory();
         let regions = vec![
@@ -4291,6 +4309,7 @@ mod tests {
             fvffsbs.clone(),
             fvlog.clone(),
             fvblobs.clone(),
+            forward_ltb.clone(),
             rv.clone(),
             rb.clone(),
             rbfs.clone(),
@@ -4306,6 +4325,7 @@ mod tests {
             rvffsbs.clone(),
             rvlog.clone(),
             rvblobs.clone(),
+            reverse_ltb.clone(),
             maintenance_queue.clone(),
         ];
         let graph = DeferredBidirectionalLabeledLaraGraph::new(
@@ -4324,6 +4344,7 @@ mod tests {
             fvffsbs,
             fvlog,
             fvblobs,
+            forward_ltb,
             rv,
             rb,
             rbfs,
@@ -4339,6 +4360,7 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            reverse_ltb,
             maintenance_queue,
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::from_raw(1),
@@ -4351,7 +4373,7 @@ mod tests {
         regions: &[VectorMemory],
         elem_capacity: u64,
     ) -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
-        assert_eq!(regions.len(), 31, "sized graph region order changed");
+        assert_eq!(regions.len(), 33, "sized graph region order changed");
         DeferredBidirectionalLabeledLaraGraph::init(
             regions[0].clone(),
             regions[1].clone(),
@@ -4384,6 +4406,8 @@ mod tests {
             regions[28].clone(),
             regions[29].clone(),
             regions[30].clone(),
+            regions[31].clone(),
+            regions[32].clone(),
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::from_raw(1),
         )
@@ -5530,6 +5554,7 @@ mod tests {
             fvffsbs,
             fvlog,
             fvblobs,
+            forward_ltb,
         ) = labeled_lara_memories();
         let (
             rv,
@@ -5547,6 +5572,7 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            reverse_ltb,
         ) = labeled_lara_memories();
         DeferredBidirectionalLabeledLaraGraph::new(
             fv,
@@ -5564,6 +5590,7 @@ mod tests {
             fvffsbs,
             fvlog,
             fvblobs,
+            forward_ltb,
             rv,
             rb,
             rbfs,
@@ -5579,6 +5606,7 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            reverse_ltb,
             vector_memory(),
             crate::labeled::InitialCapacities::uniform(256),
             BucketLabelKey::UNLABELED_DIRECTED,

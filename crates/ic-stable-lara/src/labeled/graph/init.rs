@@ -5,6 +5,7 @@ use crate::{
     labeled::{
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
         bucket_store::{DirectednessPartitionStrategy, LabelBucketStore},
+        ltb_raw_block_store::LtbRawBlockStore,
         record::LabeledVertex,
     },
     lara::{
@@ -66,6 +67,7 @@ where
     }
 
     /// Creates a new labeled LARA graph over empty stable memories.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertices: M,
         buckets: M,
@@ -82,6 +84,7 @@ where
         value_free_span_by_start: M,
         inline_property_bytes_log: M,
         value_blobs: M,
+        ltb: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, crate::GrowFailed> {
@@ -101,6 +104,7 @@ where
             value_free_span_by_start,
             inline_property_bytes_log,
             value_blobs,
+            ltb,
             capacities,
             default_label,
             DEFAULT_SEGMENT_SIZE,
@@ -111,6 +115,7 @@ where
     ///
     /// This is crate-visible so capacity benchmarks can compare layout policies;
     /// persisted graphs reopen from the segment size stored in their edge header.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_segment_size(
         vertices: M,
         buckets: M,
@@ -127,6 +132,7 @@ where
         value_free_span_by_start: M,
         inline_property_bytes_log: M,
         value_blobs: M,
+        ltb: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
         segment_size: u32,
@@ -163,6 +169,7 @@ where
                 capacities.inline_property_bytes,
                 segment_count,
             )?,
+            ltb: LtbRawBlockStore::new(ltb)?,
             default_label,
             last_bucket_lookup: Cell::new(None),
             inline_property_bytes_compaction_deferred: Cell::new(false),
@@ -172,6 +179,7 @@ where
     }
 
     /// Reopens a labeled LARA graph from existing stable memories.
+    #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: M,
         buckets: M,
@@ -188,14 +196,16 @@ where
         value_free_span_by_start: M,
         inline_property_bytes_log: M,
         value_blobs: M,
+        ltb: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, InitError> {
         // The vertex column, bucket, edge, and inline property bytes subsystems are one
         // graph-owned composite that must be created or reopened together.
-        // `value_blobs` is excluded: it may legitimately stay empty on reopen
-        // (no wide inline property bytes), and its Fresh-vs-Reopen asymmetry is enforced
-        // inside `EdgeInlinePropertyBytesStore::init`.
+        // `value_blobs` and `ltb` are excluded: they may legitimately stay empty on
+        // reopen (no wide inline property bytes / no tree-mode bucket promoted yet),
+        // and their Fresh-vs-Reopen asymmetry is enforced inside
+        // `EdgeInlinePropertyBytesStore::init` and `LtbRawBlockStore::init`.
         match crate::classify_composite_init([
             vertices.size(),
             buckets.size(),
@@ -249,6 +259,11 @@ where
                 edge_segment_count,
             )
             .map_err(InitError::InlinePropertyBytes)?,
+            // Plan 0318 §Step 2: LTB reopen. `LtbRawBlockStore::init` already
+            // validates magic "LTB", version 1, payload_bytes = 4096, R_max = 1024,
+            // and walks the free list up to the declared envelope. An empty LTB
+            // (size 0) reopens cleanly via the lazy-create convention.
+            ltb: LtbRawBlockStore::init(ltb).map_err(InitError::Ltb)?,
             default_label,
             last_bucket_lookup: Cell::new(None),
             inline_property_bytes_compaction_deferred: Cell::new(false),
@@ -408,8 +423,10 @@ mod tests {
         crate::VectorMemory,
         crate::VectorMemory,
         crate::VectorMemory,
+        crate::VectorMemory,
     ) {
         (
+            mem(),
             mem(),
             mem(),
             mem(),
@@ -431,7 +448,7 @@ mod tests {
     #[test]
     fn init_rejects_partial_layout_when_vertices_wiped() {
         let label = BucketLabelKey::directed_from_index(1);
-        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb) =
+        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, ltb) =
             labeled_memories();
         LabeledLaraGraph::<TestEdge, _>::new(
             v.clone(),
@@ -449,6 +466,7 @@ mod tests {
             vfsbs.clone(),
             pl.clone(),
             vb.clone(),
+            ltb.clone(),
             crate::labeled::InitialCapacities::uniform(256),
             label,
         )
@@ -470,6 +488,7 @@ mod tests {
             vfsbs,
             pl,
             vb,
+            ltb,
             crate::labeled::InitialCapacities::uniform(256),
             label,
         );
@@ -479,7 +498,7 @@ mod tests {
     #[test]
     fn init_reopens_fully_populated_layout() {
         let label = BucketLabelKey::directed_from_index(1);
-        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb) =
+        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, ltb) =
             labeled_memories();
         LabeledLaraGraph::<TestEdge, _>::new(
             v.clone(),
@@ -497,6 +516,7 @@ mod tests {
             vfsbs.clone(),
             pl.clone(),
             vb.clone(),
+            ltb.clone(),
             crate::labeled::InitialCapacities::uniform(256),
             label,
         )
@@ -517,6 +537,7 @@ mod tests {
             vfsbs,
             pl,
             vb,
+            ltb,
             crate::labeled::InitialCapacities::uniform(256),
             label,
         );
@@ -526,6 +547,7 @@ mod tests {
     #[test]
     fn fresh_layout_applies_independent_initial_capacities() {
         let graph = LabeledLaraGraph::<TestEdge, _>::new(
+            mem(),
             mem(),
             mem(),
             mem(),
@@ -558,6 +580,7 @@ mod tests {
     #[test]
     fn fresh_layout_uses_segment16_quota1_policy() {
         let graph = LabeledLaraGraph::<TestEdge, _>::new(
+            mem(),
             mem(),
             mem(),
             mem(),
