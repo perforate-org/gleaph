@@ -1,24 +1,24 @@
 ---
-name: "Tree-CSR production implementation in LabeledLaraGraph"
-overview: "Implement the Plan 0317-amended Tree-CSR mode in production `LabeledLaraGraph` (and bidirectional): wire `LtbRawBlockStore<VirtualMemory>` as a per-orientation field, add the tree-mode flag bit to `LabelBucket::word` bit 63, implement `promote_bypass_to_tree_mode` failure-atomic transition, mode-dispatch in the bucket access constructor for read/write paths, `deepen`/`flatten` with `MAX_DEPTH = 3` fail-closed, and `check_alloc_cap` / `check_vertex_bucket_count_cap` cap enforcement (per `alloc_space = stored_slots + alloc_gap`). Implement 10 todos; assert Gate 2 canbench numbers within ±20% of Plan 0322 `VectorMemory` baseline on production `VirtualMemory`."
+name: "Tree-CSR production wire-up in LabeledLaraGraph"
+overview: "Implement Steps 4-11 of the original Plan 0318 (Steps 1-3 already committed as `e70f43534` and `a8ad189d3` on `plan-0318` lane): `promote_bypass_to_tree_mode` failure-atomic transition, mode-dispatch in the bucket access constructor, `deepen`/`flatten` with `MAX_DEPTH = 3` fail-closed, Gate 2 canbench re-run on production `VirtualMemory`, ADR 0088 §Status update, and `validate_plan.py --phase final` pass. Steps 4-11 are split into separate commits for review-ability: Step 4 (promote), Step 5 (read dispatch), Step 6 (write dispatch), Step 7 (deepen/flatten), Step 8-11 (validation/ADR). The LEG/LTB/LPB storage architecture (per user clarification) is: `LabelBucket::edge_start` → LEG slab offset, LEG span contains block_id array (root region), each block_id points to a 4 KiB block in the LTB store. Inline-property bytes use the same pattern with LPB byte slab instead of LEG edge slab."
 todos:
   - id: "label-bucket-tree-mode-bit"
     content: "Add a tree-mode flag bit (bit 63, the high bit of the packed `word`) to `LabelBucket` in `crates/ic-stable-lara/src/labeled/record.rs`. Provide `is_tree_mode() -> bool`, `with_tree_mode(enabled: bool) -> Self`, and update `try_from_parts` / `try_read_from` / serialization / round-trip tests to keep ` `LabelBucket::BYTES == 29``. Update the reserved-bits validator so bit 63 is the tree-mode bit (not a rejected reserved bit). Update `bucket_word_has_zero_reserved_bits` to ignore bit 63 or remove the check on that bit while keeping it on bits 60–62. Unit tests: (a) tree-mode bit round-trips through encode/decode, (b) default `LabelBucket` is slab-mode, (c) reserved bits 60–62 still rejected, (d) bit 63 accepted as tree-mode flag."
     status: completed
   - id: "ltb-store-as-graph-field"
-    content: "Add `ltb: LtbRawBlockStore<M>` field to `LabeledLaraGraph<E, M>` in `crates/ic-stable-lara/src/labeled/graph.rs` (single orientation). Update `LabeledLaraGraph::new(...)` and `init(...)` constructors to accept one extra `M: Memory` argument for the LTB store. Update the bidirectional graph (`BidirectionalLabeledLaraGraph`) to hold two `LtbRawBlockStore<M>` (forward + reverse), accepting 2 extra `M` arguments total. Update test fixture helpers (`labeled_lara_memories()`, `failpoint_labeled_memories()`) to return 16 / 16 `VectorMemory` values (was 15 / 15) for single orientation, and 32 / 32 (was 30 / 30) for bidirectional. Update `LabeledLaraGraph::init` reopen validation (`count consistency`, `free-list walk up to declared envelope`, asymmetric reopen rule: empty LTB reopens under `value_blobs`-style asymmetry)."
+    content: "Add `ltb: LtbRawBlockStore<M>` field to `LabeledLaraGraph<E, M>` in `crates/ic-stable-lara/src/labeled/graph.rs` (single orientation). Update `LabeledLaraGraph::new(...)` and `init(...)` constructors to accept one extra `M: Memory` argument for the LTB store. Update the bidirectional graph (`BidirectionalLabeledLaraGraph`) to hold two `LtbRawBlockStore<M>` (forward + reverse), accepting 2 extra `M` arguments total. Update test fixture helpers (`labeled_lara_memories()`, `failpoint_labeled_memories()`) to return 16 / 16 `VectorMemory` values (was 15 / 15) for single orientation, and 32 / 32 (was 30 / 30) for bidirectional. Update `LabeledLaraGraph::init` reopen validation (`count consistency`, `free-list walk up to declared envelope`, asymmetric reopen rule: empty LTB reopens under `value_blobs`-style asymmetry). **[Additional in Step 2]: Define `pub(crate) const MAX_BUCKETS_PER_VERTEX: u32 = 1024;` in `crates/ic-stable-lara/src/labeled/graph.rs` (per Plan 0317 amend). This const is the per-vertex edge-label-type limit and is needed as an interface design choice at the field-addition step (not deferred to the cap-enforcement step). The cap-enforcement helper `check_vertex_bucket_count_cap` is implemented in Step 3, but the const is fixed here.**"
     status: completed
   - id: "cap-enforcement-helpers"
     content: "Implement cap enforcement helpers in `crates/ic-stable-lara/src/labeled/graph.rs`: (a) `pub(crate) const T_PROMOTE: u32 = 4096` and `pub(crate) const R_MAX: u32 = 1024` (wire truth from Plan 0315); (b) `pub(crate) const MAX_BUCKETS_PER_VERTEX: u32 = 1024` (per-vertex edge-label-type limit, industry-largest vs DataStax Enterprise Graph's official 200); (c) `compute_bucket_allocation(bucket: &LabelBucket) -> u32` returning `min(stored_slots + alloc_gap(stored_slots), cap)` for slab mode and `min(stored_slots, R_MAX)` for tree mode; (d) `check_alloc_cap(bucket: &LabelBucket, increment: u32) -> Result<(), LabeledOperationError>` returning `AllocSpaceCapReached { current_alloc_space, cap, mode }` when `alloc_space + increment > cap(bucket.mode)`; (e) `check_vertex_bucket_count_cap(vertex: &LabeledVertex) -> Result<(), LabeledOperationError>` returning `VertexBucketCountCapReached { current_count, cap }` when vertex bucket count reaches `MAX_BUCKETS_PER_VERTEX`. Note that the cap is on `alloc_space = stored_slots + alloc_gap` (NOT on `stored_slots` alone), per Plan 0317 amend. Unit tests cover each helper independently."
     status: completed
   - id: "promote-bypass-to-tree-mode"
-    content: "Implement `promote_bypass_to_tree_mode(vid, label)` in `LabeledLaraGraph` (single orientation). Follow the `promote_bypass_to_bucket_mode` failure-atomic template (reserve / commit / publish). When `alloc_space = stored_slots + alloc_gap` crosses `T_PROMOTE = 4096` (the cap is on `alloc_space`, not `stored_slots` alone — per Plan 0317 amend), mint all data blocks in the LTB store via `LtbRawBlockStore::mint()`, transcribe the slab prefix + unfolded log entries in logical order into blocks (using `read_payload` for the source and `write_payload` for the destination, with sub-block writes via `write_payload_partial` for the tail block), write the root region via `LabelBucket::with_tree_mode(true)` plus the new root ids, publish the descriptor (single canonical write), and release the old edge span (via the vertex-span rewrite) and the old inline-property span (via the byte-slab `FreeSpanStore`). Promotion is also the moment the leaf releases up to `T_PROMOTE` slots of pressure. Unit tests: (a) `alloc_space < T_PROMOTE` → promotion rejected (typed error); (b) `alloc_space >= T_PROMOTE` → promotion succeeds; (c) reserve phase is atomic (no partial state); (d) publish phase is atomic (no partial state)."
+    content: "Implement `promote_bypass_to_tree_mode(vid, label)` in `LabeledLaraGraph` (single orientation). Follow the `promote_bypass_to_bucket_mode` failure-atomic template (reserve / commit / publish). When `alloc_space = stored_slots + alloc_gap` crosses `T_PROMOTE = 4096` (the cap is on `alloc_space`, not `stored_slots` alone — per Plan 0317 amend), mint all data blocks in the LTB store via `LtbRawBlockStore::mint()`, transcribe the slab prefix + unfolded log entries in logical order into blocks (using `read_payload` for the source and `write_payload` for the destination, with sub-block writes via `write_payload_partial` for the tail block), write the root region via `LabelBucket::with_tree_mode(true)` plus the new root ids, publish the descriptor (single canonical write), and release the old edge span (via the vertex-span rewrite) and the old inline-property span (via the byte-slab `FreeSpanStore`). Promotion is also the moment the leaf releases up to `T_PROMOTE` slots of pressure. **Architecture clarification (LEG/LTB/LPB)**: `LabelBucket::edge_start` is an offset into the LEG (Labeled Edge Graph) slab. The LEG span at that offset holds the root region (a `u32` block_id array, 4 bytes per block_id). Each `block_id` (u32) indexes one 4 KiB block in the LTB (LARA Tree Block) store. The actual edge data (4 bytes per edge × up to 1024 edges per block) lives inside the LTB blocks. For `stored_slots = 4096` at depth 1, the root region is 4 × u32 = 16 bytes; 4 LTB blocks hold 4 × 4096 = 16384 bytes = 16 KiB. Total tree-mode bucket footprint = 16 KiB + 16 bytes (root region) ≈ 16.016 KiB. Inline-property bytes use the same pattern with an LPB (Labeled Property Byte) byte slab instead of the LEG edge slab. Unit tests: (a) `alloc_space < T_PROMOTE` → promotion rejected (typed error); (b) `alloc_space >= T_PROMOTE` → promotion succeeds; (c) reserve phase is atomic (no partial state); (d) publish phase is atomic (no partial state); (e) LEG root region holds correct block_id sequence; (f) LTB blocks hold correctly-ordered edge data after transcription."
     status: pending
   - id: "tree-mode-read-dispatch"
-    content: "Implement the mode dispatch in the bucket access constructor: `out_edges_iter`, `out_edges_collect`, `visit_edges`, `prefix_scan_descending`, and `random_ordinal_access`. When the bucket's tree-mode bit is set, the dispatch routes to a new `tree_mode_out_edges_iter` (using `LtbRawBlockStore::for_each_chunk` for the chunk-buffer pattern: yields `(start_slot, &[u8])` slices where `&[u8]` contains 4-byte rows in order). When the bit is clear, the existing slab path runs unchanged. The dispatch lives in **one constructor per accessor** — reviewers must not see a mode branch in rope / PMA / placement code per [ADR 0088 §Encapsulation](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md). `LabeledOutEdgesIter` becomes an enum with `Slab` and `TreeMode` variants. `random_ordinal_access` calls `TreeCsrBucket::range_target(slot)` (from Plan 0322) which uses `read_payload_partial` to fetch only 4 bytes — no 4 KiB block allocation per call. Unit tests: (a) `out_edges_iter` on a slab bucket routes to slab path; (b) `out_edges_iter` on a tree bucket routes to tree path; (c) `random_ordinal_access` reads only 4 bytes; (d) cross-mode `for_each_with_counterpart` walks both slab and tree streams correctly."
+    content: "Implement the mode dispatch in the bucket access constructor: `out_edges_iter`, `out_edges_collect`, `visit_edges`, `prefix_scan_descending`, and `random_ordinal_access`. When the bucket's tree-mode bit is set, the dispatch routes to new tree-mode accessors that read the LEG root region (block_id 配列) and use `LtbRawBlockStore::read_payload_partial` for sub-block reads or `for_each_chunk` for chunk-buffer iteration. **Tree-mode accessors are implemented directly on `LabeledLaraGraph` (not on a separate prototype type)**: e.g. `tree_mode_random_ordinal_access(slot: u32) -> Option<u32>` lives on `LabeledLaraGraph` and calls `self.ltb.read_payload_partial(block_id, slot * 4, &mut 4_bytes)` directly. `TreeCsrBucket` (from `tree_csr_prototype.rs` / Plan 0313 / Plan 0322) is a prototype value type that does not appear in production. `random_ordinal_access` becomes `random_ordinal_access(slab_path) | tree_mode_random_ordinal_access(tree_path)` depending on `is_tree_mode()`. The tree-mode accessor reads the LEG root region, finds the block_id for the target slot, then uses `read_payload_partial(block_id, slot * 4, &mut 4_bytes)` to fetch only the 4 bytes — no 4 KiB block allocation per call. The dispatch lives in **one constructor per accessor** — reviewers must not see a mode branch in rope / PMA / placement code per [ADR 0088 §Encapsulation](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md). `LabeledOutEdgesIter` becomes an enum with `Slab` and `TreeMode` variants. Unit tests: (a) `out_edges_iter` on a slab bucket routes to slab path; (b) `out_edges_iter` on a tree bucket routes to tree path; (c) `random_ordinal_access` reads only 4 bytes (verifiable via the LTB store call count or memory instrumentation); (d) cross-mode `for_each_with_counterpart` walks both slab and tree streams correctly."
     status: pending
   - id: "tree-mode-edge-write-dispatch"
-    content: "Implement `insert_edge`, `remove_edge_at_slot`, `direct_unlink_log_*` for the tree-mode path. When the bucket is in slab mode and the insertion would push `alloc_space` past `T_PROMOTE`, the dispatcher triggers `promote_bypass_to_tree_mode` first, then completes the insertion in tree mode. When the bucket is in tree mode, the new edge is appended into the LTB blocks: if the tail block has room (`alloc_gap_tail = ceil((T_PROMOTE - 1) - tail_first_slot) * 4`), a single `write_payload_partial` writes the 4-byte target at `tail_first_slot_offset + (stored_slots - tail_first_slot) * 4`; otherwise, mint a new tail block (`LtbRawBlockStore::mint()`), populate it via the same path, append the root array, bump `stored_slots`. When the bucket is in bypass mode, existing behavior: append into the bypass row, then trigger promotion if `alloc_space` crosses the threshold. Tombstone semantics stay above the LTB store layer; this method only mutates the canonical row. Unit tests: (a) tree-mode insert at full tail block mints new block correctly; (b) tree-mode insert with room in tail uses `write_payload_partial` for the 4-byte write; (c) slab-to-tree automatic promotion triggers when `alloc_space >= T_PROMOTE`."
+    content: "Implement `insert_edge`, `remove_edge_at_slot`, `direct_unlink_log_*` for the tree-mode path. When the bucket is in slab mode and the insertion would push `alloc_space` past `T_PROMOTE`, the dispatcher triggers `promote_bypass_to_tree_mode` first, then completes the insertion in tree mode. When the bucket is in tree mode, the new edge is appended into the LTB blocks: compute the current tail block index from `stored_slots % B` (B = 1024). If `stored_slots % B != 0` or `stored_slots == 0`, the tail block has room and we use `write_payload_partial(tail_block_id, (stored_slots % B) * 4, &target_bytes)` for a 4-byte write; otherwise, mint a new tail block (`LtbRawBlockStore::mint()`), populate it via the same path, append the new block_id to the root region (in LEG slab), bump `stored_slots`. **The tail-block-room check uses `stored_slots % B` (not `alloc_gap_tail`, which is a slab-mode concept and violates tree-mode gap-0 invariant).** Tree mode has gap-0: `alloc_space = stored_slots` (no gap slots); the cap is on `stored_slots <= R_MAX = 1024` slots per block, with multiple blocks per root region. When the bucket is in bypass mode, existing behavior: append into the bypass row, then trigger promotion if `alloc_space` crosses the threshold. Tombstone semantics stay above the LTB store layer; this method only mutates the canonical row. Unit tests: (a) tree-mode insert at full tail block mints new block correctly; (b) tree-mode insert with room in tail uses `write_payload_partial` for the 4-byte write; (c) slab-to-tree automatic promotion triggers when `alloc_space >= T_PROMOTE`."
     status: pending
   - id: "deepen-flatten"
     content: "Implement `deepen(vid, label)` and `flatten(vid, label)` for the tree-mode descriptor. `deepen` runs when the derived root length would exceed `R_MAX = 1024`: reserve interior blocks (`kind = *Interior` via `LtbRawBlockStore::mint()`), copy current root ids into the interior blocks (right-spine partial allowed), rewrite the span to the interior ids, publish the descriptor. `flatten` is the inverse, only ever inside compaction/maintenance; interior blocks are released after publish (commit-order invariant). Both are level-generic (depth 2 → 3 identical to depth 1 → 2). Fail-closed at `MAX_DEPTH = 3` per [ADR 0088 §4](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md): `derive_depth(stored_slots) > MAX_DEPTH` returns a typed error before any canonical write. Unit tests: (a) `stored_slots = 2²⁰` → deepen triggers depth 1 → 2; (b) `stored_slots = 2³⁰` → deepen triggers depth 2 → 3; (c) `stored_slots = 2⁴⁰` → MAX_DEPTH exceeded, fail-closed typed error; (d) `flatten` after compaction releases interior blocks correctly."
@@ -27,7 +27,7 @@ todos:
     content: "Run `cargo build --release --target wasm32-unknown-unknown --features canbench` from `crates/ic-stable-lara/` and verify the exported-name budget is under the 20K PocketIC limit. Plan 0318 adds no new canbench benches (production-code-only changes), so the budget should stay at the Plan 0314/0315/0316/0322 baseline (~16,776 chars / 3,224 chars of headroom preserved). If regression occurs, investigate and add to the plan as a follow-up; do not block the implementation."
     status: pending
   - id: "gate-2-recheck-on-virtual-memory"
-    content: "Re-run Gate 2 canbench benches against the production `VirtualMemory<DefaultMemoryImpl>` backend: `tcsr_4096_full_scan_descending`, `tcsr_65536_full_scan_descending`, `tcsr_4096_random_ordinal_access`, `tcsr_4096_insert_grow`, `tcsr_4096_delete_half_by_slot_then_scan`, and the same for 65K. Record ins/edge for each cell and confirm production numbers are within ±20% of the Plan 0322 `VectorMemory` baseline (~41 ins/edge at 4K full scan, ~52,300 → ~17,066 ins/edge for insert_grow, etc.). If production numbers regress beyond ±20%, open a follow-up slice to investigate the regression. Worst case leaf footprint at MAX_BUCKETS_PER_VERTEX = 1024 × T_PROMOTE = 4096 slots × 16 vertices = 256 MiB; leaf relocation cost ≈ 8.5 × 10⁸ instructions = 2.1% of IC 40B update budget per IC DMT (commit b722538, 2026-07-23: 5000 ins/page read + 5000 ins/page write + 3000 ins/page copy overhead)."
+    content: "Re-run Gate 2 canbench benches against the production `VirtualMemory<DefaultMemoryImpl>` backend: `tcsr_4096_full_scan_descending`, `tcsr_65536_full_scan_descending`, `tcsr_4096_random_ordinal_access`, `tcsr_4096_insert_grow`, `tcsr_4096_delete_half_by_slot_then_scan`, and the same for 65K. Record ins/edge for each cell and confirm production numbers are within ±20% of the Plan 0322 `VectorMemory` baseline. **Baseline numbers from Plans 0315/0316/0322 (production-equivalent VectorMemory backend)**: (a) `tcsr_4096_full_scan_descending` (Plan 0316 block-batched): **41 ins/edge** at 4K (down from 14,540 ins/edge in Plan 0313 scaffold; raw-block 59.57M / 4096 = 14,540; block-batched collapsed to 41 ins/edge); (b) `tcsr_4096_random_ordinal_access` (Plan 0322): **~209K ins/call** (call-level, not per-edge); (c) `tcsr_4096_insert_grow` (Plan 0315 raw-block): **17,066 ins/edge** (= 69.90M / 4096; down from 52,300 ins/edge in Plan 0313 scaffold). Note: insert_grow is a planar operation, not a canbench bench; the canbench surface measures it through `tcsr_promote_*` instead. (d) `tcsr_4096_delete_half_by_slot_then_scan` (Plan 0322): O(N²) prototype-only limitation, not production-representative. (e) `tcsr_65536_full_scan_descending` (Plan 0316 block-batched): **~41 ins/edge**. (f) `tcsr_65536_insert_grow` (Plan 0315 raw-block): **~17,090 ins/edge** (= 69.90M × 16 / 65536 ≈ 17,066–17,090). (g) `tcsr_65536_delete_half_by_slot_then_scan` (Plan 0316): 6.14T ins (prototype O(N²), not production). If production numbers regress beyond ±20%, open a follow-up slice to investigate the regression. Worst case leaf footprint at MAX_BUCKETS_PER_VERTEX = 1024 × T_PROMOTE = 4096 slots × 16 vertices = 256 MiB; leaf relocation cost ≈ 8.5 × 10⁸ instructions = 2.1% of IC 40B update budget per IC DMT (commit b722538, 2026-07-23: 5000 ins/page read + 5000 ins/page write + 3000 ins/page copy overhead)."
     status: pending
   - id: "adr-0088-update-and-validate"
     content: "Update `design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md` §Status to mark Plan 0318 closed. Run `python3 ~/.agents/skills/plan/scripts/validate_plan.py plans/0318-tree-csr-implementation.md --phase final` and confirm structurally-valid final-phase verdict before reporting completion."
@@ -35,7 +35,7 @@ todos:
 isProject: false
 ---
 
-# Tree-CSR production implementation in LabeledLaraGraph
+# Tree-CSR production wire-up in LabeledLaraGraph
 
 ## Objective
 
@@ -95,13 +95,27 @@ Out of scope:
 - PocketIC-backed 1M-degree sweep. Recorded as a follow-up (the `tree_csr_high_degree_test.rs` 1M sweep is `#[ignore]`'d; production `VirtualMemory` does not hit the heap limit that `VectorMemory` does on host).
 - ADR 0007 stable-memory-layout inventory update. Tracked separately.
 
+## Commit Structure (per self-review)
+
+Plan 0318 is split into 6 commits for review-ability:
+
+1. **Commit 1** (already complete: `e70f43534`): Step 1 (LabelBucket tree-mode bit).
+2. **Commit 2** (already complete: `a8ad189d3`): Steps 2-3 (ltb field + cap helpers; MAX_BUCKETS_PER_VERTEX bound at Step 2 as an interface design choice).
+3. **Commit 3** (next): Step 4 (`promote_bypass_to_tree_mode`) — failure-atomic LEG → LTB promotion with reserve/commit/publish split, LEG root region allocation, LTB block minting, slab prefix transcription, descriptor publish.
+4. **Commit 4**: Step 5 (tree-mode read dispatch) — slab/tree mode branch in 5 accessors (`out_edges_iter`, `out_edges_collect`, `visit_edges`, `prefix_scan_descending`, `random_ordinal_access`).
+5. **Commit 5**: Step 6 (tree-mode edge write dispatch) — `insert_edge` / `remove_edge_at_slot` / `direct_unlink_log_*` with tree-mode `write_payload_partial` for tail-block append, `read_payload_partial` / `write_payload_partial` for tombstone rewriting.
+6. **Commit 6**: Step 7 (`deepen`/`flatten`) — level-generic transitions with `MAX_DEPTH = 3` fail-closed.
+7. **Commit 7**: Steps 8-11 (wasm recheck, Gate 2 canbench, ADR update, validator) — validation only.
+
+Each commit keeps green-bar discipline (`cargo check` / `cargo test` / `cargo fmt --check` / `cargo clippy -D warnings`) and runs `validate_plan.py --phase draft` after each. Commits 3-6 are sizable and may each be split further at implementation time if review feedback requires.
+
 ## Expected Change Surface
 
 | File pattern | Change |
 |--------------|--------|
 | `crates/ic-stable-lara/src/labeled/record.rs` (modified) | Add `LabelBucket::is_tree_mode` / `with_tree_mode` accessors; update packed-word encode/decode so bit 63 carries the tree-mode flag and the reserved-bits validator ignores bit 63; keep `LabelBucket::BYTES == 29`. Add unit tests for the tree-mode flag bit round-trip and reserved-bits compatibility. |
 | `crates/ic-stable-lara/src/labeled/graph.rs` (modified) | Add `ltb: LtbRawBlockStore<M>` field; update `LabeledLaraGraph::new(...)` and `init(...)` signatures (one extra `M` arg each); add `promote_bypass_to_tree_mode` failure-atomic transition; add `tree_mode_out_edges_iter` and other tree-mode accessors; add cap enforcement helpers (`check_alloc_cap`, `check_vertex_bucket_count_cap`, `compute_bucket_allocation`, `T_PROMOTE`, `R_MAX`, `MAX_BUCKETS_PER_VERTEX` consts); update mode dispatch in the existing access constructor. |
-| `crates/ic-stable-lara/src/labeled/bidirectional.rs` (modified) | Add two `ltb: LtbRawBlockStore<M>` fields (forward + reverse); update bidirectional `new(...)` / `init(...)` signatures (two extra `M` args each). |
+| `crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs` (modified) | Add two `ltb: LtbRawBlockStore<M>` fields (forward + reverse) to `DeferredBidirectionalLabeledLaraGraph`; update bidirectional `new(...)` / `init(...)` and `new_with_config` / `init_with_config` signatures (two extra `M` args each). |
 | `crates/ic-stable-lara/src/labeled.rs` (modified) | `pub(crate) mod ltb_raw_block_store` already exposed from Plan 0315; no further module gate changes here. |
 | `crates/ic-stable-lara/src/test_support.rs` (modified) | `labeled_lara_memories()` and `failpoint_labeled_memories()` updated to return 16 / 16 `VectorMemory` values (was 15 / 15) to account for the extra LTB per orientation; for bidirectional graphs, 32 / 32 (was 30 / 30). |
 | `crates/ic-stable-lara/src/labeled/labeled.rs` and `crates/ic-stable-lara/src/labeled/graph/init.rs` (modified) | Wiring the new `M: Memory` args into the constructors; update `classify_composite_init` partial-layout detection to count the LTB as part of the composite (asymmetric reopen rule: empty LTB reopens under `value_blobs`-style asymmetry). |
@@ -157,6 +171,8 @@ In `crates/ic-stable-lara/src/labeled/record.rs`:
    - `label_bucket_accepts_tree_mode_bit_63`: encode with bit 63 set, decode, expect success and `is_tree_mode() == true`.
 
 ### Step 2 — `LtbRawBlockStore` as a graph field
+
+[Plan 0317 amend note]: the LTB field count, the per-orientation split, and the asymmetric reopen rule are unchanged from the original Plan 0317 Step 2. The cap semantics (`alloc_space = stored_slots + alloc_gap`) referenced in Step 2's helper return types is established by [Plan 0317](./0317-adr0088-tree-csr-implementation.md) and is a prerequisite for Step 3's `check_alloc_cap` / `compute_bucket_allocation`. **MAX_BUCKETS_PER_VERTEX = 1024 is bound at this Step (interface design)** — see the todo `ltb-store-as-graph-field`.
 
 In `crates/ic-stable-lara/src/labeled/graph.rs`:
 
@@ -282,9 +298,11 @@ In `crates/ic-stable-lara/src/labeled/graph.rs`:
 
 ### Step 4 — `promote_bypass_to_tree_mode(vid, label)`
 
+**Architecture clarification (LEG/LTB/LPB)**: `LabelBucket::edge_start` is an offset into the LEG (Labeled Edge Graph) slab. The LEG span at that offset holds the **root region** (a `u32` block_id array, 4 bytes per block_id). Each `block_id` (u32) indexes one 4 KiB block in the LTB (LARA Tree Block) store. The actual edge data (4 bytes per edge × up to 1024 edges per block) lives inside the LTB blocks. For `stored_slots = 4096` at depth 1, the root region is 4 × `u32` = 16 bytes; 4 LTB blocks hold 4 × 4096 = 16384 bytes = 16 KiB. Total tree-mode bucket footprint = 16 KiB + 16 bytes (root region) ≈ 16.016 KiB. Inline-property bytes use the same pattern with an LPB (Labeled Property Byte) byte slab instead of the LEG edge slab.
+
 In `crates/ic-stable-lara/src/labeled/graph.rs`:
 
-1. Add the failure-atomic transition mirroring `promote_bypass_to_bucket_mode`:
+1. Add the failure-atomic transition mirroring `promote_bypass_to_bucket_mode`. The transition has three phases: **Reserve** (mint blocks in LTB + allocate root region in LEG), **Commit** (write edge data into LTB blocks + write block_ids into LEG root region), **Publish** (write the new tree-mode descriptor with `edge_start` pointing to the new LEG root region):
 
    ```rust
    /// Promote a bypass / slab bucket whose `alloc_space` has crossed `T_PROMOTE = 4096`
@@ -298,27 +316,77 @@ In `crates/ic-stable-lara/src/labeled/graph.rs`:
        vid: VertexId,
        label: BucketLabelKey,
    ) -> Result<(), LabeledOperationError> {
-       // 1. Read current descriptor; verify preconditions (alloc_space < T_PROMOTE → fail-closed).
-       // 2. Compute derived depth from stored_slots; reserve blocks (LtbRawBlockStore::mint).
-       // 3. Transcribe slab prefix + log entries into blocks (read_payload + write_payload,
-       //    with sub-block writes via write_payload_partial for the tail block).
-       // 4. Set tree-mode bit on the descriptor via with_tree_mode(true); bump stored_slots
-       //    and root_len consistently.
-       // 5. Release old edge span via vertex-span rewrite; release old inline-property span
-       //    via byte-slab FreeSpanStore.
-       // 6. Publish the new descriptor (single canonical write).
+       // ---- Phase 1: Reserve (no canonical writes) ----
+       // 1a. Read current descriptor; verify preconditions:
+       //     - alloc_space >= T_PROMOTE (otherwise reject with a typed error).
+       // 1b. Compute derived depth d from stored_slots (B = 1024 slots/block);
+       //     number of root entries = 2^(d-1) (depth 1 → 4 entries; depth 2 → 16; etc.).
+       // 1c. Mint `number_of_root_entries` data blocks in the LTB store
+       //     via LtbRawBlockStore::mint() (kind = *LeafData). These hold the actual
+       //     edge data.
+       // 1d. Reserve a root region span in the LEG slab via
+       //     self.edges.allocate_edge_span(number_of_root_entries).
+       //     This returns (new_edge_start_in_leg, ...). If allocation fails, release
+       //     the LTB blocks minted in step 1c and return the error.
+       // 1e. (Optional, only if property bytes overflow) Mint property blocks
+       //     in the LTB store and reserve a root region in the LPB byte slab.
+       //     Same pattern as 1c–1d.
+       //
+       // ---- Phase 2: Commit (LTB blocks + LEG root region) ----
+       // 2a. Read the slab prefix (the bucket's existing CSR slab of stored_slots
+       //     edges) and the unfolded log entries (tombstones + appended targets).
+       // 2b. For each block in mint order (i = 0..number_of_root_entries):
+       //     - block_first_slot = i * B (B = 1024)
+       //     - block_last_slot = min(block_first_slot + B, stored_slots)
+       //     - Build the 4 KiB payload (zero-initialized; then fill in slots
+       //       block_first_slot..block_last_slot by copying the 4-byte targets).
+       //     - self.ltb.write_payload(block_id_i, &payload) — full-block write.
+       // 2c. Write the block_id array to the LEG root region:
+       //     self.edges.write_edge_spans(new_edge_start_in_leg, &[block_id_0, block_id_1, ..., block_id_N]).
+       // 2d. (Optional, only if property bytes overflow) Write the property
+       //     block_id array to the LPB root region.
+       //
+       // ---- Phase 3: Publish (single canonical write) ----
+       // 3a. Build the new descriptor with with_tree_mode(true) and the new
+       //     edge_start pointing at the LEG root region:
+       //
+       //     let new_bucket = LabelBucket::try_from_parts(
+       //         label_key,
+       //         new_edge_start_in_leg,        // LEG slab offset to root region
+       //         bucket.degree,
+       //         bucket.stored_slots,
+       //         -1,                            // overflow_log_head = -1 (tree mode)
+       //         bucket.inline_property_byte_width,
+       //         new_property_offset_in_lpb,    // LPB byte slab offset to property root region
+       //         bucket.inline_property_bytes_slab_slots,
+       //         -1,                            // inline_property_bytes_log_head = -1
+       //         0,                             // inline_property_bytes_log_len = 0
+       //     )?
+       //     .with_tree_mode(true);
+       //
+       // 3b. Publish new_bucket to the bucket store (single canonical write).
+       // 3c. Release the old edge span via the vertex-span rewrite (recycle into
+       //     the free list).
+       // 3d. Release the old inline-property span via byte-slab FreeSpanStore.
+       // 3e. (Optional) Release the bypass row if the bucket was in bypass mode.
    }
    ```
 
-2. The transition is reserved in a single attempt; partial states are rolled back via the existing release path of the LTB store.
+2. The transition is reserved in a single attempt; partial states are rolled back via the existing release path of the LTB store. If the publish in Phase 3 fails, the blocks minted in Phase 1c/1e and the LEG root region allocated in Phase 1d are released; the bucket remains in its pre-promotion state.
 
 3. Unit tests:
    - `alloc_space < T_PROMOTE` → promotion rejected (typed error).
-   - `alloc_space >= T_PROMOTE` → promotion succeeds.
-   - Reserve phase is atomic (no partial state).
-   - Publish phase is atomic (no partial state).
+   - `alloc_space >= T_PROMOTE` → promotion succeeds; descriptor has `is_tree_mode() == true` and `edge_start` pointing to the LEG root region.
+   - Reserve phase is atomic (no partial state on failure of Phase 1c/1d/1e).
+   - Commit phase is atomic (no partial state on failure of Phase 2b/2c/2d).
+   - Publish phase is atomic (no partial state on failure of Phase 3b/3c/3d/3e).
+   - **LEG root region holds the correct block_id sequence** (4 block_ids for depth 1, 16 for depth 2, etc.) in the right order.
+   - **LTB blocks hold correctly-ordered edge data** after transcription: slots 0..1024 in block_id_0, slots 1024..2048 in block_id_1, etc.
+   - **edge_start in the new descriptor is a valid LEG offset** (>= bucket base + per-bucket stride) and not equal to the pre-promotion edge_start.
 
 ### Step 5 — Tree-mode read dispatch
+
+**Tree-mode accessors are implemented directly on `LabeledLaraGraph`**, not on the `TreeCsrBucket` prototype type from `tree_csr_prototype.rs` / Plan 0313 / Plan 0322. `TreeCsrBucket` is a value type that lives in the prototype module and is used by the canbench surface only; production code goes through the LTB store API directly.
 
 In `crates/ic-stable-lara/src/labeled/graph.rs`, update the existing bucket access constructor to dispatch on the tree-mode bit:
 
@@ -338,16 +406,47 @@ pub fn out_edges_iter(
 }
 ```
 
-`LabeledOutEdgesIter` becomes an enum with `Slab` and `TreeMode` variants. Each variant yields yields `(slot, target)` pairs. The `TreeMode` variant holds an iterator built on top of `LtbRawBlockStore::for_each_chunk` and decodes 4-byte rows lazily from the yielded `&[u8]` slices.
+`LabeledOutEdgesIter` becomes an enum with `Slab` and `TreeMode` variants. Each variant yields yields `(slot, target)` pairs. The `TreeMode` variant holds an iterator built on top of `LtbRawBlockStore::for_each_chunk` and decodes 4-byte rows lazily from the yielded `&[u8]` slices. The chunk-buffer pattern is: yield `(start_slot, &[u8])` slices where `&[u8]` contains 4-byte rows in order.
 
 Other accessors follow the same pattern: `out_edges_collect`, `visit_edges`, `prefix_scan_descending`, `random_ordinal_access`. Each checks `is_tree_mode()` and routes to the LTB-backed path or the slab path. The dispatch lives in **one constructor per accessor** (no branches in the slab or tree-mode internals).
 
-`random_ordinal_access` calls `TreeCsrBucket::range_target(slot)` (from Plan 0322) which uses `read_payload_partial` to fetch only 4 bytes — no 4 KiB block allocation per call.
+`random_ordinal_access` becomes a two-arm dispatch on `LabeledLaraGraph`:
+
+```rust
+pub(crate) fn random_ordinal_access(
+    &self,
+    vid: VertexId,
+    label: BucketLabelKey,
+    slot: u32,
+) -> Result<Option<u32>, LabeledOperationError> {
+    let bucket = self.bucket_for_label(vid, label)?;
+    if bucket.is_tree_mode() {
+        self.tree_mode_random_ordinal_access(vid, label, slot)
+    } else {
+        self.slab_random_ordinal_access(vid, label, slot)
+    }
+}
+
+fn tree_mode_random_ordinal_access(
+    &self,
+    vid: VertexId,
+    label: BucketLabelKey,
+    slot: u32,
+) -> Result<Option<u32>, LabeledOperationError> {
+    // 1. Read the LEG root region span at edge_start: number_of_block_ids = ceil(stored_slots / 1024).
+    // 2. Find the block_id for slot: block_index = slot / 1024, block_id = root_region[block_index].
+    // 3. self.ltb.read_payload_partial(block_id, (slot % 1024) * 4, &mut target_bytes) — 4-byte sub-block read.
+    // 4. Decode u32 from target_bytes (LE).
+    // 5. Return Ok(Some(target)).
+}
+```
+
+The tree-mode accessor reads the LEG root region, finds the block_id for the target slot, then uses `read_payload_partial(block_id, slot * 4, &mut 4_bytes)` to fetch only the 4 bytes — no 4 KiB block allocation per call.
 
 Unit tests:
 - (a) `out_edges_iter` on a slab bucket routes to slab path.
 - (b) `out_edges_iter` on a tree bucket routes to tree path.
-- (c) `random_ordinal_access` reads only 4 bytes.
+- (c) `random_ordinal_access` reads only 4 bytes (verifiable via the LTB store call count or memory instrumentation).
 - (d) cross-mode `for_each_with_counterpart` walks both slab and tree streams correctly.
 
 ### Step 6 — Tree-mode edge write dispatch
@@ -355,15 +454,16 @@ Unit tests:
 In `crates/ic-stable-lara/src/labeled/graph.rs`, update `insert_edge`:
 
 - If the bucket is in slab mode and the insertion would push `alloc_space = stored_slots + alloc_gap` past `T_PROMOTE`, the dispatcher triggers `promote_bypass_to_tree_mode` first, then completes the insertion in tree mode.
-- If the bucket is in tree mode, the new edge is appended into the LTB blocks: if the tail block has room (`stored_slots - tail_first_slot < B = 1024`), a single `write_payload_partial` writes the 4-byte target at `tail_first_slot_offset + (stored_slots - tail_first_slot) * 4`. Otherwise, mint a new tail block (`mint()`), populate it via the same path, append the root array, bump `stored_slots`.
-- If the bucket is in bypass mode, existing behavior: append into the bypass row, then trigger promotion if `stored_slots` crosses the threshold.
+- If the bucket is in tree mode, the new edge is appended into the LTB blocks. **Tree mode has gap-0 invariant: `alloc_space = stored_slots`** (no gap slots). The tail-block-room check uses `stored_slots % B` (B = 1024): if `stored_slots % B != 0` or `stored_slots == 0`, the tail block has room and a single `write_payload_partial(tail_block_id, (stored_slots % B) * 4, &target_bytes)` writes the 4-byte target; otherwise, mint a new tail block (`LtbRawBlockStore::mint()`), populate it via the same path, append the new block_id to the root region (in LEG slab), bump `stored_slots`. **The `alloc_gap_tail` formula from the original Plan 0318 is a slab-mode concept and is incorrect for tree mode** (tree mode has no gap). The correct check is `stored_slots % B`.
+- If the bucket is in bypass mode, existing behavior: append into the bypass row, then trigger promotion if `alloc_space` crosses the threshold.
 
-`remove_edge_at_slot`, `direct_unlink_log_*` similarly dispatch on the tree-mode bit and use `read_payload_partial` / `write_payload_partial` for tombstone rewriting.
+`remove_edge_at_slot`, `direct_unlink_log_*` similarly dispatch on the tree-mode bit and use `read_payload_partial` / `write_payload_partial` for tombstone rewriting. The tombstone layer is a u32-level mask (a `u32` per slot indicates the slot is a tombstone); the LTB block is rewritten with the tombstoned slot zeroed and the rest of the block preserved.
 
 Unit tests:
-- (a) tree-mode insert at full tail block mints new block correctly.
-- (b) tree-mode insert with room in tail uses `write_payload_partial` for the 4-byte write.
+- (a) tree-mode insert at full tail block (`stored_slots % B == 0` and `stored_slots > 0`) mints new block correctly.
+- (b) tree-mode insert with room in tail (`stored_slots % B != 0`) uses `write_payload_partial` for the 4-byte write.
 - (c) slab-to-tree automatic promotion triggers when `alloc_space >= T_PROMOTE`.
+- (d) tree-mode remove with `read_payload_partial` reads only 4 bytes (not a full block).
 
 ### Step 7 — `deepen()` and `flatten()`
 
@@ -415,7 +515,17 @@ canbench tcsr_65536_insert_grow
 canbench tcsr_65536_delete_half_by_slot_then_scan
 ```
 
-For each bench, record the measured ins/edge and compare to the Plan 0322 `VectorMemory` baseline (~41 ins/edge at 4K full scan). If production numbers regress beyond ±20%, open a follow-up slice to investigate the regression; otherwise record record with pass verdict.
+For each bench, record the measured ins/edge and compare to the Plan 0322 `VectorMemory` baseline. Baseline numbers from Plans 0315/0316/0322 (production-equivalent `VectorMemory` backend):
+
+- `tcsr_4096_full_scan_descending` (Plan 0316 block-batched): **41 ins/edge** (down from 14,540 in Plan 0313 scaffold; raw-block 59.57M / 4096 = 14,540; block-batched collapsed to 41).
+- `tcsr_4096_random_ordinal_access` (Plan 0322): **~209K ins/call**.
+- `tcsr_4096_insert_grow` (Plan 0315 raw-block): **17,066 ins/edge** (= 69.90M / 4096; down from 52,300 in Plan 0313 scaffold). Note: insert_grow is not in the canbench surface; the canbench surface measures insert through `tcsr_promote_*` instead.
+- `tcsr_4096_delete_half_by_slot_then_scan` (Plan 0322): O(N²) prototype-only limitation, not production-representative.
+- `tcsr_65536_full_scan_descending` (Plan 0316 block-batched): **~41 ins/edge**.
+- `tcsr_65536_insert_grow` (Plan 0315 raw-block): **~17,090 ins/edge**.
+- `tcsr_65536_delete_half_by_slot_then_scan` (Plan 0316): 6.14T ins (prototype O(N²), not production).
+
+Production `VirtualMemory<DefaultMemoryImpl>` should be within ±20% of these baselines. If production numbers regress beyond ±20%, open a follow-up slice to investigate the regression; otherwise record with pass verdict.
 
 ### Step 10 — ADR 0088 update
 
