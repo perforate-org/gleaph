@@ -158,6 +158,10 @@ pub enum InitError {
     /// Free-list walk exceeded `min(free_count, declared envelope)` or hit a
     /// non-Free kind, an out-of-range id, or a cycle.
     FreeListCorrupt,
+    /// Lazy-create on an empty memory failed because the stable-memory
+    /// grow needed to fit the header page could not be satisfied.
+    /// Surfaces a [`crate::GrowFailed`] verbatim.
+    GrowFailed(crate::GrowFailed),
 }
 
 impl std::fmt::Display for InitError {
@@ -192,6 +196,7 @@ impl std::fmt::Display for InitError {
                 f,
                 "ltb free-list walk exceeded declared envelope or hit a non-Free kind / out-of-range id / cycle"
             ),
+            Self::GrowFailed(e) => write!(f, "ltb lazy-create on empty memory failed: {e}"),
         }
     }
 }
@@ -389,9 +394,22 @@ impl<M: Memory> LtbRawBlockStore<M> {
     /// reserved bytes, wire-truth payload_bytes and R_max, counter
     /// consistency, and walks the free list up to its declared envelope with
     /// bounds/kind/cycle checks.
+    ///
+    /// **Asymmetric reopen (Plan 0318 §Step 2 amend)**: a zero-size memory
+    /// is treated as a fresh graph that has not yet promoted any bucket
+    /// into tree mode. The header is written lazily (delegating to
+    /// [`Self::new`]) so that a canister upgraded from a pre-Plan-0318
+    /// build — whose 16th memory is genuinely empty — reopens cleanly
+    /// instead of failing with `TruncatedHeader`. The reopen
+    /// `classify_composite_init` exclusion in `LabeledLaraGraph::init`
+    /// relies on this convention.
     pub(crate) fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
-            return Err(InitError::TruncatedHeader);
+            // Lazy-create: an empty LTB memory is a fresh graph that has
+            // not yet promoted any bucket. The header is written now
+            // (one stable-memory page) so the rest of the store operates
+            // on a valid empty envelope.
+            return Self::new(memory).map_err(InitError::GrowFailed);
         }
         let header = Self::read_header(&memory);
         Self::validate_header(&memory, &header)?;
@@ -990,10 +1008,19 @@ mod tests {
     }
 
     #[test]
-    fn reopen_init_rejects_truncated_header() {
+    fn reopen_init_lazy_creates_on_empty_memory() {
+        // Plan 0318 §Step 2 amend: a zero-size memory is treated as a
+        // fresh graph that has not yet promoted any bucket. The header
+        // is written lazily and the store reopens cleanly.
         let memory: crate::VectorMemory = vector_memory();
-        let err = LtbRawBlockStore::init(memory).err().unwrap();
-        assert!(matches!(err, InitError::TruncatedHeader), "got {err:?}");
+        let ltb = LtbRawBlockStore::init(memory).expect("lazy-create on empty");
+        assert_eq!(ltb.block_capacity(), 0);
+        // The header is now materialized: the underlying memory has
+        // grown to fit the 64-byte header.
+        assert!(ltb.memory.size() > 0, "header page must be allocated");
+        // A subsequent mint succeeds.
+        let id = ltb.mint().expect("mint after lazy-create");
+        assert!(id < 4, "first mint is id 0");
     }
 
     #[test]

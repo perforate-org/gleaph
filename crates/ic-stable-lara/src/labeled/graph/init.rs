@@ -642,4 +642,92 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
     }
+
+    /// Plan 0318 §Step 2 amend: a freshly-emptied 16th memory (the LTB
+    /// slot) must reopen a `LabeledLaraGraph` cleanly. This is the
+    /// upgrade-path regression for the F5 fix (was
+    /// `Ltb(TruncatedHeader)` on every pre-Plan-0318 canister upgrade).
+    ///
+    /// The test threads each `VectorMemory` (which is `Rc<RefCell<Vec<u8>>>`)
+    /// through both a `new` call and a subsequent `init` call by cloning
+    /// the `Rc` before `new` consumes it; only the 16th (LTB) memory is
+    /// freshly-emptied, simulating the post-upgrade memory layout.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn init_reopen_with_empty_ltb_succeeds() {
+        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, ltb) =
+            labeled_memories();
+        let elem_capacity = 1u64 << 20;
+        let graph = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::new(
+            v.clone(),
+            bk.clone(),
+            bfs.clone(),
+            bfsbs.clone(),
+            ec.clone(),
+            e.clone(),
+            el.clone(),
+            esm.clone(),
+            efs.clone(),
+            efsbs.clone(),
+            ps.clone(),
+            vfs.clone(),
+            vfsbs.clone(),
+            pl.clone(),
+            vb.clone(),
+            ltb,
+            crate::labeled::InitialCapacities::uniform(elem_capacity),
+            BucketLabelKey::directed_from_index(1),
+        )
+        .expect("fresh graph");
+        assert_eq!(graph.ltb().block_capacity(), 0);
+        // Push a vertex so the v memory has something to reopen.
+        let hub = graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push_vertex");
+        // Drop the graph; the `Rc` clones inside the (now-populated)
+        // memories survive and are reused for `init`. A fresh empty
+        // memory is allocated for the 16th (LTB) slot.
+        drop(graph);
+        let fresh_ltb = mem();
+        let reopened = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::init(
+            v,
+            bk,
+            bfs,
+            bfsbs,
+            ec,
+            e,
+            el,
+            esm,
+            efs,
+            efsbs,
+            ps,
+            vfs,
+            vfsbs,
+            pl,
+            vb,
+            fresh_ltb,
+            crate::labeled::InitialCapacities::uniform(elem_capacity),
+            BucketLabelKey::directed_from_index(1),
+        )
+        .expect("reopen with empty LTB");
+        // The reopened LTB has zero capacity (no tree bucket promoted).
+        assert_eq!(reopened.ltb().block_capacity(), 0);
+        // The vertex is still there.
+        assert_eq!(reopened.vertex_count().0, 1);
+        // Round-trip a fresh edge through the reopened graph to ensure
+        // the slab path is intact (no tree-mode bucket was promoted).
+        let dst = reopened
+            .push_vertex(LabeledVertex::default())
+            .expect("push_vertex");
+        reopened
+            .insert_edge_skip_leaf_cascade(
+                hub,
+                BucketLabelKey::directed_from_index(1),
+                TestEdge {
+                    target: u32::from(dst),
+                },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert_edge after reopen");
+    }
 }

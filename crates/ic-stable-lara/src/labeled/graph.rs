@@ -37,15 +37,32 @@ const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
 
 /// CSR slab mode cap: `alloc_space = stored_slots + alloc_gap ≤ T_PROMOTE = 4096 slots (16 KiB)`.
 ///
-/// Tree mode cap: `alloc_space = stored_slots ≤ R_MAX = 1024 slots (4 KiB)` (gap-0 invariant).
+/// Tree mode cap: `alloc_space = stored_slots ≤ TREE_STRUCTURAL_CAP = 2^30 slots`
+/// (the `MAX_DEPTH = 3` fail-closed structural boundary; see ADR 0088 §4).
 ///
 /// The cap is on `alloc_space = stored_slots + alloc_gap`, NOT on `stored_slots` alone
 /// (per Plan 0317 amend). LARA rebalance naturally keeps `alloc_space` bounded via
 /// weighted gap allocation.
+///
+/// `R_MAX = 1024` is the **root-array fan-out cap** (number of `u32` block_id
+/// entries that fit in one root); the derive-depth formula in
+/// `tree_csr_prototype::derive_depth` and the `root_len` per-level cap use it.
+/// `root_len > R_MAX` is the **deepen** trigger (Plan 0318 Step 7), not a
+/// slot-cap reject.
 pub(crate) const T_PROMOTE: u32 = 4096;
 
-/// Tree mode cap on `alloc_space = stored_slots` (gap-0 invariant).
+/// Root-array fan-out cap (block_id entries per tree root). See ADR 0088 §4.
+/// Used by `derive_depth` and by the Step 7 deepen trigger; **not** the
+/// logical-slot cap on a tree bucket.
 pub(crate) const R_MAX: u32 = 1024;
+
+/// Tree-mode slot cap: `alloc_space = stored_slots ≤ 2^30` (the coverage at
+/// `MAX_DEPTH = 3` per ADR 0088 §4: depth 1 ≤ 2²⁰, depth 2 ≤ 2³⁰, depth 3 ≤
+/// 2⁴⁰; the fail-closed `MAX_DEPTH` boundary is 2³⁰ distinct edge slots under
+/// the current `B = 1024` slots/block, `R_MAX = 1024` root entries/level
+/// encoding). Practical depth = 3 is bound by physical stable memory well
+/// before the 2⁴⁰ theoretical coverage.
+pub(crate) const TREE_STRUCTURAL_CAP: u32 = 1 << 30;
 
 /// Per-vertex edge-label-type limit (per Plan 0317 amend).
 ///
@@ -107,10 +124,15 @@ pub(crate) fn compute_bucket_allocation(bucket: &LabelBucket) -> u32 {
 }
 
 /// Cap for the bucket's current mode.
+///
+/// - Slab: `T_PROMOTE = 4096` slots.
+/// - Tree: `TREE_STRUCTURAL_CAP = 2^30` slots (the `MAX_DEPTH = 3` fail-closed
+///   boundary). `R_MAX = 1024` is the **root-array fan-out cap** governing
+///   `deepen` (Step 7), not a slot cap.
 #[inline]
 pub(crate) fn cap_for_mode(bucket: &LabelBucket) -> u32 {
     if bucket.is_tree_mode() {
-        R_MAX
+        TREE_STRUCTURAL_CAP
     } else {
         T_PROMOTE
     }
@@ -302,12 +324,52 @@ mod cap_enforcement_tests {
     #[test]
     fn compute_bucket_allocation_returns_stored_slots_for_tree_mode() {
         // Tree mode is gap-0: alloc_space = stored_slots. For stored_slots = 50,
-        // alloc_space = 50 and cap = R_MAX = 1024.
+        // alloc_space = 50 and cap = TREE_STRUCTURAL_CAP = 2^30 (the
+        // `MAX_DEPTH = 3` fail-closed boundary per ADR 0088 §4).
+        // `R_MAX` is the root-array fan-out cap (deepen trigger), not the slot cap.
         let bucket =
             LabelBucket::from_parts(BucketLabelKey::default(), 0, 5, 50, -1).with_tree_mode(true);
         assert_eq!(compute_bucket_allocation(&bucket), 50);
-        assert_eq!(cap_for_mode(&bucket), R_MAX);
+        assert_eq!(cap_for_mode(&bucket), TREE_STRUCTURAL_CAP);
         assert_eq!(BucketMode::from_bucket(&bucket), BucketMode::Tree);
+    }
+
+    #[test]
+    fn check_alloc_cap_tree_mode_promoted_bucket_not_rejected() {
+        // Regression for the F1 unit-confusion fix: a promoted tree bucket
+        // with stored_slots = T_PROMOTE = 4096 (the post-promotion
+        // invariant) must NOT be rejected by `check_alloc_cap` because the
+        // tree-mode cap is `TREE_STRUCTURAL_CAP = 2^30`, not `R_MAX = 1024`.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4096, T_PROMOTE, -1)
+            .with_tree_mode(true);
+        assert_eq!(cap_for_mode(&bucket), TREE_STRUCTURAL_CAP);
+        check_alloc_cap(&bucket, 1).expect("promoted bucket must not be rejected");
+    }
+
+    #[test]
+    fn check_alloc_cap_tree_mode_rejects_beyond_structural_coverage() {
+        // The MAX_DEPTH = 3 fail-closed boundary (2^30 slots) is
+        // effectively equivalent to the u32 slot cap (2^32 - 1) for any
+        // practical stored_slots; we test the boundary by constructing a
+        // bucket at the cap and asserting that even increment = 0
+        // succeeds (sanity), then a pathologically-large increment is
+        // rejected with the cap error.
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            TREE_STRUCTURAL_CAP,
+            TREE_STRUCTURAL_CAP,
+            -1,
+        )
+        .with_tree_mode(true);
+        check_alloc_cap(&bucket, 0).expect("zero increment must always succeed");
+        // `u32::MAX - TREE_STRUCTURAL_CAP` is a saturating_add that
+        // wraps to u32::MAX, which is > TREE_STRUCTURAL_CAP.
+        let err = check_alloc_cap(&bucket, u32::MAX).expect_err("must reject at u32::MAX");
+        assert!(
+            matches!(err, LabeledOperationError::AllocSpaceCapReached { .. }),
+            "expected AllocSpaceCapReached, got {err:?}"
+        );
     }
 
     #[test]

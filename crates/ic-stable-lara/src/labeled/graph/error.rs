@@ -3,8 +3,8 @@
 use crate::{
     VertexCount, VertexId,
     labeled::{
-        ltb_raw_block_store, ltb_raw_block_store::BlockError as LtbBlockError,
-        record::LabeledVertexFieldError,
+        bucket_label_key::BucketLabelKey, ltb_raw_block_store,
+        ltb_raw_block_store::BlockError as LtbBlockError, record::LabeledVertexFieldError,
     },
     lara::{
         edge::InitError as EdgeInitError,
@@ -72,6 +72,19 @@ pub enum LabeledOperationError {
     /// promote path; the promotion fails closed and the bucket remains in
     /// its pre-promotion state. Plan 0318 §Step 4.
     LtbBlock(LtbBlockError),
+    /// No labeled bucket exists for the requested `(vid, label)` pair, so
+    /// the promote path cannot proceed. Caller is expected to insert an
+    /// edge (which creates the bucket) before retrying the promotion. Plan
+    /// 0318 §Step 4 amend (replaces the misleading
+    /// `AllocSpaceCapReached { current_alloc_space: 0, cap: T_PROMOTE, mode: Slab }`
+    /// that the original Step 4 implementation surfaced for the `Missing`
+    /// branch).
+    BucketNotFound {
+        /// Requested vertex id.
+        vid: VertexId,
+        /// Requested label key.
+        label: BucketLabelKey,
+    },
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -108,6 +121,12 @@ impl fmt::Display for LabeledOperationError {
                 "vertex bucket count cap reached: current_count={current_count}, cap={cap}"
             ),
             Self::LtbBlock(err) => write!(f, "ltb block error: {err:?}"),
+            Self::BucketNotFound { vid, label } => {
+                write!(
+                    f,
+                    "labeled bucket not found for promotion: vid={vid}, label={label:?}"
+                )
+            }
         }
     }
 }
@@ -124,7 +143,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::InvalidVertexRow(_)
             | Self::AllocSpaceCapReached { .. }
             | Self::VertexBucketCountCapReached { .. }
-            | Self::LtbBlock(_) => None,
+            | Self::LtbBlock(_)
+            | Self::BucketNotFound { .. } => None,
         }
     }
 }

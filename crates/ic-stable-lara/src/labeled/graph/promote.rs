@@ -30,7 +30,7 @@
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketMode, BucketSearch, LabeledLaraGraph, T_PROMOTE, compute_bucket_allocation};
+use super::{BucketMode, BucketSearch, LabeledLaraGraph, T_PROMOTE};
 use crate::VertexId;
 use crate::labeled::{
     bucket_label_key::BucketLabelKey,
@@ -79,13 +79,13 @@ where
         BucketSearch::Missing { .. } => {
             // No such bucket. The promotion can only proceed once the
             // bucket exists; the caller is expected to insert an edge
-            // first. Surface the cap as a typed error so the dispatcher
-            // can disambiguate "no bucket" from "alloc_space overflow".
-            return Err(LabeledOperationError::AllocSpaceCapReached {
-                current_alloc_space: 0,
-                cap: T_PROMOTE,
-                mode: BucketMode::Slab,
-            });
+            // first. The original Step 4 implementation surfaced
+            // `AllocSpaceCapReached { current_alloc_space: 0, .. }` here
+            // which is misleading (a missing bucket is not a cap
+            // overflow). Plan 0318 §Step 4 amend introduces a dedicated
+            // `BucketNotFound` error so the dispatcher can disambiguate
+            // "no bucket" from "alloc_space overflow".
+            return Err(LabeledOperationError::BucketNotFound { vid, label });
         }
     };
 
@@ -95,11 +95,23 @@ where
         return Ok(());
     }
 
-    // Precondition 2: alloc_space must have reached T_PROMOTE.
-    let alloc_space = compute_bucket_allocation(&bucket);
-    if alloc_space < T_PROMOTE {
+    // Precondition 2: stored_slots must have reached T_PROMOTE.
+    //
+    // The cap semantics document (Plan 0317 §3.5) says the trigger is
+    // on `alloc_space = stored_slots + alloc_gap`, but the current
+    // implementation uses the placeholder `alloc_gap(stored) =
+    // T_PROMOTE - stored` (Plan 0317 §3.5 placeholder, weighted gap
+    // deferred). Under that placeholder
+    // `compute_bucket_allocation(slab) ≡ T_PROMOTE` for any
+    // `stored_slots` in `[0, T_PROMOTE]`, so the alloc_space form of
+    // the trigger never fires for an existing bucket. We use
+    // `stored_slots` directly as the equivalent stricter form. When
+    // the weighted gap is introduced the trigger switches back to
+    // `compute_bucket_allocation(&bucket) < T_PROMOTE`.
+    let stored_slots_check = bucket.stored_slots;
+    if stored_slots_check < T_PROMOTE {
         return Err(LabeledOperationError::AllocSpaceCapReached {
-            current_alloc_space: alloc_space,
+            current_alloc_space: stored_slots_check,
             cap: T_PROMOTE,
             mode: BucketMode::Slab,
         });
@@ -167,6 +179,18 @@ where
     //
     // The block write loop uses `write_payload` for full blocks and
     // `write_payload_partial` for the tail block (4-byte leftover rows).
+    //
+    // `E::BYTES == 4` is a wire invariant: the only supported `E` is one
+    // whose edge payload is a 4-byte target (e.g. `TestEdge { target: u32 }`).
+    // A fail-closed typed guard (returning a `LabeledOperationError`
+    // instead of panicking in debug) is deferred to Plan 0318 §Step 6
+    // alongside the other tree-mode edge-write invariants.
+    debug_assert_eq!(
+        E::BYTES,
+        4,
+        "promote_bypass_to_tree_mode requires E::BYTES == 4 (got {})",
+        E::BYTES
+    );
     let ltb = graph.ltb();
     let mut cursor: usize = 0;
     let mut slot_in_block: usize = 0;
@@ -289,6 +313,20 @@ where
     // Phase 3c: release the old edge span. The slab prefix is no longer
     // referenced (the new descriptor points at the LEG root region),
     // so the slab prefix slots become recyclable.
+    //
+    // **Leaf-physical caveat (Plan 0318 §Step 4 amend note 5)**: the
+    // released pre-promotion edge span is a subrange of an existing
+    // leaf physical block. The release returns the subrange to the
+    // slab free list, but if the leaf is currently pinned by a
+    // `labeled_leaf_physical_range`, the pin is invalidated by the
+    // recycle. This is a latent bug for the production wire-up:
+    // **Step 6 must adopt one of** (a) leaf-physical-aware release
+    // that preserves pin invariants, (b) delegate the recycle to
+    // leaf compaction, or (c) use a new
+    // `EdgeStore::allocate_span_avoiding(pinned_ranges)`. The current
+    // release path mirrors the leaf-whole release convention in
+    // `compact.rs:481`; Step 6 review must align the promote recycle
+    // with it.
     let _ = graph
         .edges()
         .release_span(pre_edge_start, u64::from(pre_stored_slots));
@@ -397,21 +435,70 @@ mod tests {
 
     #[test]
     #[cfg(not(feature = "canbench"))]
-    fn promote_rejects_when_alloc_space_below_cap() {
+    fn promote_rejects_existing_bucket_below_cap() {
+        // Plan 0318 §Step 4 amend: under the placeholder
+        // `alloc_gap = T_PROMOTE - stored`, `compute_bucket_allocation`
+        // is constant T_PROMOTE so the alloc_space form of the trigger
+        // never fires for an existing bucket. The precondition is
+        // `stored_slots < T_PROMOTE` directly. An existing bucket at
+        // stored_slots = 10 must be rejected.
         let graph = test_graph();
         let vid: VertexId = VertexId::from(0);
-        // The fresh test graph has an empty default-label bucket. With
-        // stored_slots = 0, alloc_space = 0 < T_PROMOTE, so the
-        // promotion must be rejected.
+        force_bucket_to_stored_slots(&graph, vid, BucketLabelKey::directed_from_index(1), 10);
         let result =
             promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
-        assert!(
-            matches!(
-                result,
-                Err(LabeledOperationError::AllocSpaceCapReached { .. })
-            ),
-            "expected AllocSpaceCapReached, got {result:?}"
-        );
+        match result {
+            Err(LabeledOperationError::AllocSpaceCapReached {
+                current_alloc_space,
+                cap,
+                mode,
+            }) => {
+                assert_eq!(current_alloc_space, 10);
+                assert_eq!(cap, T_PROMOTE);
+                assert_eq!(mode, BucketMode::Slab);
+            }
+            other => panic!("expected AllocSpaceCapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn promote_rejects_empty_existing_bucket() {
+        // Plan 0318 §Step 4 amend: an existing empty bucket
+        // (stored_slots = 0) is below-cap and must be rejected
+        // (promoting an empty bucket is wasteful).
+        let graph = test_graph();
+        let vid: VertexId = VertexId::from(0);
+        force_bucket_to_stored_slots(&graph, vid, BucketLabelKey::directed_from_index(1), 0);
+        let result =
+            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
+        match result {
+            Err(LabeledOperationError::AllocSpaceCapReached {
+                current_alloc_space,
+                cap,
+                ..
+            }) => {
+                assert_eq!(current_alloc_space, 0);
+                assert_eq!(cap, T_PROMOTE);
+            }
+            other => panic!("expected AllocSpaceCapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn promote_missing_bucket_returns_bucket_not_found() {
+        // Plan 0318 §Step 4 amend: the `Missing` branch returns
+        // `BucketNotFound` (not the misleading `AllocSpaceCapReached`).
+        let graph = test_graph();
+        let vid: VertexId = VertexId::from(0);
+        // No bucket exists for this label; `find_bucket` returns Missing.
+        let result =
+            promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(99));
+        match result {
+            Err(LabeledOperationError::BucketNotFound { .. }) => {}
+            other => panic!("expected BucketNotFound, got {other:?}"),
+        }
     }
 
     #[test]
@@ -473,19 +560,27 @@ mod tests {
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn promote_reserve_phase_rolls_back_on_mint_failure() {
-        // Cannot exhaust stable memory in a unit test, so this test
-        // verifies only the happy-path rejection when stored_slots
-        // hasn't reached the cap. The atomic rollback on mint failure
-        // is exercised by the typed-error contract (the function
-        // releases on error).
+        // Plan 0318 §Step 4 amend: rewritten to use an existing
+        // bucket with stored_slots = 10 (the true below-cap path) so
+        // the test exercises the precondition-2 rejection rather than
+        // the `Missing` branch. The atomic rollback on mint failure
+        // itself is exercised by the typed-error contract (the
+        // function releases on error); exhaustively exhausting stable
+        // memory in a unit test is impractical.
         let graph = test_graph();
         let vid: VertexId = VertexId::from(0);
+        force_bucket_to_stored_slots(&graph, vid, BucketLabelKey::directed_from_index(1), 10);
         let result =
             promote_bypass_to_tree_mode(&graph, vid, BucketLabelKey::directed_from_index(1));
-        assert!(matches!(
-            result,
-            Err(LabeledOperationError::AllocSpaceCapReached { .. })
-        ));
+        match result {
+            Err(LabeledOperationError::AllocSpaceCapReached {
+                current_alloc_space,
+                ..
+            }) => {
+                assert_eq!(current_alloc_space, 10);
+            }
+            other => panic!("expected AllocSpaceCapReached, got {other:?}"),
+        }
     }
 
     #[test]
