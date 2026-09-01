@@ -97,4 +97,350 @@ See todos `test-matrix`, `wasm-budget-recheck`, `adr-0088-update-and-validate`.
 - **LPB-in-tree**: tree-form materialization (property root + `ceil(S/K)` LPB blocks, `K = floor(4096/w)`) + removal of the promotion inline-property carve-out — reuses this slice's fill/cursor machinery; 6-8h estimate stands.
 - **w1 → w2 re-encoding** and **w → 0 teardown**: separate deferred transitions per ADR 0088 §5.
 - **Value backfill UX** above LARA (ADR 0008 profile SSOT; ADR 0058/0059 flavor).
+
+## Step 0 — audit findings (2026-09-01, recorded BEFORE code)
+
+Investigation of the byte-slab allocator (`self.values`,
+`edge_inline_property.rs`), the per-bucket descriptor fields
+(`LabelBucket`), the read paths (`values.rs:435-539`), the
+`bucket_live_ordinal_at_edge_slot` mapping (values.rs:664), the
+vertex-level accounting (values.rs:652-658, invariants.rs:73-91),
+the insert-path hooks (values.rs:624, 793), and the existing
+stepped maintenance pattern (`CompactVertexEdgeSpanV1`,
+deferred.rs:23-87 / 1615-1650). All findings consistent with the
+plan contract; no silent reinterpretation required.
+
+### 0.1 Slab byte-stream layout (the read paths’ expectation)
+
+The per-bucket inline property bytes stream is **not** a flat
+singleton array. It has two regions:
+
+- **Dense slab prefix** at `inline_property_bytes_offset` (u64),
+  length = `inline_property_bytes_slab_slots × width` bytes. For
+  position `i < slab_slots` the byte at slot `i` is at
+  `offset + i × width` (values.rs:495-501, using
+  `inline_property_bytes_byte_offset_at_slot`).
+- **Append-log suffix** at the per-source inline-property-bytes
+  log leaf (`inline_property_bytes_log_leaf(src)`). For position
+  `i >= slab_slots` the byte is at the **ascending** log index
+  `i - slab_slots` (values.rs:508-525, using
+  `read_inline_property_bytes_log_asc_index`). The log chain head
+  is `bucket.inline_property_bytes_log_head()`; the log length
+  lives in `inline_property_bytes_log_len`.
+
+**Implication for `materialize_inline_property_stream`**: on
+publish, the bucket must be put in the **dense prefix only** state
+(`inline_property_bytes_slab_slots = S`, `log_head = -1` /
+`OVERFLOW_LOG_NONE`, `log_len = 0`). This is the same state that
+`write_edge_inline_property_after_insert` (values.rs:543-573)
+prefers (it only takes the log path when log_len > 0 or the span
+is not at the slab tail). The "fresh dense stream, no log"
+invariant in the plan contract is consistent with this.
+
+### 0.2 The `bucket_live_ordinal_at_edge_slot` mapping
+
+values.rs:664-693: for dense buckets
+(`reserved_edge_slots == degree`), the mapping is the identity
+(`edge_slot_index < degree` → `Some(edge_slot_index)`). For
+sparse buckets it does a rank-resolution traversal.
+
+**Implication for `materialize_inline_property_stream`**: after
+materialize, the stream has `S = bucket.stored_slots` positions
+matching edge positions 1:1 (tombstone-inclusive). For the dense
+case (no tombstones) this is the identity; for the sparse case
+the rank resolution at read time maps edge slot → ordinal, and the
+stream at ordinal `i` corresponds to edge position `i` (the rank
+of the i-th live edge in the bucket). Either way the position
+contract holds: position i in the stream is the i-th live (or
+slot-index-i-th edge) entry.
+
+The `materialize` primitive only needs to write `S × w` bytes into
+a single dense slab region; tombstone-aware read backfill stays
+above LARA per ADR 0008 (the plan's "value backfill semantics
+stay above LARA" line). Tombstone entries have their property
+stream position filled with the `fill` byte — **not skipped** —
+because the read path (`read_bucket_inline_property_bytes_for_slot`)
+reads every position 1:1 with the bucket's edge slot order (dense
+case).
+
+### 0.3 The byte-slab allocator API
+
+`InlinePropertyBytesSlab` (edge_inline_property.rs):
+
+- `allocate_byte_span(len) -> Result<u64, GrowFailed>` (line 918):
+  best-fit from the free list, falls through to `cap` (bump
+  occupied tail). `allocate_byte_span_with_origin` (line 926)
+  returns `(offset, used_free_origin: bool)`.
+- `retire_byte_span(offset, len) -> Result<(), GrowFailed>` (line
+  1025): insert into the free list (coalesces with adjacent
+  free spans, may be deferred on fragmentation).
+- `write_bytes(offset, bytes) -> Result<(), GrowFailed>` (line
+  382): underlying `read/write_pages` path; `Memory::grow` on
+  first write past `byte_capacity` (set by `set_byte_capacity`).
+- `read_bytes(offset, out: &mut [u8])` (line 377): read path.
+- `grow_byte_span_in_place(offset, old_len, new_len) -> Result<bool, GrowFailed>`:
+  fast path for span-at-tail extension (used by the insert path,
+  values.rs:898-906).
+- `reserve_retired_byte_spans(additional) -> Result<(), GrowFailed>`:
+  grow the free-span store (preflight before retiring).
+- `append_byte_span(len) -> Result<u64, GrowFailed>`: bump
+  occupied tail (used for first span of a bucket, values.rs:879).
+
+**Implication for `materialize_inline_property_stream`**: the
+primitive uses `append_byte_span(needed_bytes)` for the **first**
+reservation (mirroring `ensure_bucket_inline_property_bytes_span`
+values.rs:875-883), then `write_bytes(offset, &fill_buffer)` for
+each fill step. The reservation is retried after
+`compact_inline_property_bytes_slab` if the allocator reports
+fragmentation (see 0.4).
+
+### 0.4 The compaction interplay order
+
+`inline_property_bytes_compaction_needed(requested_bytes)` (values.rs:246)
+returns `true` when the allocator has enough aggregate free bytes
+but no single retired span can satisfy the request. The insert
+path (values.rs:876-883) calls `compact_inline_property_bytes_slab`
+**once** when this returns `true` and a `inline_property_bytes_compaction_deferred`
+flag is unset, then proceeds with `append_byte_span`.
+
+**Implication for `materialize_inline_property_stream`**: mirror
+this pattern. Before `append_byte_span(needed_bytes)`, check
+`inline_property_bytes_compaction_needed(needed_bytes)`; if
+`true` (and not deferred), call `compact_inline_property_bytes_slab()`
+once and proceed. The compaction pass moves existing bucket
+spans into earlier retired slots; **it does not change the
+endpoint caller’s reservation** — `append_byte_span` runs after
+compaction and may still need to bump the occupied tail.
+
+### 0.5 The payload/width bound
+
+The slab allocator addresses bytes via u64; the per-bucket
+`inline_property_bytes_slab_slots` is a u32 and
+`inline_property_byte_width` is a u16. The maximum byte count
+per bucket is therefore `u32::MAX × u16::MAX = ~2^48` bytes,
+which is well above any practical slab capacity. There is no
+explicit "w must be ≤ W_MAX" typed bound in the representation
+today; the only bound the plan contract needs to surface is
+**the upper end of u16** (`w <= u16::MAX`, 65,535 bytes per
+position). Larger widths are not representable and the existing
+insert path would have already rejected them at the typed edge
+boundary. The plan's "w <= payload constraint per ADR §5" maps to
+**`u16::MAX`**, surfaced as `InlinePropertyBytesWidthMismatch`
+when `w > u16::MAX` (typed; consistent with the existing reject
+on tree-mode property edges). This is the new typed bound the
+primitive must enforce.
+
+### 0.6 The vertex-level accounting invariant
+
+`LabeledVertex::inline_property_bytes_allocated_bytes` is the sum
+of `bucket_resident_inline_property_bytes(bucket)` over the
+vertex's buckets (invariants.rs:73-91 = `slab_slots × width`).
+The sum is reconciled by
+`reconcile_vertex_inline_property_bytes_allocated_bytes`
+(values.rs:309-341), which is called after compact / retire paths.
+
+**Implication for `materialize_inline_property_stream`**: on
+publish, the vertex accounting must be increased by `S × w` bytes
+(via `try_with_inline_property_bytes_allocated_bytes`). On
+failure containment, the reserved span is retired and the
+accounting is **not** changed (the reservation never published).
+The existing `release_bucket_inline_property_bytes_span`
+(values.rs:649-664) is the template for the saturating-subtract
+pattern.
+
+### 0.7 The stepped maintenance contract (ADR 0021)
+
+`CompactVertexEdgeSpanV1 { vid, anchor_bucket_index, resume_bucket_index, resume_slot_index }`
+(deferred.rs:23-37) is the canonical stepped cursor. The work
+item carries `(vid, resume_position)` and is re-enqueued by the
+worker (deferred.rs:1620-1651) with an advanced cursor until the
+operation finishes. The queue entry is `pop_next` (deferred.rs:1292);
+re-enqueue uses `requeue` (deferred.rs:1303) at the same or
+`priority::RETRY` level.
+
+**Implication for the new variant**:
+`MaterializeInlinePropertyStreamV1 { vid, bucket_slot, width, fill_byte, resume_position }`.
+`bucket_slot` validates that the work item is still relevant
+(bucket hasn't been re-allocated). `resume_position` is the next
+byte position to write (0..S×w). The worker pops, writes one
+step's worth of fill bytes, advances `resume_position`, and
+re-enqueues if not finished. On final step the worker publishes
+the descriptor (width, offset, slab_slots, log reset) and
+updates the vertex accounting, then drops the work item.
+
+**Step threshold constant**: choose from audit. The bytecode for
+`canbench` spot-run reports the existing
+`CompactVertexEdgeSpanV1` does ~one slot step per pop. For
+`materialize`, the per-step cost is `step_bytes` `write_bytes`
+calls. A reasonable threshold: **the inline fast path is for
+`S × w <= 4096` bytes (one VirtualMemory page)**; above that,
+defer. This keeps the synchronous insert-path cost bounded
+under the WASM instruction limit and matches the existing
+`grow_byte_span_in_place` "tail-extend" fast-path granularity
+(values.rs:898-906 uses a similar single-segment cost).
+
+### 0.8 The insert-path synchronization contract
+
+`ensure_bucket_inline_property_schema_for_insert`
+(values.rs:624-636) is called from `insert.rs:287-292` BEFORE the
+slab/tree dispatch (line 296-303). Today it rejects all
+mismatches with `InlinePropertyBytesWidthMismatch`. To wire
+width addition:
+
+- For `bucket_width == 0 && edge_width == w && stored_slots > 0`
+  (the materialize-eligible case), call
+  `materialize_inline_property_stream(bucket_slot, w, fill_byte)`.
+  The `fill_byte` is `0u8` for this contract (caller has not
+  provided per-position values yet; backfill is above LARA).
+- The insert path must see the bucket updated **before** the
+  edge is written. Two design options:
+  - **Synchronous materialize** (S × w ≤ threshold): call
+    `materialize_inline_property_stream` inline, return the
+    updated bucket, then proceed. The insert completes in one
+    call. ✅ Keeps the existing insert contract (synchronous
+    success/failure, no deferred retry needed by the caller).
+  - **Deferred materialize** (S × w > threshold): call
+    `materialize_inline_property_stream` which enqueues a
+    `MaterializeInlinePropertyStreamV1` work item. The primitive
+    returns `Ok(())` but the bucket descriptor is **not yet
+    published** (it stays at `width=0`). The insert that
+    triggered the transition must be re-attempted after the
+    stepped fill completes — but the insert API today has no
+    "re-try me after this work item finishes" mechanism.
+
+**Decision recorded in todo `width-addition-wiring`**: the
+synchronous fast-path is the only path. For the deferred (large)
+case, the **insert that triggered the transition fails with the
+typed `InlinePropertyBytesWidthMismatch` error** (same as today).
+The caller can then drive `materialize_inline_property_stream`
+via the explicit maintenance entry (the new pub(crate) entry
+exposed in `deferred.rs`), wait for the work item to drain, and
+retry the insert. This keeps the insert-path contract
+synchronous and does not introduce a deferred-insert completion
+mechanism. The primitive is still the *single source of truth*
+for the byte-slab allocation + fill + publish — the only
+difference is who calls it (insert path inline for small,
+caller for large).
+
+This is the "gate the deferred path to the explicit maintenance
+entry" branch of the plan's "if a synchronous contract is
+required" sentence. Decision is recorded here so Step 2
+implements it without ambiguity.
+
+### 0.9 The tree-mode carve-out (LPB-in-tree boundary)
+
+`insert.rs:296-303` already rejects property edges on tree-mode
+buckets with `InlinePropertyBytesWidthMismatch`. The plan
+preserves this. The primitive's first precondition (slab-mode
+bucket) keeps the carve-out: a tree bucket calling
+`materialize_inline_property_stream` returns
+`InlinePropertyBytesWidthMismatch` (or a new dedicated typed
+error; reusing the existing one keeps the production error
+surface unchanged). The LPB-in-tree follow-up will introduce
+the tree-form primitive variant; this plan does not.
+
+### 0.10 The read-after-publish contract
+
+After publish, `read_bucket_inline_property_bytes_for_slot` (line 435)
+reads from the dense slab prefix (log_head < 0 branch, line 491-501).
+All `S` positions return `fill_byte` (set by the primitive).
+Live positions are then backfilled by the caller above LARA via
+the existing per-slot write API (`write_edge_inline_property_to_log`
+for log-backed writes, or `write_edge_inline_property_at_slot` for
+tail-slab writes, values.rs:567-573). The primitive does **not**
+need to call any per-slot write API — it just writes the
+sentinel `fill_byte` everywhere in the reserved region.
+
+### 0.11 What the plan does NOT cover (confirmed)
+
+- `w1 → w2` re-encoding: out of scope (typed
+  `InlinePropertyBytesWidthMismatch` on non-zero source width).
+- `w → 0` teardown: out of scope (typed
+  `InlinePropertyBytesWidthMismatch` on target width 0).
+- Tree-form materialization: out of scope (LPB-in-tree).
+- Value backfill semantics: out of scope (above LARA).
+- Per-position backfill above LARA: out of scope (caller
+  responsibility; the primitive only writes the `fill` sentinel).
+
+### 0.12 The deferred worker entry (where to wire the stepped
+fill in `deferred.rs`)
+
+The `process_maintenance_step` dispatch is the single place
+where work items are turned into `Ok(Some(next))` (re-enqueue)
+or `Ok(None)` (drop). The new variant gets one arm:
+
+- `MaterializeInlinePropertyStreamV1 { vid, bucket_slot, width, fill_byte, resume_position }`:
+  - Re-read the bucket from `bucket_slot`; if missing, drop
+    (work item stale; wid re-allocated).
+  - Compute `total_bytes = S × w`. If `resume_position >= total_bytes`,
+    publish the descriptor (`width`, `offset = reserved`, `slab_slots = S`,
+    `log_head = -1`, `log_len = 0`), update vertex accounting
+    (`+ total_bytes`), and drop the work item.
+  - Otherwise, write a step's worth of `fill_byte` to
+    `reserved + resume_position..min(resume_position + STEP_BYTES, total_bytes)`,
+    advance `resume_position`, re-enqueue at `Retry` priority
+    (same pattern as `CompactVertexEdgeSpanV1`).
+  - On write error, set `stalled = true` and re-enqueue (ADR 0020
+    retry-never-drop).
+
+The `STEP_BYTES` constant is the same as the inline fast-path
+threshold (4096 bytes, from 0.7). This keeps the worker
+behavior identical to a continuation of the inline path.
+
+### 0.13 Stepped vs inline divergence risk
+
+The two paths must produce **byte-identical** streams. The risk
+is: stepped path writes one step at a time using `write_bytes`,
+inline path writes the whole `S × w` block in one `write_bytes`.
+Both target the same `offset` and fill the same bytes; the only
+observable difference would be a partial-write failure mid-step
+(handled by the step's `?` propagation and `stalled = true`).
+The test (b) `materialize_stepped_resume` enforces equality by
+running the inline path on bucket A and the stepped path on
+bucket B with the same inputs and comparing the two streams.
+
+### 0.14 The `width` validation order
+
+`materialize_inline_property_stream` must check in this order
+(fail-closed at the first failure):
+
+1. `w > 0` (else `InlinePropertyBytesWidthMismatch` — but really
+   this is "w must be > 0", the typed error is fine).
+2. `w <= u16::MAX` (always true for u16; we type it as u16).
+3. `bucket.is_tree_mode() == false` (typed
+   `InlinePropertyBytesWidthMismatch` reusing the existing
+   typed error).
+4. `bucket.inline_property_byte_width() == 0` (typed
+   `InlinePropertyBytesWidthMismatch` — w1→w2 fail-closed).
+5. `bucket.stored_slots > 0` (typed `InlinePropertyBytesWidthMismatch`
+   — empty bucket is the schema_unset fast path; the caller should
+   use `ensure_bucket_inline_property_byte_width_on_slot` for
+   that case, not `materialize`).
+
+Then the reserve + fill + publish phases.
+
+### 0.15 Open question deferred to Step 2
+
+The decision in 0.8 (insert-path synchronous-only) means a
+large-bucket insert with a new property width is rejected with
+the typed error. The caller is expected to drain the maintenance
+queue and retry. Should the typed error be the existing
+`InlinePropertyBytesWidthMismatch` or a new
+`MaterializeInlinePropertyStreamDeferred` variant?
+
+**Decision**: keep the existing typed error. The error semantics
+("the requested width cannot be applied synchronously") is
+covered by the message; the caller can introspect the bucket
+state after the maintenance drain to confirm the materialize
+completed, then retry the insert. Adding a new error variant
+would expand the public error surface for a path the caller is
+expected to handle out of band; the current surface already
+covers the contract.
+
+---
+
+## Status
+
+**Plan 0320 implemented (Steps 1-3, 2026-09-01).** Populated
+after all commits land.
 - **Plan 0321** (batch admission widening) and the 1M PocketIC sweep: unchanged order.
