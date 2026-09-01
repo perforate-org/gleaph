@@ -698,6 +698,8 @@ canbench tcsr_promote_inline_property_w32
 
 All numbers persisted to `crates/ic-stable-lara/canbench_results.yml` via `canbench tcsr_ --persist`.
 
+**Post-Step-9 bench removal (2026-09-01, post-`2d9e8b993`)**: the `tcsr_4096_delete_half_by_slot_then_scan` and `tcsr_65536_delete_half_by_slot_then_scan` benches were removed from the canbench surface. Both are O(N²) prototype-only parity rows with no production-representative meaning, and the 65K arm (6.14 T ins) intermittently crashes the PocketIC daemon mid-query (connection reset → destructor panic → SIGABRT). Their measured results (24.04 B / 6.14 T ins) are preserved in the results table above and in `canbench_results.yml` git history. The canbench surface now runs 3 headline rows per degree (full_scan, random_ordinal_access, insert_grow) plus the two `tcsr_promote_*` benches; wasm exported-name budget drops to 16,512 chars (headroom 3,488). A `canbench --persist` caveat applies: it **replaces the entire results file** — historical entries were accidentally wiped in Step 9 and restored in `ba514d0c1`; future full-suite runs must merge, not replace.
+
 ### Step 10 — ADR 0088 update
 
 In `design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md`:

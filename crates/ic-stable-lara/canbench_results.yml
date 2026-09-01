@@ -3877,13 +3877,6 @@ benches:
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
-  tcsr_4096_delete_half_by_slot_then_scan:
-    total:
-      calls: 1
-      instructions: 24035190596
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes: {}
   tcsr_4096_full_scan_descending:
     total:
       calls: 1
@@ -3902,13 +3895,6 @@ benches:
     total:
       calls: 1
       instructions: 837796
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes: {}
-  tcsr_65536_delete_half_by_slot_then_scan:
-    total:
-      calls: 1
-      instructions: 6140615658276
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

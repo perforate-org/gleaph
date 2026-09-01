@@ -2221,25 +2221,19 @@ tree_csr_parity_bench!(4096u32, tcsr_4096_insert_grow, {
         black_box(bucket.stored_slots());
     })
 });
-tree_csr_parity_bench!(4096u32, tcsr_4096_delete_half_by_slot_then_scan, {
-    let mut bucket = seed_tree_csr_hub(4096);
-    bench_fn(|| {
-        for slot in (0..4096u32).step_by(2) {
-            let removed = bucket.remove_at(slot);
-            debug_assert!(removed.is_some());
-        }
-        let mut count = 0usize;
-        bucket.for_each_descending(|_slot, target| {
-            count += usize::from(target < 4096);
-        });
-        black_box(count);
-    })
-});
+// Plan 0318 post-Step-9 removal: the `tcsr_4096_delete_half_by_slot_then_scan`
+// and `tcsr_65536_delete_half_by_slot_then_scan` benches were removed from the
+// canbench surface. Both are O(N²) prototype-only parity rows (24 B and 6.14 T
+// instructions respectively) with no production-representative meaning; the
+// 65K arm intermittently crashes the PocketIC daemon mid-query (connection
+// reset during the 6.14 T-instruction call). Their measured results are
+// preserved in `plans/0318-tree-csr-implementation.md` §Step 9 and in
+// `git history` of `canbench_results.yml`.
 
 // Degree 65K ----------------------------------------------------------------
-// Same amend as 4K above: only the four headline parity rows run via
-// canbench at degree 65K. The remaining three rows live in
-// `tree_csr_high_degree_test.rs`.
+// Same amend as 4K above: only the three headline parity rows run via
+// canbench at degree 65K (delete_half removed — see the 4K note above). The
+// remaining three rows live in `tree_csr_high_degree_test.rs`.
 tree_csr_parity_bench!(65536u32, tcsr_65536_full_scan_descending, {
     let bucket = seed_tree_csr_hub(65536);
     bench_fn(|| {
@@ -2271,21 +2265,6 @@ tree_csr_parity_bench!(65536u32, tcsr_65536_insert_grow, {
         black_box(bucket.stored_slots());
     })
 });
-tree_csr_parity_bench!(65536u32, tcsr_65536_delete_half_by_slot_then_scan, {
-    let mut bucket = seed_tree_csr_hub(65536);
-    bench_fn(|| {
-        for slot in (0..65536u32).step_by(2) {
-            let removed = bucket.remove_at(slot);
-            debug_assert!(removed.is_some());
-        }
-        let mut count = 0usize;
-        bucket.for_each_descending(|_slot, target| {
-            count += usize::from(target < 65536);
-        });
-        black_box(count);
-    })
-});
-
 // Degree 1M -----------------------------------------------------------------
 // Plan 0313 / Step 3 amend: the 1M parity arms were removed because the
 // PocketIC wasm export name budget (20,000 chars across all exported fn
