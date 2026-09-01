@@ -535,6 +535,34 @@ threshold-crossing runs) as `Unsupported` → existing scalar fallback; the
 scalar path performs promotion. Widening batch admission to tree buckets
 (reserve n blocks → write → publish) is a natural follow-up slice.
 
+**Plan 0321 status (2026-09-02):**
+- **Step 1 (fail-closed guard)**: the tree-mode classification
+  guard is now implemented in `preflight_run`
+  (`OneOrientationBatchError::TreeModeBucketRunUnsupported`).
+  Runs whose target bucket is in tree mode are rejected BEFORE
+  any geometry math (the planner would otherwise read the root
+  region as slab slots and corrupt the bucket on commit). The
+  corruption hole (Plan 0319 Step 3 rewrite hazard class) is
+  closed.
+- **Step 2 (tree-run admission, minimal first slice)**:
+  tail-fit runs are admitted through the batch boundary
+  (`RunDestination::Tree { tail_block_id, tail_offset_bytes,
+  run_edge_count }`). The run writes its edges into the existing
+  tail block via `write_payload_partial` and the descriptor is
+  published with `stored_slots += n` and `degree += n` in one
+  canonical write. Runs that exceed tail room are rejected with
+  `OneOrientationBatchError::TreeRunExceedsTailBlock` (caller
+  falls back to scalar inserts). Multi-block + root-growth
+  widening is a recorded follow-up.
+- **Step 3 (threshold-crossing)**: batch writes past
+  `T_PROMOTE` are kept working. The next scalar insert promotes
+  the over-sized slab bucket to tree mode. Regression test
+  `batch_run_past_t_promote_then_scalar_promotes_correctly`
+  covers the descriptor correctness. NO new typed error is
+  added for threshold-crossing.
+- **Batch-remove + LPB-in-tree batch + promote-then-batch**:
+  recorded as later slices, not implemented.
+
 ### 8. Reopen and validation
 
 Safety is anchored at **allocation time**, not reopen:
