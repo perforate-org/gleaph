@@ -9,7 +9,7 @@ use crate::{
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, cell::RefCell, fmt};
 
-#[cfg(feature = "canbench")]
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
 /// One versioned deferred maintenance item for a labeled graph.
@@ -1463,7 +1463,7 @@ where
         if removed.is_some() {
             self.maybe_enqueue_tombstone_vertex_edge_span_maintenance(src)?;
             if self.inner.labeled_leaf_segment_is_dense(src) {
-                #[cfg(feature = "canbench")]
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _bench_scope = bench_scope("labeled_deferred_remove_dense_enqueue");
                 self.maybe_enqueue_dense_vertex_maintenance(src)?;
             }
@@ -1502,7 +1502,7 @@ where
         if self.dense_maintenance_pending_in_leaf(vid) {
             return Ok(());
         }
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_deferred_dense_enqueue");
         self.mark_compact_dense_labeled_vertex_maintenance(vid)
     }
@@ -1599,7 +1599,7 @@ where
                 break;
             };
             report.processed_work_items = report.processed_work_items.saturating_add(1);
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_deferred_maintenance_item");
             // Set when a compaction step fails; the partially mutated span must be retried, not
             // dropped. We requeue it at the Retry priority and stop the pass to avoid

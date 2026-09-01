@@ -10,7 +10,7 @@ use crate::{
     lara::operation_error::LaraOperationError,
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-#[cfg(feature = "canbench")]
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 use std::cmp::Ordering;
@@ -200,7 +200,7 @@ where
             return Ok(());
         }
 
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rebalance_leaf_cascade");
 
         let sole_active_labeled_vertex =
@@ -209,15 +209,15 @@ where
         if self.labeled_leaf_physical_range(src).is_some() {
             let counts = self.leaf_segment_counts_for_vid(src);
             if counts.total > 0 && counts.actual >= counts.total {
-                #[cfg(feature = "canbench")]
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_relocate_leaf_physical_block");
                 self.relocate_labeled_leaf_physical_block(src)?;
             } else {
-                #[cfg(feature = "canbench")]
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_weighted_leaf_slide");
                 self.rebalance_labeled_leaf_weighted_slide(src)?;
                 if self.labeled_leaf_pma_density(src) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
-                    #[cfg(feature = "canbench")]
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
                     let _scope = bench_scope("labeled_relocate_leaf_after_slide");
                     self.relocate_labeled_leaf_physical_block(src)?;
                 }
@@ -227,14 +227,14 @@ where
 
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
             if sole_active_labeled_vertex {
-                #[cfg(feature = "canbench")]
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_rebalance_edge_log_vertex");
                 self.rebalance_edge_log_vertex_for_labeled(src, true, false)?;
                 self.edges
                     .release_log_segment(SegmentId::from(leaf))
                     .map_err(LabeledOperationError::from)?;
             } else {
-                #[cfg(feature = "canbench")]
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("labeled_rebalance_edge_log_leaf");
                 self.rebalance_edge_log_leaf_for_labeled(src, true, false)?;
             }
@@ -245,7 +245,7 @@ where
 
         let src_vertex = self.vertices.get(src);
         if !src_vertex.is_default_edge_labeled() && src_vertex.degree() > 0 {
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_rewrite_vertex_edge_span");
             self.rewrite_vertex_edge_span(src, None, 0, false, true, None)?;
             if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
@@ -457,7 +457,7 @@ where
             }
         }
 
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_find_bucket_slot");
 
         if deg >= BULK_BUCKET_SEARCH_MIN_DEGREE {

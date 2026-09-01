@@ -11,7 +11,7 @@ use crate::{
     lara::{edge::OutEdgeSlabIter, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-#[cfg(feature = "canbench")]
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 use std::ops::ControlFlow;
@@ -588,7 +588,7 @@ where
         if let Some(run) =
             Self::try_contiguous_tiled_labeled_out_edges_slice(&buckets, span_end_exclusive)
         {
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_out_edges_by_directedness_tiled");
             if run.total_edges() > 0 {
                 let nbytes = run.byte_len::<E>()?;
@@ -1054,7 +1054,7 @@ where
             return self.remove_default_bypass_edge_matching(src, label_id, vertex, matches);
         }
         if let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? {
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_remove_edge_skip_leaf");
             let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
             if bucket.degree() == 0 {

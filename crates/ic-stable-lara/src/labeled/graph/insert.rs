@@ -22,7 +22,7 @@ use crate::{
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-#[cfg(feature = "canbench")]
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
@@ -161,7 +161,7 @@ where
         vid: VertexId,
     ) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(vid)?;
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_compact_label_bucket_vertex_segment");
         self.buckets
             .compact_vertex_segment_for_vertex(&self.vertices, vid)
@@ -802,7 +802,7 @@ where
             BucketSearch::Found { slot, bucket } => return Ok((slot, bucket)),
             BucketSearch::Missing { insert_index } => insert_index,
         };
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
         let (slot, rewrote_bucket_segment) = self
             .buckets
