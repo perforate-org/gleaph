@@ -789,6 +789,14 @@ python3 ~/.agents/skills/plan/scripts/validate_plan.py \
 
 ## Later Slices
 
+    - `tree-mode-tombstone-reuse` — tree bucket tombstones are not reused on insert (slab mode reuses via
+      `try_reuse_unordered_slab_tombstone`); high-churn tree buckets grow LTB footprint monotonically toward the
+      interim `TreeRootCapacityReached` cap (2^20 slots) even at low live degree. Primary reclaim: Plan 0319
+      hysteresis demotion (tree→slab rebuild). **Parallel-track candidate (orchestrator, 2026-09-01): a compressed
+      per-bucket tombstone/occupancy distribution map** — the persistent live bitmap / rank-select structure deferred
+      in GAP-2026-07-25-002 (`design/implementation-gaps.md`) would serve both the OFFSET-skip acceleration (that
+      gap) and O(1) free-ordinal lookup for tree-mode reuse. Design them together when either is picked up.
+
 - **Plan 0319** — Demotion (tree → slab). Recorded as a benchmark-gated maintenance operation per ADR 0088 §7. Originally Plan 0318; renumbered to Plan 0319 to make room for this implementation slice.
 - **Plan 0320** — `materialize_inline_property_stream` migration primitive. Recorded as planned.
 - **Plan 0321** — Batch admission widening to tree-mode buckets. Per ADR 0088 §7.
