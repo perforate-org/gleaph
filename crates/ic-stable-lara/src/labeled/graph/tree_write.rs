@@ -1571,10 +1571,9 @@ mod tests {
         // precondition check in `tree_mode_deepen` catches this before
         // any mint/write.
         let graph = test_graph();
-        let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(1);
         // Set up vertex with a single bucket slot.
-        let vid: VertexId = graph
+        let _vid: VertexId = graph
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
@@ -1625,7 +1624,7 @@ mod tests {
         // is 2 so we mint 2 interiors).
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
-        let vid = graph
+        let _vid = graph
             .push_vertex(
                 crate::labeled::record::LabeledVertex::default()
                     .try_with_bucket_row(0, 1)

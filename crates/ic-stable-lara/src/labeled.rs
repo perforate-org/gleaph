@@ -103,13 +103,20 @@ pub(crate) mod hub_tree_prototype;
 )]
 pub(crate) mod invariants;
 /// ADR 0088 §1 LTB block store, raw stable-memory backend (Plan 0315).
-#[cfg(any(test, feature = "canbench"))]
+///
+/// Production module as of Plan 0318 §Step 2: the graph's per-orientation
+/// `ltb` field lives here. The old `any(test, feature = "canbench")` gate was
+/// removed — a plain production `cargo check` failed with it in place (the
+/// gate predated the production wiring and the green-bar matrix never ran a
+/// feature-less lib check).
 pub(crate) mod ltb_raw_block_store;
 /// Plan 0313 amend: cargo-test high-degree sweep (host wall-clock, 1M edges).
 #[cfg(test)]
 mod tree_csr_high_degree_test;
-/// ADR 0088 Tree-CSR mode prototype (evidence-only; not wired into the graph).
-#[cfg(any(test, feature = "canbench"))]
+/// ADR 0088 Tree-CSR prototype helpers (`B`, `derive_depth`, `root_len`) used
+/// by the production tree-mode read/write paths (Plan 0318 §Steps 5-7). The
+/// `TreeCsrBucket` value type remains evidence-only; the gate was removed when
+/// production paths began importing the helpers.
 pub(crate) mod tree_csr_prototype;
 
 /// Initial physical capacities for the labeled graph's independent storage slabs.
