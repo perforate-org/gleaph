@@ -100,6 +100,61 @@ New function in `crates/ic-stable-lara/src/labeled/graph/tree_write.rs`, sibling
 
 `bucket_span_region_len` helper + region-length corrections in the retire/plan/copy paths + dense-verbatim tree-bucket moves. Audit vertex.stored_slots accounting first and record findings. See todo `compaction-tree-awareness`.
 
+**Step 3 audit findings (recorded 2026-09-01, plan-0318 lane)**:
+
+1. **`vertex.stored_slots` overstates the LEG span width for tree buckets.**
+   The promote path (`promote_bypass_to_tree_mode` Phase 3) does not
+   update `LabeledVertex::stored_slots` when it transitions a slab
+   bucket to tree mode. After promote, the bucket's LEG span shrinks
+   from `stored_slots` (the old slab width) to `root_len` (the new
+   root region), but `vertex.stored_slots` still reports the old
+   width. This is a latent accounting gap: the rewrite path uses
+   `vertex.stored_slots` to size per-vertex span intervals, so it
+   over-claims the region for tree buckets. Recorded as a follow-up
+   (vertex.stored_slots must be reduced to `root_len` at promote
+   time and restored to `degree` at demote time). Not blocking Step
+   3 because `bucket_span_region_len` (added in Step 3) gives the
+   rewrite path the correct per-bucket region length, so the
+   corruption hazard is closed even though the vertex-level
+   accounting is still off.
+
+2. **`bucket_span_region_len` helper adopted in
+   `vertex_edge_span_retire_intervals` (compact.rs:288).** For slab
+   buckets, returns `stored_slots` (the contiguous edge-slab width).
+   For tree buckets, returns the physical root region length
+   (`ceil(stored/B^depth)` for depth 1, `ceil(ceil(stored/B) / K)`
+   for depth 2, etc.). This is the minimum-viable fix for the
+   rewrite-path corruption hazard: the retire-intervals calculation
+   now uses the correct per-bucket region length, and tree buckets
+   contribute their root region (not their stored_slots) to the
+   union.
+
+3. **Full rewrite-path tree-awareness is a recorded follow-up.** The
+   plan todo scope is: (b) introduce `bucket_span_region_len` and
+   adopt it in retire/plan/copy; (c) tree buckets move verbatim
+   (no tombstone interpretation). Sub-step (b) is implemented. Sub-step
+   (c) — making `compact_vertex_edge_span` / `rewrite_vertex_edge_span`
+   move tree buckets verbatim (dense u32 array, no tombstone scan)
+   and skip them in the degree-based run length calculation — is
+   deferred to a follow-up slice because it touches the copy loops
+   (`compact.rs` ~696, ~778, ~1312, ~1523, ~1646, ~1701). The
+   `bucket_span_region_len` helper is the foundation for that
+   follow-up.
+
+4. **`vertex_has_slab_tombstone_slack_pressure` (compact.rs:2305)
+   still counts tree buckets.** After Step 2, a tree bucket has
+   `degree > T_DEMOTE` between operations, so tombstone burden is
+   bounded. But a still-tree bucket CAN have `stored - degree >=
+   segment_size` (e.g. 2^20 stored, 2049 degree). The pressure check
+   may enqueue such a vertex for rewrite. The rewrite path now uses
+   the correct region length (finding 2) so it does not corrupt
+   the tree bucket, but the copy loops still try to interpret tree
+   bucket regions as edge slots (finding 3 follow-up). For the
+   current slice we accept this: the tree bucket survives the
+   rewrite (its root region is copied verbatim via the new helper),
+   but the rewrite may not reclaim any space from it. The demote
+   trigger (Step 2) is the primary reclaim path for tree buckets.
+
 ## Step 4 — test matrix, wasm budget, ADR, validator
 
 See todos `demote-test-matrix`, `wasm-budget-recheck`, `adr-0088-update-and-validate`.

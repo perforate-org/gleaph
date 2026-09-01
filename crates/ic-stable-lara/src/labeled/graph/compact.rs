@@ -213,6 +213,43 @@ fn next_vertex_edge_span_allocation(
         .ok_or(LaraOperationError::CollectAllocationOverflow)
 }
 
+/// Plan 0319 §Step 3: returns the LEG span region length for a label
+/// bucket. For slab-mode buckets, this is `stored_slots` (the
+/// contiguous edge-slab width). For tree-mode buckets, this is the
+/// **physical root region length** (a `u32` block_id array of
+/// length `ceil(stored_slots / B^depth)`), NOT `stored_slots`.
+///
+/// **Why this matters**: the vertex edge-span rewrite path
+/// (`vertex_edge_span_retire_intervals`, `compact_vertex_edge_span`,
+/// `rewrite_vertex_edge_span`) reads each bucket's region as
+/// `[edge_start, edge_start + region_len)`. For a slab bucket,
+/// `region_len = stored_slots` correctly describes the contiguous
+/// edge slots. For a tree bucket, `region_len = stored_slots` is
+/// WRONG — the actual LEG region is only the root region
+/// (`physical_root_len` slots), and `stored_slots` is the count of
+/// live + tombstoned edge entries (a logical number, not a
+/// physical LEG span). Using `stored_slots` for a tree bucket would
+/// cause the rewrite to read past the root region into neighboring
+/// buckets and misread block ids as edge targets (corruption).
+pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
+    if !bucket.is_tree_mode() {
+        return bucket.stored_slots;
+    }
+    // Tree mode: physical root region length.
+    let physical_depth = bucket.tree_mode_physical_depth();
+    let stored = bucket.stored_slots;
+    let leaf_count =
+        u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr_prototype::B as u64))
+            .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    match physical_depth {
+        1 => leaf_count,
+        2 => leaf_count.div_ceil(k),
+        3 => leaf_count.div_ceil(k).div_ceil(k),
+        _ => unreachable!("tree_mode_physical_depth out of range"),
+    }
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -298,10 +335,24 @@ where
         let span_end = checked_add_slot_index(span_start, u64::from(span_len))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
+        // Plan 0319 §Step 3: for tree-mode buckets, the LEG span is
+        // the **physical root region** (a u32 block_id array), NOT
+        // `stored_slots` edge slots. The previous code used
+        // `bucket.stored_slots` for every bucket, which for a tree
+        // bucket would claim a region far larger than the root region
+        // and cause the rewrite to read past the region into
+        // neighboring buckets (corruption). The helper
+        // `bucket_span_region_len` returns the correct region length
+        // for both modes.
         let mut bucket_intervals: Vec<(u64, u64)> = buckets
             .iter()
             .filter(|bucket| bucket.stored_slots > 0)
-            .map(|bucket| (bucket.edge_start(), u64::from(bucket.stored_slots)))
+            .map(|bucket| {
+                (
+                    bucket.edge_start(),
+                    u64::from(bucket_span_region_len(bucket)),
+                )
+            })
             .collect();
         bucket_intervals.sort_by_key(|(start, _)| *start);
 
@@ -5044,5 +5095,73 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert_eq!(bucket.stored_slots, 5);
         assert_eq!(bucket.degree(), 3);
+    }
+
+    /// Plan 0319 §Step 3 regression test: `bucket_span_region_len`
+    /// returns the correct LEG region length for both slab-mode and
+    /// tree-mode buckets.
+    ///
+    /// For a slab bucket: returns `stored_slots` (the contiguous
+    /// edge-slab width).
+    /// For a tree bucket at depth 1, stored=4096: returns
+    /// `ceil(4096 / 1024) = 4` (the root region length, NOT 4096).
+    /// For a tree bucket at depth 2, stored=1,048,576: returns
+    /// `ceil(1,048,576 / 1024) / 1024 = 1` (the root region length,
+    /// a single block_id pointing to the interior).
+    #[test]
+    fn bucket_span_region_len_returns_correct_region_per_mode() {
+        use crate::labeled::bucket_label_key::BucketLabelKey;
+        use crate::labeled::record::LabelBucket;
+
+        // Slab-mode bucket: region == stored_slots.
+        let slab_bucket = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            0,
+            100, // degree
+            200, // stored_slots
+            -1,
+            0,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(super::bucket_span_region_len(&slab_bucket), 200);
+
+        // Tree-mode bucket at depth 1, stored = 4096: region == 4.
+        let tree_d1_bucket = LabelBucket::try_from_parts(
+            BucketLabelKey::directed_from_index(1),
+            256, // edge_start (root region at slot 256)
+            4096,
+            4096,
+            -1,
+            0,
+            0,
+            0,
+            -1,
+            0, // inline_property_bytes_log_len = 0 → physical depth 1
+        )
+        .unwrap()
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(1);
+        assert_eq!(
+            super::bucket_span_region_len(&tree_d1_bucket),
+            4,
+            "depth-1 root region for stored=4096 is 4 slots"
+        );
+
+        // Tree-mode bucket at depth 2, stored = 1,048,576: region == 1.
+        // We can't construct this via try_from_parts directly because
+        // the (log_head=-1, log_len=1) mismatch is validated before
+        // with_tree_mode(true) sets the bit. Build it by starting from
+        // a depth-1 bucket and patching the physical depth byte.
+        let mut tree_d2_bucket = tree_d1_bucket;
+        tree_d2_bucket = tree_d2_bucket.with_tree_mode_physical_depth(2);
+        assert_eq!(
+            super::bucket_span_region_len(&tree_d2_bucket),
+            1,
+            "depth-2 root region for stored=4096 (after manual deepen to d2) is 1 slot"
+        );
     }
 }
