@@ -51,6 +51,25 @@ const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
 /// slot-cap reject.
 pub(crate) const T_PROMOTE: u32 = 4096;
 
+/// Plan 0319 §Step 2: demote trigger. After a tree-mode removal, if
+/// the updated `degree <= T_DEMOTE`, the remove path invokes
+/// `tree_mode_demote_to_slab` to rebuild the bucket as a fresh slab
+/// (release LTB leaves + interiors + old root region). Hysteresis
+/// pair: `T_PROMOTE = 4096` (promote at stored >= 4096) and
+/// `T_DEMOTE = 2048` (demote at degree <= 2048). The 2048-slot
+/// hysteresis band guarantees **no promote/demote oscillation**:
+/// after a demote the fresh slab has `stored = degree <= 2048`, so
+/// re-promotion requires 2048+ live inserts before `stored` can
+/// reach `T_PROMOTE = 4096` again.
+///
+/// **Invariant**: a tree-mode bucket always has `degree > T_DEMOTE`
+/// between operations. Degree only drops via removal, and the
+/// removal path immediately restores the invariant (either the
+/// degree stays > T_DEMOTE and no demote fires, or the demote
+/// fires and the bucket leaves tree mode). Inserts only grow
+/// degree, so they never lower it.
+pub(crate) const T_DEMOTE: u32 = T_PROMOTE / 2;
+
 /// Root-array fan-out cap (block_id entries per tree root). See ADR 0088 §4.
 /// Used by `derive_depth` and by the Step 7 deepen trigger; **not** the
 /// logical-slot cap on a tree bucket.

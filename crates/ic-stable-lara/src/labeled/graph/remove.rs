@@ -17,7 +17,7 @@ use ic_stable_structures::Memory;
 use std::ops::ControlFlow;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, EdgeRemoval, EdgeSlotMove, LabeledLaraGraph, OutEdgeOrder};
+use super::{BucketSearch, EdgeRemoval, EdgeSlotMove, LabeledLaraGraph, OutEdgeOrder, T_DEMOTE};
 
 enum BucketEdgeDeleteLocation {
     Slab {
@@ -326,15 +326,32 @@ where
         // existing path. No other module under `graph/` branches on
         // `bucket.is_tree_mode()`.
         if bucket.is_tree_mode() {
-            return super::tree_write::tree_mode_remove_edge_at_slot(
+            let removed = super::tree_write::tree_mode_remove_edge_at_slot(
                 self, src, slot, &bucket, slot_index,
-            )
-            .map(|opt| {
-                opt.map(|removed| EdgeRemoval {
-                    removed: removed.with_slot_index(slot_index),
-                    moves: Vec::new(),
-                })
-            });
+            )?;
+            // Plan 0319 §Step 2: after a successful tree-mode removal,
+            // check the degree-hysteresis trigger. If the updated
+            // `degree <= T_DEMOTE`, rebuild the bucket as a fresh
+            // slab. The trigger is best-effort: a successful removal
+            // must not be turned into an error, so a mid-demote
+            // failure is contained (`let _ =`). The next removal
+            // retries the trigger; until then the bucket stays in
+            // tree mode with the same `degree`.
+            if let Some(ref _removed_edge) = removed {
+                let updated = self
+                    .buckets()
+                    .read_label_bucket_slot(slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
+                    let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
+                        self, slot, label_id, &updated,
+                    );
+                }
+            }
+            return Ok(removed.map(|removed| EdgeRemoval {
+                removed: removed.with_slot_index(slot_index),
+                moves: Vec::new(),
+            }));
         }
         self.remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index)
     }

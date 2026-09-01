@@ -2466,6 +2466,49 @@ mod tests {
         assert_eq!(b4.stored_slots, 2048);
     }
 
+    /// Plan 0319 §Step 2 hysteresis test: drive the production
+    /// remove path and verify the `T_DEMOTE = 2048` trigger fires.
+    /// Promote a fresh bucket at stored = 4096, then tombstone slots
+    /// via the production remove path until `degree == 2048 ==
+    /// T_DEMOTE`. The next remove (the one that crosses the
+    /// threshold) must trigger the demote via the inline trigger
+    /// wired in remove.rs:328. Assert the bucket ends up in slab
+    /// mode with `stored == degree == 2048`.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn demote_hysteresis_trigger_via_remove_path() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        let start = 4096u32;
+        promote_test_bucket(&graph, vid, label, start);
+        // Remove slot 0 first via the production dispatch path so
+        // `num_edges` and `vertex_segment_counts` stay consistent
+        // with the production accounting. The bucket is now at
+        // degree=4095, stored=4096, still tree mode.
+        let _ = graph
+            .remove_edge_at_slot(vid, label, 0)
+            .expect("production remove 0");
+        // Tombstone slots 1..=2047 via the production path. After
+        // 2047 removes, degree = 4095 - 2047 = 2048 == T_DEMOTE.
+        // The last remove (slot 2047) triggers the demote.
+        for slot in 1..2048u32 {
+            graph
+                .remove_edge_at_slot(vid, label, slot)
+                .expect("production remove");
+        }
+        // After the trigger fires on the 2048th remove, the bucket
+        // should be in slab mode with stored == degree == 2048.
+        let v = graph.vertices().get(vid);
+        let b = match graph.find_bucket(vid, &v, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing"),
+        };
+        assert!(!b.is_tree_mode(), "trigger should have demoted the bucket");
+        assert_eq!(b.degree, 2048);
+        assert_eq!(b.stored_slots, 2048);
+    }
+
     /// Plan 0319 §Step 1 test (c): demote at degree 0 reclaims all
     /// blocks. Promote, tombstone every slot, demote, assert bucket
     /// is empty-slab and LTB allocated count is back to baseline.
