@@ -691,6 +691,19 @@ pub enum OneOrientationBatchError {
     },
     /// The slab window cannot hold the planned run.
     SlabCapacityExceeded,
+    /// Plan 0321: a batch run targets a tree-mode bucket. The
+    /// batch planner currently has no tree-aware geometry; this
+    /// failure closes the corruption hole at the batch boundary
+    /// (the run is rejected and the caller falls back to scalar
+    /// inserts which handle tree append correctly). The widening
+    /// slice (Commit 2 of Plan 0321) is the typed follow-up that
+    /// ADMITs tree runs.
+    TreeModeBucketRunUnsupported {
+        /// Vertex that owns the tree-mode bucket.
+        owner_vertex_id: VertexId,
+        /// Storage label of the tree-mode bucket.
+        label_id: BucketLabelKey,
+    },
     /// The overflow log cannot hold the planned run.
     LogCapacityExceeded,
     /// A inline property edge carried a byte length different from the declared width.
@@ -1985,6 +1998,20 @@ where
             return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
                 bucket_width: bucket.inline_property_byte_width(),
                 edge_width: run.inline_property_width,
+            });
+        }
+        // Plan 0321 Step 1 (Commit 1): the batch planner has no
+        // tree-mode geometry. Reject tree-mode bucket runs at the
+        // head of `preflight_run` (after find_bucket, before any
+        // edge_start_slot / hole-reuse math) so the caller's
+        // existing scalar fallback (per-edge insert which handles
+        // tree append correctly) takes over. The widening
+        // (Commit 2 of Plan 0321) is the typed follow-up that
+        // ADMITs tree runs.
+        if bucket.is_tree_mode() {
+            return Err(OneOrientationBatchError::TreeModeBucketRunUnsupported {
+                owner_vertex_id: run.owner_vertex_id,
+                label_id: run.label_id,
             });
         }
 
@@ -4002,6 +4029,13 @@ impl std::fmt::Display for OneOrientationBatchError {
             ),
             Self::StorageError(e) => write!(f, "storage error: {e}"),
             Self::InvalidOrientationPair(detail) => write!(f, "invalid orientation pair: {detail}"),
+            Self::TreeModeBucketRunUnsupported {
+                owner_vertex_id,
+                label_id,
+            } => write!(
+                f,
+                "tree-mode bucket run unsupported: vertex {owner_vertex_id:?} label {label_id:?} (use scalar fallback)"
+            ),
         }
     }
 }

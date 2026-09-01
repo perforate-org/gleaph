@@ -522,3 +522,36 @@ pub fn exercise_labeled_hub_scan_paths(
             .unwrap();
     }
 }
+
+/// Plan 0321 Step 1 test helper: forces the `(vid, label)` bucket
+/// to tree mode by routing through the natural promotion path
+/// (`force_bucket_to_stored_slots` + `fill_leg_slab_prefix` +
+/// `promote_bypass_to_tree_mode`). Used by the tree-run
+/// fail-closed guard tests in `batch_write_test` and any other
+/// test that needs an already-tree bucket without paying the
+/// 4096-insert promotion cost.
+pub(crate) fn force_tree_mode_for_test(
+    graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+    vid: crate::VertexId,
+    label: BucketLabelKey,
+) {
+    use crate::labeled::graph::T_PROMOTE;
+    use crate::labeled::graph::promote::{
+        fill_leg_slab_prefix_pub, force_bucket_to_stored_slots_pub,
+    };
+    // Pre-populate the LEG slab prefix with deterministic data
+    // and force stored_slots = T_PROMOTE, then promote.
+    force_bucket_to_stored_slots_pub(graph, vid, label, T_PROMOTE);
+    let vertex = graph.vertices().get(vid);
+    let slot = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { slot, .. } => slot,
+        crate::labeled::graph::BucketSearch::Missing { .. } => {
+            panic!("bucket missing after force_bucket_to_stored_slots")
+        }
+    };
+    let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+    let edge_start = bucket.edge_start();
+    fill_leg_slab_prefix_pub(graph, edge_start, T_PROMOTE);
+    crate::labeled::graph::promote::promote_bypass_to_tree_mode_pub(graph, vid, label)
+        .expect("promote");
+}

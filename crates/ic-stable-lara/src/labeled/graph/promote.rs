@@ -74,6 +74,20 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    // Plan 0321: see `promote_bypass_to_tree_mode_pub` for the
+    // `pub(crate)` test-only wrapper.
+    promote_bypass_to_tree_mode_impl(graph, vid, label)
+}
+
+fn promote_bypass_to_tree_mode_impl<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
     // Phase 0: locate the bucket (read-only; no canonical writes).
     let vertex = graph.vertices().get(vid);
     let search = graph.find_bucket(vid, &vertex, label)?;
@@ -351,6 +365,37 @@ where
 
     Ok(())
 }
+
+/// Plan 0321 Step 1: `pub(crate)` test-only wrapper that lets
+/// `crate::labeled::graph::test_support::force_tree_mode_for_test`
+/// (and any future non-sibling test setup) reach the natural
+/// promotion path without paying the 4096-insert cost. The
+/// wrapper is `pub(crate)` and the function it wraps is identical
+/// to the `pub(super)` `promote_bypass_to_tree_mode_impl`.
+pub(crate) fn promote_bypass_to_tree_mode_pub<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    promote_bypass_to_tree_mode_impl(graph, vid, label)
+}
+
+// =========================== Test-only re-exports ===========================
+// Plan 0321 §Step 1: re-export the test-only helpers (which live
+// inside `pub mod tests`) so non-sibling test modules
+// (e.g. `crate::labeled::graph::test_support`) can reach them
+// for the tree-mode batch guard test setup. The re-exports are
+// `pub(crate)` and `#[cfg(test)]`-gated so they never affect
+// non-test builds.
+#[cfg(test)]
+pub(crate) use self::tests::{
+    fill_leg_slab_prefix as fill_leg_slab_prefix_pub,
+    force_bucket_to_stored_slots as force_bucket_to_stored_slots_pub,
+};
 
 // =========================== Unit tests ===========================
 #[cfg(test)]

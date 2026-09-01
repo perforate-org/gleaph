@@ -1997,4 +1997,143 @@ mod tests {
             "reserve failure must not change canonical adjacency"
         );
     }
+
+    /// Plan 0321 §Step 1: a batch run whose target bucket is in
+    /// tree mode must fail closed at the batch boundary with the
+    /// typed `OneOrientationBatchError::TreeModeBucketRunUnsupported`
+    /// error BEFORE any geometry math (the planner would otherwise
+    /// read the root region as slab slots and corrupt the bucket
+    /// on commit). The bucket itself is untouched after the failure.
+    #[test]
+    fn batch_run_rejects_tree_mode_bucket_fail_closed() {
+        use crate::labeled::graph::test_support::{
+            TestEdge, force_tree_mode_for_test, test_graph_with_default,
+        };
+        let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        // Promote the bucket to tree mode via the natural promotion
+        // path (force_bucket_to_stored_slots = T_PROMOTE, then
+        // promote_bypass_to_tree_mode).
+        let label = BucketLabelKey::directed_from_index(1);
+        force_tree_mode_for_test(&graph, VertexId::from(0), label);
+        // Confirm the bucket is now in tree mode.
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (slot, bucket) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("expected Found bucket after promote"),
+        };
+        assert!(bucket.is_tree_mode(), "bucket must be tree-mode");
+        // Build a batch plan targeting the tree bucket with one new
+        // edge. The preflight guard should reject it.
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(2),
+                    label_id: label,
+                    edge: TestEdge { target: 2 },
+                }],
+            }],
+        };
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OneOrientationBatchError::TreeModeBucketRunUnsupported { .. }
+            ),
+            "expected TreeModeBucketRunUnsupported, got {err}"
+        );
+        // Bucket descriptor is unchanged.
+        let bucket_after = graph
+            .buckets
+            .read_label_bucket_slot(slot)
+            .expect("read after");
+        assert!(bucket_after.is_tree_mode());
+        assert_eq!(bucket_after.stored_slots, bucket.stored_slots);
+    }
+
+    /// Plan 0321 §Step 1: per-run precision. A vertex with one
+    /// tree bucket and one slab bucket batch-inserts both in the
+    /// same plan. The tree run is rejected; the slab run is
+    /// admitted (the run-level guard does not over-reject).
+    ///
+    /// (Note: today's GQL/kernel layer splits the plan at the
+    /// boundary anyway; this test asserts the inner guard
+    /// semantics, not the wrapper behavior.)
+    #[test]
+    fn batch_plan_with_mixed_slab_and_tree_runs_rejects_only_tree_run() {
+        use crate::labeled::graph::test_support::{
+            TestEdge, force_tree_mode_for_test, test_graph_with_default,
+        };
+        let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        // Bucket 1: promote to tree mode.
+        let label_tree = BucketLabelKey::directed_from_index(2);
+        force_tree_mode_for_test(&graph, VertexId::from(0), label_tree);
+        // Bucket 2: leave as slab (no inserts, no force).
+        let label_slab = BucketLabelKey::directed_from_index(3);
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label_slab,
+                TestEdge { target: 100 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        // The plan puts the slab run FIRST; preflight_run walks
+        // runs in plan order, so the slab run is admitted and the
+        // tree run (second) is rejected.
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_slab,
+                    inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(101),
+                        label_id: label_slab,
+                        edge: TestEdge { target: 101 },
+                    }],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_tree,
+                    inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(2),
+                        label_id: label_tree,
+                        edge: TestEdge { target: 2 },
+                    }],
+                },
+            ],
+        };
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OneOrientationBatchError::TreeModeBucketRunUnsupported { .. }
+            ),
+            "expected TreeModeBucketRunUnsupported, got {err}"
+        );
+        // The slab bucket is untouched (no run was admitted because
+        // the tree run failure aborts the plan). The slab bucket's
+        // edge count stays at 1.
+        let all_out = graph.out_edges(VertexId::from(0)).unwrap();
+        let slab_count = all_out.iter().filter(|e| e.target == 100).count();
+        assert_eq!(slab_count, 1, "slab bucket unchanged");
+    }
 }
