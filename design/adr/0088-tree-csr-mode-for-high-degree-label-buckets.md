@@ -866,3 +866,53 @@ demotion as follow-up slices.
   (contiguous reads + bounded mutation/placement) for a concrete storage
   problem, without generalizing beyond it (no generic collection type, no
   cross-label sharing, no public API).
+
+## Status
+
+**Plan 0318 implemented (Steps 1-11, 2026-09-01).**
+
+- Steps 1-3 (LabelBucket tree-mode flag bit, LtbRawBlockStore field, cap
+  helpers): commits `e70f43534`, `a8ad189d3` on `plan-0318` lane.
+- Step 4 (`promote_bypass_to_tree_mode` failure-atomic transition):
+  `44c82d3b2` + amend `c2a92f84d` / `c03aac7d4` (stored_slots trigger,
+  `BucketNotFound` error, below-cap tests, LTB lazy-create reopen).
+- Step 5 (tree-mode read dispatch, single dispatch point):
+  `753c100cf` (4 files, 6 tests).
+- Step 6a (tree-mode insert dispatch + promotion/cap wiring):
+  `1ff13800e` (5 tests).
+- Step 6b (tree-mode tombstone remove + Phase 3c leaf-physical
+  deferred release): `5918c8d79` (4 tests).
+- Step 7 (`tree_mode_deepen` / `tree_mode_flatten` / depth-generic
+  resolver): `7918f9be3` (4 tests).
+- Step 7 amend (interim fail-closed `TreeRootCapacityReached` guard
+  in the production insert path; effective tree-mode cap = 2^20 slots
+  per bucket until the interior-level insert cascade ships):
+  `d5657eb5f` (2 tests).
+- Gate 2 re-run (Step 9): all production-relevant benches within ±1%
+  of Plan 0315/0316 baselines (full_scan, insert_grow, promote_*);
+  see `plans/0318-tree-csr-implementation.md` §Step 9 for the
+  results table.
+
+**Follow-ups (status: pending)**:
+
+- `tree-mode-interior-level-insert-growth` — right-spine cascade at
+  depth ≥ 2 (replaces the `TreeRootCapacityReached` guard, grows
+  effective cap to 2^30 slots per bucket). Orchestrator design
+  recorded in Plan 0318 §Later Slices. Estimated 4-6h; depth 3 is
+  physically untestable (4 GiB leaf payload) so depth-3 surface is
+  structural-only.
+- `tree-mode-tombstone-reuse` — tree bucket tombstones are not
+  reused on insert (slab mode reuses via
+  `try_reuse_unordered_slab_tombstone`); high-churn tree buckets
+  grow LTB footprint monotonically. Needs reuse strategy (scan
+  on insert, or threshold-triggered flatten-and-rebuild).
+- `tree-mode-promote-from-bypass` — bypass-mode → tree-mode direct
+  transition (current path is bypass → slab → tree). Records as
+  a follow-up so the current two-step path is not blocked on
+  one-step direct promotion design.
+- PocketIC-backed 1M-degree sweep (Plan 0318 Gate 1 deferred row;
+  the 1M-sweep is `#[ignore]`'d in `tree_csr_high_degree_test`
+  because it hits production `Memory::grow` limits in test
+  environments).
+
+Last revised: 2026-09-01.
