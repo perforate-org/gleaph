@@ -318,6 +318,15 @@ property root len = ceil(S / (K·B^(d'−1)))
 span width        = edge root len + property root len      (gap = 0, §3)
 ```
 
+**Edge width (Plan 0318 post-merge):** tree mode stores one 4-byte target per
+LTB slot, so promotion is restricted to edge types with `E::BYTES == 4`. Wider
+edge types fail promotion with the typed `TreeModeEdgeWidthUnsupported` error,
+and the insert dispatcher carves them out of the promote trigger so such
+buckets stay on the CSR slab path (mirroring the inline-property carve-out).
+The carve-out was added after the canbench `bench_l_s2_det_sat_4096` bench
+(10-byte edge type) trapped on the tree-append guard following a silent
+mis-transcription — the promotion-side guard is typed, not debug-only.
+
 Logical positions are unchanged: `BucketEntryPosition` remains the bucket-local
 tombstone-inclusive position (`crates/ic-stable-lara/src/traverse.rs`), so
 `EdgeHandle`, sidecar keys, ADR 0052 compaction semantics, and

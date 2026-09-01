@@ -330,9 +330,19 @@ where
         // instead of being routed to the tree path, which would otherwise
         // try to mint `stored_slots / B` LTB blocks and fail in a
         // different way.
+        //
+        // The `E::BYTES == 4` carve-out keeps wide edge types on the slab
+        // path: tree mode stores one 4-byte target per LTB slot (ADR 0088
+        // §1), so a wider `E` can never be promoted. Mirrors the
+        // inline-property carve-out — such buckets stay slab and keep the
+        // pre-Plan-0318 growth behavior. (Post-merge fix: the canbench
+        // `bench_l_s2_det_sat_4096` bench drives a 10-byte edge type and
+        // trapped on the tree-append typed guard after the promotion had
+        // already mis-transcribed — promote now rejects before minting.)
         if bucket.stored_slots >= super::T_PROMOTE
             && bucket.stored_slots < u32::MAX
             && !has_edge_inline_property
+            && E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES
         {
             super::tree_write::promote_bucket_if_needed(self, src, label_id)?;
             // Re-read the bucket: after promotion it is tree mode.
