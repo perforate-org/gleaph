@@ -205,6 +205,7 @@ mod remove;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod traverse;
+mod tree_read;
 
 pub use traverse::BucketEntryPosition;
 mod values;

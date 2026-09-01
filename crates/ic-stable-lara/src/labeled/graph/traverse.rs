@@ -1963,6 +1963,29 @@ where
             return Ok(());
         }
 
+        // Single dispatch point for tree-mode buckets (Plan 0318 §Step 5).
+        // The tree path uses LTB-backed reads; the slab path below is
+        // unchanged. Rope / PMA / placement / leaf-pin code does not see
+        // this branch.
+        if bucket.is_tree_mode() {
+            return super::tree_read::visit_tree_mode_label_bucket_edges(
+                self,
+                label.raw(),
+                &bucket,
+                bucket.degree(),
+                order,
+                |slot_idx, edge| {
+                    // Mirror the slab path's visit semantics: yield the
+                    // edge with the slot index attached. The visitor
+                    // signature is `FnMut(E)` (no slot index), so we
+                    // drop the slot index here; callers that need it use
+                    // `visit_edges_with_inline_property` instead.
+                    let _ = slot_idx;
+                    visit(edge);
+                },
+            );
+        }
+
         if bucket.inline_property_bytes_log_head() < 0
             && bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()

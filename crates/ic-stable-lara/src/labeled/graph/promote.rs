@@ -339,7 +339,7 @@ where
 
 // =========================== Unit tests ===========================
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::super::test_support::*;
     use super::super::*;
     use super::*;
@@ -350,7 +350,7 @@ mod tests {
     /// by each test. If a bucket does not exist, it creates a new one
     /// at slot 0 with `edge_start = 0` and updates the vertex's bucket
     /// row.
-    fn force_bucket_to_stored_slots(
+    pub(crate) fn force_bucket_to_stored_slots(
         graph: &LabeledLaraGraph<TestEdge, ic_stable_structures::VectorMemory>,
         vid: VertexId,
         label: BucketLabelKey,
@@ -417,7 +417,7 @@ mod tests {
 
     /// Fill the LEG slab prefix at `edge_start` with deterministic
     /// 4-byte target values: slot i = (i + 100) as u32.
-    fn fill_leg_slab_prefix(
+    pub(crate) fn fill_leg_slab_prefix(
         graph: &LabeledLaraGraph<TestEdge, ic_stable_structures::VectorMemory>,
         edge_start: u64,
         count: u32,
