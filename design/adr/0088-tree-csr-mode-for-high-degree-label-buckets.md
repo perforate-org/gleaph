@@ -429,13 +429,30 @@ the span; the +1 shift when the edge root grows is absorbed by fold/rebalance
   bound with a widening trigger, not a supported case.
 - Width transitions stay **fail-closed exactly as today**
   (`InlinePropertyBytesWidthMismatch`); tree mode does not regress them. A
-  future `materialize_inline_property_stream(bucket, w, fill)` primitive
-  (reserve `ceil(S/K)` blocks; commit fill + root extension + one descriptor
-  republish) is recorded as **planned**: the derived geometry makes
-  later width addition an incremental, steppable operation instead of one
-  `S × w` contiguous allocation. Value backfill semantics stay above LARA
-  (ADR 0008 profile SSOT; ADR 0058/0059 flavor). `w1 → w2` re-encoding and
+  `materialize_inline_property_stream(bucket, w, fill)` primitive
+  (reserve `S × w` bytes in the byte-slab allocator; commit fill + one
+  descriptor republish) is recorded as **implemented (Plan 0320,
+  2026-09-01, slab form)**: the byte-slab allocator is shared with
+  inline property bytes, so the reservation is incremental and the
+  descriptor publish is one atomic write. The stepped fill uses a
+  new `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1` cursor
+  (ADR 0021) for reservations above `INLINE_MATERIALIZE_BYTE_BUDGET`
+  (= 4 KiB, one VirtualMemory page). The tree form (property root
+  + `ceil(S/K)` LPB blocks) reuses the fill/cursor machinery; it is
+  recorded as a separate deferred transition (LPB-in-tree, see
+  Later Slices). Value backfill semantics stay above LARA (ADR 0008
+  profile SSOT; ADR 0058/0059 flavor). `w1 → w2` re-encoding and
   `w → 0` teardown are separate deferred transitions.
+
+  - **Plan 0320 width-addition (0→w) wiring**: the insert path
+    helper `ensure_bucket_inline_property_schema_for_insert` now
+    delegates the `(bucket_width == 0 && degree > 0)` case to
+    `materialize_inline_property_stream` (inline fast path for
+    small reservations; deferred stepped fill for large). Other
+    transitions (w1→w2, w→0, tree-mode property insert) stay
+    fail-closed. The deferred path returns the typed error so the
+    caller drains the maintenance queue and retries; no deferred-
+    insert completion mechanism is introduced (Plan 0320 §0.8).
 - The log blob path (`value_blobs`) is uninvolved: tree mode never logs values
   (§6). The `value_blobs` asymmetric reopen rule is unchanged.
 
@@ -951,5 +968,23 @@ GAP-2026-07-25-002 parallel track: the per-bucket occupancy map
 idea (compressed tombstone distribution / persistent live bitmap
 for OFFSET scans) remains future work; demotion is the primary
 reclaim path for this slice.
+
+**Plan 0320 (Steps 1-3, 2026-09-01) — `materialize_inline_property_stream`
+slab form.** The §5 primitive is now implemented: reserve `S × w`
+bytes through the byte-slab allocator, fill with `fill_byte` via a
+stepped resumable cursor (ADR 0021, `MaintenanceWorkItem::
+MaterializeInlinePropertyStreamV1`), publish the descriptor
+(`width + offset + slab_slots + log reset`) and update the
+vertex-level accounting in one atomic window. Width addition
+(0→w on non-empty buckets) is wired through the insert path
+helper `ensure_bucket_inline_property_schema_for_insert_
+with_materialize`; the inline fast path (≤ 4 KiB) runs
+synchronously, the deferred stepped path (Step 2) returns the
+typed error so the caller drains the maintenance queue and
+retries. Other transitions (w1→w2, w→0, tree-mode property
+insert) stay fail-closed. Commits: `772960947` (Step 1, primitive
++ 6 tests), `c5ae29a97` (Step 2, wiring + work item + drain
+test). Tree form (property root + LPB `kind = InlineProperty`
+blocks) is the LPB-in-tree follow-up.
 
 Last revised: 2026-09-01.

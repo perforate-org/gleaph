@@ -4,22 +4,22 @@ overview: "Implement Plan 0320 per ADR 0088 §5: the `materialize_inline_propert
 todos:
   - id: "audit-inline-property-representation"
     content: "Audit the current inline-property-bytes representation and record findings in this plan's Step 1 notes BEFORE writing code: (a) byte-slab store layout (`self.values`, FreeSpanStore allocator, `retire_byte_span` / `write_bytes`), (b) the per-bucket descriptor fields (`inline_property_bytes_offset`, `inline_property_bytes_slab_slots`, `inline_property_bytes_log_byte`, `inline_property_bytes_log_len`, `inline_property_bytes_log_head`) and their invariants, (c) the log path (`write_edge_inline_property_to_log`, values.rs:539) and how compaction folds it (`compact_inline_property_bytes_slab`, values.rs:61), (d) the read paths (`read_bucket_inline_property_bytes_for_slot`, `read_bucket_inline_property_bytes_span`, `collect_bucket_inline_property_bytes_asc_order`, values.rs:435-539) — what shape do they expect (dense slab prefix + log suffix?), (e) `bucket_live_ordinal_at_edge_slot` (values.rs:664) — how live ordinals map to property positions (tombstone-inclusive vs live-only: ADR 0088 §5 says position i ↔ edge position i tombstone-inclusive for tree mode; confirm what slab mode does today and keep it consistent), (f) the vertex-level `inline_property_bytes_allocated_bytes` accounting (values.rs:652-658) that must be updated on materialize, (g) ADR 0021's resumable-maintenance contract and the CompactVertexEdgeSpanV1 cursor pattern (deferred.rs:31-38) as the template for the stepped fill. Write the findings into this plan doc (## Step 1 findings) before implementing."
-    status: pending
+    status: completed
   - id: "materialize-primitive"
     content: "Implement `materialize_inline_property_stream(bucket_slot, w, fill) -> Result<(), LabeledOperationError>` on `LabeledLaraGraph` in `crates/ic-stable-lara/src/labeled/graph/values.rs` (single orientation; generic E: CsrEdgeTombstone + M: Memory). Contract (ADR 0088 §5, fail-closed where recorded): preconditions — bucket is slab-mode (tree buckets keep the typed rejection; the tree form is LPB-in-tree later), `w >= 1`, `w <= payload constraint per ADR §5` (reject w > the slab representation's bound with the existing typed error; record the bound chosen from the audit), bucket width == 0 (w1→w2 and w→0 stay deferred fail-closed — typed `InlinePropertyBytesWidthMismatch`), and the bucket must have stored_slots > 0 (the schema_unset fast path already handles the empty case). Phases: (1) RESERVE — one `S × w` byte-slab reservation through the existing allocator (use `inline_property_bytes_compaction_needed` first and run `compact_inline_property_bytes_slab` when the allocator is fragmented, mirroring the existing insert-path compaction interplay); (2) FILL (stepped, ADR 0021) — write the `fill` byte pattern to each live position via a resumable cursor (`(bucket_slot, next_position)`); the cursor state lives in a new `MaintenanceWorkItem` variant (e.g. `MaterializeInlinePropertyStreamV1 { vid, bucket_slot, width, fill_byte, resume_position }` — stable tag per the existing enum conventions, deferred.rs:23) enqueued by the trigger when `S × w` exceeds a single-step threshold (constant, e.g. 1 MiB of fill work per step — pick from the audit); small buckets take an inline fast path (single call, no queue); fill only LIVE positions is NOT required — tombstone-inclusive 1:1 means all S positions get `fill` (live positions are then backfilled by the caller above LARA via the existing per-slot write API); (3) PUBLISH — one descriptor write setting `inline_property_byte_width = w`, `inline_property_bytes_offset`, `inline_property_bytes_slab_slots = S × w` slot accounting per the audit findings, log fields reset; update the vertex-level `inline_property_bytes_allocated_bytes` in the same publish window (values.rs accounting invariant). Failure containment: any error before publish retires the reserved span and leaves the bucket at w=0 untouched (atomic, mirror demotion's containment)."
-    status: pending
+    status: completed
   - id: "width-addition-wiring"
     content: "Wire width addition 0→w through the production surface: in `ensure_bucket_inline_property_schema_for_insert` (values.rs:624) and `ensure_bucket_inline_property_byte_width_on_slot` (values.rs:793), replace the fail-closed rejection for `bucket_width == 0 && edge_inline_property_width == w && stored_slots > 0` with a call to `materialize_inline_property_stream` (inline fast path when small, deferred enqueue when large — the insert path returns Ok after enqueueing the step job; the insert itself completes AFTER materialization completes, so the insert that triggered the transition must be re-attempted by the caller once the stepped fill finishes — audit how deferred insert completion works today and, if a synchronous contract is required, gate the deferred path to the explicit maintenance entry instead and keep the insert-path materialize synchronous with the single-step threshold; record the decision). Keep fail-closed: width mismatch w1→w2, w→0, and tree-mode buckets with property edges (insert.rs:303 tree guard unchanged — LPB-in-tree is a later slice). Also wire `materialize_inline_property_stream` as a pub(crate) maintenance entry so the deferred worker can drive the stepped fill (`drain_vertex_edge_span_compact_queue`-style pop handling in deferred.rs:210's worker). Document in ADR 0088 §5 that slab width addition is now supported via materialize and tree-mode promotion keeps its carve-out."
-    status: pending
+    status: completed
   - id: "test-matrix"
     content: "Unit tests (cfg(not(feature = \"canbench\")), values.rs tests + deferred tests, mirroring existing style): (a) `materialize_zero_to_w_preserves_positions` — bucket with S edges incl. tombstones → materialize w=3 fill=0xAA → every live position reads 0xAA via `read_bucket_inline_property_bytes_for_slot`, tombstone positions are tombstone-inclusive (no shift), width/offset/slab_slots published correctly; (b) `materialize_stepped_resume` — force the stepped path (S × w above the threshold) → drive the queue to completion across multiple pops → identical final state to the inline fast path (property stream equality); (c) `materialize_atomic_on_failure` — failpoint on a byte-slab write mid-fill → bucket stays w=0, reserved span retired, no allocated-bytes drift (vertex accounting); (d) `materialize_fragmented_allocator_compacts_first` — fragment the allocator so the S×w request needs compaction → materialize triggers compaction then succeeds; (e) `materialize_rejects_w1_to_w2_and_teardown` — w≠0 source stays fail-closed; (f) `materialize_empty_bucket_fast_path` — schema_unset empty bucket keeps the existing direct width-set path (no stream job); (g) `width_addition_via_insert` — end-to-end: insert N edges at w=0, then insert an edge carrying w-byte inline property → materialize runs → the new edge's property bytes are readable and prior edges read `fill`; (h) `tree_bucket_property_insert_still_fail_closed` — the LPB-in-tree boundary holds. Deferred-worker test: the new MaintenanceWorkItem variant drains via the existing queue machinery (mirror the CompactVertexEdgeSpanV1 drain test pattern, deferred.rs:210)."
-    status: pending
+    status: completed
   - id: "wasm-budget-recheck"
     content: "Run `cargo build --release --target wasm32-unknown-unknown --features canbench` from `crates/ic-stable-lara/` and verify the exported-name budget stays ≤ 20,000 chars (baseline 14,818 / 5,182 headroom). Full green-bar matrix per commit: plain `cargo check -p ic-stable-lara`, `cargo test -p ic-stable-lara --no-default-features` (604 baseline + new), `cargo test -p ic-stable-lara --features canbench` (0 failed), `cargo clippy -p ic-stable-lara --all-targets --features canbench -- -D warnings`, `cargo fmt --check -p ic-stable-lara`, one canbench spot-run with yml restore. Record the wasm char count in the completion report."
-    status: pending
+    status: completed
   - id: "adr-0088-update-and-validate"
     content: "Update `design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md` §5: mark `materialize_inline_property_stream` as implemented (slab form, stepped fill per ADR 0021; tree form deferred to LPB-in-tree), record the width-addition support (0→w on non-empty buckets) and the still-deferred transitions (w1→w2, w→0, tree-form). Run `python3 ~/.agents/skills/plan/scripts/validate_plan.py plans/0320-materialize-inline-property-stream.md --phase final` and confirm structurally-valid final-phase verdict before reporting completion."
-    status: pending
+    status: completed
 isProject: false
 ---
 
@@ -86,11 +86,11 @@ See todos `test-matrix`, `wasm-budget-recheck`, `adr-0088-update-and-validate`.
 
 ## Completion Criteria
 
-- [ ] `materialize_inline_property_stream` implemented (slab form, stepped fill, atomic publish) with the audit findings recorded in the plan.
-- [ ] Width addition 0→w supported for non-empty buckets through the insert-path ensure_* hooks; w1→w2 / w→0 / tree-mode property inserts remain fail-closed.
-- [ ] New `MaintenanceWorkItem` variant drains via the existing queue machinery; stepped and inline paths produce identical streams.
-- [ ] Full green-bar matrix green; wasm exported-name count recorded and ≤ 20,000.
-- [ ] ADR 0088 §5/§Status updated; `validate_plan.py --phase final` PASS.
+- [x] `materialize_inline_property_stream` implemented (slab form, stepped fill, atomic publish) with the audit findings recorded in the plan.
+- [x] Width addition 0→w supported for non-empty buckets through the insert-path ensure_* hooks; w1→w2 / w→0 / tree-mode property inserts remain fail-closed.
+- [x] New `MaintenanceWorkItem` variant drains via the existing queue machinery; stepped and inline paths produce identical streams.
+- [x] Full green-bar matrix green; wasm exported-name count recorded and ≤ 20,000.
+- [x] ADR 0088 §5/§Status updated; `validate_plan.py --phase final` PASS.
 
 ## Later Slices (recorded, not in this plan)
 
@@ -441,6 +441,10 @@ covers the contract.
 
 ## Status
 
-**Plan 0320 implemented (Steps 1-3, 2026-09-01).** Populated
-after all commits land.
+**Plan 0320 implemented (Steps 1-3, 2026-09-01).** Commits:
+`772960947` (Step 1, primitive + 6 unit tests), `c5ae29a97` (Step 2,
+width-addition wiring + new `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1`
++ drain test). Step 3 docs/ADR/validator: completed. wasm exported-name
+chars 14,818 (no change from Step 1); full green-bar matrix
+maintained through every commit.
 - **Plan 0321** (batch admission widening) and the 1M PocketIC sweep: unchanged order.
