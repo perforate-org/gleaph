@@ -144,24 +144,22 @@ values.rs:664-693: for dense buckets
 (`edge_slot_index < degree` → `Some(edge_slot_index)`). For
 sparse buckets it does a rank-resolution traversal.
 
-**Implication for `materialize_inline_property_stream`**: after
-materialize, the stream has `S = bucket.stored_slots` positions
-matching edge positions 1:1 (tombstone-inclusive). For the dense
-case (no tombstones) this is the identity; for the sparse case
-the rank resolution at read time maps edge slot → ordinal, and the
-stream at ordinal `i` corresponds to edge position `i` (the rank
-of the i-th live edge in the bucket). Either way the position
-contract holds: position i in the stream is the i-th live (or
-slot-index-i-th edge) entry.
-
-The `materialize` primitive only needs to write `S × w` bytes into
-a single dense slab region; tombstone-aware read backfill stays
-above LARA per ADR 0008 (the plan's "value backfill semantics
-stay above LARA" line). Tombstone entries have their property
-stream position filled with the `fill` byte — **not skipped** —
-because the read path (`read_bucket_inline_property_bytes_for_slot`)
-reads every position 1:1 with the bucket's edge slot order (dense
-case).
+**Implication for `materialize_inline_property_stream` (F-2
+correction, 2026-09-01)**: after materialize, the stream has
+`S = bucket.degree()` positions — the **live-ordinal count**, NOT
+`bucket.stored_slots` (which is tombstone-inclusive). The
+slab-form property stream is dense over the live positions; the
+primitive writes `degree × w` bytes, fills every position with
+`fill_byte`, and the descriptor publishes `slab_slots = degree`.
+Tombstoned edge slots (counted in `stored_slots` but not in
+`degree`) are NOT part of the property stream. The tree-form
+mapping (LPB-in-tree, follow-up) is the tombstone-inclusive 1:1
+case ADR 0088 §5 originally described; that contract is the tree
+geometry, not the slab geometry. The `materialize` primitive
+only needs to write `degree × w` bytes into a single dense slab
+region; tombstone-aware read backfill stays above LARA per ADR
+0008 (the plan's "value backfill semantics stay above LARA"
+line).
 
 ### 0.3 The byte-slab allocator API
 
@@ -447,4 +445,60 @@ width-addition wiring + new `MaintenanceWorkItem::MaterializeInlinePropertyStrea
 + drain test). Step 3 docs/ADR/validator: completed. wasm exported-name
 chars 14,818 (no change from Step 1); full green-bar matrix
 maintained through every commit.
+
+## Review rework (2026-09-01, F-1/F-2/F-3/F-4)
+
+Reviewer flagged the Plan 0320 implementation as REWORK:
+
+- **F-1**: the inner primitive's deferred branch was a stub; the
+  production path (wrapper `insert_edge`) never reached the stepped
+  machinery. Fixed by adding the typed signal
+  `LabeledOperationError::InlinePropertyMaterializeDeferredRequired`,
+  a wrapper-level `DeferredError::InlinePropertyMaterializePending`
+  variant, and an intercept in `DeferredLabeledLaraGraph::insert_edge`
+  that drains sibling work items first, re-resolves the bucket slot,
+  enqueues the stepped work item at Retry priority, drains it, and
+  surfaces the signal. Production-path test
+  `insert_edge_deferred_materialize_via_wrapper` covers the
+  drain-then-retry contract.
+
+- **F-2**: the implementation uses `S = bucket.degree()` (live
+  ordinal), not `stored_slots` (tombstone-inclusive). The original
+  plan doc audit 0.2 and ADR 0088 §5 described the tree-form
+  1:1 tombstone-inclusive mapping, which is incorrect for the
+  slab form. Plan doc audit 0.2 corrected to "live-ordinal count";
+  ADR 0088 §5 now disambiguates slab (live-ordinal) from tree
+  (tombstone-inclusive). Tombstone test
+  `materialize_inline_with_tombstones_uses_live_ordinal` covers
+  the 3-tombstone case (degree=5, stored_slots=8, slab_slots
+  publishes as 5).
+
+- **F-3**: the second hook
+  `ensure_bucket_inline_property_byte_width_on_slot` (used by the
+  bidirectional wrapper's `ensure_undirected_edge_inline_property_width`)
+  was unwired for 0→w on a non-empty bucket. Fixed by routing the
+  non-schema_unset case through `materialize_inline_property_stream`;
+  the deferred signal propagates the same way as the insert path.
+  The schema_unset fast path (truly empty bucket) is unchanged.
+
+- **F-4** (doc-only): the publish window writes the bucket
+  descriptor then the vertex `inline_property_bytes_allocated_bytes`.
+  A crash between the two writes would leave the vertex accounting
+  off by `degree × w`. The repair is
+  `reconcile_vertex_inline_property_bytes_allocated_bytes`
+  (values.rs:328), which sets the vertex accounting to the sum
+  of bucket resident bytes. The next reconcile after reopen fixes
+  the drift. The two-write window is therefore self-healing on
+  reopen. Plan doc records the contract; the F-4 question is
+  resolved as "reconcile on reopen covers it".
+
+- **F-5** (doc-only): the inline path's empty-bucket predicate is
+  `degree == 0` (live edge count), not `stored_slots == 0`. The
+  primitive's precondition chain documents this: a bucket whose
+  all edges are tombstoned (degree=0, stored_slots=N>0) is
+  rejected with `InlinePropertyBytesWidthMismatch {0, w}`. This
+  is a deliberate fail-closed: callers must compact the
+  tombstones first (via `CompactVertexEdgeSpan` or
+  `remove_edge_matching` + drain) before materializing the
+  property stream. Plan doc records the contract.
 - **Plan 0321** (batch admission widening) and the 1M PocketIC sweep: unchanged order.
