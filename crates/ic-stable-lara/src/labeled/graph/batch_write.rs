@@ -522,6 +522,17 @@ pub enum OneOrientationPhysicalLocation {
         /// InlinePropertyBytes overflow-log entry index, when present.
         inline_property_bytes_entry_idx: Option<u32>,
     },
+    /// Plan 0321 Step 2: tree-mode batch admission. The edge lives
+    /// in the LTB tail block at `tail_block_id` (4-byte target
+    /// encoding) at byte offset `byte_offset` from the start of
+    /// the tail block. There is no inline property bytes slot
+    /// (tree mode rejects inline-property-bearing buckets).
+    Tree {
+        /// LTB block id of the tail block.
+        tail_block_id: u32,
+        /// Byte offset from the start of the tail block.
+        byte_offset: usize,
+    },
 }
 
 /// Exact location keyed by the logical ordinal supplied in the batch plan.
@@ -704,6 +715,30 @@ pub enum OneOrientationBatchError {
         /// Storage label of the tree-mode bucket.
         label_id: BucketLabelKey,
     },
+    /// Plan 0321 Step 2 (minimal first slice): the tree-mode
+    /// run exceeds the current tail-block room and would cross
+    /// a block boundary. The widening (follow-up) admits this
+    /// via new-block mint + root region growth; the minimal
+    /// first slice rejects typed and lets the caller fall back
+    /// to scalar inserts.
+    TreeRunExceedsTailBlock {
+        /// Vertex that owns the tree-mode bucket.
+        owner_vertex_id: VertexId,
+        /// Storage label of the tree-mode bucket.
+        label_id: BucketLabelKey,
+        /// Total bytes the run would write.
+        run_bytes: u64,
+        /// Free bytes in the current tail block.
+        tail_room_bytes: u64,
+    },
+    /// Plan 0321 Step 2: tree mode requires 4-byte edges. The
+    /// batch boundary refuses any other edge width.
+    TreeModeEdgeWidthUnsupported {
+        /// Edge width in bytes for the run's edge type.
+        actual: usize,
+        /// Tree-mode required edge width.
+        expected: usize,
+    },
     /// The overflow log cannot hold the planned run.
     LogCapacityExceeded,
     /// A inline property edge carried a byte length different from the declared width.
@@ -872,6 +907,28 @@ enum RunDestination {
         inline_property_bytes_offset: Option<u64>,
         /// Number of inline property bytes reserved for the pending batch edges.
         inline_property_bytes_byte_count: u64,
+    },
+    /// Plan 0321 Step 2: tree-mode batch admission (minimal first
+    /// slice — tail-fit only). The run writes into the existing
+    /// tail block at `tail_block_id + tail_offset_in_bytes` for
+    /// `run.edges.len() * E::BYTES` bytes. No new LTB blocks are
+    /// minted; no root region growth. Runs that would cross a
+    /// block boundary (or require root growth) are rejected
+    /// typed — the caller falls back to scalar inserts. The
+    /// follow-up slice widens to multi-block + root-growth.
+    ///
+    /// Tree mode invariants (Plan 0318 / 0319 / 0320): 4-byte
+    /// edges, no inline property bytes, no tombstones (no hole
+    /// reuse — `Unordered` placement appends at the tail like
+    /// `Insertion`).
+    Tree {
+        /// LTB block id of the tail block where the run's first edge writes.
+        tail_block_id: u32,
+        /// Byte offset within the tail block where the run's first edge writes.
+        tail_offset_bytes: usize,
+        /// Number of run edges that fit in the existing tail block.
+        /// (For the minimal first slice this equals `run.edges.len()`.)
+        run_edge_count: u32,
     },
 }
 
@@ -1572,6 +1629,14 @@ where
                         allocated_inline_property_bytes_offsets.push(None);
                     }
                 }
+                RunDestination::Tree { .. } => {
+                    // Tree-mode runs do not allocate inline property
+                    // bytes (Plan 0321 Step 2 invariant: tree mode
+                    // rejects inline-property-bearing buckets). Push
+                    // a `None` so the reservation's inline_property
+                    // slot stays empty.
+                    allocated_inline_property_bytes_offsets.push(None);
+                }
             }
         }
 
@@ -1724,6 +1789,15 @@ where
                             inline_property_bytes_byte_count,
                         }
                     }
+                    RunDestination::Tree {
+                        tail_block_id,
+                        tail_offset_bytes,
+                        run_edge_count,
+                    } => RunDestination::Tree {
+                        tail_block_id,
+                        tail_offset_bytes,
+                        run_edge_count,
+                    },
                 };
                 BatchReservationRun {
                     bucket_slot: p.bucket_slot,
@@ -2009,9 +2083,82 @@ where
         // (Commit 2 of Plan 0321) is the typed follow-up that
         // ADMITs tree runs.
         if bucket.is_tree_mode() {
-            return Err(OneOrientationBatchError::TreeModeBucketRunUnsupported {
+            // Plan 0321 Step 2: tree-mode batch admission (minimal
+            // first slice — tail-fit only). Compute the tail block
+            // room; if the run fits, admit it. If the run crosses a
+            // block boundary, reject it with a typed error — the
+            // caller falls back to scalar inserts (which handle
+            // root-growth correctly). The follow-up widens to
+            // multi-block + root-growth.
+            //
+            // Tree-mode invariants (4-byte edges, no inline
+            // property bytes) are checked here.
+            if E::BYTES != 4 {
+                return Err(OneOrientationBatchError::TreeModeEdgeWidthUnsupported {
+                    actual: E::BYTES,
+                    expected: 4,
+                });
+            }
+            if run.inline_property_width != 0 {
+                return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: 0,
+                    edge_width: run.inline_property_width,
+                });
+            }
+            let run_count = u32::try_from(run.edges.len())
+                .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
+            if run_count == 0 {
+                return Err(OneOrientationBatchError::EmptyRun);
+            }
+            // Tail-block room. The run must fit within the existing
+            // tail block (no new LTB block, no root growth in this
+            // first slice). The follow-up slice widens to
+            // multi-block.
+            let block_b: u32 = crate::labeled::tree_csr_prototype::B as u32;
+            let stored = bucket.stored_slots;
+            let tail_offset: u32 = (stored % block_b) * (E::BYTES as u32);
+            let tail_room: u32 = (block_b * (E::BYTES as u32)) - tail_offset;
+            let run_bytes = u32::try_from(run.edges.len())
+                .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?
+                .checked_mul(E::BYTES as u32)
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+            if run_bytes > tail_room {
+                // Run would cross a block boundary. The widening
+                // (follow-up) admits this; the minimal first slice
+                // rejects it typed.
+                return Err(OneOrientationBatchError::TreeRunExceedsTailBlock {
+                    owner_vertex_id: run.owner_vertex_id,
+                    label_id: run.label_id,
+                    run_bytes: u64::from(run_bytes),
+                    tail_room_bytes: u64::from(tail_room),
+                });
+            }
+            // Resolve the tail block id via the depth-generic
+            // resolver. For depth 1 this is a single LEG read; for
+            // depth 2+ it descends the interior hop chain. The
+            // resolver is `pub(crate)` and lives in tree_write.rs.
+            let tail_block_idx = stored / block_b;
+            let tail_block_id = crate::labeled::graph::tree_write::resolve_leaf_block_id(
+                self,
+                &bucket,
+                tail_block_idx,
+            )
+            .map_err(OneOrientationBatchError::StorageError)?;
+            // Build the PreflightRun for this tree-tail-fit run.
+            return Ok(PreflightRun {
                 owner_vertex_id: run.owner_vertex_id,
                 label_id: run.label_id,
+                bucket_slot,
+                bucket,
+                edge_slot_count: run_count,
+                inline_property_width: 0,
+                inline_property_bytes_byte_count: 0,
+                inline_property_bytes_allocation: None,
+                destination: RunDestination::Tree {
+                    tail_block_id,
+                    tail_offset_bytes: tail_offset as usize,
+                    run_edge_count: run_count,
+                },
             });
         }
 
@@ -2632,6 +2779,13 @@ where
                             .expect("reserve guaranteed relocated inline property bytes slot overflow safety");
                     }
                 }
+                RunDestination::Tree { .. } => {
+                    // Tree mode: descriptor updates (stored_slots +=
+                    // edge_slot_count, degree += edge_slot_count)
+                    // happen at commit time when the descriptor is
+                    // published. The reservation only carries the
+                    // computed counts.
+                }
             }
         }
 
@@ -2935,6 +3089,59 @@ where
                         .checked_add(inline_property_bytes_written)
                         .expect("reserve guaranteed expanded inline property bytes slot count");
                 }
+                RunDestination::Tree {
+                    tail_block_id,
+                    tail_offset_bytes,
+                    run_edge_count,
+                } => {
+                    // Plan 0321 Step 2 (minimal first slice): the
+                    // tree run's edges are written contiguously into
+                    // the tail block at `tail_offset_bytes`. The
+                    // block is already populated up to
+                    // `tail_offset_bytes`; we append after.
+                    //
+                    // Build the run's edge payload (4-byte target per
+                    // edge, tree invariant). Then partial-write into
+                    // the tail block.
+                    if E::BYTES != 4 {
+                        panic!(
+                            "reserve guaranteed tree mode 4-byte edges; got E::BYTES = {}",
+                            E::BYTES
+                        );
+                    }
+                    let mut edge_bytes = Vec::with_capacity(*run_edge_count as usize * E::BYTES);
+                    for e in &run.edges {
+                        let mut buf = [0u8; 4];
+                        e.edge.write_to(&mut buf);
+                        edge_bytes.extend_from_slice(&buf);
+                    }
+                    graph
+                        .ltb()
+                        .write_payload_partial(*tail_block_id, *tail_offset_bytes, &edge_bytes)
+                        .expect("reserve guaranteed tail block write capacity");
+                    if let Some(locations) = locations.as_mut() {
+                        locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
+                            OneOrientationBatchLocation {
+                                logical_ordinal: edge.logical_ordinal,
+                                owner_vertex_id: edge.owner_vertex_id,
+                                logical_slot: res
+                                    .bucket_fingerprint
+                                    .stored_slots
+                                    .checked_add(offset as u32)
+                                    .expect("reserve guaranteed logical slot"),
+                                location: OneOrientationPhysicalLocation::Tree {
+                                    tail_block_id: *tail_block_id,
+                                    byte_offset: (*tail_offset_bytes)
+                                        .checked_add(offset * E::BYTES)
+                                        .expect("reserve guaranteed byte offset"),
+                                },
+                            }
+                        }));
+                    }
+                    edge_slots_written = edge_slots_written
+                        .checked_add(*run_edge_count as u64)
+                        .expect("reserve guaranteed tree edge slot count");
+                }
                 RunDestination::RelocatedSlab {
                     leaf,
                     new_leaf_len,
@@ -3105,6 +3312,21 @@ where
                 }
                 RunDestination::ExpandedSlab { .. } => unreachable!(),
                 RunDestination::RelocatedSlab { .. } => unreachable!(),
+                RunDestination::Tree { run_edge_count, .. } => {
+                    // Plan 0321 Step 2 (minimal first slice): tree
+                    // mode bump. The descriptor's `stored_slots` and
+                    // `degree` both grow by the run size (no inline
+                    // property bytes, no tombstones, no hole reuse).
+                    // The tail block write already happened in the
+                    // first pass; this is the canonical publish.
+                    updated_bucket = updated_bucket.with_stored_slots(
+                        bucket
+                            .stored_slots
+                            .checked_add(*run_edge_count)
+                            .expect("reserve guaranteed tree stored_slots overflow safety"),
+                    );
+                    updated_bucket = updated_bucket.with_tree_mode(true);
+                }
             }
             graph
                 .buckets
@@ -4035,6 +4257,19 @@ impl std::fmt::Display for OneOrientationBatchError {
             } => write!(
                 f,
                 "tree-mode bucket run unsupported: vertex {owner_vertex_id:?} label {label_id:?} (use scalar fallback)"
+            ),
+            Self::TreeRunExceedsTailBlock {
+                owner_vertex_id,
+                label_id,
+                run_bytes,
+                tail_room_bytes,
+            } => write!(
+                f,
+                "tree-mode run exceeds tail-block room: vertex {owner_vertex_id:?} label {label_id:?} run_bytes={run_bytes} tail_room_bytes={tail_room_bytes}"
+            ),
+            Self::TreeModeEdgeWidthUnsupported { actual, expected } => write!(
+                f,
+                "tree-mode batch requires 4-byte edges (got {actual}, expected {expected})"
             ),
         }
     }

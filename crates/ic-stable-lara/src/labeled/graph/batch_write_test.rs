@@ -1998,12 +1998,13 @@ mod tests {
         );
     }
 
-    /// Plan 0321 §Step 1: a batch run whose target bucket is in
-    /// tree mode must fail closed at the batch boundary with the
-    /// typed `OneOrientationBatchError::TreeModeBucketRunUnsupported`
-    /// error BEFORE any geometry math (the planner would otherwise
-    /// read the root region as slab slots and corrupt the bucket
-    /// on commit). The bucket itself is untouched after the failure.
+    /// Plan 0321 §Step 1 + Step 2: a batch run whose target bucket
+    /// is in tree mode and exceeds the current tail-block room
+    /// (no headroom) must fail closed at the batch boundary with
+    /// `TreeRunExceedsTailBlock` (Step 2 minimal first slice) or
+    /// `TreeModeBucketRunUnsupported` (Step 1 reject path before
+    /// Step 2 lands). The bucket itself is untouched after the
+    /// failure. The plan doc records both rejection paths.
     #[test]
     fn batch_run_rejects_tree_mode_bucket_fail_closed() {
         use crate::labeled::graph::test_support::{
@@ -2016,7 +2017,11 @@ mod tests {
         // promote_bypass_to_tree_mode).
         let label = BucketLabelKey::directed_from_index(1);
         force_tree_mode_for_test(&graph, VertexId::from(0), label);
-        // Confirm the bucket is now in tree mode.
+        // Confirm the bucket is now in tree mode with stored_slots
+        // = T_PROMOTE = 4096 = exactly 4 blocks. tail_offset = 0
+        // (the bucket ends exactly on a block boundary), so any
+        // batch run is rejected with TreeRunExceedsTailBlock (Step
+        // 2 minimal first slice).
         let vertex = graph.vertices.get(VertexId::from(0));
         let (slot, bucket) = match graph
             .find_bucket(VertexId::from(0), &vertex, label)
@@ -2026,30 +2031,42 @@ mod tests {
             _ => panic!("expected Found bucket after promote"),
         };
         assert!(bucket.is_tree_mode(), "bucket must be tree-mode");
-        // Build a batch plan targeting the tree bucket with one new
-        // edge. The preflight guard should reject it.
+        assert_eq!(
+            bucket.stored_slots,
+            crate::labeled::graph::T_PROMOTE,
+            "post-promotion stored_slots should be T_PROMOTE"
+        );
+        // Build a batch plan with 1100 edges targeting the tree
+        // bucket. The bucket is at stored_slots = 4096 (block 4,
+        // offset 0). tail_room = 1024 * 4 = 4096 bytes. 1100
+        // edges × 4 bytes = 4400 bytes > tail_room, so the run
+        // must be rejected with TreeRunExceedsTailBlock.
+        let mut edges = Vec::with_capacity(1100);
+        for i in 0..1100u32 {
+            edges.push(OneOrientationBatchEdge {
+                logical_ordinal: i,
+                owner_vertex_id: VertexId::from(0),
+                neighbor_vertex_id: VertexId::from(2 + i),
+                label_id: label,
+                edge: TestEdge { target: 2 + i },
+            });
+        }
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
                 placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                edges: vec![OneOrientationBatchEdge {
-                    logical_ordinal: 0,
-                    owner_vertex_id: VertexId::from(0),
-                    neighbor_vertex_id: VertexId::from(2),
-                    label_id: label,
-                    edge: TestEdge { target: 2 },
-                }],
+                edges,
             }],
         };
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
             matches!(
                 err,
-                OneOrientationBatchError::TreeModeBucketRunUnsupported { .. }
+                OneOrientationBatchError::TreeRunExceedsTailBlock { .. }
             ),
-            "expected TreeModeBucketRunUnsupported, got {err}"
+            "expected TreeRunExceedsTailBlock, got {err}"
         );
         // Bucket descriptor is unchanged.
         let bucket_after = graph
@@ -2111,13 +2128,15 @@ mod tests {
                     label_id: label_tree,
                     inline_property_width: 0,
                     placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    edges: vec![OneOrientationBatchEdge {
-                        logical_ordinal: 0,
-                        owner_vertex_id: VertexId::from(0),
-                        neighbor_vertex_id: VertexId::from(2),
-                        label_id: label_tree,
-                        edge: TestEdge { target: 2 },
-                    }],
+                    edges: (0..1100u32)
+                        .map(|i| OneOrientationBatchEdge {
+                            logical_ordinal: i,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(2000 + i),
+                            label_id: label_tree,
+                            edge: TestEdge { target: 2000 + i },
+                        })
+                        .collect(),
                 },
             ],
         };
@@ -2125,9 +2144,9 @@ mod tests {
         assert!(
             matches!(
                 err,
-                OneOrientationBatchError::TreeModeBucketRunUnsupported { .. }
+                OneOrientationBatchError::TreeRunExceedsTailBlock { .. }
             ),
-            "expected TreeModeBucketRunUnsupported, got {err}"
+            "expected TreeRunExceedsTailBlock, got {err}"
         );
         // The slab bucket is untouched (no run was admitted because
         // the tree run failure aborts the plan). The slab bucket's
@@ -2135,5 +2154,88 @@ mod tests {
         let all_out = graph.out_edges(VertexId::from(0)).unwrap();
         let slab_count = all_out.iter().filter(|e| e.target == 100).count();
         assert_eq!(slab_count, 1, "slab bucket unchanged");
+    }
+
+    /// Plan 0321 §Step 2: a batch run targeting a tree-mode bucket
+    /// with tail room for the run is admitted through the batch
+    /// boundary. The run writes 1 edge into the existing tail
+    /// block, the descriptor's stored_slots and degree are bumped
+    /// in one canonical write, and the edge is readable through
+    /// the standard out_edges path.
+    #[test]
+    fn batch_run_admits_tree_mode_bucket_tail_fit() {
+        use crate::labeled::graph::test_support::{
+            TestEdge, force_tree_mode_for_test, test_graph_with_default,
+        };
+        let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::directed_from_index(1);
+        // Promote the bucket to tree mode (stored_slots = T_PROMOTE
+        // = 4096 = 4 full blocks). Then issue 1 scalar insert to
+        // mint the 5th block and advance stored_slots to 4097. The
+        // tail block is now block 4 with tail_offset = 4 bytes
+        // (1 edge already in tail from the scalar insert), and
+        // tail_room = 4096 - 4 = 4092 bytes.
+        force_tree_mode_for_test(&graph, VertexId::from(0), label);
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("scalar insert after promote");
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (_slot, bucket_before) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("expected Found bucket after promote+insert"),
+        };
+        assert!(bucket_before.is_tree_mode());
+        let pre_stored = bucket_before.stored_slots;
+        let pre_degree = bucket_before.degree;
+        assert_eq!(pre_stored, 4097, "stored_slots after scalar insert");
+        // Build a 1-edge batch plan. 1 edge = 4 bytes fits in
+        // tail_room.
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(2),
+                    label_id: label,
+                    edge: TestEdge { target: 2 },
+                }],
+            }],
+        };
+        let result = graph
+            .insert_one_orientation_batch_with_locations(&plan)
+            .expect("tail-fit run should be admitted");
+        assert_eq!(result.edge_slots_written, 1);
+        // Verify the descriptor was bumped.
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (_slot, bucket_after) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("expected Found bucket after batch"),
+        };
+        assert!(bucket_after.is_tree_mode());
+        assert_eq!(bucket_after.stored_slots, pre_stored + 1);
+        assert_eq!(bucket_after.degree, pre_degree + 1);
+        // The new edge's target must be in the out_edges list.
+        let all = graph.out_edges(VertexId::from(0)).unwrap();
+        let count = all.iter().filter(|e| e.target == 2).count();
+        assert!(
+            count >= 1,
+            "new edge target 2 must be reachable (count={count})"
+        );
     }
 }
