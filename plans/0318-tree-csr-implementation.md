@@ -22,7 +22,10 @@ todos:
     status: completed
   - id: "deepen-flatten"
     content: "Implement `deepen(vid, label)` and `flatten(vid, label)` for the tree-mode descriptor. `deepen` runs when the derived root length would exceed `R_MAX = 1024`: reserve interior blocks (`kind = *Interior` via `LtbRawBlockStore::mint()`), copy current root ids into the interior blocks (right-spine partial allowed), rewrite the span to the interior ids, publish the descriptor. `flatten` is the inverse, only ever inside compaction/maintenance; interior blocks are released after publish (commit-order invariant). Both are level-generic (depth 2 → 3 identical to depth 1 → 2). Fail-closed at `MAX_DEPTH = 3` per [ADR 0088 §4](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md): `derive_depth(stored_slots) > MAX_DEPTH` returns a typed error before any canonical write. Unit tests: (a) `stored_slots = 2²⁰` → deepen triggers depth 1 → 2; (b) `stored_slots = 2³⁰` → deepen triggers depth 2 → 3; (c) `stored_slots = 2⁴⁰` → MAX_DEPTH exceeded, fail-closed typed error; (d) `flatten` after compaction releases interior blocks correctly."
-    status: pending
+    status: completed
+  - id: "tree-mode-root-capacity-fail-closed"
+    content: "Step 7 amend: insert path checks the **physical** root region length against `R_max = 1024` BEFORE any state change. When the next insert would push the physical root past `R_max`, return `LabeledOperationError::TreeRootCapacityReached { stored_slots, root_len, cap }` (new variant, error.rs). The guard replaces the overclaimed `deepen` first hook from commit `7918f9be3`'s message. Effective tree-mode cap is `2^20 = 1,048,576` slots per bucket until the interior-level insert cascade ships (follow-up `tree-mode-interior-level-insert-growth`). Tests: `tree_insert_fails_closed_at_root_capacity` (direct helper) + `production_insert_path_fails_closed_at_root_capacity` (production `insert_edge_skip_leaf_cascade` dispatcher)."
+    status: completed
   - id: "wasm-budget-recheck"
     content: "Run `cargo build --release --target wasm32-unknown-unknown --features canbench` from `crates/ic-stable-lara/` and verify the exported-name budget is under the 20K PocketIC limit. Plan 0318 adds no new canbench benches (production-code-only changes), so the budget should stay at the Plan 0314/0315/0316/0322 baseline (~16,776 chars / 3,224 chars of headroom preserved). If regression occurs, investigate and add to the plan as a follow-up; do not block the implementation."
     status: pending
@@ -599,33 +602,55 @@ Unit tests:
 >    - Does **not** call `check_alloc_cap(&bucket, 1)` for a tree bucket
 >      (the slot capacity is bounded by `TREE_STRUCTURAL_CAP`, well
 >      above realistic per-insert growth).
->    - Checks `root_len(stored_slots + 1) > R_max` and, if true, calls
->      `deepen(vid, label)` first, then completes the append.
+>    - **Original Step 6 spec said**: "Checks `root_len(stored_slots + 1)
+>      > R_max` and, if true, calls `deepen(vid, label)` first, then
+>      completes the append." **This was the Step 7 overclaim** — the
+>      `deepen` first hook was never wired. **Current Step 7 amend
+>      behavior**: the insert path checks the **physical** root region
+>      length (via `bucket.tree_mode_physical_depth()` and the leaf /
+>      interior math) against `R_max = 1024` BEFORE any state change,
+>      and returns `LabeledOperationError::TreeRootCapacityReached`
+>      when the next insert would exceed it. The interior-level insert
+>      cascade that would call `tree_mode_deepen` then append is
+>      tracked as follow-up todo `tree-mode-interior-level-insert-growth`
+>      (see "Later Slices"). The effective tree-mode cap is
+>      `2^20 = 1,048,576` slots per bucket until the cascade ships.
 
 ### Step 7 — `deepen()` and `flatten()`
 
-In `crates/ic-stable-lara/src/labeled/graph.rs`:
+In `crates/ic-stable-lara/src/labeled/graph/tree_write.rs`:
 
 ```rust
 /// Deepen the tree-mode root array when the derived root length would exceed
-/// `R_max = 1024`. Reserve interior blocks (`kind = *Interior`), copy current
-/// root ids into them, rewrite the span to the interior ids (right-spine partial
-/// allowed), publish. Level-generic (2 → 3 identical one level up). Fails closed
-/// at `MAX_DEPTH = 3` per [ADR 0088 §4](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md).
-pub(crate) fn deepen(&self, vid: VertexId, label: BucketLabelKey) -> Result<(), LabeledOperationError> { ... }
+/// `R_max = 1024`. Reserve interior blocks (`kind = EdgeInterior`), copy
+/// current root ids into them, rewrite the span to the interior ids
+/// (right-spine partial allowed), publish. Level-generic (2 → 3 identical
+/// one level up). Fails closed at `MAX_DEPTH = 3` per [ADR 0088 §4](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md).
+pub(crate) fn tree_mode_deepen<E, M>(graph, bucket_slot, bucket) -> Result<(), LabeledOperationError> { ... }
 
-/// Flatten is the inverse of deepen, only ever invoked inside compaction / maintenance.
-/// Interior blocks are released after publish (commit-order invariant).
-pub(crate) fn flatten(&self, vid: VertexId, label: BucketLabelKey) -> Result<(), LabeledOperationError> { ... }
+/// Flatten is the inverse of deepen, only ever invoked inside compaction /
+/// maintenance. Interior blocks are released after publish (commit-order
+/// invariant). Currently restricted to depth 2 → depth 1; depth 3 → depth 2
+/// is a future slice.
+pub(crate) fn tree_mode_flatten<E, M>(graph, bucket_slot, bucket) -> Result<(), LabeledOperationError> { ... }
 ```
 
-Both follow the reserve/commit/publish split used by `promote_bypass_to_tree_mode`. Fail-closed: if `derive_depth(stored_slots) > MAX_DEPTH`, the method returns an error before any canonical write.
+Both follow the reserve/commit/publish split used by `promote_bypass_to_tree_mode`. Fail-closed: if the physical depth is already at `MAX_DEPTH`, the method returns `LabeledOperationError::TreeDepthLimitReached` before any canonical write.
+
+The depth-generic leaf resolution is shared by `tree_read.rs` and `tree_write.rs` via `resolve_leaf_block_id<E, M>(graph, bucket, block_index)`. The resolver reads the **physical** depth from the bucket (`LabelBucket::tree_mode_physical_depth()`) rather than the structural `derive_depth(stored_slots)` formula, because a manually-deepened bucket at `stored_slots = 1,048,576` has structural depth 1 (the formula admits it) but physical depth 2 (the layout is depth 2). The physical depth is stored in the `inline_property_bytes_log_len` byte of the bucket (range `0..=2` = depth `1..=3`), which is required to be 0 for non-tree buckets and repurposed for tree buckets (the byte is unused in tree mode because inline properties are rejected by the promote path).
+
+**Status (commit `7918f9be3`)**: `tree_mode_deepen`, `tree_mode_flatten`, `resolve_leaf_block_id`, the F-a mint-path ordering fix, and the 4 unit tests (`resolve_leaf_block_id_walks_synthetic_depth2_layout`, `deepen_fail_closed_at_max_depth`, `deepen_restructures_root_region`, `flatten_inverts_deepen`) are implemented. The commit message overclaimed that an **insert hook** (calling `tree_mode_deepen` from the production insert path when the root region would exceed `R_max`) was part of Step 7 — **that hook is not implemented**. See Step 7 amend below.
+
+**Step 7 amend — interim fail-closed (commit pending in this plan)**:
+- The production insert path (`tree_mode_insert_edge` mint branch) now checks the **physical** root region length against `R_max = 1024` BEFORE any state change. If the next insert would push the physical root past `R_max`, the call returns `LabeledOperationError::TreeRootCapacityReached { stored_slots, root_len, cap }` with no mint, no span allocation, no descriptor publish.
+- This means the **effective tree-mode cap is `2^20 = 1,048,576` slots per bucket** (= 4 MiB of edge data per label) until the interior-level insert cascade is wired. The cascade is a follow-up todo (`tree-mode-interior-level-insert-growth`); see "Later Slices" below.
+- Test coverage: `tree_insert_fails_closed_at_root_capacity` (direct helper) and `production_insert_path_fails_closed_at_root_capacity` (production dispatcher) confirm the guard fires at `stored_slots = 1024 * 1024` with the next insert reporting the typed error.
 
 Unit tests:
-- (a) `stored_slots = 2²⁰` → deepen triggers depth 1 → 2.
-- (b) `stored_slots = 2³⁰` → deepen triggers depth 2 → 3.
-- (c) `stored_slots = 2⁴⁰` → MAX_DEPTH exceeded, fail-closed typed error.
-- (d) `flatten` after compaction releases interior blocks correctly.
+- (a) `stored_slots = 2²⁰ + 1` (structurally depth 2) → resolver walks 2 hops correctly. Implemented as `resolve_leaf_block_id_walks_synthetic_depth2_layout`.
+- (b) `stored_slots = 2²⁰` (structurally depth 1) → `tree_mode_deepen` restructures the root to 1 entry pointing to a new interior. Implemented as `deepen_restructures_root_region`. The 1-hop / 2-hop gap (structural vs physical depth) is resolved via `tree_mode_physical_depth`.
+- (c) `stored_slots = 2³⁰ + 1` (structurally depth 3) → `tree_mode_deepen` returns `TreeDepthLimitReached` before any mint. Implemented as `deepen_fail_closed_at_max_depth`.
+- (d) `tree_mode_flatten` after `tree_mode_deepen` produces a depth-1 root region with the original leaf block_ids. Implemented as `flatten_inverts_deepen`. Note: depth-3 → depth-2 flatten is a future slice (only depth-2 → depth-1 is supported in this commit).
 
 ### Step 8 — Wasm budget recheck
 
@@ -733,7 +758,8 @@ python3 ~/.agents/skills/plan/scripts/validate_plan.py \
 - [x] `promote_bypass_to_tree_mode(vid, label)` is implemented with reserve/commit/publish atomicity; 8 unit tests (slab prefix transcription, atomicity, LEG root region, LTB data ordering, edge_start offset). — Plan 0318 Step 4 (`44c82d3b2`), amended `c2a92f84d`/`c03aac7d4` (stored_slots trigger, `BucketNotFound`, below-cap tests)
 - [x] Mode dispatch in bucket access constructor: `visit_edges_for_label_impl` routes a tree-mode bucket to `graph/tree_read.rs::visit_tree_mode_label_bucket_edges`; `tree_mode_random_ordinal_access` for slot access; collect via chunk walk; single dispatch point, no branches in rope/PMA/placement. — Plan 0318 Step 5 (`753c100cf`, 6 tests)
 - [x] `insert_edge` / `remove_edge_at_slot` dispatch on tree-mode; tree-mode path uses `write_payload_partial` for tail-block append and `read_payload_partial` / `write_payload_partial` for tombstone rewriting; promotion trigger + `check_vertex_bucket_count_cap` wired in `insert_edge_skip_leaf_cascade_impl`; Phase 3c leaf-physical deferred release (pin-sheltered). — Plan 0318 Step 6a/6b (`1ff13800e`, `5918c8d79`, 9 tests)
-- [ ] `deepen()` and `flatten()` work level-generically; fail-closed at `MAX_DEPTH = 3` (typed error before canonical write). — Plan 0318 Step 7 (deferred)
+- [x] `deepen()` and `flatten()` work level-generically; fail-closed at `MAX_DEPTH = 3` (typed error before canonical write). — Plan 0318 Step 7 (`7918f9be3`, 4 tests: `resolve_leaf_block_id_walks_synthetic_depth2_layout`, `deepen_fail_closed_at_max_depth`, `deepen_restructures_root_region`, `flatten_inverts_deepen`)
+- [x] **Step 7 amend**: insert path checks the physical root region length against `R_max = 1024` BEFORE any state change; overcapacity returns `TreeRootCapacityReached`. Effective tree-mode cap is `2^20 = 1,048,576` slots per bucket until the interior-level insert cascade ships. — (commit pending in this plan, 2 tests: `tree_insert_fails_closed_at_root_capacity`, `production_insert_path_fails_closed_at_root_capacity`)
 - [ ] `cargo build --release --target wasm32-unknown-unknown --features canbench` succeeds; exported-name total under the 20K PocketIC limit (~16,776 chars expected). — Plan 0318 Step 8 (deferred, currently passing incidentally; explicit recheck pending Step 4 changes)
 - [ ] Gate 2 canbench benches re-run on production `VirtualMemory`; numbers within ±20% of Plan 0322 `VectorMemory` baseline. — Plan 0318 Step 9 (deferred)
 - [ ] ADR 0088 §Status updated to "Plan 0318 implemented"; §Design Documentation Impact table's "Tree mode summary" row marked `completed`. — Plan 0318 Step 10 (deferred)
@@ -757,6 +783,14 @@ python3 ~/.agents/skills/plan/scripts/validate_plan.py \
 - **Plan 0321** — Batch admission widening to tree-mode buckets. Per ADR 0088 §7.
 - **Plan 0323** — Normal LARA (unlabeled) tree mode as a second instance.
 - **Plan 0324** — PocketIC-backed 1M-degree sweep (Gate 1's deferred row).
+- **tree-mode-interior-level-insert-growth** (status: **pending**; from Plan 0318 §Step 7 amend). The fail-closed guard in `tree_mode_insert_edge` (returns `TreeRootCapacityReached` when the next insert would push the physical root past `R_max = 1024`) caps tree-mode buckets at `stored_slots = 2^20 = 1,048,576` per label until the right-spine cascade is wired. Orchestrator design (right-spine partial growth):
+  - For a new leaf-index `L` at physical depth `p`, level-`j` node creation condition: `L % B^j == 0` (a new node is needed at level `j` iff the new leaf's index is a multiple of `B^j`).
+  - Root growth: `L % B^(p-1) == 0` triggers a root-region append (one more entry).
+  - Root full: `root_len == R_max` triggers a `tree_mode_deepen` call (depth grows first), then the insert proceeds against the new physical depth.
+  - Depth 3 full: fail-closed with `TreeDepthLimitReached` (the existing guard).
+  - **Estimated effort**: 4-6h. Depth 3 is physically untestable (would need 2^30 slots = 4 GiB of leaf payload) so the depth-3 surface is structural-only (precondition + dispatch), with integration tests for depth 1 → 2 and depth 2 → 3.
+  - **Once implemented**: the fail-closed guard in `tree_mode_insert_edge` is replaced by the cascade; the effective tree-mode cap becomes `2^30 = 1,073,741,824` slots per bucket (= 4 GiB of edge data per label).
+- **tree-mode-tombstone-reuse** (status: **pending**; from Plan 0318 §Step 6 amend). Tree-mode inserts currently always append (Unordered tombstone reuse is not implemented). For high-churn tree buckets, the LTB footprint grows monotonically: every removed edge becomes a tombstone that occupies a permanent slot in a leaf block. Slab mode reuses tombstones via `try_reuse_unordered_slab_tombstone`. The reuse strategy for tree buckets needs to either: (a) scan for tombstones on the insert path (cost: `O(stored_slots)` worst-case per insert), (b) maintain a per-bucket tombstone count + trigger a flatten-and-rebuild when the threshold is crossed, or (c) accept the LTB bloat for tree mode and rely on the lower storage churn of high-degree buckets. Recorded as a follow-up because the production callers (Step 6 wire-up) currently have a stable contract: tombstones in tree mode never reuse.
 
 ## Notes (out of scope, recorded for context)
 

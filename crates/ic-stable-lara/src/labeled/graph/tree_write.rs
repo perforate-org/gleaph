@@ -103,6 +103,46 @@ where
         // after the grow it is `[new_edge_start, new_edge_start + old_root_len + 1)`.
         // We allocate the new span first, copy the old block_ids verbatim,
         // append the new block_id, and publish the new descriptor.
+        //
+        // **Interim fail-closed (Plan 0318 §Step 7 amend)**: the
+        // interior-level insert cascade (depth ≥ 2 growth via
+        // right-spine nodes) is not yet wired. A root region already
+        // at `R_MAX = 1024` entries cannot accept a 1,048,577th slot
+        // without either growing the root past `R_MAX` (ADR wire-truth
+        // violation) or cascading into a new interior level (unwired).
+        // The pre-mint guard below returns `TreeRootCapacityReached`
+        // before any state change. The follow-up todo
+        // `tree-mode-interior-level-insert-growth` will replace this
+        // guard with a right-spine cascade (depth grows first, then
+        // root grows, then the next insert).
+        let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let b = u32::try_from(BLOCK_B).expect("B fits u32");
+        let depth = bucket.tree_mode_physical_depth();
+        let physical_root_len: u32 = match depth {
+            1 => u32::try_from((u64::from(stored_slots)).div_ceil(b as u64))
+                .expect("depth-1 root_len fits u32"),
+            2 => u32::try_from(
+                (u64::from(stored_slots))
+                    .div_ceil(b as u64)
+                    .div_ceil(k as u64),
+            )
+            .expect("depth-2 root_len fits u32"),
+            3 => u32::try_from(
+                (u64::from(stored_slots))
+                    .div_ceil(b as u64)
+                    .div_ceil(k as u64)
+                    .div_ceil(k as u64),
+            )
+            .expect("depth-3 root_len fits u32"),
+            _ => unreachable!("tree_mode_physical_depth out of range"),
+        };
+        if physical_root_len >= k {
+            return Err(LabeledOperationError::TreeRootCapacityReached {
+                stored_slots: next_stored,
+                root_len: physical_root_len,
+                cap: k,
+            });
+        }
         let old_root_len = u32::try_from(derived_root_len(stored_slots))
             .expect("root_len fits u32 (per ADR 0088 §4 R_max = 1024)");
         let new_root_len = old_root_len
@@ -1831,6 +1871,139 @@ mod tests {
                 id, original_leaf_ids[block_index as usize],
                 "leaf block_id changed at index {block_index} after flatten"
             );
+        }
+    }
+
+    // ====================== Commit A: fail-closed root capacity guard ======================
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_insert_fails_closed_at_root_capacity() {
+        // Plan 0318 §Step 7 amend (interim fail-closed): a tree-mode
+        // bucket with `root_len == R_MAX = 1024` cannot accept a
+        // 1,048,577th slot because the interior-level insert cascade
+        // is not yet wired. The guard must reject the call with
+        // `TreeRootCapacityReached` BEFORE any state change (no mint,
+        // no span allocation, no descriptor publish).
+        //
+        // The bucket is constructed via `force_bucket_to_stored_slots`
+        // (slab-mode) + `promote_bypass_to_tree_mode` (tree-mode
+        // depth-1 layout). We force `stored_slots = 1024 * 1024 =
+        // 1,048,576` (= 2^20) so the root region has exactly 1024
+        // entries after promote. The next insert would push the root
+        // to 1025 entries, triggering the guard.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        let r_max =
+            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let target_stored: u32 = (BLOCK_B as u32) * r_max; // 1024 * 1024 = 1,048,576
+        super::super::promote::tests::force_bucket_to_stored_slots(
+            &graph,
+            vid,
+            label,
+            target_stored,
+        );
+        let vertex = graph.vertices().get(vid);
+        let search = graph.find_bucket(vid, &vertex, label).expect("find_bucket");
+        let super::super::BucketSearch::Found { slot, .. } = search else {
+            panic!("bucket missing");
+        };
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read_label_bucket_slot");
+        let edge_start = bucket.edge_start();
+        super::super::promote::tests::fill_leg_slab_prefix(&graph, edge_start, target_stored);
+        super::super::promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        // Re-read the now tree-mode bucket.
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after promote"),
+        };
+        assert!(bucket_after.is_tree_mode());
+        assert_eq!(bucket_after.stored_slots, target_stored);
+        assert_eq!(
+            bucket_after.stored_slots / BLOCK_B as u32,
+            1024,
+            "root_len must be 1024 to exercise the guard"
+        );
+
+        // The next insert (tail_offset == 0, since stored_slots % B == 0)
+        // must fail-closed with TreeRootCapacityReached.
+        let new_edge = TestEdge { target: 0xCAFE };
+        let result = tree_mode_insert_edge(&graph, vid, slot, &bucket_after, label, &new_edge);
+        match result {
+            Err(LabeledOperationError::TreeRootCapacityReached {
+                stored_slots,
+                root_len,
+                cap,
+            }) => {
+                assert_eq!(stored_slots, target_stored + 1);
+                assert_eq!(root_len, 1024);
+                assert_eq!(cap, 1024);
+            }
+            other => panic!("expected TreeRootCapacityReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn production_insert_path_fails_closed_at_root_capacity() {
+        // Plan 0318 §Step 7 amend (production-path integration): the
+        // same guard must fire when called via the production
+        // `insert_edge_skip_leaf_cascade` path, not just the raw
+        // `tree_mode_insert_edge` helper. We pre-construct a tree-mode
+        // bucket at the root capacity (`stored_slots = 1024 * 1024`)
+        // via the same force_bucket_to_stored_slots + promote path
+        // as the direct-helper test, then drive the production
+        // dispatcher once.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        let r_max =
+            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let target_stored: u32 = (BLOCK_B as u32) * r_max; // 1,048,576
+        super::super::promote::tests::force_bucket_to_stored_slots(
+            &graph,
+            vid,
+            label,
+            target_stored,
+        );
+        let vertex = graph.vertices().get(vid);
+        let search = graph.find_bucket(vid, &vertex, label).expect("find_bucket");
+        let super::super::BucketSearch::Found { slot, .. } = search else {
+            panic!("bucket missing");
+        };
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read_label_bucket_slot");
+        let edge_start = bucket.edge_start();
+        super::super::promote::tests::fill_leg_slab_prefix(&graph, edge_start, target_stored);
+        super::super::promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+
+        // Production path: the next insert must surface
+        // TreeRootCapacityReached through the public API.
+        let new_edge = TestEdge { target: 0xBEEF };
+        let result = graph.insert_edge_skip_leaf_cascade(
+            vid,
+            label,
+            new_edge,
+            crate::labeled::EdgePlacementPolicy::Insertion,
+        );
+        match result {
+            Err(LabeledOperationError::TreeRootCapacityReached {
+                stored_slots,
+                root_len,
+                cap,
+            }) => {
+                assert_eq!(stored_slots, target_stored + 1);
+                assert_eq!(root_len, 1024);
+                assert_eq!(cap, 1024);
+            }
+            other => panic!("expected TreeRootCapacityReached, got {other:?}"),
         }
     }
 }

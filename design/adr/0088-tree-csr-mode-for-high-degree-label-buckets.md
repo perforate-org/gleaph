@@ -536,6 +536,33 @@ tree buckets) or populated.
 `R_max` is deliberately wire, not policy: a build with a different `R_max`
 would re-derive different depths for the same `stored_slots`.
 
+**§Decision amend (Plan 0318, 2026 interim cap)** — The production
+insert path checks the **physical** root region length against
+`R_max = 1024` BEFORE any state change. When the next insert would
+push the physical root past `R_max`, the call returns
+`LabeledOperationError::TreeRootCapacityReached { stored_slots,
+root_len, cap }` (new variant, see `crates/ic-stable-lara/src/labeled/graph/error.rs`).
+**No state is mutated on this path** — the guard fires before any mint,
+span allocation, or descriptor publish.
+
+**Effective tree-mode cap until the interior-level insert cascade ships**:
+`2^20 = 1,048,576` slots per label bucket (= 4 MiB of edge data per
+label, = `R_max * B` where `B = 1024`). Once the right-spine cascade
+ships (follow-up todo `tree-mode-interior-level-insert-growth`), the
+guard is replaced by the cascade and the effective cap grows to
+`2^30 = 1,073,741,824` slots per bucket (= 4 GiB).
+
+The structural formulas (`derive_depth`, `root_len`) are unchanged:
+they continue to return the *minimum* root length for a given
+`stored_slots`. A bucket at `stored_slots = 1,048,576` still reports
+depth 1 / root_len 1024 even if its physical layout has been
+restructured to depth 2 (one interior) via `tree_mode_deepen`. The
+depth-generic resolver and the production insert guard consult the
+**physical** depth (`LabelBucket::tree_mode_physical_depth()`, stored
+in the `inline_property_bytes_log_len` byte repurposed for tree-mode
+buckets) rather than the structural formula, so a manually-deepened
+bucket is handled correctly.
+
 ## Consequences
 
 - Leaf relocation, weighted rebalance, and placement costs become
@@ -817,7 +844,7 @@ demotion as follow-up slices.
 | [adr/0022](0022-degree-driven-hub-edge-storage.md)   | Close Stage 2: 2a subsumed by ADR 0088 bounded footprint; 2b remains rejected                | this patch        |
 | [adr/0007](0007-stable-memory-layout.md)             | MemoryId inventory: LTB store × 2 orientations                                               | on implementation |
 | [adr/0052](0052-per-label-adjacency-order-and-tombstone-reuse.md) | Cross-reference: block-local swap-compaction, tree-mode tail-trim prohibition   | on implementation |
-| `crates/ic-stable-lara/README.md`                    | Tree mode summary                                                                            | on implementation |
+| `crates/ic-stable-lara/README.md`                    | Tree mode summary                                                                            | completed (Plan 0318) |
 
 ## Required Axes Impact (adr-review)
 

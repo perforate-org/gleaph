@@ -108,6 +108,24 @@ pub enum LabeledOperationError {
         /// Structural maximum depth (currently 3, per ADR 0088 §4).
         max_depth: u32,
     },
+    /// Plan 0318 §Step 7 amend (interim): tree-mode `insert` would
+    /// push the physical root region past `R_MAX = 1024` entries. The
+    /// interior-level insert cascade (right-spine growth at depth
+    /// ≥ 2) is not yet wired, so a depth-1 bucket at root_len = R_MAX
+    /// (= 1024) cannot accept a 1,048,577th slot. Until the cascade
+    /// is implemented (follow-up todo), the production insert path
+    /// fails closed at `stored = 2^20 = 1,048,576` slots (= 4 MiB of
+    /// edge data) with this typed error instead of silently growing
+    /// the root past the ADR wire truth (`root_len ≤ R_max`, ADR 0088
+    /// §4).
+    TreeRootCapacityReached {
+        /// The `next_stored` value the insert would have produced.
+        stored_slots: u32,
+        /// Physical root region length at the time of the failed insert.
+        root_len: u32,
+        /// Structural cap (`R_MAX = 1024` per ADR 0088 §4).
+        cap: u32,
+    },
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -158,6 +176,16 @@ impl fmt::Display for LabeledOperationError {
                 f,
                 "tree-mode depth limit reached: depth={depth}, max_depth={max_depth}"
             ),
+            Self::TreeRootCapacityReached {
+                stored_slots,
+                root_len,
+                cap,
+            } => write!(
+                f,
+                "tree-mode root region at capacity: root_len={root_len}, cap={cap}, \
+                 stored_slots={stored_slots} (interior-level insert cascade is not yet \
+                 wired; follow-up todo: tree-mode-interior-level-insert-growth)"
+            ),
         }
     }
 }
@@ -177,7 +205,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::LtbBlock(_)
             | Self::BucketNotFound { .. }
             | Self::TreeModeEdgeWidthUnsupported { .. }
-            | Self::TreeDepthLimitReached { .. } => None,
+            | Self::TreeDepthLimitReached { .. }
+            | Self::TreeRootCapacityReached { .. } => None,
         }
     }
 }
