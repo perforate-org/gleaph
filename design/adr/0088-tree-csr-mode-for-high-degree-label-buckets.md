@@ -183,6 +183,48 @@ No new canbench benches added; wasm export-name budget preserved at **16,776 cha
 
 The Tree-CSR design is **validated against a faithful LTB backend**: block-internal reads match CSR-slab scan locality (chunk-buffer iter, amortized O(1) per slot), and promotion cost is bounded by `O(T_promote × (4 + w))` bytes (Plan 0316 verified at 152.82 K ins for edge-only 4096-edge promotion).
 
+### Decision (2026-08-30) — Plan 0318 amendments: cap semantics correction
+
+After Plan 0318 Step 4 (commit `44c82d3b2`) implementation, a unit confusion in
+the cap wording introduced by the [Plan 0317 amend](../plans/0317-adr0088-tree-csr-implementation.md)
+was identified and corrected. The wire truth of the cap constants is:
+
+- `R_max = 1024` is the **root-array fan-out cap** (the dense `u32` block_id
+  array that forms the root region of a tree bucket). It bounds the size of
+  one root, *not* the logical-slot count of a tree bucket.
+- `T_promote = 4096` is the **slab → tree promotion threshold** (the
+  `alloc_space` size that triggers promotion into tree mode) and the slab
+  mode cap on `alloc_space = stored_slots + alloc_gap`.
+
+The logical-slot capacity of a tree bucket is **`coverage_at_depth(MAX_DEPTH)
+= 2^30`** slots (per §4: depth 1 ≤ 2^20, depth 2 ≤ 2^30, depth 3 ≤ 2^40; the
+fail-closed `MAX_DEPTH = 3` bounds the practical capacity to 2^30 distinct
+edge slots under the current 1024-slot blocks and 1024-entry root fan-out).
+The 1024 root entries per level mean that a `root_len` crossing `R_max`
+triggers **deepen** (Step 7), not a slot-cap reject. The text below
+"Tree bucket span (no gap) ≤ 2 × R_max = 2,048 slots (8 KiB)" in §3 is the
+size of *one root + one interior level* (i.e. the storage cost of the second
+deepen step), not a logical-slot cap — the previous wording risked being
+misread as a slot cap.
+
+The "R_MAX = 1024 slots (4 KiB)" wording in [Plan 0317 §Step 3.5](../plans/0317-adr0088-tree-csr-implementation.md)
+is a **unit error**: 1024 slots × 4 bytes = 4 KiB is the dimension of a
+single LTB block (one data block holds 1024 edge slots), not a slot cap on a
+tree bucket. Plan 0317 has been amended with a correction note; the
+production code in [Plan 0318](../plans/0318-tree-csr-implementation.md)
+`check_alloc_cap` / `cap_for_mode` uses `TREE_STRUCTURAL_CAP = 2^30` for
+tree-mode slot checks (the `MAX_DEPTH` fail-closed boundary) and
+`R_max` only as the root-array fan-out cap that the deepen's `root_len ≤
+R_max` check uses.
+
+Under the current placeholder `alloc_gap = T_promote - stored_slots` (Plan
+0317 §3.5 placeholder, weighted gap deferred to a later slice),
+`compute_bucket_allocation(slab) ≡ T_promote` for any `stored_slots` in
+[0, T_promote]. The promote trigger therefore uses `stored_slots ≥
+T_PROMOTE` directly; when the weighted gap is introduced the trigger
+switches to `alloc_space ≥ T_PROMOTE` and `compute_bucket_allocation` becomes
+strictly < `T_PROMOTE` until the cap is reached.
+
 Implementation slice (Plan 0317) is unblocked from the cost side. The full-canister wire-up of `LtbRawBlockStore<VirtualMemory>` per orientation (forward + reverse) into `LabeledLaraGraph` is the next step. The implementation slice must re-run Gate 2 against the production `VirtualMemory` backend (numbers above are on the `VectorMemory` test backend; production `Memory::write` may differ in constant cost by ±20%) and run a PocketIC-backed 1M-degree sweep to close Gate 1's deferred row.
 
 Per Plan 0316 §Notes and Plan 0322 §Notes, the following remain explicitly deferred to later slices:
@@ -312,7 +354,7 @@ Capacity bounds (all fail-closed at the allocation site):
 | ---------------------------------------- | --------------------------------- | -------------------------------------------- |
 | Slab bucket edge span (incl. slack)       | `T_promote` = 4,096 slots (16 KiB) | growth clamp + crossing compact-or-promote   |
 | Slab bucket inline-property span          | `T_promote × w` bytes             | follows `stored_slots`                       |
-| Tree bucket span (no gap)                 | ≤ 2 × `R_max` = 2,048 slots (8 KiB) | gap-0 invariant + deepen                     |
+| Tree bucket span (no gap)                 | root entries ≤ `R_max` per level; logical slots ≤ `coverage_at_depth(MAX_DEPTH) = 2^30` | gap-0 invariant + deepen (when `root_len > R_max`) |
 | Per vertex                                | above × `MAX_VERTEX_LABEL_BUCKETS` | existing bucket-count cap                    |
 
 Every per-bucket leaf region is thus constant-bounded, which: caps the

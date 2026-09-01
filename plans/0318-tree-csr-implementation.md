@@ -205,7 +205,43 @@ In `crates/ic-stable-lara/src/labeled/graph.rs`:
 
 5. Update all existing call sites that construct `LabeledLaraGraph::new` / `init` (the test suite, the production graph constructor, the deferred variants) to pass an extra `VectorMemory` (test) or `VirtualMemory<DefaultMemoryImpl>` (production) for the LTB.
 
+> **Amend note (Plan 0318 Step 4 amend, 2026-08-30) — LTB lazy-create on empty memory**:
+> The original Step 2 spec relied on `LtbRawBlockStore::init(memory)`
+> treating `memory.size() == 0` as `InitError::TruncatedHeader`, with
+> the `classify_composite_init` exclusion of the LTB hiding the error.
+> This is **inconsistent with the asymmetric reopen rule**: a canister
+> upgraded from a pre-Plan-0318 build has no LTB in the wasm image, so
+> the 16th memory handed to `init` is genuinely empty. The original
+> behavior would surface `Ltb(TruncatedHeader)` on every upgrade of a
+> pre-Plan-0318 canister. The amend changes `LtbRawBlockStore::init`
+> to **lazy-create** the LTB header on a zero-size memory (calling
+> `new(memory)` instead of failing), and adds an `InitError::GrowFailed`
+> variant for the case where the lazy grow itself fails. The
+> `classify_composite_init` exclusion is now a true asymmetric reopen
+> rule, not a workaround. This is fixed in the code commit
+> accompanying this amend.
+
 ### Step 3 — Cap enforcement helpers
+
+> **Amend note (Plan 0318 Step 4 implementation, 2026-08-30)**:
+> The tree-mode slot cap below was originally `R_MAX = 1024`. Per
+> [ADR 0088 §Decision correction](../design/adr/0088-tree-csr-mode-for-high-degree-label-buckets.md)
+> the production `cap_for_mode(tree)` returns `TREE_STRUCTURAL_CAP = 2^30`
+> (the `MAX_DEPTH = 3` fail-closed boundary). `R_max` remains wire-level
+> and is the root-array fan-out cap that `deepen` (Step 7) uses to decide
+> when the derived `root_len` would exceed the single-root capacity. The
+> `.min(cap)` clamp in the spec snippet below is *not* applied in the
+> current implementation (the implementation returns the unclamped
+> `alloc_slot` because under the placeholder `alloc_gap` the slab-mode
+> result is `≤ T_PROMOTE` already; the record here is so reviewers do not
+> flag the deviation as a defect). The full const set is:
+>
+> ```rust
+> pub(crate) const T_PROMOTE: u32 = 4096;        // slab cap & promote trigger
+> pub(crate) const R_MAX: u32 = 1024;            // root-array fan-out (deepen)
+> pub(crate) const TREE_STRUCTURAL_CAP: u32 = 1 << 30; // tree slot cap (MAX_DEPTH boundary)
+> pub(crate) const MAX_BUCKETS_PER_VERTEX: u32 = 1024;
+> ```
 
 In `crates/ic-stable-lara/src/labeled/graph.rs`:
 
@@ -384,6 +420,61 @@ In `crates/ic-stable-lara/src/labeled/graph.rs`:
    - **LTB blocks hold correctly-ordered edge data** after transcription: slots 0..1024 in block_id_0, slots 1024..2048 in block_id_1, etc.
    - **edge_start in the new descriptor is a valid LEG offset** (>= bucket base + per-bucket stride) and not equal to the pre-promotion edge_start.
 
+> **Amend note (Plan 0318 Step 4 implementation, 2026-08-30, commit `44c82d3b2`)**:
+> The implementation records the following decisions / scope deferrals:
+>
+> 1. **Promote trigger**: under the placeholder `alloc_gap(stored) = T_PROMOTE - stored`
+>    (Plan 0317 §3.5 placeholder; weighted gap deferred), the slab-mode
+>    `compute_bucket_allocation` is constant `T_PROMOTE`, so the
+>    trigger `compute_bucket_allocation(&bucket) < T_PROMOTE` never
+>    fires for an *existing* bucket. The precondition is implemented as
+>    `bucket.stored_slots < T_PROMOTE` (a stricter, well-defined
+>    equivalent). When the weighted gap is introduced, the trigger
+>    switches back to `compute_bucket_allocation(&bucket) < T_PROMOTE`.
+> 2. **Phase 0 (locate)**: the spec's `Missing` branch returns
+>    `LabeledOperationError::AllocSpaceCapReached { current_alloc_space: 0, cap: T_PROMOTE, mode: Slab }`
+>    which is **misleading** (a missing bucket is not a cap overflow).
+>    A new `LabeledOperationError::BucketNotFound` variant is added; the
+>    `Missing` branch returns it. The two pre-existing tests that
+>    exercised the `Missing` path (`promote_rejects_when_alloc_space_below_cap`
+>    and `promote_reserve_phase_rolls_back_on_mint_failure`) are
+>    rewritten to use an *existing* bucket with `stored_slots = 10`
+>    (true below-cap path), and a new test
+>    `promote_missing_bucket_returns_bucket_not_found` covers the
+>    `Missing` case explicitly.
+> 3. **Empty bucket (`stored_slots == 0`)**: the current implementation
+>    rejects with `AllocSpaceCapReached` (it satisfies
+>    `stored_slots < T_PROMOTE`). This is correct: promoting an empty
+>    bucket is wasteful. A new test
+>    `promote_rejects_empty_existing_bucket` covers the regression.
+> 4. **`E::BYTES == 4` assumption**: the transcription in Phase 2
+>    zero-initializes a stack `[u8; BLOCK_PAYLOAD_BYTES]` and fills
+>    `stored_slots * E::BYTES` bytes from the LEG slab prefix; the root
+>    region also assumes 4 bytes per block_id. A
+>    `debug_assert_eq!(E::BYTES, 4)` guards the transcription (the wire
+>    edge format is `u32 target`; the only supported `E` is one whose
+>    `BYTES` is 4). A fail-closed **typed** guard (returning a
+>    `LabeledOperationError` instead of panicking in debug) is deferred
+>    to Step 6 alongside the other tree-mode edge write dispatch
+>    invariants.
+> 5. **Phase 3c `release_span(pre_edge_start, pre_stored_slots)`**: the
+>    released pre-promotion edge span is a subrange of an existing leaf
+>    physical block. The release returns the subrange to the slab
+>    free list, but if the leaf is currently **pinned** by a
+>    `labeled_leaf_physical_range`, the pin is invalidated by the
+>    recycle. This is a latent bug for the production wire-up:
+>    **Step 6 must adopt one of**:
+>    - (a) leaf-physical-aware release that preserves pin invariants
+>      (move the subrange to a *pin-sheltered* list until the leaf
+>      unpins), or
+>    - (b) delegate the recycle to leaf compaction, or
+>    - (c) use a new `EdgeStore::allocate_span_avoiding(pinned_ranges)`
+>      that keeps new allocations outside all leaf-pinned blocks and
+>      reuses only unpinned subranges.
+>    The current release path mirrors `compact.rs:481` (leaf-whole
+>    release); that path is the existing convention. Step 6 review must
+>    align the promote recycle with it.
+
 ### Step 5 — Tree-mode read dispatch
 
 **Tree-mode accessors are implemented directly on `LabeledLaraGraph`**, not on the `TreeCsrBucket` prototype type from `tree_csr_prototype.rs` / Plan 0313 / Plan 0322. `TreeCsrBucket` is a value type that lives in the prototype module and is used by the canbench surface only; production code goes through the LTB store API directly.
@@ -464,6 +555,52 @@ Unit tests:
 - (b) tree-mode insert with room in tail (`stored_slots % B != 0`) uses `write_payload_partial` for the 4-byte write.
 - (c) slab-to-tree automatic promotion triggers when `alloc_space >= T_PROMOTE`.
 - (d) tree-mode remove with `read_payload_partial` reads only 4 bytes (not a full block).
+
+> **Step 6 additions from the Plan 0318 Step 4 amend (2026-08-30)**:
+>
+> 1. **Leaf-physical-aware release for promote Phase 3c**.
+>    The promote transition's Phase 3c
+>    `release_span(pre_edge_start, pre_stored_slots)` returns a subrange
+>    of an existing leaf-pinned physical block to the slab free list.
+>    When the leaf is currently `labeled_leaf_physical_range`-pinned, the
+>    recycle invalidates the pin. Step 6 must adopt one of:
+>    - (a) **leaf-physical-aware release** that preserves the pin
+>      invariant: move the subrange into a *pin-sheltered* recycle list
+>      keyed on the leaf's pin range, and only return it to the global
+>      free list after the leaf unpins.
+>    - (b) **delegate to leaf compaction**: keep the subrange in a
+>      "pinned-but-released" slab until leaf compaction picks it up.
+>    - (c) **`EdgeStore::allocate_span_avoiding(pinned_ranges)`**: keep
+>      new allocations outside all leaf-pinned blocks and reuse only
+>      unpinned subranges; the promote recycle still marks the subrange
+>      as free, but the allocator filters it out of pinned leaves.
+>    The existing leaf-whole release in `compact.rs:481` is the current
+>    convention; Step 6's choice must align with it (per the §Step 4
+>    amend note 5).
+>
+> 2. **Fail-closed typed guard for `E::BYTES == 4`**.
+>    The Step 4 implementation adds a `debug_assert_eq!(E::BYTES, 4)`
+>    before transcription (and the root-region `u32` block_id array
+>    assumes 4 bytes per block_id). Step 6 must replace the
+>    `debug_assert!` with a typed error: introduce a
+>    `LabeledOperationError::EdgeBytesWidthUnsupported { actual: usize, expected: usize }`
+>    variant and surface it at the dispatch point so non-4-byte edge
+>    types are rejected at compile-time at the bucket access
+>    constructor rather than panicking in debug.
+>
+> 3. **Tree-mode insert cap check uses `root_len` (deepen trigger), not
+>    `check_alloc_cap` on `stored_slots`**.
+>    Per the §Step 3 amend note, `check_alloc_cap(tree)` would
+>    incorrectly reject inserts into a promoted bucket (stored = 4096
+>    would already be `> TREE_STRUCTURAL_CAP` is fine, but the *real*
+>    trigger for a tree-mode insert is whether the new root entry
+>    exceeds `R_max` = 1024, in which case deepen must run first). Step
+>    6's tree-mode insert path therefore:
+>    - Does **not** call `check_alloc_cap(&bucket, 1)` for a tree bucket
+>      (the slot capacity is bounded by `TREE_STRUCTURAL_CAP`, well
+>      above realistic per-insert growth).
+>    - Checks `root_len(stored_slots + 1) > R_max` and, if true, calls
+>      `deepen(vid, label)` first, then completes the append.
 
 ### Step 7 — `deepen()` and `flatten()`
 

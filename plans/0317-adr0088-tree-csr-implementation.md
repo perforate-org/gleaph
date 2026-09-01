@@ -232,6 +232,44 @@ The cap is a function of the bucket's mode:
 - **CSR slab mode**: `alloc_space = stored_slots + alloc_gap ≤ T_PROMOTE = 4096 slots (16 KiB)`.
 - **Tree mode**: `alloc_space = stored_slots ≤ R_MAX = 1024 slots (4 KiB)` (gap-0 invariant; `alloc_gap = 0`).
 
+> **Correction note (Plan 0318 Step 4 amend, 2026-08-30)**:
+> The wording "Tree mode: `alloc_space = stored_slots ≤ R_MAX = 1024 slots
+> (4 KiB)`" above is a **unit confusion**: `R_max = 1024` is the **root-array
+> fan-out cap** (number of `u32` block_id entries that fit in one root of
+> the tree), not a slot cap. The 1024-slot = 4 KiB dimension is that of a
+> **single LTB block** (4 bytes per edge × 1024 edges per block). The
+> logical-slot capacity of a tree bucket is
+> `coverage_at_depth(MAX_DEPTH) = 2^30` slots (per ADR 0088 §4: depth 1 ≤
+> 2^20, depth 2 ≤ 2^30, depth 3 ≤ 2^40, with `MAX_DEPTH = 3` as the
+> fail-closed structural boundary). The correct statements are:
+>
+> - **CSR slab mode**: `alloc_space = stored_slots + alloc_gap ≤ T_PROMOTE = 4096 slots (16 KiB)`. Unchanged.
+> - **Tree mode**: `alloc_space = stored_slots ≤ TREE_STRUCTURAL_CAP = 2^30 slots` (the `MAX_DEPTH` fail-closed boundary). `R_max = 1024` bounds the size of *one root* (the number of block_id entries) and triggers **deepen** when the derived `root_len` would exceed it, **not** a slot-cap reject.
+>
+> The Plan 0317 amend body (the `cap-semantics-amend` todo, status
+> `completed`) remains correct in unifying the cap on `alloc_space` rather
+> than `stored_slots`; only the unit label in the tree-mode sentence is
+> wrong. Plan 0318 `check_alloc_cap` / `cap_for_mode` will use
+> `TREE_STRUCTURAL_CAP` (per the §Plan 0318 Step 3 amend note).
+>
+> **Cascade todo test spec correction**: "(b) tree mode bucket at
+> `alloc_space = R_MAX - 1` → trigger deepen" is a unit confusion. Deepen
+> fires when the derived `root_len(stored_slots + 1)` exceeds `R_max = 1024`,
+> which happens at `stored_slots` boundaries of approximately
+> `R_max × B^d = 1024 × 1024^d` (depth 1 → 1024 × 1024 = ~1M, depth 2 →
+> 1024 × 1024^2 = ~1G, etc.). The cascade test for tree mode should
+> exercise the **root_len overflow** boundary, not a slot-cap boundary.
+>
+> **Placeholder `alloc_gap` (current implementation)**: the spec text
+> above is "some weighted function" but the current `alloc_gap` is the
+> placeholder `T_PROMOTE - stored_slots` (the Plan 0317 §3.5 placeholder
+> form). Under this placeholder, `compute_bucket_allocation(slab) ≡
+> T_PROMOTE` for any `stored_slots` in `[0, T_PROMOTE]`. The promote
+> trigger therefore uses `stored_slots ≥ T_PROMOTE` directly. When the
+> weighted gap is introduced, the trigger switches to
+> `alloc_space ≥ T_PROMOTE` and `compute_bucket_allocation` becomes
+> strictly < `T_PROMOTE` until the cap is reached.
+
 **Vertex cap cascade.** Per vertex, the bucket count is capped at `MAX_BUCKETS_PER_VERTEX = 1024` (the number of distinct edge-label types incident to one vertex). This is independent of the 16-bit (65536) federation-wide label id space — the 1024 limit is the per-vertex incident-edge-label-type count, not a label-id encoding range. The 16-bit label id is the wire encoding; the 1024 per-vertex cap is the access pattern.
 
 **Why 1024 per vertex.** Industry comparison: DataStax Enterprise Graph imposes an official cap of 200 edge labels per graph; Gleaph's 1024 is 5× larger, the largest among major graph DB products. Typical graph schemas use < 100 edge labels per vertex; 1024 covers all practical workloads (social graphs, e-commerce, knowledge graphs, IoT, finance) with 10-200× schema evolution headroom.
