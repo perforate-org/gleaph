@@ -61,7 +61,7 @@ use ic_stable_structures::Memory;
 use super::ltb_raw_block_store::{BLOCK_PAYLOAD_BYTES, LtbRawBlockStore};
 
 /// Block payload capacity (ADR 0088 §1 wire truth).
-const B: usize = BLOCK_PAYLOAD_BYTES / 4;
+pub(crate) const B: usize = BLOCK_PAYLOAD_BYTES / 4;
 /// Root array cap (ADR 0088 §1 wire truth).
 const R_MAX: usize = 1024;
 /// Fail-closed depth boundary (ADR 0088 §4).
@@ -76,7 +76,7 @@ const fn coverage_at_depth(depth: u32) -> u64 {
 
 /// Derive depth from `stored_slots` (ADR 0088 §4 edge-stream equation):
 /// `depth = min { d >= 1 : ceil(stored_slots / B^d) <= R_max }`.
-fn derive_depth(stored_slots: u32) -> u32 {
+pub(crate) fn derive_depth(stored_slots: u32) -> u32 {
     if stored_slots == 0 {
         return 1;
     }
@@ -97,7 +97,7 @@ fn derive_depth(stored_slots: u32) -> u32 {
 }
 
 /// Required root array length for a given `stored_slots` at the derived depth.
-fn root_len(stored_slots: u32) -> usize {
+pub(crate) fn root_len(stored_slots: u32) -> usize {
     let depth = derive_depth(stored_slots);
     let s = u64::from(stored_slots);
     let blocks_at_depth = s.div_ceil(coverage_at_depth(depth)) as usize;

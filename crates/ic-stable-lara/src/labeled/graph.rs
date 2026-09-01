@@ -178,6 +178,7 @@ mod init;
 mod insert;
 mod iter;
 pub(crate) mod leaf_pin;
+mod promote;
 mod remove;
 #[cfg(test)]
 pub(crate) mod test_support;

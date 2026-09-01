@@ -704,6 +704,10 @@ mod tests {
         let value_free_span_by_start = mem();
         let inline_property_bytes_log = mem();
         let value_blobs = mem();
+        // Allocate the LTB memory once and reuse the same `VectorMemory`
+        // across `new` and `init`; otherwise the LTB reopen path sees
+        // an empty memory and fails with `Ltb(TruncatedHeader)`.
+        let ltb = mem();
         let default_label = BucketLabelKey::from_raw(1);
         let elem_capacity = 1 << 20;
 
@@ -723,7 +727,7 @@ mod tests {
             value_free_span_by_start.clone(),
             inline_property_bytes_log.clone(),
             value_blobs.clone(),
-            mem(),
+            ltb.clone(),
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,
         )
@@ -741,7 +745,6 @@ mod tests {
             )
             .unwrap();
         let (pin_start, pin_len) = graph.labeled_leaf_physical_range(hub).unwrap();
-        let ltb = mem();
 
         let reopened = LabeledLaraGraph::init(
             vertices,

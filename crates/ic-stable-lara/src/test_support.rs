@@ -277,9 +277,11 @@ impl ic_stable_structures::Memory for FailpointMemory {
     }
 }
 
-/// Fifteen fresh failpoint memories in [`LabeledLaraGraph`] constructor order.
+/// Sixteen fresh failpoint memories in [`LabeledLaraGraph`] constructor order.
+/// The 16th memory (added in Plan 0318 §Step 2) backs the per-orientation
+/// `LtbRawBlockStore` (LARA Tree Block store).
 #[cfg(test)]
-pub(crate) fn failpoint_labeled_memories() -> [FailpointMemory; 15] {
+pub(crate) fn failpoint_labeled_memories() -> [FailpointMemory; 16] {
     std::array::from_fn(|_| FailpointMemory::new())
 }
 
@@ -300,8 +302,10 @@ pub(crate) fn labeled_lara_memories() -> (
     VectorMemory,
     VectorMemory,
     VectorMemory,
+    VectorMemory,
 ) {
     (
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),

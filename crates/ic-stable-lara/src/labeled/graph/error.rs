@@ -2,7 +2,10 @@
 
 use crate::{
     VertexCount, VertexId,
-    labeled::{ltb_raw_block_store, record::LabeledVertexFieldError},
+    labeled::{
+        ltb_raw_block_store, ltb_raw_block_store::BlockError as LtbBlockError,
+        record::LabeledVertexFieldError,
+    },
     lara::{
         edge::InitError as EdgeInitError,
         edge_inline_property::{
@@ -64,6 +67,11 @@ pub enum LabeledOperationError {
         /// `MAX_BUCKETS_PER_VERTEX`.
         cap: u32,
     },
+    /// Tree-mode LTB store reported a [`LtbBlockError`] (e.g. `NotMinted`,
+    /// `OutOfRange`, `OutOfBounds`). Surfaces invariant violations in the
+    /// promote path; the promotion fails closed and the bucket remains in
+    /// its pre-promotion state. Plan 0318 §Step 4.
+    LtbBlock(LtbBlockError),
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -99,6 +107,7 @@ impl fmt::Display for LabeledOperationError {
                 f,
                 "vertex bucket count cap reached: current_count={current_count}, cap={cap}"
             ),
+            Self::LtbBlock(err) => write!(f, "ltb block error: {err:?}"),
         }
     }
 }
@@ -114,7 +123,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::InlinePropertyBytesWidthMismatch { .. }
             | Self::InvalidVertexRow(_)
             | Self::AllocSpaceCapReached { .. }
-            | Self::VertexBucketCountCapReached { .. } => None,
+            | Self::VertexBucketCountCapReached { .. }
+            | Self::LtbBlock(_) => None,
         }
     }
 }
@@ -186,6 +196,17 @@ impl From<InlinePropertyBytesLogReadError> for LabeledOperationError {
 impl From<InlinePropertyBytesLogWriteError> for LabeledOperationError {
     fn from(value: InlinePropertyBytesLogWriteError) -> Self {
         Self::InlinePropertyBytesLogWrite(value)
+    }
+}
+
+impl From<LtbBlockError> for LabeledOperationError {
+    /// Bridge LTB `BlockError` to `LabeledOperationError::LtbBlock` so the
+    /// promote path's `?` operator works across the LTB store. The
+    /// `BlockError` variants (`NotMinted`, `OutOfRange`, `OutOfBounds`) are
+    /// programming-error surfaces in normal use; they only fire when the
+    /// caller drives the LTB store out of contract.
+    fn from(value: LtbBlockError) -> Self {
+        Self::LtbBlock(value)
     }
 }
 

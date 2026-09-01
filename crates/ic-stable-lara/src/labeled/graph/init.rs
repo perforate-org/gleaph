@@ -291,6 +291,13 @@ where
         &self.values
     }
 
+    /// Returns the per-orientation LTB (LARA Tree Block) store backing
+    /// tree-mode buckets. Plan 0318 §Step 4 promotion reads from and writes
+    /// to this store; slab-mode buckets leave it empty.
+    pub(crate) fn ltb(&self) -> &LtbRawBlockStore<M> {
+        &self.ltb
+    }
+
     /// Returns the label used for unlabeled/default edge storage.
     pub fn default_label(&self) -> BucketLabelKey {
         self.default_label

@@ -128,4 +128,32 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(crate) fn free_byte_spans(&self) -> Vec<crate::lara::edge::free_span::FreeSpan> {
         self.free_spans.spans()
     }
+
+    /// Reads the raw bytes of one edge slab slot into `out`. The byte
+    /// length of `out` must equal `E::BYTES`. Used by Plan 0318 §Step 4
+    /// tree-mode promotion to transcribe the slab prefix into LTB
+    /// blocks, and by Step 5 tree-mode read dispatch.
+    pub(crate) fn read_slot_bytes(&self, slot: u64, out: &mut [u8]) {
+        self.edges.read_slot(slot, out);
+    }
+
+    /// Reads `count * E::BYTES` contiguous bytes starting at
+    /// `start_slot` into `out`. Used by Plan 0318 §Step 4 to verify
+    /// the LEG root region holds the correct block_id sequence, and by
+    /// Step 5 to read the root region in tree-mode accessors.
+    pub(crate) fn read_slots_contiguous_bytes(&self, start_slot: u64, out: &mut [u8]) {
+        self.edges.read_slots_contiguous(start_slot, out);
+    }
+
+    /// Writes `count * E::BYTES` contiguous bytes from `src` starting at
+    /// `start_slot`. `src.len()` must be a multiple of `E::BYTES`. Used
+    /// by Plan 0318 §Step 4 to write the block_id array into the LEG
+    /// root region.
+    pub(crate) fn write_slots_contiguous_bytes(
+        &self,
+        start_slot: u64,
+        src: &[u8],
+    ) -> Result<(), crate::GrowFailed> {
+        self.edges.write_slots_contiguous(start_slot, src)
+    }
 }
