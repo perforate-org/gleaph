@@ -41,9 +41,7 @@ use super::{LabeledLaraGraph, OutEdgeOrder};
 use crate::VertexId;
 use crate::labeled::graph::error::LabeledOperationError;
 use crate::labeled::record::LabelBucket;
-use crate::labeled::tree_csr_prototype::{
-    B as BLOCK_B, derive_depth, root_len as derived_root_len,
-};
+use crate::labeled::tree_csr_prototype::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::CsrEdge;
 
@@ -87,19 +85,17 @@ where
         });
     }
     // 1. Compute (block_root_index, in_block_offset) from slot.
-    let _depth = derive_depth(bucket.stored_slots);
+    let _depth = bucket.tree_mode_physical_depth();
     let root_len = u32::try_from(derived_root_len(bucket.stored_slots))
         .expect("root_len fits u32 (per ADR 0088 §4 R_max = 1024)");
     let block_root_index = slot / (BLOCK_B as u32);
     debug_assert!(block_root_index < root_len);
     let in_block_offset = (slot % (BLOCK_B as u32)) * (E::BYTES as u32);
-    // 2. Read the 4-byte block_id from the LEG root region.
-    let block_id_offset = bucket.edge_start() + u64::from(block_root_index);
-    let mut block_id_bytes = [0u8; 4];
-    graph
-        .edges()
-        .read_slot_bytes(block_id_offset, &mut block_id_bytes);
-    let block_id = u32::from_le_bytes(block_id_bytes);
+    // 2. Resolve the leaf block_id via the depth-generic resolver.
+    //    For depth 1 this is a single-hop LEG read; for depth 2+ it
+    //    descends the interior hop chain.
+    let block_id =
+        super::tree_write::resolve_leaf_block_id::<E, M>(graph, &bucket, block_root_index)?;
     // 3. Read 4 bytes from the LTB block at `in_block_offset`.
     let mut target_bytes = [0u8; 4];
     graph
@@ -148,28 +144,36 @@ where
         });
     }
     let stored_slots = bucket.stored_slots;
-    let _depth = derive_depth(stored_slots);
+    let _depth = bucket.tree_mode_physical_depth();
     let root_len = u32::try_from(derived_root_len(stored_slots))
         .expect("root_len fits u32 (per ADR 0088 §4 R_max = 1024)");
 
-    // Walk the root array in the requested order. For each block, yield
+    // Walk the leaf blocks in the requested order. For each block, yield
     // every valid slot in the requested scan order.
     //
-    // Ascending: root[0], root[1], ..., root[root_len-1]; within each
+    // Ascending: leaf[0], leaf[1], ..., leaf[leaf_count-1]; within each
     // block: slots 0..block_valid_count.
     //
-    // Descending: root[root_len-1], ..., root[0]; within each block:
+    // Descending: leaf[leaf_count-1], ..., leaf[0]; within each block:
     // slots block_valid_count-1..0.
+    //
+    // For depth 1 the leaf array IS the root array, so the walk is
+    // identical to the prior single-hop read. For depth 2+ the resolver
+    // descends the interior hop chain to find each leaf.
+    let leaf_count = u32::try_from(
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+    )
+    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    debug_assert_eq!(
+        leaf_count, root_len,
+        "depth 1 leaf_count == root_len; for depth 2+ leaf_count > root_len"
+    );
     match order {
         OutEdgeOrder::Ascending => {
-            let mut block_id_bytes = [0u8; 4];
-            for root_index in 0..root_len {
-                let block_id_offset = bucket.edge_start() + u64::from(root_index);
-                graph
-                    .edges()
-                    .read_slot_bytes(block_id_offset, &mut block_id_bytes);
-                let block_id = u32::from_le_bytes(block_id_bytes);
-                let block_first_slot = u64::from(root_index) * BLOCK_B as u64;
+            for block_index in 0..leaf_count {
+                let block_id =
+                    super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
+                let block_first_slot = u64::from(block_index) * BLOCK_B as u64;
                 let remaining_slots =
                     (u64::from(stored_slots) - block_first_slot).min(BLOCK_B as u64);
                 let mut payload = [0u8; ltb_payload_bytes_const()];
@@ -186,15 +190,10 @@ where
             }
         }
         OutEdgeOrder::Descending => {
-            let mut block_id_bytes = [0u8; 4];
-            // Walk root in reverse, slots in reverse per block.
-            for root_index in (0..root_len).rev() {
-                let block_id_offset = bucket.edge_start() + u64::from(root_index);
-                graph
-                    .edges()
-                    .read_slot_bytes(block_id_offset, &mut block_id_bytes);
-                let block_id = u32::from_le_bytes(block_id_bytes);
-                let block_first_slot = u64::from(root_index) * BLOCK_B as u64;
+            for block_index in (0..leaf_count).rev() {
+                let block_id =
+                    super::tree_write::resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
+                let block_first_slot = u64::from(block_index) * BLOCK_B as u64;
                 let remaining_slots =
                     (u64::from(stored_slots) - block_first_slot).min(BLOCK_B as u64);
                 let mut payload = [0u8; ltb_payload_bytes_const()];

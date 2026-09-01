@@ -141,7 +141,24 @@ impl LabelBucket {
         if inline_property_byte_width == 0
             && (inline_property_bytes_slab_slots != 0 || inline_property_bytes_log_len != 0)
         {
-            return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
+            // **Plan 0318 §Step 7 exception**: for tree-mode buckets, the
+            // `inline_property_bytes_log_len` byte is repurposed to
+            // store the physical depth minus 1 (0, 1, or 2). Inline
+            // properties are not allowed in tree mode (promote is
+            // fail-closed on `inline_property_byte_width != 0`), so the
+            // only consumer of this byte in tree mode is the depth
+            // marker. For non-tree-mode buckets the existing rule
+            // holds: `inline_property_bytes_log_len` must be 0 when
+            // `inline_property_byte_width == 0`.
+            let word = try_encode_bucket_word(edge_start, bucket_label_key, overflow_log_head)
+                .ok_or(LabelBucketFieldError::OverflowLogHeadOutOfRange)?;
+            let is_tree = (word & Self::TREE_MODE_BIT) != 0;
+            if !is_tree {
+                return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
+            }
+            if inline_property_bytes_log_len > 2 {
+                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
+            }
         }
         Ok(Self {
             word,
@@ -188,6 +205,54 @@ impl LabelBucket {
         } else {
             self.word &= !Self::TREE_MODE_BIT;
         }
+        self
+    }
+
+    /// Plan 0318 §Step 7: physical depth of the tree-mode layout, in
+    /// the range `1..=MAX_DEPTH = 3`. For a freshly-promoted bucket
+    /// (no `tree_mode_deepen` call) the physical depth equals
+    /// `tree_csr_prototype::derive_depth(stored_slots)`. After a
+    /// `tree_mode_deepen` call the physical depth is one more than the
+    /// pre-call depth (capped at `MAX_DEPTH`); the structural
+    /// formula's view (`derive_depth(stored_slots)`) is unchanged, so
+    /// the resolver needs an explicit depth marker to disambiguate.
+    ///
+    /// The marker is stored in the `inline_property_bytes_log_len`
+    /// byte (which is required to be 0 for tree-mode buckets with no
+    /// inline property bytes) as `depth - 1`. The byte range used is
+    /// `0..=2`; the validation in `try_from_parts` and `try_read_from`
+    /// enforces this for tree-mode buckets and rejects larger values.
+    ///
+    /// For non-tree-mode buckets the marker is unused and the
+    /// `inline_property_bytes_log_len` byte keeps its existing
+    /// semantic (number of entries in the inline property bytes
+    /// overflow log, range `0..=170`).
+    #[inline]
+    pub fn tree_mode_physical_depth(&self) -> u32 {
+        if !self.is_tree_mode() {
+            // Non-tree buckets: physical depth is irrelevant; return 0
+            // so callers can check `is_tree_mode() == false` to skip
+            // depth-aware logic.
+            return 0;
+        }
+        // Tree buckets: depth = 1 + log_len (capped at MAX_DEPTH).
+        1 + u32::from(self.inline_property_bytes_log_len)
+    }
+
+    /// Returns a copy with the tree-mode physical depth set.
+    /// `depth` must be in `1..=MAX_DEPTH = 3`. For non-tree buckets
+    /// the field is unused and the call is a no-op (returns self).
+    /// See [`Self::tree_mode_physical_depth`] for the encoding.
+    #[inline]
+    pub fn with_tree_mode_physical_depth(mut self, depth: u32) -> Self {
+        if !self.is_tree_mode() {
+            return self;
+        }
+        debug_assert!(
+            (1..=3).contains(&depth),
+            "tree_mode_physical_depth out of range"
+        );
+        self.inline_property_bytes_log_len = (depth - 1) as u8;
         self
     }
 
@@ -447,12 +512,41 @@ impl LabelBucket {
         if (inline_property_bytes_log_byte == OVERFLOW_LOG_NONE)
             != (inline_property_bytes_log_len == 0)
         {
-            return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
+            // **Plan 0318 §Step 7 exception**: tree-mode buckets may
+            // have `inline_property_bytes_log_len ∈ {0, 1, 2}` (the
+            // physical depth minus 1 marker) while `inline_property_bytes_log_byte`
+            // remains `OVERFLOW_LOG_NONE` (since tree mode rejects
+            // inline property bytes). For tree-mode buckets the
+            // "log state" check is between `log_byte == OVERFLOW_LOG_NONE`
+            // and `log_len ∈ {0, 1, 2}`. The "mismatch" only fires for
+            // non-tree buckets, where the existing rule still holds.
+            let is_tree = (word & Self::TREE_MODE_BIT) != 0;
+            if !is_tree {
+                return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
+            }
+            if inline_property_bytes_log_len > 2 {
+                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
+            }
         }
         if inline_property_byte_width == 0
             && (inline_property_bytes_slab_slots != 0 || inline_property_bytes_log_len != 0)
         {
-            return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
+            // **Plan 0318 §Step 7 exception**: for tree-mode buckets,
+            // the `inline_property_bytes_log_len` byte is repurposed to
+            // store the physical depth minus 1 (0, 1, or 2). Inline
+            // properties are not allowed in tree mode (promote is
+            // fail-closed on `inline_property_byte_width != 0`), so the
+            // only consumer of this byte in tree mode is the depth
+            // marker. For non-tree-mode buckets the existing rule
+            // holds: `inline_property_bytes_log_len` must be 0 when
+            // `inline_property_byte_width == 0`.
+            let is_tree = (word & Self::TREE_MODE_BIT) != 0;
+            if !is_tree {
+                return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
+            }
+            if inline_property_bytes_log_len > 2 {
+                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
+            }
         }
         Ok(Self {
             word,

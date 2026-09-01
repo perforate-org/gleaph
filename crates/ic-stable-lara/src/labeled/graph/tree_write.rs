@@ -141,7 +141,26 @@ where
                 .release_span(new_edge_start, u64::from(new_root_len));
             return Err(e.into());
         }
-        // 4. Publish the new descriptor (single canonical write). On
+        // 4. Append the edge to the new (empty) LTB block at offset 0.
+        //    The block is brand-new, so a tail-trim partial write is
+        //    unnecessary — the block was zero-initialized by `mint`.
+        //    Per Plan 0318 §Step 7 review (F-a) the edge write happens
+        //    **before** the descriptor publish: this aligns the insert
+        //    ordering with `promote_bypass_to_tree_mode` (Phase 2
+        //    transcription writes the leaf before Phase 3 publishes the
+        //    descriptor). On any failure the block is brand-new and
+        //    untouched, so we don't need to roll back the payload.
+        if let Err(e) = graph
+            .ltb()
+            .write_payload_partial(new_block_id, 0, &target_bytes)
+        {
+            let _ = graph.ltb().release(new_block_id);
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(new_root_len));
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        // 5. Publish the new descriptor (single canonical write). On
         //    failure, release the new LTB block and the new span.
         let new_bucket = bucket
             .with_edge_range(new_edge_start, next_stored)
@@ -154,30 +173,16 @@ where
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
         {
+            // Roll back the edge write: rewrite the slot back to zero
+            // (the next caller can re-claim the block via tail-room
+            // path, or the released block is re-mintable).
+            let zero = [0u8; 4];
+            let _ = graph.ltb().write_payload_partial(new_block_id, 0, &zero);
             let _ = graph.ltb().release(new_block_id);
             let _ = graph
                 .edges()
                 .release_span(new_edge_start, u64::from(new_root_len));
             return Err(e.into());
-        }
-        // 5. Append the edge to the new (empty) LTB block at offset 0.
-        //    The block is brand-new, so a tail-trim partial write is
-        //    unnecessary — the block was zero-initialized by `mint`.
-        if let Err(e) = graph
-            .ltb()
-            .write_payload_partial(new_block_id, 0, &target_bytes)
-        {
-            // Roll back descriptor to pre-call state; release the new
-            // block and the new span.
-            let rollback_bucket = *bucket;
-            let _ = graph
-                .buckets()
-                .write_label_bucket_slot(bucket_slot, rollback_bucket);
-            let _ = graph.ltb().release(new_block_id);
-            let _ = graph
-                .edges()
-                .release_span(new_edge_start, u64::from(new_root_len));
-            return Err(LabeledOperationError::LtbBlock(e));
         }
         // 6. Release the old root region span if it differs from the new
         //    one. (If `new_edge_start == bucket.edge_start()` the LEG
@@ -205,13 +210,10 @@ where
     } else {
         // Tail room available → write the 4-byte target into the tail
         // block at `tail_offset` and update the descriptor.
-        // 1. Read the tail block_id from the root region.
-        let mut block_id_bytes = [0u8; 4];
-        graph.edges().read_slot_bytes(
-            bucket.edge_start() + u64::from(tail_block_idx),
-            &mut block_id_bytes,
-        );
-        let tail_block_id = u32::from_le_bytes(block_id_bytes);
+        // 1. Resolve the tail block_id via the depth-generic resolver.
+        //    For depth 1 this is a single-hop LEG read; for depth 2+ it
+        //    descends the interior hop chain.
+        let tail_block_id = resolve_leaf_block_id::<E, M>(graph, bucket, tail_block_idx)?;
         // 2. Write the target into the tail block at `tail_offset`.
         if let Err(e) =
             graph
@@ -288,13 +290,10 @@ where
     }
     let block_root_index: u32 = slot / (BLOCK_B as u32);
     let in_block_offset: u32 = (slot % (BLOCK_B as u32)) * (E::BYTES as u32);
-    // 1. Read the current 4 bytes at the slot.
-    let mut block_id_bytes = [0u8; 4];
-    graph.edges().read_slot_bytes(
-        bucket.edge_start() + u64::from(block_root_index),
-        &mut block_id_bytes,
-    );
-    let block_id = u32::from_le_bytes(block_id_bytes);
+    // 1. Resolve the leaf block_id via the depth-generic resolver.
+    //    For depth 1 this is a single-hop LEG read; for depth 2+ it
+    //    descends the interior hop chain.
+    let block_id = resolve_leaf_block_id::<E, M>(graph, bucket, block_root_index)?;
     let mut current_bytes = [0u8; 4];
     graph
         .ltb()
@@ -430,6 +429,476 @@ where
 /// Translate an LTB grow failure into a `LabeledOperationError`.
 pub(crate) fn grow_failed_to_labeled(e: GrowFailed) -> LabeledOperationError {
     e.into()
+}
+
+// =================== Step 7: depth-generic resolver / deepen / flatten ===================
+
+/// Resolve the leaf `block_id` that holds the `block_index`-th leaf slot
+/// in a tree-mode bucket.
+///
+/// This is the depth-generic successor to the Step 5 / Step 6 single-hop
+/// `read_slot_bytes(root[block_index])` path. With depth `d`:
+/// - `d == 1` (production reachable): root is a dense `u32` block_id
+///   array; `root[block_index]` IS the leaf block_id. The "hop chain" is
+///   a single hop.
+/// - `d >= 2` (production unreachable in Step 7's wire-up but exercised
+///   by tests): root is a dense `u32` interior block_id array; each
+///   interior block holds `K = R_MAX = 1024` child block_ids. We descend
+///   the hop chain: `idx_{d-1} = block_index / K^{d-1}`,
+///   `idx_{d-2} = (block_index / K^{d-2}) % K`, ..., `idx_0 =
+///   block_index % K`. At each level the child id is read either from
+///   the LEG root region (level d-1) or from the previous interior
+///   block's payload.
+///
+/// **Invariants**:
+/// - `bucket.is_tree_mode()` is the caller's responsibility.
+/// - `block_index < ceil(stored_slots / B)`. Caller checks.
+/// - `E::BYTES == 4` (else the wire math breaks); the resolver uses
+///   `E::BYTES` for the interior-block payload offset, so a 4-byte edge
+///   works at every interior level. The typed guard at the dispatcher
+///   entry ensures this.
+pub(crate) fn resolve_leaf_block_id<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: &LabelBucket,
+    block_index: u32,
+) -> Result<u32, LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    debug_assert_eq!(
+        E::BYTES,
+        4,
+        "resolve_leaf_block_id requires E::BYTES == 4 (typed guard lives at the dispatcher)"
+    );
+    // Use the **physical** depth from the bucket, not the structural
+    // `derive_depth(stored_slots)`. A manually-deepened bucket at
+    // stored=1,048,576 has structural depth 1 but physical depth 2;
+    // the structural formula would under-walk the hop chain.
+    let depth = bucket.tree_mode_physical_depth();
+    if depth == 1 {
+        // Single hop: root region entry IS the leaf block_id.
+        let mut block_id_bytes = [0u8; 4];
+        graph.edges().read_slot_bytes(
+            bucket.edge_start() + u64::from(block_index),
+            &mut block_id_bytes,
+        );
+        return Ok(u32::from_le_bytes(block_id_bytes));
+    }
+    // Depth >= 2: descend root -> interior -> ... -> interior -> leaf.
+    // The hop chain is indexed by **mixed-radix decomposition** of
+    // `block_index` in base K = R_MAX. At level j (0 = root, 1 = first
+    // interior, ..., d-1 = last interior), the index is
+    // `(block_index / K^(d-1-j)) % K`. The first hop reads from the
+    // LEG root region; subsequent hops read from the previous
+    // interior block's payload at `(idx % K) * E::BYTES`.
+    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let mut child_id: u32 = {
+        // Level 0 hop: index into the root region.
+        // divisor = K^(d-1-0) = K^(d-1)
+        let divisor = k.pow(depth - 1);
+        let level_idx = (block_index / divisor) % k;
+        let mut id_bytes = [0u8; 4];
+        graph
+            .edges()
+            .read_slot_bytes(bucket.edge_start() + u64::from(level_idx), &mut id_bytes);
+        u32::from_le_bytes(id_bytes)
+    };
+    // Descend levels 1..=d-1 (interior hops).
+    for j in 1..depth {
+        // divisor = K^(d-1-j)
+        let divisor = k.pow(depth - 1 - j);
+        let level_idx = (block_index / divisor) % k;
+        let mut child_id_bytes = [0u8; 4];
+        let offset = (level_idx as usize) * E::BYTES;
+        graph
+            .ltb()
+            .read_payload_partial(child_id, offset, &mut child_id_bytes)
+            .map_err(LabeledOperationError::LtbBlock)?;
+        child_id = u32::from_le_bytes(child_id_bytes);
+    }
+    Ok(child_id)
+}
+
+/// Iterator-style helper: yield every leaf `block_id` of a tree-mode
+/// bucket in ascending leaf-index order (`0..ceil(stored_slots/B)`).
+///
+/// Returns a `Vec<u32>` instead of a Rust iterator to keep the
+/// implementation simple and the test surface tractable. The vec is
+/// only used by callers that want to walk the whole leaf space (e.g.
+/// `visit_tree_mode_label_bucket_edges`); single-slot readers use
+/// `resolve_leaf_block_id` instead.
+///
+/// **Performance note**: this allocates a `Vec<u32>` of length
+/// `ceil(stored_slots / B)`. For production bucket sizes (stored_slots
+/// up to 2^30 = ~1 Gi edges) this is at most 2^20 = 1 M u32 = 4 MiB.
+/// Callers that need streaming should write a custom visitor.
+pub(crate) fn collect_leaf_block_ids<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: &LabelBucket,
+) -> Result<Vec<u32>, LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    debug_assert_eq!(E::BYTES, 4);
+    let stored_slots = bucket.stored_slots;
+    let leaf_count = u32::try_from(
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+    )
+    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let mut out = Vec::with_capacity(leaf_count as usize);
+    for block_index in 0..leaf_count {
+        out.push(resolve_leaf_block_id(graph, bucket, block_index)?);
+    }
+    Ok(out)
+}
+
+/// Pack the bucket's depth-`d` root array into `EdgeInterior` blocks,
+/// allocating a new root region that holds the resulting interior-id
+/// array. Updates the bucket descriptor to the new root region (and
+/// the new depth). `stored_slots` is unchanged; the leaf block_ids are
+/// never relocated (ADR 0088 §2: blocks never move).
+///
+/// **Preconditions** (fail-closed before any canonical write):
+/// - `bucket.is_tree_mode()` is the caller's responsibility.
+/// - `derive_depth(stored_slots) < MAX_DEPTH` (else
+///   `TreeDepthLimitReached` is returned).
+/// - `derived_root_len(stored_slots) <= R_MAX` (the root is at the
+///   fan-out cap and a new interior level is needed).
+/// - `E::BYTES == 4` (typed guard lives at the dispatcher entry).
+///
+/// **Reserve / Commit / Publish**:
+/// 1. **Reserve**: mint `ceil(old_root_len / K)` interior blocks. Pack
+///    the old root array into the new interiors (`K` ids per block via
+///    `write_payload_partial`). Allocate a new root span of length
+///    `ceil(old_root_len / K)`. Write the interior-id array to the new
+///    root region. Each step has explicit rollback: any failure
+///    releases the already-minted interiors and the new span.
+/// 2. **Commit**: build the new descriptor with
+///    `edge_start = new_edge_start`, `stored_slots` and `degree`
+///    unchanged, tree mode bit preserved.
+/// 3. **Publish**: `write_label_bucket_slot(bucket_slot, new_descriptor)`
+///    is the single canonical write. On failure, release the new
+///    interiors and the new span, and return the error.
+/// 4. After publish, release the old root region span.
+///
+/// **Why we don't need a pin-sheltered helper here**: the old root
+/// span is a standalone `allocate_span`'d range (not a subrange of a
+/// leaf physical block), so leaf-pin invariants don't apply. The
+/// pre-promotion span inside `promote_bypass_to_tree_mode` (which IS
+/// a slab leaf subrange) still uses
+/// `pre_promotion_span_inside_pinned_leaf`.
+pub(crate) fn tree_mode_deepen<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    debug_assert_eq!(E::BYTES, 4);
+    debug_assert!(bucket.is_tree_mode());
+    let stored_slots = bucket.stored_slots;
+    // Compute the depth *without* calling `derive_depth` so a stored
+    // value past the structural cap returns a typed error instead of a
+    // `derive_depth` panic. We use the same loop predicate as the
+    // prototype but track depth explicitly.
+    let depth: u32 = if stored_slots == 0 {
+        1
+    } else {
+        let s = u64::from(stored_slots);
+        let mut d: u32 = crate::labeled::tree_csr_prototype::MAX_DEPTH;
+        for cand in 1..=crate::labeled::tree_csr_prototype::MAX_DEPTH {
+            // ceil(s / B^depth) <= R_MAX  <=>  s <= R_MAX * B^depth
+            let coverage = (crate::labeled::tree_csr_prototype::B as u64)
+                .checked_pow(cand)
+                .expect("B^MAX_DEPTH fits u64");
+            let ceiling = s.div_ceil(coverage);
+            if ceiling <= crate::labeled::tree_csr_prototype::R_MAX as u64 {
+                d = cand;
+                break;
+            }
+        }
+        d
+    };
+    if depth >= crate::labeled::tree_csr_prototype::MAX_DEPTH {
+        return Err(LabeledOperationError::TreeDepthLimitReached {
+            depth,
+            max_depth: crate::labeled::tree_csr_prototype::MAX_DEPTH,
+        });
+    }
+    let old_root_len = derived_root_len(stored_slots) as u32;
+    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    // ceil(old_root_len / K) interior blocks needed.
+    let new_interior_count = old_root_len.div_ceil(k);
+    // Sanity: deepening must strictly reduce the root length (otherwise
+    // there's no fan-out to gain and the caller miscomputed the trigger).
+    debug_assert!(
+        (new_interior_count as usize) < (old_root_len as usize) || old_root_len <= k,
+        "deepen must reduce root length"
+    );
+    // 1. Reserve: mint the interior blocks.
+    let mut interior_ids: Vec<u32> = Vec::with_capacity(new_interior_count as usize);
+    for _ in 0..new_interior_count {
+        match graph.ltb().mint() {
+            Ok(id) => interior_ids.push(id),
+            Err(e) => {
+                // Roll back already-minted interiors (LIFO).
+                for &id in interior_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                return Err(LabeledOperationError::from(e));
+            }
+        }
+    }
+    // 2. Mark each interior's block kind as `EdgeInterior` so a future
+    //    reopen can distinguish interior from leaf. Mint leaves the
+    //    kind as `Free`; we rewrite the header.
+    for (level, &id) in interior_ids.iter().enumerate() {
+        let header = crate::labeled::ltb_raw_block_store::BlockHeader {
+            kind: crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
+            bucket_label_key_wire: 0,
+            owner_or_next_free: 0,
+            ordinal: 0,
+            level: (level + 1) as u8,
+            reserved: [0u8; 3],
+        };
+        graph.ltb().write_block_header(id, &header);
+    }
+    // 3. Pack the old root array into the interiors. For each interior
+    //    block i, write `min(K, remaining)` ids from the old root,
+    //    starting at offset 0 of the interior's payload. If the
+    //    `write_payload_partial` fails, release all interiors and the
+    //    new span (allocated below).
+    let mut old_root_bytes: Vec<u8> = vec![0u8; old_root_len as usize * 4];
+    if old_root_len > 0 {
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_root_bytes);
+    }
+    let mut cursor: usize = 0;
+    for (i, &interior_id) in interior_ids.iter().enumerate() {
+        let remaining = (old_root_len as usize) - cursor;
+        let this_block_count = remaining.min(k as usize);
+        if let Err(e) = graph.ltb().write_payload_partial(
+            interior_id,
+            0,
+            &old_root_bytes[cursor * 4..(cursor + this_block_count) * 4],
+        ) {
+            // Roll back: release all minted interiors.
+            for &id in interior_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        cursor += this_block_count;
+        let _ = i;
+    }
+    debug_assert_eq!(cursor, old_root_len as usize);
+    // 4. Allocate the new root region span.
+    let new_edge_start = match graph.edges().allocate_span(u64::from(new_interior_count)) {
+        Ok(s) => s,
+        Err(e) => {
+            for &id in interior_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            return Err(LabeledOperationError::from(e));
+        }
+    };
+    // 5. Write the interior-id array to the new root region.
+    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_interior_count as usize * 4);
+    for &id in &interior_ids {
+        new_root_bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    if let Err(e) = graph
+        .edges()
+        .write_slots_contiguous_bytes(new_edge_start, &new_root_bytes)
+    {
+        for &id in interior_ids.iter().rev() {
+            let _ = graph.ltb().release(id);
+        }
+        let _ = graph
+            .edges()
+            .release_span(new_edge_start, u64::from(new_interior_count));
+        return Err(LabeledOperationError::from(e));
+    }
+    // 6. Commit: build the new descriptor. `stored_slots` and `degree`
+    //    are unchanged (deepen does not add or remove edges). The new
+    //    `edge_start` points to the new root region. The physical
+    //    depth is set to `depth + 1` so the resolver can disambiguate
+    //    the post-deepen layout (Plan 0318 §Step 7).
+    let new_physical_depth = depth + 1;
+    let new_bucket = bucket
+        .with_edge_range(new_edge_start, stored_slots)
+        .with_stored_slots(stored_slots)
+        .with_degree_field(bucket.degree)
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(new_physical_depth);
+    // 7. Publish: single canonical write.
+    if let Err(e) = graph
+        .buckets()
+        .write_label_bucket_slot(bucket_slot, new_bucket)
+    {
+        // Rollback: release the new interior blocks and the new span.
+        // The old root region is still intact (we only read it).
+        for &id in interior_ids.iter().rev() {
+            let _ = graph.ltb().release(id);
+        }
+        let _ = graph
+            .edges()
+            .release_span(new_edge_start, u64::from(new_interior_count));
+        return Err(e.into());
+    }
+    // 8. After publish, release the old root region span. (Standalone
+    //    span, not a leaf subrange; pin-sheltered helper not needed.)
+    if new_edge_start != bucket.edge_start() {
+        let _ = graph
+            .edges()
+            .release_span(bucket.edge_start(), u64::from(old_root_len));
+    }
+    Ok(())
+}
+
+/// Inverse of `tree_mode_deepen`: collapse a depth-`d` tree-mode bucket
+/// (`d >= 2`) to depth 1 by re-packing the leaf block_ids into a single
+/// new root region and releasing the interior blocks.
+///
+/// **Preconditions** (fail-closed before any canonical write):
+/// - `bucket.is_tree_mode()` is the caller's responsibility.
+/// - `derive_depth(stored_slots) >= 2` (else there's no interior layer
+///   to collapse).
+/// - After flatten, `derive_depth(stored_slots) == 1`, i.e. `stored_slots
+///   <= 2^20`. This is invariantly true when `depth >= 2`'s `B`-th
+///   power upper bound holds: depth 2 means `stored_slots > 2^20` only
+///   if depth should be 3. So `depth >= 2` implies the bucket has more
+///   than 2^20 slots and flatten would push it past the depth-1 cap.
+///   Therefore we additionally check `derive_depth(stored_slots) == 2`
+///   and reject depths > 2 (the test surface is depth-2 → depth-1 only;
+///   a depth-3 → depth-2 collapse is a future slice).
+///
+/// **Production hook**: none. Flatten is a maintenance/compaction path;
+/// the production wire-up does not call it. It exists for round-trip
+/// tests and to keep the structural invariant
+/// `derive_depth(bucket) <= MAX_DEPTH` reachable for compactors.
+///
+/// **Commit order** (per Plan 0318 §Step 7 spec): the canonical
+/// descriptor write happens **before** the interior block release. This
+/// mirrors `tree_mode_deepen`'s order and avoids a "looks like depth 1
+/// from the descriptor, but interior block still owns child ids" window.
+pub(crate) fn tree_mode_flatten<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    debug_assert_eq!(E::BYTES, 4);
+    debug_assert!(bucket.is_tree_mode());
+    let stored_slots = bucket.stored_slots;
+    // Use the **physical** depth (stored in the bucket via the
+    // `inline_property_bytes_log_len` byte) rather than the structural
+    // `derive_depth(stored_slots)`. A manually-deepened bucket at
+    // stored=1,048,576 has structural depth 1 but physical depth 2.
+    // The `collect_leaf_block_ids` call below uses the resolver, which
+    // reads the physical depth.
+    let depth = bucket.tree_mode_physical_depth();
+    if depth != 2 {
+        return Err(LabeledOperationError::TreeDepthLimitReached {
+            depth,
+            max_depth: crate::labeled::tree_csr_prototype::MAX_DEPTH,
+        });
+    }
+    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    // 1. Collect the current leaf block_ids in order.
+    let leaf_ids = collect_leaf_block_ids::<E, M>(graph, bucket)?;
+    let new_root_len = leaf_ids.len() as u32;
+    debug_assert!(new_root_len <= k, "depth 2 root_len must be <= R_MAX");
+    // 2. Allocate the new root region span.
+    let new_edge_start = match graph.edges().allocate_span(u64::from(new_root_len)) {
+        Ok(s) => s,
+        Err(e) => return Err(LabeledOperationError::from(e)),
+    };
+    // 3. Write the leaf-id array to the new root region.
+    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * 4);
+    for &id in &leaf_ids {
+        new_root_bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    if let Err(e) = graph
+        .edges()
+        .write_slots_contiguous_bytes(new_edge_start, &new_root_bytes)
+    {
+        let _ = graph
+            .edges()
+            .release_span(new_edge_start, u64::from(new_root_len));
+        return Err(LabeledOperationError::from(e));
+    }
+    // 4. Commit: new descriptor. Reset the physical depth to 1
+    //    (the flatten result is a flat root region; no interior).
+    let new_bucket = bucket
+        .with_edge_range(new_edge_start, stored_slots)
+        .with_stored_slots(stored_slots)
+        .with_degree_field(bucket.degree)
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(1);
+    // 5. Publish.
+    if let Err(e) = graph
+        .buckets()
+        .write_label_bucket_slot(bucket_slot, new_bucket)
+    {
+        let _ = graph
+            .edges()
+            .release_span(new_edge_start, u64::from(new_root_len));
+        return Err(e.into());
+    }
+    // 6. After publish, release the old root region span and the
+    //    interior blocks. The interior blocks are read-but-not-claimed
+    //    by the new descriptor (the leaf block_ids are the only
+    //    references), so the LTB blocks are unreachable.
+    //
+    // **Physical root_len**: we use the **physical** depth (from the
+    // bucket) to compute the old root region's length, because the
+    // structural `derived_root_len` may be inconsistent with the
+    // physical layout (a manually-deepened bucket at stored=1,048,576
+    // has structural root_len=1024 but physical root_len=1).
+    let leaf_count = u32::try_from(
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+    )
+    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let physical_depth = bucket.tree_mode_physical_depth();
+    let old_physical_root_len: u32 = match physical_depth {
+        1 => leaf_count,
+        2 => leaf_count.div_ceil(k),
+        3 => leaf_count.div_ceil(k).div_ceil(k),
+        _ => unreachable!("tree_mode_physical_depth out of range"),
+    };
+    if new_edge_start != bucket.edge_start() {
+        let _ = graph
+            .edges()
+            .release_span(bucket.edge_start(), u64::from(old_physical_root_len));
+    }
+    // 7. Release the interiors. The order doesn't matter: the new
+    // descriptor doesn't reference them. We release in mint order
+    // (FIFO) for consistency with `tree_mode_deepen`'s mint order.
+    let old_root_len = old_physical_root_len;
+    // Read the old root region to discover the interior block_ids.
+    let mut old_root_bytes = vec![0u8; old_root_len as usize * 4];
+    if old_root_len > 0 {
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_root_bytes);
+    }
+    for chunk in old_root_bytes.chunks(4) {
+        if chunk.len() < 4 {
+            break;
+        }
+        let interior_id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let _ = graph.ltb().release(interior_id);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -988,5 +1457,380 @@ mod tests {
             _ => panic!("bucket missing after promote"),
         };
         assert!(bucket_after.is_tree_mode());
+    }
+
+    // ====================== Step 7 tests ======================
+
+    /// Helper: build a depth-1 tree bucket with `root_len = K = 1024`
+    /// (i.e., `stored_slots = B * K = 1,048,576`). This mints 1024
+    /// LTB blocks (one per leaf), allocates a 1024-slot LEG root
+    /// region, and writes the 1024 block_ids into the root region. The
+    /// leaf payload is left zero-initialized (we never call
+    /// `write_payload_partial`); the test only verifies the resolver
+    /// walks the root + interior hop chain correctly, not the leaf
+    /// payload content.
+    fn build_depth1_full_root_bucket(
+        graph: &LabeledLaraGraph<TestEdge, VectorMemory>,
+        _vid: VertexId,
+        label: BucketLabelKey,
+        bucket_slot: u64,
+    ) {
+        let b = BLOCK_B as u32;
+        let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let stored_slots = b * k; // 1024 * 1024 = 1,048,576
+        let root_len = k; // depth 1, root_len = R_MAX
+        // 1. Mint 1024 LTB blocks (one per leaf).
+        let mut block_ids: Vec<u32> = Vec::with_capacity(root_len as usize);
+        for _ in 0..root_len {
+            let id = graph.ltb().mint().expect("mint");
+            block_ids.push(id);
+        }
+        // 2. Allocate a 1024-slot LEG root region.
+        let edge_start = graph
+            .edges()
+            .allocate_span(u64::from(root_len))
+            .expect("allocate_span");
+        // 3. Write the 1024 block_ids to the root region.
+        let mut root_bytes: Vec<u8> = Vec::with_capacity(root_len as usize * 4);
+        for &id in &block_ids {
+            root_bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &root_bytes)
+            .expect("write_slots_contiguous_bytes");
+        // 4. Construct the depth-1 tree bucket descriptor.
+        let new_bucket = crate::labeled::record::LabelBucket::try_from_parts(
+            label,
+            edge_start,
+            stored_slots, // degree = stored (every leaf is a real edge in this synthetic bucket)
+            stored_slots,
+            -1, // overflow_log_head (unused in tree mode; -1 = empty)
+            0,  // inline_property_byte_width
+            0,  // inline_property_bytes_offset
+            0,  // inline_property_bytes_slab_slots
+            -1, // inline_property_bytes_log_head (unused: -1 = empty)
+            0,  // inline_property_bytes_log_len
+        )
+        .expect("try_from_parts")
+        .with_tree_mode(true);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+            .expect("write_label_bucket_slot");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn deepen_fail_closed_at_max_depth() {
+        // Plan 0318 §Step 7 test: a bucket whose `stored_slots` would
+        // resolve to depth 3 must fail-closed with
+        // `TreeDepthLimitReached`. We construct a synthetic bucket
+        // descriptor with `stored_slots = 2^30 + 1` (the first value
+        // that pushes to depth 3) but no actual leaf blocks. The
+        // precondition check in `tree_mode_deepen` catches this before
+        // any mint/write.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        // Set up vertex with a single bucket slot.
+        let vid: VertexId = graph
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .expect("push_vertex");
+        let bucket_slot = 0u64;
+        // Build the depth-3-bound synthetic bucket.
+        let stored_slots: u32 = (1u32 << 30) + 1;
+        let bucket = crate::labeled::record::LabelBucket::try_from_parts(
+            label,
+            0, // edge_start (unused: typed error returned before any LEG read)
+            stored_slots,
+            stored_slots,
+            -1,
+            0,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .expect("try_from_parts")
+        .with_tree_mode(true);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, bucket)
+            .expect("write_label_bucket_slot");
+        let result = tree_mode_deepen(&graph, bucket_slot, &bucket);
+        match result {
+            Err(LabeledOperationError::TreeDepthLimitReached { depth, max_depth }) => {
+                assert_eq!(max_depth, 3);
+                assert!(depth >= 3, "expected depth >= MAX_DEPTH, got {depth}");
+            }
+            other => panic!("expected TreeDepthLimitReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn resolve_leaf_block_id_walks_synthetic_depth2_layout() {
+        // Plan 0318 §Step 7 test: build a depth-2 tree bucket
+        // synthetically (without going through `tree_mode_deepen`),
+        // then verify the depth-generic resolver walks the
+        // root -> interior -> leaf hop chain correctly.
+        //
+        // Setup: stored_slots = 1,048,577 (= R_MAX * B + 1), so
+        // `derive_depth` returns 2 and `root_len` returns 2. The
+        // physical layout has 1 interior block holding 1025 leaf
+        // block_ids (slots 0..=1024, first 1024 in the first interior
+        // and 1 in the second; wait, K=1024, so all 1025 fit in 1
+        // interior with 1024 - 1025 = 999 unused slots, but root_len
+        // is 2 so we mint 2 interiors).
+        let graph = test_graph();
+        let label = BucketLabelKey::directed_from_index(1);
+        let vid = graph
+            .push_vertex(
+                crate::labeled::record::LabeledVertex::default()
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("push_vertex");
+        let bucket_slot = 0u64;
+        // 1. Mint 1025 leaf blocks.
+        let mut leaf_ids: Vec<u32> = Vec::with_capacity(1025);
+        for _ in 0..1025 {
+            leaf_ids.push(graph.ltb().mint().expect("mint leaf"));
+        }
+        // 2. Mint 2 interior blocks.
+        let mut interior_ids: Vec<u32> = Vec::with_capacity(2);
+        for _ in 0..2 {
+            interior_ids.push(graph.ltb().mint().expect("mint interior"));
+        }
+        // 3. Pack the 1025 leaf_ids into the 2 interiors (K=1024 each).
+        //    interior[0] gets leaf_ids[0..1024]; interior[1] gets leaf_ids[1024..1025].
+        for (i, interior_id) in interior_ids.iter().enumerate() {
+            let start = i * 1024;
+            let end = (start + 1024).min(leaf_ids.len());
+            let chunk: Vec<u8> = leaf_ids[start..end]
+                .iter()
+                .flat_map(|id| id.to_le_bytes())
+                .collect();
+            graph
+                .ltb()
+                .write_payload_partial(*interior_id, 0, &chunk)
+                .expect("write_payload_partial interior");
+        }
+        // 4. Allocate a 2-slot LEG root region.
+        let edge_start = graph.edges().allocate_span(2).expect("allocate_span root");
+        let root_bytes: Vec<u8> = interior_ids
+            .iter()
+            .flat_map(|id| id.to_le_bytes())
+            .collect();
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &root_bytes)
+            .expect("write_slots_contiguous_bytes root");
+        // 5. Build the depth-2 descriptor.
+        let new_bucket = crate::labeled::record::LabelBucket::try_from_parts(
+            label, edge_start, 1_048_577, // degree = stored
+            1_048_577, -1, 0, 0, 0, -1, 0,
+        )
+        .expect("try_from_parts")
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(2);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+            .expect("write_label_bucket_slot");
+        // 6. Verify the resolver returns the correct leaf block_ids.
+        for block_index in 0..1025u32 {
+            let id =
+                resolve_leaf_block_id::<TestEdge, VectorMemory>(&graph, &new_bucket, block_index)
+                    .expect("resolve depth-2");
+            assert_eq!(
+                id, leaf_ids[block_index as usize],
+                "leaf block_id mismatch at block_index={block_index}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn deepen_restructures_root_region() {
+        // Plan 0318 §Step 7 test: build a small depth-1 bucket
+        // (root_len = 4) and call `tree_mode_deepen`. The function
+        // should:
+        // - pack the 4 root entries into a fresh interior block
+        // - allocate a 1-slot new root region
+        // - write the interior id to the new root region
+        // - publish the new descriptor (canonical write)
+        // - release the old root region span
+        // We verify the new descriptor is in place and the new root
+        // region has 1 entry that is not one of the original leaf ids.
+        // (The resolver leaf-id check is covered by the
+        // synthetic-depth-2 test above; we do NOT require the structural
+        // formula to align with the physical depth here, because the
+        // production wire-up only calls `tree_mode_deepen` when the
+        // next insert would push stored past the depth-1 cap — i.e.
+        // when `derive_depth` already returns 2.)
+        let graph = test_graph();
+        let label = BucketLabelKey::directed_from_index(1);
+        let vid = graph
+            .push_vertex(
+                crate::labeled::record::LabeledVertex::default()
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("push_vertex");
+        let bucket_slot = 0u64;
+        // Build a small depth-1 bucket with root_len = 4.
+        let b = BLOCK_B as u32;
+        let stored_slots = b * 4; // 4096
+        let root_len = 4u32;
+        let mut block_ids: Vec<u32> = Vec::with_capacity(4);
+        for _ in 0..4 {
+            block_ids.push(graph.ltb().mint().expect("mint"));
+        }
+        let edge_start = graph
+            .edges()
+            .allocate_span(u64::from(root_len))
+            .expect("allocate_span");
+        let root_bytes: Vec<u8> = block_ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &root_bytes)
+            .expect("write_slots_contiguous_bytes");
+        let new_bucket = crate::labeled::record::LabelBucket::try_from_parts(
+            label,
+            edge_start,
+            stored_slots,
+            stored_slots,
+            -1,
+            0,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .expect("try_from_parts")
+        .with_tree_mode(true);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+            .expect("write_label_bucket_slot");
+
+        // Deepen.
+        tree_mode_deepen(&graph, bucket_slot, &new_bucket).expect("deepen");
+
+        // Re-read the bucket.
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after"),
+        };
+        assert!(bucket_after.is_tree_mode());
+        assert_eq!(bucket_after.stored_slots, stored_slots);
+        assert_eq!(bucket_after.degree, stored_slots);
+        // The new root region has 1 entry pointing to the new interior.
+        let mut new_root_id_bytes = [0u8; 4];
+        graph
+            .edges()
+            .read_slot_bytes(bucket_after.edge_start(), &mut new_root_id_bytes);
+        let new_root_id = u32::from_le_bytes(new_root_id_bytes);
+        assert!(
+            !block_ids.contains(&new_root_id),
+            "deepened root should hold an interior block_id, not a leaf"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn flatten_inverts_deepen() {
+        // Plan 0318 §Step 7 test: build depth-1 root_len=1024, deepen
+        // to depth 2 (root_len=1, one interior), then flatten back to
+        // depth 1 (root_len=1024 with the same leaf block_ids).
+        // Verifies the round-trip property and the post-publish
+        // interior-release invariant.
+        let graph = test_graph();
+        let label = BucketLabelKey::directed_from_index(1);
+        let vid = graph
+            .push_vertex(
+                crate::labeled::record::LabeledVertex::default()
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("push_vertex");
+        let bucket_slot = 0u64;
+        build_depth1_full_root_bucket(&graph, vid, label, bucket_slot);
+
+        // Capture the original leaf block_ids.
+        let vertex = graph.vertices().get(vid);
+        let bucket_before = match graph.find_bucket(vid, &vertex, label).expect("find before") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing before"),
+        };
+        // The structural root_len for stored=1,048,576 is 1024 (the
+        // bucket is at the depth-1 fan-out cap, not pushed to depth 2).
+        let structural_root_len =
+            crate::labeled::tree_csr_prototype::root_len(bucket_before.stored_slots);
+        assert_eq!(structural_root_len, 1024);
+        let original_edge_start = bucket_before.edge_start();
+        let mut original_leaf_ids: Vec<u32> = Vec::with_capacity(1024);
+        for block_index in 0..1024u32 {
+            let id = resolve_leaf_block_id::<TestEdge, VectorMemory>(
+                &graph,
+                &bucket_before,
+                block_index,
+            )
+            .expect("resolve before");
+            original_leaf_ids.push(id);
+        }
+
+        // Deepen.
+        tree_mode_deepen(&graph, bucket_slot, &bucket_before).expect("deepen");
+        let vertex = graph.vertices().get(vid);
+        let bucket_deepened = match graph
+            .find_bucket(vid, &vertex, label)
+            .expect("find deepened")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after deepen"),
+        };
+        assert_ne!(bucket_deepened.edge_start(), original_edge_start);
+        // After deepen, the structural root_len is still 1024 (depth 1
+        // admits stored=1,048,576), but the physical root region has
+        // been replaced with a 1-entry region pointing to the new
+        // interior.
+        let deepened_structural_root_len =
+            crate::labeled::tree_csr_prototype::root_len(bucket_deepened.stored_slots);
+        assert_eq!(deepened_structural_root_len, 1024);
+        // The deepened root's first entry is the new interior block_id.
+        let mut new_root_id_bytes = [0u8; 4];
+        graph
+            .edges()
+            .read_slot_bytes(bucket_deepened.edge_start(), &mut new_root_id_bytes);
+        let new_root_id = u32::from_le_bytes(new_root_id_bytes);
+        assert!(
+            !original_leaf_ids.contains(&new_root_id),
+            "deepened root should hold an interior block_id, not a leaf"
+        );
+
+        // Flatten. The deepen-then-flatten cycle yields the original
+        // root region with the original leaf block_ids.
+        tree_mode_flatten(&graph, bucket_slot, &bucket_deepened).expect("flatten");
+        let vertex = graph.vertices().get(vid);
+        let bucket_flat = match graph.find_bucket(vid, &vertex, label).expect("find flat") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after flatten"),
+        };
+        // The flatten replaced the new root region with another region
+        // holding the original leaf ids. The edge_start may differ
+        // from the original (a fresh span), but the leaf ids must match.
+        for block_index in 0..1024u32 {
+            let id =
+                resolve_leaf_block_id::<TestEdge, VectorMemory>(&graph, &bucket_flat, block_index)
+                    .expect("resolve after flatten");
+            assert_eq!(
+                id, original_leaf_ids[block_index as usize],
+                "leaf block_id changed at index {block_index} after flatten"
+            );
+        }
     }
 }

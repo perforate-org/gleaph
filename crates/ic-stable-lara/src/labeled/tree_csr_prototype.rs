@@ -63,9 +63,9 @@ use super::ltb_raw_block_store::{BLOCK_PAYLOAD_BYTES, LtbRawBlockStore};
 /// Block payload capacity (ADR 0088 §1 wire truth).
 pub(crate) const B: usize = BLOCK_PAYLOAD_BYTES / 4;
 /// Root array cap (ADR 0088 §1 wire truth).
-const R_MAX: usize = 1024;
+pub(crate) const R_MAX: usize = 1024;
 /// Fail-closed depth boundary (ADR 0088 §4).
-const MAX_DEPTH: u32 = 3;
+pub(crate) const MAX_DEPTH: u32 = 3;
 
 /// Total slots addressable at each depth (with `R_max = B = 1024`):
 /// depth 1 ≤ 2²⁰, depth 2 ≤ 2³⁰, depth 3 ≤ 2⁴⁰. Mirrors ADR 0088 §4.

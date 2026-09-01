@@ -96,6 +96,18 @@ pub enum LabeledOperationError {
         /// Required width for tree-mode LTB block alignment (4).
         expected: usize,
     },
+    /// Tree-mode `deepen` was requested but the bucket is already at the
+    /// structural maximum depth (`MAX_DEPTH = 3`, per ADR 0088 §4). The
+    /// fan-out of every interior level is `K = R_MAX = 1024`; once a
+    /// depth-3 root is full, the bucket cannot be packed further. This
+    /// is the typed guard that replaces the prototype's
+    /// `derive_depth` panic on the production wire-up.
+    TreeDepthLimitReached {
+        /// Depth the bucket was already at when `deepen` was called.
+        depth: u32,
+        /// Structural maximum depth (currently 3, per ADR 0088 §4).
+        max_depth: u32,
+    },
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -142,6 +154,10 @@ impl fmt::Display for LabeledOperationError {
                 f,
                 "tree-mode edge append requires E::BYTES == {expected} (got {actual})"
             ),
+            Self::TreeDepthLimitReached { depth, max_depth } => write!(
+                f,
+                "tree-mode depth limit reached: depth={depth}, max_depth={max_depth}"
+            ),
         }
     }
 }
@@ -160,7 +176,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::VertexBucketCountCapReached { .. }
             | Self::LtbBlock(_)
             | Self::BucketNotFound { .. }
-            | Self::TreeModeEdgeWidthUnsupported { .. } => None,
+            | Self::TreeModeEdgeWidthUnsupported { .. }
+            | Self::TreeDepthLimitReached { .. } => None,
         }
     }
 }
