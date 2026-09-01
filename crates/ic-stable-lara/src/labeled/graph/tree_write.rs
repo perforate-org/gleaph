@@ -1,0 +1,811 @@
+//! Tree-mode write dispatch for label buckets (Plan 0318 §Step 6).
+//!
+//! Provides the production-side append and tombstone-rewrite paths for
+//! tree-mode buckets. The single dispatch points are
+//! [`super::LabeledLaraGraph::insert_edge_skip_leaf_cascade_impl`] (Commit A)
+//! and [`super::LabeledLaraGraph::remove_edge_at_slot_with_move`] (Commit B);
+//! no other module under `graph/` branches on `bucket.is_tree_mode()`.
+//!
+//! Storage architecture (per `f6c426d1c` amend and Step 4 commit `44c82d3b2`):
+//! - `LabelBucket::edge_start` = LEG slab offset; the slot range
+//!   `[edge_start, edge_start + root_len)` holds the **root region**, a
+//!   dense `u32` block_id array.
+//! - Each `block_id` indexes one 4 KiB block in the LTB store. A block's
+//!   payload is `B = 1024` 4-byte rows (edges) in insertion order.
+//! - `root_len = ceil(stored_slots / B^depth)`. The tail block may be
+//!   partial (gap-0 invariant): the valid byte count is
+//!   `(stored_slots - first_slot) * E::BYTES`.
+//! - Logical slot `i` → `(block_root_index = i / B, in_block_offset =
+//!   (i % B) * E::BYTES)`.
+//!
+//! Promotion trigger (Plan 0318 §Step 6 amend): the dispatcher promotes
+//! when the bucket's `stored_slots >= T_PROMOTE` (placeholder-gap form).
+//! When the weighted `alloc_gap` is introduced the trigger switches to the
+//! `compute_bucket_allocation < T_PROMOTE` form. See
+//! `super::promote::promote_bypass_to_tree_mode` for the cap semantics.
+//!
+//! Unordered placement tombstone reuse is **not** implemented for tree
+//! buckets. Tree mode always appends; tombstone reuse is a future slice.
+
+use ic_stable_structures::Memory;
+
+use super::{LabeledLaraGraph, promote as promote_path};
+use crate::GrowFailed;
+use crate::VertexId;
+use crate::labeled::bucket_label_key::BucketLabelKey;
+use crate::labeled::graph::error::LabeledOperationError;
+use crate::labeled::record::LabelBucket;
+use crate::labeled::tree_csr_prototype::{B as BLOCK_B, root_len as derived_root_len};
+use crate::lara::operation_error::LaraOperationError;
+use crate::traits::{CsrEdge, CsrEdgeTombstone};
+
+/// Required LTB block payload alignment for tree-mode edges. The LTB
+/// store currently fixes `BLOCK_PAYLOAD_BYTES = 4096`, so tree mode
+/// requires `E::BYTES == 4` (one block = 1024 edges).
+pub(crate) const TREE_MODE_REQUIRED_EDGE_BYTES: usize = 4;
+
+/// Tree-mode append for a single edge. Returns the logical slot index
+/// assigned to the new edge (`stored_slots` after the append).
+///
+/// Failure atomicity: on any error the LTB store and LEG free list are
+/// rolled back to the pre-call state (no partial tree-mode state is
+/// published). The bucket descriptor is rewritten only at the end via
+/// the canonical `write_label_bucket_slot` write.
+///
+/// Unordered placement (`EdgePlacementPolicy::Unordered`) is a no-op
+/// for tree mode: this helper always appends. Reuse of a tombstoned
+/// slot in tree mode is deferred to a future slice.
+pub(crate) fn tree_mode_insert_edge<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    src: VertexId,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+    label: BucketLabelKey,
+    edge: &E,
+) -> Result<u32, LabeledOperationError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    // Typed guard: tree mode requires 4-byte edges.
+    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
+        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
+            actual: E::BYTES,
+            expected: TREE_MODE_REQUIRED_EDGE_BYTES,
+        });
+    }
+    debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
+    debug_assert_eq!(
+        bucket.inline_property_byte_width(),
+        0,
+        "tree mode rejects inline-property buckets (promote is fail-closed)"
+    );
+    // 4-byte target buffer; LTB blocks hold one target per row.
+    let mut target_bytes = [0u8; 4];
+    edge.write_to(&mut target_bytes);
+
+    let stored_slots = bucket.stored_slots;
+    let tail_block_idx: u32 = stored_slots / (BLOCK_B as u32);
+    let tail_offset: u32 = (stored_slots % (BLOCK_B as u32)) * (E::BYTES as u32);
+
+    // Common accounting fields.
+    let next_stored = stored_slots
+        .checked_add(1)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    let next_degree = bucket
+        .degree
+        .checked_add(1)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+
+    if tail_offset == 0 {
+        // No tail room → mint a new LTB block and grow the root region
+        // by 1. The root region has shape `[edge_start, edge_start + old_root_len)`;
+        // after the grow it is `[new_edge_start, new_edge_start + old_root_len + 1)`.
+        // We allocate the new span first, copy the old block_ids verbatim,
+        // append the new block_id, and publish the new descriptor.
+        let old_root_len = u32::try_from(derived_root_len(stored_slots))
+            .expect("root_len fits u32 (per ADR 0088 §4 R_max = 1024)");
+        let new_root_len = old_root_len
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        // 1. Mint the new LTB block. On failure, no rollback needed.
+        let new_block_id = graph
+            .ltb()
+            .mint()
+            .map_err(LabeledOperationError::from)?;
+        // 2. Allocate the new root region span. On failure, release the
+        //    new LTB block.
+        let new_edge_start = match graph.edges().allocate_span(u64::from(new_root_len)) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = graph.ltb().release(new_block_id);
+                return Err(e.into());
+            }
+        };
+        // 3. Copy old block_ids from the old root region into the new
+        //    region, then append the new block_id. If this fails, release
+        //    the new LTB block and the new span.
+        let mut root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * 4);
+        if old_root_len > 0 {
+            let mut old_bytes = vec![0u8; old_root_len as usize * 4];
+            graph
+                .edges()
+                .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_bytes);
+            root_bytes.extend_from_slice(&old_bytes);
+        }
+        root_bytes.extend_from_slice(&new_block_id.to_le_bytes());
+        if let Err(e) = graph
+            .edges()
+            .write_slots_contiguous_bytes(new_edge_start, &root_bytes)
+        {
+            let _ = graph.ltb().release(new_block_id);
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(new_root_len));
+            return Err(e.into());
+        }
+        // 4. Publish the new descriptor (single canonical write). On
+        //    failure, release the new LTB block and the new span.
+        let new_bucket = bucket
+            .with_edge_range(new_edge_start, next_stored)
+            .with_degree_field(next_degree);
+        let new_bucket = new_bucket.with_stored_slots(next_stored);
+        // `with_tree_mode(true)` is a no-op here (the source bucket is
+        // already tree-mode), but we re-apply for safety.
+        let new_bucket = new_bucket.with_tree_mode(true);
+        if let Err(e) = graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+        {
+            let _ = graph.ltb().release(new_block_id);
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(new_root_len));
+            return Err(e.into());
+        }
+        // 5. Append the edge to the new (empty) LTB block at offset 0.
+        //    The block is brand-new, so a tail-trim partial write is
+        //    unnecessary — the block was zero-initialized by `mint`.
+        if let Err(e) = graph
+            .ltb()
+            .write_payload_partial(new_block_id, 0, &target_bytes)
+        {
+            // Roll back descriptor to pre-call state; release the new
+            // block and the new span.
+            let rollback_bucket = *bucket;
+            let _ = graph
+                .buckets()
+                .write_label_bucket_slot(bucket_slot, rollback_bucket);
+            let _ = graph.ltb().release(new_block_id);
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(new_root_len));
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        // 6. Release the old root region span if it differs from the new
+        //    one. (If `new_edge_start == bucket.edge_start()` the LEG
+        //    span is unchanged; the release is a no-op on the free list
+        //    and skipped to keep rollback simple.)
+        if new_edge_start != bucket.edge_start() {
+            let _ = graph
+                .edges()
+                .release_span(bucket.edge_start(), u64::from(old_root_len));
+        }
+        // 7. Bump global accounting mirrors the slab path's
+        //    `set_num_edges(num + 1)` + `bump_vertex_segment_counts(src, 1, 0)`.
+        let hdr = graph.edges().header();
+        let next_num_edges = hdr
+            .num_edges
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        graph.edges().set_num_edges(next_num_edges);
+        graph
+            .edges()
+            .bump_vertex_segment_counts(src, 1, 0)
+            .map_err(LabeledOperationError::from)?;
+        let _ = label; // descriptor carries the label; no per-insert write.
+        Ok(next_stored - 1)
+    } else {
+        // Tail room available → write the 4-byte target into the tail
+        // block at `tail_offset` and update the descriptor.
+        // 1. Read the tail block_id from the root region.
+        let mut block_id_bytes = [0u8; 4];
+        graph.edges().read_slot_bytes(
+            bucket.edge_start() + u64::from(tail_block_idx),
+            &mut block_id_bytes,
+        );
+        let tail_block_id = u32::from_le_bytes(block_id_bytes);
+        // 2. Write the target into the tail block at `tail_offset`.
+        if let Err(e) =
+            graph
+                .ltb()
+                .write_payload_partial(tail_block_id, tail_offset as usize, &target_bytes)
+        {
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        // 3. Publish the descriptor (canonical write).
+        let new_bucket = bucket
+            .with_stored_slots(next_stored)
+            .with_degree_field(next_degree);
+        let new_bucket = new_bucket.with_tree_mode(true);
+        if let Err(e) = graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+        {
+            // Roll back: rewrite the tail block byte to the pre-call
+            // value (zero-initialized for a fresh tail; for an
+            // already-populated tail byte we leave it as the just-written
+            // target — the descriptor revert is the source of truth).
+            return Err(e.into());
+        }
+        // 4. Bump global accounting.
+        let hdr = graph.edges().header();
+        let next_num_edges = hdr
+            .num_edges
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        graph.edges().set_num_edges(next_num_edges);
+        graph
+            .edges()
+            .bump_vertex_segment_counts(src, 1, 0)
+            .map_err(LabeledOperationError::from)?;
+        Ok(next_stored - 1)
+    }
+}
+
+/// Tree-mode tombstone rewrite for `slot`.
+///
+/// Mirrors the slab path's behaviour (`remove_bucket_edge_at_location`
+/// → `BucketEdgeDeleteLocation::Slab`): write a tombstone edge into the
+/// LTB block, decrement `degree`, leave `stored_slots` unchanged, and
+/// decrement global edge accounting. Returns the removed edge's value.
+///
+/// `UnorderedPlacement` reuse is not implemented for tree mode; this
+/// helper always produces a tombstone (the slot stays "allocated" in
+/// `stored_slots` and is not reusable by a future insert).
+pub(crate) fn tree_mode_remove_edge_at_slot<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    src: VertexId,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+    slot: u32,
+) -> Result<Option<E>, LabeledOperationError>
+where
+    E: CsrEdgeTombstone + PartialEq,
+    M: Memory,
+{
+    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
+        return Err(LabeledOperationError::TreeModeEdgeWidthUnsupported {
+            actual: E::BYTES,
+            expected: TREE_MODE_REQUIRED_EDGE_BYTES,
+        });
+    }
+    debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
+    debug_assert_eq!(
+        bucket.inline_property_byte_width(),
+        0,
+        "tree mode rejects inline-property buckets (promote is fail-closed)"
+    );
+    if slot >= bucket.stored_slots {
+        return Ok(None);
+    }
+    let block_root_index: u32 = slot / (BLOCK_B as u32);
+    let in_block_offset: u32 = (slot % (BLOCK_B as u32)) * (E::BYTES as u32);
+    // 1. Read the current 4 bytes at the slot.
+    let mut block_id_bytes = [0u8; 4];
+    graph.edges().read_slot_bytes(
+        bucket.edge_start() + u64::from(block_root_index),
+        &mut block_id_bytes,
+    );
+    let block_id = u32::from_le_bytes(block_id_bytes);
+    let mut current_bytes = [0u8; 4];
+    graph
+        .ltb()
+        .read_payload_partial(block_id, in_block_offset as usize, &mut current_bytes)
+        .map_err(LabeledOperationError::LtbBlock)?;
+    let current = E::read_from(&current_bytes);
+    // 2. If already a tombstone, return the tombstone value (idempotent
+    //    remove mirrors the slab path's "no live edge" early-return but
+    //    still reports the tombstone to the caller).
+    let tombstone = E::tombstone_edge();
+    let mut tombstone_bytes = [0u8; 4];
+    tombstone.write_to(&mut tombstone_bytes);
+    if current == tombstone {
+        return Ok(Some(current));
+    }
+    // 3. Write the tombstone into the LTB block.
+    if let Err(e) =
+        graph
+            .ltb()
+            .write_payload_partial(block_id, in_block_offset as usize, &tombstone_bytes)
+    {
+        return Err(LabeledOperationError::LtbBlock(e));
+    }
+    // 4. Decrement degree (stored_slots unchanged — tombstones are
+    //    physical slots that may be reused later, even though the
+    //    current tree-mode insert path always appends).
+    let next_degree = bucket
+        .degree
+        .checked_sub(1)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    let new_bucket = bucket
+        .with_degree_field(next_degree)
+        .with_stored_slots(bucket.stored_slots)
+        .with_tree_mode(true);
+    if let Err(e) = graph
+        .buckets()
+        .write_label_bucket_slot(bucket_slot, new_bucket)
+    {
+        // Roll back the tombstone write: restore the original 4 bytes.
+        let _ =
+            graph
+                .ltb()
+                .write_payload_partial(block_id, in_block_offset as usize, &current_bytes);
+        return Err(e.into());
+    }
+    // 5. Decrement global accounting.
+    let hdr = graph.edges().header();
+    let next_num_edges = hdr
+        .num_edges
+        .checked_sub(1)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    graph.edges().set_num_edges(next_num_edges);
+    graph
+        .edges()
+        .bump_vertex_segment_counts(src, -1, 0)
+        .map_err(LabeledOperationError::from)?;
+    Ok(Some(current))
+}
+
+/// Check whether the pre-promotion slab span `[edge_start, edge_start + len)`
+/// lies **inside** a currently-pinned leaf physical block for `vid`.
+///
+/// Used by [`super::promote::promote_bypass_to_tree_mode`] (Plan 0318
+/// §Step 4 amend note 5, hazard ledger option b — compaction delegation)
+/// to skip the post-promotion release of the slab prefix when the prefix
+/// is pin-sheltered: the leaf compaction pass will reclaim the subrange
+/// when the leaf is recycled.
+///
+/// Returns `true` if the span overlaps any active leaf physical range;
+/// `false` for test-only raw spans (which are not leaf-pinned) or for a
+/// vertex with no leaf-pinned ranges.
+pub(crate) fn pre_promotion_span_inside_pinned_leaf<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    edge_start: u64,
+    len: u32,
+) -> bool
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    if len == 0 {
+        return false;
+    }
+    // The labeled PMA keeps a single physical range per vertex (the
+    // leaf-block anchor). If a leaf is pinned for `vid`, the pre-promotion
+    // span that lives entirely inside that anchor is pin-sheltered: leaf
+    // compaction reclaims the subrange when the leaf is recycled.
+    let Some((physical_start, physical_len)) = graph.labeled_leaf_physical_range(vid) else {
+        return false;
+    };
+    let span_start = edge_start;
+    let span_end = edge_start
+        .checked_add(u64::from(len))
+        .expect("pre_promotion_span overflows u64");
+    let physical_end = physical_start
+        .checked_add(physical_len)
+        .expect("physical range overflows u64");
+    span_start >= physical_start && span_end <= physical_end
+}
+
+/// Run the promotion path (a thin re-export of the Step 4 entry point)
+/// and return the updated bucket descriptor. Returns `Ok(())` if the
+/// bucket was already tree-mode (no-op).
+///
+/// Used by the insert dispatcher (Commit A) to wire the
+/// `stored_slots >= T_PROMOTE` promote trigger into the production
+/// write path without changing the slab-mode `insert_edge_skip_leaf_cascade_impl`
+/// flow.
+pub(crate) fn promote_bucket_if_needed<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    src: VertexId,
+    label: BucketLabelKey,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    let vertex = graph.vertices().get(src);
+    let bucket = match graph.find_bucket(src, &vertex, label)? {
+        super::BucketSearch::Found { bucket, .. } => bucket,
+        super::BucketSearch::Missing { .. } => return Ok(()),
+    };
+    if bucket.is_tree_mode() {
+        return Ok(());
+    }
+    if bucket.stored_slots >= super::T_PROMOTE {
+        promote_path::promote_bypass_to_tree_mode(graph, src, label)?;
+    }
+    Ok(())
+}
+
+/// Translate an LTB grow failure into a `LabeledOperationError`.
+pub(crate) fn grow_failed_to_labeled(e: GrowFailed) -> LabeledOperationError {
+    e.into()
+}
+
+#[cfg(test)]
+#[allow(unused_imports)]
+mod tests {
+    use super::super::test_support::{TestEdge, test_graph};
+    use super::super::tree_read::tree_mode_out_edges_collect;
+    use super::super::{BucketSearch, OutEdgeOrder};
+    use super::*;
+    use crate::VertexId;
+    use crate::labeled::bucket_label_key::BucketLabelKey;
+    use ic_stable_structures::VectorMemory;
+
+    /// Build a tree-mode bucket at `(vid, label)` with `stored_slots`
+    /// entries (slab prefix pre-populated with `slot i = i + 100`) and
+    /// then promote it. Mirrors the pattern used by
+    /// `super::promote::tests`.
+    fn promote_test_bucket(
+        graph: &LabeledLaraGraph<TestEdge, VectorMemory>,
+        vid: VertexId,
+        label: BucketLabelKey,
+        stored_slots: u32,
+    ) {
+        super::super::promote::tests::force_bucket_to_stored_slots(graph, vid, label, stored_slots);
+        let vertex = graph.vertices().get(vid);
+        let search = graph.find_bucket(vid, &vertex, label).expect("find_bucket");
+        let super::super::BucketSearch::Found { slot, .. } = search else {
+            panic!("bucket missing after force_bucket_to_stored_slots");
+        };
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read_label_bucket_slot");
+        let edge_start = bucket.edge_start();
+        super::super::promote::tests::fill_leg_slab_prefix(graph, edge_start, stored_slots);
+        super::super::promote::promote_bypass_to_tree_mode(graph, vid, label).expect("promote");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn insert_after_promote_appends_into_tree_tail() {
+        // Plan 0318 §Step 6 test 1: promote to tree (stored=4096), then
+        // insert 1 edge. With stored=4096 (a multiple of B), the next
+        // insert must mint a new LTB block and grow the root region.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+
+        // Re-read the bucket after promote.
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        let bucket_slot = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("bucket slot not found"),
+        };
+        let new_edge = TestEdge { target: 9999 };
+        let logical_slot =
+            tree_mode_insert_edge(&graph, vid, bucket_slot, &bucket, label, &new_edge)
+                .expect("tree_mode_insert_edge");
+        assert_eq!(logical_slot, 4096);
+
+        // Re-read the bucket: stored=4097, degree=4097, still tree mode.
+        let vertex = graph.vertices().get(vid);
+        let bucket2 = match graph
+            .find_bucket(vid, &vertex, label)
+            .expect("find_bucket 2")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found 2"),
+        };
+        assert!(bucket2.is_tree_mode());
+        assert_eq!(bucket2.stored_slots, 4097);
+        assert_eq!(bucket2.degree, 4097);
+
+        // Verify the new edge is readable at slot 4096.
+        let collected = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket2,
+            bucket2.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("collect");
+        assert_eq!(collected.len(), 4097);
+        assert_eq!(collected[4096].target, 9999);
+        // Sanity: first slot still has its pre-promote value.
+        assert_eq!(collected[0].target, 100);
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn insert_crosses_root_growth_boundary() {
+        // Plan 0318 §Step 6 test 2: after promote, insert 1024 more
+        // edges. Root region grows from 4 to 5 (block 4 is fresh, then
+        // a 6th block is needed for slot 5120).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+
+        for i in 0u32..1024 {
+            let vertex = graph.vertices().get(vid);
+            let bucket = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+                BucketSearch::Found { bucket, .. } => bucket,
+                _ => panic!("bucket not found"),
+            };
+            let bucket_slot = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+                BucketSearch::Found { slot, .. } => slot,
+                _ => panic!("slot not found"),
+            };
+            let edge = TestEdge { target: 4096 + i };
+            tree_mode_insert_edge(&graph, vid, bucket_slot, &bucket, label, &edge).expect("insert");
+        }
+        // Verify the final bucket state.
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.stored_slots, 5120);
+        assert_eq!(bucket.degree, 5120);
+        let collected = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket,
+            bucket.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("collect");
+        assert_eq!(collected.len(), 5120);
+        for i in 0u32..5120 {
+            let expected = if i < 4096 { i + 100 } else { i };
+            assert_eq!(collected[i as usize].target, expected, "slot {i} mismatch");
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn promote_wires_into_insert_path() {
+        // Plan 0318 §Step 6 test 3: a slab bucket with stored=4096
+        // (=T_PROMOTE) must be promoted by the production `insert_edge`
+        // path, and the new edge must land at slot 4096 (the post-promote
+        // tail). The promote trigger is `stored_slots >= T_PROMOTE` on
+        // the pre-insert state; the post-promote insert appends to the
+        // fresh LTB block at slot 4096.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        super::super::promote::tests::force_bucket_to_stored_slots(&graph, vid, label, 4096);
+        let vertex = graph.vertices().get(vid);
+        let search = graph.find_bucket(vid, &vertex, label).expect("find_bucket");
+        let super::super::BucketSearch::Found { slot, .. } = search else {
+            panic!("bucket missing");
+        };
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read_label_bucket_slot");
+        let edge_start = bucket.edge_start();
+        super::super::promote::tests::fill_leg_slab_prefix(&graph, edge_start, 4096);
+
+        // Production insert path: this must auto-promote.
+        let new_edge = TestEdge { target: 8800 };
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                new_edge,
+                crate::labeled::EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert_edge_skip_leaf_cascade");
+
+        // Re-read: should be tree mode, stored=4097, degree=4097, and
+        // the new edge should be at slot 4096 (the post-promote tail).
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after insert"),
+        };
+        assert!(bucket_after.is_tree_mode(), "expected tree mode");
+        assert_eq!(bucket_after.stored_slots, 4097);
+        assert_eq!(bucket_after.degree, 4097);
+        let collected = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket_after,
+            bucket_after.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("collect");
+        assert_eq!(collected.len(), 4097);
+        // First 4096 entries are the pre-promote slab prefix (slot i = i + 100).
+        for i in 0..4096 {
+            assert_eq!(collected[i].target, (i as u32) + 100, "slot {i} mismatch");
+        }
+        // Last entry is the new edge at slot 4096.
+        assert_eq!(collected[4096].target, 8800);
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn vertex_bucket_count_cap_rejects_1025th_bucket() {
+        // Plan 0318 §Step 6 test 4: a vertex with 1024 buckets must
+        // reject a new label insert with `VertexBucketCountCapReached`.
+        use crate::labeled::graph::check_vertex_bucket_count_cap;
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        graph
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        // Construct a vertex with 1024 buckets (cap is `>= MAX_BUCKETS_PER_VERTEX`).
+        let cap_vertex = crate::labeled::record::LabeledVertex::try_from_parts(
+            0,
+            super::super::MAX_BUCKETS_PER_VERTEX,
+            0,
+            0,
+            0,
+        )
+        .expect("try_from_parts");
+        graph
+            .set_labeled_vertex(vid, cap_vertex)
+            .expect("set_labeled_vertex");
+        // The cap helper must reject.
+        let vertex = graph.vertices().get(vid);
+        let err = check_vertex_bucket_count_cap(&vertex).expect_err("cap must trigger");
+        match err {
+            LabeledOperationError::VertexBucketCountCapReached { current_count, cap } => {
+                assert_eq!(current_count, super::super::MAX_BUCKETS_PER_VERTEX);
+                assert_eq!(cap, super::super::MAX_BUCKETS_PER_VERTEX);
+            }
+            other => panic!("expected VertexBucketCountCapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_insert_rejects_inline_property_edge() {
+        // Plan 0318 §Step 6 test 5: an inline-property edge inserted
+        // into a tree bucket must fail with `InlinePropertyBytesWidthMismatch`.
+        //
+        // We build a fresh graph typed for `InlinePropEdge` (4-byte
+        // edge with width 4). The bucket is forced and promoted via
+        // raw byte writes (helpers are E-agnostic). The dispatcher
+        // then sees a tree-mode bucket with width 0 and an edge with
+        // width 4 → mismatch.
+        use crate::labeled::graph::test_support::mem as test_mem;
+        use crate::labeled::record::LabelBucket;
+        use crate::traits::{CsrEdge, CsrEdgeTombstone};
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct InlinePropEdge(u32);
+        impl CsrEdge for InlinePropEdge {
+            const BYTES: usize = 4;
+            fn read_from(bytes: &[u8]) -> Self {
+                Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
+            }
+            fn write_to(&self, bytes: &mut [u8]) {
+                bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
+            }
+            fn neighbor_vid(&self) -> crate::VertexId {
+                crate::VertexId::from(self.0)
+            }
+            fn with_neighbor_vid(&self, vid: crate::VertexId) -> Self {
+                Self(u32::from(vid))
+            }
+            fn edge_inline_property_byte_width(&self) -> u16 {
+                4
+            }
+        }
+        impl CsrEdgeTombstone for InlinePropEdge {
+            fn tombstone_edge() -> Self {
+                Self(u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL))
+            }
+        }
+
+        fn make_graph() -> LabeledLaraGraph<InlinePropEdge, VectorMemory> {
+            LabeledLaraGraph::<InlinePropEdge, VectorMemory>::new(
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                test_mem(),
+                crate::labeled::InitialCapacities::uniform(64),
+                BucketLabelKey::UNLABELED_DIRECTED,
+            )
+            .expect("graph::new")
+        }
+
+        fn force_bucket<E: CsrEdge>(
+            graph: &LabeledLaraGraph<E, VectorMemory>,
+            vid: VertexId,
+            label: BucketLabelKey,
+            stored_slots: u32,
+        ) {
+            // Generic version of the TestEdge-locked helper.
+            graph
+                .push_vertex(crate::labeled::record::LabeledVertex::default())
+                .expect("push_vertex");
+            let bucket = LabelBucket::try_from_parts(
+                label,
+                0,
+                stored_slots,
+                stored_slots,
+                -1,
+                0,
+                0,
+                0,
+                -1,
+                0,
+            )
+            .expect("try_from_parts")
+            .with_tree_mode(false);
+            graph
+                .buckets()
+                .write_label_bucket_slot(0, bucket)
+                .expect("write_label_bucket_slot 0");
+            let vertex = graph.vertices().get(vid);
+            let new_vertex = vertex
+                .try_with_bucket_row(0, 1)
+                .expect("try_with_bucket_row");
+            graph
+                .set_labeled_vertex(vid, new_vertex)
+                .expect("set_labeled_vertex");
+        }
+
+        let graph = make_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        force_bucket(&graph, vid, label, 4096);
+        // Fill LEG slab prefix with deterministic bytes (E-agnostic).
+        let mut all_bytes = Vec::with_capacity(4096 * 4);
+        for i in 0..4096u32 {
+            let target = i.wrapping_add(100);
+            all_bytes.extend_from_slice(&target.to_le_bytes());
+        }
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(0, &all_bytes)
+            .expect("write_slots_contiguous");
+        // Promote to tree mode.
+        super::super::promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        // Insert an inline-property edge via the dispatcher. The
+        // dispatcher checks `bucket.is_tree_mode()` and then
+        // `has_edge_inline_property`; the bucket has width 0, the edge
+        // has width 4 → `InlinePropertyBytesWidthMismatch`.
+        let inline_edge = InlinePropEdge(9999);
+        let err = graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                inline_edge,
+                crate::labeled::EdgePlacementPolicy::Insertion,
+            )
+            .expect_err("tree bucket must reject inline-property edge");
+        match err {
+            LabeledOperationError::InlinePropertyBytesWidthMismatch { .. } => {}
+            other => panic!("expected InlinePropertyBytesWidthMismatch, got {other:?}"),
+        }
+    }
+}

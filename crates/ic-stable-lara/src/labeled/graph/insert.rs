@@ -281,6 +281,11 @@ where
             });
         }
 
+        // Plan 0318 §Step 3 cap wiring: enforce the per-vertex bucket
+        // count cap before the new-bucket create path runs. The
+        // pre-existing bucket path is a no-op (count unchanged).
+        super::check_vertex_bucket_count_cap(&vertex)?;
+
         let (bucket_slot, mut bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
         let vertex = self.vertices.get(src);
         if edge_inline_property_width != bucket.inline_property_byte_width() {
@@ -289,6 +294,72 @@ where
                 edge_inline_property_width,
             )?;
             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+        }
+        // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
+        // bypass the slab-path entirely. Rope / PMA / placement /
+        // leaf-pin code does not see this branch.
+        if bucket.is_tree_mode() {
+            if has_edge_inline_property {
+                return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                    bucket_width: bucket.inline_property_byte_width(),
+                    edge_inline_property_width,
+                });
+            }
+            let logical_slot = super::tree_write::tree_mode_insert_edge(
+                self,
+                src,
+                bucket_slot,
+                &bucket,
+                label_id,
+                &edge,
+            )?;
+            return Ok(Some(ScalarInsertLocation {
+                logical_slot,
+                storage: ScalarInsertStorage::Slab,
+            }));
+        }
+        // Plan 0318 §Step 6 promote trigger: if the slab bucket has
+        // reached T_PROMOTE, promote it to tree mode and recurse through
+        // the new descriptor. The trigger is the placeholder-gap form
+        // (`stored_slots >= T_PROMOTE`); the `compute_bucket_allocation`
+        // form is used when the weighted gap is introduced.
+        //
+        // The additional `< u32::MAX` guard skips promotion for buckets
+        // that are already at the degree cap (e.g. `normal_label_bucket_insert_rejects_edge_len_overflow`).
+        // Those buckets fail with `RowDegreeOverflow` from the slab path
+        // instead of being routed to the tree path, which would otherwise
+        // try to mint `stored_slots / B` LTB blocks and fail in a
+        // different way.
+        if bucket.stored_slots >= super::T_PROMOTE
+            && bucket.stored_slots < u32::MAX
+            && !has_edge_inline_property
+        {
+            super::tree_write::promote_bucket_if_needed(self, src, label_id)?;
+            // Re-read the bucket: after promotion it is tree mode.
+            let vertex = self.vertices.get(src);
+            bucket = match self.find_bucket(src, &vertex, label_id)? {
+                BucketSearch::Found { bucket, .. } => bucket,
+                BucketSearch::Missing { .. } => {
+                    return Err(LabeledOperationError::BucketNotFound {
+                        vid: src,
+                        label: label_id,
+                    });
+                }
+            };
+            if bucket.is_tree_mode() {
+                let logical_slot = super::tree_write::tree_mode_insert_edge(
+                    self,
+                    src,
+                    bucket_slot,
+                    &bucket,
+                    label_id,
+                    &edge,
+                )?;
+                return Ok(Some(ScalarInsertLocation {
+                    logical_slot,
+                    storage: ScalarInsertStorage::Slab,
+                }));
+            }
         }
         self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
         let vertex = self.vertices.get(src);

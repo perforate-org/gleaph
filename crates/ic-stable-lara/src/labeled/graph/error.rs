@@ -85,6 +85,17 @@ pub enum LabeledOperationError {
         /// Requested label key.
         label: BucketLabelKey,
     },
+    /// Tree-mode edge append was attempted for an `E` whose wire width is
+    /// not 4 bytes. Tree-mode LTB blocks are 4-byte-aligned (each block
+    /// holds `B = 1024` 4-byte targets); wider edges would break the
+    /// block math. Plan 0318 §Step 6 typed guard (replaces the Step 5
+    /// `debug_assert_eq!(E::BYTES, 4)` at every tree read entry).
+    TreeModeEdgeWidthUnsupported {
+        /// `E::BYTES` reported by the edge type.
+        actual: usize,
+        /// Required width for tree-mode LTB block alignment (4).
+        expected: usize,
+    },
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -127,6 +138,10 @@ impl fmt::Display for LabeledOperationError {
                     "labeled bucket not found for promotion: vid={vid}, label={label:?}"
                 )
             }
+            Self::TreeModeEdgeWidthUnsupported { actual, expected } => write!(
+                f,
+                "tree-mode edge append requires E::BYTES == {expected} (got {actual})"
+            ),
         }
     }
 }
@@ -144,7 +159,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::AllocSpaceCapReached { .. }
             | Self::VertexBucketCountCapReached { .. }
             | Self::LtbBlock(_)
-            | Self::BucketNotFound { .. } => None,
+            | Self::BucketNotFound { .. }
+            | Self::TreeModeEdgeWidthUnsupported { .. } => None,
         }
     }
 }
