@@ -913,8 +913,12 @@ demotion as follow-up slices.
 - `tree-mode-tombstone-reuse` — tree bucket tombstones are not
   reused on insert (slab mode reuses via
   `try_reuse_unordered_slab_tombstone`); high-churn tree buckets
-  grow LTB footprint monotonically. Needs reuse strategy (scan
-  on insert, or threshold-triggered flatten-and-rebuild).
+  grow LTB footprint monotonically. **Plan 0319 (2026-09-01)**
+  ships demotion as the primary reclaim path, but in-place
+  tombstone reuse inside LTB blocks is still deferred (needs
+  per-bucket free-ordinal tracking; no spare `LabelBucket` field
+  today). After 0319 telemetry decides whether demotion alone
+  suffices.
 - `tree-mode-promote-from-bypass` — bypass-mode → tree-mode direct
   transition (current path is bypass → slab → tree). Records as
   a follow-up so the current two-step path is not blocked on
@@ -923,5 +927,29 @@ demotion as follow-up slices.
   the 1M-sweep is `#[ignore]`'d in `tree_csr_high_degree_test`
   because it hits production `Memory::grow` limits in test
   environments).
+
+**Plan 0319 (Steps 1-3, 2026-09-01) — demotion + rewrite-path tree
+awareness.** The slab→tree transition (promote) is now reversible
+via `tree_mode_demote_to_slab`, a failure-atomic reserve/commit/
+publish primitive that rebuilds a tree bucket as a fresh CSR slab
+of only live edges and releases all LTB leaves + interiors + the
+old root region. Demotion fires inline at the single tree-mode
+remove dispatch point via the `T_DEMOTE = T_PROMOTE / 2 = 2048`
+degree-hysteresis trigger (`remove.rs:328`). The rewrite path
+(`vertex_edge_span_retire_intervals`) adopts the new
+`bucket_span_region_len` helper so tree buckets contribute their
+physical root-region length (not `stored_slots`) to per-vertex
+span intervals; this closes the latent Plan 0318 corruption
+hazard where a rewrite reaching a tree bucket misread the root
+region as degree edge slots. Commits: `8598874d8` (Step 1,
+primitive + 5 tests), `08f6f9d6c` (Step 2, T_DEMOTE + trigger),
+`4a71edaee` (Step 3, region-length helper + audit). Full rewrite
+verbatim moves (copy loops skip tombstone scans for tree buckets)
+are a recorded follow-up.
+
+GAP-2026-07-25-002 parallel track: the per-bucket occupancy map
+idea (compressed tombstone distribution / persistent live bitmap
+for OFFSET scans) remains future work; demotion is the primary
+reclaim path for this slice.
 
 Last revised: 2026-09-01.
