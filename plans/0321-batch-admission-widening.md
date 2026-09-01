@@ -65,6 +65,106 @@ In: audit of the batch fallback flow, fail-closed tree-run classification, tree-
 
 Map: (a) the production callers of the batch boundary and where a scalar fallback would live; (b) the exact corruption reachability for tree-mode runs today (preflight garbage projection + hole-reuse read + commit write); (c) the LTB bulk-write primitives available (write_payload on full blocks) and the root-growth seam shared with `tree_mode_insert_edge`; (d) whether threshold-crossing slab runs are admitted today (expected: yes, writes past T_PROMOTE without promoting) and confirm promotion handles them. Contradictions with this plan go back to the orchestrator, not silently reinterpreted.
 
+#### Step 0 audit findings (2026-09-02, recorded before code)
+
+**(a) Production callers of the batch boundary**:
+- `DeferredLabeledLaraGraph::reserve_batch_orientations` →
+  `forward.reserve_one_orientation_batch(&plan)` /
+  `reverse.reserve_one_orientation_batch(&plan)`
+  (bidirectional/deferred.rs:1133-1134)
+- `bench.rs:243, 300, 402` (canbench benches; one is the
+  `bench_l_s2_det_sat_4096` we already use as a spot-run gate)
+- **GQL/kernel layer** is OUT of crate: `OneOrientationBucketPlan`
+  is built above the crate. The crate boundary must be
+  fail-closed for any tree bucket the GQL kernel might pass in.
+
+**(b) Corruption reachability (confirmed)**:
+- `batch_write.rs` grep for `is_tree_mode` returns ZERO matches
+  (verified). The flag is set/cleared on `LabelBucket` but the
+  batch planner never reads it.
+- `preflight_run` (batch_write.rs:1987) computes
+  `edge_start_slot = bucket.edge_start() + u64::from(bucket.stored_slots)`.
+  For a tree bucket, `edge_start` is the root region offset and
+  `stored_slots` is the **block id count** (one u32 per block in
+  the root region), not a slot count. The sum is garbage.
+- The `Unordered` hole-reuse branch (batch_write.rs:2025-2045)
+  reads `stored_slots × E::BYTES` bytes from `edge_start` and
+  treats the bytes as edge encodings. For a tree bucket those
+  bytes are **u32 block ids**, not edge payloads; the
+  `is_tombstone_edge` scan reads nonsense, the hole list is
+  garbage, and commit's `write_payload` overwrites the root
+  region.
+- `commit` (line 3928 `insert_one_orientation_batch_with_locations`)
+  writes through the same `edge_start_slot` garbage projection.
+  A run of N edges writes N × 4 bytes starting at the projected
+  garbage offset, corrupting both the root region and adjacent
+  span regions.
+- **Severity class matches Plan 0319 Step 3 rewrite hazard**:
+  the planner misreads the geometry and the writer follows the
+  planner. Closing this is the same urgency.
+
+**(c) LTB bulk-write primitives available**:
+- `ltb().mint()` allocates a fresh block (returns block id).
+- `ltb().write_payload(block_id, &bytes)` writes the full block
+  payload (B = 1024 rows = 4096 bytes for 4-byte edges).
+- `ltb().write_payload_partial(block_id, &bytes)` writes a
+  partial block (for the tail).
+- `ltb().release(block_id)` returns the block to the free list
+  (rollback path).
+- `edges().allocate_span(n)` and `edges().read_slots_contiguous_bytes`
+  / `write_slots_contiguous_bytes` are the root-region accessors.
+- **Root-growth seam** (tree_write.rs:58, `tree_mode_insert_edge`):
+  the scalar path computes `physical_root_len` from
+  `tree_mode_physical_depth()` and `stored_slots`; refuses
+  growth past `R_MAX = 1024` with `TreeRootCapacityReached`; on
+  `tail_offset == 0` it (1) mints a new LTB block, (2) allocates
+  a new root-region span (`new_root_len = old_root_len + 1`),
+  (3) copies old block ids verbatim, (4) appends the new block
+  id, (5) publishes the new descriptor. The **failure-rollback
+  recipe** is: release the minted block and the new span on
+  any post-mint error.
+- **For tree-run batch admission**: the run needs `ceil((N -
+  tail_room) / B)` new blocks. The new block ids go into the
+  root region in order (block 0, block 1, …). Root growth is
+  `old_root_len + n_new_blocks` (in the simple tail-fit case
+  where the run crosses one or more block boundaries). If the
+  total physical root length exceeds `R_MAX` after the grow,
+  the run is rejected with `TreeRootCapacityReached` (same as
+  scalar).
+
+**(d) Threshold-crossing slab runs**:
+- Today: `preflight_run` writes past `T_PROMOTE` without
+  promoting. The next scalar insert triggers `promote.rs:96`'
+  `is_tree_mode()` check on the stored bucket. If the bucket is
+  at `stored_slots > T_PROMOTE` with `degree > T_DEMOTE` (true
+  for an all-insert sequence), promotion succeeds (Plan 0318
+  / 0319 verified; promotion handles any stored size).
+- **Plan 0321 decision**: keep batch-past-threshold working.
+  Add a regression test that asserts: (i) batch insert pushes
+  `stored_slots` past `T_PROMOTE`; (ii) the next scalar insert
+  promotes the bucket to tree mode; (iii) the tree bucket's
+  contents are intact (all batch-inserted edges are reachable).
+  Do NOT add a new typed error for threshold-crossing.
+
+**(e) Chosen seam**:
+- **Tree-run classification** in `preflight_run` at the head
+  (after `find_bucket`, before `edge_start_slot` math), with
+  per-run precision: a vertex with mixed slab + tree buckets
+  has its slab run admitted and its tree run rejected in the
+  same plan.
+- **Commit re-validation** in `insert_one_orientation_batch_with_locations`:
+  re-read the bucket descriptor and re-check `is_tree_mode()`
+  before applying the run. Closes the TOCTOU window where a
+  scalar insert in another batch context promotes the bucket
+  between reserve and commit.
+- **Typed error**:
+  `OneOrientationBatchError::TreeModeBucketRunUnsupported {
+  owner_vertex_id: VertexId, label_id: BucketLabelKey,
+  current_mode_bucket_kind: BatchRunBucketKind }`. The
+  `BatchRunBucketKind` enum is `{ Slab, Tree }` so callers can
+  pattern-match on the failure (for the widening slice, callers
+  will only see `Tree` after the widening lands).
+
 ### Step 1 — safety classification (fail-closed)
 
 `preflight_run` rejects tree-mode bucket runs with a typed error before any geometry math; commit re-validates (mode flip between reserve and commit fails closed). See todo `tree-run-batch-admission` — wait, todo `tree-run-batch-admission` implements both the guard and the widening; Commit 1 = guard only (independently committable, closes the hole), Commit 2 = widening.
