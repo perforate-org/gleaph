@@ -228,7 +228,7 @@ mod tree_read;
 mod tree_write;
 
 pub use traverse::BucketEntryPosition;
-mod values;
+pub(crate) mod values;
 
 pub(crate) use crate::traverse::EdgeSlotState;
 pub use bucket::{LabelBucketPlacementInfo, LeafBucketPlacementStats};

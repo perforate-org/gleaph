@@ -289,7 +289,13 @@ where
         let (bucket_slot, mut bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
         let vertex = self.vertices.get(src);
         if edge_inline_property_width != bucket.inline_property_byte_width() {
-            bucket = self.ensure_bucket_inline_property_schema_for_insert(
+            // Plan 0320 §Step 2: width-addition (0→w) wiring.
+            // The new helper handles 0→w on non-empty buckets
+            // via `materialize_inline_property_stream`; other
+            // mismatches stay fail-closed (typed error).
+            bucket = self.ensure_bucket_inline_property_schema_for_insert_with_materialize(
+                src,
+                bucket_slot,
                 bucket,
                 edge_inline_property_width,
             )?;

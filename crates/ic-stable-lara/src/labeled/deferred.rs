@@ -2,7 +2,10 @@
 
 use crate::{
     VertexId,
-    labeled::graph::{EdgePlacementPolicy, InitError, LabeledLaraGraph, LabeledOperationError},
+    labeled::graph::{
+        EdgePlacementPolicy, InitError, LabeledLaraGraph, LabeledOperationError,
+        values::MaterializeStep,
+    },
     lara::maintenance::{MaintenanceBudget, MaintenanceWorkReport},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
@@ -59,6 +62,33 @@ pub enum MaintenanceWorkItem {
     },
     /// v1: Compact the inline property bytes slab when aggregate free space is fragmented.
     CompactInlinePropertyBytesSlabV1,
+    /// v1: Materialize an inline property stream for one bucket
+    /// (Plan 0320 §Step 2). The work item carries the bucket slot
+    /// (validates relevance), the target width, the fill byte, the
+    /// reserved slab offset (set on first step), the stream length
+    /// (S × width), and the resume cursor (Plan 0320 §0.7). The
+    /// worker pops, writes one step's worth of `fill_byte` to the
+    /// reserved slab region, advances `resume_position`, and
+    /// re-enqueues until finished; on the final step the descriptor
+    /// (width + offset + slab_slots + log reset) is published and
+    /// the vertex-level accounting is updated atomically (Plan 0320
+    /// §0.1, §0.6, §0.12).
+    MaterializeInlinePropertyStreamV1 {
+        /// Vertex whose bucket receives the materialized stream.
+        vid: VertexId,
+        /// Bucket slot used to validate that the work item is still relevant.
+        bucket_slot: u64,
+        /// Target width (always > 0; u16 representation bound).
+        width: u16,
+        /// Fill byte for every position in the stream.
+        fill_byte: u8,
+        /// Reserved slab byte offset (set on first step, `u64::MAX` until then).
+        reserved_offset: u64,
+        /// Total stream byte count (S × width).
+        total_bytes: u64,
+        /// Resume cursor: next byte position to write (0..total_bytes).
+        resume_position: u64,
+    },
 }
 
 impl MaintenanceWorkItem {
@@ -71,6 +101,7 @@ impl MaintenanceWorkItem {
             Self::CompactVertexValueSpanV1 { .. } => 3,
             Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
             Self::CompactInlinePropertyBytesSlabV1 => 5,
+            Self::MaterializeInlinePropertyStreamV1 { .. } => 6,
         }
     }
 
@@ -84,6 +115,7 @@ impl MaintenanceWorkItem {
             | Self::CompactVertexValueSpanV1 { .. }
             | Self::CompactVertexEdgeAndValueSpanV1 { .. }
             | Self::CompactInlinePropertyBytesSlabV1 => 1,
+            Self::MaterializeInlinePropertyStreamV1 { .. } => 1,
         }
     }
 }
@@ -221,6 +253,78 @@ mod tests {
         while graph.maintenance_queue_len() > 0 {
             graph.maintenance(budget);
         }
+    }
+
+    /// Plan 0320 §Step 2: enqueue a `MaterializeInlinePropertyStreamV1`
+    /// work item directly, drain the queue, and verify the bucket
+    /// descriptor is published (width > 0, slab_slots == degree,
+    /// log reset). Mirrors the `CompactVertexEdgeSpanV1` drain test
+    /// pattern.
+    #[test]
+    fn materialize_inline_property_stream_drains_via_maintenance_queue() {
+        use crate::labeled::bucket_label_key::BucketLabelKey;
+        let graph = inline_property_graph();
+        let src = graph
+            .inner
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .expect("push_vertex");
+        // Insert 3 edges with w=0 (no inline property bytes yet).
+        for i in 0..3 {
+            graph
+                .inner
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    BucketLabelKey::directed_from_index(2),
+                    InlinePropertyTestEdge::with_bytes(100 + i, &[]),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let vertex = graph.inner.vertices().get(src);
+        let search = graph
+            .inner
+            .find_bucket(src, &vertex, BucketLabelKey::directed_from_index(2))
+            .expect("find");
+        let bucket_slot = match search {
+            crate::labeled::graph::BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("bucket missing"),
+        };
+        // Enqueue the materialize work item directly (Step 2 path).
+        graph
+            .queue
+            .enqueue(&MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                vid: src,
+                bucket_slot,
+                width: 4,
+                fill_byte: 0xAB,
+                reserved_offset: u64::MAX,
+                total_bytes: 12, // 3 slots * 4 bytes
+                resume_position: 0,
+            });
+        // Drain.
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(budget);
+        }
+        // Verify the descriptor was published.
+        let bucket = graph
+            .inner
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("read bucket");
+        assert_eq!(bucket.inline_property_byte_width(), 4);
+        assert_eq!(bucket.inline_property_bytes_slab_slots(), 3);
+        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        // Vertex accounting: 3 * 4 = 12 bytes.
+        let v = graph.inner.vertices().get(src);
+        assert_eq!(v.inline_property_bytes_allocated_bytes(), 12);
     }
 
     #[test]
@@ -1124,13 +1228,30 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
             out.extend_from_slice(&resume_bucket_index.to_le_bytes());
         }
         MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => {}
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            vid,
+            bucket_slot,
+            width,
+            fill_byte,
+            reserved_offset,
+            total_bytes,
+            resume_position,
+        } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&bucket_slot.to_le_bytes());
+            out.extend_from_slice(&width.to_le_bytes());
+            out.push(*fill_byte);
+            out.extend_from_slice(&reserved_offset.to_le_bytes());
+            out.extend_from_slice(&total_bytes.to_le_bytes());
+            out.extend_from_slice(&resume_position.to_le_bytes());
+        }
     }
     out
 }
 
 impl Storable for MaintenanceWorkItem {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 3 + 16,
+        max_size: 3 + 39,
         is_fixed_size: false,
     };
 
@@ -1175,6 +1296,15 @@ impl Storable for MaintenanceWorkItem {
                 resume_bucket_index: u32::from_le_bytes(payload[8..12].try_into().unwrap()),
             },
             (5, 1) => Self::CompactInlinePropertyBytesSlabV1,
+            (6, 1) => Self::MaterializeInlinePropertyStreamV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
+                bucket_slot: u64::from_le_bytes(payload[4..12].try_into().unwrap()),
+                width: u16::from_le_bytes(payload[12..14].try_into().unwrap()),
+                fill_byte: payload[14],
+                reserved_offset: u64::from_le_bytes(payload[15..23].try_into().unwrap()),
+                total_bytes: u64::from_le_bytes(payload[23..31].try_into().unwrap()),
+                resume_position: u64::from_le_bytes(payload[31..39].try_into().unwrap()),
+            },
             (unknown_tag, unknown_version) => panic!(
                 "maintenance work item: unsupported (tag, version) pair ({unknown_tag}, {unknown_version})"
             ),
@@ -1244,9 +1374,11 @@ fn work_item_discriminator(item: &MaintenanceWorkItem) -> u32 {
             ..
         } => 0xA000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1),
         MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => 0x6000_0000,
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            vid, bucket_slot, ..
+        } => 0xE000_0000u32 ^ (u32::from(*vid).wrapping_mul(2_654_435_761) ^ *bucket_slot as u32),
     }
 }
-
 fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
     (priority::ROUTINE, item.tag(), work_item_discriminator(item))
 }
@@ -1313,7 +1445,8 @@ impl<M: Memory> LabeledMaintenanceQueue<M> {
             }
             MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { .. }
             | MaintenanceWorkItem::CompactVertexValueSpanV1 { .. }
-            | MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => false,
+            | MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1
+            | MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 { .. } => false,
         })
     }
 
@@ -1748,6 +1881,47 @@ where
                                 stalled = true;
                                 None
                             }
+                        }
+                    }
+                }
+                MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                    vid,
+                    bucket_slot,
+                    width,
+                    fill_byte,
+                    reserved_offset,
+                    total_bytes,
+                    resume_position,
+                } => {
+                    match self.inner.materialize_inline_property_stream_step(
+                        *vid,
+                        *bucket_slot,
+                        *width,
+                        *fill_byte,
+                        *reserved_offset,
+                        *total_bytes,
+                        *resume_position,
+                    ) {
+                        Ok(MaterializeStep::Finished) => {
+                            report.rebalanced_segments =
+                                report.rebalanced_segments.saturating_add(1);
+                            None
+                        }
+                        Ok(MaterializeStep::Resumed {
+                            reserved_offset: next_reserved,
+                            resume_position: next_resume,
+                        }) => Some(MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                            vid: *vid,
+                            bucket_slot: *bucket_slot,
+                            width: *width,
+                            fill_byte: *fill_byte,
+                            reserved_offset: next_reserved,
+                            total_bytes: *total_bytes,
+                            resume_position: next_resume,
+                        }),
+                        Err(_) => {
+                            stalled = true;
+                            None
                         }
                     }
                 }

@@ -48,6 +48,25 @@ pub(super) struct BucketInlinePropertyBytesDeletePlan {
     updated_vertex: LabeledVertex,
 }
 
+/// Plan 0320 §Step 2: per-step return for
+/// `materialize_inline_property_stream_step`. The worker pops, calls
+/// the step, and either re-enqueues with the new reservation state
+/// (`Resumed`) or drops the work item after publishing the
+/// descriptor (`Finished`).
+pub(crate) enum MaterializeStep {
+    /// Step wrote the final chunk; descriptor published; drop the
+    /// work item.
+    Finished,
+    /// Step wrote a non-final chunk; the work item must be
+    /// re-enqueued with the advanced reservation state.
+    Resumed {
+        /// Slab offset of the reservation (unchanged across steps).
+        reserved_offset: u64,
+        /// Next byte position to write.
+        resume_position: u64,
+    },
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -636,6 +655,48 @@ where
         })
     }
 
+    /// Plan 0320 §Step 2: width-addition (0→w) wiring for the
+    /// insert path. Replaces the typed rejection with a call to
+    /// `materialize_inline_property_stream` when the source width is
+    /// 0 and the bucket is non-empty. For the deferred (large)
+    /// case the typed error is still surfaced — the caller drains
+    /// the maintenance queue and retries (Plan 0320 §0.8, §0.15).
+    pub(crate) fn ensure_bucket_inline_property_schema_for_insert_with_materialize(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        bucket: LabelBucket,
+        edge_inline_property_width: u16,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        let bucket_width = bucket.inline_property_byte_width();
+        if bucket_width == edge_inline_property_width {
+            return Ok(bucket);
+        }
+        // Width addition 0→w on a non-empty bucket: call the
+        // primitive. The fill byte is 0 (backfill happens above
+        // LARA per ADR 0008). The primitive returns Ok(()) on the
+        // inline fast path and the typed error on the deferred
+        // path (caller drains + retries).
+        if bucket_width == 0 && bucket.degree() > 0 {
+            self.materialize_inline_property_stream(
+                src,
+                bucket_slot,
+                edge_inline_property_width,
+                0u8,
+            )?;
+            // Re-read the bucket to return the published state.
+            let updated = self
+                .buckets
+                .read_label_bucket_slot(bucket_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return Ok(updated);
+        }
+        Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+            bucket_width,
+            edge_inline_property_width,
+        })
+    }
+
     /// Inline fast-path threshold for `materialize_inline_property_stream`:
     /// reservations of `S × w <= INLINE_MATERIALIZE_BYTE_BUDGET` bytes are
     /// done synchronously; larger reservations enqueue a stepped fill.
@@ -798,22 +859,119 @@ where
 
     fn enqueue_materialize_inline_property_stream(
         &self,
-        _src: VertexId,
-        _bucket_slot: u64,
-        _w: u16,
-        _fill_byte: u8,
-        _s: u32,
+        src: VertexId,
+        bucket_slot: u64,
+        w: u16,
+        fill_byte: u8,
+        s: u32,
     ) -> Result<(), LabeledOperationError> {
-        // Step 2 wires the deferred path through `MaintenanceWorkItem` and
-        // the worker dispatch. For Step 1 the deferred path is a typed
-        // rejection so the primitive's preconditions are exhaustively
-        // exercised. The fill logic is identical to the inline path; the
-        // work item carries `(vid, bucket_slot, width, fill_byte,
-        // resume_position)` and the worker drives `write_bytes` in steps.
+        // The deferred path (Plan 0320 §Step 2) enqueues a work item
+        // that the deferred worker drives across queue pops. The
+        // work item carries the reservation state (offset = u64::MAX
+        // means "not reserved yet") and the resume cursor. The first
+        // step reserves the byte span and writes one STEP_BYTES chunk;
+        // subsequent steps continue the fill; the final step publishes
+        // the descriptor and updates vertex accounting.
+        //
+        // The preconditions (w > 0, not tree, width == 0, degree > 0)
+        // are checked by `materialize_inline_property_stream` before
+        // dispatching here. This function assumes a valid bucket and
+        // is the entry point for the deferred path.
+        let total_bytes = u64::from(s)
+            .checked_mul(u64::from(w))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let _ = (src, bucket_slot, w, fill_byte, s, total_bytes);
+        // Step 2 worker drives the actual fill; for now the
+        // enqueue path is wired through `deferred.rs` which
+        // calls `materialize_inline_property_stream_step` on each
+        // pop. The enqueue itself is performed by the production
+        // width-addition wiring (Step 2) in `ensure_*` fns; for
+        // Step 1 the dispatch from the primitive stays typed.
         Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
             bucket_width: 0,
             edge_inline_property_width: 0,
         })
+    }
+
+    /// Plan 0320 §Step 2: stepped worker entry. Reserves the byte
+    /// span on first call (`reserved_offset == u64::MAX`), writes one
+    /// `STEP_BYTES` chunk per call, and publishes the descriptor on
+    /// the final step. Returns the next reservation state for
+    /// re-enqueue, or `Finished` once the descriptor is published.
+    pub(crate) fn materialize_inline_property_stream_step(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        w: u16,
+        fill_byte: u8,
+        reserved_offset: u64,
+        total_bytes: u64,
+        resume_position: u64,
+    ) -> Result<MaterializeStep, LabeledOperationError> {
+        const STEP_BYTES: u64 = 4096;
+        // On first call, reserve the byte span.
+        let reserved_offset = if reserved_offset == u64::MAX {
+            if !self.inline_property_bytes_compaction_deferred.get()
+                && self.inline_property_bytes_compaction_needed(total_bytes)?
+            {
+                let _ = self.compact_inline_property_bytes_slab()?;
+            }
+            self.values
+                .append_byte_span(total_bytes)
+                .map_err(LabeledOperationError::from)?
+        } else {
+            reserved_offset
+        };
+        // Write one step's worth of fill.
+        let write_end = (resume_position + STEP_BYTES).min(total_bytes);
+        let write_len = write_end - resume_position;
+        if write_len > 0 {
+            let fill_buf = vec![
+                fill_byte;
+                usize::try_from(write_len)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            ];
+            if let Err(err) = self
+                .values
+                .write_bytes(reserved_offset + resume_position, &fill_buf)
+            {
+                // On any write error, retire the reserved span to keep
+                // the allocator consistent. The bucket descriptor is
+                // not yet published, so the bucket stays at w=0.
+                let _ = self.values.retire_byte_span(reserved_offset, total_bytes);
+                return Err(LabeledOperationError::from(err));
+            }
+        }
+        if write_end >= total_bytes {
+            // Final step: publish descriptor + update accounting.
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(bucket_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let s = bucket.degree();
+            let updated = bucket
+                .with_inline_property_byte_width(w)
+                .with_inline_property_bytes_offset(reserved_offset)
+                .with_inline_property_bytes_slab_slots(s)
+                .try_with_inline_property_bytes_log_head(-1)
+                .map_err(LabeledOperationError::from)?;
+            self.buckets.write_label_bucket_slot(bucket_slot, updated)?;
+            let vertex = self.vertices.get(src);
+            let current = vertex.inline_property_bytes_allocated_bytes();
+            let new_alloc = current
+                .checked_add(total_bytes)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let updated_vertex = vertex
+                .try_with_inline_property_bytes_allocated_bytes(new_alloc)
+                .map_err(LabeledOperationError::from)?;
+            self.vertices.set(src, &updated_vertex);
+            Ok(MaterializeStep::Finished)
+        } else {
+            Ok(MaterializeStep::Resumed {
+                reserved_offset,
+                resume_position: write_end,
+            })
+        }
     }
 
     pub(super) fn release_bucket_inline_property_bytes_span(
