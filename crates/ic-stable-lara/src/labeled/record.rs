@@ -245,9 +245,11 @@ impl LabelBucket {
     /// See [`Self::tree_mode_physical_depth`] for the encoding.
     #[inline]
     pub fn with_tree_mode_physical_depth(mut self, depth: u32) -> Self {
-        if !self.is_tree_mode() {
-            return self;
-        }
+        // Note: the byte is *also* cleared when leaving tree mode (a
+        // fresh slab bucket must have `inline_property_bytes_log_len = 0`
+        // — it is repurposed for tree-mode physical depth). The
+        // demotion path uses `with_tree_mode(false).with_tree_mode_physical_depth(1)`
+        // to reset the byte unconditionally.
         debug_assert!(
             (1..=3).contains(&depth),
             "tree_mode_physical_depth out of range"
