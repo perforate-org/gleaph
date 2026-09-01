@@ -1,7 +1,14 @@
 //! ADR 0022 Stage 2b prototype: a `seq`-keyed ordered-map backing for one hot
 //! labeled bucket.
 //!
-//! **Evidence-only.** This is NOT wired into [`super::graph::LabeledLaraGraph`];
+//! **Evidence-only, benches removed (2026-09-01).** This is NOT wired into
+//! [`super::graph::LabeledLaraGraph`]; it measured the B-tree tier's delete /
+//! scan / point-lookup cost against the shared-leaf slab baselines, and the
+//! Stage 2b decision is closed ("NOT warranted", ADR 0022 §Decision). The
+//! measuring benches were removed from the canbench surface in Plan 0318
+//! (records: `canbench_results.yml` git history, ADR 0022 §Decision). The
+//! module is retained unreferenced for a possible Stage 2b reconsideration;
+//! its unit tests keep the prototype construction correct. This is NOT wired into [`super::graph::LabeledLaraGraph`];
 //! it exists to measure the B-tree tier's delete / scan / point-lookup cost
 //! against the shared-leaf slab baselines in `labeled/bench.rs`, so the deferred
 //! Stage 2b decision rests on numbers rather than assumption.
@@ -18,6 +25,8 @@
 //! - Point lookup by target is O(degree) (target is not the key) — matching the
 //!   status quo; an optional `target -> seq` secondary index (not prototyped) is
 //!   what would make it O(log d).
+
+#![allow(dead_code)] // evidence-only; benches removed, Stage 2b decision closed (ADR 0022 §Decision)
 
 use crate::VectorMemory;
 use ic_stable_structures::{StableBTreeMap, Storable, storable::Bound};

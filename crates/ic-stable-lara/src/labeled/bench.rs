@@ -4,7 +4,6 @@
 //! `deferred.rs`) behind `feature = "canbench"`, not in this file.
 
 use crate::bench as helper;
-use crate::labeled::hub_tree_prototype::{HubBucketTree, HubTargetTree};
 use crate::labeled::ltb_raw_block_store::LtbRawBlockStore;
 use crate::labeled::tree_csr_prototype::TreeCsrBucket;
 use crate::labeled::{
@@ -1834,155 +1833,6 @@ fn bench_l_s2_iso_256() -> canbench_rs::BenchResult {
     })
 }
 
-/// Vertex / label the Stage 2b prototype tree uses (single hot bucket; values
-/// are arbitrary since the tree holds exactly one `(vertex, label)` prefix).
-const STAGE2B_VERTEX: u32 = 0;
-const STAGE2B_LABEL: u16 = 2;
-
-/// Seeds the ADR 0022 Stage 2b prototype B-tree with one hot bucket of
-/// `edge_count` edges in insertion order; `seq == target == i`. Seeding happens
-/// outside the measured region, mirroring `seed_single_label_hub`.
-fn seed_stage2b_hub_tree(edge_count: u32) -> HubBucketTree {
-    let mut tree = HubBucketTree::new(vector_memory());
-    for i in 0..edge_count {
-        let seq = tree.insert(STAGE2B_VERTEX, STAGE2B_LABEL, i);
-        debug_assert_eq!(seq, i);
-    }
-    tree
-}
-
-/// ADR 0022 Stage 2b prototype (delete churn) — B-tree counterpart of
-/// `bench_labeled_stage2_hub_delete_half_then_compact_1024`. Removes the same
-/// half (even seqs) by `seq` — the realistic delete-by-handle path — at O(log d)
-/// each, with no tombstone and no compaction, then iterates the survivors. The
-/// delta against the slab baseline is the Stage 2b delete win.
-#[bench(raw)]
-fn bench_l_s2b_bt_del_1024() -> canbench_rs::BenchResult {
-    let mut tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for seq in (0..STAGE2_HUB_DEGREE).step_by(2) {
-            let removed = tree.remove_by_seq(STAGE2B_VERTEX, STAGE2B_LABEL, seq);
-            debug_assert!(removed);
-        }
-        let mut count = 0usize;
-        tree.for_each_ascending(STAGE2B_VERTEX, STAGE2B_LABEL, |_seq, _target| count += 1);
-        black_box(count);
-    })
-}
-
-/// ADR 0022 Stage 2b prototype (point lookup) — B-tree counterpart of
-/// `bench_labeled_stage2_hub_point_lookup_descending_1024`. Without a
-/// `target -> seq` index this is still O(degree) (descending value scan); it
-/// quantifies the *no-index* B-tree lookup so the index's marginal value is
-/// visible. Worst case: target `0` is reached last in descending order.
-#[bench(raw)]
-fn bench_l_s2b_bt_pt_d_1024() -> canbench_rs::BenchResult {
-    let tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
-            let needle = black_box(0u32);
-            let found = tree.find_seq_by_target(STAGE2B_VERTEX, STAGE2B_LABEL, needle);
-            black_box(found);
-        }
-    })
-}
-
-/// ADR 0022 Stage 2b prototype (scan locality) — B-tree counterpart of
-/// `bench_labeled_stage2_hub_scan_descending_1024`. Full descending range scan
-/// via the map's `DoubleEndedIterator`; the delta against the slab baseline is
-/// the scan-locality cost the B-tree tier must not regress.
-#[bench(raw)]
-fn bench_l_s2b_bt_scn_d_1024() -> canbench_rs::BenchResult {
-    let tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
-            let mut count = 0usize;
-            tree.for_each_descending(STAGE2B_VERTEX, STAGE2B_LABEL, |_seq, target| {
-                count += usize::from(target < STAGE2_HUB_DEGREE);
-            });
-            black_box(count);
-        }
-    })
-}
-
-/// ADR 0022 Stage 2b *experiment* (value-size sensitivity): full descending scan
-/// of the 10-byte-value tree reading **only the key** (value never deserialized).
-/// Compared with `..._scan_descending_1024` this isolates the traversal + key
-/// floor from value-deser cost — i.e. whether shrinking/splitting the value can
-/// help scans at all, or whether B-tree traversal dominates.
-#[bench(raw)]
-fn bench_l_s2b_bt_scn_ko_1024() -> canbench_rs::BenchResult {
-    let tree = seed_stage2b_hub_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
-            let mut count = 0usize;
-            tree.for_each_descending_key_only(STAGE2B_VERTEX, STAGE2B_LABEL, |seq| {
-                count += usize::from(seq < STAGE2_HUB_DEGREE);
-            });
-            black_box(count);
-        }
-    })
-}
-
-/// Seeds the production-faithful narrow tree (4-byte `target` value) with one hot
-/// bucket of `edge_count` edges; `seq == target == i`.
-fn seed_stage2b_narrow_tree(edge_count: u32) -> HubTargetTree {
-    let mut tree = HubTargetTree::new(vector_memory());
-    for i in 0..edge_count {
-        let seq = tree.insert(STAGE2B_VERTEX, STAGE2B_LABEL, i);
-        debug_assert_eq!(seq, i);
-    }
-    tree
-}
-
-/// ADR 0022 Stage 2b *experiment* (narrow value): delete-half-by-`seq` + survivor
-/// scan on the 4-byte-value tree (matches `Edge::BYTES`). Compare against
-/// `..._btree_hub_delete_half_1024` (10-byte value) for delete value-sensitivity.
-#[bench(raw)]
-fn bench_l_s2b_nw_del_1024() -> canbench_rs::BenchResult {
-    let mut tree = seed_stage2b_narrow_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for seq in (0..STAGE2_HUB_DEGREE).step_by(2) {
-            let removed = tree.remove_by_seq(STAGE2B_VERTEX, STAGE2B_LABEL, seq);
-            debug_assert!(removed);
-        }
-        let mut count = 0usize;
-        tree.for_each_descending(STAGE2B_VERTEX, STAGE2B_LABEL, |_seq, _target| count += 1);
-        black_box(count);
-    })
-}
-
-/// ADR 0022 Stage 2b *experiment* (narrow value): point lookup by target on the
-/// 4-byte-value tree. Compare against `..._btree_hub_point_lookup_descending_1024`.
-#[bench(raw)]
-fn bench_l_s2b_nw_pt_d_1024() -> canbench_rs::BenchResult {
-    let tree = seed_stage2b_narrow_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
-            let needle = black_box(0u32);
-            let found = tree.find_seq_by_target(STAGE2B_VERTEX, STAGE2B_LABEL, needle);
-            black_box(found);
-        }
-    })
-}
-
-/// ADR 0022 Stage 2b *experiment* (narrow value): full descending scan on the
-/// 4-byte-value tree. Compare against `..._btree_hub_scan_descending_1024`
-/// (10-byte value) to read off the value-size effect on scan locality.
-#[bench(raw)]
-fn bench_l_s2b_nw_scn_d_1024() -> canbench_rs::BenchResult {
-    let tree = seed_stage2b_narrow_tree(STAGE2_HUB_DEGREE);
-    bench_fn(|| {
-        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
-            let mut count = 0usize;
-            tree.for_each_descending(STAGE2B_VERTEX, STAGE2B_LABEL, |_seq, target| {
-                count += usize::from(target < STAGE2_HUB_DEGREE);
-            });
-            black_box(count);
-        }
-    })
-}
-
 /// ADR 0022 Stage 2b *insert cost* (paid update path): grow one fresh hub vertex
 /// 0 → 1024 edges via the **real** `insert_edge` cascade (leaf slide/relocate +
 /// overflow log) — the status-quo insert cost an update call pays. Pair with
@@ -2009,28 +1859,20 @@ fn bench_l_s2_h_ins_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// ADR 0022 Stage 2b *insert cost* (paid update path): append 1024 edges into a
-/// fresh production-faithful B-tree (4-byte value), each an O(log d) insert with
-/// no leaf cascade. Delta vs `bench_labeled_stage2_hub_insert_grow_1024` is the
-/// B-tree insert win/loss on the update (cost-bearing) path.
-#[bench(raw)]
-fn bench_l_s2b_nw_ins_1024() -> canbench_rs::BenchResult {
-    bench_fn(|| {
-        let mut tree = HubTargetTree::new(vector_memory());
-        for target in 0..STAGE2_HUB_DEGREE {
-            let seq = tree.insert(STAGE2B_VERTEX, STAGE2B_LABEL, black_box(target));
-            black_box(seq);
-        }
-    })
-}
-
-/// ADR 0022 Stage 2b *crossover* (paid update path): the same insert and fair
+/// ADR 0022 Stage 2 *crossover* (paid update path): the same insert and fair
 /// delete-by-handle pair as the `..._1024` benches, parameterized by degree, to
 /// locate where the slab's unindexed overflow-log delete (O(degree) chain walk
 /// per log-resident slot; O(degree²) over a delete-half) loses to the B-tree's
 /// O(log d) delete — and to confirm insert stays slab-favored at scale.
+///
+/// Plan 0318 post-Step-9 cleanup: the B-tree / narrow-tree arms (Stage 2b) were
+/// removed from this macro — the Stage 2b B-tree tier is a closed decision
+/// ("NOT warranted", ADR 0022 §Decision) and its evidence lives in the ADR
+/// text, `canbench_results.yml` git history (keys `bench_labeled_stage2b_*`),
+/// and this file's git history. The slab arms remain: they feed ADR 0088
+/// Gate 1 (problem sizing) and Gate 2 (operation parity matrix).
 macro_rules! stage2b_crossover_benches {
-    ($deg:expr, $slab_del:ident, $bt_del:ident, $slab_ins:ident, $bt_ins:ident) => {
+    ($deg:expr, $slab_del:ident, $slab_ins:ident) => {
         #[bench(raw)]
         fn $slab_del() -> canbench_rs::BenchResult {
             let graph = bench_graph(1 << 20);
@@ -2056,20 +1898,6 @@ macro_rules! stage2b_crossover_benches {
         }
 
         #[bench(raw)]
-        fn $bt_del() -> canbench_rs::BenchResult {
-            let mut tree = seed_stage2b_narrow_tree($deg);
-            bench_fn(|| {
-                for seq in (0..$deg).step_by(2) {
-                    let removed = tree.remove_by_seq(STAGE2B_VERTEX, STAGE2B_LABEL, seq);
-                    debug_assert!(removed);
-                }
-                let mut count = 0usize;
-                tree.for_each_descending(STAGE2B_VERTEX, STAGE2B_LABEL, |_seq, _target| count += 1);
-                black_box(count);
-            })
-        }
-
-        #[bench(raw)]
         fn $slab_ins() -> canbench_rs::BenchResult {
             let graph = bench_graph(1 << 20);
             graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -2090,34 +1918,19 @@ macro_rules! stage2b_crossover_benches {
                 black_box::<u32>($deg);
             })
         }
-
-        #[bench(raw)]
-        fn $bt_ins() -> canbench_rs::BenchResult {
-            bench_fn(|| {
-                let mut tree = HubTargetTree::new(vector_memory());
-                for target in 0..$deg {
-                    let seq = tree.insert(STAGE2B_VERTEX, STAGE2B_LABEL, black_box(target));
-                    black_box(seq);
-                }
-            })
-        }
     };
 }
 
 stage2b_crossover_benches!(
     4096u32,
     bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096,
-    bench_labeled_stage2b_narrow_hub_delete_half_4096,
-    bench_labeled_stage2_hub_insert_grow_4096,
-    bench_labeled_stage2b_narrow_hub_insert_4096
+    bench_labeled_stage2_hub_insert_grow_4096
 );
 
 stage2b_crossover_benches!(
     16384u32,
     bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384,
-    bench_labeled_stage2b_narrow_hub_delete_half_16384,
-    bench_labeled_stage2_hub_insert_grow_16384,
-    bench_labeled_stage2b_narrow_hub_insert_16384
+    bench_labeled_stage2_hub_insert_grow_16384
 );
 
 // Plan 0313 (ADR 0088 Tree-CSR measurement gates) — slab baselines at the
@@ -2128,9 +1941,7 @@ stage2b_crossover_benches!(
 stage2b_crossover_benches!(
     65536u32,
     bench_labeled_stage2_hub_delete_half_by_slot_then_compact_65536,
-    bench_labeled_stage2b_narrow_hub_delete_half_65536,
-    bench_labeled_stage2_hub_insert_grow_65536,
-    bench_labeled_stage2b_narrow_hub_insert_65536
+    bench_labeled_stage2_hub_insert_grow_65536
 );
 
 // Plan 0313 / Step 1: the 1M slab-baseline arm was removed because the
