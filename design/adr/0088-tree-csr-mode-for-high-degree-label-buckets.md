@@ -422,6 +422,18 @@ position `i` ↔ edge position `i` (1:1, tombstone-inclusive); per-block residue
 the span; the +1 shift when the edge root grows is absorbed by fold/rebalance
 (§6), not paid on the hot path.
 
+**NOTE (Plan 0320 §F-2, 2026-09-01)**: the tombstone-inclusive 1:1
+mapping above describes the **tree** geometry (LPB-in-tree
+follow-up). The **slab** form (Plan 0320 implemented) is dense
+over the **live-ordinal** count `S = bucket.degree()`; the
+property stream has `degree × w` bytes and the descriptor
+publishes `slab_slots = degree`. Tombstoned edge slots (counted
+in `bucket.stored_slots` but NOT in `bucket.degree()`) are NOT
+part of the slab property stream. ADR 0008 profile SSOT owns the
+tombstone-aware read backfill semantics; the slab stream is the
+dense live prefix and the tree stream is the tombstone-inclusive
+1:1 mapping.
+
 - `w = 0`: no property root, no property blocks — zero cost (pay-as-you-go; an
   orientation with no tree buckets has an empty LTB store).
 - `w > payload`: tree promotion is rejected (typed error); inline properties

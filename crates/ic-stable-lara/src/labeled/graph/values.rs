@@ -791,11 +791,19 @@ where
                 total_bytes,
             )
         } else {
-            // Deferred path: enqueue the work item. The worker will resume
-            // the fill across queue pops. The primitive returns Ok(()); the
-            // caller is expected to drain the maintenance queue before
-            // observing the new width.
-            self.enqueue_materialize_inline_property_stream(src, bucket_slot, w, fill_byte, s)
+            // Plan 0320 §F-1: the inner graph has no maintenance queue
+            // (the queue is owned by `DeferredLabeledLaraGraph`).
+            // Surface the work-item payload as a typed signal so the
+            // wrapper can intercept, enqueue, drain, and retry.
+            Err(
+                LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
+                    vid: src,
+                    bucket_slot,
+                    width: w,
+                    fill_byte,
+                    degree: s,
+                },
+            )
         }
     }
 
@@ -855,42 +863,6 @@ where
             .map_err(LabeledOperationError::from)?;
         self.vertices.set(src, &updated_vertex);
         Ok(())
-    }
-
-    fn enqueue_materialize_inline_property_stream(
-        &self,
-        src: VertexId,
-        bucket_slot: u64,
-        w: u16,
-        fill_byte: u8,
-        s: u32,
-    ) -> Result<(), LabeledOperationError> {
-        // The deferred path (Plan 0320 §Step 2) enqueues a work item
-        // that the deferred worker drives across queue pops. The
-        // work item carries the reservation state (offset = u64::MAX
-        // means "not reserved yet") and the resume cursor. The first
-        // step reserves the byte span and writes one STEP_BYTES chunk;
-        // subsequent steps continue the fill; the final step publishes
-        // the descriptor and updates vertex accounting.
-        //
-        // The preconditions (w > 0, not tree, width == 0, degree > 0)
-        // are checked by `materialize_inline_property_stream` before
-        // dispatching here. This function assumes a valid bucket and
-        // is the entry point for the deferred path.
-        let total_bytes = u64::from(s)
-            .checked_mul(u64::from(w))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let _ = (src, bucket_slot, w, fill_byte, s, total_bytes);
-        // Step 2 worker drives the actual fill; for now the
-        // enqueue path is wired through `deferred.rs` which
-        // calls `materialize_inline_property_stream_step` on each
-        // pop. The enqueue itself is performed by the production
-        // width-addition wiring (Step 2) in `ensure_*` fns; for
-        // Step 1 the dispatch from the primitive stays typed.
-        Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-            bucket_width: 0,
-            edge_inline_property_width: 0,
-        })
     }
 
     /// Plan 0320 §Step 2: stepped worker entry. Reserves the byte
@@ -1127,8 +1099,8 @@ where
 
     pub(super) fn ensure_bucket_inline_property_byte_width_on_slot(
         &self,
-        _src: VertexId,
-        _bucket_slot: u64,
+        src: VertexId,
+        bucket_slot: u64,
         bucket: LabelBucket,
         inline_property_byte_width: u16,
     ) -> Result<LabelBucket, LabeledOperationError> {
@@ -1146,6 +1118,28 @@ where
                 bucket_width: bucket.inline_property_byte_width(),
                 edge_inline_property_width: inline_property_byte_width,
             });
+        }
+        // Plan 0320 §F-3: 0→w on a non-empty bucket that already has
+        // edge rows (`degree > 0` but no schema yet) is a width
+        // addition, not a schema_unset case. Route to
+        // `materialize_inline_property_stream` so the wrapper can
+        // intercept the deferred signal. (The schema_unset branch
+        // above is the case where the bucket is truly empty.)
+        if bucket.inline_property_byte_width() == 0
+            && inline_property_byte_width > 0
+            && bucket.degree() > 0
+        {
+            self.materialize_inline_property_stream(
+                src,
+                bucket_slot,
+                inline_property_byte_width,
+                0u8,
+            )?;
+            let updated = self
+                .buckets
+                .read_label_bucket_slot(bucket_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return Ok(updated);
         }
         Ok(bucket.with_inline_property_byte_width(inline_property_byte_width))
     }

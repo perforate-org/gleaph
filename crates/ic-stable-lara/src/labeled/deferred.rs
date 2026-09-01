@@ -6,7 +6,10 @@ use crate::{
         EdgePlacementPolicy, InitError, LabeledLaraGraph, LabeledOperationError,
         values::MaterializeStep,
     },
-    lara::maintenance::{MaintenanceBudget, MaintenanceWorkReport},
+    lara::{
+        maintenance::{MaintenanceBudget, MaintenanceWorkReport},
+        operation_error::LaraOperationError,
+    },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
@@ -325,6 +328,197 @@ mod tests {
         // Vertex accounting: 3 * 4 = 12 bytes.
         let v = graph.inner.vertices().get(src);
         assert_eq!(v.inline_property_bytes_allocated_bytes(), 12);
+    }
+
+    /// Plan 0320 §F-1: **production-path** stepped test. Wrapper
+    /// `insert_edge` triggers the inner primitive with `degree × w` above
+    /// `INLINE_MATERIALIZE_BYTE_BUDGET`. The inner signals
+    /// `InlinePropertyMaterializeDeferredRequired`; the wrapper
+    /// enqueues a `MaterializeInlinePropertyStreamV1`, drains, and
+    /// surfaces `InlinePropertyMaterializePending { drained: true }`.
+    /// The caller retries the same `insert_edge` and observes the new
+    /// `width` (the worker final step published the descriptor during
+    /// drain). This is the contract callers (PocketIC, e2e) depend on.
+    #[test]
+    fn insert_edge_deferred_materialize_via_wrapper() {
+        use crate::labeled::bucket_label_key::BucketLabelKey;
+        let graph = inline_property_graph();
+        let src = graph
+            .inner
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .expect("push_vertex");
+        let label = BucketLabelKey::directed_from_index(2);
+        // Insert 1100 w=0 edges followed by 2 w=4 edges. Total
+        // property bytes = 1102 × 4 = 4,408 > 4,096 budget, so the
+        // first w=4 insert must take the deferred path. After the
+        // wrapper drains, the descriptor is published at width=4 and
+        // slab_slots=1101. The second w=4 insert is the retry and
+        // must NOT re-trigger the deferred signal.
+        let n_w0: u32 = 1100;
+        for i in 0..n_w0 {
+            let result = graph.insert_edge(
+                src,
+                label,
+                InlinePropertyTestEdge::with_bytes(100 + i % 1000, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            );
+            if let Err(err) = result {
+                panic!("w=0 insert_edge ({i}) failed: {err:?}");
+            }
+        }
+        // First w=4 insert: triggers the deferred path. Wrapper
+        // intercepts, enqueues the work item at Retry priority
+        // (ahead of any routine dense-maintenance work item), drains,
+        // returns `InlinePropertyMaterializePending { drained: true }`.
+        let result = graph.insert_edge(
+            src,
+            label,
+            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 4]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        match result {
+            Err(crate::labeled::deferred::DeferredError::InlinePropertyMaterializePending {
+                vid,
+                bucket_slot: _,
+                drained,
+            }) => {
+                assert_eq!(vid, src);
+                assert!(drained, "wrapper must drain before returning");
+            }
+            other => panic!("expected InlinePropertyMaterializePending, got {other:?}"),
+        }
+        // After the Pending signal: bucket descriptor has width=4
+        // and slab_slots = n_w0 (the worker published based on the
+        // pre-insert degree; the w=4 edge itself was NOT inserted
+        // because the inner signal interrupted the flow before the
+        // edge-append step). The retry call will add the w=4 edge
+        // and bump slab_slots to n_w0 + 1.
+        let vertex = graph.inner.vertices().get(src);
+        let slot_after_first = match graph.inner.find_bucket(src, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => {
+                assert_eq!(bucket.inline_property_byte_width(), 4, "width published");
+                assert_eq!(
+                    bucket.inline_property_bytes_slab_slots(),
+                    n_w0,
+                    "slab_slots = w=0 edges (w=4 edge not yet inserted)"
+                );
+                assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+                slot
+            }
+            _ => panic!("expected Found bucket after first w=4 insert"),
+        };
+        // Retry: insert the (interrupted) w=4 edge. The descriptor
+        // is at width=4, so the inner schema check passes; the
+        // edge is appended and slab_slots bumps to n_w0 + 1. NO
+        // deferred signal fires (no new width addition).
+        let result = graph.insert_edge(
+            src,
+            label,
+            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 4]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        if let Err(err) = result {
+            panic!("retry insert_edge failed: {err:?}");
+        }
+        // After the retry: slab_slots = n_w0 + 1.
+        let vertex = graph.inner.vertices().get(src);
+        let slot_after_retry = match graph.inner.find_bucket(src, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => {
+                assert_eq!(bucket.inline_property_byte_width(), 4);
+                assert_eq!(
+                    bucket.inline_property_bytes_slab_slots(),
+                    n_w0 + 1,
+                    "slab_slots = w=0 + 1 w=4"
+                );
+                assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+                slot
+            }
+            _ => panic!("expected Found bucket after retry"),
+        };
+        // Vertex accounting: (n_w0 + 1) × 4 bytes.
+        let v = graph.inner.vertices().get(src);
+        assert_eq!(
+            v.inline_property_bytes_allocated_bytes(),
+            u64::from(n_w0 + 1) * 4
+        );
+        // The bucket slot is the same in both lookups (no segment
+        // rewrite happened during the retry).
+        assert_eq!(slot_after_first, slot_after_retry);
+    }
+
+    /// Plan 0320 §F-2: **tombstone-aware live-ordinal** test. After
+    /// materialization, the slab positions are indexed by live edge
+    /// ordinal (the slot at index i holds the property bytes of the
+    /// i-th live edge, where live = the bucket's `degree()`, NOT
+    /// `stored_slots`). Tombstones do not advance the property
+    /// index; the property stream is dense over the live positions.
+    ///
+    /// This test inserts 8 w=0 edges, removes 3 (creating
+    /// tombstones), then triggers a 0→w=4 width addition via the
+    /// inline path. The descriptor's `slab_slots` equals
+    /// `degree` (= 5 after the removes, then 6 after the w=4
+    /// insert), NOT `stored_slots` (= 8 after the removes).
+    #[test]
+    fn materialize_inline_with_tombstones_uses_live_ordinal() {
+        use crate::labeled::bucket_label_key::BucketLabelKey;
+        let graph = inline_property_graph();
+        let src = graph
+            .inner
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .expect("push_vertex");
+        let label = BucketLabelKey::directed_from_index(2);
+        // Insert 8 w=0 edges.
+        for i in 0..8u32 {
+            let result = graph.insert_edge(
+                src,
+                label,
+                InlinePropertyTestEdge::with_bytes(100 + i, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            );
+            if let Err(err) = result {
+                panic!("w=0 insert ({i}) failed: {err:?}");
+            }
+        }
+        // Remove 3 edges (creating tombstones in-place). Targets
+        // 100, 101, 102 are the first three inserts.
+        for t in 0..3u32 {
+            let removed = graph
+                .remove_edge_matching(src, label, |e: &InlinePropertyTestEdge| e.target == 100 + t)
+                .expect("remove");
+            assert!(removed.is_some(), "edge {} should exist", 100 + t);
+        }
+        // Bucket now: degree = 5, stored_slots = 8 (3 tombstones).
+        // The width-addition 0→w=4 should fire the inline path
+        // (5 × 4 = 20 bytes < 4,096 budget) and publish
+        // slab_slots = 5 (the live count).
+        let result = graph.insert_edge(
+            src,
+            label,
+            InlinePropertyTestEdge::with_bytes(200, &[0u8; 4]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        if let Err(err) = result {
+            panic!("w=4 insert failed: {err:?}");
+        }
+        // Verify the descriptor. Width = 4, slab_slots = degree (= 6
+        // after the new w=4 edge: 5 + 1). The 3 tombstoned positions
+        // are NOT part of the property stream.
+        let vertex = graph.inner.vertices().get(src);
+        let (_slot, bucket) = match graph.inner.find_bucket(src, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("expected Found bucket"),
+        };
+        assert_eq!(bucket.inline_property_byte_width(), 4, "width=4");
+        assert_eq!(
+            bucket.inline_property_bytes_slab_slots(),
+            6,
+            "slab_slots = degree (5 live + 1 w=4), NOT stored_slots (8)"
+        );
+        // Vertex accounting: degree × w = 6 × 4 = 24. The
+        // tombstoned edges (3) do NOT consume property bytes; the
+        // property stream is dense over the live (degree) positions.
+        let v = graph.inner.vertices().get(src);
+        assert_eq!(v.inline_property_bytes_allocated_bytes(), 24);
     }
 
     #[test]
@@ -1322,12 +1516,46 @@ fn current_instruction_counter() -> u64 {
 pub enum DeferredError {
     /// Inner graph operation failed.
     Inner(LabeledOperationError),
+    /// Plan 0320 §F-1: the inner `materialize_inline_property_stream` could
+    /// not be served inline (`degree × width > INLINE_MATERIALIZE_BYTE_BUDGET`).
+    /// The wrapper intercepted the typed signal, enqueued a
+    /// `MaterializeInlinePropertyStreamV1` work item, and drained a
+    /// bounded number of maintenance passes. After drain:
+    /// - The bucket descriptor's `inline_property_byte_width` is now `w`.
+    /// - The vertex accounting reflects the new `degree × w` allocation.
+    /// - The bucket's physical slot MAY have changed (segment
+    ///   rewrite by sibling compaction work items); callers MUST
+    ///   re-look up the bucket via `find_bucket` on retry, not use
+    ///   the `bucket_slot` field as an address. The field is kept
+    ///   for diagnostics only.
+    InlinePropertyMaterializePending {
+        /// Source vertex (already-validated by the inner signal).
+        vid: VertexId,
+        /// Bucket slot at the time the inner signal was raised. May
+        /// be stale after a sibling compaction rewrites the segment.
+        /// Diagnostic only; do not use as an address on retry.
+        bucket_slot: u64,
+        /// `true` if the wrapper drained before returning; the work
+        /// item is complete and the bucket's `width` field has been
+        /// published.
+        drained: bool,
+    },
 }
 
 impl fmt::Display for DeferredError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Inner(err) => write!(f, "{err}"),
+            Self::InlinePropertyMaterializePending {
+                vid,
+                bucket_slot,
+                drained,
+            } => write!(
+                f,
+                "inline-property materialize deferred to maintenance queue: \
+                 vid={vid}, bucket_slot={bucket_slot}, drained={drained}; \
+                 caller must drain queue and retry"
+            ),
         }
     }
 }
@@ -1336,6 +1564,7 @@ impl std::error::Error for DeferredError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Inner(err) => Some(err),
+            Self::InlinePropertyMaterializePending { .. } => None,
         }
     }
 }
@@ -1431,6 +1660,29 @@ impl<M: Memory> LabeledMaintenanceQueue<M> {
         self.map
             .borrow_mut()
             .insert((priority, key.1, key.2), item.clone());
+    }
+
+    /// Plan 0320 §F-1: does the queue contain a
+    /// `MaterializeInlinePropertyStreamV1` work item for
+    /// `(vid, bucket_slot)`? Linear scan; used by the wrapper's
+    /// drain helper to detect completion. The queue is bounded by
+    /// distinct `(vid, bucket_slot)` keys per plan, so the scan is
+    /// at most O(vertices × labels), not O(edges).
+    fn contains_materialize(&self, vid: VertexId, bucket_slot: u64) -> bool {
+        let target = u32::from(vid);
+        for entry in self.map.borrow().iter() {
+            if let MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                vid: v,
+                bucket_slot: bs,
+                ..
+            } = entry.value()
+                && u32::from(v) == target
+                && bs == bucket_slot
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Any span/dense/edge-value item pending for `vid` (coarse dedup scan; short-circuits).
@@ -1569,9 +1821,60 @@ where
                     edge.edge_inline_property_byte_width(),
                 ))
                 .map_err(DeferredError::Inner)?;
-        self.inner
+        // Plan 0320 §F-1: insert path that triggers a 0→w width
+        // addition above the inline byte budget surfaces
+        // `InlinePropertyMaterializeDeferredRequired` from the
+        // inner primitive. Intercept it: drain any sibling work
+        // items FIRST (so the segment layout is stable), enqueue
+        // the stepped work item, drain it, and surface
+        // `InlinePropertyMaterializePending { drained: true }` to
+        // the caller. The contract is: caller retries the same
+        // operation; the retry's `find_bucket` locates the bucket
+        // at its current slot (post-segment-rewrite, if any) and
+        // sees the published `width`.
+        match self
+            .inner
             .insert_edge_skip_leaf_cascade_deferred_inline_property(src, label_id, edge, placement)
-            .map_err(DeferredError::Inner)?;
+        {
+            Ok(()) => {}
+            Err(LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
+                vid,
+                bucket_slot,
+                width,
+                fill_byte,
+                degree,
+            }) => {
+                // Step 1: drain any sibling work items (dense leaf,
+                // value-span, etc.) that may rewrite the segment
+                // mid-flight. Without this, the materialize's
+                // post-drain slot may be stale by the time the
+                // caller retries.
+                self.drain_sibling_work_items()?;
+                // Step 2: re-resolve the bucket slot after sibling
+                // drains (the original slot may have moved).
+                let current_bucket_slot = self
+                    .resolve_bucket_slot(vid, label_id)
+                    .unwrap_or(bucket_slot);
+                // Step 3: enqueue the stepped work item at the
+                // (possibly re-resolved) slot.
+                self.enqueue_materialize_inline_property_stream(
+                    vid,
+                    current_bucket_slot,
+                    width,
+                    fill_byte,
+                    degree,
+                )?;
+                // Step 4: drain the materialize. The worker
+                // publishes the descriptor on the final step.
+                self.drain_materialize_inline_property_stream_for(vid, current_bucket_slot)?;
+                return Err(DeferredError::InlinePropertyMaterializePending {
+                    vid,
+                    bucket_slot: current_bucket_slot,
+                    drained: true,
+                });
+            }
+            Err(err) => return Err(DeferredError::Inner(err)),
+        }
         if inline_property_bytes_compaction_needed {
             self.mark_compact_inline_property_bytes_slab()?;
         }
@@ -1655,6 +1958,122 @@ where
             return Ok(());
         }
         self.mark_compact_vertex_edge_span(vid, 0)
+    }
+
+    /// Plan 0320 §F-1: enqueue a stepped `MaterializeInlinePropertyStreamV1`
+    /// work item. The inner primitive has already validated
+    /// `(vid, bucket_slot, width, fill_byte, degree)`. Deduplicated by the
+    /// `0xE000_0000 ^ (vid * 2_654_435_761 ^ bucket_slot)` discriminator
+    /// (Plan 0320 Step 2) so concurrent signals collapse into one work item.
+    ///
+    /// Enqueued at `priority::RETRY` so it runs ahead of any routine
+    /// compaction (dense leaf / value-span / edge-span) enqueued by the
+    /// same `insert_edge` call. Without this, the routine compaction
+    /// rewrites the bucket segment and the materialized slot becomes
+    /// stale; the wrapper's "drain before retry" contract then points
+    /// the caller at the wrong slot.
+    fn enqueue_materialize_inline_property_stream(
+        &self,
+        vid: VertexId,
+        bucket_slot: u64,
+        width: u16,
+        fill_byte: u8,
+        degree: u32,
+    ) -> Result<(), DeferredError> {
+        let total_bytes =
+            u64::from(degree)
+                .checked_mul(u64::from(width))
+                .ok_or(DeferredError::Inner(LabeledOperationError::Store(
+                    LaraOperationError::CollectAllocationOverflow,
+                )))?;
+        let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            vid,
+            bucket_slot,
+            width,
+            fill_byte,
+            reserved_offset: u64::MAX,
+            total_bytes,
+            resume_position: 0,
+        };
+        let key = maintenance_queue_key(&item);
+        self.queue.requeue(&key, priority::RETRY, &item);
+        Ok(())
+    }
+
+    /// Plan 0320 §F-1: drain until the materialize work item for
+    /// `(vid, bucket_slot)` is no longer in the queue. The worker
+    /// re-enqueues the stepped cursor at the same key, so a single
+    /// `maintenance` call processes all chunks; we loop until the
+    /// queue no longer contains the (vid, bucket_slot) key, with a
+    /// bounded safety cap to prevent runaway loops on a buggy
+    /// worker.
+    fn drain_materialize_inline_property_stream_for(
+        &self,
+        vid: VertexId,
+        bucket_slot: u64,
+    ) -> Result<(), DeferredError> {
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        for _pass in 0..16 {
+            if !self.queue.contains_materialize(vid, bucket_slot) {
+                return Ok(());
+            }
+            let _ = self.maintenance(budget);
+        }
+        Ok(())
+    }
+
+    /// Plan 0320 §F-1: drain all pending sibling work items (dense
+    /// leaf, value-span, edge-span) until the queue is empty or no
+    /// progress is made. Used to stabilize the segment layout
+    /// before the materialize work item is enqueued, so the
+    /// bucket slot is stable across the drain.
+    fn drain_sibling_work_items(&self) -> Result<(), DeferredError> {
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        // Bound: at most 8 full-drain passes. A correct
+        // implementation settles in 1-2 passes.
+        for _ in 0..8 {
+            let before = self.queue.len();
+            if before == 0 {
+                return Ok(());
+            }
+            let _ = self.maintenance(budget);
+            let after = self.queue.len();
+            if after >= before {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Plan 0320 §F-1: re-resolve the bucket slot for `(vid, label)`
+    /// via the inner graph. Used after a segment-rewrite to refresh
+    /// a slot that may have moved. Returns `None` if the bucket is
+    /// missing (the caller will use the original slot as a
+    /// best-effort).
+    fn resolve_bucket_slot(
+        &self,
+        vid: VertexId,
+        label: crate::labeled::BucketLabelKey,
+    ) -> Option<u64> {
+        let vertex = self.inner.vertices().get(vid);
+        match self.inner.find_bucket(vid, &vertex, label) {
+            Ok(crate::labeled::graph::BucketSearch::Found { slot, .. }) => Some(slot),
+            _ => None,
+        }
     }
 
     /// Enqueues bucket-segment compaction followed by vertex-edge-span compaction for one vertex.

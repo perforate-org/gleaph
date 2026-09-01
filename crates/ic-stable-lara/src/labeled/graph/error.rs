@@ -126,6 +126,30 @@ pub enum LabeledOperationError {
         /// Structural cap (`R_MAX = 1024` per ADR 0088 §4).
         cap: u32,
     },
+    /// Plan 0320 §F-1: the `materialize_inline_property_stream` reservation
+    /// for `(vid, bucket_slot, width, fill_byte, degree)` exceeds
+    /// `INLINE_MATERIALIZE_BYTE_BUDGET` (= 4 KiB) and must be filled via the
+    /// stepped resumable cursor. The inner graph has no maintenance queue
+    /// (the queue is owned by `DeferredLabeledLaraGraph`); the caller-facing
+    /// `DeferredLabeledLaraGraph` funnel intercepts this signal, enqueues a
+    /// `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1` (tag 6, v1),
+    /// drains, and re-runs the original operation. The variant is the
+    /// *contract* between inner and outer: it carries the work-item payload
+    /// plus the (already-bumped) `degree` so the wrapper can size the
+    /// stepped fill exactly.
+    InlinePropertyMaterializeDeferredRequired {
+        /// Source vertex (already-validated).
+        vid: VertexId,
+        /// Bucket slot (already-resolved).
+        bucket_slot: u64,
+        /// Target width to publish on the descriptor.
+        width: u16,
+        /// Fill byte (Plan 0320 §0.1 dense-prefix semantics).
+        fill_byte: u8,
+        /// Live-ordinal count at the time of the signal (= `bucket.degree()`).
+        /// Drives `total_bytes = degree * width` for the stepped fill.
+        degree: u32,
+    },
 }
 
 impl fmt::Display for LabeledOperationError {
@@ -186,6 +210,18 @@ impl fmt::Display for LabeledOperationError {
                  stored_slots={stored_slots} (interior-level insert cascade is not yet \
                  wired; follow-up todo: tree-mode-interior-level-insert-growth)"
             ),
+            Self::InlinePropertyMaterializeDeferredRequired {
+                vid,
+                bucket_slot,
+                width,
+                fill_byte,
+                degree,
+            } => write!(
+                f,
+                "inline-property materialization exceeds INLINE_MATERIALIZE_BYTE_BUDGET: \
+                 vid={vid}, bucket_slot={bucket_slot}, width={width}, fill_byte=0x{fill_byte:02x}, \
+                 degree={degree}; caller must drain maintenance queue and retry"
+            ),
         }
     }
 }
@@ -206,7 +242,8 @@ impl std::error::Error for LabeledOperationError {
             | Self::BucketNotFound { .. }
             | Self::TreeModeEdgeWidthUnsupported { .. }
             | Self::TreeDepthLimitReached { .. }
-            | Self::TreeRootCapacityReached { .. } => None,
+            | Self::TreeRootCapacityReached { .. }
+            | Self::InlinePropertyMaterializeDeferredRequired { .. } => None,
         }
     }
 }
