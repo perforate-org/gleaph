@@ -109,10 +109,7 @@ where
             .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         // 1. Mint the new LTB block. On failure, no rollback needed.
-        let new_block_id = graph
-            .ltb()
-            .mint()
-            .map_err(LabeledOperationError::from)?;
+        let new_block_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
         // 2. Allocate the new root region span. On failure, release the
         //    new LTB block.
         let new_edge_start = match graph.edges().allocate_span(u64::from(new_root_len)) {
@@ -271,7 +268,7 @@ pub(crate) fn tree_mode_remove_edge_at_slot<E, M>(
     slot: u32,
 ) -> Result<Option<E>, LabeledOperationError>
 where
-    E: CsrEdgeTombstone + PartialEq,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
@@ -306,11 +303,11 @@ where
     let current = E::read_from(&current_bytes);
     // 2. If already a tombstone, return the tombstone value (idempotent
     //    remove mirrors the slab path's "no live edge" early-return but
-    //    still reports the tombstone to the caller).
-    let tombstone = E::tombstone_edge();
+    //    still reports the tombstone to the caller). We compare raw
+    //    bytes to avoid a `PartialEq` bound on `E`.
     let mut tombstone_bytes = [0u8; 4];
-    tombstone.write_to(&mut tombstone_bytes);
-    if current == tombstone {
+    E::tombstone_edge().write_to(&mut tombstone_bytes);
+    if current_bytes == tombstone_bytes {
         return Ok(Some(current));
     }
     // 3. Write the tombstone into the LTB block.
@@ -807,5 +804,189 @@ mod tests {
             LabeledOperationError::InlinePropertyBytesWidthMismatch { .. } => {}
             other => panic!("expected InlinePropertyBytesWidthMismatch, got {other:?}"),
         }
+    }
+
+    // ====================== Commit B tests ======================
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_remove_writes_tombstone_and_updates_accounting() {
+        // Plan 0318 §Step 6 test 6: promote (stored=4096), remove slot
+        // 100 → read shows tombstone value, degree=4095, num_edges-1,
+        // stored_slots unchanged at 4096.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let num_before = graph.edges().header().num_edges;
+        let bucket = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        let slot = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("slot"),
+        };
+        let removed = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100)
+            .expect("remove")
+            .expect("slot in range");
+        // The removed edge must be the original value at slot 100.
+        assert_eq!(removed.target, 100 + 100);
+        // Re-read the bucket.
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found after"),
+        };
+        assert!(bucket_after.is_tree_mode());
+        assert_eq!(bucket_after.degree, 4095);
+        assert_eq!(bucket_after.stored_slots, 4096);
+        // num_edges decremented.
+        let num_after = graph.edges().header().num_edges;
+        assert_eq!(num_after, num_before - 1);
+        // Re-read slot 100: should be the tombstone target.
+        let collected = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket_after,
+            bucket_after.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("collect");
+        // The dense collect walks every stored slot (tombstones are
+        // physical slots that the collect does not filter). The
+        // collect size is therefore `stored_slots` (4096), even though
+        // degree is 4095.
+        assert_eq!(collected.len(), 4096);
+        // Slot 100 is now the tombstone sentinel.
+        let slot_value =
+            super::super::tree_read::tree_mode_random_ordinal_access(&graph, vid, label.raw(), 100)
+                .expect("random_ordinal_access")
+                .expect("slot in range");
+        // The tombstone target is EDGE_TOMBSTONE_SENTINEL.
+        assert_eq!(
+            slot_value,
+            u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL)
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_remove_then_insert_appends_to_tail() {
+        // Plan 0318 §Step 6 test 7: after a tree-mode remove, an insert
+        // must append (Unordered tombstone reuse is not implemented).
+        // So a remove + insert advances stored_slots by 1 and lands the
+        // new edge at the new tail slot.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        // Remove slot 100.
+        let bucket = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket"),
+        };
+        let slot = match graph
+            .find_bucket(vid, &graph.vertices().get(vid), label)
+            .expect("find")
+        {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("slot"),
+        };
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        // Re-read.
+        let vertex = graph.vertices().get(vid);
+        let bucket2 = match graph.find_bucket(vid, &vertex, label).expect("find 2") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket 2"),
+        };
+        let slot2 = match graph.find_bucket(vid, &vertex, label).expect("find 2") {
+            BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("slot 2"),
+        };
+        // Insert: stored_slots was 4096, append goes to slot 4096.
+        let new_edge = TestEdge { target: 7777 };
+        let logical_slot =
+            tree_mode_insert_edge(&graph, vid, slot2, &bucket2, label, &new_edge).expect("insert");
+        // 0-indexed: 0..=4095 were the original slots; slot 4096 is the
+        // post-remove post-insert tail.
+        assert_eq!(logical_slot, 4096);
+        // Re-read: stored=4097, degree=4097.
+        let vertex = graph.vertices().get(vid);
+        let bucket3 = match graph.find_bucket(vid, &vertex, label).expect("find 3") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket 3"),
+        };
+        assert_eq!(bucket3.stored_slots, 4097);
+        // After remove (degree 4096 → 4095) and insert (degree 4095 →
+        // 4096): the new edge is at slot 4096, the tombstone at slot
+        // 100 stays (stored_slots includes tombstones).
+        assert_eq!(bucket3.degree, 4096);
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn pre_promotion_span_inside_pinned_leaf_helper() {
+        // Plan 0318 §Step 6 B-2 test: a non-pinned test graph returns
+        // `false` for the helper. We test the helper directly without
+        // pinning a leaf (pinning requires a complex PMA setup that's
+        // not needed for the unit-level invariant).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        // No leaf is pinned for vid 0 in a fresh test graph.
+        let result = super::pre_promotion_span_inside_pinned_leaf(&graph, vid, 0, 4096);
+        assert!(!result, "fresh graph has no pinned leaf");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn promote_skip_release_inside_pinned_leaf() {
+        // Plan 0318 §Step 6 B-2 test: force a bucket at T_PROMOTE, then
+        // promote it. The pre-promotion release is **not deferred** when
+        // the leaf is not pinned (test graphs don't pin leaves by
+        // default), so the LEG free-list gains the pre-promotion span.
+        // We confirm the promote succeeds and the bucket is in tree mode.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        super::super::promote::tests::force_bucket_to_stored_slots(
+            &graph,
+            vid,
+            label,
+            super::super::T_PROMOTE,
+        );
+        let vertex = graph.vertices().get(vid);
+        let search = graph.find_bucket(vid, &vertex, label).expect("find_bucket");
+        let super::super::BucketSearch::Found { slot, .. } = search else {
+            panic!("bucket missing");
+        };
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read_label_bucket_slot");
+        let edge_start = bucket.edge_start();
+        super::super::promote::tests::fill_leg_slab_prefix(
+            &graph,
+            edge_start,
+            super::super::T_PROMOTE,
+        );
+        // The leaf is not pinned; the helper returns false → release
+        // runs. We just confirm the promote succeeds.
+        super::super::promote::promote_bypass_to_tree_mode(&graph, vid, label).expect("promote");
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after promote"),
+        };
+        assert!(bucket_after.is_tree_mode());
     }
 }

@@ -321,6 +321,21 @@ where
         let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
             return Ok(None);
         };
+        // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
+        // take the tombstone-rewrite path; slab buckets keep the
+        // existing path. No other module under `graph/` branches on
+        // `bucket.is_tree_mode()`.
+        if bucket.is_tree_mode() {
+            return super::tree_write::tree_mode_remove_edge_at_slot(
+                self, src, slot, &bucket, slot_index,
+            )
+            .map(|opt| {
+                opt.map(|removed| EdgeRemoval {
+                    removed: removed.with_slot_index(slot_index),
+                    moves: Vec::new(),
+                })
+            });
+        }
         self.remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index)
     }
 

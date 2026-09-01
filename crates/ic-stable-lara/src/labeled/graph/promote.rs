@@ -314,22 +314,29 @@ where
     // referenced (the new descriptor points at the LEG root region),
     // so the slab prefix slots become recyclable.
     //
-    // **Leaf-physical caveat (Plan 0318 §Step 4 amend note 5)**: the
-    // released pre-promotion edge span is a subrange of an existing
-    // leaf physical block. The release returns the subrange to the
-    // slab free list, but if the leaf is currently pinned by a
-    // `labeled_leaf_physical_range`, the pin is invalidated by the
-    // recycle. This is a latent bug for the production wire-up:
-    // **Step 6 must adopt one of** (a) leaf-physical-aware release
-    // that preserves pin invariants, (b) delegate the recycle to
-    // leaf compaction, or (c) use a new
-    // `EdgeStore::allocate_span_avoiding(pinned_ranges)`. The current
-    // release path mirrors the leaf-whole release convention in
-    // `compact.rs:481`; Step 6 review must align the promote recycle
-    // with it.
-    let _ = graph
-        .edges()
-        .release_span(pre_edge_start, u64::from(pre_stored_slots));
+    // **Leaf-physical caveat (Plan 0318 §Step 4 amend note 5, Step 6
+    // amend)**: the released pre-promotion edge span is a subrange of
+    // an existing leaf physical block. The release returns the
+    // subrange to the slab free list, but if the leaf is currently
+    // pinned by a `labeled_leaf_physical_range`, the pin is invalidated
+    // by the recycle. To preserve the pin invariant we adopt hazard
+    // ledger option (b): when the pre-promotion span lies inside a
+    // currently-pinned leaf physical block, the release is **deferred**
+    // and the subrange stays inside the leaf until the leaf is
+    // recycled (pin-sheltered). The upper bound on the deferred
+    // reclaim is T_PROMOTE = 4096 slots = 16 KiB per bucket — leaf
+    // compaction eventually reclaims it. Non-leaf-pinned spans (test
+    // raw spans, future slab-only paths) take the original release.
+    if !super::tree_write::pre_promotion_span_inside_pinned_leaf(
+        graph,
+        vid,
+        pre_edge_start,
+        pre_stored_slots,
+    ) {
+        let _ = graph
+            .edges()
+            .release_span(pre_edge_start, u64::from(pre_stored_slots));
+    }
 
     // Phase 3d: no inline-property span to release (we asserted
     // `inline_property_byte_width == 0` in the preconditions).
@@ -356,6 +363,14 @@ pub mod tests {
         label: BucketLabelKey,
         stored_slots: u32,
     ) {
+        // Track the global edge count to match `stored_slots` so that
+        // `num_edges.checked_sub(1)` does not underflow in subsequent
+        // operations (insert / remove) that mirror the production
+        // accounting path. This is a test-only invariant: production
+        // keeps `num_edges` in sync via the slab insert path.
+        if stored_slots > 0 {
+            graph.edges().set_num_edges(u64::from(stored_slots));
+        }
         let vertex = graph.vertices().get(vid);
         let search = graph.find_bucket(vid, &vertex, label).expect("find_bucket");
         let slot = match search {
