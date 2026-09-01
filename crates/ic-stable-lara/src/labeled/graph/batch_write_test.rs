@@ -2348,4 +2348,135 @@ mod tests {
         // correctness (the next scalar insert on an over-sized
         // batch-loaded bucket promotes without losing entries).
     }
+
+    /// Plan 0321 §F-1 (review rework, 2026-09-02): the batch
+    /// tree branch must reject runs targeting a freshly-promoted
+    /// bucket whose `stored_slots % B == 0` (e.g. a bucket that
+    /// was just promoted at `stored = T_PROMOTE = 4096`). At
+    /// that point the bucket ends exactly on a block boundary:
+    /// `tail_offset == 0` and the **next** LTB block does not
+    /// exist yet. The scalar path mints the new block; the batch
+    /// minimal first slice rejects typed and the caller falls
+    /// back to scalar inserts.
+    #[test]
+    fn batch_run_rejects_exactly_full_tail_block() {
+        use crate::labeled::graph::test_support::{
+            TestEdge, force_tree_mode_for_test, test_graph_with_default,
+        };
+        let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::directed_from_index(1);
+        // Promote (stored = T_PROMOTE = 4096, tail_offset = 0).
+        force_tree_mode_for_test(&graph, VertexId::from(0), label);
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (slot, bucket) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("expected Found bucket after promote"),
+        };
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.stored_slots, 4096);
+        assert_eq!(bucket.stored_slots % 1024, 0, "tail_offset == 0");
+        // Build a 100-edge batch run. Even with only 100 edges
+        // (= 400 bytes, well within the would-be 4096-byte tail
+        // room) the run is rejected because `tail_offset == 0`
+        // means the next block doesn't exist yet.
+        let mut edges = Vec::with_capacity(100);
+        for i in 0..100u32 {
+            edges.push(OneOrientationBatchEdge {
+                logical_ordinal: i,
+                owner_vertex_id: VertexId::from(0),
+                neighbor_vertex_id: VertexId::from(2000 + i),
+                label_id: label,
+                edge: TestEdge { target: 2000 + i },
+            });
+        }
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                edges,
+            }],
+        };
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OneOrientationBatchError::TreeRunExceedsTailBlock { .. }
+            ),
+            "expected TreeRunExceedsTailBlock (tail_offset == 0), got {err}"
+        );
+        // Bucket descriptor is unchanged.
+        let bucket_after = graph
+            .buckets
+            .read_label_bucket_slot(slot)
+            .expect("read after");
+        assert!(bucket_after.is_tree_mode());
+        assert_eq!(bucket_after.stored_slots, 4096);
+        // Scalar fallback: insert one edge via the scalar path.
+        // The scalar path mints a new block (Plan 0318 §tree
+        // insert handles `tail_offset == 0` correctly) and the
+        // bucket advances to stored = 4097.
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge { target: 9000 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("scalar fallback at tail_offset == 0");
+        let bucket_after_scalar = graph
+            .buckets
+            .read_label_bucket_slot(slot)
+            .expect("read after scalar");
+        assert_eq!(bucket_after_scalar.stored_slots, 4097);
+        assert_eq!(bucket_after_scalar.degree, 4097);
+    }
+
+    /// Plan 0321 §F-1 (review rework, 2026-09-02): scalar
+    /// fallback after a `tail_offset == 0` rejection. Inserting
+    /// 1024 edges one-by-one via the scalar path at the boundary
+    /// advances the bucket from stored = 4096 to 5120 (5 full
+    /// blocks) without errors. The scalar `tree_mode_insert_edge`
+    /// path mints a new block for each `tail_offset == 0`
+    /// transition.
+    #[test]
+    fn scalar_fallback_after_exactly_full_tail_block_advances_correctly() {
+        use crate::labeled::graph::test_support::{
+            TestEdge, force_tree_mode_for_test, test_graph_with_default,
+        };
+        let graph = test_graph_with_default(BucketLabelKey::directed_from_index(1));
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::directed_from_index(1);
+        force_tree_mode_for_test(&graph, VertexId::from(0), label);
+        // Insert 1024 edges via the scalar path. The first insert
+        // mints a new block (tail_offset == 0); the next 1023 fit
+        // in that block; the 1024th crosses another boundary and
+        // mints a second new block.
+        for i in 0..1024u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge { target: 10_000 + i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|e| panic!("scalar insert {i} failed: {e:?}"));
+        }
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (_slot, bucket) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("expected Found bucket"),
+        };
+        assert_eq!(bucket.stored_slots, 4096 + 1024);
+        assert_eq!(bucket.degree, 4096 + 1024);
+        assert!(bucket.is_tree_mode());
+    }
 }

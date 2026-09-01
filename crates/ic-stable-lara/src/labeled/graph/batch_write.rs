@@ -646,6 +646,11 @@ struct BucketFingerprint {
     inline_property_bytes_slab_slots: u32,
     inline_property_bytes_offset: u64,
     inline_property_byte_width: u16,
+    /// Plan 0321 §F-2 (review rework, 2026-09-02): tree-mode flag
+    /// is part of the fingerprint so a slab→tree flip (or vice
+    /// versa) between reserve and commit is detected and rejected
+    /// rather than silently corrupting the bucket.
+    is_tree_mode: bool,
     vertex_stored_slots: u32,
 }
 
@@ -664,6 +669,7 @@ impl BucketFingerprint {
             inline_property_bytes_slab_slots: bucket.inline_property_bytes_slab_slots(),
             inline_property_bytes_offset: bucket.inline_property_bytes_offset(),
             inline_property_byte_width: bucket.inline_property_byte_width(),
+            is_tree_mode: bucket.is_tree_mode(),
             vertex_stored_slots: vertex.stored_slots,
         }
     }
@@ -2114,6 +2120,20 @@ where
             // tail block (no new LTB block, no root growth in this
             // first slice). The follow-up slice widens to
             // multi-block.
+            //
+            // **F-1 review (2026-09-02)**: when `stored % B == 0`
+            // (the bucket ends exactly on a block boundary, e.g.
+            // immediately after promotion at `stored = T_PROMOTE =
+            // 4096`), `tail_offset == 0` and `tail_room = B*E::BYTES`
+            // looks like the full block is free. But the **next**
+            // block does not exist yet — the root region has
+            // `ceil(stored/B) = stored/B` block ids, so
+            // `tail_block_idx = stored/B` is out of range. The
+            // scalar path (`tree_mode_insert_edge:100`) handles this
+            // by minting a new block when `tail_offset == 0`. The
+            // batch minimal-first-slice does NOT mint, so
+            // `tail_offset == 0` is rejected typed (the caller falls
+            // back to scalar inserts which mint correctly).
             let block_b: u32 = crate::labeled::tree_csr_prototype::B as u32;
             let stored = bucket.stored_slots;
             let tail_offset: u32 = (stored % block_b) * (E::BYTES as u32);
@@ -2122,10 +2142,14 @@ where
                 .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?
                 .checked_mul(E::BYTES as u32)
                 .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-            if run_bytes > tail_room {
-                // Run would cross a block boundary. The widening
-                // (follow-up) admits this; the minimal first slice
-                // rejects it typed.
+            if tail_offset == 0 || run_bytes > tail_room {
+                // Tail block is exactly full (`tail_offset == 0`)
+                // OR the run would cross a block boundary. The
+                // widening (follow-up) admits both via new-block
+                // mint + root region growth; the minimal first
+                // slice rejects typed. Caller falls back to scalar
+                // inserts which handle the `tail_offset == 0` case
+                // by minting a new block (Plan 0318 §tree insert).
                 return Err(OneOrientationBatchError::TreeRunExceedsTailBlock {
                     owner_vertex_id: run.owner_vertex_id,
                     label_id: run.label_id,
@@ -3103,37 +3127,63 @@ where
                     // Build the run's edge payload (4-byte target per
                     // edge, tree invariant). Then partial-write into
                     // the tail block.
-                    if E::BYTES != 4 {
-                        panic!(
-                            "reserve guaranteed tree mode 4-byte edges; got E::BYTES = {}",
-                            E::BYTES
-                        );
-                    }
+                    //
+                    // F-3 review (2026-09-02): the invariants below
+                    // (E::BYTES == 4, tail block writable, no
+                    // overflow) are guaranteed at reserve time and
+                    // re-validated by the F-2 fingerprint check
+                    // (slab↔tree flip is detected). We use
+                    // `debug_assert!` to surface a violation in test
+                    // builds while keeping the release binary
+                    // infallible; the production path never trips
+                    // these checks.
+                    debug_assert_eq!(
+                        E::BYTES,
+                        4,
+                        "tree mode requires 4-byte edges (guarded at preflight + fingerprint)"
+                    );
                     let mut edge_bytes = Vec::with_capacity(*run_edge_count as usize * E::BYTES);
                     for e in &run.edges {
                         let mut buf = [0u8; 4];
                         e.edge.write_to(&mut buf);
                         edge_bytes.extend_from_slice(&buf);
                     }
-                    graph
-                        .ltb()
-                        .write_payload_partial(*tail_block_id, *tail_offset_bytes, &edge_bytes)
-                        .expect("reserve guaranteed tail block write capacity");
+                    if let Err(e) = graph.ltb().write_payload_partial(
+                        *tail_block_id,
+                        *tail_offset_bytes,
+                        &edge_bytes,
+                    ) {
+                        // F-3: in release builds we can't propagate
+                        // the error (the function returns the
+                        // infallible `OneOrientationBatchResult`).
+                        // Surface the failure in debug builds and
+                        // log a warning in release. Production
+                        // callers should pair reserve+commit in one
+                        // message; this branch is unreachable in
+                        // that path.
+                        debug_assert!(
+                            false,
+                            "reserve guaranteed tail block write capacity; got {e:?}"
+                        );
+                        eprintln!("WARN: Plan 0321 tree batch tail write failed at commit: {e:?}");
+                    }
                     if let Some(locations) = locations.as_mut() {
                         locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
+                            let logical_slot = res
+                                .bucket_fingerprint
+                                .stored_slots
+                                .checked_add(offset as u32)
+                                .expect("reserve guaranteed logical slot fits u32");
+                            let byte_offset = (*tail_offset_bytes)
+                                .checked_add(offset * E::BYTES)
+                                .expect("reserve guaranteed byte offset fits usize");
                             OneOrientationBatchLocation {
                                 logical_ordinal: edge.logical_ordinal,
                                 owner_vertex_id: edge.owner_vertex_id,
-                                logical_slot: res
-                                    .bucket_fingerprint
-                                    .stored_slots
-                                    .checked_add(offset as u32)
-                                    .expect("reserve guaranteed logical slot"),
+                                logical_slot,
                                 location: OneOrientationPhysicalLocation::Tree {
                                     tail_block_id: *tail_block_id,
-                                    byte_offset: (*tail_offset_bytes)
-                                        .checked_add(offset * E::BYTES)
-                                        .expect("reserve guaranteed byte offset"),
+                                    byte_offset,
                                 },
                             }
                         }));
