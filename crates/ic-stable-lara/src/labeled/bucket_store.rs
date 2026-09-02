@@ -116,29 +116,7 @@ pub(crate) enum DirectednessPartitionStrategy {
 
 /// Numerator/denominator for multiplicative growth of label-bucket descriptor span on rewrite:
 /// `new = max(ceil(max(current, MIN_BUCKET_ROW_ALLOC) * NUM / DEN), needed)`.
-///
-/// Default `5 / 4` (~1.25×, ceiling). Enable `bucket_row_grow_150` for `3 / 2`, or
-/// `bucket_row_grow_double` for historical `2 / 1`. If both optional features are enabled,
-/// `bucket_row_grow_double` wins.
-#[cfg(feature = "bucket_row_grow_double")]
-const BUCKET_ROW_GROW_NUM: u32 = 2;
-#[cfg(feature = "bucket_row_grow_double")]
-const BUCKET_ROW_GROW_DEN: u32 = 1;
-
-#[cfg(all(
-    feature = "bucket_row_grow_150",
-    not(feature = "bucket_row_grow_double")
-))]
-const BUCKET_ROW_GROW_NUM: u32 = 3;
-#[cfg(all(
-    feature = "bucket_row_grow_150",
-    not(feature = "bucket_row_grow_double")
-))]
-const BUCKET_ROW_GROW_DEN: u32 = 2;
-
-#[cfg(not(any(feature = "bucket_row_grow_150", feature = "bucket_row_grow_double")))]
 const BUCKET_ROW_GROW_NUM: u32 = 5;
-#[cfg(not(any(feature = "bucket_row_grow_150", feature = "bucket_row_grow_double")))]
 const BUCKET_ROW_GROW_DEN: u32 = 4;
 
 impl<M: Memory> LabelBucketStore<M> {

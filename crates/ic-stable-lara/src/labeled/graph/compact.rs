@@ -176,36 +176,11 @@ fn next_vertex_edge_span_allocation(
     if old_alloc == 0 {
         return Ok(min_required.max(segment_size));
     }
-    let geometric_headroom = {
-        #[cfg(feature = "bucket_row_grow_double")]
-        {
-            old_alloc
-                .checked_mul(2)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-        }
-        #[cfg(all(
-            not(feature = "bucket_row_grow_double"),
-            feature = "bucket_row_grow_150"
-        ))]
-        {
-            old_alloc
-                .checked_mul(3)
-                .and_then(|value| value.checked_add(1))
-                .map(|value| value / 2)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-        }
-        #[cfg(all(
-            not(feature = "bucket_row_grow_double"),
-            not(feature = "bucket_row_grow_150")
-        ))]
-        {
-            old_alloc
-                .checked_mul(5)
-                .and_then(|value| value.checked_add(3))
-                .map(|value| value / 4)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-        }
-    };
+    let geometric_headroom = old_alloc
+        .checked_mul(5)
+        .and_then(|value| value.checked_add(3))
+        .map(|value| value / 4)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
     let growth = segment_size.max(geometric_headroom);
     old_alloc
         .checked_add(growth)
