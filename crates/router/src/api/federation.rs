@@ -429,8 +429,10 @@ async fn get_vector_centroid_cache(
 /// Begin a shadow-version rebuild on the activated vector target. `fine_nlist = Some(f)` requests
 /// a two-level (`levels = 2`) rebuild with `nlist * f` packed leaves; `None` keeps the flat
 /// lifecycle. `code_tier = Some(true)` requests the 1-bit RaBitQ first-stage code tier for the
-/// shadow generation (Slice 6 / ADR 0078). Pass-through only this slice: the maintenance policy
-/// path always sends `None`.
+/// shadow generation (Slice 6 / ADR 0078). `eps_query_bps` / `eps_fine_bps` (Slice 9) freeze the
+/// target generation's per-level ε₂ pruning in basis points (`0` = nearest-partition-only,
+/// `u32::MAX` = full scan); `None` = `0`. Pass-through only this slice: the maintenance policy
+/// path snapshots the same selections from the policy record.
 #[update]
 async fn start_vector_rebuild(
     graph_name: String,
@@ -439,6 +441,8 @@ async fn start_vector_rebuild(
     sample_limit: u32,
     fine_nlist: Option<u32>,
     code_tier: Option<bool>,
+    eps_query_bps: Option<u32>,
+    eps_fine_bps: Option<u32>,
 ) -> Result<(), RouterError> {
     crate::rbac::authorize_vector_maintenance(&msg_caller())?;
     let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
@@ -449,6 +453,8 @@ async fn start_vector_rebuild(
         sample_limit,
         fine_nlist,
         code_tier,
+        eps_query_bps,
+        eps_fine_bps,
     )
     .await
     .map_err(RouterError::Internal)
@@ -540,6 +546,10 @@ fn set_vector_maintenance_policy(
         scan_max_pages: args.scan_max_pages,
         rebuild_max_subjects: args.rebuild_max_subjects,
         cleanup_max_work: args.cleanup_max_work,
+        target_fine_nlist: args.target_fine_nlist,
+        code_tier: args.code_tier,
+        eps_query_bps: args.eps_query_bps,
+        eps_fine_bps: args.eps_fine_bps,
     })
 }
 
@@ -612,13 +622,13 @@ async fn advance_vector_maintenance(
         scan_max_pages: policy.scan_max_pages,
         rebuild_max_subjects: policy.rebuild_max_subjects,
         cleanup_max_work: policy.cleanup_max_work,
-        // Slice 9: the maintenance policy record does not yet own these tuning selections, so the
-        // step keeps the previous behavior (flat, tier off, eps = 0). The Router will snapshot
-        // them here once the policy record gains the fields.
-        target_fine_nlist: None,
-        code_tier: None,
-        eps_query_bps: None,
-        eps_fine_bps: None,
+        // Slice 9: the maintenance policy record now owns these tuning selections, so the step
+        // snapshots them into the forwarded request. `None` keeps the previous behavior (flat,
+        // tier off, eps = 0).
+        target_fine_nlist: policy.target_fine_nlist,
+        code_tier: policy.code_tier,
+        eps_query_bps: policy.eps_query_bps,
+        eps_fine_bps: policy.eps_fine_bps,
     };
     crate::vector_sync::forward_admin_vector_maintenance_step(target, index_id, req)
         .await

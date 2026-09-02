@@ -5169,7 +5169,9 @@ mod two_level_tests {
     use super::*;
     use crate::facade::stable::{IVF_CENTROID_META, subject_store};
     use crate::records::{IvfCentroidMeta, LEVELS_TWO, PartitionKey, SubjectKey};
-    use gleaph_graph_kernel::vector_index::{VectorIndexKind, VectorRebuildPhase};
+    use gleaph_graph_kernel::vector_index::{
+        VECTOR_EPS_BPS_INFINITY, VectorIndexKind, VectorRebuildPhase,
+    };
 
     // Re-exported from `search` via the store module for centroid byte fixtures.
     fn encode_f32(vector: &[f32]) -> Vec<u8> {
@@ -5183,8 +5185,17 @@ mod two_level_tests {
 
     /// Starts a two-level rebuild of the degenerate fixture at `(nlist, nlist_fine) = (C, F)`.
     fn start_two_level() {
-        admin_start_vector_rebuild_with_fine(router(), INDEX_ID, C, SAMPLE_LIMIT, Some(F), None)
-            .expect("two-level start");
+        admin_start_vector_rebuild_with_fine(
+            router(),
+            INDEX_ID,
+            C,
+            SAMPLE_LIMIT,
+            Some(F),
+            None,
+            None,
+            None,
+        )
+        .expect("two-level start");
     }
 
     /// Seeds two well-separated 4-dim clusters (4 distinct vectors each): cluster `c` sits around
@@ -5302,6 +5313,102 @@ mod two_level_tests {
             centroid_fingerprint(target2),
             run1,
             "training is byte-for-byte deterministic"
+        );
+    }
+
+    /// Contract ④ (Slice 9): the published def freezes the per-level ε₂ bps, and the default
+    /// search path (no tuning override) derives the coarse stage from `eps_query_bps` and the
+    /// leaf stage from `eps_fine_bps` **independently**.
+    #[test]
+    fn two_level_default_search_uses_frozen_per_level_eps() {
+        fresh_store();
+        // Seed a two-level generation directly (no rebuild): coarse0 at 0, coarse1 at 100; each
+        // coarse has two leaves. The def freezes coarse eps = 0 (nearest coarse only) and leaf
+        // eps = ∞ (every leaf of the selected coarse).
+        let active = 5u64;
+        IVF_CENTROIDS.with_borrow_mut(|m| {
+            m.insert(
+                PartitionKey::coarse(INDEX_ID, active, 0),
+                encode_f32(&[0.0, 0.0, 0.0, 0.0]),
+            );
+            m.insert(
+                PartitionKey::coarse(INDEX_ID, active, 1),
+                encode_f32(&[100.0, 100.0, 100.0, 100.0]),
+            );
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 0),
+                encode_f32(&[0.0, 0.0, 0.0, 0.0]),
+            );
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 1),
+                encode_f32(&[1.0, 1.0, 1.0, 1.0]),
+            );
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 2),
+                encode_f32(&[100.0, 100.0, 100.0, 100.0]),
+            );
+            m.insert(
+                PartitionKey::new(INDEX_ID, active, 3),
+                encode_f32(&[101.0, 101.0, 101.0, 101.0]),
+            );
+        });
+        IVF_CENTROID_META.with_borrow_mut(|meta| {
+            meta.insert(
+                INDEX_ID,
+                IvfCentroidMeta {
+                    centroid_ready: true,
+                    trained_index_version: active,
+                },
+            )
+        });
+        let mut def = fixture_def();
+        def.active_index_version = active;
+        def.eps_query_bps = 0;
+        def.eps_fine_bps = VECTOR_EPS_BPS_INFINITY;
+        definition_store::insert(INDEX_ID, def).expect("seed def");
+
+        // Rows: A near leaf 0, B near leaf 1 (both under coarse 0), C near leaf 2 (coarse 1).
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(1, 1, &[0.1, 0.1, 0.1, 0.1], VectorMetric::L2Squared),
+        )
+        .expect("upsert A");
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(2, 1, &[0.9, 0.9, 0.9, 0.9], VectorMetric::L2Squared),
+        )
+        .expect("upsert B");
+        vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(3, 1, &[100.1, 100.1, 100.1, 100.1], VectorMetric::L2Squared),
+        )
+        .expect("upsert C");
+
+        // Default search (no tuning override): coarse eps = 0 selects only the nearest coarse
+        // subtree (coarse 0), leaf eps = ∞ selects every leaf of it — rows A and B. A single
+        // shared eps of 0 would have returned only the nearest leaf's subset, so this pins the
+        // per-level independence. Query 0.3 is nearest coarse 0 and closer to A (0.1) than B
+        // (0.9), so the hits are ordered `[A, B]`.
+        let hits = vector_search(&VectorSearchRequest {
+            index_id: INDEX_ID,
+            query: vec_bytes_from(&[0.3, 0.3, 0.3, 0.3]),
+            encoding: VectorEncoding::F32,
+            dims: DIMS,
+            metric: VectorMetric::L2Squared,
+            top_k: 8,
+            candidate_subjects: None,
+        })
+        .expect("default search")
+        .hits
+        .into_iter()
+        .map(|h| match h.subject {
+            VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            hits,
+            vec![1, 2],
+            "coarse=0 selects coarse 0, fine=∞ selects both its leaves (A and B)"
         );
     }
 
@@ -5571,20 +5678,47 @@ mod two_level_tests {
         vector_upsert(shard_canister(), &upsert_vec(1, 1, 1.0)).expect("def-creating upsert");
         // Leaves beyond MAX_LEAVES are rejected outright.
         assert_eq!(
-            admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 1024, 2000, Some(65), None)
-                .unwrap_err(),
+            admin_start_vector_rebuild_with_fine(
+                router(),
+                INDEX_ID,
+                1024,
+                2000,
+                Some(65),
+                None,
+                None,
+                None
+            )
+            .unwrap_err(),
             VectorCanisterError::InvalidRebuildParams,
             "1024 * 65 > MAX_LEAVES"
         );
         // A single-child hierarchy is not a meaningful shape.
         assert_eq!(
-            admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 2, 100, Some(1), None)
-                .unwrap_err(),
+            admin_start_vector_rebuild_with_fine(
+                router(),
+                INDEX_ID,
+                2,
+                100,
+                Some(1),
+                None,
+                None,
+                None
+            )
+            .unwrap_err(),
             VectorCanisterError::InvalidRebuildParams
         );
         // The boundary value itself passes validation and starts (then aborts immediately).
-        admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 1024, 1025, Some(64), None)
-            .expect("exactly MAX_LEAVES admits");
+        admin_start_vector_rebuild_with_fine(
+            router(),
+            INDEX_ID,
+            1024,
+            1025,
+            Some(64),
+            None,
+            None,
+            None,
+        )
+        .expect("exactly MAX_LEAVES admits");
         admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");
         // Flat behavior unchanged: the plain signature still starts a flat rebuild.
         admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("flat start unchanged");

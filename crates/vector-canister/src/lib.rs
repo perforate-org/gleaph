@@ -139,8 +139,10 @@ fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorC
 /// a two-level (`levels = 2`) rebuild whose target generation holds `nlist * f` packed leaves;
 /// `None` keeps the unchanged flat lifecycle. `code_tier = Some(true)` builds the shadow
 /// generation with the 1-bit RaBitQ first-stage code tier (Slice 6 / ADR 0078) — the public
-/// encoding and advertised result quality are unchanged. Router-guarded like the other admin
-/// endpoints.
+/// encoding and advertised result quality are unchanged. `eps_query_bps` / `eps_fine_bps`
+/// (Slice 9) freeze the target generation's per-level ε₂ pruning in basis points (`0` =
+/// nearest-partition-only, `u32::MAX` = full scan); `None` = `0` (legacy pruning). Router-guarded
+/// like the other admin endpoints.
 #[update(guard = "guard_router_canister")]
 fn admin_start_vector_rebuild(
     index_id: u32,
@@ -148,8 +150,18 @@ fn admin_start_vector_rebuild(
     sample_limit: u32,
     fine_nlist: Option<u32>,
     code_tier: Option<bool>,
+    eps_query_bps: Option<u32>,
+    eps_fine_bps: Option<u32>,
 ) -> Result<(), String> {
-    canister::admin_start_vector_rebuild(index_id, nlist, sample_limit, fine_nlist, code_tier)
+    canister::admin_start_vector_rebuild(
+        index_id,
+        nlist,
+        sample_limit,
+        fine_nlist,
+        code_tier,
+        eps_query_bps,
+        eps_fine_bps,
+    )
 }
 
 /// Starts a rebuild only if partition health crosses the supplied policy (ADR 0031 Slice 9). The

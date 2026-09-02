@@ -12,7 +12,9 @@ use std::ops::Bound;
 
 use candid::{CandidType, Decode, Encode};
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::vector_index::VectorMaintenancePolicy;
+use gleaph_graph_kernel::vector_index::{
+    MAX_VECTOR_EPS_BPS, VECTOR_EPS_BPS_INFINITY, VectorMaintenancePolicy,
+};
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +43,18 @@ pub(crate) struct VectorMaintenancePolicyRecord {
     pub rebuild_max_subjects: u32,
     /// Max work units processed per bounded cleanup/abort step.
     pub cleanup_max_work: u32,
+    /// Target-generation two-level fan-in (`Some(f)`, `f >= 2`) forwarded to the policy-driven
+    /// rebuild start; `None` keeps the flat lifecycle (Slice 9).
+    pub target_fine_nlist: Option<u32>,
+    /// Target-generation RaBitQ code tier forwarded to the policy-driven rebuild start; `None`
+    /// keeps the tier off (Slice 9).
+    pub code_tier: Option<bool>,
+    /// Target-generation coarse-stage ε₂ pruning in basis points (`0` = nearest-partition-only,
+    /// [`VECTOR_EPS_BPS_INFINITY`] = full scan); `None` = `0` (Slice 9).
+    pub eps_query_bps: Option<u32>,
+    /// Target-generation leaf-stage ε₂ pruning in basis points (same unit/sentinel as
+    /// `eps_query_bps`); `None` = `0` (Slice 9).
+    pub eps_fine_bps: Option<u32>,
 }
 
 /// Versioned stable envelope (ADR 0007) so the record schema can evolve across upgrades.
@@ -91,6 +105,24 @@ fn validate(record: &VectorMaintenancePolicyRecord) -> Result<(), RouterError> {
         return Err(RouterError::InvalidArgument(
             "maintenance per-step budgets must be nonzero".to_owned(),
         ));
+    }
+    // Slice 9 tuning selections: a two-level fan-in below 2 is flat with extra storage, and an
+    // ε₂ bps other than the ∞ sentinel must not exceed `MAX_VECTOR_EPS_BPS` (the threshold factor
+    // would otherwise degenerate toward a full walk and blur the distinction from ∞).
+    if record.target_fine_nlist.is_some_and(|f| f < 2) {
+        return Err(RouterError::InvalidArgument(
+            "target_fine_nlist must be >= 2".to_owned(),
+        ));
+    }
+    for (name, bps) in [
+        ("eps_query_bps", record.eps_query_bps),
+        ("eps_fine_bps", record.eps_fine_bps),
+    ] {
+        if bps.is_some_and(|b| b != VECTOR_EPS_BPS_INFINITY && b > MAX_VECTOR_EPS_BPS) {
+            return Err(RouterError::InvalidArgument(format!(
+                "{name} must be <= MAX_VECTOR_EPS_BPS or the ∞ sentinel"
+            )));
+        }
     }
     if get_vector_index(record.graph_id, record.index_id).is_none() {
         return Err(RouterError::NotFound(format!(
@@ -196,6 +228,10 @@ mod tests {
             scan_max_pages: 64,
             rebuild_max_subjects: 5_000,
             cleanup_max_work: 5_000,
+            target_fine_nlist: None,
+            code_tier: None,
+            eps_query_bps: None,
+            eps_fine_bps: None,
         }
     }
 
@@ -265,6 +301,38 @@ mod tests {
             set_policy(zero),
             Err(RouterError::InvalidArgument(_))
         ));
+    }
+
+    #[test]
+    fn set_rejects_bad_tuning_selections() {
+        let graph = GraphId::from_raw(930_006);
+        register_def(graph, 1);
+        // A single-child fan-in is flat with extra storage, not a meaningful two-level shape.
+        let mut single_child = record(graph, 1);
+        single_child.target_fine_nlist = Some(1);
+        assert!(matches!(
+            set_policy(single_child),
+            Err(RouterError::InvalidArgument(_))
+        ));
+        // An ε₂ bps above the documented cap (other than the ∞ sentinel) is rejected.
+        let mut oversized = record(graph, 1);
+        oversized.eps_query_bps = Some(MAX_VECTOR_EPS_BPS + 1);
+        assert!(matches!(
+            set_policy(oversized),
+            Err(RouterError::InvalidArgument(_))
+        ));
+        let mut oversized_fine = record(graph, 1);
+        oversized_fine.eps_fine_bps = Some(MAX_VECTOR_EPS_BPS + 1);
+        assert!(matches!(
+            set_policy(oversized_fine),
+            Err(RouterError::InvalidArgument(_))
+        ));
+        // The boundary value and the ∞ sentinel both pass.
+        let mut boundary = record(graph, 1);
+        boundary.eps_query_bps = Some(MAX_VECTOR_EPS_BPS);
+        boundary.eps_fine_bps = Some(VECTOR_EPS_BPS_INFINITY);
+        boundary.target_fine_nlist = Some(2);
+        set_policy(boundary).expect("boundary tuning selections admit");
     }
 
     #[test]

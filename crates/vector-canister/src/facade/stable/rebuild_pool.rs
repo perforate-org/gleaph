@@ -51,15 +51,18 @@ const MAGIC: [u8; 3] = *b"VRP";
 /// Format version of the pool region layout. Version 2 (Slice 5) added the optional per-row
 /// coarse-id area and the `assigned_len` header field; version 3 (Slice 6) added the `code_tier`
 /// flag byte so the shadow generation's row geometry survives into `Building` without widening
-/// the lifecycle records. Earlier versions are rejected.
-const VERSION: u8 = 3;
+/// the lifecycle records; version 4 (Slice 9) added the frozen per-level ε₂ `eps_query_bps` /
+/// `eps_fine_bps` pair so the target generation's pruning survives into `publish` without
+/// widening the lifecycle records. Earlier versions are rejected.
+const VERSION: u8 = 4;
 
 /// Fixed header size. Offsets:
 /// `0..3` magic, `3` version, `4..8` index_id, `8..12` pad_stride, `12..20` pool_len,
 /// `20..28` pool_capacity, `28..32` work_centroids, `32..36` centroid_stride, `36..40`
 /// centroid_count, `40..44` assigned_len, `44` two_level flag, `45` code_tier flag (Slice 6:
 /// carried from rebuild start to the `Building` transition — training phases never consult it),
-/// `46..96` reserved zero.
+/// `46..50` eps_query_bps, `50..54` eps_fine_bps (Slice 9: frozen per-level ε₂ pruning, carried
+/// from rebuild start to `publish` — search never reads the pool), `54..96` reserved zero.
 pub(crate) const POOL_HEADER_SIZE: u64 = 96;
 
 /// Per-row width of the coarse-id array (`u32` LE) reserved for a two-level rebuild. A flat
@@ -113,6 +116,10 @@ pub(crate) struct OpenPool {
     /// Code tier of the shadow generation (Slice 6): persisted at `begin` and consumed by the
     /// transition into `Building` so the shadow pages are reserved with the right geometry.
     pub code_tier: bool,
+    /// Frozen coarse-stage ε₂ pruning of the shadow generation (Slice 9), in basis points.
+    pub eps_query_bps: u32,
+    /// Frozen leaf-stage ε₂ pruning of the shadow generation (Slice 9), in basis points.
+    pub eps_fine_bps: u32,
 }
 
 struct PoolGeometry {
@@ -199,6 +206,7 @@ fn decode_u64(buf: &[u8], range: std::ops::Range<usize>) -> u64 {
 /// Parses and fully validates the header against the expected geometry. Returns the derived
 /// geometry plus the recorded lengths.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn validate_header(
     mem: &Memory,
     index_id: u32,
@@ -206,7 +214,7 @@ fn validate_header(
     work_centroids: u32,
     centroid_stride: u32,
     two_level: bool,
-) -> Result<(PoolGeometry, u64, u32, u32, bool), PoolValidationError> {
+) -> Result<(PoolGeometry, u64, u32, u32, bool, u32, u32), PoolValidationError> {
     let (buf, absent) = read_header(mem);
     if absent {
         return Err(PoolValidationError::Absent);
@@ -257,7 +265,17 @@ fn validate_header(
         return Err(PoolValidationError::LengthMismatch);
     }
     let code_tier = buf[45] == 1;
-    Ok((geometry, pool_len, centroid_count, assigned_len, code_tier))
+    let eps_query_bps = decode_u32(&buf, 46..50);
+    let eps_fine_bps = decode_u32(&buf, 50..54);
+    Ok((
+        geometry,
+        pool_len,
+        centroid_count,
+        assigned_len,
+        code_tier,
+        eps_query_bps,
+        eps_fine_bps,
+    ))
 }
 
 /// The index the region is currently bound to, or `None` when absent/corrupt. Used by rebuild
@@ -275,7 +293,9 @@ pub(crate) fn bound_index() -> Option<u32> {
 /// any previous binding; the caller must have established that no other index owns the region.
 /// Fails closed before any write when the geometry exceeds the region budget. `code_tier` is the
 /// shadow generation's Slice 6 flag, persisted here because `Sampling`/`Training` records stay
-/// shape-minimal — only `Building` (via [`OpenPool::code_tier`]) consumes it.
+/// shape-minimal — only `Building` (via [`OpenPool::code_tier`]) consumes it. `eps_query_bps` /
+/// `eps_fine_bps` are the shadow generation's frozen per-level ε₂ pruning (Slice 9), persisted
+/// here for the same reason — only `publish` (via [`OpenPool`]) consumes them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn begin(
     index_id: u32,
@@ -284,6 +304,8 @@ pub(crate) fn begin(
     centroid_stride: u32,
     two_level: bool,
     code_tier: bool,
+    eps_query_bps: u32,
+    eps_fine_bps: u32,
 ) -> Result<(), VectorCanisterError> {
     let Some(capacity) = pool_capacity_for(pad_stride, work_centroids, centroid_stride, two_level)
     else {
@@ -326,6 +348,8 @@ pub(crate) fn begin(
     header[40..44].copy_from_slice(&0u32.to_le_bytes());
     header[44] = u8::from(two_level);
     header[45] = u8::from(code_tier);
+    header[46..50].copy_from_slice(&eps_query_bps.to_le_bytes());
+    header[50..54].copy_from_slice(&eps_fine_bps.to_le_bytes());
     mem.write(0, &header);
     Ok(())
 }
@@ -340,7 +364,7 @@ pub(crate) fn open(
     two_level: bool,
 ) -> Result<OpenPool, PoolValidationError> {
     let mem = pool_memory();
-    let (_, pool_len, _, assigned_len, code_tier) = validate_header(
+    let (_, pool_len, _, assigned_len, code_tier, eps_query_bps, eps_fine_bps) = validate_header(
         &mem,
         index_id,
         pad_stride,
@@ -353,6 +377,8 @@ pub(crate) fn open(
         pool_len,
         assigned_len,
         code_tier,
+        eps_query_bps,
+        eps_fine_bps,
     })
 }
 
@@ -398,7 +424,7 @@ pub(crate) fn append_rows(
     rows: &[RebuildCandidate],
 ) -> Result<(), PoolValidationError> {
     let mem = pool_memory();
-    let (geo, pool_len, _, assigned_len, _) = validate_header(
+    let (geo, pool_len, _, assigned_len, _, _, _) = validate_header(
         &mem,
         index_id,
         pad_stride,
@@ -492,7 +518,7 @@ pub(crate) fn load_rows(
     two_level: bool,
 ) -> Result<Vec<RebuildCandidate>, PoolValidationError> {
     let mem = pool_memory();
-    let (_, pool_len, _, _, _) = validate_header(
+    let (_, pool_len, _, _, _, _, _) = validate_header(
         &mem,
         index_id,
         pad_stride,
@@ -530,7 +556,7 @@ pub(crate) fn put_coarse_ids(
     ids: &[u32],
 ) -> Result<(), PoolValidationError> {
     let mem = pool_memory();
-    let (geo, pool_len, _, _, _) = validate_header(
+    let (geo, pool_len, _, _, _, _, _) = validate_header(
         &mem,
         index_id,
         pad_stride,
@@ -629,7 +655,7 @@ pub(crate) fn put_centroids(
     centroids: &[Vec<u8>],
 ) -> Result<(), PoolValidationError> {
     let mem = pool_memory();
-    let (geo, _, centroid_count, _, _) = validate_header(
+    let (geo, _, centroid_count, _, _, _, _) = validate_header(
         &mem,
         index_id,
         pad_stride,
@@ -696,7 +722,7 @@ pub(crate) fn get_centroids(
     two_level: bool,
 ) -> Result<Vec<Vec<u8>>, PoolValidationError> {
     let mem = pool_memory();
-    let (geo, _, centroid_count, _, _) = validate_header(
+    let (geo, _, centroid_count, _, _, _, _) = validate_header(
         &mem,
         index_id,
         pad_stride,
@@ -761,7 +787,7 @@ mod tests {
         release();
         assert!(bound_index().is_none(), "fresh fixture has no binding");
 
-        begin(7, 32, 4, 16, false, false).expect("begin");
+        begin(7, 32, 4, 16, false, false, 0, 0).expect("begin");
         assert_eq!(bound_index(), Some(7));
 
         // Exact validation matrix on open.
@@ -825,7 +851,7 @@ mod tests {
     #[test]
     fn two_level_coarse_ids_roundtrip_and_validate() {
         release();
-        begin(31, 32, 4, 12, true, false).expect("begin two-level");
+        begin(31, 32, 4, 12, true, false, 0, 0).expect("begin two-level");
 
         let rows: Vec<RebuildCandidate> = (0..6u8).map(|i| row(32, i, i + 1)).collect();
         append_rows(31, 32, 4, 12, true, &rows).expect("append");
@@ -856,7 +882,7 @@ mod tests {
         release();
 
         // A flat binding rejects the coarse-id APIs outright.
-        begin(33, 32, 4, 12, false, false).expect("begin flat");
+        begin(33, 32, 4, 12, false, false, 0, 0).expect("begin flat");
         assert!(put_coarse_ids(33, 32, 4, 12, &[]).is_err());
         assert!(for_each_coarse_id(|_, _| {}).is_err());
         release();
@@ -870,7 +896,7 @@ mod tests {
         let pad_stride = 500_000u32;
         let capacity =
             pool_capacity_for(pad_stride, 2, 8, false).expect("geometry must fit") as usize;
-        begin(11, pad_stride, 2, 8, false, false).expect("begin");
+        begin(11, pad_stride, 2, 8, false, false, 0, 0).expect("begin");
         let rows: Vec<RebuildCandidate> = (0..capacity as u8)
             .map(|i| row(pad_stride as usize, i, 0))
             .collect();
@@ -911,7 +937,7 @@ mod tests {
     #[test]
     fn centroid_area_roundtrip_and_validation() {
         release();
-        begin(13, 16, 3, 12, false, false).expect("begin");
+        begin(13, 16, 3, 12, false, false, 0, 0).expect("begin");
         assert!(
             get_centroids(13, 16, 3, 12, false).expect("get").is_empty(),
             "a fresh area reports no seeded centroids"
@@ -942,7 +968,7 @@ mod tests {
             open(1, 16, 2, 8, false).unwrap_err(),
             PoolValidationError::Absent
         );
-        begin(21, 16, 2, 8, false, false).expect("begin");
+        begin(21, 16, 2, 8, false, false, 0, 0).expect("begin");
 
         let saved = {
             let mem = pool_memory();

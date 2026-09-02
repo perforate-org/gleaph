@@ -28,9 +28,9 @@ use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR
 use crate::records::{PageKey, PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
-    VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
-    VectorSubject, decode_i8_to_f32,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VECTOR_EPS_BPS_INFINITY,
+    VectorCanisterError, VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest,
+    VectorSearchResult, VectorSubject, decode_i8_to_f32,
 };
 use ic_stable_vector_page_store::kernel::{
     dot_f32_early_exit, dot_i8_f32_early_exit, l2_squared_f32, l2_squared_f32_early_exit,
@@ -44,18 +44,23 @@ use std::collections::BinaryHeap;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
-/// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
-/// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`.
+/// Resolves a frozen `eps_*_bps` value (Slice 9) into the ε₂ selection factor used by
+/// [`select_partitions`]. `0` (the default) yields `0.0` — scan only the nearest partition(s), the
+/// exact legacy behavior; [`VECTOR_EPS_BPS_INFINITY`] (`u32::MAX`) yields `f32::INFINITY` — a full
+/// scan (the retired in-code `INF` sentinel). Any other value is computed once in `f64` as
+/// `bps / 10_000` and rounded a single time into the selection domain's `f32`, so the same bps is
+/// bit-identical across replicas (deterministic selection).
 ///
-/// Slice 6 decision: keep `0.0` (cost-minimal), confirmed by the d=1536 canbench ε₂ sweep. The
-/// sweep isolates the cost model at the design target — ~144K ins per centroid (fixed, scales with
-/// `nlist`) and ~164K ins per scanned row — so raising `eps_query` strictly adds the scanned-partition
-/// row cost (one→two partitions measured +7% at nlist256 and +53% at nlist64). `0.0` is the right
-/// global default for well-clustered data; the recall cost of a single-partition scan is documented
-/// by `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`. The design's
-/// per-definition `eps_query` recall escape hatch is not yet wired into the definition config (a
-/// follow-up); until then every search uses this global default.
-const DEFAULT_EPS_QUERY: f32 = 0.0;
+/// The default path (`vector_search`, no tuning override) derives both per-level factors from the
+/// definition's frozen `eps_query_bps` / `eps_fine_bps`; the test/bench tuned entry applies one
+/// `SearchTuning::eps_query` to both stages.
+fn eps_query_from_bps(bps: u32) -> f32 {
+    if bps == VECTOR_EPS_BPS_INFINITY {
+        f32::INFINITY
+    } else {
+        (bps as f64 / 10_000.0) as f32
+    }
+}
 
 /// Internal, algorithm-specific search tuning. Never crosses the Router/kernel wire (the public
 /// request stays algorithm-neutral); built in-canister or supplied by tests/bench.
@@ -1088,11 +1093,12 @@ fn select_partitions(
 }
 
 /// Two-level ε₂ selection (Slice 5): stage (a) selects coarse subtrees against the cached level-0
-/// set with the same `(1 + eps_query) * dist(q, c_best)` rule as [`select_partitions`]; stage (b)
+/// set with the `(1 + eps_query) * dist(q, c_best)` rule as [`select_partitions`]; stage (b)
 /// reads each selected subtree's contiguous child range `[c·f, (c+1)·f)` from stable memory and
-/// ε₂-selects leaves within it with the **same** rule and the same single `eps_query` value
-/// (per-level eps is a deferred follow-up). Returns globally ascending leaf ids so the page walk
-/// order is deterministic.
+/// ε₂-selects leaves within it with the **same** rule but the **independent** `eps_fine` factor
+/// (Slice 9: per-level ε₂ pruning — coarse stage from `def.eps_query_bps`, leaf stage from
+/// `def.eps_fine_bps`). Returns globally ascending leaf ids so the page walk order is
+/// deterministic.
 ///
 /// A missing/incomplete child range cannot be scored, so it widens to the full subtree rather
 /// than silently narrowing the result — the fail-open direction that keeps the scan an exact
@@ -1105,6 +1111,7 @@ fn select_partitions_two_level(
     metric: VectorMetric,
     dims: usize,
     eps_query: f32,
+    eps_fine: f32,
 ) -> Vec<u32> {
     let mut leaves: Vec<u32> = Vec::new();
     for coarse in select_partitions(coarse_set, query_bytes, metric, dims, eps_query) {
@@ -1118,7 +1125,7 @@ fn select_partitions_two_level(
             Some(children) => {
                 let base = coarse * def.nlist_fine;
                 leaves.extend(
-                    select_partitions(&children, query_bytes, metric, dims, eps_query)
+                    select_partitions(&children, query_bytes, metric, dims, eps_fine)
                         .into_iter()
                         .map(|rel| base + rel),
                 );
@@ -1262,20 +1269,22 @@ fn search_impl(
         );
     }
 
-    // Resolve tuning. The default path uses `DEFAULT_EPS_QUERY`; the tuned path rejects a
-    // negative `eps_query` (see `vector_search_tuned`).
-    let tuning = match tuning_override {
+    // Resolve the per-level ε₂ factors. The default path derives them from the definition's frozen
+    // `eps_query_bps` / `eps_fine_bps` (Slice 9); the tuned path (test/bench) applies one
+    // `eps_query` to both stages and rejects a negative value (see `vector_search_tuned`).
+    let (eps_query, eps_fine) = match tuning_override {
         Some(t) => {
             assert!(
                 t.eps_query >= 0.0,
                 "tuned eps_query {} must be >= 0",
                 t.eps_query
             );
-            t
+            (t.eps_query, t.eps_query)
         }
-        None => SearchTuning {
-            eps_query: DEFAULT_EPS_QUERY,
-        },
+        None => (
+            eps_query_from_bps(def.eps_query_bps),
+            eps_query_from_bps(def.eps_fine_bps),
+        ),
     };
 
     // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
@@ -1299,7 +1308,8 @@ fn search_impl(
             req,
             &def,
             &query,
-            tuning,
+            eps_query,
+            eps_fine,
             q_norm,
             &suffix_norm,
             max_norm,
@@ -1439,13 +1449,15 @@ fn exact_subject_scan(
 /// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
 /// chains in full, scoring every non-tombstoned row directly (no subject-map access; the write
 /// path guarantees a non-tombstoned row is the subject's current live slot). A two-level
-/// (`levels = 2`) generation selects in two stages (coarse then leaf children, same `eps_query`)
-/// and scans the selected leaves; the exact-scan fallback walks every leaf.
+/// (`levels = 2`) generation selects in two stages (coarse then leaf children, with the
+/// independent `eps_query` / `eps_fine` factors) and scans the selected leaves; the exact-scan
+/// fallback walks every leaf.
 fn partition_page_scan(
     req: &VectorSearchRequest,
     def: &VectorIndexDef,
     query: &[f32],
-    tuning: SearchTuning,
+    eps_query: f32,
+    eps_fine: f32,
     q_norm: f32,
     suffix_norm: &[f32],
     max_norm: f32,
@@ -1476,7 +1488,8 @@ fn partition_page_scan(
             &req.query,
             def.metric,
             def.dims as usize,
-            tuning.eps_query,
+            eps_query,
+            eps_fine,
         )
     } else {
         select_partitions(
@@ -1484,7 +1497,7 @@ fn partition_page_scan(
             &req.query,
             def.metric,
             def.dims as usize,
-            tuning.eps_query,
+            eps_query,
         )
     };
     scan_partitions(
@@ -1505,9 +1518,23 @@ fn partition_page_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_graph_kernel::vector_index::MAX_VECTOR_EPS_BPS;
 
     fn row(values: &[f32]) -> Vec<u8> {
         encode_f32(values)
+    }
+
+    #[test]
+    fn eps_query_from_bps_maps_sentinel_and_boundaries() {
+        // `0` (the default) is the exact legacy behavior: scan only the nearest partition(s).
+        assert_eq!(eps_query_from_bps(0), 0.0);
+        // `u32::MAX` is the ∞ sentinel: a full scan (replaces the retired in-code `INF`).
+        assert_eq!(eps_query_from_bps(VECTOR_EPS_BPS_INFINITY), f32::INFINITY);
+        // A finite bps is `bps / 10_000` computed once in f64 and rounded into f32.
+        assert_eq!(eps_query_from_bps(10_000), 1.0);
+        assert_eq!(eps_query_from_bps(5_000), 0.5);
+        // The documented cap yields the ε₂ factor `100.0` (threshold factor `1 + 100 = 101`).
+        assert_eq!(eps_query_from_bps(MAX_VECTOR_EPS_BPS), 100.0);
     }
 
     #[test]

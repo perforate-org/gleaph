@@ -15,7 +15,7 @@
 
 use super::authorization::assert_router_caller;
 use super::rebuild::{
-    admin_start_vector_rebuild, admin_vector_partition_health_step,
+    admin_start_vector_rebuild_with_fine, admin_vector_partition_health_step,
     admin_vector_rebuild_cleanup_step, admin_vector_rebuild_status, admin_vector_rebuild_step,
     partition_health_summary, rebuild_state_of,
 };
@@ -194,9 +194,20 @@ pub(crate) fn admin_vector_maintenance_step(
         VectorMaintenanceRecommendation::RebuildRecommended
         | VectorMaintenanceRecommendation::RebuildRequired => {
             // `nlist=1` indexes must pass an explicit `target_nlist`; otherwise default to the
-            // current `nlist` (rejected by the rebuild start when degenerate).
+            // current `nlist` (rejected by the rebuild start when degenerate). The Slice 9 tuning
+            // selections (two-level fan-in, code tier, per-level ε₂ pruning) are forwarded from the
+            // Router's policy snapshot; `None` keeps the previous behavior (flat, tier off, eps = 0).
             let nlist = req.target_nlist.unwrap_or(def.nlist);
-            match admin_start_vector_rebuild(caller, index_id, nlist, req.sample_limit) {
+            match admin_start_vector_rebuild_with_fine(
+                caller,
+                index_id,
+                nlist,
+                req.sample_limit,
+                req.target_fine_nlist,
+                req.code_tier,
+                req.eps_query_bps,
+                req.eps_fine_bps,
+            ) {
                 Ok(()) => {
                     // The rebuild state machine now drives; clear the scan state.
                     put_maintenance_state(index_id, &VectorMaintenanceState::Idle);

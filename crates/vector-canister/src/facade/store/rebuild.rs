@@ -50,10 +50,10 @@ use crate::records::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    VectorCanisterError, VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
-    VectorMetric, VectorPartitionHealthStep, VectorPartitionHealthSummary,
-    VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
-    VectorSlabStatsStep, VectorSubject,
+    MAX_VECTOR_EPS_BPS, VECTOR_EPS_BPS_INFINITY, VectorCanisterError, VectorEncoding,
+    VectorMaintenancePolicy, VectorMaintenanceRecommendation, VectorMetric,
+    VectorPartitionHealthStep, VectorPartitionHealthSummary, VectorPartitionPageHealth,
+    VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats, VectorSlabStatsStep, VectorSubject,
 };
 use ic_stable_linear_hash_map::{SLOTS_PER_BUCKET, ScanError};
 use ic_stable_structures::Storable;
@@ -553,7 +553,16 @@ pub(crate) fn admin_start_vector_rebuild(
     nlist: u32,
     sample_limit: u32,
 ) -> Result<(), VectorCanisterError> {
-    admin_start_vector_rebuild_with_fine(caller, index_id, nlist, sample_limit, None, None)
+    admin_start_vector_rebuild_with_fine(
+        caller,
+        index_id,
+        nlist,
+        sample_limit,
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Shape-aware rebuild start (Slice 5). `fine_nlist = None` starts the unchanged flat lifecycle;
@@ -565,6 +574,12 @@ pub(crate) fn admin_start_vector_rebuild(
 /// quality stays the original tier. The flag is persisted in the rebuild-pool header at `begin`
 /// and consumed by the transition into `Building`.
 ///
+/// `eps_query_bps` / `eps_fine_bps` (Slice 9) freeze the target generation's per-level ε₂ pruning
+/// in basis points (`0` = nearest-partition-only, [`VECTOR_EPS_BPS_INFINITY`] = full scan). They
+/// are persisted in the rebuild-pool header at `begin` and consumed by `publish` when the def is
+/// flipped; search reads them from the published def, never from the pool. `None` = `0` (legacy
+/// pruning).
+///
 /// Two-level admission adds, on top of the flat checks:
 /// - `f >= 2` (a single-child hierarchy is flat with extra storage);
 /// - `nlist * f <= MAX_LEAVES` (u32 partition-id packing and per-generation head capacity);
@@ -575,6 +590,7 @@ pub(crate) fn admin_start_vector_rebuild(
 /// A tier-on target additionally fails closed when its page shape cannot fit even one row per
 /// page (`shape_def_for` → `InvalidRebuildParams`), so an unbuildable geometry is rejected before
 /// any state is written.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn admin_start_vector_rebuild_with_fine(
     caller: Principal,
     index_id: u32,
@@ -582,6 +598,8 @@ pub(crate) fn admin_start_vector_rebuild_with_fine(
     sample_limit: u32,
     fine_nlist: Option<u32>,
     code_tier: Option<bool>,
+    eps_query_bps: Option<u32>,
+    eps_fine_bps: Option<u32>,
 ) -> Result<(), VectorCanisterError> {
     assert_router_caller(caller)?;
     let def = definition_store::get(index_id)
@@ -626,6 +644,16 @@ pub(crate) fn admin_start_vector_rebuild_with_fine(
         return Err(VectorCanisterError::InvalidRebuildParams);
     }
     let code_tier = code_tier.unwrap_or(false);
+    // Fail-closed ε₂ bps admission (Slice 9): a value other than the ∞ sentinel must not exceed
+    // `MAX_VECTOR_EPS_BPS` (the threshold factor would otherwise degenerate toward a full walk and
+    // blur the distinction from ∞). `None` = `0` (legacy pruning).
+    let eps_query_bps = eps_query_bps.unwrap_or(0);
+    let eps_fine_bps = eps_fine_bps.unwrap_or(0);
+    for bps in [eps_query_bps, eps_fine_bps] {
+        if bps != VECTOR_EPS_BPS_INFINITY && bps > MAX_VECTOR_EPS_BPS {
+            return Err(VectorCanisterError::InvalidRebuildParams);
+        }
+    }
     // Fail-closed page-shape feasibility of the TARGET generation before any state is written:
     // the tier-on geometry shrinks `slots_per_page` and must fit at least one row per page.
     shape_def_for(&def, levels, nlist_fine, code_tier)
@@ -653,6 +681,8 @@ pub(crate) fn admin_start_vector_rebuild_with_fine(
         u32::from(def.dims) * 4,
         levels == LEVELS_TWO,
         code_tier,
+        eps_query_bps,
+        eps_fine_bps,
     )?;
     put_rebuild_state(
         index_id,
@@ -2225,6 +2255,23 @@ pub(crate) fn admin_publish_vector_rebuild(
     // derive their write layout from this def, so a stale capacity would corrupt every row.
     let published = shape_def_for(&def, levels, nlist_fine, code_tier)?;
     debug_assert_eq!(published.active_index_version, target_index_version);
+    // The frozen per-level ε₂ pruning (Slice 9) is carried in the rebuild-pool header (persisted
+    // at `begin`), not in the `Building`/`ReadyToPublish` lifecycle records — search reads it from
+    // the published def, and the pool is released at `Cleaning` entry. Read it here so the
+    // published def freezes the same values the rebuild started with. `shape_def_for` is the
+    // physical-shape SSOT and deliberately does not widen for eps (eps is a search-time input,
+    // not geometry), so the pool-derived values are set explicitly on the published def.
+    let opened = rebuild_pool::open(
+        index_id,
+        def.pad_stride_bytes,
+        nlist.max(nlist_fine),
+        u32::from(def.dims) * 4,
+        levels == LEVELS_TWO,
+    )
+    .map_err(VectorCanisterError::from)?;
+    let mut published = published;
+    published.eps_query_bps = opened.eps_query_bps;
+    published.eps_fine_bps = opened.eps_fine_bps;
     definition_store::insert(index_id, published)
         .map(|_| ())
         .map_err(VectorCanisterError::from)?;

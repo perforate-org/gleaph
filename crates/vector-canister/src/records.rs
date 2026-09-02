@@ -2094,6 +2094,18 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "out of range")]
+    fn def_decode_fails_closed_on_out_of_range_eps_bps() {
+        // A frozen ε₂ bps above `MAX_VECTOR_EPS_BPS` (and not the ∞ sentinel) is corrupt durable
+        // state: decode must fail closed rather than silently degrade the pruning behavior.
+        let mut bytes = vec![0u8; VECTOR_INDEX_DEF_BYTES];
+        // A valid flat def (levels = 1, tier off) so decode reaches the ε₂ bps fields.
+        bytes[41] = LEVELS_FLAT;
+        bytes[59..63].copy_from_slice(&(MAX_VECTOR_EPS_BPS + 1).to_le_bytes());
+        let _ = VectorIndexDef::from_bytes(Cow::Borrowed(&bytes));
+    }
+
+    #[test]
     fn canonical_code_stride_matches_v1_shape() {
         // The WHT rotation needs a power-of-two domain, so `P = next_pow2(dims)`.
         // d1536: P = 2048, 32 words -> aux 8 + 256 = 264. d768 -> P = 1024 -> 136.

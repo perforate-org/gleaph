@@ -699,7 +699,9 @@ forward_vector!(
         nlist: u32,
         sample_limit: u32,
         fine_nlist: Option<u32>,
-        code_tier: Option<bool>
+        code_tier: Option<bool>,
+        eps_query_bps: Option<u32>,
+        eps_fine_bps: Option<u32>
     ),
     ()
 );

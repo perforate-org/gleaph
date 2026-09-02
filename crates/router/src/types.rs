@@ -1900,6 +1900,14 @@ pub struct SetVectorMaintenancePolicyArgs {
     pub scan_max_pages: u32,
     pub rebuild_max_subjects: u32,
     pub cleanup_max_work: u32,
+    /// Target-generation two-level fan-in (`Some(f)`, `f >= 2`); `None` keeps flat (Slice 9).
+    pub target_fine_nlist: Option<u32>,
+    /// Target-generation RaBitQ code tier; `None` keeps tier off (Slice 9).
+    pub code_tier: Option<bool>,
+    /// Target-generation coarse-stage ε₂ pruning in basis points; `None` = `0` (Slice 9).
+    pub eps_query_bps: Option<u32>,
+    /// Target-generation leaf-stage ε₂ pruning in basis points; `None` = `0` (Slice 9).
+    pub eps_fine_bps: Option<u32>,
 }
 
 /// Operator-facing view of a stored vector maintenance policy (ADR 0031 Slice 10).
@@ -1914,6 +1922,10 @@ pub struct VectorMaintenancePolicyView {
     pub scan_max_pages: u32,
     pub rebuild_max_subjects: u32,
     pub cleanup_max_work: u32,
+    pub target_fine_nlist: Option<u32>,
+    pub code_tier: Option<bool>,
+    pub eps_query_bps: Option<u32>,
+    pub eps_fine_bps: Option<u32>,
 }
 
 impl From<VectorMaintenancePolicyRecord> for VectorMaintenancePolicyView {
@@ -1928,6 +1940,10 @@ impl From<VectorMaintenancePolicyRecord> for VectorMaintenancePolicyView {
             scan_max_pages: record.scan_max_pages,
             rebuild_max_subjects: record.rebuild_max_subjects,
             cleanup_max_work: record.cleanup_max_work,
+            target_fine_nlist: record.target_fine_nlist,
+            code_tier: record.code_tier,
+            eps_query_bps: record.eps_query_bps,
+            eps_fine_bps: record.eps_fine_bps,
         }
     }
 }

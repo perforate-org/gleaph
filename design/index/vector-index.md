@@ -572,6 +572,14 @@ select partition p iff dist(q, c_p) <= (1 + eps_query) * dist(q, c_best)
 `eps_query` is a per-definition setting. The selected partitions are scanned **in full** (no mid-scan
 truncation; `VectorSearchResult` carries no partial marker).
 
+**Per-level ε₂ pruning (Slice 9, implemented)**: the definition freezes two basis-point thresholds —
+`eps_query_bps` (coarse stage) and `eps_fine_bps` (leaf stage, two-level only) — chosen at rebuild
+start and carried through the rebuild-pool header into the published def. The threshold factor is
+`1 + bps / 10_000` computed at query time in `f64` and rounded once into the selection domain's
+`f32` (deterministic across replicas). `0` (the default) scans only the nearest partition(s);
+`u32::MAX` is the full-scan sentinel (replaces the retired in-code `f32::INFINITY`). Floats are
+never durable.
+
 ### Hierarchical partition structure (**implemented in Slice 5, 2026-08-24**; flat remains the default)
 
 The partition structure is level-generic and **implemented**: `VectorIndexDef` carries `levels: u8`
@@ -598,9 +606,9 @@ two-level generation stores its coarse set inside `IVF_CENTROIDS` under the coar
 - **Search iterates levels**: score the query against the cached level-0 coarse set, ε₂-select
   subtrees, read each selected subtree's contiguous child range `[c·f, (c+1)·f)` straight from
   stable memory (fine sets are **never cached** — an extension of the active-version cache scope),
-  ε₂-select leaves within it with the same rule, then scan the selected leaves in full. The same
-  single `eps_query` value applies at both stages; per-level eps is a deferred follow-up. The
-  untrained/exact-scan fallback walks all leaves.
+  ε₂-select leaves within it with the same rule, then scan the selected leaves in full. The
+  coarse stage uses `def.eps_query_bps` and the leaf stage `def.eps_fine_bps` (Slice 9: per-level
+  ε₂ pruning, independent per stage). The untrained/exact-scan fallback walks all leaves.
 - **Bounds stay per level**: `MAX_NLIST` applies to the coarse count and to each subtree's fan-in,
   and the total leaf count is capped by `MAX_LEAVES = 65,536` at start time (u32 partition-id
   packing plus per-generation head capacity). The rebuild-pool region charges both levels at the
@@ -616,10 +624,11 @@ two-level generation stores its coarse set inside `IVF_CENTROIDS` under the coar
    stable-read per use.
 2. Query × centroids of the active generation's scoring set (SIMD; `nlist <= MAX_NLIST` per level):
    the leaf set for flat, the coarse set for `levels = 2`.
-3. ε₂ partition selection. Two-level (`levels = 2`): ε₂-select coarse subtrees, then read each
-   selected subtree's contiguous leaf range `[c·f, (c+1)·f)` and ε₂-select within it with the same
-   single `eps_query`, returning globally ascending leaf ids; an unreadable child range widens to
-   the full subtree (fail-open) and the untrained fallback walks all leaves.
+3. ε₂ partition selection. Two-level (`levels = 2`): ε₂-select coarse subtrees with
+   `def.eps_query_bps`, then read each selected subtree's contiguous leaf range `[c·f, (c+1)·f)`
+   and ε₂-select within it with `def.eps_fine_bps` (Slice 9: per-level ε₂ pruning), returning
+   globally ascending leaf ids; an unreadable child range widens to the full subtree (fail-open)
+   and the untrained fallback walks all leaves.
 4. Per selected partition: read extents as contiguous spans → tombstone skip (bit 31) → positional
    validation against the subject map → (opt-in) row-level bound pruning → SIMD. When the scanned
    generation carries the code tier (ADR 0079), this step instead runs Stage A (per-row XNOR+popcount
@@ -807,13 +816,16 @@ amend the planned vector boundary above.
    (~148K rows/partition at `nlist ≈ 677`) an infeasible ~24B instructions — a concrete, measured
    argument for the two-level hierarchy at scale, not just a structural one.
 3. **Scoring formulation** (**Slice 6 decision: sub-square + early-exit is the default; ε default
-   confirmed at `0.0`**): the d=1536 ε₂ sweep isolates the cost model — ~144K ins/centroid (fixed,
-   `nlist`-scaled) and ~164K ins/row (per scanned row) — so `DEFAULT_EPS_QUERY = 0.0` is the
-   cost-minimal default (ε>0 strictly adds scanned-partition row cost: one→two partitions measured
-   +7% at nlist256, +53% at nlist64). The recall cost of a single-partition default is documented by
-   `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`; per-definition
-   `eps_query` (the operator recall escape hatch) is designed but not yet wired into the definition
-   config — a follow-up.
+   confirmed at `0.0`; Slice 9 wired the per-definition escape hatch**): the d=1536 ε₂ sweep
+   isolates the cost model — ~144K ins/centroid (fixed, `nlist`-scaled) and ~164K ins/row (per
+   scanned row) — so `eps = 0` is the cost-minimal default (ε>0 strictly adds scanned-partition
+   row cost: one→two partitions measured +7% at nlist256, +53% at nlist64). The recall cost of a
+   single-partition default is documented by
+   `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`. The per-definition
+   `eps_query_bps` / `eps_fine_bps` operator recall escape hatch is now wired (Slice 9): frozen at
+   rebuild start, carried through the rebuild-pool header into the published def, and consumed by
+   the default search path (`vector_search`); the test/bench tuned entry still applies one
+   `SearchTuning::eps_query` to both stages.
 4. **Page size / slots per page**: config tuned by the scan-cost measurement.
 
 ## Related documents

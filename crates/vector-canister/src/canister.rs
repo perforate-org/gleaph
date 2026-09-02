@@ -307,6 +307,8 @@ pub(crate) fn admin_start_vector_rebuild(
     sample_limit: u32,
     fine_nlist: Option<u32>,
     code_tier: Option<bool>,
+    eps_query_bps: Option<u32>,
+    eps_fine_bps: Option<u32>,
 ) -> Result<(), String> {
     store::admin_start_vector_rebuild_with_fine(
         msg_caller(),
@@ -315,6 +317,8 @@ pub(crate) fn admin_start_vector_rebuild(
         sample_limit,
         fine_nlist,
         code_tier,
+        eps_query_bps,
+        eps_fine_bps,
     )
     .map_err(|e| e.to_string())
 }

@@ -742,8 +742,17 @@ fn i8_clustered_req(dims: u16, value: f32) -> VectorSearchRequest {
 fn bench_rebuild_full_twolevel_d768_i8_c16_f16() -> canbench_rs::BenchResult {
     let dims = 768u16;
     setup_i8_clustered_store(dims, REBUILD_N, 16);
-    admin_start_vector_rebuild_with_fine(router(), INDEX_ID, 16, REBUILD_N + 1, Some(16), None)
-        .expect("two-level start");
+    admin_start_vector_rebuild_with_fine(
+        router(),
+        INDEX_ID,
+        16,
+        REBUILD_N + 1,
+        Some(16),
+        None,
+        None,
+        None,
+    )
+    .expect("two-level start");
     let req = i8_clustered_req(dims, 384.0);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_rebuild_full_twolevel_d768_i8_c16_f16");
@@ -999,6 +1008,10 @@ fn maint_req(target_nlist: u32) -> VectorMaintenanceStepRequest {
         scan_max_pages: REBUILD_N,
         rebuild_max_subjects: REBUILD_N,
         cleanup_max_work: REBUILD_N,
+        target_fine_nlist: None,
+        code_tier: None,
+        eps_query_bps: None,
+        eps_fine_bps: None,
     }
 }
 
@@ -1506,6 +1519,8 @@ fn run_rebuild_to_publish(nlist: u32, fine: Option<u32>, code_tier: bool) {
         REBUILD_N + 1,
         fine,
         Some(code_tier),
+        None,
+        None,
     )
     .expect("tier rebuild start");
     loop {
@@ -1625,6 +1640,8 @@ fn bench_rebuild_full_twolevel_d768_i8_c16_f16_tieron() -> canbench_rs::BenchRes
         REBUILD_N + 1,
         Some(16),
         Some(true),
+        None,
+        None,
     )
     .expect("two-level tier-on start");
     let req = i8_clustered_req(dims, 384.0);

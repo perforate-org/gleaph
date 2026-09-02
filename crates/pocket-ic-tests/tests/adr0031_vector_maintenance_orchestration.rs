@@ -228,6 +228,10 @@ fn policy_args(enabled: bool) -> SetVectorMaintenancePolicyArgs {
         scan_max_pages: 8,
         rebuild_max_subjects: 4,
         cleanup_max_work: 8,
+        target_fine_nlist: None,
+        code_tier: None,
+        eps_query_bps: None,
+        eps_fine_bps: None,
     }
 }
 

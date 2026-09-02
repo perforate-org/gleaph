@@ -20,6 +20,8 @@ fn start_tier(fine_nlist: Option<u32>) {
         SAMPLE_LIMIT,
         fine_nlist,
         Some(true),
+        None,
+        None,
     )
     .expect("tier-on rebuild starts");
 }

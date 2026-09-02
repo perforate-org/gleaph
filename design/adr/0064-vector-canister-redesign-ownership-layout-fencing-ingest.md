@@ -272,7 +272,9 @@ truncation, deterministic top-k, ADR 0034 allowlist) is unchanged. The partition
 **level-generic and implemented (Slice 5)**: flat is the degenerate `levels = 1` case; a leaf
 `partition_id` packs its path (`coarse × nlist_fine + fine`); a two-level rebuild trains
 `TrainCoarse` over the whole pool then per-subtree `TrainFine` jobs, and search ε₂-selects in two
-stages under the same single `eps_query`. Training work areas are bounded per level by the
+stages under the per-level ε₂ pruning (Slice 9): the coarse stage uses `def.eps_query_bps` and the
+leaf stage `def.eps_fine_bps`, both frozen at rebuild start in basis points (`0` = nearest-only,
+`u32::MAX` = full scan). Training work areas are bounded per level by the
 rebuild-pool region budget — see `design/index/vector-index.md`.
 
 ### 10. Compaction = rebuild; plus an opt-in bounded slab reclaim
@@ -377,9 +379,10 @@ including `markerless_frontier_catalog` total 52,080,138 and scope 52,079,143 in
    `nlist` envelope. Hierarchy deployment is **implemented (`levels = 2`)**: `admin_start_vector_rebuild`
    takes `fine_nlist`, training splits into `TrainCoarse`/`TrainFine` over the dedicated
    rebuild-pool region (`VECTOR_REBUILD_POOL`, MemoryId 18, layout v2 with the per-row coarse-id
-   array), and search ε₂-selects in two stages under one shared `eps_query`; measured on clustered
+   array), and search ε₂-selects in two stages under the per-level ε₂ pruning (Slice 9: coarse
+   `eps_query_bps` / leaf `eps_fine_bps`, frozen at rebuild start); measured on clustered
    d768 I8 at `c = f = 16`, the two-level pipeline costs ~1.79B instructions against ~4.10B for a
-   flat rebuild at the same 256-leaf count. Per-level eps configuration remains future work.
+   flat rebuild at the same 256-leaf count.
 
 ## Required design updates
 
