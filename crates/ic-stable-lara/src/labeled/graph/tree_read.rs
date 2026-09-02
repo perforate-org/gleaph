@@ -162,10 +162,9 @@ where
     // For depth 1 the leaf array IS the root array, so the walk is
     // identical to the prior single-hop read. For depth 2+ the resolver
     // descends the interior hop chain to find each leaf.
-    let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
-    )
-    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let leaf_count =
+        u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf_count fits u32 for MAX_DEPTH=3");
     // The structural `derived_root_len` is the depth-1 root length
     // (= leaf_count for a depth-1 bucket). At depth 2+ the actual
     // physical root length is shorter (root_len entries, each
@@ -514,10 +513,9 @@ where
         return Ok(());
     }
     let stored_slots = bucket.stored_slots;
-    let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
-    )
-    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let leaf_count =
+        u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let mut property_buf = vec![0u8; usize::from(w)];
     match order {
         OutEdgeOrder::Ascending => {

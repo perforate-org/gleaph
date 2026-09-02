@@ -218,8 +218,7 @@ where
         // regression (w > 0 tree buckets would otherwise grow
         // unbounded).
         let live_prop_root = pre_stored_slots.div_ceil(k_prop);
-        let k_max =
-            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+        let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         if live_prop_root > k_max {
             // Surface the typed error to the caller; release the
             // edge LTB blocks we already minted before returning.

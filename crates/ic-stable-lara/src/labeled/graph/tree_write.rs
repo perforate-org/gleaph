@@ -309,8 +309,7 @@ where
                 let new_prop_root_len = old_prop_root_len + 1;
                 let new_combined_len = old_edge_root_len + new_prop_root_len;
                 // F-2 cap guard.
-                let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX)
-                    .expect("R_MAX fits u32");
+                let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
                 if new_prop_root_len > k_max {
                     return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
                         stored_slots: next_stored,
@@ -529,8 +528,7 @@ where
     };
     // F-2 cap guard.
     if w > 0 {
-        let k_max =
-            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+        let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         if new_property_root_len > k_max {
             return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
                 stored_slots: next_stored,
@@ -1314,10 +1312,9 @@ where
 {
     debug_assert_eq!(E::BYTES, 4);
     let stored_slots = bucket.stored_slots;
-    let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
-    )
-    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let leaf_count =
+        u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let mut out = Vec::with_capacity(leaf_count as usize);
     for block_index in 0..leaf_count {
         out.push(resolve_leaf_block_id(graph, bucket, block_index)?);
@@ -1440,8 +1437,7 @@ where
     };
     // F-2 cap guard.
     if w > 0 {
-        let k_max =
-            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+        let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let kp = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).map_err(
             |_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
         )? / u32::from(w);
@@ -1700,10 +1696,9 @@ where
     // structural `derived_root_len` may be inconsistent with the
     // physical layout (a manually-deepened bucket at stored=1,048,576
     // has structural root_len=1024 but physical root_len=1).
-    let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
-    )
-    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    let leaf_count =
+        u32::try_from((u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let physical_depth = bucket.tree_mode_physical_depth();
     let old_physical_root_len: u32 = match physical_depth {
         1 => leaf_count,
@@ -1829,8 +1824,7 @@ where
     let leaf_count =
         u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
-    let k_for_avoid =
-        u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+    let k_for_avoid = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let old_physical_root_len: u32 = match physical_depth {
         1 => leaf_count,
         2 => leaf_count.div_ceil(k_for_avoid),
@@ -2969,8 +2963,7 @@ mod tests {
         };
         // The structural root_len for stored=1,048,576 is 1024 (the
         // bucket is at the depth-1 fan-out cap, not pushed to depth 2).
-        let structural_root_len =
-            crate::labeled::tree_csr::root_len(bucket_before.stored_slots);
+        let structural_root_len = crate::labeled::tree_csr::root_len(bucket_before.stored_slots);
         assert_eq!(structural_root_len, 1024);
         let original_edge_start = bucket_before.edge_start();
         let mut original_leaf_ids: Vec<u32> = Vec::with_capacity(1024);
@@ -3234,8 +3227,7 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(1);
-        let r_max =
-            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+        let r_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let target_stored: u32 = (BLOCK_B as u32) * r_max; // 2^20
         promote_test_bucket(&graph, vid, label, target_stored);
         // Verify the pre-insert state is depth 1, root_len = R_MAX.

@@ -93,9 +93,7 @@ pub(crate) fn derive_depth(stored_slots: u32) -> u32 {
     // Past the structural boundary. Caller must fail-closed before any
     // canonical write; this panic matches the ADR's "fail-closed structural
     // boundary" rule for the evidence-only prototype.
-    panic!(
-        "tree_csr: stored_slots={stored_slots} exceeds MAX_DEPTH={MAX_DEPTH} coverage"
-    );
+    panic!("tree_csr: stored_slots={stored_slots} exceeds MAX_DEPTH={MAX_DEPTH} coverage");
 }
 
 /// Required root array length for a given `stored_slots` at the derived depth.
