@@ -35,8 +35,7 @@
 //! [`crate::VectorMemory`] (via [`crate::test_support::vector_memory`]) and
 //! production wiring can use [`ic_stable_structures::memory_manager::VirtualMemory`].
 //!
-//! Scope: bench-only; not wired into the production path. Mirrors
-//! `hub_tree_prototype.rs`'s evidence-only contract.
+//! Scope: bench-only; not wired into the production path.
 //!
 //! # Read/Write API selection (Plan 0322)
 //!
