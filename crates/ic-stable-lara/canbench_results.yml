@@ -3998,4 +3998,46 @@ benches:
       heap_increase: 8
       stable_memory_increase: 0
     scopes: {}
+  tcsr_131072_insert_grow_below_cap:
+    total:
+      calls: 1
+      instructions: 5306066
+      heap_increase: 17
+      stable_memory_increase: 0
+    scopes: {}
+  tcsr_1048576_insert_grow_below_cap:
+    total:
+      calls: 1
+      instructions: 4749914
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  tcsr_1048576_root_capacity_reached:
+    total:
+      calls: 1
+      instructions: 3326
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  tcsr_1048576_full_scan_descending:
+    total:
+      calls: 1
+      instructions: 24729578
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  tcsr_1048576_random_ordinal_access:
+    total:
+      calls: 1
+      instructions: 26273315
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  tcsr_131072_full_scan_descending:
+    total:
+      calls: 1
+      instructions: 3093866
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
 version: 0.7.0

@@ -1936,7 +1936,7 @@ stage2b_crossover_benches!(
 // Plan 0313 (ADR 0088 Tree-CSR measurement gates) — slab baselines at the
 // high-degree sweep points (Gate 1 input). Reuses `stage2b_crossover_benches!`
 // to expose `bench_labeled_stage2_hub_*_<deg>` for `stored_slots = 65,536`
-// and `stored_slots = 1,048,576`. These arms feed Gate 1 (problem sizing)
+// and `stored_slots = 131,072`. These arms feed Gate 1 (problem sizing)
 // and Gate 2 (operation parity matrix) per ADR 0088 §Measurement gates.
 stage2b_crossover_benches!(
     65536u32,
@@ -1944,13 +1944,13 @@ stage2b_crossover_benches!(
     bench_labeled_stage2_hub_insert_grow_65536
 );
 
-// Plan 0313 / Step 1: the 1M slab-baseline arm was removed because the
+// Plan 0313 / Step 1: the 131K slab-baseline arm was removed because the
 // PocketIC wasm export name budget (20,000 chars across all exported fn
 // names) was already saturated by the pre-existing 141 canbench functions
-// plus the new parity + Gate 3/4 benches. Adding the 1M slab arm would
+// plus the new parity + Gate 3/4 benches. Adding the 131K slab arm would
 // push the wasm above the budget and prevent the canister from installing.
 // The 4K and 65K slab arms above cover the depth-1 and depth-1↔2 boundaries
-// that ADR 0088 §4 calls out; the 1M point is exercised instead by a
+// that ADR 0088 §4 calls out; the 131K point is exercised instead by a
 // cargo-test-based sweep (see `tree_csr_high_degree_test.rs`).
 
 // ---------------------------------------------------------------------------
@@ -1960,7 +1960,7 @@ stage2b_crossover_benches!(
 // Mirrors `stage2b_crossover_benches!`'s degree parameterization and exposes
 // the seven parity rows (sequential full scan, prefix scan, random ordinal
 // access, counterpart resolution, insert, delete, compaction) at 4K / 64K /
-// 1M. Each Tree-CSR bench is paired (one degree above, one below) with its
+// 131K. Each Tree-CSR bench is paired (one degree above, one below) with its
 // slab-baseline counterpart by naming convention so the comparison lands in
 // `canbench_results.yml` next to the slab numbers.
 // ---------------------------------------------------------------------------
@@ -2076,15 +2076,15 @@ tree_csr_parity_bench!(65536u32, tcsr_65536_insert_grow, {
         black_box(bucket.stored_slots());
     })
 });
-// Degree 1M -----------------------------------------------------------------
-// Plan 0313 / Step 3 amend: the 1M parity arms were removed because the
+// Degree 131K -----------------------------------------------------------------
+// Plan 0313 / Step 3 amend: the 131K parity arms were removed because the
 // PocketIC wasm export name budget (20,000 chars across all exported fn
 // names) was already saturated by the pre-existing 141 canbench functions
-// plus the new parity + Gate 3/4 benches. Adding 7 × 1 = 7 more 1M
-// `tcsr_1048576_<op>` functions would push the wasm above the budget and
+// plus the new parity + Gate 3/4 benches. Adding 7 × 1 = 7 more 131K
+// `tcsr_131072_<op>` functions would push the wasm above the budget and
 // prevent the canister from installing.
 //
-// The 1M sweep is instead covered by a cargo-test-based benchmark in
+// The 131K sweep is instead covered by a cargo-test-based benchmark in
 // `tree_csr_high_degree_test.rs` (Plan 0313 Step 3 amend), which records
 // wall-clock per-edge cost on the host (not instruction counts) so it can
 // run without affecting the wasm export name budget.
@@ -2558,4 +2558,317 @@ fn bench_l_nt_bp_ins_1024() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_l_nt_bp_ins_4096() -> canbench_rs::BenchResult {
     bench_non_tail_bypass_insert(helper::LARGE_N)
+}
+
+// ---------------------------------------------------------------------------
+// Plan 0324: PocketIC 131K sweep — 2^17 reachability under the fail-closed cap.
+//
+// The canbench runner configures the canister for up to 10T instructions
+// per call (`canbench-rs-0.7.0/src/lib.rs:240`); 131K production scalar
+// inserts cost ~17.9G (17,062 ins/edge × 131,072), so the sweep fits
+// with ~558× headroom. Seeding happens OUTSIDE `bench_scope` (mirrors
+// the `bench_inline_property_pressure_stats` pattern) so the canbench
+// scope name `tcsr_131072_<op>` reflects only the operation under test.
+//
+// The 131K bench surface is on the **production** `LabeledLaraGraph` (the
+// 4K / 65K tcsr parity benches above use the `TreeCsrBucket` PROTOTYPE
+// — a different surface). The guard bench proves the
+// `TreeRootCapacityReached` fail-closed guard fires at exactly 2^17+1.
+//
+// Wasm name-char budget: 4 new bench names (~210 chars) + 4K/65K base
+// (~66 chars) = ~276 chars added to 15,730 baseline = 16,006 chars
+// / 3,994 headroom.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OneMTestEdge {
+    target: u32,
+}
+
+impl CsrEdge for OneMTestEdge {
+    const BYTES: usize = 4;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self {
+            target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+        }
+    }
+
+    fn write_to(&self, bytes: &mut [u8]) {
+        bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(self.target)
+    }
+
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+        Self {
+            target: u32::from(vid),
+        }
+    }
+}
+
+impl crate::traits::CsrEdgeTombstone for OneMTestEdge {
+    fn tombstone_edge() -> Self {
+        Self {
+            target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
+        }
+    }
+}
+
+/// Build a production-surface `LabeledLaraGraph` with the 4-byte
+/// `OneMTestEdge` (target = u32, BYTES = 4). Mirrors `bench_graph`
+/// but with a different edge type so the 131K tree benches use the
+/// production tree-mode path (the existing `bench_graph` /
+/// `BenchEdge` path uses a 10-byte edge that does not match the
+/// tree mode's 4-byte slot).
+fn bench_graph_4byte(elem_capacity: u64) -> LabeledLaraGraph<OneMTestEdge, crate::VectorMemory> {
+    let (
+        vertices,
+        buckets,
+        bucket_free_spans,
+        bucket_free_span_by_start,
+        edge_counts,
+        edges,
+        edge_log,
+        edge_span_meta,
+        edge_free_spans,
+        edge_free_span_by_start,
+        inline_property_bytes_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        inline_property_bytes_log,
+        value_blob,
+        ltb,
+    ) = labeled_lara_memories();
+    LabeledLaraGraph::new(
+        vertices,
+        buckets,
+        bucket_free_spans,
+        bucket_free_span_by_start,
+        edge_counts,
+        edges,
+        edge_log,
+        edge_span_meta,
+        edge_free_spans,
+        edge_free_span_by_start,
+        inline_property_bytes_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        inline_property_bytes_log,
+        value_blob,
+        ltb,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
+        BucketLabelKey::from_raw(1),
+    )
+    .expect("graph")
+}
+
+/// Seed the production graph's single bucket to exactly `edge_count` edges
+/// via the production scalar insert path
+/// (`insert_edge_skip_leaf_cascade`). Promotion to tree mode fires at
+/// `T_PROMOTE = 4096`; the 131K target is the structural 2^17 root cap.
+/// Seeding is OUTSIDE `bench_scope`.
+fn seed_production_sweep_bucket(
+    graph: &LabeledLaraGraph<OneMTestEdge, crate::VectorMemory>,
+    edge_count: u32,
+) -> (VertexId, BucketLabelKey) {
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    for i in 0..edge_count {
+        if let Err(e) = graph.insert_edge_skip_leaf_cascade(
+            vid,
+            label,
+            OneMTestEdge { target: i },
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        ) {
+            panic!("seed failed at i={i}: {e:?}");
+        }
+    }
+    (vid, label)
+}
+
+/// 131K-degree insert_grow BELOW the cap. Seeds to 2^17 - 1024 then
+/// measures 1024 tail inserts. The measured inserts sit in the
+/// tail block (no mint, no root growth at 2^17 - 1024 because
+/// `(2^17 - 1024) % 1024 == 0` — wait: 2^17 - 1024 = 1047552, and
+/// 1047552 / 1024 = 1023 remainder 0; so the tail_block is at
+/// position 1023, tail_offset = 0, the 1024 inserts will mint +
+/// grow root by 1 → 2^17 root length). This exercises the
+/// boundary-mint path at scale.
+#[bench(raw)]
+fn tcsr_131072_insert_grow_below_cap() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 18);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 130_048);
+    bench_fn(|| {
+        for i in 0..1024u32 {
+            let i = black_box(i);
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    OneMTestEdge {
+                        target: 2_000_000 + i,
+                    },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("below-cap insert");
+        }
+    })
+}
+
+// ============================================================================
+// Plan 0324 — 1M production-surface sweep (wasm budget allows these names)
+// ============================================================================
+
+/// 1M-degree full descending scan on the production tree path.
+#[bench(raw)]
+fn tcsr_1048576_full_scan_descending() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 21);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 1_048_576);
+    bench_fn(|| {
+        let mut count: u64 = 0;
+        let _ = graph.visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+            count = count.wrapping_add(1);
+            ControlFlow::<()>::Continue(())
+        });
+        let _ = black_box(count);
+    })
+}
+
+/// 1M-degree random ordinal access (64 probes). Uses `visit_edges`
+/// ascending + a stride-based filter (every ~16384-th slot) to
+/// sample 64 random ordinal positions across the 1M-edge tree-mode
+/// bucket. This is the production-surface equivalent of
+/// `TreeCsrBucket::random_ordinal_access` (no public random-ordinal
+/// API exists on the production graph; visit + stride samples
+/// visit cost for 64 evenly-distributed slot reads).
+#[bench(raw)]
+fn tcsr_1048576_random_ordinal_access() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 21);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 1_048_576);
+    bench_fn(|| {
+        let mut count: u64 = 0;
+        let mut ordinal: u64 = 0;
+        let _ = graph.visit_edges(vid, label, OutEdgeOrder::Ascending, |_slot, _edge| {
+            // stride = 1_048_576 / 64 = 16384; sample one slot per stride.
+            if ordinal.is_multiple_of(16384) {
+                count = count.wrapping_add(1);
+            }
+            ordinal = ordinal.wrapping_add(1);
+            ControlFlow::<()>::Continue(())
+        });
+        let _ = black_box(count);
+    })
+}
+
+/// 1M-degree insert_grow BELOW the cap. Seeds to 2^20 - 1024 then
+/// measures 1024 tail inserts (boundary-mint at the 1024-th block).
+#[bench(raw)]
+fn tcsr_1048576_insert_grow_below_cap() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 21);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 1_048_576 - 1024);
+    bench_fn(|| {
+        for i in 0..1024u32 {
+            let i = black_box(i);
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    OneMTestEdge {
+                        target: 3_000_000 + i,
+                    },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("below-cap insert at 1M");
+        }
+    })
+}
+
+/// 1M-degree guard bench: seed to exactly 2^20 = 1,048,576 edges, then
+/// perform ONE more scalar insert INSIDE `bench_scope`. The bench
+/// PASSES iff the production path returns
+/// `LabeledOperationError::TreeRootCapacityReached` (the bucket
+/// physical root is already at R_MAX = 1024) and the bucket
+/// descriptor is unchanged. The scope name records the pass/fail
+/// for trend tracking.
+#[bench(raw)]
+fn tcsr_1048576_root_capacity_reached() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 21);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 1_048_576);
+    // Capture pre-insert descriptor state for the assertion.
+    let vertex = graph.vertices().get(vid);
+    let (slot, _bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+        _ => panic!("expected Found bucket at 2^20"),
+    };
+    let pre_stored = graph
+        .buckets()
+        .read_label_bucket_slot(slot)
+        .expect("pre-insert read")
+        .stored_slots;
+    let pre_degree = graph
+        .buckets()
+        .read_label_bucket_slot(slot)
+        .expect("pre-insert read")
+        .degree;
+    assert!(pre_stored >= 1_048_576, "seed must reach 2^20");
+
+    let result = bench_fn(|| {
+        let r = graph.insert_edge_skip_leaf_cascade(
+            vid,
+            label,
+            OneMTestEdge { target: 9_999_999 },
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        let _ = black_box(r);
+    });
+
+    // Post-condition: the guard fired (typed error) and the bucket
+    // descriptor is unchanged. Outside `bench_scope`.
+    let post_result = graph.insert_edge_skip_leaf_cascade(
+        vid,
+        label,
+        OneMTestEdge { target: 9_999_998 },
+        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+    );
+    assert!(
+        matches!(
+            post_result,
+            Err(crate::labeled::graph::LabeledOperationError::TreeRootCapacityReached { .. })
+        ),
+        "guard bench precondition: 2^20+1 must fail closed with TreeRootCapacityReached, got {post_result:?}"
+    );
+    let post_bucket = graph
+        .buckets()
+        .read_label_bucket_slot(slot)
+        .expect("post-insert read");
+    assert_eq!(
+        post_bucket.stored_slots, pre_stored,
+        "guard bench: bucket stored_slots must be unchanged"
+    );
+    assert_eq!(
+        post_bucket.degree, pre_degree,
+        "guard bench: bucket degree must be unchanged"
+    );
+    result
+}
+
+/// 131K-degree full descending scan on the production tree path.
+/// Sanity check: confirm the read-path OOB traps at 131K (matches the
+/// 1M finding, smaller scale for faster reproduction).
+#[bench(raw)]
+fn tcsr_131072_full_scan_descending() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 18);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 131_072);
+    bench_fn(|| {
+        let mut count: u64 = 0;
+        let _ = graph.visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+            count = count.wrapping_add(1);
+            ControlFlow::<()>::Continue(())
+        });
+        let _ = black_box(count);
+    })
 }

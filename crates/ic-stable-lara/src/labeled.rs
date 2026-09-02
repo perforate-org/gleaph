@@ -112,7 +112,14 @@ pub(crate) mod invariants;
 pub(crate) mod ltb_raw_block_store;
 /// Plan 0313 amend: cargo-test high-degree sweep (host wall-clock, 1M edges).
 #[cfg(test)]
-mod tree_csr_high_degree_test;
+mod tree_csr_high_degree_test {
+    // Plan 0324: the `#[ignore]`d prototype host tests in
+    // `tree_csr_high_degree_test.rs` were removed (user decision
+    // 2026-09-01). The module is kept as an empty stub so the
+    // `mod tree_csr_high_degree_test;` declaration compiles; the
+    // file is restored from git history if the high-degree host
+    // sweep is ever revived outside the canbench path.
+}
 /// ADR 0088 Tree-CSR prototype helpers (`B`, `derive_depth`, `root_len`) used
 /// by the production tree-mode read/write paths (Plan 0318 §Steps 5-7). The
 /// `TreeCsrBucket` value type remains evidence-only; the gate was removed when

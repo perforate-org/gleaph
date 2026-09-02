@@ -444,4 +444,192 @@ mod tests {
         .expect("collect");
         assert_eq!(collected.len() as u32, bucket.degree);
     }
+
+    /// Regression test for GAP-2026-09-02-001: `graph.visit_edges` on a
+    /// tree-mode bucket must NOT use the dense slab bulk-read path
+    /// (which would read from the LEG root region instead of the LTB
+    /// payload blocks and trap with `VectorMemory::read: out of bounds`).
+    /// The dispatch at `traverse.rs:786` routes tree-mode visits through
+    /// `visit_tree_mode_label_bucket_edges` (the LTB walker). This test
+    /// exercises that path end-to-end through the public `visit_edges` API.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_visit_edges_via_public_api_works_on_dense_tree_bucket() {
+        use crate::OutEdgeOrder;
+        use std::ops::ControlFlow;
+
+        let graph = make_test_graph();
+        let vid = VertexId::from(0);
+        let stored: u32 = 4096;
+        promote_bucket(&graph, vid, stored);
+        let vertex = graph.vertices().get(vid);
+        let label = BucketLabelKey::directed_from_index(1);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        // dense tree bucket precondition: degree == stored_slots, no log.
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.degree, stored);
+
+        // Descending via public `visit_edges` (regression: this used to trap).
+        // In descending order the FIRST visit is the highest slot (target = 100 + stored - 1)
+        // and the LAST visit is the lowest slot (target = 100).
+        let mut count_desc: u32 = 0;
+        let mut first_target_desc: u32 = 0;
+        let mut last_target_desc: u32 = 0;
+        let _ = graph
+            .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, edge| {
+                if count_desc == 0 {
+                    first_target_desc = edge.target;
+                }
+                last_target_desc = edge.target;
+                count_desc = count_desc.saturating_add(1);
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("visit_edges descending");
+        assert_eq!(count_desc, stored, "descending must visit all stored edges");
+        assert_eq!(
+            first_target_desc,
+            100 + stored - 1,
+            "first visit in desc is highest slot"
+        );
+        assert_eq!(last_target_desc, 100, "last visit in desc is lowest slot");
+
+        // Ascending via public `visit_edges` (regression: same trap).
+        let mut count_asc: u32 = 0;
+        let mut first_target_asc: u32 = 0;
+        let mut last_target_asc: u32 = 0;
+        let _ = graph
+            .visit_edges(vid, label, OutEdgeOrder::Ascending, |_slot, edge| {
+                if count_asc == 0 {
+                    first_target_asc = edge.target;
+                }
+                last_target_asc = edge.target;
+                count_asc = count_asc.saturating_add(1);
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("visit_edges ascending");
+        assert_eq!(count_asc, stored, "ascending must visit all stored edges");
+        assert_eq!(first_target_asc, 100, "first visit in asc is lowest slot");
+        assert_eq!(
+            last_target_asc,
+            100 + stored - 1,
+            "last visit in asc is highest slot"
+        );
+    }
+
+    /// Regression test for the tree-mode position contract (ADR 0088 §2):
+    /// `BucketEntryPosition` is a tombstone-inclusive bucket-local slot.
+    /// The previous `visit_edges` fix used `tree_mode_out_edges_collect` +
+    /// `enumerate()`, which yields **live-ordinal** positions (compressed
+    /// to 0..degree), violating the contract for tombstoned tree buckets.
+    /// This test promotes a 4096-slot tree bucket, tombstones slot 100,
+    /// then verifies that `visit_edges`:
+    ///   1. yields positions in the **tombstone-inclusive** range [0, 4096)
+    ///      (i.e. position 100 is yielded even though it holds a tombstone),
+    ///   2. visits 4096 slots (not 4095) because the visit must include the
+    ///      tombstoned slot,
+    ///   3. the slot 100 visitor sees a tombstone edge (target =
+    ///      `EDGE_TOMBSTONE_SENTINEL`).
+    /// For tombstoned tree buckets, the live-only fix would have
+    /// position 100 mapped to 100 in the live-ordinal space (skipping
+    /// over the tombstone in the wrong direction).
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tombstoned_tree_bucket_visit_preserves_logical_positions() {
+        use crate::OutEdgeOrder;
+        use crate::VertexId;
+        use crate::traits::CsrEdgeTombstone;
+        use std::ops::ControlFlow;
+
+        let graph = make_test_graph();
+        let vid = VertexId::from(0);
+        let stored: u32 = 4096;
+        promote_bucket(&graph, vid, stored);
+        let vertex = graph.vertices().get(vid);
+        let label = BucketLabelKey::directed_from_index(1);
+        let (slot_idx, bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket not found"),
+        };
+        assert!(bucket.is_tree_mode());
+        assert_eq!(bucket.degree, stored);
+        assert_eq!(bucket.stored_slots, stored);
+
+        // Tombstone slot 100 via the production tree-mode remove path.
+        super::super::tree_write::tree_mode_remove_edge_at_slot(
+            &graph, vid, slot_idx, &bucket, 100,
+        )
+        .expect("remove")
+        .expect("slot 100 in range");
+        // Re-read the bucket: degree decreased, stored_slots unchanged.
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after remove"),
+        };
+        assert_eq!(bucket_after.degree, stored - 1, "degree drops by 1");
+        assert_eq!(
+            bucket_after.stored_slots, stored,
+            "stored_slots is tombstone-inclusive (unchanged by tombstone)"
+        );
+
+        // Visit ascending. Expect 4096 visits (not 4095): slot 100 must
+        // be included even though it holds a tombstone, AND the position
+        // yielded must be 100 (tombstone-inclusive), not a live-ordinal
+        // offset that would skip past it.
+        let mut visited_positions: Vec<u32> = Vec::new();
+        let mut tombstone_seen_at: Option<u32> = None;
+        let _ = graph
+            .visit_edges(vid, label, OutEdgeOrder::Ascending, |slot, edge| {
+                if edge.is_tombstone_edge() && tombstone_seen_at.is_none() {
+                    tombstone_seen_at = Some(slot.raw());
+                }
+                visited_positions.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("visit_edges ascending");
+        assert_eq!(
+            visited_positions.len() as u32,
+            stored,
+            "ascending must visit all stored slots (tombstone-inclusive)"
+        );
+        assert_eq!(
+            tombstone_seen_at,
+            Some(100),
+            "tombstone at slot 100 must be visited at position 100 (tombstone-inclusive contract)"
+        );
+        // All positions 0..stored appear exactly once.
+        let mut sorted: Vec<u32> = visited_positions.clone();
+        sorted.sort_unstable();
+        let expected: Vec<u32> = (0..stored).collect();
+        assert_eq!(
+            sorted, expected,
+            "positions must cover 0..stored exactly once"
+        );
+
+        // Visit descending. Expect 4096 visits, tombstone at position 100.
+        let mut visited_positions_desc: Vec<u32> = Vec::new();
+        let mut tombstone_seen_desc: Option<u32> = None;
+        let _ = graph
+            .visit_edges(vid, label, OutEdgeOrder::Descending, |slot, edge| {
+                if edge.is_tombstone_edge() && tombstone_seen_desc.is_none() {
+                    tombstone_seen_desc = Some(slot.raw());
+                }
+                visited_positions_desc.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .expect("visit_edges descending");
+        assert_eq!(
+            visited_positions_desc.len() as u32,
+            stored,
+            "descending must visit all stored slots (tombstone-inclusive)"
+        );
+        assert_eq!(
+            tombstone_seen_desc,
+            Some(100),
+            "tombstone at slot 100 must be visited at position 100 in descending order too"
+        );
+    }
 }

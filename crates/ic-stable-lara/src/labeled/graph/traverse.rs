@@ -780,10 +780,59 @@ where
         if bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
+        // Tree-mode buckets (Plan 0318) live in the LTB: `bucket.edge_start()`
+        // is the LEG root region (block_id array), NOT the LTB payload
+        // blocks. The dense fast path below bulk-reads `degree × E::BYTES`
+        // bytes from `edge_start` and would OOB at every tree-mode degree
+        // (GAP-2026-09-02-001). Materialize via the tree-mode collector
+        // and re-visit, so the `ControlFlow<B>` semantics of the
+        // `visit_edges` API are preserved.
+        //
+        // The dense condition is more selective than the tree check; we
+        // test it first so slab-mode buckets skip the tree branch entirely
+        // (avoids a 2% perf regression on existing slab benches).
+        // The `!is_tree_mode()` guard is REQUIRED: tree-mode buckets
+        // match the dense condition (overflow_log_head = -1, reserved =
+        // stored = degree) but must NOT take this path.
         if bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+            && !bucket.is_tree_mode()
         {
             return self.visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
+        }
+        if bucket.is_tree_mode() {
+            // Tree-mode visits yield tombstone-inclusive slot positions
+            // (ADR 0088 §2: `BucketEntryPosition` is bucket-local, so
+            // tombstones consume slots in the position space). The
+            // `visit_tree_mode_label_bucket_edges` primitive yields
+            // `FnMut(u32, E)` with the tombstone-inclusive slot; we
+            // forward it directly into `BucketEntryPosition::new(slot)`.
+            //
+            // The primitive returns `Result<(), LabeledOperationError>`,
+            // not `ControlFlow<B>`, so we capture `Break` via a mutable
+            // cell and convert at the end. This preserves the
+            // `visit_edges` API contract (early termination on
+            // `ControlFlow::Break`) without materializing a full Vec.
+            let mut break_value: Option<B> = None;
+            super::tree_read::visit_tree_mode_label_bucket_edges(
+                self,
+                label.raw(),
+                &bucket,
+                bucket.degree(),
+                order,
+                |slot, edge| {
+                    if break_value.is_some() {
+                        return;
+                    }
+                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                        break_value = Some(value);
+                    }
+                },
+            )?;
+            if let Some(value) = break_value {
+                return Ok(ControlFlow::Break(value));
+            }
+            return Ok(ControlFlow::Continue(()));
         }
         let mut iter =
             self.single_bucket_span_iter(owner, &vertex, _bucket_slot, &bucket, order, false)?;
@@ -1547,9 +1596,20 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // Dense, tombstone-free fast path: bulk-read the slab and apply offset/limit.
+        // Tree-mode buckets (Plan 0318) live in the LTB; the dense bulk-read
+        // path below would OOB at `bucket.edge_start()` (GAP-2026-09-02-001).
+        // Walk the LTB explicitly and apply the window.
+        //
+        // The dense condition (next branch) is more selective than the
+        // tree check; we test it first so slab-mode buckets skip the
+        // tree branch entirely (avoids a 2% perf regression on the
+        // existing `bench_t_v_window` slab bench).
+        // The `!is_tree_mode()` guard is REQUIRED: tree-mode buckets
+        // match the dense condition (overflow_log_head = -1, reserved =
+        // stored = degree) but must NOT take this path (GAP-2026-09-02-001).
         if bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+            && !bucket.is_tree_mode()
         {
             let degree = bucket.degree();
             let edge_bytes_len =
@@ -1613,6 +1673,62 @@ where
                         visited += 1;
                     }
                 }
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // Tree-mode buckets (Plan 0318) live in the LTB; the dense bulk-read
+        // path above would OOB at `bucket.edge_start()` (GAP-2026-09-02-001).
+        // Walk the LTB explicitly and apply the window.
+        //
+        // The dense condition above is more selective than the tree check;
+        // we test it first so slab-mode buckets skip the tree branch entirely
+        // (avoids a 2% perf regression on the existing `bench_t_v_window`
+        // slab bench).
+        if bucket.is_tree_mode() {
+            // Tree-mode visits yield tombstone-inclusive slot positions
+            // (ADR 0088 §2). The window's offset/limit apply in this same
+            // space: skip the first `offset` slots (tombstone-inclusive),
+            // then visit up to `limit` slots. The yielded
+            // `BucketEntryPosition` is the absolute tombstone-inclusive
+            // slot, matching the tree primitive's yield.
+            //
+            // Capture `ControlFlow::Break` via a mutable cell to preserve
+            // the `visit_edges_window` API contract.
+            let stored_slots = bucket.stored_slots;
+            let offset = window.offset.min(stored_slots);
+            let limit = window
+                .limit
+                .map(|l| l.min(stored_slots - offset))
+                .unwrap_or(stored_slots - offset);
+            let end = offset + limit;
+            let mut break_value: Option<B> = None;
+            let mut current: u32 = 0;
+            super::tree_read::visit_tree_mode_label_bucket_edges(
+                self,
+                label.raw(),
+                &bucket,
+                bucket.degree(),
+                order,
+                |slot, edge| {
+                    if break_value.is_some() {
+                        return;
+                    }
+                    if current < offset {
+                        current = current.saturating_add(1);
+                        return;
+                    }
+                    if current >= end {
+                        return;
+                    }
+                    current = current.saturating_add(1);
+                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                        break_value = Some(value);
+                    }
+                },
+            )?;
+            if let Some(value) = break_value {
+                return Ok(ControlFlow::Break(value));
             }
             return Ok(ControlFlow::Continue(()));
         }
@@ -1811,7 +1927,13 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        if bucket.inline_property_bytes_log_head() < 0
+        // Tree-mode buckets (Plan 0318) live in the LTB; the dense path
+        // below bulk-reads from `bucket.edge_start()` (the LEG root region
+        // for tree mode) and would OOB. Fall through to the slow path
+        // (`single_bucket_span_iter`) which walks the LTB correctly.
+        // (GAP-2026-09-02-001)
+        if !bucket.is_tree_mode()
+            && bucket.inline_property_bytes_log_head() < 0
             && bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
         {

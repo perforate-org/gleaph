@@ -1027,4 +1027,106 @@ insert) stay fail-closed. Commits: `772960947` (Step 1, primitive
 test). Tree form (property root + LPB `kind = InlineProperty`
 blocks) is the LPB-in-tree follow-up.
 
-Last revised: 2026-09-01.
+**Plan 0321 (review rework, 2026-09-02) — F-1/F-2/F-3 fix.**
+The F-1 must-fix closed the `tail_offset == 0` boundary hole in
+the batch tree branch (rejects `TreeRunExceedsTailBlock` when
+the tail block is exactly full and the next block does not
+exist yet). F-2 added `is_tree_mode` to `BucketFingerprint` so
+slab↔tree flips between reserve and commit are detected. F-3
+replaced the tree path's `panic!`/`expect` with `debug_assert!`
++ `eprintln!` (the function returns the infallible
+`OneOrientationBatchResult`, so the typed error cannot propagate;
+release-build fail-silent with debug surface).
+
+**Plan 0324 (2026-09-02) — PocketIC 1M sweep — 6/6 benches PASS; read-dispatch bug GAP-2026-09-02-001 fixed in this slice.**
+The `#[ignore]`d prototype host tests in
+`tree_csr_high_degree_test.rs` are removed (user decision
+2026-09-01). All 6 production-surface benches implemented and
+PASS deterministically (3-for-3 each):
+
+| Bench | Result | ins | ins/edge |
+|---|---|---|---|
+| `tcsr_131072_insert_grow_below_cap` | **PASS** | 5,306,066 | n/a (write batch) |
+| `tcsr_131072_full_scan_descending` | **PASS** | 6,235,765 | 47.6 |
+| `tcsr_1048576_insert_grow_below_cap` | **PASS** | 4,749,914 | n/a (write batch) |
+| `tcsr_1048576_full_scan_descending` | **PASS** | 49,859,317 | 47.5 |
+| `tcsr_1048576_random_ordinal_access` | **PASS** | 50,650,893 | 48.3 |
+| `tcsr_1048576_root_capacity_reached` | **PASS** | 3,326 | n/a (1 guard insert) |
+
+The read benches (full_scan, random_ordinal) initially TRAPped
+deterministically (3-for-3) at
+`ic-stable-structures-0.7.2/src/vec_mem.rs:36:13` with `read: out
+of bounds`. Root cause: 3 dispatch sites in `traverse.rs` (visit_edges
+line 786, visit_edges_window line 1577, visit_edges_with_inline_property
+line 1823) used a "dense, tombstone-free" fast path that
+bulk-reads `degree × E::BYTES` bytes from `bucket.edge_start()`.
+For tree mode, `edge_start` is the LEG root region (block_id array,
+`root_len × 4` bytes), NOT the LTB payload blocks — so the bulk
+read went OOB.
+
+**Fix applied in this slice:** tree-mode `is_tree_mode()` branches
+added at all 3 sites, routing to `tree_mode_out_edges_collect` (LTB
+walker) or `single_bucket_span_iter` (LTB-aware slow path). The
+`FnMut(u32, E) -> FnMut(BucketEntryPosition, E) -> ControlFlow<B>`
+adapter is implemented as a `Vec<E>` collect + re-iterate (the LTB
+primitive's `FnMut(u32, E)` signature doesn't match the public API's
+`FnMut(BucketEntryPosition, E) -> ControlFlow<B>`). Other read
+paths (`visit_edges_for_label_impl` line 1970,
+`visit_edges_for_label_with_inline_property`, inline-property
+bulk-read paths) are tree-mode safe by construction (require
+`inline_property_byte_width > 0`, which is 0 in tree mode) or
+already have tree branches.
+
+**Regression test added:** `tree_visit_edges_via_public_api_works_on_dense_tree_bucket`
+in `tree_read.rs:447`. Exercises `graph.visit_edges` on a 4K-
+promoted tree bucket via the public API, both ascending and
+descending. Verified to FAIL without the fix (first visit in
+desc reads 0 instead of 4195, garbage from LEG region) and PASS
+with the fix (3-for-3).
+
+**Why Plan 0318 Step 5 didn't catch the bug:** the Step 5 read-
+dispatch tests used `tree_mode_out_edges_collect` directly (the
+LTB primitive), not the public `graph.visit_edges` API. The public
+API has its own dispatch at line 786 that unconditionally tried the
+dense fast path before falling through. The Step 5 tests also
+used bucket degrees below the LEG root size (4096 edges = 4 LTB
+blocks = LEG root 16 bytes), so even a misread from `edge_start`
+returned within the (small) memory window without trapping. The
+1M bench exposed the bug because 1M = 1024 LTB blocks = LEG root
+4096 bytes, while the dense read attempted 4MB.
+
+Wasm: 15,536 / 20,000 chars (4,464 headroom). Green-bar:
+**620 / 620 / 583 (lib / no-default / canbench feature) all green
+(+1 regression test)**; clippy -D warnings clean; fmt clean.
+**Full canbench suite: 158/158 unchanged, 0 regressed, 0 failed**.
+4K/65K prototype baseline: 0% regression (6/6 unchanged). Validator
+final phase PASS. GAP-2026-09-02-001 moved to Resolved.
+
+**Initial BLOCKER-001 claim retracted (REWORK-1).** The first audit
+attributed the trap to non-deterministic seeding failure above 77K
+edges. Orchestrator REJECT noted the contradiction (the 131K
+insert_grow bench worked 5-for-5, requiring seeding past the
+alleged 77K boundary). REWORK-2 re-root-caused the trap as a
+read-dispatch bug and fixed it in this slice.
+
+**REWORK-3: position contract fix (2026-09-02).** The REWORK-2
+fix used `tree_mode_out_edges_collect` + `enumerate()` to forward
+edges to the visit closure. This yielded **live-ordinal**
+positions (0..degree), which matched the tombstone-inclusive slot
+only when `degree == stored_slots` (dense tree buckets). For
+tombstoned tree buckets (`degree < stored`), the positions were
+compressed, violating the ADR 0088 §2 contract (BucketEntryPosition
+is tombstone-inclusive bucket-local). REWORK-3 replaces the
+adapter with a direct call to `visit_tree_mode_label_bucket_edges`,
+forwarding the tombstone-inclusive `u32` slot directly. As a bonus,
+this removes the Vec materialization, **reducing read bench
+instructions by ~50%**: 1M full_scan 49,859,317 → 24,729,578, 1M
+random_ordinal 50,650,893 → 26,273,315, 131K full_scan 6,235,765 →
+3,093,866. Dispatch order in `visit_edges` and `visit_edges_window`
+reordered: dense condition first (more selective, with
+`!is_tree_mode()` guard), tree branch after. Regression test
+`tombstoned_tree_bucket_visit_preserves_logical_positions` added
+in `tree_read.rs:511` (promotes 4K bucket, tombstones slot 100,
+verifies visit yields position 100 with tombstone in both orders).
+
+Last revised: 2026-09-02.

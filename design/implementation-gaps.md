@@ -1684,6 +1684,94 @@ typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
 
+### GAP-2026-09-02-001 — RESOLVED: production `LabeledLaraGraph::visit_edges` dispatches tree-mode buckets into the dense slab read path
+
+- **Status:** Resolved (2026-09-02, Plan 0324 REWORK-2).
+- **Severity:** P0 production-correctness defect (read of stable
+  memory garbage / trap with `VectorMemory::read: out of bounds`).
+  Tree mode is the primary high-degree storage mode; any production
+  canister that visits a high-degree tree bucket would trap.
+- **Root cause:** 3 dispatch sites in `traverse.rs` used a "dense,
+  tombstone-free" fast path that bulk-reads
+  `degree × E::BYTES` bytes from `bucket.edge_start()`. For tree
+  mode, `edge_start` is the LEG root region (block_id array,
+  `root_len × 4` bytes), not the LTB payload blocks. The dispatch
+  condition matched tree mode (overflow_log_head = -1,
+  reserved_slots = stored_slots), so the dense slab-path was
+  incorrectly taken and the bulk read went OOB.
+- **Initial fix (REWORK-2)**: tree branches routed through
+  `tree_mode_out_edges_collect` (Vec materialization) + `enumerate()`,
+  yielding live-ordinal positions. Worked for dense tree buckets
+  (where enumerate == tombstone-inclusive slot) but violated the
+  position contract (ADR 0088 §2) for tombstoned buckets.
+- **Final fix (REWORK-3, this slice's design)**: tree branches call
+  `visit_tree_mode_label_bucket_edges` directly, forwarding the
+  tombstone-inclusive `u32` slot to `BucketEntryPosition::new(slot)`.
+  `ControlFlow::Break` is captured via a mutable cell. Dispatch
+  order reordered: dense condition first (more selective, with
+  `!is_tree_mode()` guard), tree branch after. **~50% instruction
+  reduction on the 3 read benches** as a bonus.
+- **Fix (REWORK-3):** added `if bucket.is_tree_mode() { ... }` branches
+  at 3 dispatch sites:
+
+  | Site | Function | Routing |
+  |---|---|---|
+  | `traverse.rs:790` | `visit_edges` | `tree_mode_out_edges_collect` + `ControlFlow` adapter |
+  | `traverse.rs:1580` | `visit_edges_window` | `tree_mode_out_edges_collect` + window slice + `ControlFlow` adapter |
+  | `traverse.rs:1843` | `visit_edges_with_inline_property` | `!is_tree_mode()` guard on dense path; falls through to `single_bucket_span_iter` (LTB-aware) |
+
+  `visit_edges_for_label_impl` (line 2000) and
+  `visit_edges_for_label_with_inline_property` already had the
+  tree branch (Plan 0318 Step 5). Other read paths require
+  `inline_property_byte_width > 0` for dispatch (a precondition),
+  which is always 0 in tree mode (set on promote), so they are
+  tree-mode safe by construction.
+
+- **Regression tests:**
+  - `tree_visit_edges_via_public_api_works_on_dense_tree_bucket` in
+    `tree_read.rs:447` (dense tree bucket: 4096 slots, no tombstone).
+    Verified to FAIL without the fix and PASS with the fix.
+  - `tombstoned_tree_bucket_visit_preserves_logical_positions` in
+    `tree_read.rs:511` (REWORK-3): promotes 4K tree bucket,
+    tombstones slot 100, verifies `graph.visit_edges` yields 4096
+    visits (not 4095) with tombstone at position 100, all positions
+    0..4096 covered exactly once, ascending AND descending.
+    Verified to FAIL with the REWORK-2 fix (enumeration gives
+    live-ordinal; tombstone at position 3995 in descending) and
+    PASS with the REWORK-3 fix (tombstone at position 100 in both
+    orders).
+
+- **Bench verification:** the 3 previously-TRAPping benches
+  (`tcsr_1048576_full_scan_descending`,
+  `tcsr_1048576_random_ordinal_access`,
+  `tcsr_131072_full_scan_descending`) now PASS deterministically
+  (3-for-3 each) and are persisted in `canbench_results.yml`.
+  Original 3 write-path benches (131K insert_grow, 1M insert_grow,
+  1M root_capacity) still PASS. 4K/65K prototype baseline 0%
+  regression (6/6 unchanged). Full canbench suite 158/158
+  unchanged, 0 regressed, 0 failed.
+
+- **Why the bug wasn't caught in Plan 0318 Step 5:** the Step 5
+  read-dispatch tests used `tree_mode_out_edges_collect` directly
+  (the LTB primitive), not the public `graph.visit_edges` API.
+  The public API has its own dispatch at `visit_edges` line 786
+  that unconditionally tried the dense fast path before falling
+  through. The Step 5 tests also used bucket degrees below the
+  LEG root size (4096 edges = 4 LTB blocks = LEG root 16 bytes),
+  so even a misread from `edge_start` returned within the (small)
+  memory window without trapping. The 1M bench exposed the bug
+  because 1M = 1024 LTB blocks = LEG root 4096 bytes, while the
+  dense read attempted 4MB.
+
+- **Diagnostic history:** the original (REWORK-1) audit
+  misdiagnosed the bug as "seeding above ~77K edges traps non-
+  deterministically" and proposed reducing the bench anchor to
+  131K. The REWORK-1 audit was internally inconsistent (the
+  131K insert_grow bench worked, requiring seeding past the
+  alleged 77K boundary). The REWORK-2 audit identified the
+  read-dispatch as the actual cause; REWORK-2 verified
+  determinism (3-for-3 trap) and re-root-caused the OOB.
+
 ### GAP-2026-08-28-001 — RESOLVED: index-anchored scans are unattributed in authz requirement extraction (grants silently stop working when an index exists)
 
 - **Status:** Resolved (2026-08-28). Fixing commit `0aebf4513`; Router suite 1045 → 1056 green.
