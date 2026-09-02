@@ -2106,6 +2106,13 @@ where
                 });
             }
             if run.inline_property_width != 0 {
+                // Plan 0326 LPB-in-tree: tree mode + `w > 0` is
+                // not admitted in batch (the property row writeback
+                // path is per-edge). The caller's scalar fallback
+                // (per-edge insert) handles the new property
+                // tree branch via `tree_mode_insert_edge` +
+                // property row writeback. Typed reject signals
+                // the recorder to route to scalar.
                 return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
                     bucket_width: 0,
                     edge_width: run.inline_property_width,

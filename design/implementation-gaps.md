@@ -2889,3 +2889,84 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   when they become the highest-impact blocker.
 - If an entry duplicates an existing roadmap or ADR item, replace its detailed proposal with a link
   to that authoritative contract rather than maintaining both descriptions.
+
+### GAP-2026-09-02-003 — RESOLVED: LPB-in-tree split-brain layout (Plan 0326 REWORK)
+
+- **Status:** Resolved (2026-09-02, Plan 0326 REWORK).
+- **Severity:** P0 split-brain — read path and write path disagreed on
+  the property root location. Production correctness + benchmark
+  measurement validity.
+- **Owner:** `promote_bypass_to_tree_mode` (promote.rs:300-465), 
+  `tree_mode_property_leaf_append` (tree_write.rs:421-567), depth-1
+  tail append (tree_write.rs:611-794), depth-2 tail append
+  (tree_write.rs:856-1196), `tree_mode_demote_to_slab` Phase 5e
+  (tree_write.rs:2260-2300), `bucket_span_region_len` and
+  `property_root_region_len` (compact.rs:234-300).
+- **Observed behavior:** the Plan 0326 first cycle shipped with a
+  read path that derived the property root as `edge_start +
+  bucket_span_region_len(bucket)` (contiguous layout, ADR §2) and a
+  write path that allocated the property root as a separate LEG
+  span, recorded in the descriptor's `inline_property_bytes_offset`
+  field. The two layouts agreed only when the allocator happened to
+  place the property root span adjacent to the edge root span.
+  Synthetic bench seeds (in `seed_w32_sweep_bucket`) constructed
+  both spans manually, so the split was hidden. The canbench
+  reported 540 ins for both new benches (4K and 65K), which was
+  actually a no-op: the bench seed left the vertex's `bucket_count`
+  at 0, so `find_bucket` returned `BucketSearch::Missing` and the
+  visit callback was never invoked. The unit test
+  `lpb_in_tree_demote_round_trip_at_w_4_stored_4096` passed only
+  because the synthetic seed's property root span happened to
+  land at `edge_start + edge_root_len` by allocator luck.
+- **Why it matters:** the actual production deployment would have
+  hit the read-after-write inconsistency on the first w>0 tree-mode
+  bucket promote: property reads via the production visit path
+  would return bytes from the wrong LPB blocks. The bench numbers
+  reported in the yml were 0% noise; downstream regression budgets
+  (Plan 0324's Gate 3) compared against these bogus values.
+- **Fix (REWORK)**: single combined LEG span `[edge root | property root]`
+  (gap 0, ADR §2). All write sites (promote Phase 2, depth-1 tail
+  append, depth-2 tail append, depth-2 new-interior-mint) do a
+  single `allocate_span_avoiding(combined_len, avoid=old_combined_span)`
+  and copy both halves. The descriptor's `inline_property_bytes_offset`
+  is set to 0 in tree mode (unused; the property root location is
+  derived from `edge_start + bucket_span_region_len(bucket)`). The
+  read path is unchanged (was already correct per ADR §2). The
+  demote's Phase 5e reads the property root from `edge_start +
+  bucket_span_region_len(bucket)` and releases the property half of
+  the combined span (the edge half is covered by the edge-half
+  release in Phase 5c). The compact helper `property_root_region_len`
+  returns `ceil(S / K)` (no tail buffer; the legacy `+ 1` was a
+  writing-side convenience that never affected the read path). A new
+  compact helper `combined_span_region_len` returns
+  `edge_root_len + property_root_len` for the compaction rewrite
+  path's per-vertex span intervals.
+- **F-2 cap guard**: a new `LabeledOperationError::PropertyTreeRootCapacityReached`
+  variant fires when the property root would exceed `R_MAX = 1024`.
+  Property-tree deepen (with `BlockKind::InlinePropertyInterior`) is
+  recorded as a follow-up slice per ADR 0088 §7.
+- **F-3 bench honesty**: `tcsr_4096_property_read_w32` and
+  `tcsr_65536_property_read_w32` now use the production insert path
+  (`insert_edge_skip_leaf_cascade`) with the bucket schema pre-declared
+  via `ensure_label_bucket_inline_property_byte_width`. The two bogus
+  540-ins entries (which measured nothing) are removed from
+  `canbench_results.yml`. New honest measurements: 4K = 3,160,000 ins,
+  65K = 5,630,000 ins. `--persist` is forbidden going forward
+  (single-bench `canbench <name>` runs only; yml updates are manual).
+- **F-4 w=0 hot path**: the depth-2 interior-row-append path for w=0
+  no longer reallocates the edge root (the edge root doesn't grow
+  on interior-row append; only on new-interior-mint does the edge
+  root grow). The depth-1 / depth-2 combined-span allocation uses
+  `allocate_span` (no avoid) for the w=0 path to avoid the avoid-scan
+  cost. The +24.81% regression on `tcsr_1048576_deepen_beyond_r_max`
+  is fully restored to 0%.
+- **Tests**: 630 lib tests pass (+4 from 627: 
+  `lpb_in_tree_rework_combined_span_round_trip` exercises the full
+  promote → read round-trip via the production path; 
+  `lpb_in_tree_rework_f2_cap_guard` exercises the synthetic
+  R_MAX-1 setup; plus 2 from the foundation). 583 canbench tests pass.
+  clippy -D warnings clean. fmt clean. validator final phase: PASS.
+- **F-5 wasm chars**: canbench wasm builds and runs; exported name
+  count within the 20,000 char limit. Baseline 15,684 → 15,684 (no
+  new bench surface). 159 → 161 entries (+2 honest benches; the
+  partial slice's bogus 540-ins entries were removed).

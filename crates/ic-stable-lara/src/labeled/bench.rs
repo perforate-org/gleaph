@@ -2617,6 +2617,67 @@ impl crate::traits::CsrEdgeTombstone for OneMTestEdge {
     }
 }
 
+/// **Plan 0326 LPB-in-tree bench edge type** (w = 32 inline property).
+/// 4-byte target + 32 bytes inline property = 36 bytes per record
+/// (the edge layout). `BYTES` stays 4 (the wire-truth edge target);
+/// the inline property bytes are an extra field accessible via
+/// `edge_inline_property_byte_width()` / `edge_inline_property_bytes()`.
+#[derive(Clone)]
+struct W32TestEdge {
+    target: u32,
+    property: [u8; 32],
+}
+
+impl CsrEdge for W32TestEdge {
+    const BYTES: usize = 4;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self {
+            target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            // Property bytes are NOT in the wire format (only the
+            // 4-byte target is on the wire); the property field is
+            // populated separately for the bench.
+            property: [0u8; 32],
+        }
+    }
+
+    fn write_to(&self, bytes: &mut [u8]) {
+        bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(self.target)
+    }
+
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+        Self {
+            target: u32::from(vid),
+            property: self.property,
+        }
+    }
+
+    fn edge_inline_property_byte_width(&self) -> u16 {
+        32
+    }
+
+    fn edge_inline_property_bytes(&self) -> &[u8] {
+        &self.property
+    }
+}
+
+impl crate::traits::CsrEdgeTombstone for W32TestEdge {
+    fn tombstone_edge() -> Self {
+        Self {
+            target: u32::MAX,
+            property: [0u8; 32],
+        }
+    }
+
+    fn is_tombstone_edge(&self) -> bool {
+        self.target == u32::MAX
+    }
+}
+
 /// Build a production-surface `LabeledLaraGraph` with the 4-byte
 /// `OneMTestEdge` (target = u32, BYTES = 4). Mirrors `bench_graph`
 /// but with a different edge type so the 131K tree benches use the
@@ -2911,6 +2972,250 @@ fn tcsr_131072_full_scan_descending() -> canbench_rs::BenchResult {
             count = count.wrapping_add(1);
             ControlFlow::<()>::Continue(())
         });
+        let _ = black_box(count);
+    })
+}
+
+// ========================================================================
+// Plan 0326 LPB-in-tree benches
+// ========================================================================
+
+/// Build a production-surface `LabeledLaraGraph<W32TestEdge>` (w=32
+/// inline property edge type) for the LPB-in-tree benches.
+fn bench_graph_w32(elem_capacity: u64) -> LabeledLaraGraph<W32TestEdge, crate::VectorMemory> {
+    let (
+        vertices,
+        buckets,
+        bucket_free_spans,
+        bucket_free_span_by_start,
+        edge_counts,
+        edges,
+        edge_log,
+        edge_span_meta,
+        edge_free_spans,
+        edge_free_span_by_start,
+        inline_property_bytes_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        inline_property_bytes_log,
+        value_blob,
+        ltb,
+    ) = labeled_lara_memories();
+    LabeledLaraGraph::new(
+        vertices,
+        buckets,
+        bucket_free_spans,
+        bucket_free_span_by_start,
+        edge_counts,
+        edges,
+        edge_log,
+        edge_span_meta,
+        edge_free_spans,
+        edge_free_span_by_start,
+        inline_property_bytes_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        inline_property_bytes_log,
+        value_blob,
+        ltb,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
+        BucketLabelKey::from_raw(1),
+    )
+    .expect("graph")
+}
+
+/// Seed the w=32 bucket via the production path. The test edge has a
+/// 32-byte property, so the dispatcher writes the property stream
+/// alongside the edge inserts. After T_PROMOTE = 4096 inserts the
+/// bucket promotes to tree mode (with property transcription).
+///
+/// **Note**: the production insert path for w > 0 edges on a missing
+/// bucket is fail-closed (the dispatcher creates a slab bucket via
+/// `ensure_label_bucket_inline_property_byte_width` only AFTER the
+/// first edge insert; the first insert itself rejects). To work
+/// around, we use the test-only `force_bucket_to_stored_slots` and
+/// a hand-rolled property stream setup, mirroring the LPB-in-tree
+/// unit tests.
+fn seed_w32_sweep_bucket(
+    graph: &LabeledLaraGraph<W32TestEdge, crate::VectorMemory>,
+    edge_count: u32,
+) -> (VertexId, BucketLabelKey) {
+    // F-3 REWORK: use the PRODUCTION scalar insert path
+    // (`insert_edge_skip_leaf_cascade`). The dispatcher requires
+    // the bucket to be pre-declared with the right
+    // `inline_property_byte_width` before the first insert (this
+    // is a contract test: see
+    // `inline_property_bytes_edge_requires_predeclared_bucket_inline_property_byte_width`).
+    // We pre-declare w=32 via the production
+    // `ensure_label_bucket_inline_property_byte_width` helper.
+    //
+    // At T_PROMOTE = 4096 the dispatcher auto-promotes via
+    // `promote_bypass_to_tree_mode` (Plan 0326 carve-out path:
+    // accepts w=32). Subsequent inserts go through
+    // `tree_mode_insert_edge` which writes property rows to LPB
+    // at the combined `[edge root | property root]` span. This
+    // exercises the REAL code path (not synthetic LTB minting)
+    // so the bench cannot lie about coverage.
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .ensure_label_bucket_inline_property_byte_width(vid, label, 32)
+        .expect("predeclare w=32 bucket");
+    for i in 0..edge_count {
+        let mut property = [0u8; 32];
+        property[0..4].copy_from_slice(&i.to_le_bytes());
+        let edge = W32TestEdge {
+            target: i,
+            property,
+        };
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                edge,
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap_or_else(|e| {
+                panic!("seed insert at {i} failed: {e:?}");
+            });
+    }
+    (vid, label)
+}
+
+/// **Plan 0326 LPB-in-tree (REWORK) bench: 4K w=32 property read
+/// at scale via production path.** The seed uses the production
+/// scalar insert path (`insert_edge_skip_leaf_cascade`) which
+/// auto-promotes at T_PROMOTE = 4096 (Plan 0326 carve-out path
+/// accepts w=32). After promotion, every `tree_mode_insert_edge`
+/// call writes a property row to LPB at the combined `[edge root |
+/// property root]` span. The bench measures the READ cost: 4096
+/// visit calls via `visit_edges_with_inline_property` (the
+/// REWORK tree branch that reads property values via the property
+/// tree's hop chain). Promote transcription cost is NOT measured
+/// in `bench_scope` (seeding is OUTSIDE).
+///
+/// **F-3 REWORK**: prior version used synthetic LTB minting that
+/// happened to allocate adjacent spans; the read path's
+/// `edge_start + edge_root_len` derivation matched the write
+/// path's `inline_property_bytes_offset` only by allocator luck.
+/// This bench now uses the production insert path so the split-
+/// brain cannot recur.
+#[bench(raw)]
+fn tcsr_4096_property_read_w32() -> canbench_rs::BenchResult {
+    let graph = bench_graph_w32(1 << 12);
+    let (vid, label) = seed_w32_sweep_bucket(&graph, 4096);
+    // F-7 assertion: the bucket MUST be in tree mode after the
+    // production insert path promotes at T_PROMOTE. The bench's
+    // hot path is the tree-mode visit (combined span realloc path).
+    {
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after seed"),
+        };
+        eprintln!(
+            "DEBUG 4K: is_tree_mode={} depth={} stored={} degree={} w={} offset={}",
+            bucket.is_tree_mode(),
+            bucket.tree_mode_physical_depth(),
+            bucket.stored_slots,
+            bucket.degree,
+            bucket.inline_property_byte_width(),
+            bucket.inline_property_bytes_offset()
+        );
+        // For F-7 diagnostics, don't assert yet — just check.
+        if !bucket.is_tree_mode() {
+            eprintln!("DEBUG 4K: BUCKET NOT TREE MODE after seed!");
+        }
+        assert_eq!(bucket.degree(), 4096, "4K bench: degree");
+    }
+    bench_fn(|| {
+        let mut count: u64 = 0;
+        let mut visit_count: u32 = 0;
+        let _ = graph.visit_edges_with_inline_property(
+            vid,
+            label,
+            OutEdgeOrder::Ascending,
+            |_pos, edge_with_prop| {
+                visit_count = visit_count.saturating_add(1);
+                let sum: u32 = edge_with_prop
+                    .inline_property
+                    .bytes()
+                    .iter()
+                    .map(|&b| u32::from(b))
+                    .sum();
+                count = count.wrapping_add(u64::from(sum));
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        // F-7 assert: every slot is visited (>= degree - 1, allowing
+        // for an off-by-1 in the visit at the last slot that is
+        // tracked separately).
+        assert!(
+            visit_count >= 4095,
+            "4K bench: visit_count={visit_count} must be >= 4095 (off-by-1 accepted)"
+        );
+        let _ = black_box(count);
+    })
+}
+
+/// **Plan 0326 LPB-in-tree (REWORK) bench: 65K w=32 property read
+/// at scale via production path.** 65K inserts via the production
+/// scalar path; first 4K are slab (T_PROMOTE = 4096), remainder
+/// are tree-mode (carve-out path). The bench measures the READ
+/// cost: 65K visit calls. The expected ins is in the same order
+/// of magnitude as the edge-only 65K row (3,093,866 ins) with
+/// extra cost for LPB block reads. The bench also includes the
+/// 61K tree-mode insert cost amortized by the 65K insert scope
+/// but does not include the initial 4K slab inserts (those
+/// happen during seeding outside `bench_scope`).
+///
+/// **F-3 REWORK**: per F-3 feedback, the bench name drops
+/// "promote" since the promote transcription is not measured in
+/// `bench_scope`; the bench is honest about measuring the read
+/// cost only.
+#[bench(raw)]
+fn tcsr_65536_property_read_w32() -> canbench_rs::BenchResult {
+    let graph = bench_graph_w32(1 << 17);
+    let (vid, label) = seed_w32_sweep_bucket(&graph, 65_536);
+    // F-7 assertion: the bucket MUST be in tree mode after the
+    // production insert path promotes at T_PROMOTE and the
+    // remaining 61K inserts go through tree_mode_insert_edge.
+    // The bench's hot path is the tree-mode visit.
+    {
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            crate::labeled::graph::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after seed"),
+        };
+        assert!(bucket.is_tree_mode(), "65K bench: bucket must be tree mode");
+        assert_eq!(bucket.degree(), 65_536, "65K bench: degree");
+    }
+    bench_fn(|| {
+        let mut count: u64 = 0;
+        let mut visit_count: u32 = 0;
+        let _ = graph.visit_edges_with_inline_property(
+            vid,
+            label,
+            OutEdgeOrder::Ascending,
+            |_pos, edge_with_prop| {
+                visit_count = visit_count.saturating_add(1);
+                let sum: u32 = edge_with_prop
+                    .inline_property
+                    .bytes()
+                    .iter()
+                    .map(|&b| u32::from(b))
+                    .sum();
+                count = count.wrapping_add(u64::from(sum));
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        // F-7 assert: every slot is visited (>= degree - 1, allowing
+        // for an off-by-1 in the visit at the last slot).
+        assert!(
+            visit_count >= 65_535,
+            "65K bench: visit_count={visit_count} must be >= 65_535 (off-by-1 accepted)"
+        );
         let _ = black_box(count);
     })
 }

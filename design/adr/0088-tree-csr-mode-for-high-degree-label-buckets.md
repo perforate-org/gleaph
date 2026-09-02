@@ -1046,11 +1046,12 @@ helper `ensure_bucket_inline_property_schema_for_insert_
 with_materialize`; the inline fast path (≤ 4 KiB) runs
 synchronously, the deferred stepped path (Step 2) returns the
 typed error so the caller drains the maintenance queue and
-retries. Other transitions (w1→w2, w→0, tree-mode property
-insert) stay fail-closed. Commits: `772960947` (Step 1, primitive
-+ 6 tests), `c5ae29a97` (Step 2, wiring + work item + drain
-test). Tree form (property root + LPB `kind = InlineProperty`
-blocks) is the LPB-in-tree follow-up.
+retries. Other transitions (w1→w2, w→0) stay fail-closed. Commits:
+`772960947` (Step 1, primitive + 6 tests), `c5ae29a97` (Step 2,
+wiring + work item + drain test). **Plan 0326 (LPB-in-tree, this
+slice) ships the tree-mode property insert path** (see §Status
+below); the remaining w1→w2 / w→0 transitions on tree buckets
+stay fail-closed (typed `InlinePropertyBytesWidthMismatch`).
 
 **Plan 0321 (review rework, 2026-09-02) — F-1/F-2/F-3 fix.**
 The F-1 must-fix closed the `tail_offset == 0` boundary hole in
@@ -1153,5 +1154,49 @@ reordered: dense condition first (more selective, with
 `tombstoned_tree_bucket_visit_preserves_logical_positions` added
 in `tree_read.rs:511` (promotes 4K bucket, tombstones slot 100,
 verifies visit yields position 100 with tombstone in both orders).
+
+**Plan 0326 (LPB-in-tree, 2026-09-02; REWORK-3 layout fix) — §2 tree-form property
+stream ships; promote carve-out removed.** The Plan 0318 §Step 4
+amend's interim `InlinePropertyBytesWidthMismatch` for `w != 0`
+buckets is removed; the promote path now accepts `0 < w <=
+payload_bytes` (declared bound per §2) and transcribes the slab
+property stream into a depth-1 LPB tree (LPB blocks share the LTB
+store with kind `BlockKind::InlineProperty`). **Layout (REWORK-3,
+single contiguous span):** the vertex span holds `[edge root |`
+`inline-property root]` (gap 0) — the property root is the `u32`
+block_id array at `edge_start + edge_root_len`, DERIVED (never a
+stored offset). Invariants after promote: `w` preserved;
+`inline_property_bytes_offset = 0`, `inline_property_bytes_slab_slots
+= 0`; depth byte holds the edge-tree physical depth (the property
+tree's depth is derived from `(w, stored_slots)` — property leaves
+hold `K = floor(payload_bytes / w)` values each; property interiors
+are B-radix, so the property tree's own coverage differs from the
+edge tree's). Tombstone semantics: per §2, tombstoned slots retain
+their property value bytes; the `is_tombstone_edge` filter applies
+to the edge tree only. Both insert sub-paths (edge-leaf boundary and
+tail-room) mint property leaves at K boundaries and grow the
+property root via the combined-span realloc; `write_property_value_at_slot`
+never resolves past the root (K-boundary mints precede it).
+**Interim per-w slot cap** (property-tree deepen not yet wired —
+follow-up per §7): a `w > 0` tree bucket's effective slot cap is
+`min(2^30, K × R_MAX)` (w=32 → 131,072; w=4 → 2^20 exactly),
+enforced by the typed `PropertyTreeRootCapacityReached` guard;
+`tree_mode_deepen` relocates the property root when the EDGE tree
+deepens (w ≤ 4 reachability), and the combined-span realloc keeps
+`[edge root | property root]` contiguous on every growth. The `bucket_span_region_len`
+helper gains a companion `property_root_region_len` so the
+compaction rewrite path can sum edge + property roots for
+`w > 0` tree buckets. `w > payload_bytes` remains a typed
+`InlinePropertyBytesWidthMismatch` reject (the ADR-declared bound).
+Out of scope for this slice: 0→w on existing tree buckets,
+w1→w2 re-encoding, w→0 teardown, depth-2 property tree, batch
+`commit_with_location_mode` tree admission for w > 0
+(recorded as batch scalar-fallback carve for a future slice).
+Regression tests: `lpb_in_tree_read_round_trip_at_w_4_stored_4096`
+(promote with w = 4 at T_PROMOTE = 4096 succeeds;
+`inline_property_byte_width` preserved), and
+`lpb_in_tree_property_leaf_fanout_matches_documented_table`
+(K = floor(4096/w) at w ∈ {1, 8, 32, 128, 1024}). 627 / 627
+library tests pass (was 625; +2 LPB-in-tree tests, 0 removed).
 
 Last revised: 2026-09-02.

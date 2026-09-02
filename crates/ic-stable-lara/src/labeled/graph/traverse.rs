@@ -1966,6 +1966,59 @@ where
         }
 
         let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+        // Plan 0326 LPB-in-tree: tree-mode path with property
+        // bytes. The dense path above is slab-only (`!is_tree_mode()`);
+        // the slow `single_bucket_span_iter` below is slab-only too
+        // (it reads from the LEG slab + log chain). For tree mode
+        // we walk the LTB edge tree (depth 1) directly via
+        // `visit_tree_mode_label_bucket_edges_with_property`,
+        // reading each slot's property value from the LPB
+        // (depth-1 property tree) via the property root region.
+        //
+        // **Position contract** (Plan 0324 REWORK-3): the visit
+        // callback receives the tombstone-inclusive `BucketEntryPosition`
+        // (slot index, not live ordinal). The closure
+        // `visit_tree_mode_label_bucket_edges_with_property` yields
+        // `(slot, edge, property_value)` directly from the LTB
+        // walk; no `enumerate()` (which would yield live ordinals
+        // and break the contract).
+        if bucket.is_tree_mode() && width > 0 {
+            use super::tree_read::visit_tree_mode_label_bucket_edges_with_property;
+            let mut value_buf = vec![0u8; usize::from(width)];
+            // Mirror the Plan 0324 REWORK-3 break-cell pattern.
+            // The visit closure signature is `FnMut` (no `?`/early
+            // return from inside the closure), so we capture a
+            // `ControlFlow::Break(B)` via a mutable cell.
+            let mut break_value: Option<B> = None;
+            visit_tree_mode_label_bucket_edges_with_property(
+                self,
+                label.raw(),
+                &bucket,
+                bucket.degree(),
+                order,
+                |slot, edge, value_bytes| {
+                    if break_value.is_some() {
+                        return; // already broken; skip
+                    }
+                    value_buf.clear();
+                    value_buf.extend_from_slice(&value_bytes);
+                    let flow = visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlinePropertyRef {
+                            edge,
+                            inline_property: InlinePropertyBytesRef::from_parts(width, &value_buf),
+                        },
+                    );
+                    if let ControlFlow::Break(value) = flow {
+                        break_value = Some(value);
+                    }
+                },
+            )?;
+            if let Some(value) = break_value {
+                return Ok(ControlFlow::Break(value));
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
         let mut iter =
             self.single_bucket_span_iter(owner, vertex, bucket_slot, &bucket, order, false)?;
         let mut inline_property_bytes = Vec::new();

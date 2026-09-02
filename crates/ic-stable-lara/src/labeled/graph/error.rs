@@ -126,6 +126,26 @@ pub enum LabeledOperationError {
         /// Structural cap (`R_MAX = 1024` per ADR 0088 §4).
         cap: u32,
     },
+    /// Plan 0326 LPB-in-tree (F-2 cap guard): the property root
+    /// region (in the combined `[edge root | property root]` span)
+    /// would exceed `R_MAX = 1024` entries on the next property-leaf
+    /// mint. The fan-out at the property root is the same `K =
+    /// R_MAX` as the edge root (the B-radix interior radix is the
+    /// same constant), so the cap mirrors `TreeRootCapacityReached`.
+    /// Property-tree deepen (with `BlockKind::InlinePropertyInterior`)
+    /// would lift the cap; that wire-up is recorded as a follow-up
+    /// slice per ADR 0088 §7.
+    PropertyTreeRootCapacityReached {
+        /// The `next_stored` value the insert would have produced.
+        stored_slots: u32,
+        /// Property root length at the time of the failed insert.
+        property_root_len: u32,
+        /// Structural cap (`R_MAX = 1024` per ADR 0088 §4).
+        cap: u32,
+        /// Property leaf fan-out at the failed insert
+        /// (`K = floor(4096 / w)`).
+        property_leaf_fanout: u32,
+    },
     /// Plan 0320 §F-1: the `materialize_inline_property_stream` reservation
     /// for `(vid, bucket_slot, width, fill_byte, degree)` exceeds
     /// `INLINE_MATERIALIZE_BYTE_BUDGET` (= 4 KiB) and must be filled via the
@@ -210,6 +230,18 @@ impl fmt::Display for LabeledOperationError {
                  stored_slots={stored_slots} (interior-level insert cascade is not yet \
                  wired; follow-up todo: tree-mode-interior-level-insert-growth)"
             ),
+            Self::PropertyTreeRootCapacityReached {
+                stored_slots,
+                property_root_len,
+                cap,
+                property_leaf_fanout,
+            } => write!(
+                f,
+                "tree-mode property root at capacity: property_root_len={property_root_len}, \
+                 cap={cap}, stored_slots={stored_slots}, property_leaf_fanout={property_leaf_fanout} \
+                 (property-tree deepen with BlockKind::InlinePropertyInterior is not yet \
+                 wired; follow-up todo: property-tree-deepen)"
+            ),
             Self::InlinePropertyMaterializeDeferredRequired {
                 vid,
                 bucket_slot,
@@ -243,6 +275,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::TreeModeEdgeWidthUnsupported { .. }
             | Self::TreeDepthLimitReached { .. }
             | Self::TreeRootCapacityReached { .. }
+            | Self::PropertyTreeRootCapacityReached { .. }
             | Self::InlinePropertyMaterializeDeferredRequired { .. } => None,
         }
     }

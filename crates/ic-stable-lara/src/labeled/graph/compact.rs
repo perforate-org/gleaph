@@ -235,19 +235,80 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
     if !bucket.is_tree_mode() {
         return bucket.stored_slots;
     }
-    // Tree mode: physical root region length.
+    // Tree mode: edge root region length + property root region length
+    // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
+    // `[edge root | property root]`, gap 0 — but the LEG allocator
+    // does not guarantee contiguity, so the property root may live
+    // at an arbitrary LEG offset stored in
+    // `inline_property_bytes_offset`. The edge root is contiguous
+    // at `edge_start`; the property root is at a separate offset,
+    // and `vertex_label_edge_span_end_exclusive` (and friends) sum
+    // the two regions for the compaction rewrite path).
     let physical_depth = bucket.tree_mode_physical_depth();
     let stored = bucket.stored_slots;
     let leaf_count =
         u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr_prototype::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
-    match physical_depth {
+    let edge_root_len = match physical_depth {
         1 => leaf_count,
         2 => leaf_count.div_ceil(k),
         3 => leaf_count.div_ceil(k).div_ceil(k),
         _ => unreachable!("tree_mode_physical_depth out of range"),
+    };
+    // Plan 0326: property root length (separate LEG span; the
+    // compact span logic adds the property root via
+    // `property_root_region_len` below, so `bucket_span_region_len`
+    // returns the EDGE root only — the property root is appended
+    // explicitly by the compaction rewrite path).
+    edge_root_len
+}
+
+/// Plan 0326: property root region length for a tree-mode bucket
+/// (LPB-in-tree). Returns 0 for `w == 0` buckets (no property
+/// stream). The property root is at
+/// `inline_property_bytes_offset` in the LEG slab; its length is
+/// `ceil(S / K) + 1` (live leaves + tail buffer).
+/// Plan 0326 LPB-in-tree: property root region length for a
+/// tree-mode bucket. Returns 0 for `w == 0` buckets (no property
+/// stream). The property root is contiguous at
+/// `edge_start + bucket_span_region_len(bucket)` (per ADR 0088
+/// §2: `[edge root | property root]`, gap 0); its length is
+/// `ceil(S / K)` where `K = floor(4096 / w)` and `S = stored_slots`.
+/// No tail buffer (the ADR §2 wire truth is the exact coverage).
+pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
+    if !bucket.is_tree_mode() {
+        return 0;
     }
+    let w = bucket.inline_property_byte_width();
+    if w == 0 {
+        return 0;
+    }
+    let k = match (u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).ok())
+        .map(|payload| payload / u32::from(w))
+    {
+        Some(k) if k >= 1 => k,
+        _ => return 0,
+    };
+    bucket.stored_slots.div_ceil(k)
+}
+
+/// Plan 0326 LPB-in-tree: combined LEG span length for a tree-mode
+/// bucket. The span holds `[edge root | property root]` (gap 0);
+/// the read path derives the property root start as
+/// `edge_start + edge_root_len`. The compaction rewrite path uses
+/// this combined length to compute per-vertex span intervals so
+/// the rewrite does not reallocate the property root.
+pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
+    if !bucket.is_tree_mode() {
+        return bucket.stored_slots;
+    }
+    let edge = bucket_span_region_len(bucket);
+    let prop = property_root_region_len(bucket);
+    edge.checked_add(prop).expect(
+        "combined_span_region_len: edge_root_len + property_root_len overflows u32 (impossible: \
+         both bounded by R_MAX = 1024, so total <= 2048)",
+    )
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -348,9 +409,16 @@ where
             .iter()
             .filter(|bucket| bucket.stored_slots > 0)
             .map(|bucket| {
+                // Plan 0326 LPB-in-tree (REWORK): for `w > 0` tree
+                // buckets, the vertex span is `[edge root | property
+                // root]` (gap 0, ADR 0088 §2). The combined length is
+                // `edge_root_len + property_root_len` (returned by
+                // `combined_span_region_len`). The single interval
+                // covers both regions contiguously; no separate
+                // property-root interval is needed.
                 (
                     bucket.edge_start(),
-                    u64::from(bucket_span_region_len(bucket)),
+                    u64::from(combined_span_region_len(bucket)),
                 )
             })
             .collect();

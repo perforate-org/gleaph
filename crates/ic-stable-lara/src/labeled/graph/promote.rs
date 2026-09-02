@@ -134,13 +134,16 @@ where
         });
     }
 
-    // Precondition 3: inline-property bytes are not yet wired through this
-    // promotion path. A bucket that already has non-zero
-    // `inline_property_byte_width` must be promoted in a separate slice
-    // (Plan 0318 + future work). Fail-closed for now.
-    if bucket.inline_property_byte_width() != 0 {
+    // Precondition 3: Plan 0326 (LPB-in-tree) wires the property
+    // stream through the tree-form path. The carve-out is removed:
+    // - `w == 0`: no property stream (the original Plan 0318 path).
+    // - `0 < w <= payload_bytes`: property stream is transcribed into
+    //   the LPB (depth-1 property tree) during this promotion.
+    // - `w > payload_bytes`: declared ADR bound; typed reject.
+    let w = bucket.inline_property_byte_width();
+    if w > BLOCK_PAYLOAD_BYTES as u16 {
         return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-            bucket_width: bucket.inline_property_byte_width(),
+            bucket_width: w,
             edge_inline_property_width: 0,
         });
     }
@@ -165,6 +168,8 @@ where
 
     let pre_edge_start = bucket.edge_start();
     let pre_stored_slots = stored_slots;
+    let pre_property_offset = bucket.inline_property_bytes_offset();
+    let _pre_property_slab_slots = bucket.inline_property_bytes_slab_slots();
 
     // ==================== Phase 1: Reserve ====================
     // Mint `root_len` LTB blocks. The LTB store grows stable memory at
@@ -189,10 +194,58 @@ where
         return Err(mint_err.into());
     }
 
-    // Reserve the LEG root region span. This is the slot range in the
-    // LEG slab that will hold the block_id array. If the allocation
+    // Plan 0326 LPB-in-tree (REWORK): the combined LEG span holds
+    // `[edge root | property root]` (gap 0, ADR 0088 §2). For `w > 0`,
+    // the property root is contiguous after the edge root; the read
+    // path derives the property root start as `edge_start +
+    // bucket_span_region_len(bucket)`. The `inline_property_bytes_offset`
+    // descriptor field is set to 0 in tree mode (the property root is
+    // contiguous, not at a stored offset). The combined length is
+    // computed up front so a single `allocate_span` produces the
+    // contiguous region.
+    //
+    // Property root length per ADR §2 wire truth: `ceil(S / K)` where
+    // `K = floor(4096 / w)`. No tail buffer (the legacy `+ 1` was a
+    // writing-side convenience; reads never used the tail slot, and
+    // a tail buffer would inflate the root past the ADR cap).
+    let property_root_len: u32 = if w > 0 && pre_stored_slots > 0 {
+        let k_prop = (BLOCK_PAYLOAD_BYTES as u32) / (w as u32);
+        // F-2 cap guard: when the property root would exceed R_MAX,
+        // the property tree needs to deepen. Wire-up of property-tree
+        // deepen (with BlockKind::InlinePropertyInterior) is a
+        // follow-up slice per ADR 0088 §7. For this slice we fail
+        // closed at the property-root cap to avoid the giant-span
+        // regression (w > 0 tree buckets would otherwise grow
+        // unbounded).
+        let live_prop_root = pre_stored_slots.div_ceil(k_prop);
+        let k_max =
+            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        if live_prop_root > k_max {
+            // Surface the typed error to the caller; release the
+            // edge LTB blocks we already minted before returning.
+            for &id in reserved_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
+                stored_slots: pre_stored_slots,
+                property_root_len: live_prop_root,
+                cap: k_max,
+                property_leaf_fanout: k_prop,
+            });
+        }
+        live_prop_root
+    } else {
+        0
+    };
+    let combined_root_len: u32 = root_len.checked_add(property_root_len).expect(
+        "combined_root_len overflow: edge_root_len + property_root_len must fit in u32          (edge_root_len <= R_MAX = 1024, property_root_len <= R_MAX = 1024, total <= 2048)",
+    );
+    // Reserve the combined LEG root region span. This is the slot range
+    // in the LEG slab that will hold BOTH the edge block_id array
+    // (offset 0..root_len) AND the property block_id array
+    // (offset root_len..combined_root_len). If the allocation
     // fails, release the LTB blocks and return the typed error.
-    let new_edge_start: u64 = match graph.edges().allocate_span(u64::from(root_len)) {
+    let new_edge_start: u64 = match graph.edges().allocate_span(u64::from(combined_root_len)) {
         Ok(start) => start,
         Err(e) => {
             // Rollback: release LTB blocks in LIFO order.
@@ -292,6 +345,137 @@ where
         return Err(LaraOperationError::WriteEdgeSlotFailed(e).into());
     }
 
+    // ==================== Phase 2c: Property stream (Plan 0326 REWORK) ====================
+    // The property root is contiguous in the COMBINED span: it starts
+    // at `new_edge_start + root_len` (immediately after the edge
+    // root). The descriptor field `inline_property_bytes_offset` is
+    // set to 0 in tree mode; the read path derives the property root
+    // start as `edge_start + bucket_span_region_len(bucket)`.
+    //
+    // Failure atomicity: any error retires the minted LTB blocks
+    // (LIFO) and the LEG combined span is released.
+    let mut property_block_ids: Vec<u32> = Vec::new();
+    let property_root_span_start: u64 = new_edge_start + u64::from(root_len);
+    if w > 0 && pre_stored_slots > 0 {
+        // K = floor(4096 / w). Guarded above (w <= payload) so K >= 1.
+        let k = (BLOCK_PAYLOAD_BYTES as u32) / (w as u32);
+        // 1. Mint LTB blocks (LIFO rollback on failure).
+        let mut mint_err: Option<LabeledOperationError> = None;
+        for _ in 0..property_root_len {
+            match graph.ltb().mint() {
+                Ok(id) => property_block_ids.push(id),
+                Err(e) => {
+                    mint_err = Some(e.into());
+                    break;
+                }
+            }
+        }
+        if let Some(err) = mint_err {
+            for &id in property_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            for &id in reserved_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(combined_root_len));
+            return Err(err);
+        }
+        // 2. Mark each block as InlineProperty (mint leaves kind = Free).
+        for &id in &property_block_ids {
+            let header = crate::labeled::ltb_raw_block_store::BlockHeader {
+                kind: crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
+                bucket_label_key_wire: 0,
+                owner_or_next_free: 0,
+                ordinal: 0,
+                level: 0,
+                reserved: [0u8; 3],
+            };
+            graph.ltb().write_block_header(id, &header);
+        }
+        // 3. Transcribe slab property bytes into LPB blocks.
+        let ltb = graph.ltb();
+        let mut prop_cursor: usize = 0;
+        let mut prop_slot_in_block: usize = 0;
+        let mut prop_payload = [0u8; BLOCK_PAYLOAD_BYTES];
+        let mut prop_block_idx: usize = 0;
+        let mut prop_write_err: Option<LabeledOperationError> = None;
+        while prop_cursor < pre_stored_slots as usize {
+            let mut value_bytes = vec![0u8; usize::from(w)];
+            let source = pre_property_offset
+                .checked_add((prop_cursor as u64) * u64::from(w))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            graph.values().read_bytes(source, &mut value_bytes);
+            let in_block_offset = prop_slot_in_block * usize::from(w);
+            prop_payload[in_block_offset..in_block_offset + usize::from(w)]
+                .copy_from_slice(&value_bytes);
+            prop_slot_in_block += 1;
+            prop_cursor += 1;
+            if prop_slot_in_block == k as usize || prop_cursor == pre_stored_slots as usize {
+                let block_id = property_block_ids[prop_block_idx];
+                let used = prop_slot_in_block * usize::from(w);
+                let write_result = if prop_slot_in_block == k as usize {
+                    ltb.write_payload(block_id, &prop_payload)
+                } else {
+                    ltb.write_payload_partial(block_id, 0, &prop_payload[..used])
+                };
+                if let Err(e) = write_result {
+                    prop_write_err = Some(e.into());
+                    break;
+                }
+                prop_slot_in_block = 0;
+                prop_payload = [0u8; BLOCK_PAYLOAD_BYTES];
+                prop_block_idx += 1;
+            }
+        }
+        if let Some(err) = prop_write_err {
+            for &id in property_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            for &id in reserved_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(combined_root_len));
+            return Err(err);
+        }
+        // 4. Write the property root block_id array at
+        //    `property_root_span_start` (the second half of the
+        //    combined span). Failure releases the LPB blocks + the
+        //    combined span.
+        let mut property_root_bytes: Vec<u8> = Vec::with_capacity(property_root_len as usize * 4);
+        for &id in &property_block_ids {
+            property_root_bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        if let Err(e) = graph
+            .edges()
+            .write_slots_contiguous_bytes(property_root_span_start, &property_root_bytes)
+        {
+            for &id in property_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            for &id in reserved_block_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(combined_root_len));
+            return Err(LaraOperationError::WriteEdgeSlotFailed(e).into());
+        }
+    }
+    // After this point, the combined span
+    // `[new_edge_start, new_edge_start + combined_root_len)` holds
+    // `[edge root (length root_len) | property root (length
+    // property_root_len)]` (gap 0). The descriptor invariants for
+    // tree mode are:
+    //   `edge_start = new_edge_start`
+    //   `inline_property_bytes_offset = 0` (the property root is
+    //     derived from `edge_start + bucket_span_region_len(bucket)`,
+    //     not from a stored offset).
+    //   `inline_property_bytes_slab_slots = 0` (no slab form).
+
     // ==================== Phase 3: Publish ====================
     // Build the new tree-mode descriptor. The descriptor's `edge_start`
     // is the LEG offset to the root region. `overflow_log_head = -1` to
@@ -306,11 +490,12 @@ where
         bucket.degree,
         bucket.stored_slots,
         -1, // overflow_log_head = -1 (tree mode does not use log)
-        0,  // inline_property_byte_width = 0 (handled in a later slice)
-        0,  // inline_property_bytes_offset = 0
+        w,  // inline_property_byte_width (preserved)
+        0,  // inline_property_bytes_offset = 0 (unused in tree mode;
+        //   property root is contiguous at edge_start + root_len)
         0,  // inline_property_bytes_slab_slots = 0
         -1, // inline_property_bytes_log_head = -1
-        0,  // inline_property_bytes_log_len = 0
+        0,  // inline_property_bytes_log_len = 0 (depth byte = 0 = depth 1)
     )
     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
     .with_tree_mode(true);
@@ -321,14 +506,18 @@ where
         .write_label_bucket_slot(bucket_slot, new_bucket)
     {
         // Phase 3 failure is the canonical write itself: the bucket is
-        // still in slab mode; release the new tree-mode LTB blocks and
-        // LEG root region so we don't leak.
+        // still in slab mode; release the new tree-mode LTB blocks
+        // (edge + property) and the combined LEG root region so we
+        // don't leak.
+        for &id in property_block_ids.iter().rev() {
+            let _ = graph.ltb().release(id);
+        }
         for &id in reserved_block_ids.iter().rev() {
             let _ = graph.ltb().release(id);
         }
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(root_len));
+            .release_span(new_edge_start, u64::from(combined_root_len));
         return Err(e.into());
     }
 

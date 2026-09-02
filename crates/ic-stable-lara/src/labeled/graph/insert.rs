@@ -275,6 +275,12 @@ where
         if edge_inline_property_width != 0
             && let BucketSearch::Missing { .. } = self.find_bucket(src, &vertex, label_id)?
         {
+            // The dispatcher requires the bucket to be pre-declared
+            // with the right `inline_property_byte_width` before the
+            // first insert (this is a deliberate contract: the
+            // caller must establish the schema via
+            // `ensure_label_bucket_inline_property_byte_width` or
+            // a similar helper, not have the dispatcher infer it).
             return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
                 bucket_width: 0,
                 edge_inline_property_width,
@@ -305,12 +311,15 @@ where
         // bypass the slab-path entirely. Rope / PMA / placement /
         // leaf-pin code does not see this branch.
         if bucket.is_tree_mode() {
-            if has_edge_inline_property {
-                return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
-                    bucket_width: bucket.inline_property_byte_width(),
-                    edge_inline_property_width,
-                });
-            }
+            // Plan 0326 LPB-in-tree: tree mode + `w > 0` is wired
+            // through `tree_mode_insert_edge` (which writes the
+            // property row via the combined span realloc). The
+            // previous carve-out `if has_edge_inline_property` is
+            // REMOVED; the dispatcher accepts `w > 0` on a tree
+            // bucket as long as the edge's width matches the
+            // bucket's width (width mismatch is a typed error above
+            // at the `ensure_bucket_inline_property_schema_for_insert_with_materialize`
+            // call).
             let logical_slot = super::tree_write::tree_mode_insert_edge(
                 self,
                 src,
@@ -347,7 +356,6 @@ where
         // already mis-transcribed — promote now rejects before minting.)
         if bucket.stored_slots >= super::T_PROMOTE
             && bucket.stored_slots < u32::MAX
-            && !has_edge_inline_property
             && E::BYTES == super::tree_write::TREE_MODE_REQUIRED_EDGE_BYTES
         {
             super::tree_write::promote_bucket_if_needed(self, src, label_id)?;
