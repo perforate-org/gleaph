@@ -182,8 +182,12 @@ impl From<VertexPropertyStoreError> for GraphStoreError {
     }
 }
 
-impl From<ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError> for GraphStoreError {
-    fn from(value: ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError) -> Self {
+impl From<ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError>
+    for GraphStoreError
+{
+    fn from(
+        value: ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError,
+    ) -> Self {
         Self::CounterpartLookup(value)
     }
 }

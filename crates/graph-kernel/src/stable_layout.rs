@@ -822,6 +822,25 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::SyncCoUpdate,
             ProductionCompat::Rebuildable,
         ),
+        // LARA Tree Block stores — one per orientation (Plan 0318 §Step 2)
+        region(
+            "FWD_LTB",
+            53,
+            StableMemoryClass::Canonical,
+            "lara/ltb",
+            "Forward LARA Tree Block store backing label-bucket tree blocks",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "REV_LTB",
+            54,
+            StableMemoryClass::Canonical,
+            "lara/ltb",
+            "Reverse LARA Tree Block store backing label-bucket tree blocks",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
     ],
 };
 
@@ -1958,8 +1977,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 53);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(52));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 55);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(54));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,

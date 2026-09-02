@@ -59,6 +59,10 @@ const REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27)
 const REV_INLINE_PROPERTY_BYTES_LOG: MemoryId = MemoryId::new(28);
 const REV_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(29);
 
+// --- Labeled graph: LARA Tree Block store (1 memory per orientation, Plan 0318 §Step 2) ---
+const FWD_LTB: MemoryId = MemoryId::new(53);
+const REV_LTB: MemoryId = MemoryId::new(54);
+
 // --- LARA maintenance (1 memory) ---
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
 // MemoryId 31 was formerly DIRTY_WORK_ITEMS. It remains reserved and is not allocated.
@@ -160,6 +164,9 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (REV_INLINE_PROPERTY_BYTES_SLAB, 32),
     (REV_INLINE_PROPERTY_BYTES_LOG, 32),
     (REV_INLINE_PROPERTY_BYTES_BLOBS, 32),
+    // LARA Tree Block stores: label-bucket tree blocks grow with adjacency.
+    (FWD_LTB, 16),
+    (REV_LTB, 16),
     // Label sidecars and value-bearing facade stores.
     (VERTEX_LABEL_SETS, 8),
     (VERTEX_PROPERTIES, 64),
@@ -246,6 +253,7 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_LOG)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_BLOBS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_LTB)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
@@ -261,6 +269,7 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_LOG)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_LTB)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         InitialCapacities {
             bucket_slots: GRAPH_INITIAL_BUCKET_CAPACITY,
@@ -405,6 +414,8 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
         ("canonical_export_scopes", 51, CANONICAL_EXPORT_SCOPES),
         ("index_pending_floor", 52, INDEX_PENDING_FLOOR),
+        ("fwd_ltb", 53, FWD_LTB),
+        ("rev_ltb", 54, REV_LTB),
     ];
 
     let regions: Vec<_> = REGIONS
@@ -746,13 +757,13 @@ mod tests {
                 .map(|region| region.memory_id)
                 .max()
         );
-        assert_eq!(stats.regions.len(), 45);
+        assert_eq!(stats.regions.len(), 47);
         assert_eq!(
             stats
                 .regions
                 .last()
                 .map(|region| (region.memory_id, region.name.as_str())),
-            Some((52, "index_pending_floor"))
+            Some((54, "rev_ltb"))
         );
     }
 }

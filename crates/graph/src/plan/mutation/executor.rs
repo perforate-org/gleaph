@@ -25,7 +25,7 @@ use gleaph_graph_kernel::plan_exec::{
 };
 use ic_stable_lara::VertexId;
 #[cfg(test)]
-use ic_stable_lara::bidirectional::counterpart::CounterpartLookupError;
+use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
 use ic_stable_lara::labeled::{LabeledOrientation, OutEdgeOrder};
 use ic_stable_lara::traits::CsrEdge;
 use std::collections::{BTreeMap, BTreeSet};

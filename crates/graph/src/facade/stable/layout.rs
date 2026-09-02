@@ -13,8 +13,8 @@ mod tests {
     #[test]
     fn graph_canister_layout_registry() {
         validate_layout(&GRAPH_STABLE_LAYOUT).expect("graph layout invariants");
-        assert_eq!(STABLE_REGION_COUNT, 53);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(52));
+        assert_eq!(STABLE_REGION_COUNT, 55);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(54));
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[52].symbol,
             "INDEX_PENDING_FLOOR"
