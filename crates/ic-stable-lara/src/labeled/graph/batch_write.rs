@@ -2141,7 +2141,7 @@ where
             // batch minimal-first-slice does NOT mint, so
             // `tail_offset == 0` is rejected typed (the caller falls
             // back to scalar inserts which mint correctly).
-            let block_b: u32 = crate::labeled::tree_csr_prototype::B as u32;
+            let block_b: u32 = crate::labeled::tree_csr::B as u32;
             let stored = bucket.stored_slots;
             let tail_offset: u32 = (stored % block_b) * (E::BYTES as u32);
             let tail_room: u32 = (block_b * (E::BYTES as u32)) - tail_offset;

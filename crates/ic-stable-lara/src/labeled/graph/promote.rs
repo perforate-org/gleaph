@@ -39,7 +39,7 @@ use crate::labeled::{
     bucket_label_key::BucketLabelKey,
     ltb_raw_block_store::BLOCK_PAYLOAD_BYTES,
     record::LabelBucket,
-    tree_csr_prototype::{B as BLOCK_B, derive_depth, root_len as derived_root_len},
+    tree_csr::{B as BLOCK_B, derive_depth, root_len as derived_root_len},
 };
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::CsrEdge;
@@ -219,7 +219,7 @@ where
         // unbounded).
         let live_prop_root = pre_stored_slots.div_ceil(k_prop);
         let k_max =
-            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         if live_prop_root > k_max {
             // Surface the typed error to the caller; release the
             // edge LTB blocks we already minted before returning.

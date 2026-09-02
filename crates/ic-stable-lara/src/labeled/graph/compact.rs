@@ -222,9 +222,9 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
     let physical_depth = bucket.tree_mode_physical_depth();
     let stored = bucket.stored_slots;
     let leaf_count =
-        u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr_prototype::B as u64))
+        u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
-    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let edge_root_len = match physical_depth {
         1 => leaf_count,
         2 => leaf_count.div_ceil(k),

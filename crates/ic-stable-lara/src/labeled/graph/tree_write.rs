@@ -35,7 +35,7 @@ use crate::VertexId;
 use crate::labeled::bucket_label_key::BucketLabelKey;
 use crate::labeled::graph::error::LabeledOperationError;
 use crate::labeled::record::LabelBucket;
-use crate::labeled::tree_csr_prototype::{B as BLOCK_B, root_len as derived_root_len};
+use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
@@ -142,7 +142,7 @@ where
         //           `tree_mode_physical_depth`)
         //         → continue into the depth-aware append at the
         //           post-deepen depth.
-        let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         // Compute physical_root_len WITHOUT calling `derive_depth`
         // (a manually-deepened bucket would have derive_depth=1
         // despite physical depth ≥ 2). Use the same physical
@@ -164,7 +164,7 @@ where
         //   `derive_depth = 3` which is the ADR amend candidate
         //   (out of scope for this slice).
         if pre_deepen_physical_root_len >= k {
-            let max_depth = crate::labeled::tree_csr_prototype::MAX_DEPTH;
+            let max_depth = crate::labeled::tree_csr::MAX_DEPTH;
             let structural_cap = super::TREE_STRUCTURAL_CAP;
             if pre_deepen_depth >= max_depth || next_stored > structural_cap {
                 return Err(LabeledOperationError::TreeRootCapacityReached {
@@ -309,7 +309,7 @@ where
                 let new_prop_root_len = old_prop_root_len + 1;
                 let new_combined_len = old_edge_root_len + new_prop_root_len;
                 // F-2 cap guard.
-                let k_max = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX)
+                let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX)
                     .expect("R_MAX fits u32");
                 if new_prop_root_len > k_max {
                     return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
@@ -454,8 +454,8 @@ where
 /// 1024^3 * 1024 = 2^40 slots at MAX_DEPTH = 3, well within u32
 /// but the intermediate `ceil` math uses u64).
 fn physical_root_len_ceil(stored_slots: u64, depth: u32) -> Result<u32, LabeledOperationError> {
-    let k = crate::labeled::tree_csr_prototype::R_MAX as u64;
-    let b = crate::labeled::tree_csr_prototype::B as u64;
+    let k = crate::labeled::tree_csr::R_MAX as u64;
+    let b = crate::labeled::tree_csr::B as u64;
     let mut r: u64 = stored_slots;
     // ceil-chain: r = ceil(r / B) / K / K / ... until depth-1
     // divisions. depth 1: r = ceil(s / B). depth 2: r = ceil(s / B) / K.
@@ -530,7 +530,7 @@ where
     // F-2 cap guard.
     if w > 0 {
         let k_max =
-            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         if new_property_root_len > k_max {
             return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
                 stored_slots: next_stored,
@@ -750,7 +750,7 @@ where
 {
     let depth = bucket.tree_mode_physical_depth();
     debug_assert!(depth >= 2, "caller must check depth");
-    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let b = u32::try_from(BLOCK_B).expect("B fits u32");
     // Leaf index for the new leaf: l = ceil(stored_slots / B). Note
     // `stored_slots` is the pre-insert value (this helper is called
@@ -1184,7 +1184,7 @@ where
     // `(block_index / K^(d-1-j)) % K`. The first hop reads from the
     // LEG root region; subsequent hops read from the previous
     // interior block's payload at `(idx % K) * E::BYTES`.
-    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let mut child_id: u32 = {
         // Level 0 hop: index into the root region.
         // divisor = K^(d-1-0) = K^(d-1)
@@ -1263,7 +1263,7 @@ where
         depth >= 2,
         "resolve_interior_block_id requires physical depth >= 2 (caller must check)"
     );
-    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     // For depth `d`, the interior levels are 0..=d-2 (root is level 0,
     // leaf is level d-1). The last interior (level d-2) holds K leaf
     // block_ids. We descend from the root, stopping at level d-2.
@@ -1315,7 +1315,7 @@ where
     debug_assert_eq!(E::BYTES, 4);
     let stored_slots = bucket.stored_slots;
     let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let mut out = Vec::with_capacity(leaf_count as usize);
@@ -1398,28 +1398,28 @@ where
         1
     } else {
         let s = u64::from(stored_slots);
-        let mut d: u32 = crate::labeled::tree_csr_prototype::MAX_DEPTH;
-        for cand in 1..=crate::labeled::tree_csr_prototype::MAX_DEPTH {
-            let coverage = (crate::labeled::tree_csr_prototype::B as u64)
+        let mut d: u32 = crate::labeled::tree_csr::MAX_DEPTH;
+        for cand in 1..=crate::labeled::tree_csr::MAX_DEPTH {
+            let coverage = (crate::labeled::tree_csr::B as u64)
                 .checked_pow(cand)
                 .expect("B^MAX_DEPTH fits u64");
             let ceiling = s.div_ceil(coverage);
-            if ceiling <= crate::labeled::tree_csr_prototype::R_MAX as u64 {
+            if ceiling <= crate::labeled::tree_csr::R_MAX as u64 {
                 d = cand;
                 break;
             }
         }
         d
     };
-    if depth >= crate::labeled::tree_csr_prototype::MAX_DEPTH {
+    if depth >= crate::labeled::tree_csr::MAX_DEPTH {
         return Err(LabeledOperationError::TreeDepthLimitReached {
             depth,
-            max_depth: crate::labeled::tree_csr_prototype::MAX_DEPTH,
+            max_depth: crate::labeled::tree_csr::MAX_DEPTH,
         });
     }
     let w = bucket.inline_property_byte_width();
     let old_root_len = derived_root_len(stored_slots) as u32;
-    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let new_interior_count = old_root_len.div_ceil(k);
     // Property root length (combined layout).
     let (old_property_root_len, new_property_root_len) = if w > 0 {
@@ -1441,7 +1441,7 @@ where
     // F-2 cap guard.
     if w > 0 {
         let k_max =
-            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let kp = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).map_err(
             |_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
         )? / u32::from(w);
@@ -1645,10 +1645,10 @@ where
     if depth != 2 {
         return Err(LabeledOperationError::TreeDepthLimitReached {
             depth,
-            max_depth: crate::labeled::tree_csr_prototype::MAX_DEPTH,
+            max_depth: crate::labeled::tree_csr::MAX_DEPTH,
         });
     }
-    let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+    let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     // 1. Collect the current leaf block_ids in order.
     let leaf_ids = collect_leaf_block_ids::<E, M>(graph, bucket)?;
     let new_root_len = leaf_ids.len() as u32;
@@ -1701,7 +1701,7 @@ where
     // physical layout (a manually-deepened bucket at stored=1,048,576
     // has structural root_len=1024 but physical root_len=1).
     let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let physical_depth = bucket.tree_mode_physical_depth();
@@ -1827,10 +1827,10 @@ where
     let physical_depth = bucket.tree_mode_physical_depth();
     let stored = bucket.stored_slots;
     let leaf_count =
-        u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr_prototype::B as u64))
+        u32::try_from((u64::from(stored)).div_ceil(crate::labeled::tree_csr::B as u64))
             .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let k_for_avoid =
-        u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let old_physical_root_len: u32 = match physical_depth {
         1 => leaf_count,
         2 => leaf_count.div_ceil(k_for_avoid),
@@ -2678,7 +2678,7 @@ mod tests {
         bucket_slot: u64,
     ) {
         let b = BLOCK_B as u32;
-        let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let stored_slots = b * k; // 1024 * 1024 = 1,048,576
         let root_len = k; // depth 1, root_len = R_MAX
         // 1. Mint 1024 LTB blocks (one per leaf).
@@ -2970,7 +2970,7 @@ mod tests {
         // The structural root_len for stored=1,048,576 is 1024 (the
         // bucket is at the depth-1 fan-out cap, not pushed to depth 2).
         let structural_root_len =
-            crate::labeled::tree_csr_prototype::root_len(bucket_before.stored_slots);
+            crate::labeled::tree_csr::root_len(bucket_before.stored_slots);
         assert_eq!(structural_root_len, 1024);
         let original_edge_start = bucket_before.edge_start();
         let mut original_leaf_ids: Vec<u32> = Vec::with_capacity(1024);
@@ -3000,7 +3000,7 @@ mod tests {
         // been replaced with a 1-entry region pointing to the new
         // interior.
         let deepened_structural_root_len =
-            crate::labeled::tree_csr_prototype::root_len(bucket_deepened.stored_slots);
+            crate::labeled::tree_csr::root_len(bucket_deepened.stored_slots);
         assert_eq!(deepened_structural_root_len, 1024);
         // The deepened root's first entry is the new interior block_id.
         let mut new_root_id_bytes = [0u8; 4];
@@ -3070,7 +3070,7 @@ mod tests {
             )
             .expect("push_vertex");
         let bucket_slot = 0u64;
-        let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         // Mint 1024 interior blocks (the root region is full at stored=2^30).
         let mut interior_ids: Vec<u32> = Vec::with_capacity(k as usize);
         for _ in 0..k {
@@ -3149,7 +3149,7 @@ mod tests {
             )
             .expect("push_vertex");
         let bucket_slot = 0u64;
-        let k = u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+        let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let mut interior_ids: Vec<u32> = Vec::with_capacity(k as usize);
         for _ in 0..k {
             interior_ids.push(graph.ltb().mint().expect("mint interior"));
@@ -3235,7 +3235,7 @@ mod tests {
         let vid = VertexId::from(0);
         let label = BucketLabelKey::directed_from_index(1);
         let r_max =
-            u32::try_from(crate::labeled::tree_csr_prototype::R_MAX).expect("R_MAX fits u32");
+            u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let target_stored: u32 = (BLOCK_B as u32) * r_max; // 2^20
         promote_test_bucket(&graph, vid, label, target_stored);
         // Verify the pre-insert state is depth 1, root_len = R_MAX.

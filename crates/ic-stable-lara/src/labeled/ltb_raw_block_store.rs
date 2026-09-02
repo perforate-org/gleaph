@@ -1,7 +1,7 @@
 //! ADR 0088 §1 LTB block store, raw stable-memory backend.
 //!
 //! Replaces the [`super::ltb_reopen_prototype`] scaffold (and the StableBTreeMap
-//! scaffold in `tree_csr_prototype`) with direct `Memory::read` / `Memory::write`
+//! scaffold in `tree_csr`) with direct `Memory::read` / `Memory::write`
 //! access against fixed-stride blocks (16-byte header + 4096-byte payload =
 //! 4112 bytes per block). **Evidence-only**: the LTB store is wired into the
 //! prototype here, not into the production [`crate::labeled::LabeledLaraGraph`]

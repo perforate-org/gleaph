@@ -106,11 +106,10 @@ pub(crate) mod invariants;
 /// gate predated the production wiring and the green-bar matrix never ran a
 /// feature-less lib check).
 pub(crate) mod ltb_raw_block_store;
-/// ADR 0088 Tree-CSR prototype helpers (`B`, `derive_depth`, `root_len`) used
-/// by the production tree-mode read/write paths (Plan 0318 §Steps 5-7). The
-/// `TreeCsrBucket` value type remains evidence-only; the gate was removed when
-/// production paths began importing the helpers.
-pub(crate) mod tree_csr_prototype;
+/// ADR 0088 Tree-CSR constants and layout math (`B`, `derive_depth`, `root_len`)
+/// used by the production tree-mode read/write paths (Plan 0318 §Steps 5-7).
+/// The `TreeCsrBucket` measurement scaffold remains bench-only.
+pub(crate) mod tree_csr;
 
 /// Initial physical capacities for the labeled graph's independent storage slabs.
 ///

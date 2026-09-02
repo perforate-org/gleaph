@@ -46,7 +46,7 @@ const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
 ///
 /// `R_MAX = 1024` is the **root-array fan-out cap** (number of `u32` block_id
 /// entries that fit in one root); the derive-depth formula in
-/// `tree_csr_prototype::derive_depth` and the `root_len` per-level cap use it.
+/// `tree_csr::derive_depth` and the `root_len` per-level cap use it.
 /// `root_len > R_MAX` is the **deepen** trigger (Plan 0318 Step 7), not a
 /// slot-cap reject.
 pub(crate) const T_PROMOTE: u32 = 4096;

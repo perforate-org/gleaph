@@ -211,7 +211,7 @@ impl LabelBucket {
     /// Plan 0318 §Step 7: physical depth of the tree-mode layout, in
     /// the range `1..=MAX_DEPTH = 3`. For a freshly-promoted bucket
     /// (no `tree_mode_deepen` call) the physical depth equals
-    /// `tree_csr_prototype::derive_depth(stored_slots)`. After a
+    /// `tree_csr::derive_depth(stored_slots)`. After a
     /// `tree_mode_deepen` call the physical depth is one more than the
     /// pre-call depth (capped at `MAX_DEPTH`); the structural
     /// formula's view (`derive_depth(stored_slots)`) is unchanged, so

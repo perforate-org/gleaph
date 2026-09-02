@@ -5,7 +5,7 @@
 
 use crate::bench as helper;
 use crate::labeled::ltb_raw_block_store::LtbRawBlockStore;
-use crate::labeled::tree_csr_prototype::TreeCsrBucket;
+use crate::labeled::tree_csr::TreeCsrBucket;
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, EdgePlacementPolicy,
     LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
@@ -2731,7 +2731,7 @@ fn bench_l_nt_bp_ins_4096() -> canbench_rs::BenchResult {
 // scope name `tcsr_131072_<op>` reflects only the operation under test.
 //
 // The 131K bench surface is on the **production** `LabeledLaraGraph` (the
-// 4K / 65K tcsr parity benches above use the `TreeCsrBucket` PROTOTYPE
+// 4K / 65K tcsr parity benches above use the `TreeCsrBucket` measurement scaffold
 // — a different surface). The guard bench proves the
 // `TreeRootCapacityReached` fail-closed guard fires at exactly 2^17+1.
 //

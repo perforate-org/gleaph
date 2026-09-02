@@ -42,7 +42,7 @@ use crate::VertexId;
 use crate::labeled::graph::error::LabeledOperationError;
 use crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES;
 use crate::labeled::record::LabelBucket;
-use crate::labeled::tree_csr_prototype::{B as BLOCK_B, root_len as derived_root_len};
+use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::CsrEdge;
 
@@ -95,7 +95,7 @@ where
     // descends the hop chain. The valid range is
     // `block_root_index < leaf_count = ceil(stored_slots / B)`.
     let leaf_count = u32::try_from(
-        (u64::from(bucket.stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+        (u64::from(bucket.stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
     debug_assert!(block_root_index < leaf_count);
@@ -163,7 +163,7 @@ where
     // identical to the prior single-hop read. For depth 2+ the resolver
     // descends the interior hop chain to find each leaf.
     let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
     // The structural `derived_root_len` is the depth-1 root length
@@ -515,7 +515,7 @@ where
     }
     let stored_slots = bucket.stored_slots;
     let leaf_count = u32::try_from(
-        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+        (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
     let mut property_buf = vec![0u8; usize::from(w)];

@@ -1,11 +1,13 @@
-//! ADR 0088 Tree-CSR mode prototype: an ordinal-addressed indirect block tree
-//! standing in for one hot labeled bucket.
+//! ADR 0088 Tree-CSR mode: an ordinal-addressed indirect block tree standing in
+//! for one hot labeled bucket.
 //!
-//! **Evidence-only.** This is NOT wired into [`super::graph::LabeledLaraGraph`];
-//! it exists to measure Tree-CSR's mutation, scan, and lookup cost against the
-//! shared-leaf slab baselines in `labeled/bench.rs`, so the implementation
-//! decision recorded in ADR 0088 §Measurement gates rests on numbers rather than
-//! assumption.
+//! Split scope as of Plan 0318: the constants and layout math ([`B`],
+//! [`R_MAX`], [`derive_depth`], [`root_len`], `MAX_DEPTH`) are production API —
+//! the tree-mode read/write paths in `super::graph` import them. The
+//! [`TreeCsrBucket`] measurement scaffold is bench-only; it exists to measure
+//! Tree-CSR's mutation, scan, and lookup cost against the shared-leaf slab
+//! baselines in `labeled/bench.rs`, so the implementation decision recorded in
+//! ADR 0088 §Measurement gates rests on numbers rather than assumption.
 //!
 //! Design (per ADR 0088 recorded constraints):
 //! - **Ordinal-addressed**, not key-addressed: lookup input is a logical
@@ -35,7 +37,8 @@
 //! [`crate::VectorMemory`] (via [`crate::test_support::vector_memory`]) and
 //! production wiring can use [`ic_stable_structures::memory_manager::VirtualMemory`].
 //!
-//! Scope: bench-only; not wired into the production path.
+//! Scope: the [`TreeCsrBucket`] scaffold is bench-only; the layout constants
+//! are production API.
 //!
 //! # Read/Write API selection (Plan 0322)
 //!
@@ -91,7 +94,7 @@ pub(crate) fn derive_depth(stored_slots: u32) -> u32 {
     // canonical write; this panic matches the ADR's "fail-closed structural
     // boundary" rule for the evidence-only prototype.
     panic!(
-        "tree_csr_prototype: stored_slots={stored_slots} exceeds MAX_DEPTH={MAX_DEPTH} coverage"
+        "tree_csr: stored_slots={stored_slots} exceeds MAX_DEPTH={MAX_DEPTH} coverage"
     );
 }
 
@@ -340,7 +343,7 @@ impl<M: Memory> TreeCsrBucket<M> {
         let new_stored_slots = self
             .stored_slots
             .checked_add(1)
-            .expect("tree_csr_prototype: stored_slots overflow");
+            .expect("tree_csr: stored_slots overflow");
 
         let new_root_len = root_len(new_stored_slots);
 
