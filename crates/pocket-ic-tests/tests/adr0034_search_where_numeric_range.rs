@@ -64,6 +64,12 @@ fn register_vector_index(env: &FederationEnv, metric: VectorMetric, target: Prin
         target: Some(target),
         if_not_exists: false,
     };
+    // The router resolves registration labels fail-closed against interned names, so intern the
+    // fixture's labels before registering (ensure is idempotent; later test code re-ensures the
+    // same names and observes the same VertexLabelId).
+    for label in &args.labels {
+        ensure_vertex_label(env, label);
+    }
     let bytes = env
         .pic
         .update_call(
