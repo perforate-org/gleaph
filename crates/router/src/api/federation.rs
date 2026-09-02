@@ -612,6 +612,13 @@ async fn advance_vector_maintenance(
         scan_max_pages: policy.scan_max_pages,
         rebuild_max_subjects: policy.rebuild_max_subjects,
         cleanup_max_work: policy.cleanup_max_work,
+        // Slice 9: the maintenance policy record does not yet own these tuning selections, so the
+        // step keeps the previous behavior (flat, tier off, eps = 0). The Router will snapshot
+        // them here once the policy record gains the fields.
+        target_fine_nlist: None,
+        code_tier: None,
+        eps_query_bps: None,
+        eps_fine_bps: None,
     };
     crate::vector_sync::forward_admin_vector_maintenance_step(target, index_id, req)
         .await

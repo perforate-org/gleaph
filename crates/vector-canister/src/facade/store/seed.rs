@@ -142,6 +142,8 @@ pub(crate) fn seed_ivf_with_metric_for_test(
         code_tier: false,
         code_stride_bytes: 0,
         rotation_seed: VectorIndexDef::rotation_seed_for(index_id),
+        eps_query_bps: 0,
+        eps_fine_bps: 0,
     };
 
     // Live slots, assigned to the nearest centroid partition.

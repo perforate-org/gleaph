@@ -3835,6 +3835,8 @@ fn seed_ready_centroids_only(index_id: u32, nlist: u32, dims: u16) {
             code_tier: false,
             code_stride_bytes: 0,
             rotation_seed: 0,
+            eps_query_bps: 0,
+            eps_fine_bps: 0,
         },
     )
     .expect("seed def");
@@ -4073,6 +4075,10 @@ fn maint_req() -> VectorMaintenanceStepRequest {
         scan_max_pages: 100,
         rebuild_max_subjects: 100,
         cleanup_max_work: 100,
+        target_fine_nlist: None,
+        code_tier: None,
+        eps_query_bps: None,
+        eps_fine_bps: None,
     }
 }
 
@@ -5319,6 +5325,8 @@ mod two_level_tests {
             code_tier: false,
             code_stride_bytes: 0,
             rotation_seed: 0,
+            eps_query_bps: 0,
+            eps_fine_bps: 0,
         }
     }
 

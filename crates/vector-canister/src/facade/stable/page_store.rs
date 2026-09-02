@@ -2578,6 +2578,8 @@ mod tests {
             code_tier: false,
             code_stride_bytes: 0,
             rotation_seed: 0,
+            eps_query_bps: 0,
+            eps_fine_bps: 0,
         }
     }
 

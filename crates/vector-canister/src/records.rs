@@ -14,7 +14,8 @@
 use candid::{CandidType, Decode, Encode};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
+    MAX_VECTOR_EPS_BPS, VECTOR_EPS_BPS_INFINITY, VectorEncoding, VectorIndexKind, VectorMetric,
+    VectorSubject,
 };
 use ic_stable_linear_hash_map::{ScanCursor, ScanError, StableHashKey, StableMapValue};
 use ic_stable_structures::storable::{Bound, Storable};
@@ -22,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 const SUBJECT_TAG_VERTEX: u8 = 0;
-const VECTOR_INDEX_DEF_BYTES: usize = 59;
-const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-03";
+const VECTOR_INDEX_DEF_BYTES: usize = 67;
+const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-04";
 
 /// `VectorIndexDef` shape tags (`levels` field). `levels = 1` is the flat behavior and the default
 /// for lazily created defs; `levels = 2` activates the coarse/leaf hierarchy (ADR 0064 §9).
@@ -355,6 +356,14 @@ pub struct VectorIndexDef {
     /// Walsh–Hadamard + seeded sign flips over the zero-padded `P` domain) is applied at data
     /// write time and query time, so codes and queries always live in the same rotated space.
     pub rotation_seed: u64,
+    /// Frozen ε₂ pruning of the **active** generation's coarse stage (Slice 9), in basis points:
+    /// a partition is selected iff `dist(q, c_p) <= (1 + bps / 10_000) * dist(q, c_best)`.
+    /// `0` (default) scans only the nearest partition(s); [`VECTOR_EPS_BPS_INFINITY`]
+    /// (`u32::MAX`) selects everything. Chosen at rebuild start; floats are never durable.
+    pub eps_query_bps: u32,
+    /// Frozen ε₂ pruning of a two-level generation's leaf stage (Slice 9), same unit and
+    /// sentinel as [`Self::eps_query_bps`]. Unused by flat (`levels = 1`) generations.
+    pub eps_fine_bps: u32,
 }
 
 impl VectorIndexDef {
@@ -444,6 +453,10 @@ impl Storable for VectorIndexDef {
         out[46] = self.code_tier as u8;
         out[47..51].copy_from_slice(&self.code_stride_bytes.to_le_bytes());
         out[51..59].copy_from_slice(&self.rotation_seed.to_le_bytes());
+        // Slice 9 (per-level ε₂ pruning): frozen bps thresholds extend the layout to 67 bytes.
+        // The storage id bumped to GLEAPH-VECDEF-04; reinstall required.
+        out[59..63].copy_from_slice(&self.eps_query_bps.to_le_bytes());
+        out[63..67].copy_from_slice(&self.eps_fine_bps.to_le_bytes());
         Cow::Owned(out.to_vec())
     }
 
@@ -500,7 +513,23 @@ impl Storable for VectorIndexDef {
                 stride
             },
             rotation_seed: u64::from_le_bytes(b[51..59].try_into().expect("rotation_seed")),
+            eps_query_bps: Self::decode_eps_bps(b, 59, "eps_query"),
+            eps_fine_bps: Self::decode_eps_bps(b, 63, "eps_fine"),
         }
+    }
+}
+
+impl VectorIndexDef {
+    /// Fail-closed ε₂ bps decode (Slice 9): valid values are `0..=MAX_VECTOR_EPS_BPS` or the
+    /// [`VECTOR_EPS_BPS_INFINITY`] sentinel. Anything else rejects the record instead of
+    /// silently degrading the pruning behavior.
+    fn decode_eps_bps(b: &[u8], offset: usize, name: &str) -> u32 {
+        let bps = u32::from_le_bytes(b[offset..offset + 4].try_into().expect(name));
+        assert!(
+            bps == VECTOR_EPS_BPS_INFINITY || bps <= MAX_VECTOR_EPS_BPS,
+            "def {name}_bps out of range"
+        );
+        bps
     }
 }
 
@@ -1939,6 +1968,8 @@ pub(crate) mod test_support {
             code_tier: true,
             code_stride_bytes,
             rotation_seed: VectorIndexDef::rotation_seed_for(1),
+            eps_query_bps: 0,
+            eps_fine_bps: 0,
         }
     }
 }
@@ -2031,9 +2062,13 @@ mod tests {
             code_tier: true,
             code_stride_bytes: VectorIndexDef::canonical_code_stride_bytes(0x0201),
             rotation_seed: 0x3231_2f2e_2d2c_2b2a,
+            eps_query_bps: 0x000f_4240, // = MAX_VECTOR_EPS_BPS (decode boundary)
+            eps_fine_bps: 0xffff_ffff,  // = VECTOR_EPS_BPS_INFINITY sentinel
         };
         // The retired 46-byte prefix is unchanged; `code_tier` (1 B) + `code_stride_bytes` (4 B
-        // LE) + `rotation_seed` (8 B LE) extend the layout to 59 bytes under GLEAPH-VECDEF-03.
+        // LE) + `rotation_seed` (8 B LE) extend the layout to 59 bytes under GLEAPH-VECDEF-03,
+        // and Slice 9's frozen ε₂ bps pair (2 × 4 B LE) extends it to 67 bytes under
+        // GLEAPH-VECDEF-04.
         let mut expected = vec![
             0x00, 0x01, 0x01, 0x02, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
             0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
@@ -2045,13 +2080,15 @@ mod tests {
         expected
             .extend_from_slice(&VectorIndexDef::canonical_code_stride_bytes(0x0201).to_le_bytes());
         expected.extend_from_slice(&0x3231_2f2e_2d2c_2b2au64.to_le_bytes());
+        expected.extend_from_slice(&0x000f_4240u32.to_le_bytes());
+        expected.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
 
         assert_eq!(
             VectorIndexDef::BOUND.max_size(),
             VECTOR_INDEX_DEF_BYTES as u32
         );
         assert!(VectorIndexDef::BOUND.is_fixed_size());
-        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-03");
+        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-04");
         assert_eq!(def.to_bytes().as_ref(), expected.as_slice());
         assert_eq!(VectorIndexDef::from_bytes(Cow::Borrowed(&expected)), def);
     }
@@ -2131,6 +2168,8 @@ mod tests {
             code_tier: false,
             code_stride_bytes: 0,
             rotation_seed: 0,
+            eps_query_bps: 0,
+            eps_fine_bps: 0,
         };
         let flat = VectorIndexDef {
             levels: LEVELS_FLAT,

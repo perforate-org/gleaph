@@ -701,6 +701,18 @@ pub struct VectorMaintenancePolicy {
     pub min_tombstoned_rows: u64,
 }
 
+/// Reserved `eps_*_bps` value meaning **∞**: every partition/leaf is selected regardless of the
+/// query distance (the full-scan escape hatch; replaces the retired in-code `f32::INFINITY`
+/// sentinel). The threshold factor is derived at query time as `1 + bps / 10_000`.
+pub const VECTOR_EPS_BPS_INFINITY: u32 = u32::MAX;
+
+/// Upper bound for durable/query `eps_query_bps` / `eps_fine_bps` inputs (Slice 9). The implied
+/// threshold factor is `1 + bps / 10_000 <= 101`, beyond which the ε₂ selection degenerates toward
+/// a full walk anyway and stops being meaningfully distinct from [`VECTOR_EPS_BPS_INFINITY`].
+/// Enforced by the Router policy validation, the vector rebuild-start validation, and the
+/// definition codec's fail-closed decode.
+pub const MAX_VECTOR_EPS_BPS: u32 = 1_000_000;
+
 /// Deterministic maintenance recommendation from merged partition health (ADR 0031 Slice 9).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
@@ -775,6 +787,16 @@ pub struct VectorMaintenanceStepRequest {
     pub rebuild_max_subjects: u32,
     /// Max work units processed in one bounded cleanup/abort step.
     pub cleanup_max_work: u32,
+    /// Target-generation shape/tuning selections (Slice 9) forwarded to the policy-driven rebuild
+    /// start: two-level fan-in (`Some(f)`, `f >= 2`), the RaBitQ code tier, and the frozen
+    /// per-level ε₂ pruning (`eps_query_bps` coarse stage / `eps_fine_bps` leaf stage).
+    /// `None` keeps the previous behavior (flat, tier off, `eps = 0`); the Router owns these
+    /// settings and snapshots them per step — the vector canister never durably copies them
+    /// outside the started generation.
+    pub target_fine_nlist: Option<u32>,
+    pub code_tier: Option<bool>,
+    pub eps_query_bps: Option<u32>,
+    pub eps_fine_bps: Option<u32>,
 }
 
 /// Outcome of one bounded `admin_vector_maintenance_step` unit (ADR 0031 Slice 10).
@@ -1754,6 +1776,10 @@ mod tests {
             scan_max_pages: 64,
             rebuild_max_subjects: 5_000,
             cleanup_max_work: 5_000,
+            target_fine_nlist: None,
+            code_tier: None,
+            eps_query_bps: None,
+            eps_fine_bps: None,
         };
         let bytes = Encode!(&req).expect("encode");
         assert_eq!(

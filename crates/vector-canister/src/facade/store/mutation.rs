@@ -452,6 +452,10 @@ fn lazy_definition_for_outcome(
         code_tier: false,
         code_stride_bytes: 0,
         rotation_seed: VectorIndexDef::rotation_seed_for(index_id),
+        // Slice 9: lazy defs keep the legacy pruning behavior — nearest-partition-only scan at
+        // both stages; only an explicit rebuild start freezes per-level ε₂ values.
+        eps_query_bps: 0,
+        eps_fine_bps: 0,
     })
 }
 
@@ -1709,6 +1713,8 @@ pub(crate) fn create_index_for_test(
         code_tier: false,
         code_stride_bytes: 0,
         rotation_seed: VectorIndexDef::rotation_seed_for(index_id),
+        eps_query_bps: 0,
+        eps_fine_bps: 0,
     };
     definition_store::insert(index_id, def)
         .map(|_| ())
