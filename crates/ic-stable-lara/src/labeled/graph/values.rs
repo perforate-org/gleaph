@@ -1,5 +1,10 @@
 //! Labeled graph `values` implementation.
 
+use super::error::LabeledOperationError;
+use super::{
+    BucketSearch, LabeledInlinePropertyBytesCompactionResult,
+    LabeledInlinePropertyBytesStorageStats, LabeledLaraGraph,
+};
 use crate::{
     VertexId,
     labeled::slot_index::checked_add_slot_index,
@@ -15,29 +20,6 @@ use crate::{
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
-#[cfg(test)]
-use std::cell::Cell;
-
-use super::error::LabeledOperationError;
-use super::{
-    BucketSearch, LabeledInlinePropertyBytesCompactionResult,
-    LabeledInlinePropertyBytesStorageStats, LabeledLaraGraph,
-};
-
-#[cfg(test)]
-thread_local! {
-    static FORCE_INLINE_PROPERTY_BYTES_COMPACTION_ERROR: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(crate) fn force_next_inline_property_bytes_compaction_error() {
-    FORCE_INLINE_PROPERTY_BYTES_COMPACTION_ERROR.with(|flag| flag.set(true));
-}
-
-#[cfg(test)]
-fn take_forced_inline_property_bytes_compaction_error() -> bool {
-    FORCE_INLINE_PROPERTY_BYTES_COMPACTION_ERROR.with(|flag| flag.replace(false))
-}
 
 pub(super) struct BucketInlinePropertyBytesDeletePlan {
     bucket: LabelBucket,
@@ -80,10 +62,6 @@ where
     pub(crate) fn compact_inline_property_bytes_slab(
         &self,
     ) -> Result<LabeledInlinePropertyBytesCompactionResult, LabeledOperationError> {
-        #[cfg(test)]
-        if take_forced_inline_property_bytes_compaction_error() {
-            return Err(LaraOperationError::CollectAllocationOverflow.into());
-        }
         struct SpanPlan {
             bucket_slot: u64,
             bucket: LabelBucket,
@@ -792,7 +770,7 @@ where
             )
         } else {
             // Plan 0320 §F-1: the inner graph has no maintenance queue
-            // (the queue is owned by `DeferredLabeledLaraGraph`).
+            // (the queue is owned by the deferred-maintenance wrapper).
             // Surface the work-item payload as a typed signal so the
             // wrapper can intercept, enqueue, drain, and retry.
             Err(

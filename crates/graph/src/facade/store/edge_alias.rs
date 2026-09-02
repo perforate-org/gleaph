@@ -4,7 +4,7 @@ use super::super::stable::GRAPH;
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    bidirectional::counterpart::{self, CounterpartLookupError},
+    labeled::bidirectional::counterpart::{self, CounterpartLookupError},
     labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
 };
 

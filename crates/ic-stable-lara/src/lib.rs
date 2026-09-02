@@ -59,7 +59,6 @@ use std::{
 
 #[cfg(feature = "canbench")]
 mod bench;
-pub mod bidirectional;
 pub mod labeled;
 pub mod lara;
 pub mod log_head;
@@ -68,39 +67,24 @@ pub mod traits;
 pub mod traverse;
 mod types;
 
-pub use bidirectional::{
-    BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph,
-    BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
-    DeferredBidirectionalLaraGraph, DeleteEdgeObserver, FilteredOutEdgesIter,
-};
 pub use labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLara,
-    DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara, DeferredLabeledLaraGraph,
-    LabelBucket, LabeledCsrVertex, LabeledLara, LabeledLaraGraph, LabeledOutEdgesIter,
-    LabeledVertex, OutEdgeOrder,
+    DeferredBidirectionalLabeledLaraGraph, LabelBucket, LabeledCsrVertex, LabeledLara,
+    LabeledLaraGraph, LabeledOutEdgesIter, LabeledVertex, OutEdgeOrder,
 };
 pub use lara::{
-    LaraGraph,
     edge::{
         DescOutEdgesIter, EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
         OutEdgesIter,
         free_span::{FreeSpan, FreeSpanError, FreeSpanStore, InitError as FreeSpanInitError},
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
-    maintenance::{
-        DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceError, MaintenanceReport,
-        MaintenanceWorkReport,
-    },
+    maintenance::{DeferredConfig, MaintenanceBudget, MaintenanceWorkReport},
     operation_error::{LaraOperationError, VertexAccessError},
     vertex::{InitError as VertexInitError, Vertex, VertexStore},
 };
 pub use log_head::LogHead;
 pub use traits::*;
-
-/// Convenience alias for the single-orientation LARA graph.
-pub type Lara<E, V, M> = LaraGraph<E, V, M>;
-/// Convenience alias for the deferred-maintenance single-orientation LARA graph.
-pub type DeferredLara<E, V, M> = DeferredLaraGraph<E, V, M>;
 
 pub use ic_stable_structures::vec_mem::VectorMemory;
 use types::Address;

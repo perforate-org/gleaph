@@ -209,8 +209,6 @@ mod bypass;
 mod compact;
 #[cfg(test)]
 pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
-#[cfg(test)]
-pub(crate) use values::force_next_inline_property_bytes_compaction_error;
 pub mod batch_write;
 #[cfg(test)]
 mod batch_write_test;

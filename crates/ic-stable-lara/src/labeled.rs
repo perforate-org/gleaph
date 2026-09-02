@@ -81,10 +81,9 @@ mod bench;
     dead_code,
     reason = "bidirectional labeled maintenance exposes staged helpers"
 )]
-pub(crate) mod bidirectional;
+pub mod bidirectional;
 pub mod bucket_label_key;
 mod bucket_store;
-pub(crate) mod deferred;
 #[expect(
     dead_code,
     reason = "labeled graph contains maintenance and diagnostics entry points"
@@ -165,7 +164,6 @@ pub use bucket_label_key::{
     BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,
 };
 pub use bucket_store::InitError as LabelBucketStoreInitError;
-pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
 pub use graph::BucketEntryPosition;
 pub use graph::{EdgePlacementPolicy, ScalarInsertLocation, ScalarInsertStorage};
 pub use graph::{EdgeRemoval, EdgeSlotMove};
@@ -184,7 +182,5 @@ pub use traits::LabeledCsrVertex;
 
 /// Convenience alias for the single-orientation labeled LARA graph.
 pub type LabeledLara<E, M> = LabeledLaraGraph<E, M>;
-/// Convenience alias for the deferred-maintenance labeled LARA graph.
-pub type DeferredLabeledLara<E, M> = DeferredLabeledLaraGraph<E, M>;
 /// Convenience alias for the deferred bidirectional labeled LARA graph.
 pub type DeferredBidirectionalLabeledLara<E, M> = DeferredBidirectionalLabeledLaraGraph<E, M>;

@@ -6,6 +6,7 @@
 
 use crate::{
     VertexCount, VertexId,
+    labeled::graph::values::MaterializeStep,
     labeled::{
         BucketLabelKey, InitialCapacities,
         bucket_label_key::BucketDirectedness,
@@ -216,10 +217,39 @@ pub enum MaintenanceWorkItem {
         /// Incident edges already removed (informational; threaded across steps).
         removed_edges: u32,
     },
+    /// v1: Materialize an inline property stream for one bucket in one
+    /// orientation (Plan 0320 §Step 2). The work item carries the bucket slot
+    /// (validates relevance), the target width, the fill byte, the
+    /// reserved slab offset (set on first step), the stream length
+    /// (S × width), and the resume cursor (Plan 0320 §0.7). The
+    /// worker pops, writes one step's worth of `fill_byte` to the
+    /// reserved slab region, advances `resume_position`, and
+    /// re-enqueues until finished; on the final step the descriptor
+    /// (width + offset + slab_slots + log reset) is published and
+    /// the vertex-level accounting is updated atomically (Plan 0320
+    /// §0.1, §0.6, §0.12).
+    MaterializeInlinePropertyStreamV1 {
+        /// Orientation whose bucket receives the materialized stream.
+        orientation: Orientation,
+        /// Vertex whose bucket receives the materialized stream.
+        vid: VertexId,
+        /// Bucket slot used to validate that the work item is still relevant.
+        bucket_slot: u64,
+        /// Target width (always > 0; u16 representation bound).
+        width: u16,
+        /// Fill byte for every position in the stream.
+        fill_byte: u8,
+        /// Reserved slab byte offset (set on first step, `u64::MAX` until then).
+        reserved_offset: u64,
+        /// Total stream byte count (S × width).
+        total_bytes: u64,
+        /// Resume cursor: next byte position to write (0..total_bytes).
+        resume_position: u64,
+    },
 }
 
 impl MaintenanceWorkItem {
-    /// Stable variant tag byte (0..=6).
+    /// Stable variant tag byte (0..=7).
     fn tag(&self) -> u8 {
         match self {
             Self::CompactLabelBucketVertexSegmentV1 { .. } => 0,
@@ -229,6 +259,7 @@ impl MaintenanceWorkItem {
             Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
             Self::DeleteVertexV1 { .. } => 5,
             Self::CompactInlinePropertyBytesSlabV1 { .. } => 6,
+            Self::MaterializeInlinePropertyStreamV1 { .. } => 7,
         }
     }
 
@@ -242,7 +273,8 @@ impl MaintenanceWorkItem {
             | Self::CompactVertexValueSpanV1 { .. }
             | Self::CompactVertexEdgeAndValueSpanV1 { .. }
             | Self::DeleteVertexV1 { .. }
-            | Self::CompactInlinePropertyBytesSlabV1 { .. } => 1,
+            | Self::CompactInlinePropertyBytesSlabV1 { .. }
+            | Self::MaterializeInlinePropertyStreamV1 { .. } => 1,
         }
     }
 }
@@ -365,6 +397,25 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
         MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
             out.push(orientation_byte(*orientation));
         }
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            orientation,
+            vid,
+            bucket_slot,
+            width,
+            fill_byte,
+            reserved_offset,
+            total_bytes,
+            resume_position,
+        } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&bucket_slot.to_le_bytes());
+            out.extend_from_slice(&width.to_le_bytes());
+            out.push(*fill_byte);
+            out.extend_from_slice(&reserved_offset.to_le_bytes());
+            out.extend_from_slice(&total_bytes.to_le_bytes());
+            out.extend_from_slice(&resume_position.to_le_bytes());
+        }
     }
     out
 }
@@ -429,6 +480,16 @@ impl Storable for MaintenanceWorkItem {
             },
             (6, 1) => Self::CompactInlinePropertyBytesSlabV1 {
                 orientation: orientation_from_byte(payload[0]),
+            },
+            (7, 1) => Self::MaterializeInlinePropertyStreamV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
+                bucket_slot: u64::from_le_bytes(payload[5..13].try_into().unwrap()),
+                width: u16::from_le_bytes(payload[13..15].try_into().unwrap()),
+                fill_byte: payload[15],
+                reserved_offset: u64::from_le_bytes(payload[16..24].try_into().unwrap()),
+                total_bytes: u64::from_le_bytes(payload[24..32].try_into().unwrap()),
+                resume_position: u64::from_le_bytes(payload[32..40].try_into().unwrap()),
             },
             (unknown_tag, unknown_version) => panic!(
                 "maintenance work item: unsupported (tag, version) pair ({unknown_tag}, {unknown_version})"
@@ -516,6 +577,14 @@ fn work_item_discriminator(item: &MaintenanceWorkItem) -> u32 {
             }
         }
         MaintenanceWorkItem::DeleteVertexV1 { vid, .. } => 0xE000_0000 | u32::from(*vid),
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            vid, bucket_slot, ..
+        } => {
+            // Same discriminator family as the single-orientation queue (Plan 0320
+            // Step 2): hash-spread `(vid, bucket_slot)` so concurrent signals for the
+            // same bucket collapse onto one key (dedup is key presence).
+            0xE000_0000u32 ^ (u32::from(*vid).wrapping_mul(2_654_435_761) ^ *bucket_slot as u32)
+        }
     }
 }
 
@@ -606,6 +675,36 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
             .insert((priority, key.1, key.2), item.clone());
     }
 
+    /// Plan 0320 §F-1: does the queue contain a
+    /// `MaterializeInlinePropertyStreamV1` work item for
+    /// `(orientation, vid, bucket_slot)`? Linear scan; used by the
+    /// wrapper's drain helper to detect completion. The queue is bounded by
+    /// distinct `(vid, bucket_slot)` keys per plan, so the scan is
+    /// at most O(vertices × labels), not O(edges).
+    fn contains_materialize(
+        &self,
+        orientation: Orientation,
+        vid: VertexId,
+        bucket_slot: u64,
+    ) -> bool {
+        let target = u32::from(vid);
+        for entry in self.map.borrow().iter() {
+            if let MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                orientation: o,
+                vid: v,
+                bucket_slot: bs,
+                ..
+            } = entry.value()
+                && orientation_byte(o) == orientation_byte(orientation)
+                && u32::from(v) == target
+                && bs == bucket_slot
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Any span or dense item pending for `vid` in `orientation` (coarse dedup scan;
     /// short-circuits). Mirrors the unidirectional graph's per-vid span dedup while
     /// keeping the two orientations independent in the shared queue.
@@ -686,6 +785,29 @@ pub enum DeferredBidirectionalLabeledError {
         /// Current vertex column length.
         len: VertexCount,
     },
+    /// Plan 0320 §F-1: the insert triggered a 0→w inline-property width
+    /// addition above the materialize byte budget. The wrapper intercepted
+    /// the inner `InlinePropertyMaterializeDeferredRequired` signal,
+    /// enqueued the stepped `MaterializeInlinePropertyStreamV1` work item,
+    /// and drained it: by the time this error is returned the materialize
+    /// has completed and the descriptor is published. The caller must retry
+    /// the same insert; the retry observes the published width and proceeds
+    /// normally. Nothing has been written for the interrupted insert.
+    InlinePropertyMaterializePending {
+        /// Vertex whose bucket was materialized.
+        vid: VertexId,
+        /// Bucket slot the materialize was published against.
+        bucket_slot: u64,
+    },
+    /// A maintenance worker step failed and the work item was requeued at
+    /// Retry priority; a bounded drain could not make further progress, so
+    /// the claimed completion is not guaranteed. This is an invariant
+    /// violation of the maintenance machinery, not a caller-recoverable
+    /// condition: the next timer-driven drain must resolve the queue.
+    MaintenanceStalled {
+        /// Queue length after the last drain pass (the stalled item included).
+        remaining_queue_len: u64,
+    },
 }
 
 impl fmt::Display for DeferredBidirectionalLabeledError {
@@ -705,6 +827,16 @@ impl fmt::Display for DeferredBidirectionalLabeledError {
             Self::VertexOutOfRange { vid, len } => {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
+            Self::InlinePropertyMaterializePending { vid, bucket_slot } => write!(
+                f,
+                "inline property materialize pending for vertex {vid} bucket {bucket_slot}; retry the insert"
+            ),
+            Self::MaintenanceStalled {
+                remaining_queue_len,
+            } => write!(
+                f,
+                "maintenance worker stalled ({remaining_queue_len} item(s) still queued)"
+            ),
         }
     }
 }
@@ -717,7 +849,10 @@ impl std::error::Error for DeferredBidirectionalLabeledError {
             Self::Grow(err) => Some(err),
             Self::MaintenanceCapture(err) => Some(err),
             Self::InvalidConfig(err) => Some(err),
-            Self::VertexCountMismatch { .. } | Self::VertexOutOfRange { .. } => None,
+            Self::VertexCountMismatch { .. }
+            | Self::VertexOutOfRange { .. }
+            | Self::InlinePropertyMaterializePending { .. }
+            | Self::MaintenanceStalled { .. } => None,
         }
     }
 }
@@ -726,6 +861,66 @@ impl From<crate::GrowFailed> for DeferredBidirectionalLabeledError {
     fn from(value: crate::GrowFailed) -> Self {
         Self::Grow(value)
     }
+}
+
+/// Bounded drain passes for the materialize work item. A correct
+/// implementation completes within one `maintenance` call; the cap exists to
+/// bound a buggy worker instead of silently bailing.
+const MATERIALIZE_DRAIN_MAX_PASSES: u32 = 16;
+
+/// Bounded passes for the best-effort sibling drain. A correct
+/// implementation settles in 1-2 passes.
+const SIBLING_DRAIN_MAX_PASSES: u32 = 8;
+
+/// Payload of the inner `InlinePropertyMaterializeDeferredRequired` signal
+/// (Plan 0320 §F-1): the bucket whose inline-property schema must be
+/// materialized (stepped fill + descriptor publish) before the interrupted
+/// edge append can proceed.
+struct MaterializeSignal {
+    /// Vertex whose bucket triggered the signal.
+    vid: VertexId,
+    /// Bucket slot at signal time (re-resolved before enqueue).
+    bucket_slot: u64,
+    /// Target width to publish on the descriptor.
+    width: u16,
+    /// Fill byte (Plan 0320 §0.1 dense-prefix semantics).
+    fill_byte: u8,
+    /// Live-ordinal count at signal time; drives `total_bytes = degree * width`.
+    degree: u32,
+}
+
+impl MaterializeSignal {
+    /// Extracts the signal payload from an inner operation error, passing any
+    /// other error through unchanged.
+    fn from_operation_error(err: LabeledOperationError) -> Result<Self, LabeledOperationError> {
+        match err {
+            LabeledOperationError::InlinePropertyMaterializeDeferredRequired {
+                vid,
+                bucket_slot,
+                width,
+                fill_byte,
+                degree,
+            } => Ok(Self {
+                vid,
+                bucket_slot,
+                width,
+                fill_byte,
+                degree,
+            }),
+            other => Err(other),
+        }
+    }
+}
+
+/// Transaction position of a canonical pair write half interrupted by a
+/// materialize signal; see [`DeferredBidirectionalLabeledLaraGraph::write_half_interruptible`].
+enum MaterializeRetry<'a, R> {
+    /// Nothing is committed for this insert: materialize, then surface the
+    /// retry-after-drain contract to the caller.
+    Surface,
+    /// The other half is already committed: materialize, then retry this half
+    /// inline so the pair write stays atomic.
+    Inline(Box<dyn FnOnce() -> Result<R, LabeledOperationError> + 'a>),
 }
 
 /// Bidirectional labeled LARA graph whose two orientations share one deferred queue.
@@ -757,7 +952,7 @@ where
 
 impl<E, M> DeferredBidirectionalLabeledLaraGraph<E, M>
 where
-    E: CsrEdge + CsrEdgeTombstone,
+    E: CsrEdge + CsrEdgeTombstone + PartialEq,
     M: Memory,
 {
     /// Creates fresh bidirectional labeled stores with a shared deferred queue.
@@ -1418,6 +1613,277 @@ where
         Ok(())
     }
 
+    fn graph_for(&self, orientation: Orientation) -> &LabeledLaraGraph<E, M> {
+        match orientation {
+            Orientation::Forward => &self.forward,
+            Orientation::Reverse => &self.reverse,
+        }
+    }
+
+    /// Plan 0320 §F-1: enqueue a stepped `MaterializeInlinePropertyStreamV1`
+    /// work item for one orientation. The inner primitive has already validated
+    /// `(vid, bucket_slot, width, fill_byte, degree)`. Deduplicated by the
+    /// `0xE000_0000 ^ (vid * 2_654_435_761 ^ bucket_slot)` discriminator
+    /// (Plan 0320 Step 2) so concurrent signals collapse into one work item.
+    ///
+    /// Enqueued at `priority::RETRY` so it runs ahead of any routine
+    /// compaction (dense leaf / value-span / edge-span) enqueued by the
+    /// same insert call. Without this, the routine compaction
+    /// rewrites the bucket segment and the materialized slot becomes
+    /// stale; the wrapper's "drain before retry" contract then points
+    /// the caller at the wrong slot.
+    fn enqueue_materialize_inline_property_stream(
+        &self,
+        orientation: Orientation,
+        bucket_slot: u64,
+        signal: &MaterializeSignal,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let total_bytes = u64::from(signal.degree)
+            .checked_mul(u64::from(signal.width))
+            .ok_or(DeferredBidirectionalLabeledError::MaintenanceCapture(
+                LabeledOperationError::Store(
+                    crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
+                ),
+            ))?;
+        let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+            orientation,
+            vid: signal.vid,
+            bucket_slot,
+            width: signal.width,
+            fill_byte: signal.fill_byte,
+            reserved_offset: u64::MAX,
+            total_bytes,
+            resume_position: 0,
+        };
+        let key = maintenance_queue_key(&item);
+        self.maintenance.requeue(&key, priority::RETRY, &item);
+        Ok(())
+    }
+
+    /// Plan 0320 §F-1: drain until the materialize work item for
+    /// `(orientation, vid, bucket_slot)` is no longer in the queue. The worker
+    /// re-enqueues the stepped cursor at the same key, so a single
+    /// `maintenance` call processes all chunks; a correct implementation
+    /// completes within one call. The pass cap bounds a buggy worker: hitting
+    /// [`MATERIALIZE_DRAIN_MAX_PASSES`] with the item still queued means the
+    /// maintenance machinery stalled, which surfaces as
+    /// [`DeferredBidirectionalLabeledError::MaintenanceStalled`] rather than a
+    /// silent bail (the retry contract claims the materialize completed).
+    fn drain_materialize_inline_property_stream_for(
+        &self,
+        orientation: Orientation,
+        vid: VertexId,
+        bucket_slot: u64,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        for _pass in 0..MATERIALIZE_DRAIN_MAX_PASSES {
+            if !self
+                .maintenance
+                .contains_materialize(orientation, vid, bucket_slot)
+            {
+                return Ok(());
+            }
+            self.maintenance(budget)?;
+        }
+        if self
+            .maintenance
+            .contains_materialize(orientation, vid, bucket_slot)
+        {
+            return Err(DeferredBidirectionalLabeledError::MaintenanceStalled {
+                remaining_queue_len: self.maintenance.len(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Plan 0320 §F-1: best-effort drain of all pending sibling work items,
+    /// used to stabilize the segment layout before the materialize work item
+    /// is enqueued so the bucket slot is stable across the drain. This is a
+    /// precaution, not part of the retry contract: a stalled sibling only
+    /// degrades slot resolution, so no error is surfaced here.
+    fn drain_sibling_work_items(&self) -> Result<(), DeferredBidirectionalLabeledError> {
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        for _ in 0..SIBLING_DRAIN_MAX_PASSES {
+            let before = self.maintenance.len();
+            if before == 0 {
+                return Ok(());
+            }
+            self.maintenance(budget)?;
+            let after = self.maintenance.len();
+            if after >= before {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Plan 0320 §F-1: re-resolve the bucket slot for `(vid, label)` in
+    /// `orientation` after a segment-rewrite. Returns `None` if the bucket is
+    /// missing (the caller will use the original slot as a best-effort).
+    fn resolve_bucket_slot(
+        &self,
+        orientation: Orientation,
+        vid: VertexId,
+        label: BucketLabelKey,
+    ) -> Option<u64> {
+        let graph = self.graph_for(orientation);
+        let vertex = graph.vertices().get(vid);
+        match graph.find_bucket(vid, &vertex, label) {
+            Ok(crate::labeled::graph::BucketSearch::Found { slot, .. }) => Some(slot),
+            _ => None,
+        }
+    }
+
+    /// Plan 0320 §F-1: shared intercept for an inner
+    /// `InlinePropertyMaterializeDeferredRequired` signal in one orientation.
+    /// Drains sibling work items first (so the segment layout is stable),
+    /// re-resolves the bucket slot, enqueues the stepped work item at Retry
+    /// priority, and drains it. Returns the (possibly re-resolved) bucket
+    /// slot the materialize was published against. What happens next is the
+    /// caller's transaction position: see [`Self::write_half_interruptible`].
+    fn run_inline_property_materialize(
+        &self,
+        orientation: Orientation,
+        label_id: BucketLabelKey,
+        signal: &MaterializeSignal,
+    ) -> Result<u64, DeferredBidirectionalLabeledError> {
+        self.drain_sibling_work_items()?;
+        let current_bucket_slot = self
+            .resolve_bucket_slot(orientation, signal.vid, label_id)
+            .unwrap_or(signal.bucket_slot);
+        self.enqueue_materialize_inline_property_stream(orientation, current_bucket_slot, signal)?;
+        self.drain_materialize_inline_property_stream_for(
+            orientation,
+            signal.vid,
+            current_bucket_slot,
+        )?;
+        Ok(current_bucket_slot)
+    }
+
+    /// Wraps a one-orientation inner error into the wrapper error type.
+    fn wrap_orientation_error(
+        &self,
+        orientation: Orientation,
+        err: LabeledOperationError,
+    ) -> DeferredBidirectionalLabeledError {
+        match orientation {
+            Orientation::Forward => DeferredBidirectionalLabeledError::Forward(err),
+            Orientation::Reverse => DeferredBidirectionalLabeledError::Reverse(err),
+        }
+    }
+
+    /// One attempt at the reverse half of a directed pair write, including the
+    /// test-only half-failure injection.
+    #[allow(clippy::unnecessary_wraps)]
+    fn try_insert_directed_reverse(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        reverse_edge: &E,
+        placement: EdgePlacementPolicy,
+    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError> {
+        #[cfg(test)]
+        if test_take_reverse_half_failure() {
+            return Err(LabeledOperationError::InvalidDefaultBypass);
+        }
+        self.reverse
+            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
+                dst,
+                label_id,
+                reverse_edge.clone(),
+                placement,
+            )
+    }
+
+    /// One attempt at the second endpoint row of an undirected pair write,
+    /// including the test-only half-failure injection.
+    fn try_insert_undirected_second(
+        &self,
+        v: VertexId,
+        label_id: BucketLabelKey,
+        edge_vu: &E,
+        placement: EdgePlacementPolicy,
+    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError> {
+        #[cfg(test)]
+        if test_take_reverse_half_failure() {
+            return Err(LabeledOperationError::InvalidDefaultBypass);
+        }
+        self.forward
+            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
+                v,
+                label_id,
+                edge_vu.clone(),
+                placement,
+            )
+    }
+
+    /// Runs one half of a canonical pair write under the Plan 0320 §F-1
+    /// materialize-interrupt contract.
+    ///
+    /// The inner primitive signals `InlinePropertyMaterializeDeferredRequired`
+    /// *before* the edge-append step, so the half is either entirely committed
+    /// or entirely unwritten. That gives the transaction two positions:
+    ///
+    /// - [`RetryHalf::Surface`] (nothing committed yet): materialize, then
+    ///   surface [`DeferredBidirectionalLabeledError::InlinePropertyMaterializePending`]
+    ///   so the caller retries the whole insert.
+    /// - [`RetryHalf::Inline`] (the other half is already committed): materialize,
+    ///   then retry this half inline so the pair write stays atomic. Any other
+    ///   failure of this half is an invariant violation and traps, matching the
+    ///   surrounding post-write failure handling.
+    fn write_half_interruptible<'a, R>(
+        &'a self,
+        orientation: Orientation,
+        label_id: BucketLabelKey,
+        half: impl FnOnce() -> Result<R, LabeledOperationError>,
+        retry: MaterializeRetry<'a, R>,
+    ) -> Result<R, DeferredBidirectionalLabeledError> {
+        match half() {
+            Ok(result) => Ok(result),
+            Err(err) => match MaterializeSignal::from_operation_error(err) {
+                Ok(signal) => {
+                    let bucket_slot =
+                        self.run_inline_property_materialize(orientation, label_id, &signal)?;
+                    match retry {
+                        MaterializeRetry::Surface => {
+                            Err(DeferredBidirectionalLabeledError::InlinePropertyMaterializePending {
+                                vid: signal.vid,
+                                bucket_slot,
+                            })
+                        }
+                        MaterializeRetry::Inline(retry) => {
+                            Ok(retry().unwrap_or_else(|error| {
+                                panic!(
+                                    "{orientation:?} half failed after inline property materialize retry: {error}"
+                                )
+                            }))
+                        }
+                    }
+                }
+                Err(err) => match retry {
+                    MaterializeRetry::Surface => Err(self.wrap_orientation_error(orientation, err)),
+                    MaterializeRetry::Inline(_) => {
+                        panic!("{orientation:?} half failed after the first canonical write: {err}")
+                    }
+                },
+            },
+        }
+    }
+
     /// Appends one vertex row to both orientations.
     pub fn push_vertex(&self) -> Result<VertexId, DeferredBidirectionalLabeledError> {
         let forward_count = self.forward.vertex_count();
@@ -1489,14 +1955,20 @@ where
                     ))
                     .map_err(DeferredBidirectionalLabeledError::Forward)?;
 
-        self.forward
-            .insert_edge_skip_leaf_cascade_deferred_inline_property(
-                src,
-                label_id,
-                forward_edge,
-                placement,
-            )
-            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        self.write_half_interruptible(
+            Orientation::Forward,
+            label_id,
+            || {
+                self.forward
+                    .insert_edge_skip_leaf_cascade_deferred_inline_property(
+                        src,
+                        label_id,
+                        forward_edge,
+                        placement,
+                    )
+            },
+            MaterializeRetry::Surface,
+        )?;
         if inline_property_bytes_compaction_needed {
             self.mark_compact_inline_property_bytes_slab(Orientation::Forward)?;
         }
@@ -1648,39 +2120,28 @@ where
                         reverse_edge.edge_inline_property_byte_width(),
                     ))
                     .map_err(DeferredBidirectionalLabeledError::Reverse)?;
-        let forward_location = self
-            .forward
-            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                src,
-                label_id,
-                forward_edge,
-                placement,
-            )
-            .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        #[cfg(test)]
-        let reverse_result = if test_take_reverse_half_failure() {
-            Err(LabeledOperationError::InvalidDefaultBypass)
-        } else {
-            self.reverse
-                .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                    dst,
-                    label_id,
-                    reverse_edge,
-                    placement,
-                )
-        };
-        #[cfg(not(test))]
-        let reverse_result = self
-            .reverse
-            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                dst,
-                label_id,
-                reverse_edge,
-                placement,
-            );
-        let reverse_location = reverse_result.unwrap_or_else(|error| {
-            panic!("reverse half failed after directed forward canonical write: {error}")
-        });
+        let forward_location = self.write_half_interruptible(
+            Orientation::Forward,
+            label_id,
+            || {
+                self.forward
+                    .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
+                        src,
+                        label_id,
+                        forward_edge,
+                        placement,
+                    )
+            },
+            MaterializeRetry::Surface,
+        )?;
+        let reverse_location = self.write_half_interruptible(
+            Orientation::Reverse,
+            label_id,
+            || self.try_insert_directed_reverse(dst, label_id, &reverse_edge, placement),
+            MaterializeRetry::Inline(Box::new(|| {
+                self.try_insert_directed_reverse(dst, label_id, &reverse_edge, placement)
+            })),
+        )?;
         #[cfg(test)]
         if test_take_post_write_maintenance_failure() {
             test_post_write_maintenance_failure_result().unwrap_or_else(|error| {
@@ -3052,6 +3513,50 @@ where
                         }
                     }
                 }
+                MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                    orientation,
+                    vid,
+                    bucket_slot,
+                    width,
+                    fill_byte,
+                    reserved_offset,
+                    total_bytes,
+                    resume_position,
+                } => {
+                    let graph = self.graph_for(*orientation);
+                    match graph.materialize_inline_property_stream_step(
+                        *vid,
+                        *bucket_slot,
+                        *width,
+                        *fill_byte,
+                        *reserved_offset,
+                        *total_bytes,
+                        *resume_position,
+                    ) {
+                        Ok(MaterializeStep::Finished) => {
+                            report.work.rebalanced_segments =
+                                report.work.rebalanced_segments.saturating_add(1);
+                            None
+                        }
+                        Ok(MaterializeStep::Resumed {
+                            reserved_offset: next_reserved,
+                            resume_position: next_resume,
+                        }) => Some(MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                            orientation: *orientation,
+                            vid: *vid,
+                            bucket_slot: *bucket_slot,
+                            width: *width,
+                            fill_byte: *fill_byte,
+                            reserved_offset: next_reserved,
+                            total_bytes: *total_bytes,
+                            resume_position: next_resume,
+                        }),
+                        Err(_) => {
+                            stalled = true;
+                            None
+                        }
+                    }
+                }
                 MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
                     orientation,
                     vid,
@@ -3961,31 +4466,26 @@ where
                     edge_vu.edge_inline_property_byte_width(),
                 ))
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        let forward_location = self
-            .forward
-            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                u, label_id, edge_uv, placement,
-            )
-            .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        let reverse_location = if u != v {
-            #[cfg(test)]
-            let reverse_result = if test_take_reverse_half_failure() {
-                Err(LabeledOperationError::InvalidDefaultBypass)
-            } else {
+        let forward_location = self.write_half_interruptible(
+            Orientation::Forward,
+            label_id,
+            || {
                 self.forward
                     .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                        v, label_id, edge_vu, placement,
+                        u, label_id, edge_uv, placement,
                     )
-            };
-            #[cfg(not(test))]
-            let reverse_result = self
-                .forward
-                .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                    v, label_id, edge_vu, placement,
-                );
-            Some(reverse_result.unwrap_or_else(|error| {
-                panic!("undirected second half failed after first forward canonical write: {error}")
-            }))
+            },
+            MaterializeRetry::Surface,
+        )?;
+        let reverse_location = if u != v {
+            Some(self.write_half_interruptible(
+                Orientation::Forward,
+                label_id,
+                || self.try_insert_undirected_second(v, label_id, &edge_vu, placement),
+                MaterializeRetry::Inline(Box::new(|| {
+                    self.try_insert_undirected_second(v, label_id, &edge_vu, placement)
+                })),
+            )?)
         } else {
             None
         };
@@ -6247,5 +6747,247 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    /// Plan 0320 §Step 2 (bidi port): enqueue a `MaterializeInlinePropertyStreamV1`
+    /// work item directly, drain the queue, and verify the bucket descriptor is
+    /// published (width > 0, slab_slots == degree, log reset).
+    #[test]
+    fn materialize_inline_property_stream_drains_via_bidi_maintenance_queue() {
+        let graph = inline_property_bidi_graph();
+        let src = graph.push_vertex().expect("push_vertex");
+        for i in 0..3 {
+            graph
+                .forward()
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    BucketLabelKey::directed_from_index(2),
+                    InlinePropertyTestEdge::with_bytes(100 + i, &[]),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        let vertex = graph.forward().vertices().get(src);
+        let bucket_slot = match graph
+            .forward()
+            .find_bucket(src, &vertex, BucketLabelKey::directed_from_index(2))
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, .. } => slot,
+            _ => panic!("bucket missing"),
+        };
+        graph
+            .maintenance
+            .enqueue(&MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
+                orientation: Orientation::Forward,
+                vid: src,
+                bucket_slot,
+                width: 4,
+                fill_byte: 0xAB,
+                reserved_offset: u64::MAX,
+                total_bytes: 12,
+                resume_position: 0,
+            });
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(budget).expect("maintenance");
+        }
+        let bucket = graph
+            .forward()
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("read bucket");
+        assert_eq!(bucket.inline_property_byte_width(), 4);
+        assert_eq!(bucket.inline_property_bytes_slab_slots(), 3);
+        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        let v = graph.forward().vertices().get(src);
+        assert_eq!(v.inline_property_bytes_allocated_bytes(), 12);
+    }
+
+    /// Plan 0320 §F-1 (bidi port): **production-path** retry-after-drain
+    /// contract. A directed insert that triggers a 0→w width addition above
+    /// `INLINE_MATERIALIZE_BYTE_BUDGET` surfaces
+    /// `InlinePropertyMaterializePending` (which by construction implies the
+    /// materialize drained to completion); the caller retries the same insert
+    /// and observes the published width.
+    #[test]
+    fn directed_insert_deferred_materialize_via_wrapper_retry_after_drain() {
+        let graph = inline_property_bidi_graph();
+        let src = graph.push_vertex().expect("push_vertex");
+        let dst = graph.push_vertex().expect("push_vertex");
+        let label = BucketLabelKey::directed_from_index(2);
+        let n_w0: u32 = 1100;
+        for i in 0..n_w0 {
+            let dst_i = VertexId::from(1);
+            let result = graph.insert_directed_edge(
+                src,
+                dst_i,
+                label,
+                InlinePropertyTestEdge::with_bytes(100 + i % 1000, &[]),
+                InlinePropertyTestEdge::with_bytes(src.into(), &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            );
+            if let Err(err) = result {
+                panic!("w=0 directed insert ({i}) failed: {err:?}");
+            }
+        }
+        // First w=4 insert: wrapper intercepts, enqueues at Retry priority,
+        // drains, and surfaces InlinePropertyMaterializePending.
+        let result = graph.insert_directed_edge(
+            src,
+            dst,
+            label,
+            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 4]),
+            InlinePropertyTestEdge::with_bytes(src.into(), &[]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        match result {
+            Err(DeferredBidirectionalLabeledError::InlinePropertyMaterializePending {
+                vid,
+                bucket_slot: _,
+            }) => {
+                assert_eq!(vid, src);
+            }
+            other => panic!("expected InlinePropertyMaterializePending, got {other:?}"),
+        }
+        let vertex = graph.forward().vertices().get(src);
+        match graph
+            .forward()
+            .find_bucket(src, &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot: _, bucket } => {
+                assert_eq!(bucket.inline_property_byte_width(), 4, "width published");
+                assert_eq!(
+                    bucket.inline_property_bytes_slab_slots(),
+                    n_w0,
+                    "slab_slots = w=0 edges (w=4 edge not yet inserted)"
+                );
+                assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+            }
+            _ => panic!("expected Found bucket after first w=4 insert"),
+        }
+        // Retry: the descriptor is at width=4, so the inner schema check passes;
+        // no new deferred signal fires.
+        let result = graph.insert_directed_edge(
+            src,
+            dst,
+            label,
+            InlinePropertyTestEdge::with_bytes(2000, &[0u8; 4]),
+            InlinePropertyTestEdge::with_bytes(src.into(), &[]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        if let Err(err) = result {
+            panic!("retry insert_directed_edge failed: {err:?}");
+        }
+        let vertex = graph.forward().vertices().get(src);
+        match graph
+            .forward()
+            .find_bucket(src, &vertex, label)
+            .expect("find")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot: _, bucket } => {
+                assert_eq!(bucket.inline_property_byte_width(), 4);
+                assert_eq!(
+                    bucket.inline_property_bytes_slab_slots(),
+                    n_w0 + 1,
+                    "slab_slots = w=0 + 1 w=4"
+                );
+                assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+            }
+            _ => panic!("expected Found bucket after retry"),
+        }
+        let v = graph.forward().vertices().get(src);
+        assert_eq!(
+            v.inline_property_bytes_allocated_bytes(),
+            u64::from(n_w0 + 1) * 4
+        );
+    }
+
+    /// Test fixture: bidirectional labeled graph over `InlinePropertyTestEdge`
+    /// with uniform initial capacities (Plan 0320 contract harness).
+    fn inline_property_bidi_graph()
+    -> DeferredBidirectionalLabeledLaraGraph<InlinePropertyTestEdge, VectorMemory> {
+        let (
+            fv,
+            fb,
+            fbfs,
+            fbfsbs,
+            fec,
+            fe,
+            fel,
+            fesm,
+            fefs,
+            fefsbs,
+            fips,
+            fvsp,
+            fvfsbs,
+            fipl,
+            fvb,
+            fltb,
+        ) = crate::test_support::labeled_lara_memories();
+        let (
+            rv,
+            rb,
+            rbfs,
+            rbfsbs,
+            rec,
+            re,
+            rel,
+            resm,
+            refs,
+            refsbs,
+            rips,
+            rvsp,
+            rvfsbs,
+            ripl,
+            rvb,
+            rltb,
+        ) = crate::test_support::labeled_lara_memories();
+        DeferredBidirectionalLabeledLaraGraph::new(
+            fv,
+            fb,
+            fbfs,
+            fbfsbs,
+            fec,
+            fe,
+            fel,
+            fesm,
+            fefs,
+            fefsbs,
+            fips,
+            fvsp,
+            fvfsbs,
+            fipl,
+            fvb,
+            fltb,
+            rv,
+            rb,
+            rbfs,
+            rbfsbs,
+            rec,
+            re,
+            rel,
+            resm,
+            refs,
+            refsbs,
+            rips,
+            rvsp,
+            rvfsbs,
+            ripl,
+            rvb,
+            rltb,
+            crate::test_support::vector_memory(),
+            crate::labeled::InitialCapacities::uniform(1024),
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("bidi inline property graph")
     }
 }

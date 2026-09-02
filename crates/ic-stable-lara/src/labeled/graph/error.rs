@@ -150,8 +150,8 @@ pub enum LabeledOperationError {
     /// for `(vid, bucket_slot, width, fill_byte, degree)` exceeds
     /// `INLINE_MATERIALIZE_BYTE_BUDGET` (= 4 KiB) and must be filled via the
     /// stepped resumable cursor. The inner graph has no maintenance queue
-    /// (the queue is owned by `DeferredLabeledLaraGraph`); the caller-facing
-    /// `DeferredLabeledLaraGraph` funnel intercepts this signal, enqueues a
+    /// (the queue is owned by the deferred-maintenance wrapper); the caller-facing
+    /// `DeferredBidirectionalLabeledLaraGraph` funnel intercepts this signal, enqueues a
     /// `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1` (tag 6, v1),
     /// drains, and re-runs the original operation. The variant is the
     /// *contract* between inner and outer: it carries the work-item payload

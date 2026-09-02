@@ -56,7 +56,7 @@ impl GraphStore {
         validate_edge_inline_property_bytes_for_label(catalog_label, inline_property_bytes)?;
 
         let counterpart = self.counterpart_edge_occurrence(occurrence)?;
-        let canonical = ic_stable_lara::bidirectional::counterpart::canonical_from_counterpart(
+        let canonical = ic_stable_lara::labeled::bidirectional::counterpart::canonical_from_counterpart(
             occurrence,
             counterpart,
         );

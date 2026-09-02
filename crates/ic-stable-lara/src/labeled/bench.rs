@@ -7,8 +7,8 @@ use crate::bench as helper;
 use crate::labeled::ltb_raw_block_store::LtbRawBlockStore;
 use crate::labeled::tree_csr_prototype::TreeCsrBucket;
 use crate::labeled::{
-    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
-    EdgePlacementPolicy, LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
+    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, EdgePlacementPolicy,
+    LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
     batch_write::{OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBucketRun},
     graph::{LabeledLaraGraph, VertexEdgeSpanCompactOneStep},
 };
@@ -450,11 +450,162 @@ fn inline_property_bench_graph(
     .expect("graph")
 }
 
+fn inline_property_deferred_bidi_bench_graph(
+    elem_capacity: u64,
+) -> DeferredBidirectionalLabeledLaraGraph<InlinePropertyBenchEdge, crate::VectorMemory> {
+    let (
+        fv,
+        fb,
+        fbfs,
+        fbfsbs,
+        fec,
+        fe,
+        fel,
+        fesm,
+        fefs,
+        fefsbs,
+        fips,
+        fvf,
+        fvfsbs,
+        fipl,
+        fvb,
+        fltb,
+    ) = labeled_lara_memories();
+    let (
+        rv,
+        rb,
+        rbfs,
+        rbfsbs,
+        rec,
+        re,
+        rel,
+        resm,
+        refs,
+        refsbs,
+        rips,
+        rvf,
+        rvfsbs,
+        ripl,
+        rvb,
+        rltb,
+    ) = labeled_lara_memories();
+    DeferredBidirectionalLabeledLaraGraph::new(
+        fv,
+        fb,
+        fbfs,
+        fbfsbs,
+        fec,
+        fe,
+        fel,
+        fesm,
+        fefs,
+        fefsbs,
+        fips,
+        fvf,
+        fvfsbs,
+        fipl,
+        fvb,
+        fltb,
+        rv,
+        rb,
+        rbfs,
+        rbfsbs,
+        rec,
+        re,
+        rel,
+        resm,
+        refs,
+        refsbs,
+        rips,
+        rvf,
+        rvfsbs,
+        ripl,
+        rvb,
+        rltb,
+        vector_memory(),
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
+        BucketLabelKey::from_raw(1),
+    )
+    .expect("deferred bidirectional inline property bench graph")
+}
+
 fn deferred_bench_graph(
     elem_capacity: u64,
-) -> DeferredLabeledLaraGraph<BenchEdge, crate::VectorMemory> {
-    let inner = bench_graph(elem_capacity);
-    DeferredLabeledLaraGraph::new(inner, vector_memory()).expect("deferred labeled graph")
+) -> DeferredBidirectionalLabeledLaraGraph<BenchEdge, crate::VectorMemory> {
+    let (
+        fv,
+        fb,
+        fbfs,
+        fbfsbs,
+        fec,
+        fe,
+        fel,
+        fesm,
+        fefs,
+        fefsbs,
+        fips,
+        fvf,
+        fvfsbs,
+        fipl,
+        fvb,
+        fltb,
+    ) = labeled_lara_memories();
+    let (
+        rv,
+        rb,
+        rbfs,
+        rbfsbs,
+        rec,
+        re,
+        rel,
+        resm,
+        refs,
+        refsbs,
+        rips,
+        rvf,
+        rvfsbs,
+        ripl,
+        rvb,
+        rltb,
+    ) = labeled_lara_memories();
+    DeferredBidirectionalLabeledLaraGraph::new(
+        fv,
+        fb,
+        fbfs,
+        fbfsbs,
+        fec,
+        fe,
+        fel,
+        fesm,
+        fefs,
+        fefsbs,
+        fips,
+        fvf,
+        fvfsbs,
+        fipl,
+        fvb,
+        fltb,
+        rv,
+        rb,
+        rbfs,
+        rbfsbs,
+        rec,
+        re,
+        rel,
+        resm,
+        refs,
+        refsbs,
+        rips,
+        rvf,
+        rvfsbs,
+        ripl,
+        rvb,
+        rltb,
+        vector_memory(),
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
+        BucketLabelKey::from_raw(1),
+    )
+    .expect("deferred bidirectional labeled bench graph")
 }
 
 /// Mirrors `CACHE_PREFIX_COUNT` in `crates/graph` shortest-path converging-hub benches:
@@ -1128,19 +1279,20 @@ fn bench_cmp_edge_sc_128() -> canbench_rs::BenchResult {
 fn bench_l_df_ins_1024() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = deferred_bench_graph(8192);
-        graph
-            .inner()
-            .push_vertex(LabeledVertex::default())
-            .expect("vertex");
+        graph.push_vertex().expect("vertex");
+        graph.push_vertex().expect("vertex");
         let vid = VertexId::from(0);
+        let dst = VertexId::from(1);
         let label = BucketLabelKey::from_raw(2);
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
             graph
-                .insert_edge(
+                .insert_directed_edge(
                     vid,
+                    dst,
                     label,
                     BenchEdge(i),
+                    BenchEdge(0),
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("insert");
@@ -1154,29 +1306,35 @@ fn bench_l_df_ins_1024() -> canbench_rs::BenchResult {
 fn bench_l_df_mnt_cv_1() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = deferred_bench_graph(8192);
-        let vid = VertexId::from(0);
+        let vid = graph.push_vertex().expect("vertex");
+        let dsts: Vec<VertexId> = (0..80u32)
+            .map(|_| graph.push_vertex().expect("vertex"))
+            .collect();
         let label = BucketLabelKey::from_raw(2);
-        graph
-            .inner()
-            .push_vertex(LabeledVertex::default())
-            .expect("vertex");
-        for t in 0..80u32 {
+        for (k, dst) in dsts.iter().enumerate() {
             graph
-                .insert_edge(
+                .insert_directed_edge(
                     vid,
+                    *dst,
                     label,
-                    BenchEdge(t),
+                    BenchEdge(k as u32),
+                    BenchEdge(0),
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("insert");
         }
-        for t in 0..72u32 {
+        for (k, dst) in dsts.iter().enumerate().take(72) {
             graph
-                .remove_edge_matching(vid, label, |e| e.0 == t)
+                .remove_directed_deferred(vid, *dst, BenchEdge(k as u32))
                 .expect("remove");
         }
         graph
-            .mark_compact_vertex_edge_span(vid, 0)
+            .mark_compact_vertex_edge_span(
+                crate::labeled::bidirectional::Orientation::Forward,
+                vid,
+                0,
+                &|_| EdgePlacementPolicy::Insertion,
+            )
             .expect("mark compact");
         let report = graph.maintenance(MaintenanceBudget {
             max_instructions: 0,
@@ -1186,7 +1344,7 @@ fn bench_l_df_mnt_cv_1() -> canbench_rs::BenchResult {
             max_segments: None,
             max_delete_edge_steps: None,
         });
-        black_box(report.rebalanced_segments);
+        black_box(report.expect("maintenance").work.rebalanced_segments);
         black_box(graph.maintenance_queue_len());
     })
 }
@@ -1428,21 +1586,22 @@ fn bench_l_ip_frag_comp() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_l_df_ip_frag_enq_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
-        let graph =
-            DeferredLabeledLaraGraph::new(inline_property_bench_graph(1 << 20), vector_memory())
-                .expect("deferred graph");
-        let vid = seed_fragmented_inline_property_fixture(graph.inner());
+        let graph = inline_property_deferred_bidi_bench_graph(1 << 20);
+        let vid = seed_fragmented_inline_property_fixture(graph.forward());
+        let _ = seed_fragmented_inline_property_fixture(graph.reverse());
+        let dst = graph.push_vertex().expect("vertex");
         let target = BucketLabelKey::directed_from_index(5);
         graph
-            .inner()
-            .ensure_label_bucket_inline_property_byte_width(vid, target, 6)
+            .ensure_directed_edge_inline_property_width(vid, dst, target, 6)
             .expect("inline property byte width");
         let _scope = canbench_rs::bench_scope("inline_property_deferred_enqueue_insert");
         graph
-            .insert_edge(
+            .insert_directed_edge(
                 vid,
+                dst,
                 target,
-                InlinePropertyBenchEdge::with_inline_property(3, 6, &[3u8; 6]),
+                InlinePropertyBenchEdge::with_inline_property(dst.into(), 6, &[3u8; 6]),
+                InlinePropertyBenchEdge::with_inline_property(vid.into(), 6, &[3u8; 6]),
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
@@ -1454,20 +1613,21 @@ fn bench_l_df_ip_frag_enq_6() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_l_df_ip_frag_mnt_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
-        let graph =
-            DeferredLabeledLaraGraph::new(inline_property_bench_graph(1 << 20), vector_memory())
-                .expect("deferred graph");
-        let vid = seed_fragmented_inline_property_fixture(graph.inner());
+        let graph = inline_property_deferred_bidi_bench_graph(1 << 20);
+        let vid = seed_fragmented_inline_property_fixture(graph.forward());
+        let _ = seed_fragmented_inline_property_fixture(graph.reverse());
+        let dst = graph.push_vertex().expect("vertex");
         let target = BucketLabelKey::directed_from_index(5);
         graph
-            .inner()
-            .ensure_label_bucket_inline_property_byte_width(vid, target, 6)
+            .ensure_directed_edge_inline_property_width(vid, dst, target, 6)
             .expect("inline property byte width");
         graph
-            .insert_edge(
+            .insert_directed_edge(
                 vid,
+                dst,
                 target,
-                InlinePropertyBenchEdge::with_inline_property(3, 6, &[3u8; 6]),
+                InlinePropertyBenchEdge::with_inline_property(dst.into(), 6, &[3u8; 6]),
+                InlinePropertyBenchEdge::with_inline_property(vid.into(), 6, &[3u8; 6]),
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
@@ -1480,7 +1640,7 @@ fn bench_l_df_ip_frag_mnt_6() -> canbench_rs::BenchResult {
             max_delete_edge_steps: None,
         };
         let _scope = canbench_rs::bench_scope("inline_property_deferred_maintenance_compaction");
-        black_box(graph.maintenance(budget));
+        black_box(graph.maintenance(budget).expect("maintenance"));
     })
 }
 

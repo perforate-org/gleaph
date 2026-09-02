@@ -514,7 +514,7 @@ fn bench_graph(
 
 fn reverse_bench_graph<E>() -> DeferredBidirectionalLabeledLaraGraph<E, crate::VectorMemory>
 where
-    E: CsrEdge + CsrEdgeTombstone,
+    E: CsrEdge + CsrEdgeTombstone + PartialEq,
 {
     let (
         fv,

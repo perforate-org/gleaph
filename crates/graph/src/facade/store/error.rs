@@ -53,7 +53,7 @@ pub enum GraphStoreError {
         property_id: PropertyId,
     },
     /// CounterpartScan failed to resolve the canonical edge occurrence.
-    CounterpartLookup(ic_stable_lara::bidirectional::counterpart::CounterpartLookupError),
+    CounterpartLookup(ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError),
     /// A Building/Sealing index DML failed its Graph-owned phase, epoch, namespace, or capacity
     /// admission before canonical storage mutation.
     IndexBuildAdmission(CanonicalExportError),
@@ -182,8 +182,8 @@ impl From<VertexPropertyStoreError> for GraphStoreError {
     }
 }
 
-impl From<ic_stable_lara::bidirectional::counterpart::CounterpartLookupError> for GraphStoreError {
-    fn from(value: ic_stable_lara::bidirectional::counterpart::CounterpartLookupError) -> Self {
+impl From<ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError> for GraphStoreError {
+    fn from(value: ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError) -> Self {
         Self::CounterpartLookup(value)
     }
 }
