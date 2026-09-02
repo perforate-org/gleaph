@@ -85,12 +85,19 @@ where
         });
     }
     // 1. Compute (block_root_index, in_block_offset) from slot.
-    let _depth = bucket.tree_mode_physical_depth();
-    let root_len = u32::try_from(derived_root_len(bucket.stored_slots))
-        .expect("root_len fits u32 (per ADR 0088 §4 R_max = 1024)");
     let block_root_index = slot / (BLOCK_B as u32);
-    debug_assert!(block_root_index < root_len);
     let in_block_offset = (slot % (BLOCK_B as u32)) * (E::BYTES as u32);
+    // `block_root_index` is a LEAF index (not a root index), so the
+    // upper bound is `leaf_count` (the number of leaves needed to
+    // cover `stored_slots`), not the depth-1 root length. For
+    // depth 2+ the actual root length is shorter; the resolver
+    // descends the hop chain. The valid range is
+    // `block_root_index < leaf_count = ceil(stored_slots / B)`.
+    let leaf_count = u32::try_from(
+        (u64::from(bucket.stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
+    )
+    .expect("leaf_count fits u32 for MAX_DEPTH=3");
+    debug_assert!(block_root_index < leaf_count);
     // 2. Resolve the leaf block_id via the depth-generic resolver.
     //    For depth 1 this is a single-hop LEG read; for depth 2+ it
     //    descends the interior hop chain.
@@ -164,9 +171,19 @@ where
         (u64::from(stored_slots)).div_ceil(crate::labeled::tree_csr_prototype::B as u64),
     )
     .expect("leaf_count fits u32 for MAX_DEPTH=3");
-    debug_assert_eq!(
-        leaf_count, root_len,
-        "depth 1 leaf_count == root_len; for depth 2+ leaf_count > root_len"
+    // The structural `derived_root_len` is the depth-1 root length
+    // (= leaf_count for a depth-1 bucket). At depth 2+ the actual
+    // physical root length is shorter (root_len entries, each
+    // pointing at an interior holding K leaf block_ids). The
+    // invariant is `leaf_count >= root_len`: the leaf space is at
+    // least as large as the depth-1 root, and strictly larger
+    // for depth 2+ buckets (where the root holds K-1 fewer
+    // entries per level). The actual walk uses
+    // `resolve_leaf_block_id`, which descends the hop chain for
+    // depth 2+ — see the comment on that helper.
+    debug_assert!(
+        leaf_count >= root_len,
+        "leaf_count must cover the stored slots (depth 1: leaf_count == root_len; depth 2+: leaf_count > root_len)"
     );
     match order {
         OutEdgeOrder::Ascending => {

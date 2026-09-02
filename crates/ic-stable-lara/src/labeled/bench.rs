@@ -2787,18 +2787,17 @@ fn tcsr_1048576_insert_grow_below_cap() -> canbench_rs::BenchResult {
     })
 }
 
-/// 1M-degree guard bench: seed to exactly 2^20 = 1,048,576 edges, then
-/// perform ONE more scalar insert INSIDE `bench_scope`. The bench
-/// PASSES iff the production path returns
-/// `LabeledOperationError::TreeRootCapacityReached` (the bucket
-/// physical root is already at R_MAX = 1024) and the bucket
-/// descriptor is unchanged. The scope name records the pass/fail
-/// for trend tracking.
+/// 1M-degree deepen bench: seed to exactly 2^20 = 1,048,576 edges,
+/// then perform ONE more scalar insert INSIDE `bench_scope`. With
+/// the right-spine cascade (Plan 0325) the insert now SUCCEEDS via
+/// `tree_mode_deepen` (depth 1 → 2). The bench records the cascade
+/// cost in the wasm instruction budget; the assertion checks the
+/// post-cascade state (depth 2, root_len 2, stored_slots 2^20+1,
+/// the inserted edge is readable).
 #[bench(raw)]
-fn tcsr_1048576_root_capacity_reached() -> canbench_rs::BenchResult {
+fn tcsr_1048576_deepen_beyond_r_max() -> canbench_rs::BenchResult {
     let graph = bench_graph_4byte(1 << 21);
     let (vid, label) = seed_production_sweep_bucket(&graph, 1_048_576);
-    // Capture pre-insert descriptor state for the assertion.
     let vertex = graph.vertices().get(vid);
     let (slot, _bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
         crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
@@ -2809,13 +2808,7 @@ fn tcsr_1048576_root_capacity_reached() -> canbench_rs::BenchResult {
         .read_label_bucket_slot(slot)
         .expect("pre-insert read")
         .stored_slots;
-    let pre_degree = graph
-        .buckets()
-        .read_label_bucket_slot(slot)
-        .expect("pre-insert read")
-        .degree;
     assert!(pre_stored >= 1_048_576, "seed must reach 2^20");
-
     let result = bench_fn(|| {
         let r = graph.insert_edge_skip_leaf_cascade(
             vid,
@@ -2825,33 +2818,82 @@ fn tcsr_1048576_root_capacity_reached() -> canbench_rs::BenchResult {
         );
         let _ = black_box(r);
     });
-
-    // Post-condition: the guard fired (typed error) and the bucket
-    // descriptor is unchanged. Outside `bench_scope`.
-    let post_result = graph.insert_edge_skip_leaf_cascade(
-        vid,
-        label,
-        OneMTestEdge { target: 9_999_998 },
-        crate::labeled::graph::EdgePlacementPolicy::Insertion,
-    );
-    assert!(
-        matches!(
-            post_result,
-            Err(crate::labeled::graph::LabeledOperationError::TreeRootCapacityReached { .. })
-        ),
-        "guard bench precondition: 2^20+1 must fail closed with TreeRootCapacityReached, got {post_result:?}"
-    );
+    // Post-condition: cascade succeeded. The bucket is now
+    // depth 2 with root_len = ceil(2^20 / 1024) = 1024 / 1024 = 1
+    // interior (the deepened root holds the single new interior id).
+    // Wait — `tree_mode_deepen` at stored = 2^20 has
+    // old_root_len = derived_root_len(2^20) = 1024. new_interior_count
+    // = ceil(1024 / 1024) = 1. So the post-deepen root has 1 entry
+    // pointing at the 1 interior (which holds the 1024 original
+    // leaf ids). The NEXT insert appends to the existing interior
+    // (row 0 of the interior, leaf index 1024, no root grow) — this
+    // is the **interior-row append** path.
     let post_bucket = graph
         .buckets()
         .read_label_bucket_slot(slot)
         .expect("post-insert read");
     assert_eq!(
-        post_bucket.stored_slots, pre_stored,
-        "guard bench: bucket stored_slots must be unchanged"
+        post_bucket.stored_slots,
+        pre_stored + 1,
+        "cascade must commit the insert"
     );
     assert_eq!(
-        post_bucket.degree, pre_degree,
-        "guard bench: bucket degree must be unchanged"
+        post_bucket.degree,
+        pre_stored + 1,
+        "cascade must commit the insert (degree = stored)"
+    );
+    assert_eq!(
+        post_bucket.tree_mode_physical_depth(),
+        2,
+        "cascade must have deepened to depth 2"
+    );
+    result
+}
+
+/// 1M-degree interior-grow bench: seed to 2^20, then perform 1024
+/// more scalar inserts INSIDE `bench_scope`. This crosses the
+/// right-spine cascade once (deepen at the first insert) and then
+/// walks the new depth-2 interior: 1023 interior-row appends + 1
+/// new-interior mint. Records the per-insert cost of the post-cascade
+/// interior append path.
+#[bench(raw)]
+fn tcsr_1048576_deepen_then_interior_grow() -> canbench_rs::BenchResult {
+    let graph = bench_graph_4byte(1 << 22);
+    let (vid, label) = seed_production_sweep_bucket(&graph, 1_048_576);
+    let vertex = graph.vertices().get(vid);
+    let (slot, _bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+        crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+        _ => panic!("expected Found bucket at 2^20"),
+    };
+    let result = bench_fn(|| {
+        // 1024 inserts: 1st triggers deepen, 2..=1024 are
+        // interior-row appends (leaf index 1025..=2047, all in the
+        // existing interior at row 1..=1023).
+        for i in 0..1024u32 {
+            let r = graph.insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                OneMTestEdge {
+                    target: 9_000_000 + i,
+                },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            );
+            let _ = black_box(r);
+        }
+    });
+    let post_bucket = graph
+        .buckets()
+        .read_label_bucket_slot(slot)
+        .expect("post-grow read");
+    assert_eq!(
+        post_bucket.stored_slots,
+        1_048_576 + 1024,
+        "1024 inserts must commit"
+    );
+    assert_eq!(
+        post_bucket.tree_mode_physical_depth(),
+        2,
+        "depth must remain 2 after interior-row appends"
     );
     result
 }

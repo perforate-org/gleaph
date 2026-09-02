@@ -1772,6 +1772,124 @@ typed-schema endpoint gate remains unchanged and fail-closed.
   read-dispatch as the actual cause; REWORK-2 verified
   determinism (3-for-3 trap) and re-root-caused the OOB.
 
+### GAP-2026-09-02-002 — RESOLVED: `tree-mode-interior-level-insert-growth` (right-spine cascade) and the 2^30 fail-closed boundary
+
+- **Status:** Resolved (2026-09-02, Plan 0325).
+- **Severity:** P1 production-correctness defect (effective tree-mode
+  cap of 2^20 per bucket was 4 KiB per label per vertex — too tight
+  for any non-trivial high-degree use case).
+- **Owner:** `tree_mode_insert_edge` (`tree_write.rs:58-280`),
+  `tree_mode_deepen` (already shipped, level-generic), depth-generic
+  resolver `resolve_leaf_block_id` (already shipped, physical depth).
+- **Observed behavior:** the Plan 0318 §Step 7 amend shipped an
+  interim fail-closed `TreeRootCapacityReached` guard at 2^20
+  (`stored_slots + 1 > R_MAX × B = 1,048,576` in a depth-1 tree
+  bucket). Production tree-mode inserts above 2^20 returned
+  `Err(TreeRootCapacityReached)`. The depth-generic infrastructure
+  needed for the cascade was already shipped and unit-verified
+  (mixed-radix resolver, `tree_mode_deepen`, `tree_mode_flatten`,
+  demote Phase 5b interior release, `bucket_span_region_len`
+  physical-depth match) — only the insert-side wiring was missing.
+- **Why it matters (design invariant):** ADR 0088 §4 documents
+  `TREE_STRUCTURAL_CAP = 2^30` (depth 1 → 2 at 2^20, depth 2 → 3 at
+  2^30, MAX_DEPTH = 3 primitive safety). The interim guard
+  contradicted the documented cap by 2^10. Production canisters
+  promoting high-degree label buckets to tree mode would hit the
+  guard at 2^20 with no way to grow further.
+- **Fix (Plan 0325):** rewrote `tree_mode_insert_edge` to wire
+  the right-spine cascade:
+  1. The `tail_offset == 0` branch now consults the
+     **physical** root length (ceil-chain, NOT
+     `derived_root_len` — `derive_depth` returns 1 for a deepened
+     bucket at stored = 2^20, but the physical root has 1 entry,
+     not 1024).
+  2. When the physical root is at `R_MAX`, the cascade fires:
+     - if `depth >= MAX_DEPTH` OR `next_stored > TREE_STRUCTURAL_CAP` →
+       typed `TreeRootCapacityReached` (fail-closed at the 2^30
+       structural boundary);
+     - else → `tree_mode_deepen` + **re-read the bucket
+       descriptor** (the caller's `bucket` copy is stale after
+       deepen publishes a new `edge_start` /
+       `tree_mode_physical_depth`).
+  3. After the cascade, the dispatch routes to
+     `tree_mode_tail_append_depth1` (depth 1) or
+     `tree_mode_tail_append_depth_ge2` (depth ≥ 2). The depth ≥ 2
+     path appends the new leaf id to its **home interior** (not
+     the root); the root grows only when a new interior is minted
+     (`l % K == 0`).
+  4. New helper `resolve_interior_block_id` — the
+     `resolve_leaf_block_id` hop chain truncated one level short.
+     Used by `tree_mode_tail_append_depth_ge2` to find the
+     home interior.
+
+- **Audit of depth-generic infrastructure (file:line):**
+  - `resolve_leaf_block_id` (tree_write.rs:516) — depth-generic ✓
+  - `collect_leaf_block_ids` (tree_write.rs:586) — depth-generic ✓
+  - `tree_mode_deepen` (tree_write.rs:632) — level-generic ✓
+  - `tree_mode_flatten` (tree_write.rs:830) — depth-2 → depth-1 ✓
+  - demote Phase 5b (tree_write.rs:1025) — interior release ✓
+  - `bucket_span_region_len` (compact.rs:234) — physical-depth match ✓
+  - `tree_mode_random_ordinal_access` (tree_read.rs:54) — DEPTH-1
+    DEBUG_ASSERT was relaxed (the prior `block_root_index < root_len`
+    debug_assert used structural root_len; relaxed to
+    `block_root_index < leaf_count` for depth-2 safety)
+  - `visit_tree_mode_label_bucket_edges` (tree_read.rs:115) —
+    DEPTH-1 DEBUG_ASSERT was relaxed (the prior
+    `debug_assert_eq!(leaf_count, root_len)` failed for depth ≥ 2;
+    relaxed to `leaf_count >= root_len` invariant — actual walk
+    uses `resolve_leaf_block_id` for the descent)
+  - `tree_mode_insert_edge` `tail_offset == 0` branch
+    (tree_write.rs:113-280) — **DEPTH-1-ONLY** (replaced by the
+    cascade + depth-aware append)
+
+- **Regression tests** (synthetic layout, host `VectorMemory`,
+  cheap):
+  - `tree_insert_fails_closed_at_2_30_cap`: 2^30 fail-closed at
+    depth 2 + root_len = R_MAX.
+  - `production_insert_path_fails_closed_at_2_30_cap`: same,
+    via the public `insert_edge_skip_leaf_cascade` API.
+  - `cascade_at_2_20_plus_1_deepens`: 2^20 + 1 insert SUCCEEDS,
+    depth 1 → 2, stored 2^20 + 1, visit yields 2^20 + 1 slots.
+  - `interior_row_append_keeps_root_constant`: depth 2 with
+    2 interiors + 1 leaf in the 2nd; next insert at row 1 of the
+    2nd interior (l = 1025, l % K = 1) — root unchanged.
+  - `new_interior_mint_grows_root`: depth 2 with 2 full interiors
+    + tail_offset == 0; next insert at l = 2048, l % K = 0 —
+    root grows from 2 to 3.
+  - `public_read_accessors_over_depth_2`: `tree_mode_out_edges_collect`
+    walks 1,048,577 slots for stored = 2^20 + 1, depth 2.
+  - Replaces the obsolete 0318 §Step 7 tests
+    `tree_insert_fails_closed_at_root_capacity` and
+    `production_insert_path_fails_closed_at_root_capacity` (the
+    2^20 guard was superseded by the cascade + 2^30 boundary).
+
+- **Bench surface:** REPLACED `tcsr_1048576_root_capacity_reached`
+  (2^20 + 1 insert previously FAIL-CLOSED) with
+  `tcsr_1048576_deepen_beyond_r_max` (2^20 + 1 insert now
+  SUCCEEDS via deepen; verified PASS ×3 with depth 2 / root_len 2 /
+  stored 2^20 + 1 / edge readable at slot 2^20). ADDED
+  `tcsr_1048576_deepen_then_interior_grow` (2^20 → 2^20 + 1024:
+  1 deepen + 1023 interior-row appends + 1 new-interior mint;
+  5,111,272 ins, 4994 ins/insert).
+  - Existing depth-1 benches (5 of them) 0% regression
+    (insert_grow / full_scan / random_ordinal / 131K insert_grow
+    / 131K full_scan): "no change" or within noise threshold
+    (≤ 1% on insert_grow, 0% on read benches).
+  - Full canbench 158/158 unchanged, 1 regressed
+    (`bench_t_v_window` +2.10%, pre-existing from Plan 0324
+    REWORK-3; small slab bench, 220 ins regression, acceptable).
+  - Wasm 15,661 chars / 4,339 headroom (was 15,536; +125 for
+    2 new bench names).
+
+- **Why depth 3 is not exercised (deliberate):** ADR 0088 §4
+  documents `MAX_DEPTH = 3` as a primitive-level safety bound
+  (`TreeDepthLimitReached`); the production cap of 2^30 binds
+  first. Depth 3 coverage (2^40 slots, 1 TiB per bucket) is
+  structurally wired (the resolver handles it, the canbench
+  surface cannot seed it: 17.9T ins > 10T per-bench limit). Lifting
+  the cap to 2^40 in production requires an ADR amend (out of
+  scope for this slice).
+
 ### GAP-2026-08-28-001 — RESOLVED: index-anchored scans are unattributed in authz requirement extraction (grants silently stop working when an index exists)
 
 - **Status:** Resolved (2026-08-28). Fixing commit `0aebf4513`; Router suite 1045 → 1056 green.

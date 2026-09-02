@@ -30,6 +30,16 @@ Success signal:
 
 - 2-4 new canbench benches at 1M degree on the production tree path; numbers recorded in `canbench_results.yml` + `design/implementation-gaps.md` (the high-degree anchor the 4K/65K arms cannot reach).
 - The guard bench proves `TreeRootCapacityReached` fires at exactly 2^20+1 with the bucket intact.
+  - **Superseded by Plan 0325**: the 2^20 guard was the interim
+    fail-closed (Plan 0318 §Step 7 amend). Plan 0325 replaced
+    the guard with the right-spine cascade and the fail-closed
+    boundary moved to `TREE_STRUCTURAL_CAP = 2^30`. The
+    `tcsr_1048576_root_capacity_reached` bench was REPLACED by
+    `tcsr_1048576_deepen_beyond_r_max` (2^20 + 1 insert now
+    SUCCEEDS via deepen) + new `tcsr_1048576_deepen_then_interior_grow`
+    (2^20 → 2^20 + 1024: 1 deepen + 1023 interior-row appends +
+    1 new-interior mint). See `plans/0325-interior-level-insert-growth.md`
+    for the full design.
 - The `#[ignore]`d prototype host tests are removed (user decision: unrunnable prototype benches removed; git history + plan keep the record).
 - Wasm exported-name budget ≤ 20,000 chars with the new benches (baseline 15,730).
 - Full green-bar matrix green; ADR 0088 §Status updated; `validate_plan.py --phase final` PASS.

@@ -200,6 +200,17 @@ The logical-slot capacity of a tree bucket is **`coverage_at_depth(MAX_DEPTH)
 = 2^30`** slots (per §4: depth 1 ≤ 2^20, depth 2 ≤ 2^30, depth 3 ≤ 2^40; the
 fail-closed `MAX_DEPTH = 3` bounds the practical capacity to 2^30 distinct
 edge slots under the current 1024-slot blocks and 1024-entry root fan-out).
+
+**Plan 0325 update (right-spine cascade)**: the cap was
+**previously 2^20** (interim `TreeRootCapacityReached` guard,
+Plan 0318 §Step 7 amend). Plan 0325 shipped the right-spine
+cascade and the cap is now **`TREE_STRUCTURAL_CAP = 2^30`** —
+the exact depth-2 coverage. The cascade grows depth 1 → 2 at
+stored = 2^20 (right-spine interior mint) and fail-closes at
+stored = 2^30 + 1 (depth 2 + root_len = R_MAX, `MAX_DEPTH` not
+yet reached but the structural cap binds first). Lifting the cap
+to 2^40 (depth 3 in production) would require an ADR amend; out
+of scope for Plan 0325.
 The 1024 root entries per level mean that a `root_len` crossing `R_max`
 triggers **deepen** (Step 7), not a slot-cap reject. The text below
 "Tree bucket span (no gap) ≤ 2 × R_max = 2,048 slots (8 KiB)" in §3 is the
@@ -954,6 +965,20 @@ demotion as follow-up slices.
   in the production insert path; effective tree-mode cap = 2^20 slots
   per bucket until the interior-level insert cascade ships):
   `d5657eb5f` (2 tests).
+- **Plan 0325 (right-spine cascade)**: replaced the 2^20 interim
+  guard with the right-spine insert cascade. The fail-closed
+  boundary moved to the documented `TREE_STRUCTURAL_CAP = 2^30`
+  (depth 1 → 2 at stored = 2^20; fail-closed at stored = 2^30 + 1
+  with depth 2 + root_len = R_MAX). Production depth never exceeds
+  2; `MAX_DEPTH = 3` remains the primitive safety bound
+  (`TreeDepthLimitReached`). canbench surface: guard bench
+  `tcsr_1048576_root_capacity_reached` REPLACED by
+  `tcsr_1048576_deepen_beyond_r_max` (1M + 1 insert SUCCEEDS via
+  deepen) + new `tcsr_1048576_deepen_then_interior_grow` (1M →
+  1M + 1024: 1 deepen + 1023 interior-row appends + 1 new-interior
+  mint). Synthetic-layout unit tests prove the 2^30 fail-closed
+  boundary (canbench cannot seed 2^30: 17.9T ins > 10T limit).
+  Wasm 15,661 chars (was 15,536; +125 for the 2 new bench names).
 - Gate 2 re-run (Step 9): all production-relevant benches within ±1%
   of Plan 0315/0316 baselines (full_scan, insert_grow, promote_*);
   see `plans/0318-tree-csr-implementation.md` §Step 9 for the
@@ -961,12 +986,12 @@ demotion as follow-up slices.
 
 **Follow-ups (status: pending)**:
 
-- `tree-mode-interior-level-insert-growth` — right-spine cascade at
-  depth ≥ 2 (replaces the `TreeRootCapacityReached` guard, grows
-  effective cap to 2^30 slots per bucket). Orchestrator design
-  recorded in Plan 0318 §Later Slices. Estimated 4-6h; depth 3 is
-  physically untestable (4 GiB leaf payload) so depth-3 surface is
-  structural-only.
+- ~~`tree-mode-interior-level-insert-growth`~~ — **resolved in Plan
+  0325** (this slice). Right-spine cascade at depth ≥ 2 ships; the
+  effective cap is 2^30 slots per bucket. Depth 3 remains
+  structurally wired (`MAX_DEPTH = 3`) but the production
+  fail-closed boundary at 2^30 makes it unreachable; lifting the
+  cap to 2^40 (depth 3 in production) is a future ADR amend.
 - `tree-mode-tombstone-reuse` — tree bucket tombstones are not
   reused on insert (slab mode reuses via
   `try_reuse_unordered_slab_tombstone`); high-churn tree buckets
