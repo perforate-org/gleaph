@@ -294,21 +294,33 @@ fn deepening_stop(
     None
 }
 
-/// Classify one finished round for a **NonLeading** SEARCH (ADR 0034 Slice 5, which governs
-/// the contract there): the `LIMIT k` bounds the *global vector top-k*, not the joined row
-/// count — a single surviving hit can join to many prefix rows (multiplicity is preserved),
-/// and the globally-nearest hit can legitimately join to nothing (an empty result is a
-/// correct, non-truncated answer). Convergence is therefore measured on the authorized **hit
-/// count**, the joined `row_count` is never used to converge, and the join output is never
-/// capped: deepening only exists to recover from authz/label-filtered hit loss (ADR 0078 §3),
-/// not to fill the join up to k rows.
+/// Classify one finished round for a **NonLeading** SEARCH. The convergence signal is the
+/// joined `row_count` (same signal as 49f10d461), because NonLeading deepening exists to
+/// recover **authorization loss** (ADR 0082 exists-traversal, ADR 0078 §3 authz-aware
+/// deepening): the raw ANN hits are pre-authz, so a hit-count criterion cannot see rows
+/// dropped by the authorization path — only the joined row count reflects it.
+/// The ONLY divergence from the Leading classifier is therefore the absence of the
+/// `cap_result_rows` application (see the call site): the join output must keep ADR 0034
+/// Slice 5 multiplicity (one surviving hit may join to many prefix rows), so it is never
+/// truncated to k.
+///
+/// OPEN CONFLICT (ADR 0034 vs ADR 0082, deliberately unresolved here — escalated to the
+/// design owner via the user): joined row count cannot distinguish *join sparsity* (a
+/// globally-nearest hit that legitimately joins to nothing — ADR 0034 Slice 5 expects an
+/// empty, non-truncated answer) from *authorization loss* (ADR 0082 expects the deepening
+/// loop to fetch more candidates until k authorized rows exist). Converging on `row_count`
+/// keeps the ADR 0082 recovery but over-deepens past a sparse join (the
+/// `non_leading_search_where_global_top_k_consumes_unlinked_qualifying_vertex` contract has
+/// been red since before 49f10d461 and stays red by this ruling). Distinguishing the two
+/// requires a future chain-survivor receipt signal (per-hit join survival carried out of the
+/// graph dispatch), which is out of scope for this regression fix.
 fn non_leading_deepening_stop(
-    authorized_hits: usize,
+    authorized_rows: u64,
     top_k: u32,
     candidates_exhausted: bool,
     next_round_allowed: bool,
 ) -> Option<DeepeningStop> {
-    if authorized_hits >= top_k as usize {
+    if authorized_rows >= u64::from(top_k) {
         return Some(DeepeningStop::Converged);
     }
     if !next_round_allowed {
@@ -491,25 +503,32 @@ where
                 }
             },
             SearchPosition::NonLeading(_) => {
-                // ADR 0034 Slice 5: convergence and truncation are hit-count based; the join
-                // output is neither capped nor used as the stop signal (multiplicity makes the
-                // joined row count diverge from k in both directions).
+                // Convergence is row_count based (authorization-loss recovery, ADR 0082/0078
+                // §3 — see non_leading_deepening_stop). The ONLY divergence from Leading is
+                // that the join output is never capped: ADR 0034 Slice 5 multiplicity means a
+                // k-hit join can legitimately produce more than k rows, so capping here would
+                // destroy contract-correct multiplicities.
                 match non_leading_deepening_stop(
-                    hits.len(),
+                    gql_result.row_count,
                     top_k,
                     candidates_exhausted,
                     deepening_may_start_round(round + 1),
                 ) {
                     None => round += 1,
                     Some(DeepeningStop::Converged) => {
+                        // NO cap_result_rows here: Leading truncates to the k-prefix (rows
+                        // map 1:1 onto hits), but a NonLeading join multiplies each surviving
+                        // hit across its prefix rows and truncation would violate ADR 0034
+                        // Slice 5 multiplicity (see the regression covered by
+                        // non_leading_search_global_top_k_computed_before_join).
                         return Ok(gql_result.with_truncated(false));
                     }
                     Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
                         // The converge check ran first, so a non-converged stop still held
-                        // fewer than k authorized hits.
+                        // fewer than k authorized rows.
                         debug_assert!(
-                            hits.len() < top_k as usize,
-                            "non-converged stops require fewer than k authorized hits"
+                            gql_result.row_count < u64::from(top_k),
+                            "non-converged stops require fewer than k authorized rows"
                         );
                         return Ok(gql_result.with_truncated(true));
                     }
@@ -2912,53 +2931,33 @@ mod tests {
     }
 
     #[test]
-    fn non_leading_deepening_stop_converges_on_hits_not_joined_rows() {
-        // ADR 0034 Slice 5 vs ADR 0078 §3/§4 divergence, made explicit: the same observed
-        // state classifies differently on the two positions. One globally-nearest hit that
-        // joined to NOTHING (row_count = 0) is a converged, non-truncated answer for a
-        // non-leading SEARCH (empty result is correct), while a leading SEARCH with the same
-        // hit count keeps deepening.
+    fn non_leading_deepening_stop_matches_leading_signal_but_skips_the_cap() {
+        // The Leading/NonLeading divergence is ONLY whether the join output is capped at the
+        // call site: both classifiers converge on the joined row count (deepening exists to
+        // recover authorization loss — ADR 0082/0078 §3 — which only row_count can observe),
+        // while NonLeading must never truncate the ADR 0034 Slice 5 multiplicity of the join.
         const K: u32 = 2;
-        assert_eq!(
-            non_leading_deepening_stop(K as usize, K, false, true),
-            Some(DeepeningStop::Converged),
-            "a full k-hit page converges for non-leading even though the join over those \
-             hits may produce zero rows: the join output is not the stop signal"
-        );
-        assert_eq!(
-            deepening_stop(0, K, false, true),
-            None,
-            "leading with 0 joined rows must keep deepening (same state, different criterion)"
-        );
-
-        // Multiplicity: one hit joined to many prefix rows over-satisfies the joined-row
-        // criterion; non-leading must NOT converge on it unless the hit count says so.
+        // Identical stop decisions for the same observed state.
+        for rows in [0u64, 1, 2, 5] {
+            for exhausted in [false, true] {
+                for allowed in [false, true] {
+                    assert_eq!(
+                        non_leading_deepening_stop(rows, K, exhausted, allowed),
+                        deepening_stop(rows, K, exhausted, allowed),
+                        "the classifiers must agree on every observed state (rows={rows}, \
+                         exhausted={exhausted}, allowed={allowed})"
+                    );
+                }
+            }
+        }
+        // The cap difference is asserted structurally at the call site; this probe pins the
+        // classifier contract the separation relies on: convergence is row_count based, so a
+        // full k-hit join that produced zero rows keeps deepening on both positions.
+        assert_eq!(non_leading_deepening_stop(0, K, false, true), None);
         assert_eq!(
             non_leading_deepening_stop(0, K, true, true),
-            Some(DeepeningStop::CandidatesExhausted),
-        );
-        assert_eq!(
-            deepening_stop(5, K, false, true),
-            Some(DeepeningStop::Converged),
-            "leading converges on joined rows"
-        );
-        assert_eq!(
-            non_leading_deepening_stop(5, K, false, true),
-            Some(DeepeningStop::Converged),
-            "non-leading also converges once k authorized hits exist (deepening is only \
-             for hit loss, never for filling the join)"
-        );
-
-        // Non-converged non-leading stops keep the same precedence as leading.
-        assert_eq!(
-            non_leading_deepening_stop(K as usize - 1, K, false, false),
-            Some(DeepeningStop::BudgetExhausted)
-        );
-        assert_eq!(
-            non_leading_deepening_stop(K as usize - 1, K, true, true),
             Some(DeepeningStop::CandidatesExhausted)
         );
-        assert_eq!(non_leading_deepening_stop(0, K, false, true), None);
     }
 
     fn encoded_rows(n: usize) -> Vec<u8> {
