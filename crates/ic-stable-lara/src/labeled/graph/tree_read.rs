@@ -304,16 +304,22 @@ pub(crate) fn property_leaf_fanout(w: u16) -> Option<u32> {
 }
 
 /// Resolve the LPB block_id that holds the property value for `slot`
-/// in a tree-mode bucket (depth 1 only).
+/// in a tree-mode bucket, at any property-tree depth.
 ///
-/// **Layout**: the property root region lives at
-/// `edge_start + edge_root_len`, holds `ceil(S / K) + 1` u32
-/// block_ids (the +1 is the deferred-mint tail buffer; we size to
-/// the live count + 1 so the next property-leaf mint can grow the
-/// root in-place without an interior). The block_id at property
-/// leaf index `slot / K` is the LPB block holding value `slot`.
+/// **Layout** (ADR 0088 §2): the property root region lives at
+/// `edge_start + edge_root_len` (derived, never a stored offset) and
+/// holds `ceil(L_p / B^(d'-1))` u32 block_ids where `L_p = ceil(S / K)`
+/// is the property leaf count and `d' =
+/// bucket.tree_mode_property_depth()` is the property-tree physical
+/// depth. At `d' == 1` the entries are LPB leaf block_ids; at
+/// `d' >= 2` the entries are `InlinePropertyInterior` block_ids one
+/// hop above the leaves.
 ///
-/// **Returns** the LPB block_id for property leaf `slot / K`.
+/// **Mixed radix**: the leaf index `l_p = slot / K` decomposes in
+/// base `B` for the interior hops (interior fanout = block capacity),
+/// while the leaf radix (values per leaf) is `K = floor(4096 / w)`.
+/// These two radices must not be confused — `K` counts values per
+/// LPB leaf, `B` counts block_ids per interior.
 ///
 /// **Failure modes** (typed):
 /// - `w == 0` or `w > payload` → `InlinePropertyBytesWidthMismatch`
@@ -346,7 +352,7 @@ where
         // this a pure read helper.
         return Ok(0);
     }
-    let property_leaf_index = slot / k;
+    let property_leaf_index = u64::from(slot / k);
     // Edge root length: same formula as bucket_span_region_len for
     // the edge tree (physical depth).
     let edge_root_len = crate::labeled::graph::compact::bucket_span_region_len(bucket);
@@ -356,12 +362,32 @@ where
         .ok_or(LabeledOperationError::from(
             LaraOperationError::CollectAllocationOverflow,
         ))?;
-    let mut block_id_bytes = [0u8; 4];
-    graph.edges().read_slot_bytes(
-        property_root_offset + u64::from(property_leaf_index),
-        &mut block_id_bytes,
-    );
-    Ok(u32::from_le_bytes(block_id_bytes))
+    // Depth-generic descent, mirroring `resolve_leaf_block_id` but
+    // with interior radix B (block capacity) instead of the edge
+    // tree's R_MAX hop radix and root offset after the edge root.
+    let b = crate::labeled::tree_csr::B as u64;
+    let depth = bucket.tree_mode_property_depth();
+    let mut child_id: u32 = {
+        // Root hop: index into the property root region.
+        let divisor = b.pow(depth - 1);
+        let level_idx = property_leaf_index / divisor;
+        let mut id_bytes = [0u8; 4];
+        graph
+            .edges()
+            .read_slot_bytes(property_root_offset + level_idx, &mut id_bytes);
+        u32::from_le_bytes(id_bytes)
+    };
+    for j in 1..depth {
+        let divisor = b.pow(depth - 1 - j);
+        let level_idx = ((property_leaf_index / divisor) % b) as usize;
+        let mut child_id_bytes = [0u8; 4];
+        graph
+            .ltb()
+            .read_payload_partial(child_id, level_idx * 4, &mut child_id_bytes)
+            .map_err(LabeledOperationError::LtbBlock)?;
+        child_id = u32::from_le_bytes(child_id_bytes);
+    }
+    Ok(child_id)
 }
 
 /// Read the property value bytes for `slot` in a tree-mode bucket
@@ -1376,6 +1402,31 @@ mod tests {
         assert_eq!(
             prop_len, 1024,
             "stored=1M w=4 K=1024 must produce property_root_len=1024 = R_MAX (at cap)"
+        );
+        // **Plan 0327**: the fail-closed boundary moved to the 2^30
+        // backstop. At the old "root full at d'=1" boundary the tree
+        // now DEEPENS instead of failing: `property_depth_for_leaves`
+        // returns the minimal depth covering the leaf count.
+        let d_full =
+            crate::labeled::graph::tree_write::property_depth_for_leaves(1024, 1024, stored)
+                .expect("root exactly full at d'=1 still fits");
+        assert_eq!(d_full, 1, "L_p = 1024 = R_MAX is covered at d' = 1");
+        // The NEXT property leaf (L_p = 1025) requires the deepen to
+        // d' = 2 instead of the old fail-closed guard.
+        let d = crate::labeled::graph::tree_write::property_depth_for_leaves(1025, 1024, stored)
+            .expect("root-full-at-d'=1 + 1 leaf must deepen, not fail");
+        assert_eq!(d, 2, "L_p = 1025 = R_MAX + 1 requires deepening to d' = 2");
+        // The typed error now fires only past the depth-3 coverage
+        // (B^3 = 2^30 leaves).
+        let err = crate::labeled::graph::tree_write::property_depth_for_leaves(
+            (1u64 << 30) + 1,
+            1024,
+            stored,
+        )
+        .expect_err("past the 2^30 backstop must fail closed");
+        assert!(
+            matches!(err, crate::labeled::graph::error::LabeledOperationError::PropertyTreeRootCapacityReached { .. }),
+            "expected PropertyTreeRootCapacityReached, got {err:?}"
         );
     }
     /// **LPB-in-tree (REWORK) F-6: `tree_mode_deepen` property

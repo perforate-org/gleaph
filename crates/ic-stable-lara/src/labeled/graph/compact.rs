@@ -239,17 +239,15 @@ pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
     edge_root_len
 }
 
-/// Plan 0326: property root region length for a tree-mode bucket
-/// (LPB-in-tree). Returns 0 for `w == 0` buckets (no property
-/// stream). The property root is at
-/// `inline_property_bytes_offset` in the LEG slab; its length is
-/// `ceil(S / K) + 1` (live leaves + tail buffer).
 /// Plan 0326 LPB-in-tree: property root region length for a
 /// tree-mode bucket. Returns 0 for `w == 0` buckets (no property
 /// stream). The property root is contiguous at
 /// `edge_start + bucket_span_region_len(bucket)` (per ADR 0088
 /// §2: `[edge root | property root]`, gap 0); its length is
-/// `ceil(S / K)` where `K = floor(4096 / w)` and `S = stored_slots`.
+/// `ceil(L_p / B^(d'-1))` where `L_p = ceil(S / K)`,
+/// `K = floor(4096 / w)`, `S = stored_slots`, and `d' =
+/// bucket.tree_mode_property_depth()` is the property-tree physical
+/// depth (Plan 0327). At `d' == 1` this reduces to `ceil(S / K)`.
 /// No tail buffer (the ADR §2 wire truth is the exact coverage).
 pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
     if !bucket.is_tree_mode() {
@@ -265,7 +263,13 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
         Some(k) if k >= 1 => k,
         _ => return 0,
     };
-    bucket.stored_slots.div_ceil(k)
+    let l_p = u64::from(bucket.stored_slots.div_ceil(k));
+    let b = crate::labeled::tree_csr::B as u64;
+    let mut r = l_p;
+    for _ in 1..bucket.tree_mode_property_depth() {
+        r = r.div_ceil(b);
+    }
+    u32::try_from(r).expect("property root entry count fits u32 (bounded by R_MAX)")
 }
 
 /// Plan 0326 LPB-in-tree: combined LEG span length for a tree-mode

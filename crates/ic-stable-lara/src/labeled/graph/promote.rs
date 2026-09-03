@@ -205,35 +205,39 @@ where
     // contiguous region.
     //
     // Property root length per ADR §2 wire truth: `ceil(S / K)` where
-    // `K = floor(4096 / w)`. No tail buffer (the legacy `+ 1` was a
-    // writing-side convenience; reads never used the tail slot, and
-    // a tail buffer would inflate the root past the ADR cap).
+    // `K = floor(4096 / w)`. No tail buffer. Plan 0327: instead of
+    // fail-closing at `R_MAX`, the property tree is built at the
+    // correct depth directly — the root holds leaf ids at `d' == 1`
+    // and `InlinePropertyInterior` ids at `d' >= 2` (ceil(L_p / B)
+    // entries). The typed `PropertyTreeRootCapacityReached` now fires
+    // only at the 2^30 backstop (depth-3 coverage exceeded) via
+    // `property_depth_for_leaves`.
+    let property_depth: u32;
     let property_root_len: u32 = if w > 0 && pre_stored_slots > 0 {
         let k_prop = (BLOCK_PAYLOAD_BYTES as u32) / (w as u32);
-        // F-2 cap guard: when the property root would exceed R_MAX,
-        // the property tree needs to deepen. Wire-up of property-tree
-        // deepen (with BlockKind::InlinePropertyInterior) is a
-        // follow-up slice per ADR 0088 §7. For this slice we fail
-        // closed at the property-root cap to avoid the giant-span
-        // regression (w > 0 tree buckets would otherwise grow
-        // unbounded).
         let live_prop_root = pre_stored_slots.div_ceil(k_prop);
-        let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
-        if live_prop_root > k_max {
-            // Surface the typed error to the caller; release the
-            // edge LTB blocks we already minted before returning.
-            for &id in reserved_block_ids.iter().rev() {
-                let _ = graph.ltb().release(id);
+        property_depth = match super::tree_write::property_depth_for_leaves(
+            u64::from(live_prop_root),
+            k_prop,
+            pre_stored_slots,
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                // Surface the typed error to the caller; release the
+                // edge LTB blocks we already minted before returning.
+                for &id in reserved_block_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                return Err(e);
             }
-            return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
-                stored_slots: pre_stored_slots,
-                property_root_len: live_prop_root,
-                cap: k_max,
-                property_leaf_fanout: k_prop,
-            });
+        };
+        if property_depth == 1 {
+            live_prop_root
+        } else {
+            live_prop_root.div_ceil(BLOCK_B as u32)
         }
-        live_prop_root
     } else {
+        property_depth = 1;
         0
     };
     let combined_root_len: u32 = root_len.checked_add(property_root_len).expect(
@@ -354,6 +358,10 @@ where
     // Failure atomicity: any error retires the minted LTB blocks
     // (LIFO) and the LEG combined span is released.
     let mut property_block_ids: Vec<u32> = Vec::new();
+    // Plan 0327: at property depth >= 2 the root holds
+    // `InlinePropertyInterior` ids instead of leaf ids; these are the
+    // freshly minted interiors (released LIFO on any failure).
+    let mut property_interior_ids: Vec<u32> = Vec::new();
     let property_root_span_start: u64 = new_edge_start + u64::from(root_len);
     if w > 0 && pre_stored_slots > 0 {
         // K = floor(4096 / w). Guarded above (w <= payload) so K >= 1.
@@ -442,16 +450,96 @@ where
         }
         // 4. Write the property root block_id array at
         //    `property_root_span_start` (the second half of the
-        //    combined span). Failure releases the LPB blocks + the
-        //    combined span.
-        let mut property_root_bytes: Vec<u8> = Vec::with_capacity(property_root_len as usize * 4);
-        for &id in &property_block_ids {
+        //    combined span). At `d' == 1` the root holds the leaf ids;
+        //    at `d' >= 2` the leaf ids are packed into
+        //    `ceil(L_p / B)` freshly minted `InlinePropertyInterior`
+        //    blocks (`B` ids per block) and the root holds the
+        //    interior ids. Failure releases the interiors, the LPB
+        //    blocks + the combined span.
+        let root_entry_ids: &[u32] = if property_depth == 1 {
+            &property_block_ids
+        } else {
+            // 4a. Mint the interior blocks (LIFO rollback).
+            let interior_count = property_block_ids.len().div_ceil(BLOCK_B);
+            let mut mint_err: Option<LabeledOperationError> = None;
+            for _ in 0..interior_count {
+                match graph.ltb().mint() {
+                    Ok(id) => property_interior_ids.push(id),
+                    Err(e) => {
+                        mint_err = Some(e.into());
+                        break;
+                    }
+                }
+            }
+            if let Some(err) = mint_err {
+                for &id in property_interior_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                for &id in property_block_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                for &id in reserved_block_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                let _ = graph
+                    .edges()
+                    .release_span(new_edge_start, u64::from(combined_root_len));
+                return Err(err);
+            }
+            // 4b. Mark each interior as `InlinePropertyInterior`.
+            for &id in &property_interior_ids {
+                let header = crate::labeled::ltb_raw_block_store::BlockHeader {
+                    kind: crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
+                    bucket_label_key_wire: 0,
+                    owner_or_next_free: 0,
+                    ordinal: 0,
+                    level: property_depth as u8,
+                    reserved: [0u8; 3],
+                };
+                graph.ltb().write_block_header(id, &header);
+            }
+            // 4c. Pack the leaf ids into the interiors (B per block).
+            let mut pack_err: Option<LabeledOperationError> = None;
+            for (chunk_idx, interior_id) in property_interior_ids.iter().enumerate() {
+                let start = chunk_idx * BLOCK_B;
+                let end = (start + BLOCK_B).min(property_block_ids.len());
+                let chunk: Vec<u8> = property_block_ids[start..end]
+                    .iter()
+                    .flat_map(|id| id.to_le_bytes())
+                    .collect();
+                if let Err(e) = graph.ltb().write_payload_partial(*interior_id, 0, &chunk) {
+                    pack_err = Some(LabeledOperationError::LtbBlock(e));
+                    break;
+                }
+            }
+            if let Some(err) = pack_err {
+                for &id in property_interior_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                for &id in property_block_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                for &id in reserved_block_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                let _ = graph
+                    .edges()
+                    .release_span(new_edge_start, u64::from(combined_root_len));
+                return Err(err);
+            }
+            &property_interior_ids
+        };
+        let mut property_root_bytes: Vec<u8> = Vec::with_capacity(root_entry_ids.len() * 4);
+        for &id in root_entry_ids {
             property_root_bytes.extend_from_slice(&id.to_le_bytes());
         }
         if let Err(e) = graph
             .edges()
             .write_slots_contiguous_bytes(property_root_span_start, &property_root_bytes)
         {
+            for &id in property_interior_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
             for &id in property_block_ids.iter().rev() {
                 let _ = graph.ltb().release(id);
             }
@@ -497,7 +585,8 @@ where
         0,  // inline_property_bytes_log_len = 0 (depth byte = 0 = depth 1)
     )
     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-    .with_tree_mode(true);
+    .with_tree_mode(true)
+    .with_tree_mode_property_depth(property_depth);
 
     // Phase 3b: single canonical write of the new descriptor.
     if let Err(e) = graph
@@ -506,8 +595,11 @@ where
     {
         // Phase 3 failure is the canonical write itself: the bucket is
         // still in slab mode; release the new tree-mode LTB blocks
-        // (edge + property) and the combined LEG root region so we
-        // don't leak.
+        // (edge + property interiors + property leaves) and the
+        // combined LEG root region so we don't leak.
+        for &id in property_interior_ids.iter().rev() {
+            let _ = graph.ltb().release(id);
+        }
         for &id in property_block_ids.iter().rev() {
             let _ = graph.ltb().release(id);
         }

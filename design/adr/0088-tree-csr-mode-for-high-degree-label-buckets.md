@@ -1199,4 +1199,39 @@ Regression tests: `lpb_in_tree_read_round_trip_at_w_4_stored_4096`
 (K = floor(4096/w) at w ∈ {1, 8, 32, 128, 1024}). 627 / 627
 library tests pass (was 625; +2 LPB-in-tree tests, 0 removed).
 
-Last revised: 2026-09-02.
+**Plan 0327 (property-tree deepen, 2026-09-03) — per-w slot cap lifted to
+`2^30`; `PropertyTreeRootCapacityReached` is now the d' = 3 backstop.**
+The depth-1 property tree fail-closed at `property root len = R_MAX`
+(w=32 → 131,072 slots; w=4 → 2^20). The production growth paths
+(`tree_mode_insert_edge` tail-room, `tree_mode_tail_append_depth1`,
+`tree_mode_tail_append_depth_ge2`, `tree_mode_deepen`'s property-root
+anticipation, and promote) now cascade: when the next property leaf
+would overflow the root at the current property depth `d'`, the root's
+entries are packed into `ceil(root_len / B)` new `BlockKind::
+InlinePropertyInterior` blocks and the combined span is reallocated as
+`[edge root | new property root]` (edge root bytes copied verbatim;
+property root offset stays derived at `edge_start + edge_root_len`).
+Property-root region length at depth `d'` is `ceil(L_p / B^(d'-1))`
+with `L_p = ceil(S / K)`; effective per-`w` cap is now `min(2^30,
+K × R_MAX × B^2)`, i.e. the edge tree's `TREE_STRUCTURAL_CAP = 2^30`
+for every `w ≥ 1` (d' = 3 suffices for all widths).
+**Depth representation amendment to §4:** the property-tree physical
+depth is **stored**, packed into the tree-mode depth byte (bits 0-1 =
+edge physical depth − 1, bits 2-3 = property physical depth − 1; all
+access via `LabelBucket::tree_mode_physical_depth` /
+`tree_mode_property_depth`). The §4 "pure function of stored_slots"
+derivation is kept as the structural formula, but the physical marker
+is authoritative for resolver hop depth — tombstone compaction can
+shrink `stored_slots`, so a derived property depth would under-walk a
+deepened root (the same reason the edge tree keeps its physical depth
+marker). A derived-depth design was audited and rejected: it requires
+an eager property-tree flatten on every downward boundary crossing
+with no hysteresis. Latent bug fixed in the same slice:
+`tree_mode_tail_append_depth_ge2` previously ignored `w > 0` entirely
+(both the missing K-boundary leaf mint and the edge-root-only realloc
+that would orphan the property root); all its branches now perform the
+combined-span realloc. 546 / 490 library tests pass (was 541; +5
+property-deepen tests, `lpb_in_tree_rework_f2_cap_guard` retargeted to
+the 2^30 backstop).
+
+Last revised: 2026-09-03.

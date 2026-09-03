@@ -240,6 +240,7 @@ where
             bucket_slot,
             bucket,
             &target_bytes,
+            property_value_bytes,
             next_stored,
             next_degree,
             label,
@@ -268,6 +269,10 @@ where
         // Without minting the property leaf, the property root
         // array has no entry for the new leaf and the subsequent
         // read at visit time fails.
+        //
+        // Plan 0327: `property_depth_for_publish` is captured from
+        // the post-ensure bucket when the property side deepens.
+        let mut property_depth_for_publish = bucket.tree_mode_property_depth();
         let tail_block_id = resolve_leaf_block_id::<E, M>(graph, bucket, tail_block_idx)?;
         // 1. Write the edge target to the tail block (speculative).
         if let Err(e) =
@@ -297,96 +302,110 @@ where
             let slot = next_stored - 1;
             let needs_new_property_leaf = slot > 0 && slot % kp == 0;
             if needs_new_property_leaf {
-                // Combined span realloc: edge root unchanged, property
-                // root +1. Inline the grow logic (atomic with the
-                // edge target write above).
+                // Plan 0327 (property-tree deepen): ensure the property
+                // tree covers the new leaf count FIRST — this may deepen
+                // `d' -> d' + 1` (moving the combined span) and re-read
+                // the canonical descriptor. Width never changes, so K,
+                // `slot`, and `needs_new_property_leaf` are unchanged;
+                // only lengths must be recomputed against the
+                // post-ensure bucket.
+                let ensured_bucket: LabelBucket =
+                    ensure_property_tree_depth::<E, M>(graph, bucket_slot, bucket, next_stored)?;
+                let bucket = &ensured_bucket;
+                property_depth_for_publish = bucket.tree_mode_property_depth();
+                let plan = plan_property_leaf_append::<E, M>(graph, bucket, next_stored)?;
+                // Combined-span lengths come from the compact layout
+                // contract (single source of truth).
+                let old_edge_root_len = super::compact::bucket_span_region_len(bucket);
+                let old_prop_root_len = super::compact::property_root_region_len(bucket);
                 let old_combined_start = bucket.edge_start();
-                let old_edge_root_len = physical_root_len_ceil(
-                    u64::from(bucket.stored_slots),
-                    bucket.tree_mode_physical_depth(),
-                )?;
-                let old_prop_root_len = bucket.stored_slots / kp;
-                let new_prop_root_len = old_prop_root_len + 1;
-                let new_combined_len = old_edge_root_len + new_prop_root_len;
-                // F-2 cap guard.
-                let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
-                if new_prop_root_len > k_max {
-                    return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
-                        stored_slots: next_stored,
-                        property_root_len: new_prop_root_len,
-                        cap: k_max,
-                        property_leaf_fanout: kp,
-                    });
-                }
-                // Mint the new property leaf.
-                let new_prop_block_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
-                {
-                    let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-                        kind: crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
-                        bucket_label_key_wire: 0,
-                        owner_or_next_free: 0,
-                        ordinal: 0,
-                        level: 0,
-                        reserved: [0u8; 3],
-                    };
-                    graph.ltb().write_block_header(new_prop_block_id, &header);
-                }
-                // Allocate the new combined span (avoiding the old).
-                let avoid = Some((
-                    old_combined_start,
-                    u64::from(old_edge_root_len + old_prop_root_len),
-                ));
-                let new_combined = match graph
-                    .edges()
-                    .allocate_span_avoiding(u64::from(new_combined_len), avoid)
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = graph.ltb().release(new_prop_block_id);
-                        return Err(e.into());
+                match plan.entry_for_root {
+                    Some(entry_id) => {
+                        // Combined span realloc: [edge root | property root | entry].
+                        let new_combined_len = old_edge_root_len
+                            .checked_add(old_prop_root_len)
+                            .and_then(|v| v.checked_add(1))
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        let old_combined_len = old_edge_root_len + old_prop_root_len;
+                        let avoid = Some((old_combined_start, u64::from(old_combined_len)));
+                        let new_combined = match graph
+                            .edges()
+                            .allocate_span_avoiding(u64::from(new_combined_len), avoid)
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                release_property_plan::<E, M>(graph, &plan);
+                                return Err(e.into());
+                            }
+                        };
+                        let mut combined_bytes: Vec<u8> =
+                            Vec::with_capacity(new_combined_len as usize * 4);
+                        if old_edge_root_len > 0 {
+                            let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
+                            graph.edges().read_slots_contiguous_bytes(
+                                old_combined_start,
+                                &mut old_edge_bytes,
+                            );
+                            combined_bytes.extend_from_slice(&old_edge_bytes);
+                        }
+                        if old_prop_root_len > 0 {
+                            let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
+                            graph.edges().read_slots_contiguous_bytes(
+                                old_combined_start + u64::from(old_edge_root_len),
+                                &mut old_prop_bytes,
+                            );
+                            combined_bytes.extend_from_slice(&old_prop_bytes);
+                        }
+                        combined_bytes.extend_from_slice(&entry_id.to_le_bytes());
+                        if let Err(e) = graph
+                            .edges()
+                            .write_slots_contiguous_bytes(new_combined, &combined_bytes)
+                        {
+                            release_property_plan::<E, M>(graph, &plan);
+                            let _ = graph
+                                .edges()
+                                .release_span(new_combined, u64::from(new_combined_len));
+                            return Err(LabeledOperationError::from(e));
+                        }
+                        // Write the property value at row 0 of the new
+                        // leaf (slot is a K boundary → row 0).
+                        if let Err(e) =
+                            graph
+                                .ltb()
+                                .write_payload_partial(plan.leaf_id, 0, property_value)
+                        {
+                            release_property_plan::<E, M>(graph, &plan);
+                            let _ = graph
+                                .edges()
+                                .release_span(new_combined, u64::from(new_combined_len));
+                            return Err(LabeledOperationError::LtbBlock(e));
+                        }
+                        new_combined
                     }
-                };
-                // Build new combined bytes: [edge root (unchanged) | property root (old + new)].
-                let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
-                if old_edge_root_len > 0 {
-                    let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
-                    graph
-                        .edges()
-                        .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
-                    combined_bytes.extend_from_slice(&old_edge_bytes);
+                    None => {
+                        // Home interior already covers the new leaf:
+                        // write the leaf id into the interior row and the
+                        // value into leaf row 0. No combined-span realloc
+                        // (edge_start is the post-ensure value).
+                        if let Err(e) = graph.ltb().write_payload_partial(
+                            plan.interior_id,
+                            (plan.row as usize) * 4,
+                            &plan.leaf_id.to_le_bytes(),
+                        ) {
+                            release_property_plan::<E, M>(graph, &plan);
+                            return Err(LabeledOperationError::LtbBlock(e));
+                        }
+                        if let Err(e) =
+                            graph
+                                .ltb()
+                                .write_payload_partial(plan.leaf_id, 0, property_value)
+                        {
+                            release_property_plan::<E, M>(graph, &plan);
+                            return Err(LabeledOperationError::LtbBlock(e));
+                        }
+                        old_combined_start
+                    }
                 }
-                if old_prop_root_len > 0 {
-                    let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
-                    graph.edges().read_slots_contiguous_bytes(
-                        old_combined_start + u64::from(old_edge_root_len),
-                        &mut old_prop_bytes,
-                    );
-                    combined_bytes.extend_from_slice(&old_prop_bytes);
-                }
-                combined_bytes.extend_from_slice(&new_prop_block_id.to_le_bytes());
-                if let Err(e) = graph
-                    .edges()
-                    .write_slots_contiguous_bytes(new_combined, &combined_bytes)
-                {
-                    let _ = graph.ltb().release(new_prop_block_id);
-                    let _ = graph
-                        .edges()
-                        .release_span(new_combined, u64::from(new_combined_len));
-                    return Err(LabeledOperationError::from(e));
-                }
-                // Write the property value at row 0 of the new leaf.
-                if let Err(e) =
-                    graph
-                        .ltb()
-                        .write_payload_partial(new_prop_block_id, 0, property_value)
-                {
-                    let _ = graph.ltb().release(new_prop_block_id);
-                    let _ = graph
-                        .edges()
-                        .release_span(new_combined, u64::from(new_combined_len));
-                    return Err(LabeledOperationError::LtbBlock(e));
-                }
-                new_combined
             } else {
                 // In-place row write into the existing property leaf.
                 super::tree_read::write_property_value_at_slot::<E, M>(
@@ -409,7 +428,8 @@ where
             .with_edge_range(new_combined_span_start, next_stored)
             .with_stored_slots(next_stored)
             .with_degree_field(next_degree)
-            .with_tree_mode(true);
+            .with_tree_mode(true)
+            .with_tree_mode_property_depth(property_depth_for_publish);
         if let Err(e) = graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -422,6 +442,20 @@ where
             // the inconsistency window. Accept the brief window
             // (bounded to the next insert) for simplicity.
             return Err(e.into());
+        }
+        // Release the old combined span after the canonical publish
+        // (mirrors `tree_mode_tail_append_depth1`). When a property
+        // deepen ran, `tree_mode_property_deepen` already released the
+        // pre-deepen span, so `bucket` (post-ensure) owns the span
+        // being replaced here and its region lengths describe it.
+        if new_combined_span_start != bucket.edge_start() {
+            let old_combined_len = crate::labeled::graph::compact::bucket_span_region_len(bucket)
+                + crate::labeled::graph::compact::property_root_region_len(bucket);
+            if old_combined_len > 0 {
+                let _ = graph
+                    .edges()
+                    .release_span(bucket.edge_start(), u64::from(old_combined_len));
+            }
         }
         // 4. Bump global accounting.
         let hdr = graph.edges().header();
@@ -467,6 +501,435 @@ fn physical_root_len_ceil(stored_slots: u64, depth: u32) -> Result<u32, LabeledO
         .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))
 }
 
+// =================== Plan 0327: property-tree deepen ===================
+
+/// Property root entry count at depth `d`: the ceil-chain of the
+/// property leaf count `l_p` over `B` (block capacity), `d - 1` times.
+/// Depth 1 → `l_p` itself; depth 2 → `ceil(l_p / B)`; depth 3 →
+/// `ceil(ceil(l_p / B) / B)`. This mirrors
+/// `compact::property_root_region_len` (the single source of truth)
+/// in pure form so the write paths and the deepener can compute the
+/// same quantity without a bucket descriptor.
+fn property_root_entry_count(l_p: u64, d: u32) -> u64 {
+    debug_assert!((1..=3).contains(&d), "property depth out of range");
+    let b = crate::labeled::tree_csr::B as u64;
+    let mut r = l_p;
+    for _ in 1..d {
+        r = r.div_ceil(b);
+    }
+    r
+}
+
+/// Minimal property-tree depth `d'` in `1..=MAX_PROPERTY_DEPTH = 3`
+/// such that `property_root_entry_count(l_p, d') <= R_MAX`. Returns
+/// the typed `PropertyTreeRootCapacityReached` backstop only when
+/// even depth 3 cannot cover `l_p` (past the 2^30 structural cap —
+/// the edge TREE_STRUCTURAL_CAP guard fires first in production).
+pub(crate) fn property_depth_for_leaves(
+    l_p: u64,
+    k: u32,
+    stored_slots: u32,
+) -> Result<u32, LabeledOperationError> {
+    let cap = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
+    for d in 1..=3 {
+        if property_root_entry_count(l_p, d) <= u64::from(cap) {
+            return Ok(d);
+        }
+    }
+    Err(LabeledOperationError::PropertyTreeRootCapacityReached {
+        stored_slots,
+        property_root_len: u32::try_from(property_root_entry_count(l_p, 3)).map_err(|_| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?,
+        cap,
+        property_leaf_fanout: k,
+    })
+}
+
+/// Release everything `plan_property_leaf_append` minted (LIFO: the
+/// interior first when the plan minted it — the `row == 0` /
+/// `entry_for_root == Some(interior_id)` case — then the leaf). A
+/// pre-existing home interior (`entry_for_root == None`) and the
+/// `d' == 1` plan (`interior_id == 0`) are never released here.
+fn release_property_plan<E, M>(graph: &LabeledLaraGraph<E, M>, plan: &PropertyLeafAppend)
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    if plan.entry_for_root == Some(plan.interior_id) && plan.interior_id != 0 {
+        let _ = graph.ltb().release(plan.interior_id);
+    }
+    let _ = graph.ltb().release(plan.leaf_id);
+}
+
+/// Deepen the property tree one level (`d' -> d' + 1`, `d' < 3`
+/// asserted by the caller). Mirrors `tree_mode_deepen`'s LIFO
+/// rollback + commit order:
+///
+/// 1. `old_root_len = property_root_entry_count(L_p, d')` where
+///    `L_p = ceil(S / K)` — must equal
+///    `compact::property_root_region_len(bucket)` (debug-asserted).
+/// 2. `new_interior_count = ceil(old_root_len / B)`.
+/// 3. Mint that many LTB blocks with `BlockKind::InlinePropertyInterior`
+///    headers (`level = d'`).
+/// 4. Read the old root bytes from
+///    `property_root_offset = edge_start + bucket_span_region_len(bucket)`;
+///    pack them into the interiors, `B` entries per block.
+/// 5. Allocate the new combined span (avoiding the old one), size
+///    `bucket_span_region_len(bucket) + new_interior_count`; bytes =
+///    `[old edge root bytes | new interior ids]`.
+/// 6. Publish the descriptor (`with_tree_mode_property_depth(d' + 1)`)
+///    — single canonical `write_label_bucket_slot`.
+/// 7. Release the old combined span after publish. On any failure
+///    before publish: release the interiors + the new span in reverse
+///    order and return `Err`.
+pub(crate) fn tree_mode_property_deepen<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    debug_assert!(bucket.is_tree_mode());
+    let d = bucket.tree_mode_property_depth();
+    debug_assert!(d < 3, "property deepen requires d' < 3");
+    let w = bucket.inline_property_byte_width();
+    debug_assert!(w > 0, "property deepen requires w > 0");
+    let stored_slots = bucket.stored_slots;
+    let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
+        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
+    let k = payload / u32::from(w);
+    let l_p = u64::from(stored_slots.div_ceil(k));
+    let old_root_len_u64 = property_root_entry_count(l_p, d);
+    let old_root_len = u32::try_from(old_root_len_u64)
+        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
+    debug_assert_eq!(
+        old_root_len,
+        super::compact::property_root_region_len(bucket),
+        "property root entry count must match the compact-layout contract"
+    );
+    let b = u32::try_from(crate::labeled::tree_csr::B).expect("B fits u32");
+    let new_interior_count = old_root_len.div_ceil(b);
+    let edge_root_len = super::compact::bucket_span_region_len(bucket);
+    let old_combined_len = edge_root_len
+        .checked_add(old_root_len)
+        .expect("old combined span overflow");
+    let new_combined_len = edge_root_len
+        .checked_add(new_interior_count)
+        .expect("new combined span overflow");
+    // 1. Reserve: mint the interior blocks (LIFO rollback).
+    let mut interior_ids: Vec<u32> = Vec::with_capacity(new_interior_count as usize);
+    for _ in 0..new_interior_count {
+        match graph.ltb().mint() {
+            Ok(id) => interior_ids.push(id),
+            Err(e) => {
+                for &id in interior_ids.iter().rev() {
+                    let _ = graph.ltb().release(id);
+                }
+                return Err(LabeledOperationError::from(e));
+            }
+        }
+    }
+    // 2. Mark each interior as `InlinePropertyInterior` (level d').
+    for &id in &interior_ids {
+        let header = crate::labeled::ltb_raw_block_store::BlockHeader {
+            kind: crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
+            bucket_label_key_wire: 0,
+            owner_or_next_free: 0,
+            ordinal: 0,
+            level: d as u8,
+            reserved: [0u8; 3],
+        };
+        graph.ltb().write_block_header(id, &header);
+    }
+    // 3. Read the old property root bytes and pack them into the
+    //    interiors (B entries per block).
+    let old_combined_start = bucket.edge_start();
+    let property_root_offset = old_combined_start + u64::from(edge_root_len);
+    let mut old_root_bytes: Vec<u8> = vec![0u8; old_root_len as usize * 4];
+    if old_root_len > 0 {
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(property_root_offset, &mut old_root_bytes);
+    }
+    let mut cursor: usize = 0;
+    for &interior_id in &interior_ids {
+        let remaining = (old_root_len as usize) - cursor;
+        let this_block_count = remaining.min(b as usize);
+        if let Err(e) = graph.ltb().write_payload_partial(
+            interior_id,
+            0,
+            &old_root_bytes[cursor * 4..(cursor + this_block_count) * 4],
+        ) {
+            for &id in interior_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        cursor += this_block_count;
+    }
+    debug_assert_eq!(cursor, old_root_len as usize);
+    // 4. Allocate the new combined span (avoiding the old one).
+    let new_combined_start = match graph.edges().allocate_span_avoiding(
+        u64::from(new_combined_len),
+        Some((old_combined_start, u64::from(old_combined_len))),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            for &id in interior_ids.iter().rev() {
+                let _ = graph.ltb().release(id);
+            }
+            return Err(e.into());
+        }
+    };
+    // 5. Build the new combined bytes: [old edge root | new interior ids].
+    let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
+    if edge_root_len > 0 {
+        let mut old_edge_bytes = vec![0u8; edge_root_len as usize * 4];
+        graph
+            .edges()
+            .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
+        combined_bytes.extend_from_slice(&old_edge_bytes);
+    }
+    for &id in &interior_ids {
+        combined_bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    if let Err(e) = graph
+        .edges()
+        .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
+    {
+        for &id in interior_ids.iter().rev() {
+            let _ = graph.ltb().release(id);
+        }
+        let _ = graph
+            .edges()
+            .release_span(new_combined_start, u64::from(new_combined_len));
+        return Err(LabeledOperationError::from(e));
+    }
+    // 6. Publish the descriptor (single canonical write).
+    let new_bucket = bucket
+        .with_edge_range(new_combined_start, stored_slots)
+        .with_tree_mode(true)
+        .with_tree_mode_property_depth(d + 1);
+    if let Err(e) = graph
+        .buckets()
+        .write_label_bucket_slot(bucket_slot, new_bucket)
+    {
+        for &id in interior_ids.iter().rev() {
+            let _ = graph.ltb().release(id);
+        }
+        let _ = graph
+            .edges()
+            .release_span(new_combined_start, u64::from(new_combined_len));
+        return Err(e.into());
+    }
+    // 7. After publish, release the old combined span.
+    if old_combined_start != new_combined_start && old_combined_len > 0 {
+        let _ = graph
+            .edges()
+            .release_span(old_combined_start, u64::from(old_combined_len));
+    }
+    Ok(())
+}
+
+/// Ensure the property tree can cover the property leaf count implied
+/// by `next_stored` slots, deepening (via `tree_mode_property_deepen`)
+/// when the required depth exceeds the bucket's current property
+/// depth. Returns the bucket descriptor to use for subsequent length
+/// math: after a deepen, the input bucket is stale (stale-descriptor
+/// hazard, same as the edge cascade), so the canonical descriptor is
+/// re-read from stable storage. For `w == 0` the input bucket is
+/// returned unchanged (`LabelBucket` is `Copy`).
+pub(crate) fn ensure_property_tree_depth<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+    next_stored: u32,
+) -> Result<LabelBucket, LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    let w = bucket.inline_property_byte_width();
+    if w == 0 {
+        return Ok(*bucket);
+    }
+    let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
+        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
+    let k = payload / u32::from(w);
+    let l_p_new = u64::from(next_stored.div_ceil(k));
+    let d_required = property_depth_for_leaves(l_p_new, k, next_stored)?;
+    if d_required > bucket.tree_mode_property_depth() {
+        tree_mode_property_deepen::<E, M>(graph, bucket_slot, bucket)?;
+        // Re-read the canonical descriptor (stale-descriptor hazard).
+        graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .ok_or_else(|| {
+                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+            })
+    } else {
+        Ok(*bucket)
+    }
+}
+
+/// Plan output for a property leaf append: the freshly minted LPB
+/// leaf and where its block_id must be recorded.
+///
+/// - `d' == 1`: `interior_id == 0`, `row == 0`, and
+///   `entry_for_root = Some(leaf_id)` — the property root grows by 1
+///   entry (combined-span realloc needed).
+/// - `d' >= 2`, `l_p_new % B != 0`: the home interior exists; the
+///   caller writes `leaf_id` into `interior_id` at `row * 4`
+///   (`entry_for_root == None`, no realloc).
+/// - `d' >= 2`, `l_p_new % B == 0`: a new `InlinePropertyInterior` is
+///   minted; the caller writes `leaf_id` into its row 0 and appends
+///   `entry_for_root` (the interior id) to the property root
+///   (combined-span realloc needed).
+///
+/// The CALLER writes the leaf id into the interior row / appends the
+/// root entry, because the combined-span realloc must be fused with
+/// the caller's own edge-root changes in the same allocation. On
+/// failure inside this helper, everything it minted is released
+/// (LIFO) and `Err` is returned.
+pub(crate) struct PropertyLeafAppend {
+    /// The freshly minted LPB leaf block_id.
+    pub leaf_id: u32,
+    /// The home (or newly minted) interior block_id; `0` when `d' == 1`.
+    pub interior_id: u32,
+    /// Row inside the home interior; `0` when `d' == 1` or a new
+    /// interior was minted.
+    pub row: u32,
+    /// `Some(id)` to append to the property root (leaf id at `d' == 1`,
+    /// interior id at `d' >= 2` with a fresh interior); `None` when the
+    /// home interior already covers the new leaf (no root growth).
+    pub entry_for_root: Option<u32>,
+}
+
+/// Mint the next property leaf (LPB `BlockKind::InlineProperty`,
+/// level 0) and compute where its block_id goes. See
+/// [`PropertyLeafAppend`] for the returned plan.
+pub(crate) fn plan_property_leaf_append<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    bucket: &LabelBucket,
+    next_stored: u32,
+) -> Result<PropertyLeafAppend, LabeledOperationError>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    debug_assert!(bucket.is_tree_mode());
+    let w = bucket.inline_property_byte_width();
+    debug_assert!(w > 0, "property leaf append requires w > 0");
+    let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
+        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
+    let k = payload / u32::from(w);
+    let l_p_new = u64::from(next_stored.div_ceil(k)) - 1; // 0-based new leaf index
+    let d = bucket.tree_mode_property_depth();
+    // 1. Mint the leaf (LIFO rollback on every later failure).
+    let leaf_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
+    let leaf_header = crate::labeled::ltb_raw_block_store::BlockHeader {
+        kind: crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
+        bucket_label_key_wire: 0,
+        owner_or_next_free: 0,
+        ordinal: 0,
+        level: 0,
+        reserved: [0u8; 3],
+    };
+    graph.ltb().write_block_header(leaf_id, &leaf_header);
+    if d == 1 {
+        return Ok(PropertyLeafAppend {
+            leaf_id,
+            interior_id: 0,
+            row: 0,
+            entry_for_root: Some(leaf_id),
+        });
+    }
+    // d >= 2: home interior index = l_p_new / B.
+    let b = u32::try_from(crate::labeled::tree_csr::B).expect("B fits u32");
+    let home_index = u32::try_from(l_p_new / u64::from(b))
+        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
+    let row = u32::try_from(l_p_new % u64::from(b))
+        .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
+    // Resolve the home interior: descend the property root -> interior
+    // chain (the same hop chain as `resolve_property_leaf_block_id`,
+    // truncated one level short — do NOT resolve the leaf itself).
+    let home_interior_id = (|| -> Result<u32, LabeledOperationError> {
+        let edge_root_len = super::compact::bucket_span_region_len(bucket);
+        let property_root_offset = bucket
+            .edge_start()
+            .checked_add(u64::from(edge_root_len))
+            .ok_or(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ))?;
+        let mut child_id: u32 = {
+            let divisor = b.pow(d - 2);
+            let level_idx = home_index / divisor;
+            let mut id_bytes = [0u8; 4];
+            graph
+                .edges()
+                .read_slot_bytes(property_root_offset + u64::from(level_idx), &mut id_bytes);
+            u32::from_le_bytes(id_bytes)
+        };
+        for j in 1..d - 1 {
+            let divisor = b.pow(d - 2 - j);
+            let level_idx = (home_index / divisor) % b;
+            let mut child_id_bytes = [0u8; 4];
+            graph
+                .ltb()
+                .read_payload_partial(child_id, (level_idx as usize) * 4, &mut child_id_bytes)
+                .map_err(LabeledOperationError::LtbBlock)?;
+            child_id = u32::from_le_bytes(child_id_bytes);
+        }
+        Ok(child_id)
+    })();
+    let home_interior_id = match home_interior_id {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = graph.ltb().release(leaf_id);
+            return Err(e);
+        }
+    };
+    if row != 0 {
+        // Home interior already covers the new leaf: no root growth.
+        return Ok(PropertyLeafAppend {
+            leaf_id,
+            interior_id: home_interior_id,
+            row,
+            entry_for_root: None,
+        });
+    }
+    // row == 0: mint a new interior for the next fanout group.
+    let new_interior_id = match graph.ltb().mint() {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = graph.ltb().release(leaf_id);
+            return Err(LabeledOperationError::from(e));
+        }
+    };
+    let interior_header = crate::labeled::ltb_raw_block_store::BlockHeader {
+        kind: crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
+        bucket_label_key_wire: 0,
+        owner_or_next_free: 0,
+        ordinal: 0,
+        // The minted interior directly holds LPB leaves, so its level
+        // (height above the leaves) is 1 at any property depth.
+        level: 1,
+        reserved: [0u8; 3],
+    };
+    graph
+        .ltb()
+        .write_block_header(new_interior_id, &interior_header);
+    Ok(PropertyLeafAppend {
+        leaf_id,
+        interior_id: new_interior_id,
+        row: 0,
+        entry_for_root: Some(new_interior_id),
+    })
+}
+
 /// Depth-1 tail append: mint a leaf, grow the root by 1, append the
 /// new leaf id at the tail of the root region. This is the original
 /// Plan 0318 §Step 6 path; preserved byte-identically (modulo the
@@ -492,52 +955,59 @@ where
 {
     debug_assert_eq!(bucket.tree_mode_physical_depth(), 1);
     let w = bucket.inline_property_byte_width();
-    // Compute old/new edge + property root lengths (combined layout).
+    // K boundary check: the slot being written is `next_stored - 1`
+    // (0-indexed). A new property leaf is needed when the slot is a K
+    // boundary (and slot > 0). For w == 0 there is no property stream.
+    let k = if w > 0 {
+        u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).map_err(|_| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })? / u32::from(w)
+    } else {
+        1
+    };
+    let slot = next_stored - 1;
+    let needs_new_property_leaf = w > 0 && slot > 0 && slot.is_multiple_of(k);
+    // Plan 0327 (property-tree deepen): ensure the property tree
+    // covers the new property leaf count BEFORE minting the edge leaf,
+    // so all length math uses the post-deepen bucket. This may deepen
+    // `d' -> d' + 1` (moving the combined span) and re-read the
+    // canonical descriptor (stale-descriptor hazard).
+    let ensured_bucket: LabelBucket =
+        ensure_property_tree_depth::<E, M>(graph, bucket_slot, bucket, next_stored)?;
+    let bucket: &LabelBucket = &ensured_bucket;
+    let property_depth = bucket.tree_mode_property_depth();
+    // Mint + plan the property leaf (before the edge leaf so the LIFO
+    // rollback releases the edge leaf first, then the property plan).
+    let plan: Option<PropertyLeafAppend> = if needs_new_property_leaf {
+        Some(plan_property_leaf_append::<E, M>(
+            graph,
+            bucket,
+            next_stored,
+        )?)
+    } else {
+        None
+    };
+    // Combined layout lengths from the compact contract (single source
+    // of truth). `property_root_region_len` = ceil(S / K) at d' = 1,
+    // which at the mint (S % K == 0) equals the previous floor + 1
+    // expression — identical, so the swap is safe.
     let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots), 1)?;
     let new_edge_root_len = old_edge_root_len
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-    // K boundary check: the slot being written is
-    // `next_stored - 1` (0-indexed). The property leaf index
-    // is `slot / K`. A new property leaf is needed when the
-    // slot is a K boundary (and slot > 0). For w == 0 there is
-    // no property stream, so no K boundary applies.
-    let (slot, k) = if w > 0 {
-        let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
-            .map_err(|_| {
-                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
-            })?;
-        let k = payload / u32::from(w);
-        let slot = next_stored - 1;
-        (slot, k)
+    let old_property_root_len: u32 = if w > 0 {
+        super::compact::property_root_region_len(bucket)
     } else {
-        (next_stored - 1, 1) // K is unused when w == 0
+        0
     };
-    let needs_new_property_leaf = w > 0 && slot > 0 && slot % k == 0;
-    // **F-7 fix** (this slice): for w > 0, the new edge leaf may
-    // also coincide with a K boundary (when stored_slots % B == 0
-    // AND stored_slots % K == 0; e.g., w=32, K=128, B=1024
-    // gives K|B exactly: every 8th edge-leaf boundary is a K
-    // boundary). In that case, both the edge root and the
-    // property root grow by 1 in the same combined span realloc.
-    let old_property_root_len: u32 = if w > 0 { bucket.stored_slots / k } else { 0 };
-    let new_property_root_len: u32 = if needs_new_property_leaf {
-        old_property_root_len + 1
+    let property_root_grows = plan.as_ref().is_some_and(|p| p.entry_for_root.is_some());
+    let new_property_root_len: u32 = if property_root_grows {
+        old_property_root_len
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
     } else {
         old_property_root_len
     };
-    // F-2 cap guard.
-    if w > 0 {
-        let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
-        if new_property_root_len > k_max {
-            return Err(LabeledOperationError::PropertyTreeRootCapacityReached {
-                stored_slots: next_stored,
-                property_root_len: new_property_root_len,
-                cap: k_max,
-                property_leaf_fanout: k,
-            });
-        }
-    }
     let new_combined_len: u32 = new_edge_root_len
         .checked_add(new_property_root_len)
         .expect("combined span overflow");
@@ -546,23 +1016,7 @@ where
         .expect("old combined span overflow");
     // 1. Mint the new edge LTB block.
     let new_block_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
-    // 2. If we need a new property leaf, mint it too.
-    let new_property_block_id: u32 = if needs_new_property_leaf {
-        let id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
-        let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-            kind: crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
-            bucket_label_key_wire: 0,
-            owner_or_next_free: 0,
-            ordinal: 0,
-            level: 0,
-            reserved: [0u8; 3],
-        };
-        graph.ltb().write_block_header(id, &header);
-        id
-    } else {
-        0
-    };
-    // 3. Allocate the new combined span (edge root + property root).
+    // 2. Allocate the new combined span (edge root + property root).
     let old_combined_start = bucket.edge_start();
     let new_combined_start = if w > 0 && old_combined_len > 0 {
         let avoid = Some((old_combined_start, u64::from(old_combined_len)));
@@ -573,8 +1027,8 @@ where
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
-                if needs_new_property_leaf {
-                    let _ = graph.ltb().release(new_property_block_id);
+                if let Some(p) = &plan {
+                    release_property_plan::<E, M>(graph, p);
                 }
                 return Err(e.into());
             }
@@ -584,14 +1038,14 @@ where
             Ok(s) => s,
             Err(e) => {
                 let _ = graph.ltb().release(new_block_id);
-                if needs_new_property_leaf {
-                    let _ = graph.ltb().release(new_property_block_id);
+                if let Some(p) = &plan {
+                    release_property_plan::<E, M>(graph, p);
                 }
                 return Err(e.into());
             }
         }
     };
-    // 4. Build new combined bytes: [edge root (old + new edge block_id) | property root (old + maybe new)].
+    // 3. Build new combined bytes: [edge root (old + new edge block_id) | property root (old + maybe entry)].
     let mut combined_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
     if old_edge_root_len > 0 {
         let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
@@ -609,55 +1063,75 @@ where
         );
         combined_bytes.extend_from_slice(&old_prop_bytes);
     }
-    if needs_new_property_leaf {
-        combined_bytes.extend_from_slice(&new_property_block_id.to_le_bytes());
+    if let Some(p) = &plan
+        && let Some(entry_id) = p.entry_for_root
+    {
+        combined_bytes.extend_from_slice(&entry_id.to_le_bytes());
     }
+
     if let Err(e) = graph
         .edges()
         .write_slots_contiguous_bytes(new_combined_start, &combined_bytes)
     {
         let _ = graph.ltb().release(new_block_id);
-        if needs_new_property_leaf {
-            let _ = graph.ltb().release(new_property_block_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
         }
         let _ = graph
             .edges()
             .release_span(new_combined_start, u64::from(new_combined_len));
         return Err(e.into());
     }
-    // 5. Write the edge into the new (empty) leaf block at offset 0.
+    // 4. Write the edge into the new (empty) leaf block at offset 0.
     if let Err(e) = graph
         .ltb()
         .write_payload_partial(new_block_id, 0, target_bytes)
     {
         let _ = graph.ltb().release(new_block_id);
-        if needs_new_property_leaf {
-            let _ = graph.ltb().release(new_property_block_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
         }
         let _ = graph
             .edges()
             .release_span(new_combined_start, u64::from(new_combined_len));
         return Err(LabeledOperationError::LtbBlock(e));
     }
-    // 6. Write the property value at row 0 of the new property leaf
-    //    (if we minted one).
-    if needs_new_property_leaf {
-        if let Err(e) =
-            graph
-                .ltb()
-                .write_payload_partial(new_property_block_id, 0, property_value_bytes)
-        {
+    // 5. Write the property side.
+    if let Some(p) = &plan {
+        // Wire the leaf id into its home (new interior row or the root
+        // entry already appended above), then write the value at the
+        // leaf row (a K-boundary slot → row 0).
+        if p.entry_for_root.is_some() && p.interior_id != 0 && p.entry_for_root != Some(p.leaf_id) {
+            // d' >= 2, row == 0: the plan minted a new interior whose
+            // id is the root entry; record the leaf at interior row 0.
+            if let Err(e) =
+                graph
+                    .ltb()
+                    .write_payload_partial(p.interior_id, 0, &p.leaf_id.to_le_bytes())
+            {
+                let _ = graph.ltb().release(new_block_id);
+                release_property_plan::<E, M>(graph, p);
+                let _ = graph
+                    .edges()
+                    .release_span(new_combined_start, u64::from(new_combined_len));
+                return Err(LabeledOperationError::LtbBlock(e));
+            }
+        }
+        if let Err(e) = graph.ltb().write_payload_partial(
+            p.leaf_id,
+            ((slot % k) as usize) * usize::from(w),
+            property_value_bytes,
+        ) {
             let _ = graph.ltb().release(new_block_id);
-            let _ = graph.ltb().release(new_property_block_id);
+            release_property_plan::<E, M>(graph, p);
             let _ = graph
                 .edges()
                 .release_span(new_combined_start, u64::from(new_combined_len));
             return Err(LabeledOperationError::LtbBlock(e));
         }
     } else if w > 0 {
-        // In-place row write into the existing property leaf
-        // (slot is not a K boundary; the property leaf is
-        // already minted).
+        // In-place row write into the existing property leaf (slot is
+        // not a K boundary; the property leaf is already minted).
         super::tree_read::write_property_value_at_slot::<E, M>(
             graph,
             bucket,
@@ -665,13 +1139,14 @@ where
             property_value_bytes,
         )?;
     }
-    // 7. Publish the new descriptor.
+    // 6. Publish the new descriptor.
     let new_bucket = bucket
         .with_edge_range(new_combined_start, next_stored)
         .with_degree_field(next_degree)
         .with_stored_slots(next_stored)
         .with_tree_mode(true)
-        .with_tree_mode_physical_depth(1);
+        .with_tree_mode_physical_depth(1)
+        .with_tree_mode_property_depth(property_depth);
     if let Err(e) = graph
         .buckets()
         .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -679,21 +1154,21 @@ where
         let zero = [0u8; 4];
         let _ = graph.ltb().write_payload_partial(new_block_id, 0, &zero);
         let _ = graph.ltb().release(new_block_id);
-        if needs_new_property_leaf {
-            let _ = graph.ltb().release(new_property_block_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
         }
         let _ = graph
             .edges()
             .release_span(new_combined_start, u64::from(new_combined_len));
         return Err(e.into());
     }
-    // 8. Release the old combined span.
+    // 7. Release the old combined span.
     if old_combined_start != new_combined_start && old_combined_len > 0 {
         let _ = graph
             .edges()
             .release_span(old_combined_start, u64::from(old_combined_len));
     }
-    // 9. Bump global accounting.
+    // 8. Bump global accounting.
     let hdr = graph.edges().header();
     let next_num_edges = hdr
         .num_edges
@@ -738,6 +1213,7 @@ fn tree_mode_tail_append_depth_ge2<E, M>(
     bucket_slot: u64,
     bucket: &LabelBucket,
     target_bytes: &[u8; 4],
+    property_value_bytes: &[u8],
     next_stored: u32,
     next_degree: u32,
     _label: BucketLabelKey,
@@ -763,47 +1239,197 @@ where
     // `l / K`.
     let home_interior_index = leaf_index / k;
     let row_in_home_interior = leaf_index % k;
-    // 1. Resolve the home interior's block_id.
+    // Plan 0327 (property-tree deepen): handle the property stream for
+    // `w > 0`. A K-boundary slot needs a fresh LPB leaf; the property
+    // tree may also need to deepen. Both are planned BEFORE the edge
+    // leaf mint so all length math uses the post-ensure bucket and the
+    // LIFO rollback releases the edge leaf first.
+    let w = bucket.inline_property_byte_width();
+    let slot = next_stored - 1;
+    let (kp, needs_new_property_leaf) = if w > 0 {
+        let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
+            .map_err(|_| {
+                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+            })?;
+        let kp = payload / u32::from(w);
+        (kp, slot > 0 && slot.is_multiple_of(kp))
+    } else {
+        (1u32, false)
+    };
+    let ensured_bucket: LabelBucket = if needs_new_property_leaf {
+        ensure_property_tree_depth::<E, M>(graph, bucket_slot, bucket, next_stored)?
+    } else {
+        *bucket
+    };
+    let bucket: &LabelBucket = &ensured_bucket;
+    let property_depth = bucket.tree_mode_property_depth();
+    let plan: Option<PropertyLeafAppend> = if needs_new_property_leaf {
+        Some(plan_property_leaf_append::<E, M>(
+            graph,
+            bucket,
+            next_stored,
+        )?)
+    } else {
+        None
+    };
+    // Combined layout lengths (compact contract; single source of
+    // truth). The property root is contiguous after the edge root, so
+    // EVERY root-region realloc must carry both halves.
+    let old_prop_root_len: u32 = if w > 0 {
+        super::compact::property_root_region_len(bucket)
+    } else {
+        0
+    };
+    let property_root_grows = plan.as_ref().is_some_and(|p| p.entry_for_root.is_some());
+    // 1. Resolve the home interior's block_id (post-ensure bucket).
     let home_interior_id = resolve_interior_block_id::<E, M>(graph, bucket, home_interior_index)?;
     // 2. Mint the new leaf block.
     let new_leaf_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
     // 3. Branch on row index.
     if row_in_home_interior != 0 {
-        // === Interior-row append (root unchanged) ===
-        // Write the leaf id into the home interior at the row
-        // position, then write the edge into the leaf block at
-        // offset 0. Then publish the descriptor (edge_start
-        // unchanged). LIFO rollback.
+        // === Interior-row append (edge root unchanged) ===
         if let Err(e) = graph.ltb().write_payload_partial(
             home_interior_id,
             (row_in_home_interior as usize) * E::BYTES,
             &new_leaf_id.to_le_bytes(),
         ) {
             let _ = graph.ltb().release(new_leaf_id);
+            if let Some(p) = &plan {
+                release_property_plan::<E, M>(graph, p);
+            }
             return Err(LabeledOperationError::LtbBlock(e));
         }
         if let Err(e) = graph
             .ltb()
             .write_payload_partial(new_leaf_id, 0, target_bytes)
         {
-            // Roll back the interior pointer (we don't need to
-            // zero the row, because the descriptor still has
-            // stored_slots == pre-insert and the resolver's
-            // hop chain only consults rows < pre-insert ceil).
             let _ = graph.ltb().release(new_leaf_id);
+            if let Some(p) = &plan {
+                release_property_plan::<E, M>(graph, p);
+            }
             return Err(LabeledOperationError::LtbBlock(e));
         }
-        // Publish the descriptor (edge_start unchanged).
+        // Property side. `release_old_combined` captures the old
+        // combined span to release AFTER the descriptor publish
+        // (publish-before-release commit order).
+        let mut release_old_combined: Option<(u64, u32)> = None;
+        let new_edge_start: u64 = match &plan {
+            None => bucket.edge_start(),
+            Some(p) => match p.entry_for_root {
+                None => {
+                    // Home property interior already covers the new
+                    // leaf: record the leaf id + value, edge_start
+                    // unchanged.
+                    if let Err(e) = graph.ltb().write_payload_partial(
+                        p.interior_id,
+                        (p.row as usize) * 4,
+                        &p.leaf_id.to_le_bytes(),
+                    ) {
+                        let _ = graph.ltb().release(new_leaf_id);
+                        release_property_plan::<E, M>(graph, p);
+                        return Err(LabeledOperationError::LtbBlock(e));
+                    }
+                    if let Err(e) = graph.ltb().write_payload_partial(
+                        p.leaf_id,
+                        ((slot % kp) as usize) * usize::from(w),
+                        property_value_bytes,
+                    ) {
+                        let _ = graph.ltb().release(new_leaf_id);
+                        release_property_plan::<E, M>(graph, p);
+                        return Err(LabeledOperationError::LtbBlock(e));
+                    }
+                    bucket.edge_start()
+                }
+                Some(entry_id) => {
+                    // Combined span realloc: [edge root | property root | entry].
+                    let old_edge_root_len = super::compact::bucket_span_region_len(bucket);
+                    let old_combined_len = old_edge_root_len + old_prop_root_len;
+                    let new_combined_len = old_combined_len
+                        .checked_add(1)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let old_combined_start = bucket.edge_start();
+                    let avoid = Some((old_combined_start, u64::from(old_combined_len)));
+                    let new_combined = match graph
+                        .edges()
+                        .allocate_span_avoiding(u64::from(new_combined_len), avoid)
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = graph.ltb().release(new_leaf_id);
+                            release_property_plan::<E, M>(graph, p);
+                            return Err(e.into());
+                        }
+                    };
+                    let mut combined_bytes: Vec<u8> =
+                        Vec::with_capacity(new_combined_len as usize * 4);
+                    if old_edge_root_len > 0 {
+                        let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * 4];
+                        graph
+                            .edges()
+                            .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
+                        combined_bytes.extend_from_slice(&old_edge_bytes);
+                    }
+                    if old_prop_root_len > 0 {
+                        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
+                        graph.edges().read_slots_contiguous_bytes(
+                            old_combined_start + u64::from(old_edge_root_len),
+                            &mut old_prop_bytes,
+                        );
+                        combined_bytes.extend_from_slice(&old_prop_bytes);
+                    }
+                    combined_bytes.extend_from_slice(&entry_id.to_le_bytes());
+                    if let Err(e) = graph
+                        .edges()
+                        .write_slots_contiguous_bytes(new_combined, &combined_bytes)
+                    {
+                        let _ = graph.ltb().release(new_leaf_id);
+                        release_property_plan::<E, M>(graph, p);
+                        let _ = graph
+                            .edges()
+                            .release_span(new_combined, u64::from(new_combined_len));
+                        return Err(LabeledOperationError::from(e));
+                    }
+                    if let Err(e) = graph.ltb().write_payload_partial(
+                        p.leaf_id,
+                        ((slot % kp) as usize) * usize::from(w),
+                        property_value_bytes,
+                    ) {
+                        let _ = graph.ltb().release(new_leaf_id);
+                        release_property_plan::<E, M>(graph, p);
+                        let _ = graph
+                            .edges()
+                            .release_span(new_combined, u64::from(new_combined_len));
+                        return Err(LabeledOperationError::LtbBlock(e));
+                    }
+                    release_old_combined = Some((old_combined_start, old_combined_len));
+                    new_combined
+                }
+            },
+        };
+        // Publish the descriptor (edge_start may have moved with the
+        // combined-span realloc).
         let new_bucket = bucket
-            .with_stored_slots(next_stored)
+            .with_edge_range(new_edge_start, next_stored)
             .with_degree_field(next_degree)
+            .with_stored_slots(next_stored)
             .with_tree_mode(true)
-            .with_tree_mode_physical_depth(depth);
+            .with_tree_mode_physical_depth(depth)
+            .with_tree_mode_property_depth(property_depth);
         if let Err(e) = graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
         {
+            let _ = graph.ltb().release(new_leaf_id);
+            if let Some(p) = &plan {
+                release_property_plan::<E, M>(graph, p);
+            }
             return Err(e.into());
+        }
+        // Release the old combined span after publish.
+        if let Some((start, len)) = release_old_combined
+            && start != new_edge_start
+        {
+            let _ = graph.edges().release_span(start, u64::from(len));
         }
         // Bump global accounting.
         let hdr = graph.edges().header();
@@ -818,14 +1444,17 @@ where
             .map_err(LabeledOperationError::from)?;
         return Ok(next_stored - 1);
     }
-    // === New-interior mint (root grows) ===
+    // === New-interior mint (edge root grows) ===
     // Mint the new interior block. LIFO rollback on any failure
-    // (release the leaf + the interior + the new root span, in
-    // the order they were minted/allocated).
+    // (release the edge interior, the edge leaf, the property plan,
+    // then the new combined span — newest first).
     let new_interior_id = match graph.ltb().mint() {
         Ok(id) => id,
         Err(e) => {
             let _ = graph.ltb().release(new_leaf_id);
+            if let Some(p) = &plan {
+                release_property_plan::<E, M>(graph, p);
+            }
             return Err(LabeledOperationError::from(e));
         }
     };
@@ -841,39 +1470,92 @@ where
     graph
         .ltb()
         .write_block_header(new_interior_id, &interior_header);
-    // Grow the root region by 1: realloc + copy + append the new
-    // interior id. Physical root length uses the same physical
-    // ceil-chain (NOT `derived_root_len`).
-    let old_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots), depth)?;
-    let new_root_len = old_root_len
+    // COMBINED realloc (Plan 0327 fix): the previous code grew only the
+    // edge root, which would orphan the property root (it must stay
+    // contiguous at `edge_start + edge_root_len`). The new combined
+    // span holds `[edge root + new edge interior id | property root +
+    // optional property entry]`.
+    let old_edge_root_len = physical_root_len_ceil(u64::from(bucket.stored_slots), depth)?;
+    let new_edge_root_len = old_edge_root_len
         .checked_add(1)
         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-    let new_edge_start = match graph.edges().allocate_span(u64::from(new_root_len)) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = graph.ltb().release(new_interior_id);
-            let _ = graph.ltb().release(new_leaf_id);
-            return Err(e.into());
+    let old_combined_len = old_edge_root_len
+        .checked_add(old_prop_root_len)
+        .expect("old combined span overflow");
+    let new_combined_len = new_edge_root_len
+        .checked_add(old_prop_root_len)
+        .and_then(|v| {
+            if property_root_grows {
+                v.checked_add(1)
+            } else {
+                Some(v)
+            }
+        })
+        .expect("new combined span overflow");
+    let old_combined_start = bucket.edge_start();
+    let new_edge_start = if w > 0 && old_combined_len > 0 {
+        let avoid = Some((old_combined_start, u64::from(old_combined_len)));
+        match graph
+            .edges()
+            .allocate_span_avoiding(u64::from(new_combined_len), avoid)
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = graph.ltb().release(new_interior_id);
+                let _ = graph.ltb().release(new_leaf_id);
+                if let Some(p) = &plan {
+                    release_property_plan::<E, M>(graph, p);
+                }
+                return Err(e.into());
+            }
+        }
+    } else {
+        match graph.edges().allocate_span(u64::from(new_combined_len)) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = graph.ltb().release(new_interior_id);
+                let _ = graph.ltb().release(new_leaf_id);
+                if let Some(p) = &plan {
+                    release_property_plan::<E, M>(graph, p);
+                }
+                return Err(e.into());
+            }
         }
     };
-    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_root_len as usize * 4);
-    if old_root_len > 0 {
-        let mut old_bytes = vec![0u8; old_root_len as usize * 4];
+    let mut new_root_bytes: Vec<u8> = Vec::with_capacity(new_combined_len as usize * 4);
+    if old_edge_root_len > 0 {
+        let mut old_bytes = vec![0u8; old_edge_root_len as usize * 4];
         graph
             .edges()
-            .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_bytes);
+            .read_slots_contiguous_bytes(old_combined_start, &mut old_bytes);
         new_root_bytes.extend_from_slice(&old_bytes);
     }
     new_root_bytes.extend_from_slice(&new_interior_id.to_le_bytes());
+    if old_prop_root_len > 0 {
+        let mut old_prop_bytes = vec![0u8; old_prop_root_len as usize * 4];
+        graph.edges().read_slots_contiguous_bytes(
+            old_combined_start + u64::from(old_edge_root_len),
+            &mut old_prop_bytes,
+        );
+        new_root_bytes.extend_from_slice(&old_prop_bytes);
+    }
+    if let Some(p) = &plan
+        && let Some(entry_id) = p.entry_for_root
+    {
+        new_root_bytes.extend_from_slice(&entry_id.to_le_bytes());
+    }
     if let Err(e) = graph
         .edges()
         .write_slots_contiguous_bytes(new_edge_start, &new_root_bytes)
     {
         let _ = graph.ltb().release(new_interior_id);
         let _ = graph.ltb().release(new_leaf_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
+        }
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(new_root_len));
+            .release_span(new_edge_start, u64::from(new_combined_len));
         return Err(e.into());
     }
     // Write the leaf id into the new interior at row 0.
@@ -882,13 +1564,14 @@ where
             .ltb()
             .write_payload_partial(new_interior_id, 0, &new_leaf_id.to_le_bytes())
     {
-        // Roll back: release the new interior, the new leaf, and
-        // the new root span. The old root region is intact.
         let _ = graph.ltb().release(new_interior_id);
         let _ = graph.ltb().release(new_leaf_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
+        }
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(new_root_len));
+            .release_span(new_edge_start, u64::from(new_combined_len));
         return Err(LabeledOperationError::LtbBlock(e));
     }
     // Write the edge into the new leaf at offset 0.
@@ -898,35 +1581,75 @@ where
     {
         let _ = graph.ltb().release(new_interior_id);
         let _ = graph.ltb().release(new_leaf_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
+        }
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(new_root_len));
+            .release_span(new_edge_start, u64::from(new_combined_len));
         return Err(LabeledOperationError::LtbBlock(e));
     }
-    // Publish the new descriptor (edge_start updated, depth
-    // unchanged).
+    // Property side: wire the plan's leaf into its home interior (when
+    // the plan minted one) and write the value at the leaf row.
+    if let Some(p) = &plan {
+        if p.entry_for_root.is_some()
+            && p.interior_id != 0
+            && p.entry_for_root != Some(p.leaf_id)
+            && let Err(e) =
+                graph
+                    .ltb()
+                    .write_payload_partial(p.interior_id, 0, &p.leaf_id.to_le_bytes())
+        {
+            let _ = graph.ltb().release(new_interior_id);
+            let _ = graph.ltb().release(new_leaf_id);
+            release_property_plan::<E, M>(graph, p);
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(new_combined_len));
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        if let Err(e) = graph.ltb().write_payload_partial(
+            p.leaf_id,
+            ((slot % kp) as usize) * usize::from(w),
+            property_value_bytes,
+        ) {
+            let _ = graph.ltb().release(new_interior_id);
+            let _ = graph.ltb().release(new_leaf_id);
+            release_property_plan::<E, M>(graph, p);
+            let _ = graph
+                .edges()
+                .release_span(new_edge_start, u64::from(new_combined_len));
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+    }
+    // Publish the new descriptor (edge_start updated, edge depth
+    // unchanged, property depth from the post-ensure bucket).
     let new_bucket = bucket
         .with_edge_range(new_edge_start, next_stored)
         .with_degree_field(next_degree)
         .with_stored_slots(next_stored)
         .with_tree_mode(true)
-        .with_tree_mode_physical_depth(depth);
+        .with_tree_mode_physical_depth(depth)
+        .with_tree_mode_property_depth(property_depth);
     if let Err(e) = graph
         .buckets()
         .write_label_bucket_slot(bucket_slot, new_bucket)
     {
         let _ = graph.ltb().release(new_interior_id);
         let _ = graph.ltb().release(new_leaf_id);
+        if let Some(p) = &plan {
+            release_property_plan::<E, M>(graph, p);
+        }
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(new_root_len));
+            .release_span(new_edge_start, u64::from(new_combined_len));
         return Err(e.into());
     }
-    // Release the old root region.
-    if new_edge_start != bucket.edge_start() {
+    // Release the old combined span.
+    if new_edge_start != bucket.edge_start() && old_combined_len > 0 {
         let _ = graph
             .edges()
-            .release_span(bucket.edge_start(), u64::from(old_root_len));
+            .release_span(bucket.edge_start(), u64::from(old_combined_len));
     }
     // Bump global accounting.
     let hdr = graph.edges().header();
@@ -1415,27 +2138,78 @@ where
         });
     }
     let w = bucket.inline_property_byte_width();
+    // Plan 0327 (property-tree deepen): the anticipation of the
+    // imminent slot (`S + 1`) can itself require a property deepen
+    // (`property_root_entry_count(ceil((S+1)/K), d') > R_MAX` with
+    // `d' < 3`). In that case deepen the property tree BEFORE the
+    // edge deepen and re-read the canonical descriptor (stale-
+    // descriptor hazard); the combined-span copies and the published
+    // descriptor below then use the post-deepen bucket (whose
+    // property root holds interior ids — copied verbatim either way).
+    let post_property_deepen_bucket_storage;
+    let bucket: &LabelBucket = if w > 0 {
+        let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
+            .map_err(|_| {
+                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+            })?;
+        let kp = payload / u32::from(w);
+        let next = stored_slots
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let l_p_new = u64::from(next.div_ceil(kp));
+        let d_required = property_depth_for_leaves(l_p_new, kp, stored_slots)?;
+        if d_required > bucket.tree_mode_property_depth() {
+            tree_mode_property_deepen::<E, M>(graph, bucket_slot, bucket)?;
+            post_property_deepen_bucket_storage = graph
+                .buckets()
+                .read_label_bucket_slot(bucket_slot)
+                .ok_or_else(|| {
+                    LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+                })?;
+            &post_property_deepen_bucket_storage
+        } else {
+            bucket
+        }
+    } else {
+        bucket
+    };
+    let d_prop = bucket.tree_mode_property_depth();
     let old_root_len = derived_root_len(stored_slots) as u32;
     let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
     let new_interior_count = old_root_len.div_ceil(k);
-    // Property root length (combined layout).
+    // Property root length (combined layout), depth-aware:
+    // `old` = ceil-chain of ceil(S / K) over B at d'; `new` anticipates
+    // the imminent mint (S + 1). The old length must equal the compact
+    // layout contract exactly.
     let (old_property_root_len, new_property_root_len) = if w > 0 {
         let payload = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES)
             .map_err(|_| {
                 LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
             })?;
         let kp = payload / u32::from(w);
-        let old_len = stored_slots / kp;
-        let new_len = if stored_slots > 0 && stored_slots.is_multiple_of(kp) {
-            stored_slots / kp + 1
-        } else {
-            old_len
-        };
+        let old_len_u64 = property_root_entry_count(u64::from(stored_slots.div_ceil(kp)), d_prop);
+        let next = stored_slots
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let new_len_u64 = property_root_entry_count(u64::from(next.div_ceil(kp)), d_prop);
+        let old_len = u32::try_from(old_len_u64).map_err(|_| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?;
+        let new_len = u32::try_from(new_len_u64).map_err(|_| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?;
+        debug_assert_eq!(
+            old_len,
+            super::compact::property_root_region_len(bucket),
+            "deepen: old property root length must match the compact-layout contract"
+        );
         (old_len, new_len)
     } else {
         (0u32, 0u32)
     };
-    // F-2 cap guard.
+    // Defensive 2^30 backstop: only reachable when d' == 3 and the
+    // property leaf count exceeds B^3 (past the edge TREE_STRUCTURAL_CAP
+    // guard, which fires first in production).
     if w > 0 {
         let k_max = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
         let kp = u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).map_err(
@@ -1570,7 +2344,8 @@ where
         .with_inline_property_bytes_offset(0)
         .with_inline_property_bytes_slab_slots(0)
         .with_tree_mode(true)
-        .with_tree_mode_physical_depth(new_physical_depth);
+        .with_tree_mode_physical_depth(new_physical_depth)
+        .with_tree_mode_property_depth(d_prop);
     // 7. Publish: single canonical write.
     if let Err(e) = graph
         .buckets()
@@ -4108,5 +4883,627 @@ mod tests {
         // released back to the LTB free list. `alloc_final` should
         // be 0 (no live blocks).
         assert_eq!(alloc_final, 0, "all leaf + interior blocks released");
+    }
+
+    // ====================== Plan 0327: property-tree deepen tests ======================
+
+    use crate::labeled::graph::test_support::{InlinePropertyTestEdge, inline_property_test_graph};
+
+    /// Build a synthetic tree-mode bucket with `w > 0` whose property
+    /// root holds `L_p = ceil(S / K)` LPB leaf ids at property depth 1
+    /// and whose edge root holds `ceil(S / B)` edge leaf ids at edge
+    /// depth `edge_depth` (only depth 1 supported here; depth-2
+    /// layouts are built inline by the tests that need them). Every
+    /// slot's property value is seeded deterministically as
+    /// `seed(slot)` (4-byte LE pattern repeated across the `w` bytes).
+    fn build_full_property_root_bucket(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>,
+        label: BucketLabelKey,
+        bucket_slot: u64,
+        stored_slots: u32,
+        w: u16,
+        seed: impl Fn(u32) -> u32,
+    ) -> LabelBucket {
+        let b = BLOCK_B as u32;
+        let payload =
+            u32::try_from(crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES).unwrap();
+        let kp = payload / u32::from(w);
+        let edge_leaf_count = stored_slots.div_ceil(b);
+        let l_p = stored_slots.div_ceil(kp);
+        // Mint the edge leaves (payload left empty: the property tests
+        // never read old edge targets).
+        let mut edge_ids: Vec<u32> = Vec::with_capacity(edge_leaf_count as usize);
+        for _ in 0..edge_leaf_count {
+            edge_ids.push(graph.ltb().mint().expect("mint edge leaf"));
+        }
+        // Mint the property leaves and fill every row with the seeded
+        // value pattern.
+        let mut prop_ids: Vec<u32> = Vec::with_capacity(l_p as usize);
+        for leaf in 0..l_p {
+            let id = graph.ltb().mint().expect("mint property leaf");
+            prop_ids.push(id);
+            let mut leaf_payload = vec![0u8; (kp as usize) * usize::from(w)];
+            for row in 0..kp {
+                let slot = leaf * kp + row;
+                if slot >= stored_slots {
+                    break;
+                }
+                let v = seed(slot).to_le_bytes();
+                let off = (row as usize) * usize::from(w);
+                leaf_payload[off..off + 4].copy_from_slice(&v);
+            }
+            graph
+                .ltb()
+                .write_payload(
+                    id,
+                    leaf_payload.as_slice().try_into().expect("4096-byte leaf"),
+                )
+                .expect("write property leaf");
+        }
+        // Combined span [edge root | property root].
+        let combined_len = edge_leaf_count + l_p;
+        let edge_start = graph
+            .edges()
+            .allocate_span(u64::from(combined_len))
+            .expect("allocate combined span");
+        let mut bytes: Vec<u8> = Vec::with_capacity(combined_len as usize * 4);
+        for &id in &edge_ids {
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        for &id in &prop_ids {
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &bytes)
+            .expect("write combined span");
+        let bucket = LabelBucket::try_from_parts(
+            label,
+            edge_start,
+            stored_slots,
+            stored_slots,
+            -1,
+            w,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .expect("try_from_parts")
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(1);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, bucket)
+            .expect("write descriptor");
+        bucket
+    }
+
+    /// Decoy span: fill a fresh LEG span with a sentinel pattern so a
+    /// misresolved property-root read fails loudly instead of hitting
+    /// adjacent-layout luck.
+    fn allocate_decoy_span(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>,
+        len: u32,
+    ) {
+        let start = graph
+            .edges()
+            .allocate_span(u64::from(len))
+            .expect("decoy span");
+        let mut bytes = Vec::with_capacity(len as usize * 4);
+        for _ in 0..len {
+            bytes.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        }
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(start, &bytes)
+            .expect("write decoy");
+    }
+
+    fn read_prop_u32(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>,
+        bucket: &LabelBucket,
+        slot: u32,
+        w: u16,
+    ) -> u32 {
+        let mut buf = vec![0u8; usize::from(w)];
+        super::super::tree_read::read_property_value_at_slot::<InlinePropertyTestEdge, VectorMemory>(
+            graph, bucket, slot, &mut buf,
+        )
+        .expect("read_property_value_at_slot");
+        let mut word = [0u8; 4];
+        word[..usize::from(w).min(4)].copy_from_slice(&buf[..usize::from(w).min(4)]);
+        u32::from_le_bytes(word)
+    }
+
+    fn write_prop_u32(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>,
+        bucket: &LabelBucket,
+        slot: u32,
+        w: u16,
+        value: u32,
+    ) {
+        let mut buf = vec![0u8; usize::from(w)];
+        buf[0..4].copy_from_slice(&value.to_le_bytes());
+        super::super::tree_read::write_property_value_at_slot::<InlinePropertyTestEdge, VectorMemory>(
+            graph, bucket, slot, &buf,
+        )
+        .expect("write_property_value_at_slot");
+    }
+
+    /// Plan 0327 test 1: K-boundary property deepen parity. A w=32
+    /// bucket (K = 128) at property root full (S = 131072, d' = 1,
+    /// root = 1024 leaf ids) mints one more slot via
+    /// `tree_mode_insert_edge`; the property tree must deepen to
+    /// d' = 2 and ALL property values must read back correctly.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn property_deepen_at_k_boundary_preserves_all_values() {
+        let graph = inline_property_test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(3);
+        let w: u16 = 32;
+        let stored: u32 = 128 * 1024; // 131072 = 1024 leaves x K=128
+        let seed = |slot: u32| slot ^ 0x5A5A_5A5A;
+        let bucket_slot = 0u64;
+        let pre = build_full_property_root_bucket(&graph, label, bucket_slot, stored, w, seed);
+        allocate_decoy_span(&graph, 64);
+        // Pre-mint sanity: sample reads across the full root.
+        for slot in [0u32, 1, 127, 128, 4096, 65_536, stored - 1] {
+            assert_eq!(
+                read_prop_u32(&graph, &pre, slot, w),
+                seed(slot),
+                "pre slot {slot}"
+            );
+        }
+        // Insert one edge: slot = stored is a K boundary → property
+        // leaf mint + property deepen (d' 1 -> 2).
+        let new_value: u32 = 0x0BAD_C0DE;
+        let mut prop_bytes = vec![0u8; usize::from(w)];
+        prop_bytes[0..4].copy_from_slice(&new_value.to_le_bytes());
+        let edge = InlinePropertyTestEdge::with_bytes(0x1234, &new_value.to_le_bytes())
+            .with_stored_inline_property_bytes(w, &prop_bytes);
+        let logical_slot = tree_mode_insert_edge(&graph, vid, bucket_slot, &pre, label, &edge)
+            .expect("insert at K boundary must deepen the property tree");
+        assert_eq!(logical_slot, stored);
+        let post = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("post read");
+        assert_eq!(
+            post.tree_mode_property_depth(),
+            2,
+            "property tree must deepen to d'=2"
+        );
+        assert_eq!(
+            post.tree_mode_physical_depth(),
+            1,
+            "edge tree must stay at depth 1"
+        );
+        assert_eq!(post.stored_slots, stored + 1);
+        // Full parity: every slot (old + new) reads back its seeded value.
+        for slot in 0..=stored {
+            let expected = if slot < stored { seed(slot) } else { new_value };
+            assert_eq!(
+                read_prop_u32(&graph, &post, slot, w),
+                expected,
+                "post-deepen slot {slot}"
+            );
+        }
+    }
+
+    /// Plan 0327 test 2: pseudo-random slot read/write after the
+    /// property deepen, against an in-memory model (fixed LCG).
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn property_deepen_random_slot_read_write_model() {
+        let graph = inline_property_test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(3);
+        let w: u16 = 32;
+        let stored: u32 = 128 * 1024;
+        let seed = |slot: u32| slot.wrapping_mul(0x9E37_79B1);
+        let bucket_slot = 0u64;
+        let pre = build_full_property_root_bucket(&graph, label, bucket_slot, stored, w, seed);
+        let mut prop_bytes = vec![0u8; usize::from(w)];
+        prop_bytes[0..4].copy_from_slice(&0xABCD_1234u32.to_le_bytes());
+        let edge = InlinePropertyTestEdge::with_bytes(1, &0u32.to_le_bytes())
+            .with_stored_inline_property_bytes(w, &prop_bytes);
+        tree_mode_insert_edge(&graph, vid, bucket_slot, &pre, label, &edge)
+            .expect("insert must deepen");
+        let post = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("post read");
+        assert_eq!(post.tree_mode_property_depth(), 2);
+        // In-memory model over all slots.
+        let total = stored + 1;
+        let mut model: Vec<u32> = (0..total)
+            .map(|s| if s < stored { seed(s) } else { 0xABCD_1234 })
+            .collect();
+        // 200 pseudo-random read/write rounds via a fixed LCG.
+        let mut x: u32 = 0x1234_5678;
+        for _ in 0..200 {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let slot = x % total;
+            // Read must match the model.
+            assert_eq!(
+                read_prop_u32(&graph, &post, slot, w),
+                model[slot as usize],
+                "random read slot {slot}"
+            );
+            // Write a fresh value and update the model.
+            let new_value = x ^ 0xFEED_F00D;
+            write_prop_u32(&graph, &post, slot, w, new_value);
+            model[slot as usize] = new_value;
+            // Read-back parity.
+            assert_eq!(
+                read_prop_u32(&graph, &post, slot, w),
+                new_value,
+                "post-write slot {slot}"
+            );
+        }
+    }
+
+    /// Plan 0327 test 3: `property_root_entry_count` /
+    /// `property_depth_for_leaves` boundary math for every
+    /// `w` in 1..=4096 (K = 4096 / w) at the 2^30 cap, plus the typed
+    /// backstop past the depth-3 coverage.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn property_root_entry_count_and_depth_boundary_math() {
+        let cap = crate::labeled::tree_csr::R_MAX as u64;
+        for w in 1..=4096u32 {
+            let k = 4096u32 / w;
+            // At the 2^30 structural cap the required depth must cover
+            // the leaf count exactly minimally.
+            let l_p = (1u64 << 30).div_ceil(u64::from(k));
+            let d = property_depth_for_leaves(l_p, k, 1u32 << 30)
+                .unwrap_or_else(|e| panic!("w={w}: unexpected error {e:?}"));
+            assert!((1..=3).contains(&d), "w={w}: depth {d} out of range");
+            assert!(
+                property_root_entry_count(l_p, d) <= cap,
+                "w={w}: depth {d} does not cover l_p={l_p}"
+            );
+            if d > 1 {
+                assert!(
+                    property_root_entry_count(l_p, d - 1) > cap,
+                    "w={w}: depth {d} is not minimal for l_p={l_p}"
+                );
+            }
+        }
+        // Known boundary values: w=1 (K=4096) → d'=2 at 2^30;
+        // w=4 (K=1024) → d'=2; w=32 (K=128) → d'=3.
+        assert_eq!(
+            property_depth_for_leaves((1u64 << 30).div_ceil(4096), 4096, 1u32 << 30).unwrap(),
+            2
+        );
+        assert_eq!(
+            property_depth_for_leaves((1u64 << 30).div_ceil(1024), 1024, 1u32 << 30).unwrap(),
+            2
+        );
+        assert_eq!(
+            property_depth_for_leaves((1u64 << 30).div_ceil(128), 128, 1u32 << 30).unwrap(),
+            3
+        );
+        // The typed backstop: past the depth-3 coverage (B^3 = 2^30
+        // leaves) the helper fails closed.
+        match property_depth_for_leaves((1u64 << 30) + 1, 1, u32::MAX) {
+            Err(LabeledOperationError::PropertyTreeRootCapacityReached {
+                property_root_len,
+                cap: c,
+                property_leaf_fanout,
+                ..
+            }) => {
+                assert_eq!(property_root_len, 1025);
+                assert_eq!(c, 1024);
+                assert_eq!(property_leaf_fanout, 1);
+            }
+            other => panic!("expected PropertyTreeRootCapacityReached, got {other:?}"),
+        }
+    }
+
+    /// Plan 0327 test 4: edge deepen x property deepen order
+    /// compatibility. A w=4 bucket (K = 1024) at stored = 2^20 has its
+    /// property root exactly full at d' = 1 AND its edge root exactly
+    /// full at edge depth 1. `tree_mode_deepen`'s anticipation of the
+    /// imminent slot must property-deepen FIRST, then edge-deepen, and
+    /// the property values must survive both relocations.
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn edge_deepen_with_property_deepen_anticipation() {
+        let graph = inline_property_test_graph();
+        let label = BucketLabelKey::directed_from_index(3);
+        let w: u16 = 4;
+        let stored: u32 = 1u32 << 20;
+        let seed = |slot: u32| slot.wrapping_mul(0x51ED_270B).wrapping_add(7);
+        let bucket_slot = 0u64;
+        let pre = build_full_property_root_bucket(&graph, label, bucket_slot, stored, w, seed);
+        assert_eq!(pre.tree_mode_physical_depth(), 1);
+        assert_eq!(pre.tree_mode_property_depth(), 1);
+        tree_mode_deepen::<InlinePropertyTestEdge, VectorMemory>(&graph, bucket_slot, &pre)
+            .expect("deepen must property-deepen then edge-deepen");
+        let post = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("post read");
+        assert_eq!(
+            post.tree_mode_physical_depth(),
+            2,
+            "edge tree must deepen to 2"
+        );
+        assert_eq!(
+            post.tree_mode_property_depth(),
+            2,
+            "property tree must deepen to 2"
+        );
+        assert_eq!(post.stored_slots, stored);
+        // Sampled parity across the whole slot space (every 997th slot
+        // plus the boundaries).
+        let mut checked = 0u32;
+        for slot in (0..stored).step_by(997).chain([0, stored - 1]) {
+            assert_eq!(
+                read_prop_u32(&graph, &post, slot, w),
+                seed(slot),
+                "post-double-deepen slot {slot}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 1000, "sample coverage too small: {checked}");
+    }
+
+    /// Plan 0327 test 5: depth-≥2 edge append with a property K
+    /// boundary. Uses w=1 (K = 4096) because a w=32 edge-depth-2
+    /// bucket with property depth 1 is an impossible layout (L_p =
+    /// ceil(S / 128) > R_MAX for any S > 2^20).
+    ///
+    /// Part (a): interior-row edge append (edge root unchanged) that is
+    /// also a K boundary → property leaf mint + property root grows by
+    /// 1 (combined-span realloc).
+    /// Part (b): new-edge-interior mint (edge root grows) that is also
+    /// a K boundary → COMBINED realloc [edge root + interior | property
+    /// root + entry].
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn depth_ge2_property_append_at_k_boundary() {
+        // ---------- Part (a): interior-row edge append ----------
+        let graph = inline_property_test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(3);
+        let w: u16 = 1;
+        let kp = 4096u32;
+        let stored: u32 = (1u32 << 20) + 4096; // edge depth 2; K boundary slot
+        let bucket_slot = 0u64;
+        let seed = |slot: u32| (slot & 0xff) as u32;
+        // Build the synthetic depth-2 edge layout by hand.
+        let edge_leaf_count = stored.div_ceil(1024); // 1028
+        let edge_root_len = edge_leaf_count.div_ceil(1024); // 2
+        let l_p = stored.div_ceil(kp); // 257
+        let mut edge_leaf_ids: Vec<u32> = Vec::with_capacity(edge_leaf_count as usize);
+        for _ in 0..edge_leaf_count {
+            edge_leaf_ids.push(graph.ltb().mint().expect("mint edge leaf"));
+        }
+        let mut edge_interior_ids: Vec<u32> = Vec::with_capacity(edge_root_len as usize);
+        for i in 0..edge_root_len {
+            let id = graph.ltb().mint().expect("mint edge interior");
+            edge_interior_ids.push(id);
+            let start = (i * 1024) as usize;
+            let end = (start + 1024).min(edge_leaf_ids.len());
+            let chunk: Vec<u8> = edge_leaf_ids[start..end]
+                .iter()
+                .flat_map(|id| id.to_le_bytes())
+                .collect();
+            graph
+                .ltb()
+                .write_payload_partial(id, 0, &chunk)
+                .expect("write edge interior");
+        }
+        let mut prop_leaf_ids: Vec<u32> = Vec::with_capacity(l_p as usize);
+        for leaf in 0..l_p {
+            let id = graph.ltb().mint().expect("mint property leaf");
+            prop_leaf_ids.push(id);
+            let mut leaf_payload = vec![0u8; kp as usize];
+            for row in 0..kp {
+                let slot = leaf * kp + row;
+                if slot >= stored {
+                    break;
+                }
+                leaf_payload[row as usize] = (seed(slot) & 0xff) as u8;
+            }
+            graph
+                .ltb()
+                .write_payload(
+                    id,
+                    leaf_payload.as_slice().try_into().expect("4096-byte leaf"),
+                )
+                .expect("write property leaf");
+        }
+        let combined_len = edge_root_len + l_p;
+        let edge_start = graph
+            .edges()
+            .allocate_span(u64::from(combined_len))
+            .expect("allocate combined");
+        let mut bytes: Vec<u8> = Vec::with_capacity(combined_len as usize * 4);
+        for &id in &edge_interior_ids {
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        for &id in &prop_leaf_ids {
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        graph
+            .edges()
+            .write_slots_contiguous_bytes(edge_start, &bytes)
+            .expect("write combined");
+        let pre =
+            LabelBucket::try_from_parts(label, edge_start, stored, stored, -1, w, 0, 0, -1, 0)
+                .expect("try_from_parts")
+                .with_tree_mode(true)
+                .with_tree_mode_physical_depth(2);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, pre)
+            .expect("write descriptor");
+        // Pre-insert sanity.
+        for slot in [0u32, 4095, 1 << 20, stored - 1] {
+            assert_eq!(
+                read_prop_u32(&graph, &pre, slot, w),
+                seed(slot),
+                "pre slot {slot}"
+            );
+        }
+        // Insert at slot = stored (K boundary; edge leaf index 1028,
+        // interior row 4 ≠ 0 → interior-row branch).
+        let new_value: u32 = 0x7E;
+        let edge = InlinePropertyTestEdge::with_bytes(0x77, &[new_value as u8]);
+        let logical_slot =
+            tree_mode_insert_edge(&graph, vid, bucket_slot, &pre, label, &edge).expect("insert");
+        assert_eq!(logical_slot, stored);
+        let post = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("post read");
+        assert_eq!(post.stored_slots, stored + 1);
+        assert_eq!(post.tree_mode_physical_depth(), 2);
+        assert_eq!(post.tree_mode_property_depth(), 1);
+        // Property root grew by exactly 1 (257 -> 258).
+        assert_eq!(
+            crate::labeled::graph::compact::property_root_region_len(&post),
+            l_p + 1,
+            "property root must grow by 1 entry"
+        );
+        // New value readable + sampled parity.
+        assert_eq!(
+            read_prop_u32(&graph, &post, stored, w),
+            new_value,
+            "new slot"
+        );
+        for slot in (0..stored).step_by(4093) {
+            assert_eq!(
+                read_prop_u32(&graph, &post, slot, w),
+                seed(slot),
+                "post slot {slot}"
+            );
+        }
+        drop(post);
+
+        // ---------- Part (b): new-edge-interior mint ----------
+        let graph_b = inline_property_test_graph();
+        let stored_b: u32 = 1u32 << 21; // 2048 edge leaves; row 0 → mint branch
+        let edge_leaf_count_b = stored_b.div_ceil(1024); // 2048
+        let edge_root_len_b = 2u32;
+        let l_p_b = stored_b.div_ceil(kp); // 512
+        let mut edge_leaf_ids_b: Vec<u32> = Vec::with_capacity(edge_leaf_count_b as usize);
+        for _ in 0..edge_leaf_count_b {
+            edge_leaf_ids_b.push(graph_b.ltb().mint().expect("mint edge leaf"));
+        }
+        let mut edge_interior_ids_b: Vec<u32> = Vec::with_capacity(edge_root_len_b as usize);
+        for i in 0..edge_root_len_b {
+            let id = graph_b.ltb().mint().expect("mint edge interior");
+            edge_interior_ids_b.push(id);
+            let start = (i * 1024) as usize;
+            let end = (start + 1024).min(edge_leaf_ids_b.len());
+            let chunk: Vec<u8> = edge_leaf_ids_b[start..end]
+                .iter()
+                .flat_map(|id| id.to_le_bytes())
+                .collect();
+            graph_b
+                .ltb()
+                .write_payload_partial(id, 0, &chunk)
+                .expect("write edge interior");
+        }
+        let mut prop_leaf_ids_b: Vec<u32> = Vec::with_capacity(l_p_b as usize);
+        for leaf in 0..l_p_b {
+            let id = graph_b.ltb().mint().expect("mint property leaf");
+            prop_leaf_ids_b.push(id);
+            let mut leaf_payload = vec![0u8; kp as usize];
+            for row in 0..kp {
+                let slot = leaf * kp + row;
+                if slot >= stored_b {
+                    break;
+                }
+                leaf_payload[row as usize] = (seed(slot) & 0xff) as u8;
+            }
+            graph_b
+                .ltb()
+                .write_payload(
+                    id,
+                    leaf_payload.as_slice().try_into().expect("4096-byte leaf"),
+                )
+                .expect("write property leaf");
+        }
+        let combined_len_b = edge_root_len_b + l_p_b;
+        let edge_start_b = graph_b
+            .edges()
+            .allocate_span(u64::from(combined_len_b))
+            .expect("allocate combined b");
+        let mut bytes_b: Vec<u8> = Vec::with_capacity(combined_len_b as usize * 4);
+        for &id in &edge_interior_ids_b {
+            bytes_b.extend_from_slice(&id.to_le_bytes());
+        }
+        for &id in &prop_leaf_ids_b {
+            bytes_b.extend_from_slice(&id.to_le_bytes());
+        }
+        graph_b
+            .edges()
+            .write_slots_contiguous_bytes(edge_start_b, &bytes_b)
+            .expect("write combined b");
+        let pre_b = LabelBucket::try_from_parts(
+            label,
+            edge_start_b,
+            stored_b,
+            stored_b,
+            -1,
+            w,
+            0,
+            0,
+            -1,
+            0,
+        )
+        .expect("try_from_parts b")
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(2);
+        graph_b
+            .buckets()
+            .write_label_bucket_slot(0, pre_b)
+            .expect("write descriptor b");
+        // Insert at slot = 2^21 (K boundary; leaf index 2048, row 0 →
+        // new-edge-interior mint branch).
+        let new_value_b: u32 = 0x3C;
+        let edge_b = InlinePropertyTestEdge::with_bytes(0x88, &[new_value_b as u8]);
+        let logical_slot_b =
+            tree_mode_insert_edge(&graph_b, VertexId::from(0), 0, &pre_b, label, &edge_b)
+                .expect("insert b");
+        assert_eq!(logical_slot_b, stored_b);
+        let post_b = graph_b
+            .buckets()
+            .read_label_bucket_slot(0)
+            .expect("post read b");
+        assert_eq!(post_b.stored_slots, stored_b + 1);
+        assert_eq!(post_b.tree_mode_physical_depth(), 2);
+        assert_eq!(post_b.tree_mode_property_depth(), 1);
+        // Edge root grew to 3, property root grew to 513.
+        assert_eq!(
+            crate::labeled::graph::compact::bucket_span_region_len(&post_b),
+            edge_root_len_b + 1,
+            "edge root must grow by 1 entry"
+        );
+        assert_eq!(
+            crate::labeled::graph::compact::property_root_region_len(&post_b),
+            l_p_b + 1,
+            "property root must grow by 1 entry"
+        );
+        // New value readable + sampled parity.
+        assert_eq!(
+            read_prop_u32(&graph_b, &post_b, stored_b, w),
+            new_value_b,
+            "new slot b"
+        );
+        for slot in (0..stored_b).step_by(8191) {
+            assert_eq!(
+                read_prop_u32(&graph_b, &post_b, slot, w),
+                seed(slot),
+                "post slot b {slot}"
+            );
+        }
     }
 }
