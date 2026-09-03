@@ -191,6 +191,41 @@ fn collect_offset_window_rows(
     (rows, result)
 }
 
+/// Expected window rows under the tombstone-inclusive position contract:
+/// the window covers request-order positions `[offset, offset + limit)`
+/// over the bucket's full slot extent; ascending position == slot id,
+/// descending position == `extent - 1 - slot`.
+fn truth_position_window(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
+    truth: &[(BucketEntryPosition, u32)],
+    order: OutEdgeOrder,
+    offset: u32,
+    limit: u32,
+) -> Vec<(BucketEntryPosition, u32)> {
+    let extent = offset_bucket(graph, src, label).stored_slots;
+    let (lo, hi) = match order {
+        OutEdgeOrder::Ascending => (u64::from(offset), u64::from(offset) + u64::from(limit)),
+        OutEdgeOrder::Descending => (
+            u64::from(extent).saturating_sub(u64::from(offset) + u64::from(limit)),
+            u64::from(extent).saturating_sub(u64::from(offset)),
+        ),
+    };
+    let mut rows: Vec<_> = truth
+        .iter()
+        .filter(|(position, _)| {
+            let raw = u64::from(position.raw());
+            raw >= lo && raw < hi
+        })
+        .copied()
+        .collect();
+    if order == OutEdgeOrder::Descending {
+        rows.reverse();
+    }
+    rows
+}
+
 fn assert_offset_window_contract(
     graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
     src: VertexId,
@@ -203,18 +238,26 @@ fn assert_offset_window_contract(
             label,
             order,
         };
-        let expected = if order == OutEdgeOrder::Ascending {
-            truth.to_vec()
-        } else {
-            truth.iter().copied().rev().collect()
-        };
+        // Plan 0327 polish: the window cuts the tombstone-inclusive
+        // position space in the requested order, so the expected rows are
+        // the truth rows whose positions fall inside the window
+        // (descending maps positions to the top of the slot range).
+        let expected = truth_position_window(
+            graph,
+            src,
+            label,
+            truth,
+            order,
+            OFFSET_WINDOW_OFFSET,
+            OFFSET_WINDOW_LIMIT,
+        );
         let (rows, result) = collect_offset_window_rows(
             graph,
             &request,
             TraversalWindow::new(OFFSET_WINDOW_OFFSET, Some(OFFSET_WINDOW_LIMIT)),
         );
         assert_eq!(result, std::ops::ControlFlow::Continue(()));
-        assert_eq!(rows, expected[960..992]);
+        assert_eq!(rows, expected);
         assert!(
             rows.iter()
                 .all(|(_, target)| *target != u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
@@ -235,13 +278,14 @@ fn assert_offset_window_contract(
         assert_eq!(calls, 0);
 
         for offset in [31usize, 32, 33] {
+            let expected = truth_position_window(graph, src, label, truth, order, offset as u32, 1);
             let (rows, result) = collect_offset_window_rows(
                 graph,
                 &request,
                 TraversalWindow::new(offset as u32, Some(1)),
             );
             assert_eq!(result, std::ops::ControlFlow::Continue(()));
-            assert_eq!(rows, expected[offset..offset + 1]);
+            assert_eq!(rows, expected);
         }
     }
 }
@@ -363,22 +407,22 @@ fn visit_offset_window(
 }
 
 fn expected_offset_window_rows(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    src: VertexId,
+    label: BucketLabelKey,
     ascending: &[(BucketEntryPosition, u32)],
     order: OutEdgeOrder,
     offset: u32,
 ) -> Vec<(BucketEntryPosition, u32)> {
-    let offset = offset as usize;
-    let limit = OFFSET_WINDOW_LIMIT as usize;
-    match order {
-        OutEdgeOrder::Ascending => ascending[offset..offset + limit].to_vec(),
-        OutEdgeOrder::Descending => ascending
-            .iter()
-            .rev()
-            .skip(offset)
-            .take(limit)
-            .copied()
-            .collect(),
-    }
+    truth_position_window(
+        graph,
+        src,
+        label,
+        ascending,
+        order,
+        offset,
+        OFFSET_WINDOW_LIMIT,
+    )
 }
 
 fn assert_production_window_rows(
@@ -386,11 +430,18 @@ fn assert_production_window_rows(
     request: &LabeledTraversalRequest,
     window: TraversalWindow,
 ) {
-    let expected = expected_offset_window_rows(&fixture.truth, request.order, window.offset);
+    let expected = expected_offset_window_rows(
+        &fixture.graph,
+        fixture.src,
+        fixture.label,
+        &fixture.truth,
+        request.order,
+        window.offset,
+    );
     let (rows, control) = collect_offset_window_rows(&fixture.graph, request, window);
     assert_eq!(control, std::ops::ControlFlow::Continue(()));
     assert_eq!(rows, expected);
-    assert_eq!(rows.len(), OFFSET_WINDOW_LIMIT as usize);
+    assert!(!rows.is_empty());
     assert!(
         rows.iter()
             .all(|(_, target)| *target != u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))

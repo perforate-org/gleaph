@@ -979,6 +979,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn visit_edges_window_tree_matches_slab_tombstone_positions() {
+        // Window contract parity (Plan 0327 polish): the window cuts the
+        // tombstone-inclusive position space identically for tree and
+        // slab buckets. Slab-side expectation
+        // (`visit_edges_window_cuts_tombstone_inclusive_positions_...` in
+        // traverse.rs): with slot 2 tombstoned, window (1, Some(3))
+        // yields the live edges at positions 1 and 3 and nothing at the
+        // tombstone position 2. This test asserts the same shape on a
+        // tree bucket (slot i holds target i + 100).
+        use std::ops::ControlFlow;
+
+        let graph = make_test_graph();
+        let vid = VertexId::from(0);
+        let stored: u32 = 4096;
+        promote_bucket(&graph, vid, stored);
+        let vertex = graph.vertices().get(vid);
+        let label = BucketLabelKey::directed_from_index(1);
+        let (slot_idx, bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket not found"),
+        };
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, vid, slot_idx, &bucket, 2)
+            .expect("remove")
+            .expect("slot 2 in range");
+        let vertex = graph.vertices().get(vid);
+        let bucket_after = match graph.find_bucket(vid, &vertex, label).expect("find after") {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket missing after remove"),
+        };
+
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        let flow: ControlFlow<()> = graph
+            .visit_edges_window(
+                vid,
+                label,
+                OutEdgeOrder::Ascending,
+                crate::traverse::TraversalWindow::new(1, Some(3)),
+                |slot, edge| {
+                    out.push((slot.raw(), u32::from(edge.neighbor_vid())));
+                    ControlFlow::Continue(())
+                },
+            )
+            .expect("visit_edges_window");
+        assert_eq!(flow, ControlFlow::Continue(()));
+        // Positions 1, 2, 3: slot 2 is the tombstone (no yield), so the
+        // live edges at positions 1 and 3 come back.
+        assert_eq!(out, vec![(1, 101), (3, 103)]);
+
+        // Descending: request-order positions run from slot
+        // stored - 1 downward; window (1, Some(2)) skips position 0
+        // (slot 4095) and covers positions 1..3 (slots 4094 and 4093).
+        let mut desc: Vec<(u32, u32)> = Vec::new();
+        let flow: ControlFlow<()> = graph
+            .visit_edges_window(
+                vid,
+                label,
+                OutEdgeOrder::Descending,
+                crate::traverse::TraversalWindow::new(1, Some(2)),
+                |slot, edge| {
+                    desc.push((slot.raw(), u32::from(edge.neighbor_vid())));
+                    ControlFlow::Continue(())
+                },
+            )
+            .expect("visit_edges_window descending");
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(desc, vec![(4094, 4194), (4093, 4193)]);
+        // bucket_after is re-read to mirror the 0326 test's invariants.
+        assert_eq!(bucket_after.degree, stored - 1);
+    }
+
     // ========================================================================
     // Plan 0326 LPB-in-tree: tree-mode property stream tests.
     // ========================================================================

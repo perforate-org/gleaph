@@ -1513,9 +1513,19 @@ where
 
     /// Visits a bounded window of live edges for one label in the requested order.
     ///
-    /// For dense, tombstone-free label buckets this bulk-reads the topology slab
-    /// and applies the offset/limit directly, avoiding the per-slot round trips
-    /// that the generic sparse path pays.
+    /// The window cuts the bucket's **tombstone-inclusive position space**
+    /// (ADR 0088 §2: `BucketEntryPosition` is the bucket-local slot id):
+    /// `offset` skips the first `offset` positions — tombstoned slots
+    /// included — and `limit` bounds the number of positions delivered.
+    /// The visitor receives only live edges, each at its absolute
+    /// tombstone-inclusive position, identically for slab and tree buckets
+    /// (Plan 0327 polish: the dense/sparse slab paths previously counted
+    /// live ordinals, which disagreed with the tree path on tombstoned
+    /// buckets).
+    ///
+    /// For dense, tombstone-free label buckets this bulk-reads the topology
+    /// slab and applies the offset/limit directly, avoiding the per-slot
+    /// round trips that the generic sparse path pays.
     pub(crate) fn visit_edges_window<B>(
         &self,
         owner: VertexId,
@@ -1537,26 +1547,31 @@ where
             if label != self.bypass_storage_label_for(&vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
-            let mut offset = window.offset;
-            let mut remaining = window.limit;
+            let offset = window.offset;
+            let remaining = window.limit;
+            // Bypass extent: bypass rows span `vertex.stored_slots` slots
+            // with no overflow log. Descending positions are
+            // `extent - 1 - slot`.
+            let extent = vertex.stored_slots;
             return match order {
                 OutEdgeOrder::Ascending => {
                     let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
+                    // Window positions are tombstone-inclusive (ADR 0088 §2);
+                    // the bypass scan yields live rows with absolute slots, so
+                    // the window cut compares slot ids directly.
                     while let Some((slot, edge)) = iter.next_with_slot() {
-                        if offset != 0 {
-                            offset -= 1;
+                        if slot < offset {
                             continue;
+                        }
+                        if let Some(limit) = remaining
+                            && slot >= offset.saturating_add(limit)
+                        {
+                            break;
                         }
                         if let ControlFlow::Break(value) =
                             visit(BucketEntryPosition::new(slot), edge)
                         {
                             return Ok(ControlFlow::Break(value));
-                        }
-                        if let Some(remaining) = remaining.as_mut() {
-                            *remaining -= 1;
-                            if *remaining == 0 {
-                                break;
-                            }
                         }
                     }
                     Ok(ControlFlow::Continue(()))
@@ -1564,20 +1579,21 @@ where
                 OutEdgeOrder::Descending => {
                     let mut iter = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
                     while let Some((slot, edge)) = iter.next_with_slot() {
-                        if offset != 0 {
-                            offset -= 1;
+                        let position = u64::from(extent)
+                            .saturating_sub(1)
+                            .saturating_sub(u64::from(slot));
+                        if position < u64::from(offset) {
                             continue;
+                        }
+                        if let Some(limit) = remaining
+                            && position >= u64::from(offset).saturating_add(u64::from(limit))
+                        {
+                            break;
                         }
                         if let ControlFlow::Break(value) =
                             visit(BucketEntryPosition::new(slot), edge)
                         {
                             return Ok(ControlFlow::Break(value));
-                        }
-                        if let Some(remaining) = remaining.as_mut() {
-                            *remaining -= 1;
-                            if *remaining == 0 {
-                                break;
-                            }
                         }
                     }
                     Ok(ControlFlow::Continue(()))
@@ -1622,6 +1638,9 @@ where
             self.edges
                 .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
 
+            // Window positions are tombstone-inclusive (ADR 0088 §2). The
+            // dense condition guarantees a tombstone-free bucket, so slot
+            // ids are the position space and the window is a plain range.
             let offset = window.offset.min(degree);
             let limit = window
                 .limit
@@ -1630,11 +1649,7 @@ where
 
             match order {
                 OutEdgeOrder::Ascending => {
-                    let mut visited = 0u32;
-                    for slot in offset..degree {
-                        if visited >= limit {
-                            break;
-                        }
+                    for slot in offset..offset + limit {
                         let off = slot as usize * E::BYTES;
                         let edge = E::read_from(&raw_edges[off..off + E::BYTES])
                             .with_slot_index(slot)
@@ -1647,17 +1662,12 @@ where
                         {
                             return Ok(ControlFlow::Break(value));
                         }
-                        visited += 1;
                     }
                 }
                 OutEdgeOrder::Descending => {
                     let start = degree.saturating_sub(offset + limit);
                     let end = degree.saturating_sub(offset);
-                    let mut visited = 0u32;
                     for slot in (start..end).rev() {
-                        if visited >= limit {
-                            break;
-                        }
                         let off = slot as usize * E::BYTES;
                         let edge = E::read_from(&raw_edges[off..off + E::BYTES])
                             .with_slot_index(slot)
@@ -1670,7 +1680,6 @@ where
                         {
                             return Ok(ControlFlow::Break(value));
                         }
-                        visited += 1;
                     }
                 }
             }
@@ -1722,6 +1731,11 @@ where
                         return;
                     }
                     current = current.saturating_add(1);
+                    // The window contract yields live edges only; the
+                    // tombstone-inclusive position was already counted above.
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        return;
+                    }
                     if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
                         break_value = Some(value);
                     }
@@ -1733,23 +1747,56 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // Sparse path: skip `offset` live rows via the span iterator, then take `limit`.
+        // Sparse path (tombstoned slab buckets): the window cuts the
+        // tombstone-inclusive position space (ADR 0088 §2), matching the
+        // tree path. Positions run in the requested order over the
+        // bucket's full slot extent (span slots + overflow-log suffix);
+        // the span iterator yields only live rows with their absolute
+        // slot ids, so the cut maps slot ids to positions per order —
+        // tombstoned positions inside the window contribute no yield
+        // but still consume position space.
+        let offset = window.offset;
+        let limit = window.limit.unwrap_or(u32::MAX - offset);
+        // Ascending position == slot id. Descending position ==
+        // `extent - 1 - slot`, so the descending cut needs the extent.
+        let extent = match order {
+            OutEdgeOrder::Ascending => 0,
+            OutEdgeOrder::Descending => {
+                let log_len = if bucket.overflow_log_head() >= 0 {
+                    let leaf = Self::leaf_index_for_vid(owner, self.edges.header().segment_size);
+                    self.edges
+                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+                } else {
+                    0
+                };
+                bucket
+                    .stored_slots
+                    .checked_add(log_len)
+                    .ok_or(LabeledOperationError::from(
+                        LaraOperationError::CollectAllocationOverflow,
+                    ))?
+            }
+        };
         let mut iter =
             self.single_bucket_span_iter(owner, &vertex, _bucket_slot, &bucket, order, false)?;
-        if iter.try_advance_by(window.offset as usize).is_err() {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let mut remaining = window.limit;
         while let Some(result) = iter.next_with_slot() {
             let (slot, edge) = result?;
+            let position = match order {
+                OutEdgeOrder::Ascending => u64::from(slot),
+                OutEdgeOrder::Descending => u64::from(extent)
+                    .saturating_sub(1)
+                    .saturating_sub(u64::from(slot)),
+            };
+            // Both orders walk request-order positions monotonically
+            // upward from the traversal start, so the cut is uniform.
+            if position < u64::from(offset) {
+                continue;
+            }
+            if position >= u64::from(offset).saturating_add(u64::from(limit)) {
+                break;
+            }
             if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
                 return Ok(ControlFlow::Break(value));
-            }
-            if let Some(remaining) = remaining.as_mut() {
-                *remaining -= 1;
-                if *remaining == 0 {
-                    break;
-                }
             }
         }
         Ok(ControlFlow::Continue(()))
@@ -4901,7 +4948,7 @@ mod tests {
     }
 
     #[test]
-    fn visit_edges_window_counts_live_rows_when_tombstones_make_bucket_sparse() {
+    fn visit_edges_window_cuts_tombstone_inclusive_positions_when_tombstones_make_bucket_sparse() {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=5u32 {
@@ -4915,18 +4962,96 @@ mod tests {
                 .unwrap();
         }
         graph.compact_vertex_edge_span(src, 0).unwrap();
+        // Slot 2 (target 3) is tombstoned; positions are tombstone-inclusive.
         graph.remove_edge_at_slot(src, label, 2).unwrap();
-        let request = LabeledTraversalRequest {
+        let mut request = LabeledTraversalRequest {
             owner: src,
             label,
             order: OutEdgeOrder::Ascending,
         };
 
+        // Window (1, Some(2)) covers positions 1 and 2; position 2 is the
+        // tombstone, which consumes window space but yields nothing.
         let mut out = Vec::new();
         let flow: ControlFlow<()> = Traversal::visit_edges_window(
             &graph,
             &request,
             TraversalWindow::new(1, Some(2)),
+            |slot, edge| {
+                out.push((slot.raw(), edge.target));
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(out, vec![(1, 2)]);
+
+        // Unbounded window yields all live edges at their absolute positions.
+        let mut all = Vec::new();
+        let flow: ControlFlow<()> = Traversal::visit_edges_window(
+            &graph,
+            &request,
+            TraversalWindow::unbounded(),
+            |slot, edge| {
+                all.push((slot.raw(), edge.target));
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(all, vec![(0, 1), (1, 2), (3, 4), (4, 5)]);
+
+        // Descending: request-order positions run from the highest slot;
+        // window (1, Some(2)) skips position 0 (slot 4) and covers
+        // positions 1..3 (slots 3 and 2; position 2 is the tombstone).
+        request.order = OutEdgeOrder::Descending;
+        let mut desc = Vec::new();
+        let flow: ControlFlow<()> = Traversal::visit_edges_window(
+            &graph,
+            &request,
+            TraversalWindow::new(1, Some(2)),
+            |slot, edge| {
+                desc.push((slot.raw(), edge.target));
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(desc, vec![(3, 4)]);
+    }
+
+    #[test]
+    fn visit_edges_window_tree_and_slab_agree_on_tombstone_inclusive_positions() {
+        // Tree-side half lives in `tree_read.rs`
+        // (`visit_edges_window_tree_matches_slab_tombstone_positions`),
+        // where the promote helpers are in scope. This slab-side half
+        // fixes the expectation: 5 live edges, slot 2 tombstoned, window
+        // (1, Some(3)) covers positions 1..4; position 2 is the
+        // tombstone (consumes window space, yields nothing), so the live
+        // edges come back at positions 1 and 3.
+        let (slab_graph, slab_src) = bucket_graph();
+        let label = BucketLabelKey::directed_from_index(2);
+        for target in 1..=5u32 {
+            slab_graph
+                .insert_edge(
+                    slab_src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        slab_graph.compact_vertex_edge_span(slab_src, 0).unwrap();
+        slab_graph.remove_edge_at_slot(slab_src, label, 2).unwrap();
+        let mut out = Vec::new();
+        let flow: ControlFlow<()> = Traversal::visit_edges_window(
+            &slab_graph,
+            &LabeledTraversalRequest {
+                owner: slab_src,
+                label,
+                order: OutEdgeOrder::Ascending,
+            },
+            TraversalWindow::new(1, Some(3)),
             |slot, edge| {
                 out.push((slot.raw(), edge.target));
                 ControlFlow::Continue(())

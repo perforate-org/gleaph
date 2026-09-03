@@ -1234,4 +1234,26 @@ combined-span realloc. 546 / 490 library tests pass (was 541; +5
 property-deepen tests, `lpb_in_tree_rework_f2_cap_guard` retargeted to
 the 2^30 backstop).
 
+**Plan 0327 polish (2026-09-03, same day) — `visit_edges_window`
+contract unified to tombstone-inclusive positions.** The pub(crate)
+window API previously applied `offset`/`limit` in live-ordinal space on
+the slab paths (bypass, dense, sparse) but in tombstone-inclusive
+position space on the tree path, so the same window returned different
+edges for slab vs tree buckets holding tombstones — the asymmetry
+recorded by Plan 0324 REWORK-3. All paths now cut the window in
+request-order positions over the bucket's tombstone-inclusive extent
+(ascending position = slot id; descending position = `extent − 1 −
+slot` with `extent = stored_slots + overflow-log len`), yielding only
+live edges; tombstoned positions consume window space on every mode.
+Consumer audit: `TraversalWindow` / `visit_edges_window` consumers are
+crate-internal only (grep over `crates/graph` and `crates/gql`: zero
+hits), so the semantic change breaks no external caller. The
+`t_off_*` window benches and `bench_t_v_window` re-encoded to the
+position contract (`canbench --persist` full suite, 142 entries,
+0 regression; `bench_t_v_window` improved 10,574 → 9,669 ins, −8.6%,
+from replacing `try_advance_by` buffering with direct position cuts).
+D-1 (the +2.10% `bench_t_v_window` regression attributed to Plan 0324
+REWORK-3 dispatch) is closed: re-measurement at the 0327 HEAD showed
+the 0326 dense-first dispatch reorder had already absorbed it.
+
 Last revised: 2026-09-03.
