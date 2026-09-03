@@ -295,10 +295,10 @@ fn deepening_stop(
 }
 
 /// Classify one finished round for a **NonLeading** SEARCH. The convergence signal is the
-/// joined `row_count` (same signal as 49f10d461), because NonLeading deepening exists to
-/// recover **authorization loss** (ADR 0082 exists-traversal, ADR 0078 §3 authz-aware
-/// deepening): the raw ANN hits are pre-authz, so a hit-count criterion cannot see rows
-/// dropped by the authorization path — only the joined row count reflects it.
+/// joined `row_count`, because NonLeading deepening exists to recover **authorization loss**
+/// (ADR 0082 exists-traversal, ADR 0078 §3 authz-aware deepening): the raw ANN hits are
+/// pre-authz, so a hit-count criterion cannot see rows dropped by the authorization path —
+/// only the joined row count reflects it.
 /// The ONLY divergence from the Leading classifier is therefore the absence of the
 /// `cap_result_rows` application (see the call site): the join output must keep ADR 0034
 /// Slice 5 multiplicity (one surviving hit may join to many prefix rows), so it is never
@@ -309,11 +309,11 @@ fn deepening_stop(
 /// globally-nearest hit that legitimately joins to nothing — ADR 0034 Slice 5 expects an
 /// empty, non-truncated answer) from *authorization loss* (ADR 0082 expects the deepening
 /// loop to fetch more candidates until k authorized rows exist). Converging on `row_count`
-/// keeps the ADR 0082 recovery but over-deepens past a sparse join (the
-/// `non_leading_search_where_global_top_k_consumes_unlinked_qualifying_vertex` contract has
-/// been red since before 49f10d461 and stays red by this ruling). Distinguishing the two
-/// requires a future chain-survivor receipt signal (per-hit join survival carried out of the
-/// graph dispatch), which is out of scope for this regression fix.
+/// keeps the ADR 0082 recovery but over-deepens past a sparse join, so the
+/// `non_leading_search_where_global_top_k_consumes_unlinked_qualifying_vertex` contract stays
+/// red under this ruling. Distinguishing the two requires a chain-survivor receipt signal
+/// (per-hit chain survival carried out of the graph dispatch) — designed in ADR 0092, which
+/// supersedes this interim ruling once implemented.
 fn non_leading_deepening_stop(
     authorized_rows: u64,
     top_k: u32,

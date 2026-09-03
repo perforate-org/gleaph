@@ -45,11 +45,11 @@ use std::collections::BinaryHeap;
 use canbench_rs::bench_scope;
 
 /// Resolves a frozen `eps_*_bps` value (Slice 9) into the ε₂ selection factor used by
-/// [`select_partitions`]. `0` (the default) yields `0.0` — scan only the nearest partition(s), the
-/// exact legacy behavior; [`VECTOR_EPS_BPS_INFINITY`] (`u32::MAX`) yields `f32::INFINITY` — a full
-/// scan (the retired in-code `INF` sentinel). Any other value is computed once in `f64` as
-/// `bps / 10_000` and rounded a single time into the selection domain's `f32`, so the same bps is
-/// bit-identical across replicas (deterministic selection).
+/// [`select_partitions`]. `0` (the default) yields `0.0` — scan only the nearest partition(s);
+/// [`VECTOR_EPS_BPS_INFINITY`] (`u32::MAX`) yields `f32::INFINITY` — a full scan. Any other
+/// value is computed once in `f64` as `bps / 10_000` and rounded a single time into the
+/// selection domain's `f32`, so the same bps is bit-identical across replicas (deterministic
+/// selection).
 ///
 /// The default path (`vector_search`, no tuning override) derives both per-level factors from the
 /// definition's frozen `eps_query_bps` / `eps_fine_bps`; the test/bench tuned entry applies one
@@ -1526,9 +1526,9 @@ mod tests {
 
     #[test]
     fn eps_query_from_bps_maps_sentinel_and_boundaries() {
-        // `0` (the default) is the exact legacy behavior: scan only the nearest partition(s).
+        // `0` (the default) scans only the nearest partition(s).
         assert_eq!(eps_query_from_bps(0), 0.0);
-        // `u32::MAX` is the ∞ sentinel: a full scan (replaces the retired in-code `INF`).
+        // `u32::MAX` is the ∞ sentinel: a full scan.
         assert_eq!(eps_query_from_bps(VECTOR_EPS_BPS_INFINITY), f32::INFINITY);
         // A finite bps is `bps / 10_000` computed once in f64 and rounded into f32.
         assert_eq!(eps_query_from_bps(10_000), 1.0);

@@ -33,9 +33,7 @@
 //! `Sampling`/`Training` for good: abort entry, teardown completion, `Failed`, and the coordinated
 //! definition-domain reset.
 //!
-//! Layout cutover note: this is a fresh pre-production layout (format version 2, breaking over
-//! version 1's no-coarse-id layout). There is no migration and no compatibility reader; reinstall
-//! is required after any layout change.
+//! Reinstall is required after any layout change; unknown versions fail closed.
 
 use super::memory::{Memory, rebuild_pool_memory};
 use crate::records::RebuildCandidate;
@@ -48,12 +46,7 @@ const AUX_LEN: usize = 8;
 /// Magic bytes of a bound pool header (`V`ector `R`ebuild `P`ool).
 const MAGIC: [u8; 3] = *b"VRP";
 
-/// Format version of the pool region layout. Version 2 (Slice 5) added the optional per-row
-/// coarse-id area and the `assigned_len` header field; version 3 (Slice 6) added the `code_tier`
-/// flag byte so the shadow generation's row geometry survives into `Building` without widening
-/// the lifecycle records; version 4 (Slice 9) added the frozen per-level ε₂ `eps_query_bps` /
-/// `eps_fine_bps` pair so the target generation's pruning survives into `publish` without
-/// widening the lifecycle records. Earlier versions are rejected.
+/// Format version of the pool region layout. Earlier versions are rejected.
 const VERSION: u8 = 4;
 
 /// Fixed header size. Offsets:
@@ -69,9 +62,8 @@ pub(crate) const POOL_HEADER_SIZE: u64 = 96;
 /// rebuild reserves none, keeping its region capacity identical to the pre-Slice-5 layout.
 pub(crate) const COARSE_ID_WIDTH: u64 = 4;
 
-/// Total byte budget of the pool region (header + slots + centroid area). Mirrors the scale of
-/// the retired combined-state envelope so admission behavior stays comparable; unlike that
-/// envelope it bounds a physical region, not a Candid encoding.
+/// Total byte budget of the pool region (header + slots + centroid area): a physical region
+/// budget, not a Candid encoding bound.
 pub(crate) const REGION_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Stable-memory page size (mirrors the slab page store's growth granularity).

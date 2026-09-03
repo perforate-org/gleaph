@@ -141,7 +141,7 @@ fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorC
 /// generation with the 1-bit RaBitQ first-stage code tier (Slice 6 / ADR 0078) — the public
 /// encoding and advertised result quality are unchanged. `eps_query_bps` / `eps_fine_bps`
 /// (Slice 9) freeze the target generation's per-level ε₂ pruning in basis points (`0` =
-/// nearest-partition-only, `u32::MAX` = full scan); `None` = `0` (legacy pruning). Router-guarded
+/// nearest-partition-only, `u32::MAX` = full scan); `None` = `0` (the default pruning). Router-guarded
 /// like the other admin endpoints.
 #[update(guard = "guard_router_canister")]
 fn admin_start_vector_rebuild(

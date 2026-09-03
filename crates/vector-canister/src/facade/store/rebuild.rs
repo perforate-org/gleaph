@@ -124,8 +124,7 @@ pub(super) fn partition_health_summary(
 ///
 /// - **Pool region (P2):** the dedicated raw pool region must host at least `nlist` candidate rows
 ///   (`pad_stride + aux` wide) plus `nlist` trained canonical-f32 centroids inside
-///   [`rebuild_pool::REGION_BYTES`] — the physical bound that replaced the retired Candid-envelope
-///   constraint.
+///   [`rebuild_pool::REGION_BYTES`].
 /// - **Per-iteration work (P1):** `nlist * nlist * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`, so
 ///   `>= nlist` candidates can be sampled and one k-means-lite iteration over them stays within the
 ///   per-message op budget.
@@ -577,8 +576,8 @@ pub(crate) fn admin_start_vector_rebuild(
 /// `eps_query_bps` / `eps_fine_bps` (Slice 9) freeze the target generation's per-level ε₂ pruning
 /// in basis points (`0` = nearest-partition-only, [`VECTOR_EPS_BPS_INFINITY`] = full scan). They
 /// are persisted in the rebuild-pool header at `begin` and consumed by `publish` when the def is
-/// flipped; search reads them from the published def, never from the pool. `None` = `0` (legacy
-/// pruning).
+/// flipped; search reads them from the published def, never from the pool. `None` = `0` (the
+/// default pruning).
 ///
 /// Two-level admission adds, on top of the flat checks:
 /// - `f >= 2` (a single-child hierarchy is flat with extra storage);
@@ -646,7 +645,7 @@ pub(crate) fn admin_start_vector_rebuild_with_fine(
     let code_tier = code_tier.unwrap_or(false);
     // Fail-closed ε₂ bps admission (Slice 9): a value other than the ∞ sentinel must not exceed
     // `MAX_VECTOR_EPS_BPS` (the threshold factor would otherwise degenerate toward a full walk and
-    // blur the distinction from ∞). `None` = `0` (legacy pruning).
+    // blur the distinction from ∞). `None` = `0` (the default pruning).
     let eps_query_bps = eps_query_bps.unwrap_or(0);
     let eps_fine_bps = eps_fine_bps.unwrap_or(0);
     for bps in [eps_query_bps, eps_fine_bps] {
@@ -2072,7 +2071,7 @@ fn building_step(
                 shadow_slots.iter().copied().zip(bucket).enumerate()
             {
                 // Positional stale-read guard: the subject's current live slot must still be the
-                // one we read bytes from (replaces the retired `vector_id` equality check).
+                // one we read bytes from.
                 if !entry.deleted && entry.current_slot_for(active) == Some(active_slot) {
                     entry.shadow_slot = Some(shadow_slot);
                     if let Err(error) = insert_subject_entry(key, entry) {

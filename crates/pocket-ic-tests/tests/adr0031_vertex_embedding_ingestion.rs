@@ -418,9 +418,9 @@ fn vector_frontier_receipt_probe(env: &FederationEnv, vector: Principal) -> Vect
 }
 
 /// Long-window variant of [`run_router_recovery_timer`]: the catalog frontier lap
-/// (128940f51) restarts on the Router's 30s relaxed lap delay, so the shared 6 x 3s window
-/// ends before the *second* catalog lap can fire. Each firing here advances past that delay
-/// so a lost frontier reply is retried (and eventually published) within one drain.
+/// restarts on the Router's 30s relaxed lap delay, so the shared 6 x 3s window ends before
+/// the *second* catalog lap can fire. Each firing here advances past that delay so a lost
+/// frontier reply is retried (and eventually published) within one drain.
 fn run_router_recovery_timer_long(env: &FederationEnv) {
     use std::time::Duration;
 
@@ -1229,8 +1229,8 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
     // Resolve m10 through the durable Router retry while arming the frontier response-loss fault.
     // Vector must ignore/no-op the stale m10 upsert against the newer m11 tombstone, then durably apply
     // the safe m12 frontier and GC before Router can retire either marker. The drain uses the
-    // long window: the catalog frontier lap (128940f51) consumes its first lap deriving the
-    // safe frontier while m10 is still unresolved and restarts on the Router's 30s relaxed
+    // long window: the catalog frontier lap consumes its first lap deriving the safe frontier
+    // while m10 is still unresolved and restarts on the Router's 30s relaxed
     // delay, so the default 18s window ends before the retry lap can publish at all.
     arm_router_fault(&env, FRONTIER_REPLY_AFTER_COMMIT_FAULT);
     run_router_recovery_timer_long(&env);
@@ -1239,8 +1239,8 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
         (m11, m12_result.embedding_version, None, false, None),
         "Vector must durably advance the router watermark and GC m11 before the Router reply"
     );
-    // The catalog lap retries the lost frontier reply on every lap (the documented design of
-    // 128940f51: failed/unknown publications leave the lane-progress hint unchanged), and each
+    // The catalog lap retries the lost frontier reply on every lap (the documented catalog-lap
+    // design: failed/unknown publications leave the lane-progress hint unchanged), and each
     // retry is an individually successful Vector store call whose watermark advance is
     // idempotent. The durable contract is therefore "at least one successful store call for
     // shard 0 ending at the safe m12 frontier", not an exact call count.

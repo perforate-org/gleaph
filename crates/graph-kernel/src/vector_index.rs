@@ -702,8 +702,8 @@ pub struct VectorMaintenancePolicy {
 }
 
 /// Reserved `eps_*_bps` value meaning **∞**: every partition/leaf is selected regardless of the
-/// query distance (the full-scan escape hatch; replaces the retired in-code `f32::INFINITY`
-/// sentinel). The threshold factor is derived at query time as `1 + bps / 10_000`.
+/// query distance (the full-scan escape hatch). The threshold factor is derived at query time
+/// as `1 + bps / 10_000`.
 pub const VECTOR_EPS_BPS_INFINITY: u32 = u32::MAX;
 
 /// Upper bound for durable/query `eps_query_bps` / `eps_fine_bps` inputs (Slice 9). The implied

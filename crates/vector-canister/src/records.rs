@@ -139,8 +139,8 @@ impl StableHashKey for SubjectKey {
 /// a two-level index. Leaf `partition_id` packs the hierarchy path as `coarse_id * nlist_fine +
 /// fine_id`, so a subtree is the contiguous id range `[c * f, (c + 1) * f)`.
 ///
-/// The 17-byte layout (level byte between version and partition id) is a breaking change over the
-/// retired 16-byte layout; reinstall required.
+/// The 17-byte layout (level byte between version and partition id); reinstall required after
+/// any layout change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionKey {
     pub index_id: u32,
@@ -444,7 +444,7 @@ impl Storable for VectorIndexDef {
         out[29..33].copy_from_slice(&self.run_capacity.to_le_bytes());
         out[33..37].copy_from_slice(&self.max_page_bytes.to_le_bytes());
         out[37..41].copy_from_slice(&self.slots_per_page.to_le_bytes());
-        // Slice 5 (levels=2): shape fields extend the retired 41-byte layout to 46 bytes.
+        // Slice 5 (levels=2): shape fields occupy bytes 41..46.
         out[41] = self.levels;
         out[42..46].copy_from_slice(&self.nlist_fine.to_le_bytes());
         // Slice 6 (two-tier precision): `code_tier` (1 B) + frozen code width (4 B LE) + the
@@ -1093,7 +1093,7 @@ pub struct RebuildCandidate {
 /// [`VectorRebuildStateRecord::decode_rebuild_state`]), not Candid: the ingest hot path decodes this
 /// record once per op while a rebuild row exists (`rebuild_mutation_mode`), and Candid's
 /// self-describing type table for this wide enum made that decode cost ~425K instructions per op.
-/// Unknown magic/version/tag fails closed; there is no migration reader (fresh install).
+/// Unknown magic/version/tag fails closed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum VectorRebuildStateRecord {
     #[default]
@@ -1210,7 +1210,7 @@ impl Storable for VectorRebuildStateRecord {
 enum RebuildStateCodecError {
     /// Leading magic byte is not the rebuild-state codec marker.
     Magic,
-    /// Unsupported format version (fail-closed; fresh install, never migrated).
+    /// Unsupported format version (fail-closed).
     Version,
     /// Unknown record variant tag or cursor scope tag.
     Tag,
@@ -1433,8 +1433,8 @@ impl VectorRebuildStateRecord {
     /// owner bytes + done flag). Unknown magic/version/tags, truncation, trailing bytes, non-0/1
     /// flags, or non-UTF-8 reasons fail closed. Candid was replaced because its self-describing
     /// type table (~500B per ~15B payload) taxed every hot-path op read ~425K instructions while a
-    /// rebuild row exists (see design/index/vector-index.md design principle 5); fresh install,
-    /// no migration reader.
+    /// type table (~500B per ~15B payload) taxed every hot-path op read ~425K instructions while a
+    /// rebuild row exists (see design/index/vector-index.md design principle 5).
     fn encode_rebuild_state(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(48);
         out.push(Self::CODEC_MAGIC);
@@ -2065,9 +2065,7 @@ mod tests {
             eps_query_bps: 0x000f_4240, // = MAX_VECTOR_EPS_BPS (decode boundary)
             eps_fine_bps: 0xffff_ffff,  // = VECTOR_EPS_BPS_INFINITY sentinel
         };
-        // The retired 46-byte prefix is unchanged; `code_tier` (1 B) + `code_stride_bytes` (4 B
-        // LE) + `rotation_seed` (8 B LE) extend the layout to 59 bytes under GLEAPH-VECDEF-03,
-        // and Slice 9's frozen ε₂ bps pair (2 × 4 B LE) extends it to 67 bytes under
+        // The 67-byte layout ends with the frozen ε₂ bps pair (2 × 4 B LE) under
         // GLEAPH-VECDEF-04.
         let mut expected = vec![
             0x00, 0x01, 0x01, 0x02, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
