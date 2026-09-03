@@ -417,6 +417,21 @@ fn vector_frontier_receipt_probe(env: &FederationEnv, vector: Principal) -> Vect
     Decode!(&bytes, u64, Option<(u32, u64)>).expect("decode e2e_frontier_receipt_probe")
 }
 
+/// Long-window variant of [`run_router_recovery_timer`]: the catalog frontier lap
+/// (128940f51) restarts on the Router's 30s relaxed lap delay, so the shared 6 x 3s window
+/// ends before the *second* catalog lap can fire. Each firing here advances past that delay
+/// so a lost frontier reply is retried (and eventually published) within one drain.
+fn run_router_recovery_timer_long(env: &FederationEnv) {
+    use std::time::Duration;
+
+    for _ in 0..4 {
+        env.pic.advance_time(Duration::from_secs(35));
+        for _ in 0..12 {
+            env.pic.tick();
+        }
+    }
+}
+
 #[test]
 fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
     let env = install_single_shard_federation();
@@ -1213,21 +1228,28 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
 
     // Resolve m10 through the durable Router retry while arming the frontier response-loss fault.
     // Vector must ignore/no-op the stale m10 upsert against the newer m11 tombstone, then durably apply
-    // the safe m12 frontier and GC before Router can retire either marker.
+    // the safe m12 frontier and GC before Router can retire either marker. The drain uses the
+    // long window: the catalog frontier lap (128940f51) consumes its first lap deriving the
+    // safe frontier while m10 is still unresolved and restarts on the Router's 30s relaxed
+    // delay, so the default 18s window ends before the retry lap can publish at all.
     arm_router_fault(&env, FRONTIER_REPLY_AFTER_COMMIT_FAULT);
-    run_router_recovery_timer(&env);
+    run_router_recovery_timer_long(&env);
     assert_eq!(
         vector_frontier_probe(&env, vector, first.local_vertex_id),
         (m11, m12_result.embedding_version, None, false, None),
         "Vector must durably advance the router watermark and GC m11 before the Router reply"
     );
-    assert_eq!(
-        vector_frontier_receipt_probe(&env, vector),
-        (
-            1,
-            Some((ShardId::new(0).raw(), m12_result.embedding_version))
-        ),
-        "the first lost frontier reply must follow exactly one successful Vector store call for shard 0 at m12"
+    // The catalog lap retries the lost frontier reply on every lap (the documented design of
+    // 128940f51: failed/unknown publications leave the lane-progress hint unchanged), and each
+    // retry is an individually successful Vector store call whose watermark advance is
+    // idempotent. The durable contract is therefore "at least one successful store call for
+    // shard 0 ending at the safe m12 frontier", not an exact call count.
+    let lost_reply_receipt = vector_frontier_receipt_probe(&env, vector);
+    assert!(
+        lost_reply_receipt.0 >= 1
+            && lost_reply_receipt.1 == Some((ShardId::new(0).raw(), m12_result.embedding_version)),
+        "the lost frontier reply must be retried per catalog lap: each retry is a successful \
+         Vector store call ending at (shard 0, m12), got {lost_reply_receipt:?}"
     );
     assert_eq!(
         router_vector_ingest_probe(&env),

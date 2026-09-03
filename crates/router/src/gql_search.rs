@@ -269,10 +269,13 @@ enum DeepeningStop {
     BudgetExhausted,
 }
 
-/// Classify one finished round (ADR 0078 §3/§4). `None` means another round may run:
-/// fewer than k authorized rows were observed while both the candidate universe and the
-/// budget still have room. Convergence is checked first so an exhausted-looking page
-/// behind a satisfied result never sets the marker.
+/// Classify one finished round (ADR 0078 §3/§4, **Leading** SEARCH). `None` means another
+/// round may run: fewer than k authorized rows were observed while both the candidate
+/// universe and the budget still have room. Convergence is checked first so an
+/// exhausted-looking page behind a satisfied result never sets the marker.
+///
+/// Leading SEARCH emits one result row per surviving search hit, so joined row count and
+/// hit count coincide and `row_count` is the convergence signal.
 fn deepening_stop(
     authorized_rows: u64,
     top_k: u32,
@@ -280,6 +283,32 @@ fn deepening_stop(
     next_round_allowed: bool,
 ) -> Option<DeepeningStop> {
     if authorized_rows >= u64::from(top_k) {
+        return Some(DeepeningStop::Converged);
+    }
+    if !next_round_allowed {
+        return Some(DeepeningStop::BudgetExhausted);
+    }
+    if candidates_exhausted {
+        return Some(DeepeningStop::CandidatesExhausted);
+    }
+    None
+}
+
+/// Classify one finished round for a **NonLeading** SEARCH (ADR 0034 Slice 5, which governs
+/// the contract there): the `LIMIT k` bounds the *global vector top-k*, not the joined row
+/// count — a single surviving hit can join to many prefix rows (multiplicity is preserved),
+/// and the globally-nearest hit can legitimately join to nothing (an empty result is a
+/// correct, non-truncated answer). Convergence is therefore measured on the authorized **hit
+/// count**, the joined `row_count` is never used to converge, and the join output is never
+/// capped: deepening only exists to recover from authz/label-filtered hit loss (ADR 0078 §3),
+/// not to fill the join up to k rows.
+fn non_leading_deepening_stop(
+    authorized_hits: usize,
+    top_k: u32,
+    candidates_exhausted: bool,
+    next_round_allowed: bool,
+) -> Option<DeepeningStop> {
+    if authorized_hits >= top_k as usize {
         return Some(DeepeningStop::Converged);
     }
     if !next_round_allowed {
@@ -439,23 +468,52 @@ where
         };
 
         let candidates_exhausted = hits.len() < request_size as usize;
-        match deepening_stop(
-            gql_result.row_count,
-            top_k,
-            candidates_exhausted,
-            deepening_may_start_round(round + 1),
-        ) {
-            None => round += 1,
-            Some(DeepeningStop::Converged) => {
-                cap_result_rows(&mut gql_result, top_k)?;
-                return Ok(gql_result.with_truncated(false));
-            }
-            Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
-                debug_assert!(
-                    gql_result.row_count < u64::from(top_k),
-                    "non-converged stops require fewer than k authorized rows"
-                );
-                return Ok(gql_result.with_truncated(true));
+        match position {
+            SearchPosition::Leading(_) => match deepening_stop(
+                gql_result.row_count,
+                top_k,
+                candidates_exhausted,
+                deepening_may_start_round(round + 1),
+            ) {
+                None => round += 1,
+                Some(DeepeningStop::Converged) => {
+                    // Leading rows map 1:1 onto surviving hits, so the k-prefix cap is the
+                    // ADR 0078 "return exactly k" contract (ADR 0078 §2/§4).
+                    cap_result_rows(&mut gql_result, top_k)?;
+                    return Ok(gql_result.with_truncated(false));
+                }
+                Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
+                    debug_assert!(
+                        gql_result.row_count < u64::from(top_k),
+                        "non-converged stops require fewer than k authorized rows"
+                    );
+                    return Ok(gql_result.with_truncated(true));
+                }
+            },
+            SearchPosition::NonLeading(_) => {
+                // ADR 0034 Slice 5: convergence and truncation are hit-count based; the join
+                // output is neither capped nor used as the stop signal (multiplicity makes the
+                // joined row count diverge from k in both directions).
+                match non_leading_deepening_stop(
+                    hits.len(),
+                    top_k,
+                    candidates_exhausted,
+                    deepening_may_start_round(round + 1),
+                ) {
+                    None => round += 1,
+                    Some(DeepeningStop::Converged) => {
+                        return Ok(gql_result.with_truncated(false));
+                    }
+                    Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
+                        // The converge check ran first, so a non-converged stop still held
+                        // fewer than k authorized hits.
+                        debug_assert!(
+                            hits.len() < top_k as usize,
+                            "non-converged stops require fewer than k authorized hits"
+                        );
+                        return Ok(gql_result.with_truncated(true));
+                    }
+                }
             }
         }
     }
@@ -2851,6 +2909,56 @@ mod tests {
         // candidates are exhausted would mask genuine truncation; the exact-variant
         // assertions above fail for it. A stub that never stops would fail the `None`
         // assertions by returning early exhaustion instead.
+    }
+
+    #[test]
+    fn non_leading_deepening_stop_converges_on_hits_not_joined_rows() {
+        // ADR 0034 Slice 5 vs ADR 0078 §3/§4 divergence, made explicit: the same observed
+        // state classifies differently on the two positions. One globally-nearest hit that
+        // joined to NOTHING (row_count = 0) is a converged, non-truncated answer for a
+        // non-leading SEARCH (empty result is correct), while a leading SEARCH with the same
+        // hit count keeps deepening.
+        const K: u32 = 2;
+        assert_eq!(
+            non_leading_deepening_stop(K as usize, K, false, true),
+            Some(DeepeningStop::Converged),
+            "a full k-hit page converges for non-leading even though the join over those \
+             hits may produce zero rows: the join output is not the stop signal"
+        );
+        assert_eq!(
+            deepening_stop(0, K, false, true),
+            None,
+            "leading with 0 joined rows must keep deepening (same state, different criterion)"
+        );
+
+        // Multiplicity: one hit joined to many prefix rows over-satisfies the joined-row
+        // criterion; non-leading must NOT converge on it unless the hit count says so.
+        assert_eq!(
+            non_leading_deepening_stop(0, K, true, true),
+            Some(DeepeningStop::CandidatesExhausted),
+        );
+        assert_eq!(
+            deepening_stop(5, K, false, true),
+            Some(DeepeningStop::Converged),
+            "leading converges on joined rows"
+        );
+        assert_eq!(
+            non_leading_deepening_stop(5, K, false, true),
+            Some(DeepeningStop::Converged),
+            "non-leading also converges once k authorized hits exist (deepening is only \
+             for hit loss, never for filling the join)"
+        );
+
+        // Non-converged non-leading stops keep the same precedence as leading.
+        assert_eq!(
+            non_leading_deepening_stop(K as usize - 1, K, false, false),
+            Some(DeepeningStop::BudgetExhausted)
+        );
+        assert_eq!(
+            non_leading_deepening_stop(K as usize - 1, K, true, true),
+            Some(DeepeningStop::CandidatesExhausted)
+        );
+        assert_eq!(non_leading_deepening_stop(0, K, false, true), None);
     }
 
     fn encoded_rows(n: usize) -> Vec<u8> {
