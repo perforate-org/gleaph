@@ -38,6 +38,7 @@ use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_graph_kernel::plan_exec::ReadMode;
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
 };
@@ -249,7 +250,7 @@ fn gql_query_with_params_as_admin_result(
             env.router,
             env.admin,
             "gql_query",
-            Encode!(&query.to_string(), &params).expect("encode gql_query"),
+            Encode!(&query.to_string(), &params, &ReadMode::Eventual).expect("encode gql_query"),
         )
         .expect("gql_query call");
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query result")
