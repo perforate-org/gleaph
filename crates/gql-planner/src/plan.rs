@@ -1565,6 +1565,17 @@ pub enum TextScanMode {
     /// deliver only the `limit` highest-scoring vertices. `limit` is an Int64 literal or
     /// a parameter resolved by the executor.
     TopK { limit: ScanValue },
+    /// Compound mode (plan 0329): the fused `WHERE text_score(v.prop, Q) cmp t` +
+    /// `ORDER BY text_score(v.prop, Q) DESC LIMIT k` shape. Keep only the vertices whose
+    /// relevance score satisfies `cmp bound` (literal or parameter), then deliver the
+    /// `limit` highest-scoring survivors in the deterministic `(score DESC, key ASC)`
+    /// order. `limit` is an Int64 literal (parity with the TopK lowering); the bound may
+    /// be a literal or a parameter (parity with `Threshold`).
+    ThresholdTopK {
+        cmp: CmpOp,
+        bound: ScanValue,
+        limit: ScanValue,
+    },
 }
 
 /// An edge in a WCOJ plan: directed hop from pattern `src` to `dst` (cycle closes on last→first).

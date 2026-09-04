@@ -489,8 +489,7 @@ fn text_score_ranks_through_gql_after_ready_and_fails_closed_before() {
     );
 
     // Drive the migration to convergence, then flush so docs are searchable.
-    let statement =
-        format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
     let args = migration_args(MIGRATION_ID, &statement);
     drive_to_ready(&env, &args);
     assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
@@ -538,4 +537,143 @@ fn text_score_ranks_through_gql_after_ready_and_fails_closed_before() {
     assert_eq!(zebra.row_count, 1);
     let zebra_rows = scored_rows(&zebra);
     assert!(zebra_rows[0].1 > 0.0);
+}
+
+// -- Plan 0329: compound WHERE-threshold + ORDER BY top-k lowering ----------------------------
+
+const COMBINED_QUERY: &str = "MATCH (d:Document) \
+     WHERE text_score(d.bio, $query) > $min \
+     RETURN ELEMENT_ID(d) AS d_id, text_score(d.bio, $query) AS score \
+     ORDER BY text_score(d.bio, $query) DESC LIMIT 10";
+
+const COMBINED_LIMIT_1_QUERY: &str = "MATCH (d:Document) \
+     WHERE text_score(d.bio, $query) > $min \
+     RETURN ELEMENT_ID(d) AS d_id, text_score(d.bio, $query) AS score \
+     ORDER BY text_score(d.bio, $query) DESC LIMIT 1";
+
+fn combined_query_params(query: &str, min: f64) -> Vec<u8> {
+    encode_gql_params_blob(vec![
+        ("query".to_string(), Value::Text(query.to_string())),
+        ("min".to_string(), Value::Float64(min)),
+    ])
+    .expect("encode params")
+}
+
+#[test]
+fn text_score_compound_threshold_topk_lowers_and_ranks() {
+    let wired = bootstrap_with_active_release();
+    let env = Env {
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+
+    // Same frequency-discriminated corpus as the plan 0297 leg: heavy(0) < light(1).
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    seed_text_vertex(&env, "wombat wombat wombat");
+    seed_text_vertex(&env, "wombat");
+    seed_text_vertex(&env, "unrelated zebra");
+
+    let info = create_text_index_definition(&env);
+    env.fed.pic.add_cycles(
+        info.canister.expect("provisioned canister attached"),
+        20_000_000_000_000,
+    );
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
+
+    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    let args = migration_args(MIGRATION_ID, &statement);
+    drive_to_ready(&env, &args);
+    assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
+    flush_until_done(&env);
+
+    // Plain top-k reference: both wombat docs rank, heavier first.
+    let plain = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("wombat", 10));
+    assert_eq!(plain.row_count, 2);
+    let plain_rows = scored_rows(&plain);
+    assert!(plain_rows[0].1 > plain_rows[1].1, "frequency discriminates");
+    let weakest = plain_rows[1].1;
+
+    // LEG 1 — COMBINED positive: the fused compound scan returns ranked rows in
+    // frequency-discriminated order, every returned score > $min, alias bound.
+    let combined = gql_query_with_params_as_admin(
+        &env.fed,
+        COMBINED_QUERY,
+        combined_query_params("wombat", 0.0),
+    );
+    assert_eq!(combined.row_count, 2, "both docs above the floor rank");
+    let combined_rows = scored_rows(&combined);
+    assert_eq!(
+        combined_rows, plain_rows,
+        "compound order matches plain top-k"
+    );
+    assert!(combined_rows.iter().all(|(_, score)| *score > 0.0));
+
+    // LEG 2 — threshold enforcement: a $min above the weakest plain top-k score returns
+    // strictly fewer rows than the plain top-k, and every remaining score > $min.
+    let strict_min = weakest + 0.5;
+    let strict = gql_query_with_params_as_admin(
+        &env.fed,
+        COMBINED_QUERY,
+        combined_query_params("wombat", strict_min),
+    );
+    assert_eq!(strict.row_count, 1, "only the strongest doc survives $min");
+    let strict_rows = scored_rows(&strict);
+    assert_eq!(strict_rows[0].0, plain_rows[0].0, "the heavy doc survives");
+    assert!(
+        strict_rows[0].1 > strict_min,
+        "every returned score must exceed the threshold"
+    );
+
+    // LEG 3 — empty: $min above every score returns 0 rows, no error.
+    let empty_min = plain_rows[0].1 + 0.5;
+    let empty = gql_query_with_params_as_admin(
+        &env.fed,
+        COMBINED_QUERY,
+        combined_query_params("wombat", empty_min),
+    );
+    assert_eq!(empty.row_count, 0, "nothing survives the impossible floor");
+
+    // LEG 4 — fail-closed: WHERE and ORDER BY disagreeing on the query literal keeps the
+    // shape unfused and the Router rejects the residual mention.
+    const MISMATCHED_QUERY: &str = "MATCH (d:Document) \
+         WHERE text_score(d.bio, 'other') > 0.0 \
+         RETURN ELEMENT_ID(d) AS d_id, text_score(d.bio, $query) AS score \
+         ORDER BY text_score(d.bio, $query) DESC LIMIT 10";
+    let mismatch_err = raw_gql_query(&env, MISMATCHED_QUERY, combined_query_params("wombat", 0.0))
+        .expect_err("disagreeing query literals must fail closed");
+    let mismatch_message = mismatch_err.to_string();
+    assert!(
+        mismatch_message
+            .contains("residual text_score references are only supported as projected expressions")
+            || mismatch_message.contains("did not lower into a TextScan"),
+        "unexpected mismatch error: {mismatch_message}"
+    );
+
+    // LEG 5 — compound + LIMIT clamp sanity: LIMIT 1 returns the single best row above
+    // $min (the frequency-heaviest wombat doc).
+    let capped = gql_query_with_params_as_admin(
+        &env.fed,
+        COMBINED_LIMIT_1_QUERY,
+        combined_query_params("wombat", 0.0),
+    );
+    assert_eq!(capped.row_count, 1, "LIMIT clamps the compound scan");
+    let capped_rows = scored_rows(&capped);
+    assert_eq!(
+        capped_rows[0], combined_rows[0],
+        "the cap keeps the best row"
+    );
+
+    // Determinism: an identical compound re-run returns the identical order.
+    let replay = gql_query_with_params_as_admin(
+        &env.fed,
+        COMBINED_QUERY,
+        combined_query_params("wombat", 0.0),
+    );
+    assert_eq!(
+        scored_rows(&replay),
+        combined_rows,
+        "merge must be deterministic"
+    );
 }

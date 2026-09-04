@@ -12,7 +12,10 @@
 //!
 //! Both landed modes execute: `TopK { limit }` delivers the top-k ranked prefix; `Threshold
 //! { cmp, bound }` keeps the hits whose engine score satisfies the comparison inside the
-//! bounded search window (completeness beyond the window is marked truncated).
+//! bounded search window (completeness beyond the window is marked truncated). The compound
+//! `ThresholdTopK { cmp, bound, limit }` mode (plan 0329) retains the threshold on the
+//! score-ranked window FIRST, then truncates to the limit — the top-k of the
+//! threshold-filtered set, since `search` returns the score-ranked top-N window.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -123,6 +126,19 @@ pub(crate) async fn try_execute_gql_text_scan(
             let bound = resolve_scan_bound(bound, &params)?;
             retain_threshold(&mut hits, *cmp, bound);
             None
+        }
+        TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+            // Order is the correctness core: retain the threshold on the score-ranked
+            // window FIRST, then truncate to the limit, so the survivors are exactly the
+            // top-k of the threshold-filtered set.
+            let bound = resolve_scan_bound(bound, &params)?;
+            retain_threshold(&mut hits, *cmp, bound);
+            let requested_k = resolve_scan_limit(limit, &params)?;
+            let request_k = requested_k.min(MAX_TEXT_SEARCH_K);
+            hits.truncate(request_k as usize);
+            // A LIMIT beyond the canister clamp cannot be satisfied completely.
+            truncated |= requested_k > MAX_TEXT_SEARCH_K;
+            Some(requested_k)
         }
     };
 
@@ -295,7 +311,7 @@ struct TextScanShape {
     label_id: VertexLabelId,
     /// Indexed property named by the scan.
     property_id: gleaph_graph_kernel::entry::PropertyId,
-    /// Structured scan mode from the planner (`TopK` / `Threshold`).
+    /// Structured scan mode from the planner (`TopK` / `Threshold` / `ThresholdTopK`).
     mode: TextScanMode,
     /// Scan query: a TEXT literal or `$param` reference.
     query: ScanValue,
@@ -1130,6 +1146,104 @@ mod tests {
             matches!(position_err, RouterError::InvalidArgument(ref msg) if msg.contains("leading")),
             "unexpected error: {position_err:?}"
         );
+    }
+
+    fn compound_text_scan_op() -> PlanOp {
+        PlanOp::TextScan {
+            variable: "n".into(),
+            label: NodeLabelRef::from("Document"),
+            property: "body".into(),
+            query: ScanValue::Literal(gleaph_gql::Value::Text("index".into())),
+            mode: TextScanMode::ThresholdTopK {
+                cmp: CmpOp::Gt,
+                bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(2)),
+            },
+            property_projection: None,
+        }
+    }
+
+    /// Store fixture with one graph whose (`Document`, `body`) pair is interned, so
+    /// `analyze_text_scan_shape` can resolve the scan's label and property.
+    fn analyzed_store() -> (crate::RouterStore, GraphId) {
+        use crate::facade::auth;
+        use crate::init::RouterInitArgs;
+
+        let store = crate::RouterStore::new();
+        let admin = candid::Principal::from_slice(&[1; 29]);
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            provision_canister: None,
+        });
+        auth::grant_admins(&[admin]);
+        crate::facade::store::catalog_test_support::register_graph(
+            &store,
+            admin,
+            "tenant.text.compound",
+        );
+        let graph_id = store
+            .resolve_graph_id("tenant.text.compound")
+            .expect("graph");
+        store
+            .admin_intern_vertex_label(admin, "tenant.text.compound", "Document")
+            .expect("label");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.text.compound",
+            "body",
+        );
+        (store, graph_id)
+    }
+
+    #[test]
+    fn shape_analysis_accepts_compound_mode_and_carries_it() {
+        let (store, graph_id) = analyzed_store();
+        let plan = PhysicalPlan::from_ops(vec![compound_text_scan_op(), project_call_op("score")]);
+        let shape = analyze_text_scan_shape(&plan, graph_id, &store).expect("compound shape");
+        assert!(matches!(
+            shape.mode,
+            TextScanMode::ThresholdTopK { cmp: CmpOp::Gt, .. }
+        ));
+        assert_eq!(shape.alias.as_deref(), Some("score"));
+    }
+
+    #[test]
+    fn compound_execution_retains_threshold_then_truncates_in_ranked_order() {
+        // Score-ranked window (as `sort_hits_deterministically` produced): threshold
+        // excludes some of the window, truncate to k < filtered len.
+        let mut window = hits(&[(9, 20), (2, 70), (5, 50), (7, 50), (3, 90)]);
+        sort_hits_deterministically(&mut window);
+        retain_threshold(&mut window, CmpOp::Gt, 40.0);
+        window.truncate(2);
+        assert_eq!(
+            window.iter().map(|hit| hit.key).collect::<Vec<_>>(),
+            vec![3, 2],
+            "top-k of the filtered set in (score DESC, key ASC) order"
+        );
+    }
+
+    #[test]
+    fn compound_limit_clamps_at_max_text_search_k() {
+        let mut params = BTreeMap::new();
+        params.insert("k".to_string(), gleaph_gql::Value::Int64(500));
+        let limit = ScanValue::Parameter("$k".into());
+        let requested_k = resolve_scan_limit(&limit, &params).expect("param limit");
+        let request_k = requested_k.min(MAX_TEXT_SEARCH_K);
+        assert_eq!(request_k, MAX_TEXT_SEARCH_K, "clamped at the window width");
+        assert!(requested_k > MAX_TEXT_SEARCH_K, "truncation flag set");
+    }
+
+    #[test]
+    fn compound_empty_post_threshold_set_yields_empty_seeds_without_error() {
+        let mut window = hits(&[(1, 30), (2, 20)]);
+        retain_threshold(&mut window, CmpOp::Gt, 90.0);
+        assert!(window.is_empty());
+        window.truncate(5);
+        let seeded = build_text_scan_seeds("n", Some("score"), &[], ShardId::new(0), &window)
+            .expect("empty hits seed cleanly");
+        assert!(seeded[&ShardId::new(0)].rows.is_empty());
     }
 
     #[test]

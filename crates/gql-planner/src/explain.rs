@@ -295,6 +295,14 @@ fn format_op(op: &PlanOp) -> String {
                 TextScanMode::TopK { limit } => {
                     format!("top-k limit {}", format_scan_value(limit))
                 }
+                TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+                    format!(
+                        "threshold score {} {} top-k limit {}",
+                        format_cmp(cmp),
+                        format_scan_value(bound),
+                        format_scan_value(limit)
+                    )
+                }
             };
             format!(
                 "TextScan({}, label={}, text_score({}) query={} {}){}",

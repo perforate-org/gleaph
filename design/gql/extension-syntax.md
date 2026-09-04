@@ -956,6 +956,13 @@ LIMIT 20
 MATCH (d:Document)
 WHERE text_score(d.document_text, $query) > 0.5
 RETURN d
+
+-- Compound threshold-top-k mode (plan 0329): fused into ONE scan
+MATCH (d:Document)
+WHERE text_score(d.document_text, $query) > 0.5
+RETURN d, text_score(d.document_text, $query) AS score
+ORDER BY text_score(d.document_text, $query) DESC
+LIMIT 10
 ```
 
 The TEXT definition itself is declared with the vendor DDL
@@ -972,7 +979,11 @@ Contract:
   (`ORDER BY text_score(...) DESC LIMIT k`) lowers into a bounded ranked scan, and
   **threshold** (`WHERE text_score(...) > t`, `>= t`, reversed operand forms included)
   lowers into a filtered scan inside the bounded canister window; results beyond that
-  window mark the result truncated. Results rank by engine score descending with
+  window mark the result truncated. The **compound threshold-top-k** shape (plan 0329) —
+  the WHERE-threshold and ORDER BY top-k halves referencing the same
+  (variable, property, query) — fuses into one scan that retains the threshold on the
+  score-ranked window and then truncates to the literal limit; disagreeing halves stay
+  unfused and fail closed. Results rank by engine score descending with
   deterministic key tie-breaks `(score DESC, element-key ASC)`.
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
   mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
@@ -1053,7 +1064,7 @@ This expresses the intended flow:
 | 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
 | 9     | Add the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar: feature-gated parsing, owner-only Router execution with catalog/schema validation, grant introspection, and revoke; plan-time enforcement stays deferred to slice 2b | Implemented                                                                                                          |
 | 10    | Add the ADR 0074 slice 3 `GRANT`/`REVOKE EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded authority gates and the synthesized implicit-root introspection marker | Implemented                                                                                                          |
-| 11    | Add the `text_score(prop, query)` scalar function (plan 0297): generic function-call syntax end-to-end; planner lowering of covered uses into `PlanOp::TextScan` (top-k and threshold modes) with TEXT-coverage-gated seed selection; Router execution resolves `Ready` TEXT definitions, dispatches the definition canister as a same-subnet composite query, merges deterministically under `(score desc, key asc)`, and binds projected score aliases; fail-closed absent resolution with no sequential-scan fallback; vendor DDL `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)` / `DROP TEXT INDEX <name> [IF EXISTS]`. Nested placements, aggregates over scores, and multi-shard text fan-out remain deferred with triggers | Implemented (top-k + threshold)                                                                                      |
+| 11    | Add the `text_score(prop, query)` scalar function (plan 0297): generic function-call syntax end-to-end; planner lowering of covered uses into `PlanOp::TextScan` (top-k and threshold modes) with TEXT-coverage-gated seed selection; Router execution resolves `Ready` TEXT definitions, dispatches the definition canister as a same-subnet composite query, merges deterministically under `(score desc, key asc)`, and binds projected score aliases; fail-closed absent resolution with no sequential-scan fallback; vendor DDL `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)` / `DROP TEXT INDEX <name> [IF EXISTS]`. Nested placements, aggregates over scores, and multi-shard text fan-out remain deferred with triggers | Implemented (top-k + threshold + compound threshold-top-k)                                                           |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 

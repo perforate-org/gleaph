@@ -128,6 +128,15 @@ impl<'a> Decoder<'a> {
                             limit: decode_scan_value(limit)?,
                         }
                     }
+                    crate::wire::convert::types::TextScanModeWire::ThresholdTopK {
+                        cmp,
+                        bound,
+                        limit,
+                    } => crate::plan::TextScanMode::ThresholdTopK {
+                        cmp: *cmp,
+                        bound: decode_scan_value(bound)?,
+                        limit: decode_scan_value(limit)?,
+                    },
                 },
                 property_projection: decode_str_slice(property_projection),
             },

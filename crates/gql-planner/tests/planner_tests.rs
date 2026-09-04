@@ -7126,7 +7126,7 @@ fn text_threshold_predicate_lowers_to_text_scan_and_drops_residual() {
         !plan.ops.iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
-                if predicates.iter().any(is_text_score_expr)
+                if predicates.iter().any(contains_text_score_call)
         )),
         "the lowered score conjunct must not survive as a residual filter, got: {:?}",
         plan.ops
@@ -7281,4 +7281,159 @@ fn is_text_score_expr(expr: &gleaph_gql::ast::Expr) -> bool {
         gleaph_gql::ast::ExprKind::FunctionCall { name, .. }
             if name.parts.len() == 1 && name.parts[0].eq_ignore_ascii_case("text_score")
     )
+}
+
+#[test]
+fn text_combined_threshold_topk_lowers_to_single_compound_scan() {
+    let stats = text_coverage_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, 'index') > 0.5 RETURN n, text_score(n.body, 'index') AS score ORDER BY text_score(n.body, 'index') DESC LIMIT 3",
+        &stats,
+    );
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::TextScan {
+                label,
+                mode:
+                    TextScanMode::ThresholdTopK {
+                        cmp: CmpOp::Gt,
+                        bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
+                        limit: ScanValue::Literal(gleaph_gql::Value::Int64(3)),
+                    },
+                ..
+            }) if &**label == "Document" && *bound == 0.5
+        ),
+        "expected ONE leading compound TextScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. } | PlanOp::Sort { .. })),
+        "the fused scan delivers the ranked prefix; no TopK may remain, got: {:?}",
+        plan.ops
+    );
+    // The alias ride-along Project survives after the fused scan (late projection).
+    assert!(
+        matches!(plan.ops.get(1), Some(PlanOp::Project { .. })),
+        "expected the residual projected score alias after the fused scan, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn text_combined_compound_lowers_with_parameter_bound_and_query() {
+    let stats = text_coverage_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, $q) >= $t RETURN n ORDER BY text_score(n.body, $q) DESC LIMIT 5",
+        &stats,
+    );
+
+    assert!(matches!(
+        plan.ops.first(),
+        Some(PlanOp::TextScan {
+            mode: TextScanMode::ThresholdTopK {
+                cmp: CmpOp::Ge,
+                bound: ScanValue::Parameter(_),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(5)),
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn text_combined_mismatched_query_stays_unfused_fail_closed() {
+    let stats = text_coverage_stats();
+    let program = parser::parse(
+        "MATCH (n:Document) WHERE text_score(n.body, 'other') > 0.5 RETURN n, text_score(n.body, 'index') AS score ORDER BY text_score(n.body, 'index') DESC LIMIT 3",
+    )
+    .unwrap();
+    let block = program.transaction_activity.unwrap().body.unwrap();
+    // No fuse: the plan keeps the threshold seed and a residual TopK mentioning
+    // text_score, which the Router shape analysis rejects fail-closed.
+    let plan = build_block_plan(&block, Some(&stats)).expect("plan");
+    assert!(matches!(
+        plan.ops.first(),
+        Some(PlanOp::TextScan {
+            mode: TextScanMode::Threshold { .. },
+            ..
+        })
+    ));
+    assert!(
+        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        "the unfused TopK must stay residual for the Router's fail-closed check, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn text_combined_mismatched_property_stays_unfused_fail_closed() {
+    let stats = text_coverage_stats();
+    let program = parser::parse(
+        "MATCH (n:Document) WHERE text_score(n.title, 'index') > 0.5 RETURN n, text_score(n.body, 'index') AS score ORDER BY text_score(n.body, 'index') DESC LIMIT 3",
+    )
+    .unwrap();
+    let block = program.transaction_activity.unwrap().body.unwrap();
+    // No fuse: the threshold conjunct on `n.title` stays a residual filter and the TopK
+    // mention survives, which the Router shape analysis rejects fail-closed.
+    let plan = build_block_plan(&block, Some(&stats)).expect("plan");
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::TextScan {
+                mode: TextScanMode::ThresholdTopK { .. },
+                ..
+            }
+        )),
+        "no compound fusion across mismatched properties, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(contains_text_score_call)
+        )),
+        "the mismatched threshold conjunct stays residual, got: {:?}",
+        plan.ops
+    );
+    // The score mention outside the Project (in the residual filter) makes the Router
+    // reject this plan fail-closed even though the ORDER BY half lowered.
+}
+
+#[test]
+#[cfg(feature = "plan-wire")]
+fn text_scan_wire_round_trip_preserves_compound_mode() {
+    use gleaph_gql_planner::wire::{decode_plan_bundle, encode_block_plans};
+
+    let stats = text_coverage_stats();
+    let plan = plan_query_with_stats(
+        "MATCH (n:Document) WHERE text_score(n.body, $q) >= 0.25 RETURN n ORDER BY text_score(n.body, $q) DESC LIMIT 7",
+        &stats,
+    );
+    let bytes = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+    let (_, plans) = decode_plan_bundle(&bytes).expect("decode");
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].ops.iter().any(|op| matches!(
+        op,
+        PlanOp::TextScan {
+            variable,
+            label,
+            property,
+            mode:
+                TextScanMode::ThresholdTopK {
+                    cmp: CmpOp::Ge,
+                    bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(7)),
+                },
+            ..
+        } if &**variable == "n"
+            && &**label == "Document"
+            && &**property == "body"
+            && *bound == 0.25
+    )));
 }

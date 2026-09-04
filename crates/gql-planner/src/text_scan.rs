@@ -5,7 +5,11 @@
 //! [`PlanOp::TextScan`]:
 //!
 //! - threshold: a WHERE conjunct `text_score(v.prop, Q) > t` (or `>=`, or reversed);
-//! - top-k: `ORDER BY text_score(v.prop, Q) DESC LIMIT k`.
+//! - top-k: `ORDER BY text_score(v.prop, Q) DESC LIMIT k`;
+//! - compound threshold-top-k (plan 0329): the combined shape above fuses into ONE scan
+//!   with [`TextScanMode::ThresholdTopK`] when both halves reference the same
+//!   `(variable, property, query)` — the scan retains the threshold on the score-ranked
+//!   window, then truncates to the literal limit.
 //!
 //! Every other placement fails closed at plan validation: an unfused `text_score`
 //! expression rejects the plan instead of falling back to a sequential scan.
@@ -175,6 +179,37 @@ pub(crate) fn apply_text_topk_lowering(
     {
         return false;
     }
+    // Compound path (plan 0329), ordered before the NodeScan path: a drained WHERE
+    // threshold seed scan (`TextScan { Threshold }`) already sits at ops[0], so the TopK
+    // may fuse into it when both halves reference the same (variable, property, query).
+    // Coverage was enforced at seed time by `find_text_threshold_seed` — no second stats
+    // check; the equality match below already excludes cross-property/cross-query fusion
+    // (a mismatch returns false and the TopK mention stays residual → fail closed).
+    if let PlanOp::TextScan {
+        variable,
+        property,
+        query,
+        mode: mode @ TextScanMode::Threshold { .. },
+        ..
+    } = &mut ops[0]
+    {
+        if **variable == *score.variable && **property == *score.property && *query == score.query {
+            let TextScanMode::Threshold { cmp, bound } = mode else {
+                unreachable!("matched above");
+            };
+            *mode = TextScanMode::ThresholdTopK {
+                cmp: *cmp,
+                bound: bound.clone(),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+            };
+            ops.remove(topk_idx);
+            return true;
+        }
+        // A surviving leading `TextScan { Threshold }` whose halves disagree on any of
+        // (variable, property, query) never fuses: the TopK mention stays residual.
+        return false;
+    }
+
     let seed_label = match &ops[0] {
         PlanOp::NodeScan {
             variable,

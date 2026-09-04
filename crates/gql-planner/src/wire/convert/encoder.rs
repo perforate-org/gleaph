@@ -115,6 +115,13 @@ impl Encoder {
                             limit: encode_scan_value(limit)?,
                         }
                     }
+                    crate::plan::TextScanMode::ThresholdTopK { cmp, bound, limit } => {
+                        crate::wire::convert::types::TextScanModeWire::ThresholdTopK {
+                            cmp: *cmp,
+                            bound: encode_scan_value(bound)?,
+                            limit: encode_scan_value(limit)?,
+                        }
+                    }
                 },
                 property_projection: opt_str_slice(property_projection),
             },

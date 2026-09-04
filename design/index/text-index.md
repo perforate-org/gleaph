@@ -38,9 +38,18 @@ docs-sync unless noted):
   for idempotent key-based replay. There is no durable journal variant yet: unconfirmed ops
   do not survive a canister upgrade (converges via next write or backfill).
 - Known v1 limitations: `DROP TEXT INDEX` removes the catalog definition and fails closed
-  while builds are active, but does not tear down the physical canister; a combined
-  WHERE-threshold + ORDER BY top-k predicate lowers only its threshold half today (remaining
-  shape fails closed downstream); multi-shard fan-out is deferred (single home shard).
+  while builds are active, but does not tear down the physical canister; multi-shard fan-out
+  is deferred (single home shard).
+- Compound lowering (plan 0329): a combined `WHERE text_score(v.prop, $q) cmp t` +
+  `ORDER BY text_score(v.prop, $q) DESC LIMIT k` predicate fuses into ONE
+  `TextScan { mode: ThresholdTopK }` when both halves reference the same
+  (variable, property, query); the Router retains the threshold on the score-ranked canister
+  window first, then truncates to the literal limit (top-k of the threshold-filtered set).
+  A mismatch on any of (variable, property, query) never fuses and fails closed downstream.
+  Literal-LIMIT parity with the top-k mode holds; the threshold bound may be a literal or a
+  parameter. Canister-side `min_score` pushdown (shrinking the Router window for highly
+  selective thresholds) is recorded as a later optimization — Router-side filtering is
+  already correct.
 
 ## Purpose
 

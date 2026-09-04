@@ -312,8 +312,20 @@ pub enum ScanValueWire {
 /// Wire form of [`crate::plan::TextScanMode`].
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum TextScanModeWire {
-    Threshold { cmp: CmpOp, bound: ScanValueWire },
-    TopK { limit: ScanValueWire },
+    Threshold {
+        cmp: CmpOp,
+        bound: ScanValueWire,
+    },
+    TopK {
+        limit: ScanValueWire,
+    },
+    /// Wire form of [`crate::plan::TextScanMode::ThresholdTopK`] (plan 0329 compound
+    /// lowering): threshold + top-k fused into one scan.
+    ThresholdTopK {
+        cmp: CmpOp,
+        bound: ScanValueWire,
+        limit: ScanValueWire,
+    },
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
