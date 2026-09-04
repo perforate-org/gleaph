@@ -132,6 +132,24 @@ no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
   suffix tables are rule-friendly) or a MeCab-compatible `mecab-ko-dic` model compiled for
   vibrato; both recorded as later slices, not implemented.
 
+**Tier-0 rule analyzer family (recorded design — one plan, not implemented):** the remaining
+recall gaps (Korean 조사, English stemming, Japanese inflection without vibrato) are all
+rule-closable without dictionaries. They compose into ONE script-dispatched composite analyzer
+(candidate `ANALYZER_ID=3`, name `rule_multilingual` — strategy-named like id 1, no dictionary):
+UAX #29 segmentation, deterministic Unicode-script classification per run (no statistical
+language detection), then per-script rule layers — Han runs: v1 bigram expansion; kana-tailed
+runs: the 0330-measured Japanese stem FSA (走った → +走); Hangul runs: 조사/어미 suffix strip
+(closed-class tables with 받침 allomorphy, enumerated irregulars) emitting surface+stem;
+Latin words: surface + Porter stem. Surface+stem dual emission keeps precision while adding
+recall; postings grow ~1 unit per inflected/Latin word. Deterministic and idempotent by
+construction (pure text functions). It does NOT deliver dictionary-grade lemmas (Japanese
+走る-grade recall remains ANALYZER_ID=2's role), Chinese word boundaries (bigram remains the
+Chinese strategy), or Korean irregular-verb completeness beyond enumerated tables. Korean
+조사 stripping + English Porter + Japanese stem FSA are small enough to land as one plan
+(working title 0332); the quality upgrade path for Korean stays a vibrato × mecab-ko-dic
+spike (reusing the 0331 region-16 dictionary machinery if a dictionary-based analyzer is
+ever adopted).
+
 ## Lifecycle and lag semantics (mapping onto derived-state contracts)
 
 | Phase | Behavior | Lag class |
