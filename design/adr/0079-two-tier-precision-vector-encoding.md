@@ -94,6 +94,11 @@ Adopt a **two-tier precision contract**:
   40.95M vs tier-off 43.48M instructions (−5.8%); stable byte streaming dominates e2e cost, so
   the arithmetic saving grows with future kernel work rather than layout change. Query rotation:
   777K ins per search. Tier-on upsert delta is inside noise on d128.
+  - **Erratum (2026-08-26):** the −5.8% figure measured the pre-Slice-7/8 layout and has
+    inverted in the current tree — the inline tier is a net loss (tier-on 47.03M vs tier-off
+    45.80M, k10 d1536) because the page-directory arithmetic reduced tier-off streaming while
+    the inline code bytes add pure streaming. The resolution path is ADR 0093 (columnar code
+    region + global shortlist).
 
 ## References
 
