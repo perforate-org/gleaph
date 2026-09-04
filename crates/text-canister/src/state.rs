@@ -24,6 +24,21 @@
 //! | 13 | dense vector of `TermEntrySlot` | term_id → canonical term string (arena ref) + live df |
 //! | 14 | `Cell<Option<backfill::BackfillRegistration>>` | text backfill build identity + lifecycle phase (`crate::backfill`) |
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
+//! | 16 | stable `Vec` of dictionary chunks | ANALYZER_ID=2 ZSTD ipadic dictionary blob (append-only during upload, see "Analyzer-2 dictionary") |
+//!
+//! ## Analyzer-2 dictionary (layout 5, plan 0331)
+//!
+//! The vibrato pipeline keeps its ipadic dictionary OUT of the wasm: region 16 holds the
+//! pinned ZSTD artifact (8.0 MB) appended in controller-supplied chunks (`MAX_DICT_CHUNK_BYTES`
+//! per call). The streaming identity is a single xxh3_128 over the concatenated chunk bytes,
+//! computed from a full region re-read at `admin_finalize_dict_upload` (an 8 MB transient
+//! read, explicitly acceptable) and pinned in [`TextMeta`] with the declared length.
+//! States: `Absent` (fresh open), `Uploading` (append-only, interrupted uploads fail the
+//! open loudly — resume semantics are not part of this slice), `Finalized`. With
+//! `analyzer_id == 2` the open eagerly decompresses the finalized region and builds the
+//! pinned tokenizer (eager, NOT lazy: the 5B query-call budget never pays dictionary
+//! construction); while `Absent`, analyze-touching operations (ingest, search, backfill
+//! registration for analyzer 2) fail closed with a recorded message until finalize lands.
 //!
 //! Per-segment posting/dict stores materialize lazily on flush: the structures above bind
 //! their regions at first open but stay empty until the first applied delta.
@@ -76,6 +91,7 @@ mod arena;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::io::Read;
 
 use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_linear_hash_map::StableLinearHashMap;
@@ -91,8 +107,8 @@ use ic_stable_vec_deque::VecDeque as StableVecDeque;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{xxh3_128, xxh3_128_with_seed};
 
-use crate::analyzer::analyze;
-use crate::{FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
+use crate::analyzer::{ANALYZER_UNICODE_BIGRAM, ANALYZER_VIBRATO, analyze_pinned};
+use crate::{DictStatus, FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
 
 use arena::{BlobArena, BlobRef};
 
@@ -117,6 +133,11 @@ pub(crate) const MAX_TEXT_BYTES_PER_DOC: usize = 65_536;
 pub(crate) const MAX_UNITS_PER_DOC: usize = 4_096;
 /// Upper bound on keys per `delete_docs` call.
 pub(crate) const MAX_KEYS_PER_DELETE: usize = 1_000;
+/// Upper bound on bytes per `admin_upload_dict_chunk` call (ADR 0087 chunk analogy).
+pub const MAX_DICT_CHUNK_BYTES: usize = 1024 * 1024;
+/// Upper bound on the total dictionary blob length (fail-closed runaway guard; the pinned
+/// artifact is 8,045,952 bytes, so 16 MiB leaves comfortable headroom).
+pub(crate) const MAX_DICT_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 /// Pending ops applied per `admin_flush` call; repeat until [`FlushReport::done`].
 pub(crate) const FLUSH_OPS_BUDGET: u64 = 512;
 /// Terms reclaimed per `admin_merge_step` call (budget parameter clamps to this).
@@ -134,10 +155,10 @@ const SPLIT_DEBT_ENTRY_BUDGET: u64 = 1024;
 const SPLIT_DEBT_BYTE_BUDGET: u64 = 16 * 1024 * 1024;
 
 const MAGIC: u64 = u64::from_le_bytes(*b"GLEAPHTX");
-/// Layout 4 (plan 0297 backfill-pull): adds the ADR 0059 §Text build kind durable regions
-/// 14/15 (backfill registration cell + resumable cursor cell). Layouts 1–3 fail loudly at
-/// open; fresh state is required (pre-production rule).
-const LAYOUT_VERSION: u32 = 4;
+/// Layout 5 (plan 0331): adds durable region 16 (analyzer-2 dictionary blob) and the
+/// dictionary fields of [`TextMeta`]. Layouts 1–4 fail loudly at open; fresh state is
+/// required (pre-production rule).
+const LAYOUT_VERSION: u32 = 5;
 /// The single active segment of v0 (`SegmentRow` holder; see module docs).
 const ACTIVE_SEGMENT_ID: u64 = 0;
 const TOMBSTONE_CONTAINER_BITS: usize = 65_536;
@@ -164,6 +185,8 @@ const TEXT_MERGE_CURSOR: MemoryId = MemoryId::new(10);
 const TEXT_CONTROLLER: MemoryId = MemoryId::new(11);
 const TEXT_BLOB_ARENA: MemoryId = MemoryId::new(12);
 const TEXT_TERM_ENTRIES: MemoryId = MemoryId::new(13);
+/// Analyzer-2 dictionary blob (plan 0331); the backfill cells own 14/15 (see `backfill`).
+const TEXT_DICT_BLOB: MemoryId = MemoryId::new(16);
 
 /// Binds one production region through the single `MemoryManager`; exposed so the
 /// sibling [`crate::backfill`] module can bind its own cells on dedicated MemoryIds.
@@ -188,6 +211,7 @@ pub(crate) struct TextMemories<M: ic_stable_structures::Memory> {
     controller: M,
     arena: M,
     term_entries: M,
+    dict_blob: M,
 }
 
 impl TextMemories<Memory> {
@@ -208,6 +232,7 @@ impl TextMemories<Memory> {
             controller: region(TEXT_CONTROLLER),
             arena: region(TEXT_BLOB_ARENA),
             term_entries: region(TEXT_TERM_ENTRIES),
+            dict_blob: region(TEXT_DICT_BLOB),
         }
     }
 }
@@ -223,16 +248,34 @@ struct TextMeta {
     analyzer_id: u32,
     next_docid: u32,
     next_term_id: u32,
+    /// Analyzer-2 dictionary identity: xxh3_128 over the concatenated region-16 chunk
+    /// bytes, pinned at finalize (0 while absent/uploading).
+    dict_digest: u128,
+    /// Dictionary blob byte length (0 while absent/uploading; pinned at finalize).
+    dict_len: u64,
+    /// Dictionary lifecycle (see the module "Analyzer-2 dictionary" section):
+    /// [`DICT_STATE_ABSENT`] / [`DICT_STATE_UPLOADING`] / [`DICT_STATE_FINALIZED`].
+    dict_state: u8,
 }
+
+/// Dictionary lifecycle states of [`TextMeta::dict_state`].
+pub(crate) const DICT_STATE_ABSENT: u8 = 0;
+/// Appending chunks; an interrupted upload fails the open loudly (no resume this slice).
+pub(crate) const DICT_STATE_UPLOADING: u8 = 1;
+/// Digest verified + pinned; the pinned tokenizer is resident (or rebuilt at open).
+pub(crate) const DICT_STATE_FINALIZED: u8 = 2;
 
 impl Default for TextMeta {
     fn default() -> Self {
         Self {
             magic: MAGIC,
             layout_version: LAYOUT_VERSION,
-            analyzer_id: crate::analyzer::ANALYZER_ID,
+            analyzer_id: ANALYZER_UNICODE_BIGRAM,
             next_docid: 0,
             next_term_id: 0,
+            dict_digest: 0,
+            dict_len: 0,
+            dict_state: DICT_STATE_ABSENT,
         }
     }
 }
@@ -376,6 +419,37 @@ impl Storable for DocKeySlot {
     }
 }
 
+/// One controller-supplied chunk of the analyzer-2 dictionary blob (region 16).
+///
+/// Bounded at [`MAX_DICT_CHUNK_BYTES`] (stable `Vec` requires bounded elements) but
+/// stored at the chunk's actual length: zero padding never enters the digest or the
+/// decoded dictionary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DictChunk(Vec<u8>);
+
+impl Storable for DictChunk {
+    const BOUND: SBound = SBound::Bounded {
+        max_size: MAX_DICT_CHUNK_BYTES as u32,
+        is_fixed_size: false,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&self.0)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        assert!(
+            bytes.len() <= MAX_DICT_CHUNK_BYTES,
+            "corrupt dict chunk exceeds the chunk bound"
+        );
+        Self(bytes.into_owned())
+    }
+}
+
 /// Durable pending op. Units are carried verbatim so `admin_flush` applies exactly what
 /// was ingested (the analyzer runs once, at enqueue time). Encoded candid bytes live in
 /// the shared blob arena; the FIFO deque holds only the locator.
@@ -478,6 +552,8 @@ pub struct TextStores<M: ic_stable_structures::Memory> {
     merge_cursor: Cell<Option<u32>, M>,
     controller: Cell<Principal, M>,
     arena: BlobArena<M>,
+    /// Analyzer-2 dictionary blob chunks (region 16, plan 0331).
+    dict_blob: StableVec<DictChunk, M>,
 }
 
 /// Computes the probe digests of one term (dual-domain xxh3_128 over UTF-8 bytes).
@@ -491,8 +567,28 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
     /// or incompatible meta bytes fail closed (assert) before any structure binds its
     /// region, matching pre-production simplicity — layout changes require fresh state,
     /// not migrations.
+    ///
+    /// `init_analyzer` (plan 0331) is the install-arg analyzer id: `None` = default
+    /// unicode-bigram, `Some(id)` validated fail-closed against the registered set and
+    /// recorded into fresh meta (a reopen with a mismatching arg fails loudly). With
+    /// analyzer 2 the open enforces the dictionary lifecycle: an interrupted upload fails
+    /// the open; a finalized dictionary eagerly decompresses + builds the pinned tokenizer.
+    /// [`init_with_analyzer`](Self::init_with_analyzer) with the default unicode-bigram
+    /// pipeline (the pre-0331 open shape; production binds the install arg instead).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn init(memories: TextMemories<M>) -> Self {
-        let meta = Cell::init(memories.meta, TextMeta::default());
+        Self::init_with_analyzer(memories, None)
+    }
+
+    /// [`init`](Self::init) with the install-arg analyzer id (validated ∈ {1, 2}).
+    pub fn init_with_analyzer(memories: TextMemories<M>, init_analyzer: Option<u32>) -> Self {
+        let meta = Cell::init(
+            memories.meta,
+            TextMeta {
+                analyzer_id: init_analyzer.unwrap_or(ANALYZER_UNICODE_BIGRAM),
+                ..TextMeta::default()
+            },
+        );
         let header = meta.get();
         assert!(
             header.magic == MAGIC && header.layout_version == LAYOUT_VERSION,
@@ -500,6 +596,28 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
             header.magic,
             header.layout_version
         );
+        assert!(
+            matches!(
+                header.analyzer_id,
+                ANALYZER_UNICODE_BIGRAM | ANALYZER_VIBRATO
+            ),
+            "text index meta carries unregistered analyzer id {}",
+            header.analyzer_id
+        );
+        if let Some(requested) = init_analyzer {
+            assert!(
+                requested == header.analyzer_id,
+                "init analyzer {} does not match the persisted meta analyzer {}",
+                requested,
+                header.analyzer_id
+            );
+        }
+        if header.analyzer_id == ANALYZER_VIBRATO && header.dict_state == DICT_STATE_UPLOADING {
+            panic!(
+                "analyzer-2 dictionary upload was interrupted (state Uploading); \
+                 the canister cannot open — re-install with fresh state"
+            );
+        }
 
         let mut stores = Self {
             meta,
@@ -517,11 +635,24 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
             merge_cursor: Cell::init(memories.merge_cursor, None),
             controller: Cell::init(memories.controller, Principal::anonymous()),
             arena: BlobArena::init(memories.arena),
+            dict_blob: StableVec::init(memories.dict_blob),
         };
         if stores.segments.is_empty() {
             stores
                 .segments
                 .insert(ACTIVE_SEGMENT_ID, SegmentRow { active: true });
+        }
+        // Eager analyzer-2 dictionary load (plan 0331): a finalized region decodes NOW so
+        // the query budget never pays dictionary construction. Corrupt bytes fail the
+        // open loudly — the canister cannot operate on a broken dictionary.
+        if stores.meta.get().analyzer_id == ANALYZER_VIBRATO
+            && stores.meta.get().dict_state == DICT_STATE_FINALIZED
+        {
+            let compressed = stores.dict_blob_bytes();
+            let raw = <Self>::decode_dict_zstd(&compressed)
+                .unwrap_or_else(|error| panic!("analyzer-2 dictionary open failed: {error}"));
+            crate::analyzer_vibrato::load_dictionary(&raw)
+                .unwrap_or_else(|error| panic!("analyzer-2 dictionary open failed: {error}"));
         }
         stores
     }
@@ -703,6 +834,137 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         }
     }
 
+    // -- Analyzer-2 dictionary upload / finalize (plan 0331) -----------------------------
+
+    /// Shared ruzstd decode of the pinned ZSTD artifact (finalize + open paths).
+    fn decode_dict_zstd(bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let mut decoder = ruzstd::StreamingDecoder::new(bytes)
+            .map_err(|error| format!("dictionary zstd decode failed: {error}"))?;
+        let mut raw = Vec::with_capacity(bytes.len() * 3);
+        decoder
+            .read_to_end(&mut raw)
+            .map_err(|error| format!("dictionary decompress failed: {error}"))?;
+        Ok(raw)
+    }
+
+    /// Concatenated region-16 bytes, trimmed to the recorded upload length (8 MB
+    /// transient at finalize/load; acceptable per plan 0331).
+    fn dict_blob_bytes(&self) -> Vec<u8> {
+        let total = self.meta.get().dict_len as usize;
+        let mut out = Vec::with_capacity(total);
+        for chunk in self.dict_blob.iter() {
+            if out.len() >= total {
+                break;
+            }
+            let take = (total - out.len()).min(MAX_DICT_CHUNK_BYTES);
+            out.extend_from_slice(&chunk.0[..take]);
+        }
+        out
+    }
+
+    /// Controller-guarded append of one dictionary chunk. Fail-closed: analyzer ≠ 2,
+    /// an oversized chunk, a runaway total, or an already-finalized dictionary all
+    /// reject without mutation. Returns the new total blob length.
+    pub fn upload_dict_chunk(&mut self, bytes: Vec<u8>) -> Result<u64, String> {
+        let meta = self.meta.get();
+        if meta.analyzer_id != ANALYZER_VIBRATO {
+            return Err(format!(
+                "dictionary upload requires analyzer {}, this index pins analyzer {}",
+                ANALYZER_VIBRATO, meta.analyzer_id
+            ));
+        }
+        if meta.dict_state == DICT_STATE_FINALIZED {
+            return Err("dictionary already finalized; re-upload requires fresh state".to_string());
+        }
+        if bytes.len() > MAX_DICT_CHUNK_BYTES {
+            return Err(format!(
+                "dictionary chunk of {} bytes exceeds MAX_DICT_CHUNK_BYTES ({MAX_DICT_CHUNK_BYTES})",
+                bytes.len()
+            ));
+        }
+        if bytes.is_empty() {
+            return Err("empty dictionary chunk".to_string());
+        }
+        let new_len = meta.dict_len + bytes.len() as u64;
+        if new_len > MAX_DICT_TOTAL_BYTES {
+            return Err(format!(
+                "dictionary blob would exceed MAX_DICT_TOTAL_BYTES ({MAX_DICT_TOTAL_BYTES})"
+            ));
+        }
+        self.dict_blob.push(&DictChunk(bytes));
+        let mut meta = meta.clone();
+        meta.dict_state = DICT_STATE_UPLOADING;
+        meta.dict_len = new_len;
+        self.meta.set(meta);
+        Ok(new_len)
+    }
+
+    /// Controller-guarded finalize: re-reads the full region, hashes the concatenated
+    /// bytes (xxh3_128) and compares against `expected_digest`. Idempotent no-op on an
+    /// exact Finalized match; a mismatch rejects WITHOUT touching state. On success the
+    /// dictionary decompresses and the pinned tokenizer becomes resident BEFORE the
+    /// Finalized state is recorded, so a corrupt artifact leaves the state untouched.
+    pub fn finalize_dict_upload(&mut self, expected_digest: u128) -> Result<DictStatus, String> {
+        let meta = self.meta.get();
+        if meta.analyzer_id != ANALYZER_VIBRATO {
+            return Err(format!(
+                "dictionary finalize requires analyzer {}, this index pins analyzer {}",
+                ANALYZER_VIBRATO, meta.analyzer_id
+            ));
+        }
+        if meta.dict_state == DICT_STATE_FINALIZED {
+            if meta.dict_digest == expected_digest {
+                return Ok(self.dict_status());
+            }
+            return Err(format!(
+                "dictionary already finalized with digest {:#032x}; expected {:#032x}",
+                meta.dict_digest, expected_digest
+            ));
+        }
+        if meta.dict_state == DICT_STATE_ABSENT {
+            return Err("no dictionary chunks uploaded".to_string());
+        }
+        let bytes = self.dict_blob_bytes();
+        if bytes.len() as u64 != meta.dict_len {
+            return Err(format!(
+                "dictionary blob length {} does not match the recorded upload length {}",
+                bytes.len(),
+                meta.dict_len
+            ));
+        }
+        let digest = xxh3_128(&bytes);
+        if digest != expected_digest {
+            return Err(format!(
+                "dictionary digest mismatch: region hashes {:#032x}, expected {:#032x}",
+                digest, expected_digest
+            ));
+        }
+        // Decompress + build the tokenizer FIRST; a decode failure must not persist.
+        let raw = Self::decode_dict_zstd(&bytes)?;
+        crate::analyzer_vibrato::load_dictionary(&raw)?;
+        let mut meta = meta.clone();
+        meta.dict_state = DICT_STATE_FINALIZED;
+        meta.dict_digest = digest;
+        meta.dict_len = bytes.len() as u64;
+        self.meta.set(meta);
+        Ok(self.dict_status())
+    }
+
+    /// Read-only dictionary status (state / digest / len).
+    pub fn dict_status(&self) -> DictStatus {
+        let meta = self.meta.get();
+        let state = match meta.dict_state {
+            DICT_STATE_ABSENT => crate::DictState::Absent,
+            DICT_STATE_UPLOADING => crate::DictState::Uploading,
+            _ => crate::DictState::Finalized,
+        };
+        crate::DictStatus {
+            state,
+            digest: (meta.dict_state == DICT_STATE_FINALIZED).then_some(meta.dict_digest),
+            len: meta.dict_len,
+        }
+    }
+
     // -- DML: durable pending appends (no searchable state changes here) ------------------
 
     /// Analyzes and appends one durable upsert op per document. Preflight validates every
@@ -714,6 +976,15 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
                 docs.len()
             ));
         }
+        // Analyzer-2 gate (plan 0331): ingestion analyzes every document, so it is
+        // fail-closed until the pinned dictionary is finalized.
+        let meta = self.meta.get();
+        if meta.analyzer_id == ANALYZER_VIBRATO && meta.dict_state != DICT_STATE_FINALIZED {
+            return Err(
+                "analyzer-2 dictionary is not finalized; ingestion is rejected until finalize"
+                    .to_string(),
+            );
+        }
         // Preflight-then-write: analyze everything up front so any cap violation rejects
         // the whole batch before the first durable append.
         let mut prepared = Vec::with_capacity(docs.len());
@@ -724,7 +995,7 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
                     doc.key
                 ));
             }
-            let units = analyze(&doc.text);
+            let units = analyze_pinned(self.meta.get().analyzer_id, &doc.text);
             if units.len() > MAX_UNITS_PER_DOC {
                 return Err(format!(
                     "doc key {} expands to {} units, exceeding MAX_UNITS_PER_DOC \
@@ -976,6 +1247,14 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         if k == 0 {
             return Ok(Vec::new());
         }
+        // Analyzer-2 gate (plan 0331): no query analysis without a finalized dictionary.
+        let meta = self.meta.get();
+        if meta.analyzer_id == ANALYZER_VIBRATO && meta.dict_state != DICT_STATE_FINALIZED {
+            return Err(
+                "analyzer-2 dictionary is not finalized; the index cannot serve queries"
+                    .to_string(),
+            );
+        }
 
         // Caller-built scoring data: identity tf→part table (contribution part = tf)
         // plus the tombstone filter. Both are O(1) to construct per query. The filter
@@ -987,7 +1266,7 @@ impl<M: ic_stable_structures::Memory> TextStores<M> {
         let tombs = TombFilter::new(&self.tombstones);
         let mut seen = std::collections::BTreeSet::new();
         let mut buffers: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
-        for term in analyze(query) {
+        for term in analyze_pinned(self.meta.get().analyzer_id, query) {
             if !seen.insert(term.clone()) {
                 continue;
             }
@@ -1495,19 +1774,33 @@ mod driver_counters {
 
 thread_local! {
     static STORES: RefCell<Option<TextStores<Memory>>> = const { RefCell::new(None) };
+    /// Install-arg analyzer id (plan 0331), captured by the init handler BEFORE the
+    /// lazily-opened store reads it. `None` = default unicode-bigram; post-upgrade
+    /// reopens leave it `None` (the persisted meta is the pinned analyzer SSOT).
+    static INIT_ANALYZER: RefCell<Option<u32>> = const { RefCell::new(None) };
+}
+
+/// Records the install-arg analyzer id for the first open (the init handler must call
+/// it before any `with_stores`).
+pub(crate) fn set_init_analyzer(analyzer_id: Option<u32>) {
+    INIT_ANALYZER.with(|slot| *slot.borrow_mut() = analyzer_id);
 }
 
 /// Runs `f` against the lazily-opened production store. First use performs the one
-/// `MemoryManager::init` and the layout validation; upgrade reopen reuses the same path.
+/// `MemoryManager::init` and the layout validation; upgrade reopen reuses the same path
+/// (the persisted meta stays the pinned analyzer SSOT on reopen).
 pub(crate) fn with_stores<R>(f: impl FnOnce(&mut TextStores<Memory>) -> R) -> R {
+    let init_analyzer = INIT_ANALYZER.with(|slot| *slot.borrow());
     STORES.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let stores = slot.get_or_insert_with(|| TextStores::init(TextMemories::production()));
+        let stores = slot.get_or_insert_with(|| {
+            TextStores::init_with_analyzer(TextMemories::production(), init_analyzer)
+        });
         f(stores)
     })
 }
 
-/// Fourteen fresh, independent in-memory regions for sibling-module tests (the struct
+/// Fresh, independent in-memory regions for sibling-module tests (the struct
 /// fields are private to this module, so construction is offered here instead).
 #[cfg(test)]
 pub(crate) fn fresh_vector_memories() -> TextMemories<ic_stable_structures::VectorMemory> {
@@ -1526,6 +1819,7 @@ pub(crate) fn fresh_vector_memories() -> TextMemories<ic_stable_structures::Vect
         controller: Default::default(),
         arena: Default::default(),
         term_entries: Default::default(),
+        dict_blob: Default::default(),
     }
 }
 

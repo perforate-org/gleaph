@@ -62,13 +62,17 @@ pub struct VectorCanisterInitArgs {
     pub subject_map_seed: u64,
 }
 
-/// Candid init args for a Text canister issued by Provision (plan 0297). The Candid shape mirrors
-/// `text_canister::TextCanisterInitArgs` exactly (`controller`); this module only fixes the wire
-/// shape so Router-built install args decode in the text canister's init handler.
+/// Candid init args for a Text canister issued by Provision (plan 0297; analyzer id per
+/// plan 0331). The Candid shape mirrors `text_canister::TextCanisterInitArgs` exactly
+/// (`controller`, `analyzer_id`); this module only fixes the wire shape so Router-built
+/// install args decode in the text canister's init handler.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct TextCanisterInitArgs {
     /// Controller allowed to call the text canister's admin endpoints (`admin_flush`,
-    /// `admin_merge_step`, and the later backfill steps). Wired to the issuing Router so
-    /// Router-driven backfill/flush work is authorized from day one.
+    /// `admin_merge_step`, and the later backfill/dictionary steps). Wired to the issuing
+    /// Router so Router-driven backfill/flush work is authorized from day one.
     pub controller: Option<Principal>,
+    /// Pinned analyzer id (plan 0331): 1 = unicode-bigram, 2 = vibrato + ipadic lemma
+    /// pipeline. The text canister validates ∈ {1, 2} fail-closed at the open.
+    pub analyzer_id: Option<u32>,
 }

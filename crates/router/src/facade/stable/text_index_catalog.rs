@@ -186,6 +186,13 @@ pub(crate) fn register_text_index(
             "text index target canister must not be the anonymous principal".to_owned(),
         ));
     }
+    // Catalog pin lift (plan 0331): the creation-pinned analyzer must be one of the
+    // admitted set — ids mirror text_canister::{ANALYZER_UNICODE_BIGRAM, ANALYZER_VIBRATO}.
+    if !matches!(analyzer_id, 1 | 2) {
+        return Err(RouterError::InvalidArgument(format!(
+            "unregistered text analyzer id {analyzer_id} (admitted set: 1, 2)"
+        )));
+    }
 
     let key = TextIndexKey::new(graph_id, text_index_id);
     if ROUTER_TEXT_INDEXES.with_borrow(|map| map.contains_key(&key)) {

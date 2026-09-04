@@ -16,7 +16,7 @@ use crate::analyzer::analyze;
 type TestStores = TextStores<VectorMemory>;
 type TestMemories = TextMemories<VectorMemory>;
 
-/// Fourteen fresh, independent regions (stable structures never share memories).
+/// Fresh, independent regions (stable structures never share memories).
 fn fresh_regions() -> TestMemories {
     TestMemories {
         meta: VectorMemory::default(),
@@ -33,6 +33,7 @@ fn fresh_regions() -> TestMemories {
         controller: VectorMemory::default(),
         arena: VectorMemory::default(),
         term_entries: VectorMemory::default(),
+        dict_blob: VectorMemory::default(),
     }
 }
 
@@ -53,6 +54,7 @@ fn reopen(regions: &TestMemories) -> TestStores {
         controller: regions.controller.clone(),
         arena: regions.arena.clone(),
         term_entries: regions.term_entries.clone(),
+        dict_blob: regions.dict_blob.clone(),
     };
     TestStores::init(clone_all())
 }
@@ -1011,4 +1013,131 @@ fn every_swapped_structure_survives_reopen_round_trip() {
         stats.total_units, 6,
         "fox + red×2 + fish + blue (re-interned by whale) + whale = 2+2+2"
     );
+}
+
+// -- Analyzer-2 dictionary lifecycle (plan 0331) ---------------------------------------------
+
+/// The pinned ZSTD artifact bytes (the region-16 payload; the digest is over THESE
+/// bytes), or `None` when the gitignored fetch hasn't run — tests needing the
+/// dictionary SKIP loudly; the E2E fetch helper is fail-closed.
+fn vibrato_artifact() -> Option<Vec<u8>> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../pocket-ic-tests/resources/vibrato/system.dic.zst"
+    ))
+    .ok()
+}
+
+fn upload_all(stores: &mut TestStores, bytes: &[u8]) -> u64 {
+    for chunk in bytes.chunks(MAX_DICT_CHUNK_BYTES) {
+        stores.upload_dict_chunk(chunk.to_vec()).expect("chunk");
+    }
+    bytes.len() as u64
+}
+
+#[test]
+fn analyzer2_dict_upload_finalize_and_gates() {
+    let Some(raw) = vibrato_artifact() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    let regions = fresh_regions();
+    let clone_regions = || TestMemories {
+        meta: regions.meta.clone(),
+        segments: regions.segments.clone(),
+        dict: regions.dict.clone(),
+        postings: regions.postings.clone(),
+        block_max: regions.block_max.clone(),
+        key_by_docid: regions.key_by_docid.clone(),
+        docid_by_key: regions.docid_by_key.clone(),
+        tombstones: regions.tombstones.clone(),
+        stats: regions.stats.clone(),
+        pending: regions.pending.clone(),
+        merge_cursor: regions.merge_cursor.clone(),
+        controller: regions.controller.clone(),
+        arena: regions.arena.clone(),
+        term_entries: regions.term_entries.clone(),
+        dict_blob: regions.dict_blob.clone(),
+    };
+    let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_VIBRATO));
+
+    // Pre-finalize fail-closed gates.
+    assert!(
+        stores.enqueue_ingest(vec![doc(1, "走った")]).is_err(),
+        "ingest must hold until finalize"
+    );
+    assert!(
+        stores.search("走る", 10).is_err(),
+        "search must hold until finalize"
+    );
+    let status = stores.dict_status();
+    assert_eq!(status.state, crate::DictState::Absent);
+    assert_eq!(status.digest, None);
+    assert_eq!(status.len, 0);
+
+    // Finalize without any chunks rejects.
+    assert!(stores.finalize_dict_upload(1).is_err());
+
+    // Oversized chunk rejects without mutation.
+    assert!(
+        stores
+            .upload_dict_chunk(vec![0u8; MAX_DICT_CHUNK_BYTES + 1])
+            .is_err()
+    );
+    assert_eq!(stores.dict_status().state, crate::DictState::Absent);
+
+    // Upload + wrong digest rejects WITHOUT touching state.
+    upload_all(&mut stores, &raw);
+    let uploading = stores.dict_status();
+    assert_eq!(uploading.state, crate::DictState::Uploading);
+    assert_eq!(uploading.len, raw.len() as u64);
+    assert_eq!(uploading.digest, None, "digest pins only at finalize");
+    let expected = xxhash_rust::xxh3::xxh3_128(&raw);
+    assert!(stores.finalize_dict_upload(expected ^ 1).is_err());
+    assert_eq!(stores.dict_status().state, crate::DictState::Uploading);
+
+    // Correct digest finalizes idempotently.
+    let first = stores.finalize_dict_upload(expected).expect("finalize");
+    assert_eq!(first.state, crate::DictState::Finalized);
+    assert_eq!(first.digest, Some(expected));
+    assert_eq!(first.len, raw.len() as u64);
+    let replay = stores.finalize_dict_upload(expected).expect("replay");
+    assert_eq!(first, replay, "exact finalize replay is a no-op");
+
+    // Post-finalize upload and post-finalize re-finalize (other digest) reject.
+    assert!(stores.upload_dict_chunk(vec![1; 16]).is_err());
+
+    // The pinned tokenizer is resident: recall works engine-side.
+    let units = crate::analyzer::analyze_pinned(ANALYZER_VIBRATO, "昨日、公園を全力で走った。");
+    assert!(
+        units.contains(&"走る".to_string()),
+        "lemma recall: {units:?}"
+    );
+
+    // Reopen rebuilds the tokenizer eagerly from the finalized region.
+    let mut reopened = TextStores::init_with_analyzer(regions, Some(ANALYZER_VIBRATO));
+    assert!(crate::analyzer_vibrato::dictionary_loaded());
+    let hits = reopened.search("走った", 10).expect("post-reopen search");
+    // (no documents ingested — the assertion is that analysis did not trap)
+    assert!(hits.is_empty());
+    assert!(reopened.enqueue_ingest(vec![doc(1, "走った")]).is_ok());
+    flush_all(&mut reopened);
+    let hits = reopened.search("走る", 10).expect("recall search");
+    assert_eq!(hits.len(), 1, "走った doc recalls under query 走る");
+    assert_eq!(hits[0].key, 1);
+}
+
+#[test]
+fn analyzer1_rejects_dict_upload_and_search_serves_without_dictionary() {
+    let mut stores = TextStores::init(fresh_regions());
+    assert!(
+        stores.upload_dict_chunk(vec![1; 16]).is_err(),
+        "analyzer-1 index rejects dictionary upload"
+    );
+    assert!(stores.finalize_dict_upload(1).is_err());
+    // Analyzer 1 never needs the dictionary.
+    stores
+        .enqueue_ingest(vec![doc(1, "hello")])
+        .expect("ingest");
+    assert!(stores.search("hello", 10).is_ok());
 }

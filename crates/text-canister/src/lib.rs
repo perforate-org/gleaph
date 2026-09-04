@@ -23,6 +23,7 @@
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
 
 pub mod analyzer;
+mod analyzer_vibrato;
 mod backfill;
 mod guards;
 mod init;
@@ -35,15 +36,38 @@ use candid::CandidType;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 
-pub use analyzer::ANALYZER_ID;
+#[allow(deprecated)] // deprecated alias kept for the v1 test references across the workspace
+pub use analyzer::{ANALYZER_ID, ANALYZER_UNICODE_BIGRAM, ANALYZER_VIBRATO};
 pub use backfill::{
     RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
     TextBackfillSealProof, TextBackfillStatus,
 };
 pub use init::TextCanisterInitArgs;
+pub use state::MAX_DICT_CHUNK_BYTES;
 /// v0 identity-scorer constant weight (see `state` module docs); part of the observable
 /// search contract until catalog-driven scoring lands.
 pub use state::WEIGHT_BASE;
+
+/// Lifecycle of the analyzer-2 dictionary blob (stable region 16, plan 0331).
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DictState {
+    /// Fresh open: no dictionary chunks uploaded yet.
+    Absent,
+    /// Appending chunks; interrupted uploads fail the open loudly (no resume this slice).
+    Uploading,
+    /// Digest verified and pinned; the pinned tokenizer is resident.
+    Finalized,
+}
+
+/// Read-only analyzer-2 dictionary status (`admin_get_dict_status`).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct DictStatus {
+    pub state: DictState,
+    /// xxh3_128 over the concatenated region bytes; `None` before finalize.
+    pub digest: Option<u128>,
+    /// Dictionary blob byte length (pinned upload length while uploading).
+    pub len: u64,
+}
 
 /// One document to index. Keys are caller-owned u64 identities (vertex ids once the
 /// Router wires DML); re-ingesting a key updates it (delete + insert semantics).
@@ -124,6 +148,10 @@ fn init() {
                 .0,
         )
     };
+    // Plan 0331: the pinned analyzer id rides the init args, validated fail-closed at
+    // the open (∈ {1, 2}); an unset/omitted field defaults to the unicode-bigram
+    // pipeline (bare wasm installs such as canbench keep working unchanged).
+    state::set_init_analyzer(args.as_ref().and_then(|a| a.analyzer_id));
     state::with_stores(|stores| stores.set_controller(args.and_then(|a| a.controller)));
 }
 
@@ -157,13 +185,6 @@ fn search(query: String, k: u32) -> Result<Vec<TextHit>, String> {
     state::with_stores(|stores| stores.search(&query, k))
 }
 
-/// Controller-guarded bounded flush step: applies pending ops FIFO into the active
-/// segment. Repeat until `done` to make ingested documents searchable.
-#[update(guard = "guards::guard_controller")]
-fn admin_flush() -> FlushReport {
-    state::with_stores(|stores| stores.flush_step(state::FLUSH_OPS_BUDGET))
-}
-
 /// Controller-guarded bounded tombstone-reclaim step (physical exactness after deletes).
 /// `budget = 0` is rejected fail-closed; larger budgets clamp to
 /// `MAX_MERGE_TERMS_PER_STEP`. Repeat until `done`.
@@ -173,6 +194,38 @@ fn admin_merge_step(budget: u32) -> Result<MergeStepReport, String> {
         return Err("merge budget must be >= 1".to_string());
     }
     Ok(state::with_stores(|stores| stores.merge_step(budget)))
+}
+
+// -- Analyzer-2 dictionary upload (plan 0331, ADR 0087 chunk analogy) -----------------------
+
+/// Controller-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] bytes).
+/// Fail-closed unless this index pins analyzer 2 and the dictionary is not yet
+/// finalized; returns the new total blob length.
+#[update(guard = "guards::guard_controller")]
+fn admin_upload_dict_chunk(bytes: Vec<u8>) -> Result<u64, String> {
+    state::with_stores(|stores| stores.upload_dict_chunk(bytes))
+}
+
+/// Controller-guarded dictionary finalize: verifies the streaming identity
+/// (xxh3_128 over the concatenated region) against `expected_digest`, then eagerly
+/// decompresses + builds the pinned tokenizer. Idempotent on an exact Finalized replay;
+/// a wrong digest rejects WITHOUT touching state.
+#[update(guard = "guards::guard_controller")]
+fn admin_finalize_dict_upload(expected_digest: u128) -> Result<DictStatus, String> {
+    state::with_stores(|stores| stores.finalize_dict_upload(expected_digest))
+}
+
+/// Read-only analyzer-2 dictionary status (state / digest / len).
+#[query]
+fn admin_get_dict_status() -> DictStatus {
+    state::with_stores(|stores| stores.dict_status())
+}
+
+/// Controller-guarded bounded flush step: applies pending ops FIFO into the active
+/// segment. Repeat until `done` to make ingested documents searchable.
+#[update(guard = "guards::guard_controller")]
+fn admin_flush() -> FlushReport {
+    state::with_stores(|stores| stores.flush_step(state::FLUSH_OPS_BUDGET))
 }
 
 /// O(1)-ish counters from the meta cell, stats cell, and pending log length.
@@ -190,7 +243,12 @@ fn get_stats() -> TextIndexStats {
 fn admin_register_text_backfill(
     registration: RegisterTextBackfillRequest,
 ) -> Result<TextBackfillStatus, String> {
-    backfill::with_cells(|cells| backfill::register_text_backfill(cells, registration))
+    backfill::with_cells(|cells| {
+        // Plan 0331: analyzer-2 registrations hold until the dictionary is finalized.
+        let dict_finalized =
+            state::with_stores(|stores| stores.dict_status().state == crate::DictState::Finalized);
+        backfill::register_text_backfill(cells, registration, dict_finalized)
+    })
 }
 
 /// Controller-guarded bounded pull step: up to `min(budget, MAX_INDEX_BUILD_ADVANCE_PAGES)`

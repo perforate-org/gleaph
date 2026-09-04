@@ -221,6 +221,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
+        text_analyzer_id: 1,
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -246,10 +247,24 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
     }
 }
 
-/// Analyzer pipeline identity pinned by every TEXT definition in v1 (ADR 0077 production
-/// pipeline; mirrors `text_canister::ANALYZER_ID`). Later analyzers take new ids behind
-/// explicit DDL options, so this constant stays the only v1 value.
+/// Default analyzer for TEXT definitions with no explicit `ANALYZER` clause (ADR 0077
+/// v0 production pipeline = 1; plan 0331 keeps it the byte-compatible default).
 pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 1;
+
+/// Resolves an `ANALYZER <name>` clause to its registered pipeline id (plan 0331).
+/// Names are implementation names (MySQL `WITH PARSER ngram/mecab` precedent); ids stay
+/// internal. Unknown names fail closed at admission with this recorded wording.
+pub(crate) fn resolve_analyzer_name(name: &str) -> Result<u32, RouterError> {
+    // Ids mirror `text_canister::ANALYZER_UNICODE_BIGRAM` / `ANALYZER_VIBRATO` (the
+    // Router does not depend on the canister crate).
+    match name {
+        "unicode_bigram" => Ok(1),
+        "vibrato" => Ok(2),
+        other => Err(RouterError::InvalidArgument(format!(
+            "unknown ANALYZER name `{other}` (admitted set: unicode_bigram, vibrato)"
+        ))),
+    }
+}
 
 /// Execute Router-owned TEXT index DDL (plan 0297): `CREATE TEXT INDEX` admission and
 /// `DROP TEXT INDEX` catalog removal.
@@ -263,8 +278,17 @@ pub(crate) async fn execute_text_index_ddl_for_graph(
             if_not_exists,
             label,
             property,
+            analyzer,
         } => {
-            execute_create_text_index(graph_id, &index_name, &label, &property, if_not_exists).await
+            execute_create_text_index(
+                graph_id,
+                &index_name,
+                &label,
+                &property,
+                if_not_exists,
+                analyzer.as_deref(),
+            )
+            .await
         }
         TextIndexDdlStatement::Drop {
             index_name,
@@ -292,6 +316,7 @@ pub(crate) async fn execute_create_text_index(
     vertex_label: &str,
     property: &str,
     if_not_exists: bool,
+    analyzer: Option<&str>,
 ) -> Result<(), RouterError> {
     use crate::facade::stable::text_index_catalog;
     use gleaph_graph_kernel::federation::TextIndexId;
@@ -301,6 +326,13 @@ pub(crate) async fn execute_create_text_index(
             "text index name must not be empty".to_owned(),
         ));
     }
+    // Admission-owned analyzer resolution (plan 0331): absent clause = default pipeline
+    // (byte-compatible), a known name resolves to its id, an unknown name fails closed
+    // HERE before any durable or remote effect.
+    let analyzer_id = match analyzer {
+        None => TEXT_INDEX_ANALYZER_V0,
+        Some(name) => resolve_analyzer_name(name)?,
+    };
     let store = RouterStore::new();
     let label_id = store.lookup_vertex_label_id(graph_id, vertex_label)?;
     let property_id = store.lookup_property_id(graph_id, property)?;
@@ -323,7 +355,7 @@ pub(crate) async fn execute_create_text_index(
         {
             let exact = existing.label_id == label_id
                 && existing.property_id == property_id
-                && existing.analyzer_id == TEXT_INDEX_ANALYZER_V0;
+                && existing.analyzer_id == analyzer_id;
             if !exact {
                 return Err(RouterError::Conflict(format!(
                     "text index already exists with a different declaration: {index_name}"
@@ -342,7 +374,7 @@ pub(crate) async fn execute_create_text_index(
     let raw_id = text_index_catalog::allocate_text_index_id()?;
 
     let target = if crate::provisioning::config::get().is_some() {
-        Some(provision_text_canister(graph_id, TextIndexId::new(raw_id)).await?)
+        Some(provision_text_canister(graph_id, TextIndexId::new(raw_id), analyzer_id).await?)
     } else {
         None
     };
@@ -353,7 +385,7 @@ pub(crate) async fn execute_create_text_index(
         index_name_id,
         label_id,
         property_id,
-        TEXT_INDEX_ANALYZER_V0,
+        analyzer_id,
         target,
         if_not_exists,
     )?;
@@ -416,6 +448,7 @@ pub(crate) fn text_index_info_by_name(
 async fn provision_text_canister(
     graph_id: GraphId,
     text_index_id: gleaph_graph_kernel::federation::TextIndexId,
+    analyzer_id: u32,
 ) -> Result<candid::Principal, RouterError> {
     use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
@@ -433,6 +466,7 @@ async fn provision_text_canister(
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
+        text_analyzer_id: analyzer_id,
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -786,6 +820,7 @@ async fn provision_index_canisters(
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
+        text_analyzer_id: 1,
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -1202,6 +1237,61 @@ mod tests {
     }
 
     #[test]
+    fn analyzer_names_resolve_to_registered_ids() {
+        assert_eq!(resolve_analyzer_name("unicode_bigram").expect("bigram"), 1);
+        assert_eq!(resolve_analyzer_name("vibrato").expect("vibrato"), 2);
+        let err = resolve_analyzer_name("nonsense").expect_err("unknown name");
+        match err {
+            RouterError::InvalidArgument(message) => {
+                assert!(
+                    message.contains("unknown ANALYZER name `nonsense`")
+                        && message.contains("unicode_bigram, vibrato"),
+                    "unexpected wording: {message}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_unregistered_analyzer_pins_without_any_row() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.pin";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Doc");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "title",
+        );
+        intern_index_name(graph_id, "pin_test_idx").expect("intern name");
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "Doc")
+            .expect("label");
+        let property_id = store.lookup_property_id(graph_id, "title").expect("prop");
+        let err = crate::facade::stable::text_index_catalog::register_text_index(
+            graph_id,
+            4040,
+            lookup_index_name_id(graph_id, "pin_test_idx").expect("name id"),
+            label_id,
+            property_id,
+            7,
+            None,
+            false,
+        )
+        .expect_err("unregistered analyzer id");
+        assert!(
+            err.to_string().contains("unregistered text analyzer id 7"),
+            "unexpected wording: {err}"
+        );
+        assert!(
+            crate::facade::stable::text_index_catalog::get_text_index(graph_id, 4040).is_none(),
+            "rejected registration must not persist a definition row"
+        );
+    }
+
+    #[test]
     fn text_index_dev_mode_registers_registered_and_exact_replay_is_noop() {
         let store = RouterStore::new();
         let graph_name = "tenant.text.ddl";
@@ -1226,6 +1316,7 @@ mod tests {
             "Document",
             "title",
             false,
+            None,
         ))
         .expect("create text index");
         let info =
@@ -1243,6 +1334,7 @@ mod tests {
             "Document",
             "title",
             false,
+            None,
         ))
         .expect("exact replay");
         assert_eq!(
@@ -1263,6 +1355,7 @@ mod tests {
             "Document",
             "body",
             false,
+            None,
         ))
         .expect_err("differing re-declaration must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
@@ -1291,6 +1384,7 @@ mod tests {
             "MissingLabel",
             "title",
             false,
+            None,
         ))
         .expect_err("unknown label must fail closed");
         assert!(matches!(unknown_label, RouterError::NotFound(_)));
@@ -1311,7 +1405,7 @@ mod tests {
         ))
         .expect("create property index");
         let err = futures::executor::block_on(execute_create_text_index(
-            graph_id, name, "Document", "title", false,
+            graph_id, name, "Document", "title", false, None,
         ))
         .expect_err("property-index-owned name must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
@@ -1341,6 +1435,7 @@ mod tests {
             if_not_exists: true,
             label: "Document".into(),
             property: property.into(),
+            analyzer: None,
         };
 
         futures::executor::block_on(execute_text_index_ddl_for_graph(
@@ -1403,6 +1498,7 @@ mod tests {
             "Document",
             "bio",
             false,
+            None,
         ))
         .expect("create");
         let cursor_before =
@@ -1466,6 +1562,7 @@ mod tests {
             "Document",
             "bio",
             false,
+            None,
         ))
         .expect("create");
         let name_id = lookup_index_name_id(graph_id, "doc_gate_text_idx").expect("name interned");

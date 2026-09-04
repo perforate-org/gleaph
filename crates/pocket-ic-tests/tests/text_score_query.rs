@@ -257,6 +257,10 @@ fn create_text_index_definition(env: &Env) -> TextIndexInfo {
 }
 
 fn get_text_index(env: &Env) -> TextIndexInfo {
+    get_text_index_named(env, INDEX_NAME)
+}
+
+fn get_text_index_named(env: &Env, index_name: &str) -> TextIndexInfo {
     let bytes = env
         .fed
         .pic
@@ -264,7 +268,7 @@ fn get_text_index(env: &Env) -> TextIndexInfo {
             env.fed.router,
             env.fed.admin,
             "get_text_index",
-            Encode!(&GRAPH_NAME.to_string(), &INDEX_NAME.to_string()).expect("encode"),
+            Encode!(&GRAPH_NAME.to_string(), &index_name.to_string()).expect("encode"),
         )
         .unwrap_or_else(|e| panic!("get_text_index on router: {e:?}"));
     Decode!(&bytes, Result<TextIndexInfo, RouterError>)
@@ -335,6 +339,10 @@ fn apply_retrying_busy(
 
 /// Drives the migration to `Applied` within the bounded-step budget.
 fn drive_to_ready(env: &Env, args: &ApplySchemaMigrationArgs) {
+    drive_to_ready_for(env, args, INDEX_NAME)
+}
+
+fn drive_to_ready_for(env: &Env, args: &ApplySchemaMigrationArgs, index_name: &str) {
     let prepare =
         try_apply_once(env, args).unwrap_or_else(|err| panic!("prepare rejected: {err:?}"));
     assert!(matches!(
@@ -342,7 +350,7 @@ fn drive_to_ready(env: &Env, args: &ApplySchemaMigrationArgs) {
         SchemaMigrationApplyStatus::Progress(_)
     ));
     for step in 0..16 {
-        let status_now = get_text_index(env).status;
+        let status_now = get_text_index_named(env, index_name).status;
         if status_now == TextIndexStatusView::Ready {
             return;
         }
@@ -358,7 +366,11 @@ fn drive_to_ready(env: &Env, args: &ApplySchemaMigrationArgs) {
 
 /// Flushes the canister pending log until done so ingested docs become searchable.
 fn flush_until_done(env: &Env) {
-    let canister = get_text_index(env)
+    flush_until_done_for(env, INDEX_NAME)
+}
+
+fn flush_until_done_for(env: &Env, index_name: &str) {
+    let canister = get_text_index_named(env, index_name)
         .canister
         .expect("provisioned text canister attached");
     for _ in 0..16 {
@@ -676,4 +688,322 @@ fn text_score_compound_threshold_topk_lowers_and_ranks() {
         combined_rows,
         "merge must be deterministic"
     );
+}
+
+// -- Plan 0331: ANALYZER vibrato (ANALYZER_ID=2) + stable-resident ipadic dictionary -----
+
+/// The pinned ipadic artifact URL (identical to the plan 0330 spike fetch).
+const VIBRATO_DICT_URL: &str =
+    "https://github.com/daac-tools/vibrato/releases/download/v0.5.0/ipadic-mecab-2_7_0.tar.xz";
+
+/// Returns the pinned `system.dic.zst` bytes from the gitignored
+/// `crates/pocket-ic-tests/resources/` cache, fetching it (curl) when absent.
+/// FAIL-CLOSED: an unreachable artifact aborts the test with fetch instructions —
+/// the vibrato legs never silently skip.
+fn fetch_vibrato_dictionary() -> Vec<u8> {
+    const ARTIFACT: &str = "system.dic.zst";
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("vibrato");
+    let path = dir.join(ARTIFACT);
+    if !path.exists() {
+        std::fs::create_dir_all(&dir).expect("create resources/vibrato");
+        // The tarball carries system.dic.zst at its root; the E2E cache keeps only the
+        // dictionary file itself.
+        let tarball = dir.join("ipadic-mecab-2_7_0.tar.xz");
+        let status = Command::new("curl")
+            .args(["-sL", "-o"])
+            .arg(&tarball)
+            .arg(VIBRATO_DICT_URL)
+            .status()
+            .expect("spawn curl for the ipadic dictionary");
+        assert!(status.success(), "curl fetch of {VIBRATO_DICT_URL} failed");
+        let extracted = Command::new("tar")
+            .args(["-xf"])
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&dir)
+            .status()
+            .expect("spawn tar");
+        assert!(
+            extracted.success(),
+            "tar extract of the ipadic tarball failed"
+        );
+        let extracted_path = dir.join("ipadic-mecab-2_7_0").join(ARTIFACT);
+        std::fs::rename(&extracted_path, &path).expect("move system.dic.zst into place");
+        let _ = std::fs::remove_file(&tarball);
+        let _ = std::fs::remove_dir_all(dir.join("ipadic-mecab-2_7_0"));
+    }
+    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Read-only dictionary status query on the text canister.
+fn get_dict_status(env: &Env, canister: candid::Principal) -> text_canister::DictStatus {
+    let bytes = env
+        .fed
+        .pic
+        .query_call(
+            canister,
+            env.fed.router,
+            "admin_get_dict_status",
+            Encode!(&()).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("admin_get_dict_status: {e:?}"));
+    Decode!(&bytes, text_canister::DictStatus).expect("decode status")
+}
+
+/// Calls a text-canister admin endpoint as the Router (its controller).
+fn call_text_canister<R: candid::CandidType + serde::de::DeserializeOwned>(
+    env: &Env,
+    canister: candid::Principal,
+    method: &str,
+    args: &impl candid::CandidType,
+) -> R {
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            canister,
+            env.fed.router,
+            method,
+            Encode!(args).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("{method} on text canister: {e:?}"));
+    Decode!(&bytes, Result<R, String>)
+        .expect("decode reply")
+        .expect("reply ok")
+}
+
+const VIBRATO_INDEX_NAME: &str = "text_score_vibrato_idx";
+const VIBRATO_MIGRATION_ID: &str = "000104_text_score_vibrato";
+
+#[test]
+fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
+    let wired = bootstrap_with_active_release();
+    let env = Env {
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    // Corpus: two inflected 走った docs and one unrelated (ids ascend with insertion).
+    seed_text_vertex(&env, "毎日公園を走った。");
+    seed_text_vertex(&env, "走った走った走った");
+    seed_text_vertex(&env, "unrelated zebra");
+
+    // LEG 1 — GQL-surface admission with the ANALYZER clause: the provisioned canister
+    // pins analyzer 2 (install-arg flow through Provision).
+    let statement = format!(
+        "CREATE TEXT INDEX {VIBRATO_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER vibrato"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "vibrato-ddl");
+    let info = {
+        let bytes = env
+            .fed
+            .pic
+            .query_call(
+                env.fed.router,
+                env.fed.admin,
+                "get_text_index",
+                Encode!(&GRAPH_NAME.to_string(), &VIBRATO_INDEX_NAME).expect("encode"),
+            )
+            .unwrap_or_else(|e| panic!("get_text_index on router: {e:?}"));
+        Decode!(&bytes, Result<TextIndexInfo, RouterError>)
+            .expect("decode get_text_index")
+            .expect("definition exists")
+    };
+    assert_eq!(info.analyzer_id, 2, "the ANALYZER vibrato clause pins id 2");
+    let canister = info.canister.expect("provisioned canister attached");
+    env.fed.pic.add_cycles(canister, 50_000_000_000_000);
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
+
+    // LEG 2 — fail-closed admission: an unknown analyzer name never reaches a durable
+    // or remote effect.
+    let nonsense = format!(
+        "CREATE TEXT INDEX nonsense_analyzer_idx FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER nonsense"
+    );
+    let err = gleaph_pocket_ic_tests::gql_mutate_as_admin_expect_err(
+        &env.fed,
+        &nonsense,
+        "vibrato-ddl-nonsense",
+    );
+    assert!(
+        err.to_string().contains("unknown ANALYZER name `nonsense`"),
+        "unexpected admission error: {err}"
+    );
+
+    // LEG 3 — canister-side dictionary gates before finalize.
+    // 3a: oversized chunk rejected.
+    let oversized = vec![0u8; 1024 * 1024 + 1];
+    let err: String = {
+        let bytes = env
+            .fed
+            .pic
+            .update_call(
+                canister,
+                env.fed.router,
+                "admin_upload_dict_chunk",
+                Encode!(&oversized).expect("encode"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
+        Decode!(&bytes, Result<u64, String>)
+            .expect("decode reply")
+            .expect_err("oversized chunk must reject")
+    };
+    assert!(
+        err.contains("MAX_DICT_CHUNK_BYTES"),
+        "unexpected chunk error: {err}"
+    );
+    // 3b: backfill registration HOLDS until finalize (recorded wording, no state change).
+    let request = text_canister::RegisterTextBackfillRequest {
+        text_index_id: gleaph_graph_kernel::federation::TextIndexId::new(1),
+        graph_canister: env.fed.graph_source,
+        graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(3),
+        index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(5),
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_100).unwrap(),
+        catalog_epoch: 1,
+        scope: text_canister::TextBackfillScope {
+            label_id: 1,
+            property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(1),
+            analyzer_id: 2,
+        },
+    };
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            canister,
+            env.fed.router,
+            "admin_register_text_backfill",
+            Encode!(&request).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("admin_register_text_backfill: {e:?}"));
+    let hold: Result<text_canister::TextBackfillStatus, String> =
+        Decode!(&bytes, Result<text_canister::TextBackfillStatus, String>).expect("decode reply");
+    let hold = hold.expect_err("pre-finalize registration must hold");
+    assert!(
+        hold.contains("until the ipadic dictionary is finalized"),
+        "unexpected hold wording: {hold}"
+    );
+
+    // Upload the pinned artifact in 1 MiB chunks (8,045,952 bytes = 8 chunks).
+    let dict = fetch_vibrato_dictionary();
+    for (index, chunk) in dict.chunks(1024 * 1024).enumerate() {
+        let total: u64 =
+            call_text_canister(&env, canister, "admin_upload_dict_chunk", &chunk.to_vec());
+        let expected = ((index + 1) * 1024 * 1024).min(dict.len());
+        assert_eq!(total as usize, expected, "append accounting");
+    }
+    let status = get_dict_status(&env, canister);
+    assert_eq!(status.state, text_canister::DictState::Uploading);
+    assert_eq!(status.len, dict.len() as u64);
+    assert_eq!(status.digest, None, "digest pins at finalize only");
+
+    // LEG 4 — finalize with a wrong digest rejects WITHOUT touching state.
+    let wrong_digest = xxhash_rust::xxh3::xxh3_128(&dict) ^ 1;
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            canister,
+            env.fed.router,
+            "admin_finalize_dict_upload",
+            Encode!(&wrong_digest).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
+    let mismatch: Result<text_canister::DictStatus, String> =
+        Decode!(&bytes, Result<text_canister::DictStatus, String>).expect("decode reply");
+    let mismatch = mismatch.expect_err("wrong digest must reject");
+    assert!(
+        mismatch.contains("digest mismatch"),
+        "unexpected: {mismatch}"
+    );
+    let status = get_dict_status(&env, canister);
+    assert_eq!(status.state, text_canister::DictState::Uploading);
+
+    // LEG 5 — correct digest finalizes; an exact replay is an idempotent no-op.
+    // Instruction accounting (plan 0331 validation): cycle delta across the finalize
+    // call covers the zstd decode + tokenizer build of the eager load (recorded in the
+    // plan audit).
+    let digest = xxhash_rust::xxh3::xxh3_128(&dict);
+    let cycles_before = env.fed.pic.cycle_balance(canister);
+    let finalized: text_canister::DictStatus =
+        call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
+    let cycles_after = env.fed.pic.cycle_balance(canister);
+    println!(
+        "plan-0331 finalize (8 MB zstd decode + tokenizer build) cycles: {}",
+        cycles_before.saturating_sub(cycles_after)
+    );
+    assert_eq!(finalized.state, text_canister::DictState::Finalized);
+    assert_eq!(finalized.digest, Some(digest));
+    assert_eq!(finalized.len, dict.len() as u64);
+    let replay: text_canister::DictStatus =
+        call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
+    assert_eq!(replay, finalized, "exact re-finalize is a no-op");
+
+    // LEG 6 — the SAME registration that held before finalize now replays idempotently:
+    // drive the migration (statement carries the matching ANALYZER clause) to Ready.
+    let args = migration_args(
+        VIBRATO_MIGRATION_ID,
+        &format!(
+            "CREATE TEXT INDEX {VIBRATO_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER vibrato"
+        ),
+    );
+    drive_to_ready_for(&env, &args, VIBRATO_INDEX_NAME);
+    assert_eq!(
+        get_text_index_named(&env, VIBRATO_INDEX_NAME).status,
+        TextIndexStatusView::Ready
+    );
+    flush_until_done_for(&env, VIBRATO_INDEX_NAME);
+
+    // LEG 7 — RECALL through GQL: doc 走った ranks under query 走る (lemma shares the
+    // unit), the unrelated doc is absent, deterministic order, alias ride-along intact.
+    let result = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走る", 10));
+    assert_eq!(result.row_count, 2, "both 走った docs recall under 走る");
+    let rows = scored_rows(&result);
+    assert!(rows[0].1 >= rows[1].1, "scores arrive descending");
+    assert!(rows.iter().all(|(_, score)| *score > 0.0));
+    let replay = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走る", 10));
+    assert_eq!(scored_rows(&replay), rows, "recall must be deterministic");
+
+    // The unrelated doc stays out of the candidate set under a discriminating term.
+    let zebra = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("zebra", 10));
+    assert_eq!(zebra.row_count, 1, "zebra still matches its own doc");
+}
+
+#[test]
+fn vibrato_counter_leg_bigram_default_does_not_recall_lemma() {
+    let wired = bootstrap_with_active_release();
+    let env = Env {
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    seed_text_vertex(&env, "毎日公園を走った。");
+
+    // Declare via the bare admin endpoint (analyzer defaults to unicode_bigram).
+    let info = create_text_index_definition(&env);
+    env.fed.pic.add_cycles(
+        info.canister.expect("provisioned canister attached"),
+        20_000_000_000_000,
+    );
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
+
+    // Default admission (no ANALYZER clause): the unicode-bigram pipeline, byte-compatibly.
+    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    let args = migration_args(MIGRATION_ID, &statement);
+    drive_to_ready(&env, &args);
+    assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
+    flush_until_done(&env);
+
+    // Query 走る does NOT match the 走った doc under bigrams ([走っ, った] vs [走る]).
+    let result = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走る", 10));
+    assert_eq!(result.row_count, 0, "bigram counter-leg: no lemma recall");
+    // …while its own surface bigrams match (sanity that the corpus IS indexed).
+    let own = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走っ", 10));
+    assert_eq!(own.row_count, 1, "bigram index matches its own unit");
 }

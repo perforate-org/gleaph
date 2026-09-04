@@ -966,8 +966,36 @@ LIMIT 10
 ```
 
 The TEXT definition itself is declared with the vendor DDL
-`CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)`
+`CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>) [ ANALYZER <ident> ]`
 and removed with `DROP TEXT INDEX <name> [IF EXISTS]`.
+
+### ANALYZER clause (plan 0331)
+
+The optional `ANALYZER <ident>` clause (case-insensitive keyword, identifier token — never a
+numeric id) pins the tokenization pipeline at creation, mirroring MySQL's `WITH PARSER`:
+
+| Name | Id | Pipeline |
+|---|---|---|
+| `unicode_bigram` | 1 | Unicode segmentation + NFKC + lowercase; CJK runs expand to overlapping bigrams (the default, byte-compatible with pre-0331 declarations) |
+| `vibrato` | 2 | vibrato 0.5.2 + ipadic-mecab lemma units (走った ⇄ 走る recall); requires the stable-resident ipadic dictionary (8.0 MB zstd in stable region 16, controller-uploaded) before backfill/ingest/search |
+
+```gql
+CREATE TEXT INDEX jp_docs FOR (v:Document) ON (v.body) ANALYZER vibrato
+```
+
+Contract:
+
+- An absent clause defaults to `unicode_bigram`; names are implementation names resolved at
+  Router admission, ids stay internal (MySQL `WITH PARSER ngram/mecab` precedent).
+- Unknown names fail closed at admission with `unknown ANALYZER name \`<name>\`
+  (admitted set: unicode_bigram, vibrato)` — no durable or remote effect precedes the check.
+- The analyzer is creation-fixed: a later migration statement's clause must resolve to the
+  same pinned id or the admission rejects it; changing analyzers requires a new index +
+  re-backfill.
+- For analyzer 2, backfill registration holds fail-closed until the dictionary is finalized
+  (`admin_upload_dict_chunk` ≤ 1 MiB chunks → `admin_finalize_dict_upload` verifying the
+  xxh3_128 streaming identity); the hold surfaces as retryable migration progress, never a
+  silent skip.
 
 Contract:
 
@@ -1064,6 +1092,7 @@ This expresses the intended flow:
 | 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
 | 9     | Add the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar: feature-gated parsing, owner-only Router execution with catalog/schema validation, grant introspection, and revoke; plan-time enforcement stays deferred to slice 2b | Implemented                                                                                                          |
 | 10    | Add the ADR 0074 slice 3 `GRANT`/`REVOKE EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded authority gates and the synthesized implicit-root introspection marker | Implemented                                                                                                          |
+| 12    | Add the `ANALYZER <name>` clause to `CREATE TEXT INDEX` (plan 0331): optional clause after the ON group, admission-resolved names {unicode_bigram→1, vibrato→2} with fail-closed unknown-name rejection and creation-fixed pinning; analyzer-2 canister lands the vibrato + ipadic lemma pipeline with the stable-resident ZSTD dictionary (chunk upload ≤ 1 MiB + digest-verified finalize, backfill registration gated on finalize) | Implemented (vibrato + unicode_bigram; backfill-hold + fail-closed admission legs in `text_score_query.rs`) |
 | 11    | Add the `text_score(prop, query)` scalar function (plan 0297): generic function-call syntax end-to-end; planner lowering of covered uses into `PlanOp::TextScan` (top-k and threshold modes) with TEXT-coverage-gated seed selection; Router execution resolves `Ready` TEXT definitions, dispatches the definition canister as a same-subnet composite query, merges deterministically under `(score desc, key asc)`, and binds projected score aliases; fail-closed absent resolution with no sequential-scan fallback; vendor DDL `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)` / `DROP TEXT INDEX <name> [IF EXISTS]`. Nested placements, aggregates over scores, and multi-shard text fan-out remain deferred with triggers | Implemented (top-k + threshold + compound threshold-top-k)                                                           |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.

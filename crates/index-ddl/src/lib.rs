@@ -26,9 +26,12 @@ pub enum IndexDdlStatement {
 /// Gleaph-specific `CREATE TEXT INDEX` / `DROP TEXT INDEX` DDL (plan 0297 `backfill-pull`;
 /// ADR 0059 §Text build kind).
 ///
-/// Grammar (recorded decision, 2026-08-26):
-/// `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)`
-/// and `DROP TEXT INDEX <name> [IF EXISTS]`.
+/// Grammar (recorded decision, 2026-08-26; analyzer clause per plan 0331):
+/// `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>) [ ANALYZER <ident> ]`
+/// and `DROP TEXT INDEX <name> [IF EXISTS]`. The optional analyzer clause parses after
+/// the ON group, case-insensitive keyword, identifier token (implementation name, never
+/// a numeric id). An absent clause is `None` = the default analyzer, byte-compatibly
+/// with every pre-0331 statement.
 ///
 /// Deliberately separate from [`IndexDdlStatement`]: a text declaration routes through the
 /// text-canister backfill lifecycle, never the property-posting build.
@@ -39,6 +42,11 @@ pub enum TextIndexDdlStatement {
         if_not_exists: bool,
         label: String,
         property: String,
+        /// Implementation analyzer name pinned at creation (e.g. `vibrato`); `None` =
+        /// the default unicode-bigram pipeline, byte-identical to pre-0331 behavior.
+        /// Name → id resolution (and unknown-name rejection) is admission-owned, never
+        /// parser-owned: the parser only accepts a bare identifier.
+        analyzer: Option<String>,
     },
     Drop {
         index_name: String,
@@ -209,8 +217,9 @@ pub fn try_parse_vector(
 ///
 /// Grammar: `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)`
 /// and `DROP TEXT INDEX <name> [IF EXISTS]`, mirroring the vendor property-index target shape
-/// (`CREATE INDEX person_age FOR (n:Person) ON (n.age)`). The analyzer is creation-fixed by the
-/// Router TEXT catalog (v0 production pipeline) and therefore not part of the syntax.
+/// (`CREATE INDEX person_age FOR (n:Person) ON (n.age)`). The analyzer is creation-fixed
+/// at admission: the optional `ANALYZER <ident>` clause carries the implementation name
+/// and the Router resolves it to the pinned id (plan 0331; absent = default pipeline).
 pub fn try_parse_text(
     query: &str,
 ) -> Option<Result<TextIndexDdlStatement, TextIndexDdlParseError>> {
@@ -236,6 +245,14 @@ fn parse_text(query: &str) -> Result<TextIndexDdlStatement, TextIndexDdlParseErr
         if on_variable != variable {
             return Err(TextIndexDdlParseError::VariableMismatch);
         }
+        // Optional ANALYZER clause (plan 0331): a bare identifier after the ON group;
+        // anything not followed by the keyword stays ordinary trailing-input handling.
+        let analyzer = if cur.try_consume_ascii_ci("ANALYZER") {
+            cur.skip_ws();
+            Some(cur.parse_ident()?)
+        } else {
+            None
+        };
         cur.try_consume(';');
         cur.skip_ws();
         if !cur.is_eof() {
@@ -246,6 +263,7 @@ fn parse_text(query: &str) -> Result<TextIndexDdlStatement, TextIndexDdlParseErr
             if_not_exists,
             label,
             property,
+            analyzer,
         })
     } else if cur.consume_ascii_ci("DROP") {
         cur.expect_ascii_ci("TEXT")?;
@@ -1577,6 +1595,7 @@ mod tests {
                 if_not_exists: false,
                 label: "Person".into(),
                 property: "bio".into(),
+                analyzer: None,
             }
         );
         // Case-insensitive keywords, optional semicolon.
@@ -1609,8 +1628,61 @@ mod tests {
                 if_not_exists: true,
                 label: "Person".into(),
                 property: "bio".into(),
+                analyzer: None,
             }
         );
+    }
+
+    // -- ANALYZER clause (plan 0331) ---------------------------------------------------------
+
+    #[test]
+    fn text_ddl_parses_analyzer_clause_after_on_group() {
+        let parsed =
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER vibrato;")
+                .expect("text DDL")
+                .expect("parse");
+        assert_eq!(
+            parsed,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "Person".into(),
+                property: "bio".into(),
+                analyzer: Some("vibrato".into()),
+            }
+        );
+        // Case-insensitive keyword; case-preserving identifier (admission resolves it).
+        let lowered = try_parse_text(
+            "create text index docs for (v:person) on (v.bio) analyzer UNICODE_BIGRAM",
+        )
+        .expect("text DDL")
+        .expect("parse");
+        assert_eq!(
+            lowered,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "person".into(),
+                property: "bio".into(),
+                analyzer: Some("UNICODE_BIGRAM".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn text_ddl_analyzer_clause_shape_is_fail_closed() {
+        // Numeric ids are never part of the clause: a number is not an identifier token.
+        let numeric = try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER 2")
+            .expect("text DDL")
+            .expect_err("numeric analyzer id");
+        assert!(matches!(numeric, TextIndexDdlParseError::Expected(_)));
+        // Trailing input after the clause still rejects.
+        let trailing = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER vibrato EXTRA",
+        )
+        .expect("recognized")
+        .expect_err("trailing input");
+        assert_eq!(trailing, TextIndexDdlParseError::TrailingInput);
     }
 
     #[test]

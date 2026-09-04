@@ -95,12 +95,27 @@ document records the steady-state contract those imply.
 - All replicated paths (flushes, merges) are fully deterministic: no hash-order iteration, sort
   keys include ids; timers are consensus-executed.
 
-## Analyzer default
+## Analyzers
 
-Unicode segmentation + NFKC + lowercase; CJK character runs expand to overlapping bigrams
-(lone characters stay unigrams); ASCII words whole. Morphological analysis (lindera) is opt-in
-per index definition behind a feature flag (~13 MB wasm for IPADIC). Trigram indexing is a
-separate future index kind, not part of v1.
+Two registered pipelines (creation-fixed per index definition; plan 0330 spike + 0331 landing):
+
+- **`unicode_bigram` (id 1, default)** — Unicode segmentation + NFKC + lowercase; CJK character
+  runs expand to overlapping bigrams (lone characters stay unigrams); ASCII words whole. Trigram
+  indexing is a separate future index kind, not part of v1.
+- **`vibrato` (ANALYZER_ID=2, plan 0331)**: vibrato 0.5.2 + ipadic-mecab lemma units — whole-text
+  NFKC + lowercase pre-pass, per-line tokenization, ipadic base-form (feature column 6) for
+  content words with particles/auxiliaries/symbols dropped. Deterministic and strict-idempotent.
+  The dictionary is NOT in the wasm (engine 1.85 MB canister wasm): the pinned ZSTD artifact
+  (8.0 MB compressed, about $0.0088/month) lives in stable region 16, uploaded via
+  controller-guarded `admin_upload_dict_chunk` (<= 1 MiB/call) + `admin_finalize_dict_upload`
+  (xxh3_128 identity verified at finalize; exact replay idempotent), and eagerly decompressed at
+  open (ruzstd) into the ~52 MB heap-resident tokenizer. The DDL clause contract lives in
+  [extension-syntax.md](../gql/extension-syntax.md).
+
+Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB zstd dictionary /
+51.8 MB heap / ~400k chars/s vs lindera 48 MB wasm (path-only dictionary API, wasm-embedded-only),
+sudachi absent from crates.io + 117 MB dictionary, rule-stemmer smallest but coarse (kanji stems,
+no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
 
 ## Lifecycle and lag semantics (mapping onto derived-state contracts)
 
@@ -119,14 +134,15 @@ rows for TEXT are recorded.
 ## Region map (MemoryId plan, ratified at wiring time)
 
 One `MemoryManager` in the text canister; ≤255 ids; one structure per id. Concrete 16-region
-numbering (layout v4, plan 0297) lives in `crates/text-canister/src/state.rs` next to the manager:
+numbering (layout v5, plan 0331) lives in `crates/text-canister/src/state.rs` next to the manager:
 meta cell · segment registry map · dictionary probes (linear hash map `u128→u32`) · dense term
 entries (canonical string arena ref + df) · postings blob refs · block-max blob refs · dense
 doc-key slots · doc-key→docid linear hash map (`u64→u32`) · tombstone container vector · stats
 cell · pending-ops FIFO deque (payloads in the shared blob arena) · merge-cursor cell ·
 controller cell · shared fixed-chunk blob arena · term-entry vector — plus layout-v4 additions:
 backfill registration cell + resumable cursor cell (MemoryIds 14/15, bound by the backfill
-module through `state::region()`).
+module through `state::region()`) — plus the layout-v5 addition: the analyzer-2 ZSTD dictionary
+blob (MemoryId 16, bounded 1 MiB chunk slots; upload/finalize contract in the analyzer section).
 
 ## Budgets and capacity
 
@@ -134,6 +150,12 @@ Measured @M=2000 docs (seed 20260823 fixture family): build 188.80 M instruction
 m3/top-10 query 15.78 M (tf-scored 17.25 M), storage 141–193 KB logical bytes. Formula model,
 worked examples, and the soft/hard split thresholds (350/400/450 GiB) carry over from
 [capacity-planning.md](capacity-planning.md); TEXT region growth rows are recorded there.
+
+Analyzer-2 landing costs (plan 0331, measured): text-canister wasm 1,745,232 B (pocket-ic build)
+/ 1,851,074 B (canbench build) — inside the ~2 MB gate with NO dictionary bytes embedded;
+dictionary finalize (8.0 MB zstd decode + tokenizer build) measured 4,752,264,345 cycles on
+PocketIC, inside the 300B install budget; heap-resident dictionary after load ~52 MB; transient
+decode peak ~675 MB (plan 0330 spike).
 
 ## Non-goals (v1)
 

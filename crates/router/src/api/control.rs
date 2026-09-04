@@ -470,6 +470,7 @@ async fn register_provisioned_graph(
         release_id: "default".to_owned(),
         owner: args.owner,
         admins: args.admins,
+        text_analyzer_id: 1,
     };
     let response = crate::provisioning::graph::provision_graph_flow(caller, provision_args).await?;
     // Accepted (fresh), Replay (already admitted), and Completed (already acked) all mean the
@@ -556,6 +557,10 @@ async fn create_text_index(
         &vertex_label,
         &property,
         false,
+        // The bare admin endpoint stays byte-compatible with the pre-0331 surface:
+        // no clause = default unicode-bigram pipeline. The `ANALYZER <name>` clause
+        // flows through the GQL DDL surface (execute_text_index_ddl_for_graph).
+        None,
     )
     .await?;
     crate::index_catalog::text_index_info_by_name(graph_id, &index_name)

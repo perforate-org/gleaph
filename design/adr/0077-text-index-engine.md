@@ -2,7 +2,7 @@
 
 Date: 2026-08-24
 Status: accepted
-Last revised: 2026-08-24
+Last revised: 2026-09-04
 
 ## Context
 
@@ -106,9 +106,19 @@ Adopt the **custom segment-LSM inverted index** for the Text Index, as prototype
 4. **Scoring contract**: fixed-point integer scores owned by the index definition catalog
    (fixture parts precomputed outside the physical crate; formula finalized in the engine
    implementation slice).
-5. **Analyzer default**: Unicode segmentation + NFKC/lowercase + CJK character bigram; lindera
-   opt-in behind a feature flag; trigram indexing as a separate future kind. Analyzer identity is
-   part of the index definition and never enters gleaph-gql/planner.
+5. **Analyzer default**: Unicode segmentation + NFKC/lowercase + CJK character bigram;
+   morphological analyzers register as later pipeline ids with an explicit DDL clause;
+   trigram indexing as a separate future kind. Analyzer identity is part of the index
+   definition and never enters gleaph-gql/planner.
+   - Execution note (2026-09-04, plan 0331): the plan 0330 spike (measured on wasm32) selected
+     **vibrato 0.5.2 + ipadic-mecab** over lindera 6.0 (system-dictionary API is path-only — no
+     bytes-based load, so no stable-resident landing shape; engine+dict wasm 48 MB) and over
+     sudachi (crate absent from crates.io; 117 MB small dictionary; wasm build fails on its
+     dynamic plugin loader) and vaporetto (pointwise prediction is not segmentation-consistent;
+     no lemma tag without license-restricted BCCWJ training data). Landed as ANALYZER_ID=2 with
+     the 8.0 MB ZSTD dictionary in stable region 16 (not the wasm: canister 1.85 MB, engine-only
+     vibrato 228 KB per the corrected 0330 audit) and the `ANALYZER <name>` DDL clause
+     (`unicode_bigram` | `vibrato`).
 6. **Partition strategy remains open** (ADR 0054), with docid-range sharding and same-subnet
    scatter-gather as the working assumption.
 

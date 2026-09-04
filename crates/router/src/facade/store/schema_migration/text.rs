@@ -44,29 +44,31 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
     auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
     let ApplySchemaMigrationArgs::V1(args) = args;
 
-    let (index_name, label, property) = match crate::index_ddl::try_parse_text(&args.statement) {
-        Some(Ok(crate::index_ddl::TextIndexDdlStatement::Create {
-            index_name,
-            label,
-            property,
-            ..
-        })) => (index_name, label, property),
-        Some(Ok(crate::index_ddl::TextIndexDdlStatement::Drop { .. })) => {
-            return Err(RouterError::InvalidArgument(
-                "TEXT backfill migrations only accept CREATE TEXT INDEX statements".into(),
-            ));
-        }
-        Some(Err(error)) => {
-            return Err(RouterError::InvalidArgument(format!(
-                "invalid migration CREATE TEXT INDEX syntax: {error}"
-            )));
-        }
-        None => {
-            return Err(RouterError::InvalidArgument(
-                "expected exactly one CREATE TEXT INDEX migration statement".into(),
-            ));
-        }
-    };
+    let (index_name, label, property, analyzer) =
+        match crate::index_ddl::try_parse_text(&args.statement) {
+            Some(Ok(crate::index_ddl::TextIndexDdlStatement::Create {
+                index_name,
+                label,
+                property,
+                analyzer,
+                if_not_exists: _,
+            })) => (index_name, label, property, analyzer),
+            Some(Ok(crate::index_ddl::TextIndexDdlStatement::Drop { .. })) => {
+                return Err(RouterError::InvalidArgument(
+                    "TEXT backfill migrations only accept CREATE TEXT INDEX statements".into(),
+                ));
+            }
+            Some(Err(error)) => {
+                return Err(RouterError::InvalidArgument(format!(
+                    "invalid migration CREATE TEXT INDEX syntax: {error}"
+                )));
+            }
+            None => {
+                return Err(RouterError::InvalidArgument(
+                    "expected exactly one CREATE TEXT INDEX migration statement".into(),
+                ));
+            }
+        };
 
     let checksum = gleaph_migration_api::schema_migration_checksum(
         &args.id,
@@ -137,8 +139,23 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
         ));
     }
 
+    // Admission-owned analyzer resolution (plan 0331): the migration statement's optional
+    // `ANALYZER <name>` clause must resolve to the creation-pinned definition analyzer.
+    // Unknown names fail closed here; a mismatching clause fails closed at admission
+    // (analyzer + dictionary are creation-fixed; changes require a new index).
+    let statement_analyzer_id = match analyzer.as_deref() {
+        None => crate::index_catalog::TEXT_INDEX_ANALYZER_V0,
+        Some(name) => crate::index_catalog::resolve_analyzer_name(name)?,
+    };
+
     // The definition must already exist, be provisioned, and still be awaiting backfill.
     let def = resolve_backfill_definition(graph_id, &index_name, &label, &property)?;
+    if def.analyzer_id != statement_analyzer_id {
+        return Err(RouterError::InvalidArgument(format!(
+            "CREATE TEXT INDEX analyzer {} does not match the pinned definition analyzer {}              (analyzer changes require a new index + re-backfill)",
+            statement_analyzer_id, def.analyzer_id
+        )));
+    }
 
     // Fallible identity resolution BEFORE the first durable write.
     let shards = store.list_live_shards_for_graph_id(graph_id)?;

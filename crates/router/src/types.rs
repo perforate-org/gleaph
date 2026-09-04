@@ -2928,6 +2928,11 @@ pub struct ProvisionGraphArgs {
     pub owner: Principal,
     /// Additional graph admins seeded at registration.
     pub admins: BTreeSet<Principal>,
+    /// Analyzer id baked into the install args of a provisioned TEXT canister
+    /// (plan 0331): 1 = unicode-bigram, 2 = vibrato. Ignored for other resource kinds;
+    /// absent/0 semantics are not part of the contract — the issuer always sets it.
+    #[serde(default)]
+    pub text_analyzer_id: u32,
 }
 
 /// Router ingress response for `provision_graph`: a mirror of `ProvisionAcceptResponse`.
@@ -2982,6 +2987,7 @@ mod outbound_tests {
             release_id: "rel-1".to_owned(),
             owner: Principal::from_slice(&[0xAB; 29]),
             admins: std::collections::BTreeSet::new(),
+            text_analyzer_id: 1,
         };
         let bytes = Encode!(&args).expect("encode ProvisionGraphArgs");
         let decoded: ProvisionGraphArgs =

@@ -247,6 +247,7 @@ pub(crate) async fn create_graph_admission(
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
+        text_analyzer_id: 1,
     };
     create_graph_admission_with(
         caller,
@@ -589,6 +590,7 @@ fn build_install_args_with_router(
                 // mirrors `text_canister::TextCanisterInitArgs` via the shared init-args module.
                 let init = TextCanisterInitArgs {
                     controller: Some(router_principal),
+                    analyzer_id: Some(args.text_analyzer_id),
                 };
                 Encode!(&init).expect("encode TextCanisterInitArgs")
             }
@@ -690,6 +692,7 @@ mod tests {
             release_id: "rel-1".to_owned(),
             owner: Principal::from_slice(&[1; 29]),
             admins: Default::default(),
+            text_analyzer_id: 1,
         }
     }
 
@@ -1442,6 +1445,7 @@ mod tests {
                 release_id: "rel-1".to_owned(),
                 owner: admin,
                 admins: BTreeSet::new(),
+                text_analyzer_id: 1,
             };
             let graph_canister = Principal::from_slice(&[0x50; 29]);
             let created = vec![CreatedResource {
