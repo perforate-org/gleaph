@@ -17,9 +17,8 @@ docs-sync unless noted):
 - Pending ops are an `ic-stable-vec-deque` FIFO of arena locators (plan 0295); op payloads are
   candid-encoded in the shared blob arena. The former `StableBTreeMap<u64 seq, Op>` is gone
   (`StableLog` had no bounded drain; the deque makes bounded drain natural).
-- Layout version 3 (plan 0295): posting codecs carry an inline bi-level skip trailer and hot-path
-  regions moved off stable B-trees; layouts 1–2 fail loudly at open — fresh state required
-  (pre-production rule).
+- (plan 0295): posting codecs carry an inline bi-level skip trailer and hot-path
+  regions moved off stable B-trees — fresh state required
 - v0 keeps one active segment plus a registry marker; multi-segment levels land with merge
   scheduling work.
 - Scoring is weight × tf via docid-aligned block-max parts; tf→part application is inline in the
@@ -29,9 +28,9 @@ docs-sync unless noted):
 - E2E cycle observations (PocketIC, single calls): ingest of 1 doc ≈ 8.3 M cycles (fixed overhead
   dominated — do not extrapolate linearly), flush-to-done ≈ 9.0 M, merge-to-done ≈ 26 M on the
   M=242 lifecycle fixture.
-- Layout version 4 (plan 0297 backfill-pull): adds durable regions 14/15 — the backfill
+- (plan 0297 backfill-pull): adds durable regions 14/15 — the backfill
   registration cell + resumable cursor cell, bound by the backfill module through the shared
-  `state::region()` accessor. Layouts 1–3 fail loudly at open; fresh state required.
+  `state::region()` accessor.
 - DML sync (plan 0297 dml-pending-flush): ops enqueue into a volatile catalog-gated queue;
   the maintenance timer ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`;
   the ack watermark advances only after confirmed delivery and failures requeue the suffix
@@ -184,14 +183,14 @@ rows for TEXT are recorded.
 ## Region map (MemoryId plan, ratified at wiring time)
 
 One `MemoryManager` in the text canister; ≤255 ids; one structure per id. Concrete 16-region
-numbering (layout v5, plan 0331) lives in `crates/text-canister/src/state.rs` next to the manager:
+numbering (plan 0331) lives in `crates/text-canister/src/state.rs` next to the manager:
 meta cell · segment registry map · dictionary probes (linear hash map `u128→u32`) · dense term
 entries (canonical string arena ref + df) · postings blob refs · block-max blob refs · dense
 doc-key slots · doc-key→docid linear hash map (`u64→u32`) · tombstone container vector · stats
 cell · pending-ops FIFO deque (payloads in the shared blob arena) · merge-cursor cell ·
-controller cell · shared fixed-chunk blob arena · term-entry vector — plus layout-v4 additions:
+controller cell · shared fixed-chunk blob arena · term-entry vector — plus the plan 0297 additions:
 backfill registration cell + resumable cursor cell (MemoryIds 14/15, bound by the backfill
-module through `state::region()`) — plus the layout-v5 addition: the analyzer-2 ZSTD dictionary
+module through `state::region()`) — plus the 0331 addition: the analyzer-2 ZSTD dictionary
 blob (MemoryId 16, bounded 1 MiB chunk slots; upload/finalize contract in the analyzer section).
 
 ## Budgets and capacity

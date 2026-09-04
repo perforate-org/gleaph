@@ -26,7 +26,7 @@
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
 //! | 16 | stable `Vec` of dictionary chunks | ANALYZER_ID=2 ZSTD ipadic dictionary blob (append-only during upload, see "Analyzer-2 dictionary") |
 //!
-//! ## Analyzer-2 dictionary (layout 5, plan 0331)
+//! ## Analyzer-2 dictionary (plan 0331)
 //!
 //! The vibrato pipeline keeps its ipadic dictionary OUT of the wasm: region 16 holds the
 //! pinned ZSTD artifact (8.0 MB) appended in controller-supplied chunks (`MAX_DICT_CHUNK_BYTES`
@@ -155,10 +155,12 @@ const SPLIT_DEBT_ENTRY_BUDGET: u64 = 1024;
 const SPLIT_DEBT_BYTE_BUDGET: u64 = 16 * 1024 * 1024;
 
 const MAGIC: u64 = u64::from_le_bytes(*b"GLEAPHTX");
-/// Layout 5 (plan 0331): adds durable region 16 (analyzer-2 dictionary blob) and the
+/// The analyzer-2 dictionary (plan 0331): durable region 16 (analyzer-2 dictionary blob) and the
 /// dictionary fields of [`TextMeta`]. Layouts 1–4 fail loudly at open; fresh state is
 /// required (pre-production rule).
-const LAYOUT_VERSION: u32 = 5;
+// Layout version stays 1 while pre-production (states are disposable — structural changes
+// do not bump; the number resumes meaning as an install-time guard at production).
+const LAYOUT_VERSION: u32 = 1;
 /// The single active segment of v0 (`SegmentRow` holder; see module docs).
 const ACTIVE_SEGMENT_ID: u64 = 0;
 const TOMBSTONE_CONTAINER_BITS: usize = 65_536;

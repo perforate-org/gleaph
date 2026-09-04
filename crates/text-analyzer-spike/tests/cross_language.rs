@@ -11,7 +11,10 @@ fn chinese_and_korean_samples_through_candidates() {
         ("chinese_long", "知识图谱数据库在人工智能中的应用"),
         // Korean: school+particle (agglutination) + a sentence
         ("korean_short", "학교에서"),
-        ("korean_long", "지식 그래프 데이터베이스는 인공지능의 응용이다"),
+        (
+            "korean_long",
+            "지식 그래프 데이터베이스는 인공지능의 응용이다",
+        ),
         // Japanese control: the documented recall pair from plan 0330
         ("japanese_inflected", "走った"),
     ];
@@ -28,9 +31,7 @@ fn chinese_and_korean_samples_through_candidates() {
         .find(|(name, _)| *name == "vibrato")
         .expect("vibrato feature enabled");
     assert!(
-        (vibrato.1)("走った")
-            .iter()
-            .any(|u| u == "走る"),
+        (vibrato.1)("走った").iter().any(|u| u == "走る"),
         "vibrato lemma recall on 走った must yield 走る"
     );
 }
