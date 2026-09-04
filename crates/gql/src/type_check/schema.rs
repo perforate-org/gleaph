@@ -23,9 +23,18 @@ pub trait PropertySchema {
         vec![]
     }
 
-    /// Resolve a node type name to a set of labels.
-    fn resolve_node_type_labels(&self, _type_name: &str) -> Option<Vec<String>> {
-        None
+    /// Resolve a node type name to a set of runtime labels.
+    ///
+    /// This is the label-resolution function shared by schema-side constraint construction and
+    /// pattern-side label resolution: both must go through the same implementation (ADR 0013 §4).
+    ///
+    /// The default is identity — every name resolves to itself — which is correct for schemas
+    /// whose endpoint-constraint label strings are exactly the runtime labels. Schemas with a
+    /// richer vocabulary (node type names and aliases resolving to label sets) override this;
+    /// returning `None` marks the name as outside the schema vocabulary (open-world: a pattern
+    /// label the schema does not know cannot falsify an endpoint constraint).
+    fn resolve_node_type_labels(&self, type_name: &str) -> Option<Vec<String>> {
+        Some(vec![type_name.to_string()])
     }
 
     /// Resolve an edge type name to `(label, from_labels, to_labels)`.

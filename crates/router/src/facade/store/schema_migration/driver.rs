@@ -2830,9 +2830,7 @@ mod tests {
         // rejected), so its build-state row does not exist.
         index_fake.fail_next(
             IndexCallKind::Abort,
-            IndexBuildCallError::Typed(IndexBuildError::Store(
-                IndexBuildStoreError::UnknownBuild,
-            )),
+            IndexBuildCallError::Typed(IndexBuildError::Store(IndexBuildStoreError::UnknownBuild)),
         );
 
         let response = drive(&driver, request).expect("cleanup must converge");

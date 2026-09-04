@@ -1969,3 +1969,125 @@ fn inline_call_exported_alias_preserves_type_for_downstream_exprs() {
         "expected BinaryOpMismatch from exported inline CALL alias, got: {warnings:?}"
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// Endpoint constraints through the unified label resolution (ADR 0013 §4)
+//
+// The schema-side constraint construction and the pattern-side endpoint check
+// must go through the same label-resolution function (`resolve_node_type_labels`).
+// These tests pin the contract on the real DDL-backed schema:
+//   - node type names, aliases, and declared labels all resolve to the same
+//     runtime label set;
+//   - a pattern label outside the graph type vocabulary is open-world and can
+//     never falsify an endpoint constraint (the adr0034_inline_edge_scalar_cost_by
+//     fixture relies on runtime-only labels like CitySrc/CityDst).
+// ════════════════════════════════════════════════════════════════════════
+
+use gleaph_gql::ast::Statement;
+use gleaph_gql::type_check::GraphTypePropertySchema;
+
+fn road_schema() -> GraphTypePropertySchema {
+    let ddl = "CREATE GRAPH TYPE road_type { \
+               NODE City AS city, NODE Town AS town, \
+               DIRECTED EDGE Road LABEL ROAD { distance UINT16 } CONNECTING (city -> town) }";
+    let program = parser::parse(ddl).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let block = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|a| a.body.as_ref())
+        .expect("body");
+    match &block.first {
+        Statement::CreateGraphType(create) => {
+            GraphTypePropertySchema::try_from_definition(&create.definition)
+                .expect("schema construction")
+        }
+        other => panic!("expected CREATE GRAPH TYPE, got {other:?}"),
+    }
+}
+
+#[test]
+fn unified_resolution_maps_type_name_alias_and_label_to_the_same_runtime_labels() {
+    let schema = road_schema();
+    assert_eq!(
+        schema.resolve_node_type_labels("City"),
+        Some(vec!["City".to_string()]),
+        "node type name resolves to its runtime label set"
+    );
+    assert_eq!(
+        schema.resolve_node_type_labels("city"),
+        Some(vec!["City".to_string()]),
+        "node type alias resolves to the same runtime label set"
+    );
+    assert_eq!(
+        schema.resolve_node_type_labels("Town"),
+        Some(vec!["Town".to_string()]),
+    );
+    assert_eq!(
+        schema.resolve_node_type_labels("CitySrc"),
+        None,
+        "a label outside the graph type vocabulary is open-world"
+    );
+}
+
+#[test]
+fn endpoint_conflict_with_schema_known_label_is_impossible() {
+    // ROAD connects City -> Town per the DDL; a Town→City directed pattern is impossible.
+    let warnings = parse_and_check_with_schema(
+        "MATCH (a:Town)-[e:ROAD]->(b:City) RETURN a, b",
+        &road_schema(),
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::ImpossiblePattern),
+        "expected ImpossiblePattern for Town-ROAD->City, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn endpoint_schema_known_labels_in_ddl_direction_are_ok() {
+    let warnings = parse_and_check_with_schema(
+        "MATCH (a:City)-[e:ROAD]->(b:Town) RETURN a, b",
+        &road_schema(),
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::ImpossiblePattern),
+        "unexpected ImpossiblePattern for City-ROAD->Town: {warnings:?}"
+    );
+}
+
+#[test]
+fn endpoint_out_of_vocabulary_pattern_label_is_open_world_not_impossible() {
+    // CitySrc is a runtime label the graph type never declares (the adr0034 fixture style).
+    // The schema cannot know where such a label occurs, so it must not falsify the
+    // ROAD endpoint constraint — this is the exact query that regressed as
+    // `gql_query rejected: InvalidArgument(...cannot connect :CitySrc...)` before the
+    // label-resolution unification.
+    let warnings = parse_and_check_with_schema(
+        "MATCH (a:CitySrc)-[e:ROAD]->(b) RETURN a, b",
+        &road_schema(),
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::ImpossiblePattern),
+        "unexpected ImpossiblePattern for out-of-vocabulary label CitySrc: {warnings:?}"
+    );
+}
+
+#[test]
+fn endpoint_pattern_via_type_alias_resolves_like_the_constraint_side() {
+    // `:city` is the node type alias; the constraint side resolves the same reference
+    // through the same function, so the pattern must stay compatible.
+    let ddl_schema = road_schema();
+    let warnings =
+        parse_and_check_with_schema("MATCH (a:city)-[e:ROAD]->(b:Town) RETURN a, b", &ddl_schema);
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::ImpossiblePattern),
+        "unexpected ImpossiblePattern for alias-based pattern: {warnings:?}"
+    );
+}

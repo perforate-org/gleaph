@@ -195,8 +195,12 @@ pub(crate) fn edge_ordering_policy_in_definition(
 }
 
 /// ADR 0052 §10: rejects a per-label ordering-policy change when the label has
-/// live edges (aggregated `ROUTER_EDGE_LABEL_STATS` live_count > 0). Runs before
-/// any catalog mutation so the DDL fails closed without partial state.
+/// live edges (aggregated `ROUTER_EDGE_LABEL_STATS` live_count > 0).
+/// ADR 0034 Slice 20/24: rejects a conflicting inline-schema re-declaration — a
+/// `CREATE GRAPH TYPE IF NOT EXISTS` / `OR REPLACE` (or a graph-level re-binding)
+/// whose named inline schema differs from the stored record returns `Conflict`
+/// instead of being silently skipped by the catalog's idempotent no-op. Runs
+/// before any catalog mutation so the DDL fails closed without partial state.
 ///
 /// The label-stats projection is Telemetry-class event-sourced state, so a
 /// projection-lag window fails open in the initial implementation (recorded in
@@ -206,7 +210,10 @@ fn enforce_policy_change_restrictions(block: &StatementBlock) -> Result<(), Rout
     for stmt in block.iter_statements() {
         match stmt {
             Statement::CreateGraph(create) => {
-                if !create.or_replace {
+                // A plain re-declaration of an existing graph name reaches the catalog
+                // and fails with `GraphExists`; only the idempotent spellings reach the
+                // silent-skip path and therefore need the stored-schema comparison.
+                if !(create.if_not_exists || create.or_replace) {
                     continue;
                 }
                 let Some(GraphTypeSpec::Inline(new_definition)) = &create.graph_type else {
@@ -220,6 +227,7 @@ fn enforce_policy_change_restrictions(block: &StatementBlock) -> Result<(), Rout
                 else {
                     continue;
                 };
+                RouterStore::preflight_graph_type_vocabulary(graph_id, new_definition)?;
                 reject_changed_policies_with_live_edges(
                     &store,
                     graph_id,
@@ -228,7 +236,7 @@ fn enforce_policy_change_restrictions(block: &StatementBlock) -> Result<(), Rout
                 )?;
             }
             Statement::CreateGraphType(create) => {
-                if !create.or_replace {
+                if !(create.if_not_exists || create.or_replace) {
                     continue;
                 }
                 let type_name = object_name_key(&create.name);
@@ -244,12 +252,15 @@ fn enforce_policy_change_restrictions(block: &StatementBlock) -> Result<(), Rout
                     else {
                         continue;
                     };
-                    reject_changed_policies_with_live_edges(
-                        &store,
-                        graph_id,
-                        &old_definition,
-                        &create.definition,
-                    )?;
+                    RouterStore::preflight_graph_type_vocabulary(graph_id, &create.definition)?;
+                    if create.or_replace {
+                        reject_changed_policies_with_live_edges(
+                            &store,
+                            graph_id,
+                            &old_definition,
+                            &create.definition,
+                        )?;
+                    }
                 }
             }
             _ => {}

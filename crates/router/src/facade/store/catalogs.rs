@@ -38,6 +38,20 @@ fn map_edge_inline_property_profile_err(err: EdgeInlinePropertyProfileStoreError
     RouterError::InvalidArgument(err.to_string())
 }
 
+/// ADR 0034 Slice 20/24: conflict-class profile-store failures surface as
+/// `RouterError::Conflict` on the read-only preflight path (the pinned E2E
+/// contract is `Conflict` for conflicting inline re-declarations); validity-class
+/// failures stay `InvalidArgument`.
+fn map_edge_inline_property_conflict_err(err: EdgeInlinePropertyProfileStoreError) -> RouterError {
+    match err {
+        EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
+        | EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(_) => {
+            RouterError::Conflict(err.to_string())
+        }
+        other => map_edge_inline_property_profile_err(other),
+    }
+}
+
 enum InlineSchema {
     Scalar { scalar_type: InlineScalarType },
     Struct { fields: Vec<InlineStructFieldSpec> },
@@ -386,7 +400,7 @@ impl RouterStore {
                 ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
                     store
                         .validate_proposed_record(graph_id, label_id, &proposed)
-                        .map_err(map_edge_inline_property_profile_err)
+                        .map_err(map_edge_inline_property_conflict_err)
                 })?;
             }
         }

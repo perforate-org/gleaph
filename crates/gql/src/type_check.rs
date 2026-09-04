@@ -1541,3 +1541,49 @@ fn expr_contains_aggregate(expr: &Expr) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod element_id_group_projection_tests {
+    use super::*;
+    use crate::parser;
+    use crate::type_check::schema::NoSchema;
+
+    /// The citation-reach scenario: `ELEMENT_ID(e)` over a quantified edge hop returns the
+    /// whole hop trail, so the declared prepared-op column type must be a list of element
+    /// ids — a scalar Bytes declaration makes every prepared-client decoder reject the row
+    /// (`declared Bytes but received List`).
+    #[test]
+    fn element_id_over_quantified_edge_declares_a_list_column() {
+        let source = "MATCH (src:Document {title: 'x'})-[e:CITES]->{1,3}(dst:Document) \
+                      RETURN ELEMENT_ID(dst) AS document_id, ELEMENT_ID(e) AS cite_edge_id";
+        let program = parser::parse(source).expect("parse");
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .and_then(|a| a.body.as_ref())
+            .expect("body");
+        let inferred = infer_statement_block_output_types_with_schema(block, &NoSchema);
+
+        let bytes = || {
+            Type::NonNull(Box::new(Type::Scalar(ValueType::Bytes {
+                max_length: None,
+            })))
+        };
+        let by_name = |name: &str| {
+            inferred
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or_else(|| panic!("no inferred column {name}"))
+        };
+
+        // The quantified edge variable binds the hop trail (a list of edges), so its
+        // element ids form a list: NonNull(TypedList(NonNull(Bytes))).
+        assert_eq!(
+            by_name("cite_edge_id"),
+            Type::NonNull(Box::new(Type::TypedList(Box::new(bytes()))))
+        );
+        // The singleton vertex element id stays a scalar.
+        assert_eq!(by_name("document_id"), bytes());
+    }
+}

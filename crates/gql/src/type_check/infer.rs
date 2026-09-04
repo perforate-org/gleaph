@@ -1053,11 +1053,9 @@ mod tests {
 
         assert_eq!(
             infer_expr(&env, &expr),
-            Type::NonNull(Box::new(Type::TypedList(Box::new(Type::NonNull(Box::new(
-                Type::Scalar(ValueType::Bytes {
-                    max_length: None
-                })
-            ))))))
+            Type::NonNull(Box::new(Type::TypedList(Box::new(Type::NonNull(
+                Box::new(Type::Scalar(ValueType::Bytes { max_length: None }))
+            )))))
         );
     }
 }

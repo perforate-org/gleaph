@@ -58,13 +58,22 @@ pub struct GraphTypePropertySchema {
     edge_undirected: BTreeMap<String, bool>,
     edge_endpoints: BTreeMap<String, Vec<EndpointLabelsPair>>,
     edge_properties: BTreeMap<String, Vec<PropertyTypeSpec>>,
+    /// The single label-resolution map (ADR 0018 V5): node type names, aliases, and declared
+    /// runtime labels all resolve to the same runtime label set. Both schema-side constraint
+    /// construction (`endpoint_constraint_labels`) and pattern-side label resolution
+    /// (`resolve_node_type_labels`) MUST go through this map so endpoint checks never compare
+    /// a pattern label against a raw type name.
+    node_label_resolution: BTreeMap<String, Vec<String>>,
 }
 
 impl GraphTypePropertySchema {
     /// Build from a graph type definition. Fails if the same edge label key is both directed and undirected.
     pub fn try_from_definition(def: &GraphTypeDefinition) -> Result<Self, String> {
         let node_map = build_node_label_map(def);
-        let mut s = Self::default();
+        let mut s = Self {
+            node_label_resolution: node_map.clone(),
+            ..Self::default()
+        };
 
         for element in &def.elements {
             if let GraphTypeElement::Node(node) = element {
@@ -185,9 +194,21 @@ fn endpoint_constraint_labels(
         return vec![l.clone()];
     }
     if let Some(ref t) = endpoint.type_name {
-        return node_map.get(t).cloned().unwrap_or_else(|| vec![t.clone()]);
+        // Resolve the endpoint reference (node name, alias, or label) to its runtime label
+        // set through the same map that pattern-side label resolution uses.
+        return resolve_node_type_name(node_map, t).unwrap_or_else(|| vec![t.clone()]);
     }
     vec![]
+}
+
+/// The shared label-resolution function: a node type name, alias, or declared runtime label
+/// resolves to the runtime label set of its node type. Returns `None` for names outside the
+/// graph type vocabulary (open-world — the runtime may bind such labels anywhere).
+fn resolve_node_type_name(
+    node_map: &BTreeMap<String, Vec<String>>,
+    name: &str,
+) -> Option<Vec<String>> {
+    node_map.get(name).cloned()
 }
 
 impl PropertySchema for GraphTypePropertySchema {
@@ -215,6 +236,10 @@ impl PropertySchema for GraphTypePropertySchema {
 
     fn edge_is_undirected(&self, label: &str) -> Option<bool> {
         self.edge_undirected.get(label).copied()
+    }
+
+    fn resolve_node_type_labels(&self, type_name: &str) -> Option<Vec<String>> {
+        resolve_node_type_name(&self.node_label_resolution, type_name)
     }
 }
 

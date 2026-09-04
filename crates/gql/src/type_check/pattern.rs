@@ -6,6 +6,7 @@ use crate::types::{EdgeDirection, LabelExpr};
 
 use super::diagnostics::{DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION};
 use super::env::{TypeEnv, WarningKind, WarningProvenance};
+use super::schema::PropertySchema;
 use super::types::{EdgeTypeInfo, NodeTypeInfo, PathTypeInfo, Type};
 
 /// Extract bindings from a `GraphPattern` and insert them into `env`.
@@ -68,9 +69,13 @@ fn extract_from_path_primary(
         // A quantified edge term itself (`-[e:CITES]->{1,3}`) is a group hop: the runtime
         // binds the edge variable to the whole trail (EdgeGroup), so the type-checker env
         // must bind it as a list — exactly like a quantified parenthesized sub-pattern.
-        PathPrimary::Edge(edge) => {
-            bind_edge(env, edge, optional, quantifier, group || quantifier.is_some())
-        }
+        PathPrimary::Edge(edge) => bind_edge(
+            env,
+            edge,
+            optional,
+            quantifier,
+            group || quantifier.is_some(),
+        ),
         PathPrimary::Parenthesized { expr, variable, .. } => {
             let is_quantified = quantifier.is_some();
             if let Some(var) = variable {
@@ -257,7 +262,7 @@ fn check_endpoint_constraints_in_term(env: &mut TypeEnv<'_>, term: &PathTerm) {
             continue; // No labels on either endpoint → cannot falsify.
         }
         let direction = &ep.direction;
-        if !any_endpoint_satisfies(&constraints, &labels_a, &labels_b, direction) {
+        if !any_endpoint_satisfies(env.schema, &constraints, &labels_a, &labels_b, direction) {
             env.warnings.push(super::env::TypeWarning {
                 code: None,
                 message: format!(
@@ -295,10 +300,18 @@ fn as_edge(primary: &PathPrimary) -> Option<&EdgePattern> {
 
 /// Check if any schema endpoint constraint is satisfiable given the pattern labels and direction.
 ///
+/// Pattern labels are resolved through the SAME label-resolution function the schema used to
+/// build its constraint pairs (`resolve_node_type_labels` — node type names, aliases, and
+/// declared labels all resolve to their runtime label sets). A pattern label outside the graph
+/// type vocabulary resolves to `None` and cannot falsify the constraint (open-world: the runtime
+/// permits labels the graph type does not declare), so only schema-known labels participate in
+/// the impossibility check.
+///
 /// For directed edges (`->`), `(from_labels, to_labels)` maps to `(a_labels, b_labels)`.
 /// For reverse (`<-`), it maps to `(b_labels, a_labels)`.
 /// For undirected/any-direction, either orientation is tried.
 fn any_endpoint_satisfies(
+    schema: &dyn PropertySchema,
     constraints: &[(Vec<String>, Vec<String>)],
     labels_a: &[String],
     labels_b: &[String],
@@ -306,12 +319,14 @@ fn any_endpoint_satisfies(
 ) -> bool {
     let forward = || {
         constraints.iter().any(|(from, to)| {
-            labels_subset_matches(labels_a, from) && labels_subset_matches(labels_b, to)
+            labels_subset_matches(schema, labels_a, from)
+                && labels_subset_matches(schema, labels_b, to)
         })
     };
     let reverse = || {
         constraints.iter().any(|(from, to)| {
-            labels_subset_matches(labels_b, from) && labels_subset_matches(labels_a, to)
+            labels_subset_matches(schema, labels_b, from)
+                && labels_subset_matches(schema, labels_a, to)
         })
     };
     match direction {
@@ -326,10 +341,17 @@ fn any_endpoint_satisfies(
     }
 }
 
-/// Check if the pattern labels are a subset of (or compatible with) the constraint labels.
+/// Check if the pattern labels are compatible with the constraint label set.
 /// Empty pattern labels means "unconstrained" → always compatible.
-/// If the pattern specifies labels, every pattern label must appear in the constraint label set.
-fn labels_subset_matches(pattern_labels: &[String], constraint_labels: &[String]) -> bool {
+/// Empty constraint labels means the constraint doesn't restrict labels → compatible.
+/// Each pattern label resolves through the schema's label-resolution map; a resolvable label
+/// is compatible iff the constraint admits one of the runtime labels it denotes, and an
+/// unresolvable label is open-world compatible.
+fn labels_subset_matches(
+    schema: &dyn PropertySchema,
+    pattern_labels: &[String],
+    constraint_labels: &[String],
+) -> bool {
     if pattern_labels.is_empty() {
         return true; // No labels specified → unconstrained, compatible.
     }
@@ -338,7 +360,14 @@ fn labels_subset_matches(pattern_labels: &[String], constraint_labels: &[String]
     }
     pattern_labels
         .iter()
-        .all(|pl| constraint_labels.iter().any(|cl| cl == pl))
+        .all(|pl| match schema.resolve_node_type_labels(pl) {
+            // Schema-known label: the constraint must admit one of the runtime labels it denotes.
+            Some(runtime_labels) => runtime_labels
+                .iter()
+                .any(|rl| constraint_labels.contains(rl)),
+            // Unknown to the schema → open-world, cannot falsify.
+            None => true,
+        })
 }
 
 fn format_labels(labels: &[String]) -> String {
