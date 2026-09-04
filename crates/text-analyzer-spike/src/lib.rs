@@ -89,6 +89,15 @@ pub unsafe extern "C" fn spike_probe(ptr: *const u8, len: usize) -> usize {
             total += a.analyze(text).len();
         }
     }
+    // Candidate B: a reachable call path keeps vibrato (+ ruzstd) linked for wasm size
+    // accounting; the empty byte slice errors at runtime, which is fine for probing —
+    // at landing (plan 0331) the dictionary bytes arrive from stable memory instead.
+    #[cfg(feature = "vibrato")]
+    {
+        if let Ok(a) = vibrato_candidate::Analyzer::from_bytes(&[]) {
+            total += a.analyze(text).len();
+        }
+    }
     let _ = text;
     total
 }

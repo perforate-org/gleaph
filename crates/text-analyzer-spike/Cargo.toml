@@ -10,7 +10,7 @@ default = []
 # Candidate A: dictionary-free rule-based stemmer (UAX #29 + suffix FSA).
 rule = []
 # Candidate B: vibrato 0.5.x + ipadic-mecab (dictionary loaded from bytes).
-vibrato = ["dep:vibrato", "dep:ruzstd", "dep:getrandom"]
+vibrato = ["dep:vibrato", "dep:ruzstd"]
 # Candidate C: sudachi.rs 0.6.11 (via suiko-sudachi crates.io redistribution) + SudachiDict small (dictionary loaded from bytes).
 sudachi = ["dep:sudachi"]
 # Candidate D: lindera 6.0 + ipadic embedded dictionary (wasm-embedded landing shape only;
@@ -22,10 +22,8 @@ unicode-normalization = "0.1"
 unicode-segmentation = "1.12"
 anyhow = "1"
 
-vibrato = { version = "=0.5.2", optional = true }
+vibrato = { version = "=0.5.2", default-features = false, optional = true }
 ruzstd = { version = "0.7", optional = true }
-# wasm32 support for vibrato's transitive ahash -> getrandom 0.2 (see build_wasm.sh note).
-getrandom = { version = "0.2", features = ["js"], optional = true }
 # The official `sudachi` crate is absent from crates.io (verified 2026-09);
 # suiko-sudachi 0.6.11 is the byte-identical unofficial crates.io redistribution of
 # WorksApplications/sudachi.rs v0.6.11 (Apache-2.0, bundled plugins + resources,
