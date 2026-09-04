@@ -252,6 +252,61 @@ pub(crate) fn page_table_remove_all(index_id: u32, index_version: u64, partition
             Err(error) => panic!("partition table chunk remove failed: {error:?}"),
         }
     }
+    // ADR 0093: the partition's code-page table chunks share the teardown (dense as well).
+    for chunk in 0..MAX_PAGE_TABLE_CHUNKS {
+        let key = PartitionKey::code_table_chunk(index_id, index_version, partition_id, chunk);
+        match VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.remove(&key)) {
+            Ok(None) => break,
+            Ok(Some(_)) => {}
+            Err(error) => panic!("partition code table chunk remove failed: {error:?}"),
+        }
+    }
+}
+
+/// Reads one sealed **code-page**-table chunk of a leaf partition; `None` when absent (ADR 0093).
+pub(crate) fn code_table_chunk_get(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    chunk: u32,
+) -> Option<PageTableChunk> {
+    let key = PartitionKey::code_table_chunk(index_id, index_version, partition_id, chunk);
+    match VECTOR_PARTITION_HEADS.with_borrow(|h| h.get(&key).expect("partition heads read")) {
+        None => None,
+        Some(PartitionHeadRecord::Code(table)) => Some(table),
+        Some(other) => panic!(
+            "partition heads: unexpected record kind under code chunk key {key:?}: {other:?}"
+        ),
+    }
+}
+
+/// Writes one sealed **code-page**-table chunk of a leaf partition. `Err(())` surfaces grow failure.
+pub(crate) fn code_table_chunk_put(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    chunk: u32,
+    table: PageTableChunk,
+) -> Result<(), ()> {
+    let key = PartitionKey::code_table_chunk(index_id, index_version, partition_id, chunk);
+    VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
+        h.insert(key, PartitionHeadRecord::Code(table))
+            .map(|_| ())
+            .map_err(|_| ())
+    })
+}
+
+/// Removes one sealed **code-page**-table chunk of a leaf partition.
+pub(crate) fn code_table_chunk_remove(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    chunk: u32,
+) {
+    let key = PartitionKey::code_table_chunk(index_id, index_version, partition_id, chunk);
+    VECTOR_PARTITION_HEADS
+        .with_borrow_mut(|h| h.remove(&key).expect("code table chunk remove"))
+        .expect("code table chunk present");
 }
 
 /// Removes one sealed-page-table chunk of a leaf partition; `Err(())` surfaces grow failure of

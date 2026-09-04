@@ -8,7 +8,7 @@ use gleaph_graph_kernel::vector_index::VectorSearchResult;
 
 use crate::code_tier::QueryCode;
 use crate::facade::stable::PAGE_STORE;
-use crate::facade::stable::page_store::PageScratch;
+use crate::facade::stable::page_store::{CodeRegionGeometry, PageScratch};
 
 const SAMPLE_LIMIT: u32 = 100;
 
@@ -142,21 +142,38 @@ fn tier_on_search_equals_exact_ground_truth_within_envelope() {
     );
     drive_cleanup(INDEX_ID);
 
-    // Every page of the active generation carries a non-degenerate code table.
+    // Every page of the active generation resolves a non-degenerate code entry in the partition's
+    // columnar code region (ADR 0093: codes live beside the row pages, not inside their slots).
     PAGE_STORE.with_borrow(|store| {
-        let version = published_def().active_index_version;
+        let def = published_def();
+        let version = def.active_index_version;
+        let geometry = CodeRegionGeometry::from_def(&def).expect("tier-on geometry");
+        let head = crate::facade::stable::partition_head_get(&crate::records::PartitionKey::new(
+            INDEX_ID, version, 0,
+        ))
+        .unwrap_or_default();
         let mut scratch = PageScratch::new();
-        store.visit_partition_pages_grouped(INDEX_ID, version, 0, &mut scratch, |_, scratch| {
-            assert!(scratch.has_code_table(), "page must carry a code table");
+        for view in store.partition_page_metas(INDEX_ID, version, 0) {
+            let page_key = crate::records::PageKey::new(INDEX_ID, version, 0, view.page_id);
+            let cp = geometry.code_page_of_row_page(view.page_id);
+            let code_seq = store
+                .resolve_code_page_seq(INDEX_ID, version, 0, cp, &geometry, &head)
+                .unwrap_or_else(|| panic!("code page {cp} must resolve"));
+            assert!(
+                store.load_page_stage_a(page_key, &geometry, code_seq, &mut scratch),
+                "code page for row page {} must resolve",
+                view.page_id
+            );
             for slot in 0..scratch.row_count() {
                 if scratch.live_row_info(slot).is_some() {
                     assert!(
-                        scratch.code_slice(slot).iter().any(|b| *b != 0),
-                        "live row {slot} has a non-zero code segment"
+                        scratch.code_slice_at(slot).iter().any(|b| *b != 0),
+                        "live row {slot} of page {} has a non-zero code entry",
+                        view.page_id
                     );
                 }
             }
-        });
+        }
     });
 
     let expected = brute_force(&data, &[6.1, 6.2, 6.3, 6.4], 8);
@@ -237,6 +254,7 @@ fn tier_on_shortlist_capacity_monotonically_improves_recall() {
             5,
             &qc,
             cap,
+            CodeRegionGeometry::from_def(&def).expect("tier-on geometry"),
         );
         let hits = hit_vertices(result);
         hits.iter().filter(|v| expected.contains(v)).count() as f32 / 5.0

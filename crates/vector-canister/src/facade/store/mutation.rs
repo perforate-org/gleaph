@@ -18,7 +18,7 @@ use crate::encoding::EncodingRecord;
 use crate::facade::stable::region_store::RegionError;
 use crate::facade::stable::{
     IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS,
-    definition_store, subject_store,
+    definition_store, page_store::CodeRegionGeometry, subject_store,
 };
 #[cfg(test)]
 use crate::records::PartitionKey;
@@ -275,21 +275,30 @@ pub(crate) fn shape_def_for(
     } else {
         0
     };
+    // ADR 0093: row pages never carry per-row code bytes, so `slots_per_page` is the code-free
+    // capacity in every tier — the columnar code region carries the tier's footprint instead.
+    // The tier-on shape is still fail-closed: the code region must fit one row page's span per
+    // block (validated here via the geometry derivation).
     let slots_per_page = slots_per_page_for(
         base.max_page_bytes,
         base.pad_stride_bytes,
         base.meta_stride_bytes,
         base.run_capacity,
-        code_stride_bytes,
+        0,
     )?;
-    Ok(VectorIndexDef {
+    let shaped = VectorIndexDef {
         levels,
         nlist_fine,
         code_tier,
         code_stride_bytes,
         slots_per_page,
         ..*base
-    })
+    };
+    if code_tier {
+        CodeRegionGeometry::from_def(&shaped)
+            .expect("tier-on code region must fit one block per row page");
+    }
+    Ok(shaped)
 }
 
 /// Run-table width for a def: `min(owned_shards, MAX_RUNS)`, floored at 1. Owned shards come from the

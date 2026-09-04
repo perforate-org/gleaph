@@ -20,9 +20,10 @@
 //!
 //! [`FixedSubjectMapEntry`]: crate::records::FixedSubjectMapEntry
 
-use crate::code_tier::{CODE_AUX_BYTES, QueryCode};
+use crate::code_tier::QueryCode;
 use crate::facade::stable::definition_store;
-use crate::facade::stable::page_store::{PageScratch, RowInfo};
+use crate::facade::stable::page_store::{CodeRegionGeometry, PageScratch, RowInfo};
+use crate::facade::stable::partition_head_get;
 use crate::facade::stable::subject_store;
 use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS};
 use crate::records::{PageKey, PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
@@ -433,6 +434,7 @@ fn scan_partitions(
     max_norm: f32,
     top_k: u32,
     query_code: Option<&QueryCode>,
+    code_geometry: Option<CodeRegionGeometry>,
 ) -> VectorSearchResult {
     let Some(query_code) = query_code else {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
@@ -504,6 +506,7 @@ fn scan_partitions(
         max_norm,
         top_k,
         query_code,
+        code_geometry.expect("tier-on scan requires the ADR 0093 code geometry"),
     )
 }
 
@@ -589,28 +592,19 @@ impl PartialEq for EstimateCandidate {
 
 impl Eq for EstimateCandidate {}
 
-/// Two-tier precision scan (Slice 6 / ADR 0078). Per loaded page:
+/// Two-tier precision scan (ADR 0093): **columnar code region + global shortlist**.
 ///
-/// - **Stage A** scores every live row's code segment with the RaBitQ estimator
-///   ([`QueryCode::estimate`]) and keeps the top-`C` shortlist (`C = clamp(8k, 128..=1024)`; ties
-///   resolve to the lowest subject).
-/// - **Stage B** walks the shortlist in `(estimate asc, subject asc)` order and rescors each row
-///   **exactly** from the same loaded scratch — zero stable re-reads — into the global bounded
-///   top-k with the existing exact tie-break. Two prunings skip Stage B work without ever
-///   changing an emitted result:
-///     * the exact early-exit threshold (the current k-th best exact distance), identical in
-///       kind to the tier-off scan;
-///     * the exact sketch lower bound (Cauchy–Schwarz residual bound over `x̄ = φ_x·x̂ + r_x`):
-///       when it strictly exceeds that threshold, the true distance provably cannot enter the
-///       top-k either (see the module doc in `code_tier.rs`; the bound only ever skips rescoring,
-///       never produces or reorders hits).
+/// Stage A streams, per row page, only `[header | run table | row meta]` plus the page's entries
+/// of the partition's columnar code region — the vector bytes are never read. Every live row's
+/// RaBitQ estimate competes in one **global** bounded heap of capacity `C = clamp(8k, 128..=1024)`
+/// (ties to the largest subject), so the shortlist is the global top-C over the whole scan.
 ///
-/// The final output is the exact top-k over the union of shortlists — approximate over the whole
-/// index by construction (recall is measured in tests/benches), exact within what it emits.
+/// Stage B walks the sorted shortlist (ascending estimate, lowest subject on ties), loads **only
+/// the original pages holding shortlist rows**, and rescores exactly with the unchanged
+/// `(distance, subject)` tie-break and the exact sketch lower-bound pruning. Exactness of what is
+/// emitted is preserved by construction; the global top-C dominates the former per-page top-C.
 ///
-/// A page whose header carries no code table despite a tier-on generation (only possible as
-/// corruption or a torn mixed-generation state) degrades to scoring all its live rows exactly:
-/// correctness first, speed second.
+/// A missing code page for a tier-on generation is corruption and fails closed.
 #[allow(clippy::too_many_arguments)]
 fn scan_partitions_code_tier(
     index_id: u32,
@@ -624,6 +618,7 @@ fn scan_partitions_code_tier(
     max_norm: f32,
     top_k: u32,
     query_code: &QueryCode,
+    geometry: CodeRegionGeometry,
 ) -> VectorSearchResult {
     scan_partitions_code_tier_with_cap(
         index_id,
@@ -638,6 +633,7 @@ fn scan_partitions_code_tier(
         top_k,
         query_code,
         shortlist_capacity(top_k),
+        geometry,
     )
 }
 
@@ -657,15 +653,20 @@ pub(super) fn scan_partitions_code_tier_with_cap(
     top_k: u32,
     query_code: &QueryCode,
     shortlist_cap: usize,
+    geometry: CodeRegionGeometry,
 ) -> VectorSearchResult {
     let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-    // Reused Stage A buffer; cleared per page.
-    let mut shortlist: Vec<EstimateCandidate> = Vec::with_capacity(shortlist_cap);
+    // Global Stage A shortlist: one bounded heap over ALL scanned rows (ADR 0093 SS2).
+    let mut stage_a: BinaryHeap<GlobalEstimateCandidate> = BinaryHeap::with_capacity(shortlist_cap);
     let mut scratch = PageScratch::new();
     // The Slice 8 scalar bound gates L2 pages before any slab read; cosine stays ungated.
     let gate_l2 = metric == VectorMetric::L2Squared;
     PAGE_STORE.with_borrow(|store| {
+        // ---- Stage A pass: code-region bytes only; global top-C estimates ----
         for partition_id in partitions {
+            // The code page covering a row page is resolved once per code page (one code-table
+            // read per `G` row pages), not once per row page.
+            let mut resolved_code: Option<(u64, u32)> = None;
             for view in store.partition_page_metas(index_id, active_index_version, partition_id) {
                 let pre_threshold = if heap.len() as u32 == top_k {
                     heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
@@ -677,44 +678,54 @@ pub(super) fn scan_partitions_code_tier_with_cap(
                     continue;
                 }
                 note_page_skip(false);
-                if !store.load_page(
-                    PageKey::new(index_id, active_index_version, partition_id, view.page_id),
-                    &mut scratch,
-                ) {
-                    continue;
-                }
-                let page_id = view.page_id;
-                if !scratch.has_code_table() {
-                    score_whole_page_exact(
-                        &scratch,
-                        page_id,
-                        partition_id,
+                let page_key =
+                    PageKey::new(index_id, active_index_version, partition_id, view.page_id);
+                let cp = geometry.code_page_of_row_page(view.page_id);
+                if !matches!(&resolved_code, Some((cached, _)) if *cached == cp) {
+                    let head = partition_head_get(&PartitionKey::new(
+                        index_id,
                         active_index_version,
-                        query,
-                        metric,
-                        encoding,
-                        q_norm,
-                        suffix_norm,
-                        max_norm,
-                        top_k,
-                        &mut heap,
-                    );
-                    continue;
+                        partition_id,
+                    ))
+                    .unwrap_or_default();
+                    let seq = store
+                        .resolve_code_page_seq(
+                            index_id,
+                            active_index_version,
+                            partition_id,
+                            cp,
+                            &geometry,
+                            &head,
+                        )
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "vector search: tier-on code page {} of partition ({},{},{}) \
+                                 missing (corrupt code chain)",
+                                cp, index_id, active_index_version, partition_id
+                            )
+                        });
+                    resolved_code = Some((cp, seq));
                 }
-                // ---- Stage A: top-C estimates on this page (worst-evicting bounded heap) ----
-                let mut stage_a: BinaryHeap<EstimateCandidate> =
-                    BinaryHeap::with_capacity(shortlist_cap);
+                let code_page_seq = resolved_code
+                    .as_ref()
+                    .map(|(_, seq)| *seq)
+                    .expect("resolved");
+                scratch.a1_pass = true;
+                if !store.load_page_stage_a(page_key, &geometry, code_page_seq, &mut scratch) {
+                    // A tier-on row page that fails to resolve mid-chain is corruption.
+                    panic!(
+                        "vector search: tier-on row page {} of partition ({},{},{}) failed to \
+                         resolve (corrupt chain)",
+                        view.page_id, index_id, active_index_version, partition_id
+                    );
+                }
                 for slot in 0..scratch.row_count() {
                     let Some(info) = scratch.live_row_info(slot) else {
                         continue;
                     };
-                    let segment = scratch.code_slice(slot);
-                    if segment.len() < CODE_AUX_BYTES {
-                        continue;
-                    }
-                    stage_a.push({
-                        let scored = query_code.score_row(segment);
-                        EstimateCandidate {
+                    let scored = query_code.score_row(scratch.code_slice_at(slot));
+                    stage_a.push(GlobalEstimateCandidate {
+                        inner: EstimateCandidate {
                             estimate: scored.distance,
                             lower_bound: scored.lower_bound,
                             subject: VectorSubject::Vertex {
@@ -722,116 +733,110 @@ pub(super) fn scan_partitions_code_tier_with_cap(
                                 vertex_id: info.vertex_id,
                             },
                             slot,
-                        }
+                        },
+                        partition_id,
+                        page_id: view.page_id,
                     });
                     if stage_a.len() > shortlist_cap {
                         stage_a.pop(); // evicts the worst estimate (ties: largest subject)
                     }
                 }
-                // Deterministic Stage B order: `into_sorted_vec` yields ascending `Ord`, i.e.
-                // best (smallest) estimate first, lowest subject on ties.
-                shortlist = stage_a.into_sorted_vec();
-                // ---- Stage B: same-page exact rerank ----
-                #[cfg(test)]
-                for entry in &shortlist {
-                    let _ = &entry;
-                }
-                for entry in &shortlist {
-                    let threshold = if heap.len() as u32 == top_k {
-                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                    } else {
-                        f32::INFINITY
-                    };
-                    // Exact lower-bound pruning: even the most favorable consistent cosine
-                    // (full Cauchy–Schwarz residual slack) cannot strictly beat the current
-                    // k-th best exact hit.
-                    if threshold != f32::INFINITY && entry.lower_bound > threshold {
-                        continue;
-                    }
-                    let bytes = scratch.vec_slice(entry.slot);
-                    let scale = row_scale(
-                        encoding,
-                        &scratch
-                            .live_row_info(entry.slot)
-                            .expect("shortlist row stays live within one page"),
-                    );
-                    let Some(distance) = score_row(
-                        metric,
-                        encoding,
-                        bytes,
-                        scale,
-                        query,
-                        q_norm,
-                        suffix_norm,
-                        max_norm,
-                        threshold,
-                    ) else {
-                        continue;
-                    };
-                    push_bounded(
-                        &mut heap,
-                        top_k,
-                        Candidate {
-                            distance,
-                            subject: entry.subject,
-                        },
-                    );
-                }
             }
+        }
+        let shortlist: Vec<GlobalEstimateCandidate> = stage_a.into_sorted_vec();
+        crate::facade::stable::page_store::a1_note(0, false, false, shortlist.len() as u64);
+        // ---- Stage B pass: exact rerank over the original pages of the shortlist ----
+        let mut current_page: Option<PageKey> = None;
+        for entry in &shortlist {
+            let threshold = if heap.len() as u32 == top_k {
+                heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+            } else {
+                f32::INFINITY
+            };
+            // Exact lower-bound pruning: even the most favorable consistent cosine cannot
+            // strictly beat the current k-th best exact hit.
+            if threshold != f32::INFINITY && entry.inner.lower_bound > threshold {
+                continue;
+            }
+            let page_key = PageKey::new(
+                index_id,
+                active_index_version,
+                entry.partition_id,
+                entry.page_id,
+            );
+            if current_page != Some(page_key) {
+                scratch.a1_pass = false;
+                if !store.load_page(page_key, &mut scratch) {
+                    panic!(
+                        "vector search: tier-on row page {} of partition ({},{},{}) vanished \
+                         between the scan passes (corrupt chain)",
+                        entry.page_id, index_id, active_index_version, entry.partition_id
+                    );
+                }
+                current_page = Some(page_key);
+            }
+            let bytes = scratch.vec_slice(entry.inner.slot);
+            let scale = row_scale(
+                encoding,
+                &scratch
+                    .live_row_info(entry.inner.slot)
+                    .expect("shortlist row stays live within one page"),
+            );
+            let Some(distance) = score_row(
+                metric,
+                encoding,
+                bytes,
+                scale,
+                query,
+                q_norm,
+                suffix_norm,
+                max_norm,
+                threshold,
+            ) else {
+                continue;
+            };
+            push_bounded(
+                &mut heap,
+                top_k,
+                Candidate {
+                    distance,
+                    subject: entry.inner.subject,
+                },
+            );
         }
     });
     finalize(heap)
 }
 
-/// Exact fallback scorer used when a page unexpectedly lacks its code table: scores every live row
-/// exactly (tier-off semantics), preserving result correctness at the cost of the skipped
-/// first-stage acceleration.
-#[allow(clippy::too_many_arguments)]
-fn score_whole_page_exact(
-    scratch: &PageScratch,
-    _page_id: u64,
-    _partition_id: u32,
-    _active_index_version: u64,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
-    top_k: u32,
-    heap: &mut BinaryHeap<Candidate>,
-) {
-    for slot in 0..scratch.row_count() {
-        let Some(info) = scratch.live_row_info(slot) else {
-            continue;
-        };
-        let threshold = if heap.len() as u32 == top_k {
-            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-        } else {
-            f32::INFINITY
-        };
-        let subject = VectorSubject::Vertex {
-            shard_id: ShardId::new(info.shard_id),
-            vertex_id: info.vertex_id,
-        };
-        let scale = row_scale(encoding, &info);
-        let Some(distance) = score_row(
-            metric,
-            encoding,
-            scratch.vec_slice(slot),
-            scale,
-            query,
-            q_norm,
-            suffix_norm,
-            max_norm,
-            threshold,
-        ) else {
-            continue;
-        };
-        push_bounded(heap, top_k, Candidate { distance, subject });
+/// ADR 0093: [`EstimateCandidate`] plus the page identity a global shortlist needs to find the
+/// row's original page in the Stage B pass.
+struct GlobalEstimateCandidate {
+    inner: EstimateCandidate,
+    partition_id: u32,
+    page_id: u64,
+}
+
+impl Ord for GlobalEstimateCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.inner.cmp(&other.inner)
     }
 }
 
+impl PartialOrd for GlobalEstimateCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for GlobalEstimateCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl Eq for GlobalEstimateCandidate {}
+
+/// Shortlist capacity of the two-tier first stage (Slice 6 contract): `C = clamp(8k, 128..=1024)`.
 /// Total live rows in the active version across `0..nlist` partitions (sum of `PartitionHead.live_len`).
 fn active_live_count(index_id: u32, active: u64, nlist: u32) -> u64 {
     VECTOR_PARTITION_HEADS.with_borrow(|h| {
@@ -1295,6 +1300,7 @@ fn search_impl(
             req,
             def.active_index_version,
             def.leaf_count(),
+            CodeRegionGeometry::from_def(&def),
             &query,
             def.metric,
             def.encoding,
@@ -1423,6 +1429,7 @@ fn exact_subject_scan(
     req: &VectorSearchRequest,
     active_index_version: u64,
     nlist: u32,
+    code_geometry: Option<CodeRegionGeometry>,
     query: &[f32],
     metric: VectorMetric,
     encoding: VectorEncoding,
@@ -1443,6 +1450,7 @@ fn exact_subject_scan(
         max_norm,
         req.top_k,
         query_code,
+        code_geometry,
     )
 }
 
@@ -1470,6 +1478,7 @@ fn partition_page_scan(
             req,
             def.active_index_version,
             def.leaf_count(),
+            CodeRegionGeometry::from_def(def),
             query,
             def.metric,
             def.encoding,
@@ -1512,6 +1521,7 @@ fn partition_page_scan(
         max_norm,
         req.top_k,
         query_code,
+        CodeRegionGeometry::from_def(def),
     )
 }
 

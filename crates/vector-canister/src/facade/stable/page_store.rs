@@ -43,14 +43,14 @@
 
 use super::memory::{Memory, init_row_slab};
 use crate::facade::stable::{
-    VECTOR_PARTITION_HEADS, page_table_chunk_get, page_table_chunk_put, page_table_remove_all,
-    partition_head_get, partition_head_insert, partition_head_remove, slab_free_anchor_get,
-    slab_free_anchor_set,
+    VECTOR_PARTITION_HEADS, code_table_chunk_get, code_table_chunk_put, page_table_chunk_get,
+    page_table_chunk_put, page_table_remove_all, partition_head_get, partition_head_insert,
+    partition_head_remove, slab_free_anchor_get, slab_free_anchor_set,
 };
 use crate::records::{
-    ENTRIES_PER_TABLE_CHUNK, MAX_PAGE_TABLE_CHUNKS, PARTITION_LEVEL_PAGE_TABLE_BASE, PageKey,
-    PageTableChunk, PageTableEntry, PartitionHead, PartitionHeadRecord, PartitionKey, SlotRef,
-    VectorIndexDef,
+    ENTRIES_PER_TABLE_CHUNK, MAX_PAGE_TABLE_CHUNKS, PARTITION_LEVEL_CODE_TABLE_BASE,
+    PARTITION_LEVEL_PAGE_TABLE_BASE, PageKey, PageTableChunk, PageTableEntry, PartitionHead,
+    PartitionHeadRecord, PartitionKey, SlotRef, VectorIndexDef,
 };
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEncoding, VectorPartitionHealthStep, VectorPartitionPageHealth,
@@ -64,6 +64,7 @@ use ic_stable_vector_page_store::{
     SlabHeader, VertexPayload, header::MAX_META_STRIDE, read_run,
 };
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -73,6 +74,201 @@ use canbench_rs::bench_scope;
 /// to this budget (`DEFAULT_MAX_PAGE_BYTES`), so `page_span ≤ BLOCK_LEN` holds by construction
 /// and is re-validated fail-closed at reservation.
 const BLOCK_LEN: u64 = crate::facade::store::DEFAULT_MAX_PAGE_BYTES as u64;
+
+/// On-slab header of one columnar code page (ADR 0093): `[VCP1][capacity][code_stride][rows]`.
+/// Code pages live in the same slab block space as row pages (one block each), tracked by the
+/// partition's sealed code-page table (`PARTITION_LEVEL_CODE_TABLE_BASE`) plus the head's
+/// `mutable_code_seq` tail mirror. `capacity` is the fixed entry capacity (`row_capacity ×
+/// row_pages_per_code_page`); `rows` counts consumed entry ADDRESSES (short sealed row pages
+/// leave address holes whose entries stay unwritten — Stage A skips them via row meta).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CodePageHeader {
+    capacity: u32,
+    code_stride: u32,
+    rows: u32,
+}
+
+impl CodePageHeader {
+    const MAGIC: [u8; 3] = *b"VCP";
+    const VERSION: u8 = 1;
+    pub(crate) const SIZE: usize = 16;
+
+    fn new(capacity: u32, code_stride: u32, rows: u32) -> Self {
+        assert!(code_stride > 0, "code page requires a positive code stride");
+        assert!(
+            Self::SIZE + capacity as usize * code_stride as usize <= BLOCK_LEN as usize,
+            "code page span exceeds the uniform block length"
+        );
+        assert!(rows <= capacity, "code page rows exceed capacity");
+        Self {
+            capacity,
+            code_stride,
+            rows,
+        }
+    }
+
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[..3].copy_from_slice(&Self::MAGIC);
+        out[3] = Self::VERSION;
+        out[4..8].copy_from_slice(&self.capacity.to_le_bytes());
+        out[8..12].copy_from_slice(&self.code_stride.to_le_bytes());
+        out[12..16].copy_from_slice(&self.rows.to_le_bytes());
+        out
+    }
+
+    fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
+        assert_eq!(
+            &bytes[..3],
+            &Self::MAGIC,
+            "vector code page: bad magic (corrupt or pre-0093 layout)"
+        );
+        assert_eq!(bytes[3], Self::VERSION, "vector code page: unknown version");
+        let header = Self {
+            capacity: u32::from_le_bytes(bytes[4..8].try_into().expect("capacity")),
+            code_stride: u32::from_le_bytes(bytes[8..12].try_into().expect("code_stride")),
+            rows: u32::from_le_bytes(bytes[12..16].try_into().expect("rows")),
+        };
+        assert!(
+            Self::SIZE + header.capacity as usize * header.code_stride as usize
+                <= BLOCK_LEN as usize,
+            "vector code page: header span exceeds the block"
+        );
+        assert!(
+            header.rows <= header.capacity,
+            "vector code page: rows {} exceed capacity {} (corrupt header)",
+            header.rows,
+            header.capacity
+        );
+        header
+    }
+}
+
+/// ADR 0093 columnar code-region geometry, derived purely from the generation def (fail-closed
+/// when even one row page's code span does not fit one block).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CodeRegionGeometry {
+    /// Row-page capacity (`def.slots_per_page`); row pages never straddle code pages.
+    pub(crate) row_capacity: u32,
+    /// Row-page identity/liveness prefix length (`[header | run table | row meta]`, the
+    /// `[0, vector_bytes_offset)` span) — derived from the def so Stage A reads the prefix in
+    /// one stable read without a separate header read.
+    pub(crate) row_meta_prefix: u32,
+    /// Row pages covered by one code page (`G ≥ 1`).
+    pub(crate) row_pages_per_code_page: u32,
+    /// Code entries per code page (`G × row_capacity` = the code page header's `capacity`).
+    pub(crate) code_rows_per_page: u32,
+    /// Frozen per-entry code width (`def.code_stride_bytes`).
+    pub(crate) code_stride: u32,
+}
+
+impl CodeRegionGeometry {
+    /// Derives the geometry from a tier-on def; `None` keeps the tier-off (no code region) shape.
+    /// Fail-closed when one row page's code span does not fit a single block.
+    pub(crate) fn from_def(def: &VectorIndexDef) -> Option<Self> {
+        if !def.has_code_tier() || def.code_stride_bytes == 0 {
+            return None;
+        }
+        let row_capacity = def.slots_per_page;
+        assert!(row_capacity > 0, "vector code region: empty row pages");
+        let per_row = def.code_stride_bytes as usize;
+        let budget = (BLOCK_LEN as usize).saturating_sub(CodePageHeader::SIZE);
+        let row_pages = budget / (row_capacity as usize * per_row);
+        assert!(
+            row_pages >= 1,
+            "vector code region: one row page's code span ({}) does not fit one block",
+            row_capacity as usize * per_row
+        );
+        let prefix = PAGE_HEADER_SIZE
+            + def.run_capacity as usize * 8
+            + row_capacity as usize * def.meta_stride_bytes as usize;
+        let row_meta_prefix = prefix.next_multiple_of(16) as u32;
+        Some(Self {
+            row_capacity,
+            row_meta_prefix,
+            row_pages_per_code_page: row_pages as u32,
+            code_rows_per_page: row_capacity * row_pages as u32,
+            code_stride: def.code_stride_bytes,
+        })
+    }
+
+    /// Code page id holding global entry index `e` (`e = page_id × row_capacity + slot`).
+    pub(crate) fn code_page_of_entry(&self, entry: u64) -> u64 {
+        entry / u64::from(self.code_rows_per_page)
+    }
+
+    /// Entry offset within its code page.
+    pub(crate) fn entry_offset(&self, entry: u64) -> u64 {
+        entry % u64::from(self.code_rows_per_page)
+    }
+
+    /// The code page covering row page `page_id` (row pages never straddle code pages).
+    pub(crate) fn code_page_of_row_page(&self, page_id: u64) -> u64 {
+        page_id / u64::from(self.row_pages_per_code_page)
+    }
+}
+
+/// ADR 0093 verification byte-streaming counters (Stage A / Stage B attribution for the canbench
+/// targets, gated off the production build per the ADR's landing review).
+#[cfg(feature = "canbench")]
+#[derive(Clone, Copy)]
+pub(crate) struct A1ByteStats {
+    pub(crate) stage_a_bytes: u64,
+    pub(crate) stage_b_bytes: u64,
+    pub(crate) stage_a_pages: u64,
+    pub(crate) stage_b_pages: u64,
+    pub(crate) shortlist_rows: u64,
+}
+
+#[cfg(feature = "canbench")]
+thread_local! {
+    static A1_BYTES: std::cell::Cell<A1ByteStats> = const {
+        std::cell::Cell::new(A1ByteStats {
+            stage_a_bytes: 0,
+            stage_b_bytes: 0,
+            stage_a_pages: 0,
+            stage_b_pages: 0,
+            shortlist_rows: 0,
+        })
+    };
+}
+
+/// Resets the byte-streaming counters (verification benches).
+#[cfg(feature = "canbench")]
+pub(crate) fn a1_reset_byte_stats() {
+    A1_BYTES.set(A1ByteStats {
+        stage_a_bytes: 0,
+        stage_b_bytes: 0,
+        stage_a_pages: 0,
+        stage_b_pages: 0,
+        shortlist_rows: 0,
+    });
+}
+
+/// Snapshot of the byte-streaming counters (verification benches).
+#[cfg(feature = "canbench")]
+pub(crate) fn a1_byte_stats() -> A1ByteStats {
+    A1_BYTES.get()
+}
+
+#[cfg(feature = "canbench")]
+pub(crate) fn a1_note(read_bytes: u64, stage_a: bool, page: bool, shortlist_rows: u64) {
+    let mut s = A1_BYTES.get();
+    if stage_a {
+        s.stage_a_bytes += read_bytes;
+        s.stage_a_pages += u64::from(page);
+    } else {
+        s.stage_b_bytes += read_bytes;
+        s.stage_b_pages += u64::from(page);
+    }
+    s.shortlist_rows += shortlist_rows;
+    A1_BYTES.set(s);
+}
+
+/// Production builds compile the accounting away entirely (no hot-loop cost).
+#[cfg(not(feature = "canbench"))]
+#[inline(always)]
+pub(crate) fn a1_note(_read_bytes: u64, _stage_a: bool, _page: bool, _shortlist_rows: u64) {}
 
 /// Physical base address of block `seq`.
 fn block_offset(seq: u32) -> u64 {
@@ -303,6 +499,14 @@ pub(crate) struct PageScratch {
     /// run `i`, so runs tile `[0, last]` contiguously. Built once per `load` (O(runs), at most
     /// `MAX_RUNS` entries).
     run_prefix: Vec<u32>,
+    /// ADR 0093: which scan pass the current load belongs to (byte accounting only, consumed by
+    /// the canbench-gated counters).
+    #[cfg_attr(not(feature = "canbench"), allow(dead_code))]
+    pub(crate) a1_pass: bool,
+    /// ADR 0093: resident columnar code span (Stage A), loaded separately from row pages.
+    code_buf: Vec<u8>,
+    code_span_offset: u32,
+    code_span_stride: u32,
 }
 
 impl PageScratch {
@@ -315,6 +519,10 @@ impl PageScratch {
             run_count: 0,
             row_count: 0,
             run_prefix: Vec::new(),
+            a1_pass: true,
+            code_buf: Vec::new(),
+            code_span_offset: 0,
+            code_span_stride: 0,
         }
     }
 
@@ -324,6 +532,8 @@ impl PageScratch {
         let layout = PageLayout::new(header).expect("valid page layout");
         self.buf.resize(layout.page_len(), 0);
         slab.read(base, &mut self.buf[..layout.page_len()]);
+        // ADR 0093 verification byte accounting: attribute the streamed page to the tagged pass.
+        a1_note(layout.page_len() as u64, self.a1_pass, true, 0);
         self.layout = layout;
         self.run_count = header.run_count;
         self.row_count = row_count;
@@ -338,6 +548,77 @@ impl PageScratch {
                 .expect("run prefix overflow");
             self.run_prefix.push(end);
         }
+    }
+
+    /// ADR 0093 Stage A: loads one row page's code-entry span `[offset, offset + count)` from its
+    /// columnar code page (header read for validation + the span). Entry addresses beyond the
+    /// header's consumed count are holes (unwritten slots of short sealed row pages) and are
+    /// never consulted by the caller (bounded by the row page's `row_count`).
+    pub(crate) fn load_code_span(
+        &mut self,
+        slab: &Memory,
+        base: u64,
+        code_stride: u32,
+        offset: u32,
+        count: u32,
+    ) {
+        // The span alone is streamed: the code page header is validated at reopen (fail-closed)
+        // and its geometry is def-frozen, so the scan needs no per-page header read. Entries for
+        // live rows are always written; holes (short sealed row pages) are never consulted.
+        let stride = code_stride as usize;
+        let span = count as usize * stride;
+        self.code_buf.resize(span, 0);
+        slab.read(
+            base + CodePageHeader::SIZE as u64 + u64::from(offset) * u64::from(code_stride),
+            &mut self.code_buf[..span],
+        );
+        self.code_span_offset = offset;
+        self.code_span_stride = code_stride;
+        a1_note(span as u64, self.a1_pass, false, 0);
+    }
+
+    /// Zero-copy slice of one code entry of the resident code-page span (relative index).
+    pub(crate) fn code_slice_at(&self, entry: u32) -> &[u8] {
+        let stride = self.code_span_stride as usize;
+        let start = entry as usize * stride;
+        &self.code_buf[start..start + stride]
+    }
+
+    /// ADR 0093 Stage A: loads one row page's identity/liveness prefix
+    /// `[header | run table | row meta]` (the `[0, vector_bytes_offset)` span) without streaming
+    /// the vector bytes. Run prefix sums are rebuilt so `shard_of` works.
+    pub(crate) fn load_meta_prefix(
+        &mut self,
+        slab: &Memory,
+        base: u64,
+        row_count: u32,
+        meta_prefix: u32,
+    ) {
+        self.buf.resize(meta_prefix as usize, 0);
+        slab.read(base, &mut self.buf[..meta_prefix as usize]);
+        // The header rides at the front of the same span: decode + validate from the buffer.
+        let mut hdr = [0u8; PAGE_HEADER_SIZE];
+        hdr.copy_from_slice(&self.buf[..PAGE_HEADER_SIZE]);
+        let header = PageHeader::from_bytes(&hdr).expect("vector row page: corrupt header");
+        let layout = PageLayout::new(&header).expect("valid page layout");
+        assert_eq!(
+            layout.vector_bytes_offset() as u32,
+            meta_prefix,
+            "vector row page: meta prefix geometry disagrees with the def (corrupt layout)"
+        );
+        self.layout = layout;
+        self.run_count = header.run_count;
+        self.row_count = row_count;
+        self.run_prefix.clear();
+        let table = &self.buf[self.layout.run_table_range()];
+        let mut end = 0u32;
+        for i in 0..header.run_count as usize {
+            end = end
+                .checked_add(read_run(table, i).expect("run entry").run_len)
+                .expect("run prefix overflow");
+            self.run_prefix.push(end);
+        }
+        a1_note(meta_prefix as u64, self.a1_pass, false, 0);
     }
 
     /// Number of written rows in the loaded page; slots `>= row_count` are uninitialized. Page-level
@@ -415,19 +696,6 @@ impl PageScratch {
     pub(crate) fn vec_slice(&self, slot: u32) -> &[u8] {
         let r = self.layout.vector_range_at(slot);
         &self.buf[r.start..r.end]
-    }
-
-    /// Zero-copy slice of one slot's code segment (`[code_aux 8B][codes …]`). Empty when the
-    /// loaded page has no code table (`code_stride == 0`, tier-off generation) — callers on a
-    /// tier-off page never consult it.
-    pub(crate) fn code_slice(&self, slot: u32) -> &[u8] {
-        let r = self.layout.code_range_at(slot);
-        &self.buf[r.start..r.end]
-    }
-
-    /// Whether the loaded page carries a code table (its header's `code_stride` is non-zero).
-    pub(crate) fn has_code_table(&self) -> bool {
-        self.layout.code_stride() > 0
     }
 }
 
@@ -563,10 +831,13 @@ struct BlockLease {
 #[derive(Clone)]
 struct CompactCandidate {
     owner: PartitionKey,
-    /// Positional page id (`page_count - 1` for a head's mutable tail).
+    /// Positional page id (`page_count - 1` for a head's mutable tail; `u64::MAX` for the
+    /// mutable code tail).
     positional: u64,
     src_seq: u32,
     mutable: bool,
+    /// ADR 0093: the candidate is a columnar code page (row pages/tables when `false`).
+    code: bool,
 }
 
 /// Reads one partition's sealed entries in positional order (`sealed_len` total). Chunks are
@@ -668,6 +939,73 @@ fn append_sealed_entries(
         .map_err(|_| VectorCanisterError::StableGrowFailed)
 }
 
+/// Resolves one sealed **code-page** table entry by positional code page id (a single chunk read).
+fn code_sealed_entry_at(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    positional: u64,
+) -> Option<PageTableEntry> {
+    let chunk = (positional as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+    code_table_chunk_get(index_id, index_version, partition_id, chunk)?
+        .entries
+        .get(positional as usize % ENTRIES_PER_TABLE_CHUNK)
+        .copied()
+}
+
+/// Appends sealed code-page entries at global positions starting at `start_pos`, first dropping
+/// any retry-artifact chunks beyond the final chunk (same dense-chunk discipline as the row-page
+/// [`append_sealed_entries`]).
+fn append_code_sealed_entries(
+    index_id: u32,
+    index_version: u64,
+    partition_id: u32,
+    start_pos: u64,
+    entries: &[PageTableEntry],
+) -> Result<(), VectorCanisterError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let end_pos = start_pos + entries.len() as u64 - 1;
+    let last_chunk = (end_pos as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+    assert!(
+        (last_chunk + 1) < MAX_PAGE_TABLE_CHUNKS,
+        "vector slab: code-page growth exceeds the {}-chunk table cap",
+        MAX_PAGE_TABLE_CHUNKS
+    );
+    // Drop chunks beyond the target written by an interrupted earlier attempt.
+    for c in (last_chunk + 1)..MAX_PAGE_TABLE_CHUNKS {
+        if code_table_chunk_get(index_id, index_version, partition_id, c).is_none() {
+            break;
+        }
+        crate::facade::stable::code_table_chunk_remove(index_id, index_version, partition_id, c);
+    }
+
+    let mut chunk = (start_pos as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
+    let mut slot = start_pos as usize % ENTRIES_PER_TABLE_CHUNK;
+    let mut table =
+        code_table_chunk_get(index_id, index_version, partition_id, chunk).unwrap_or_default();
+    debug_assert_eq!(
+        table.entries.len(),
+        slot,
+        "code chunks must be dense up to the append position"
+    );
+    table.entries.truncate(slot);
+    for entry in entries {
+        if slot == ENTRIES_PER_TABLE_CHUNK {
+            code_table_chunk_put(index_id, index_version, partition_id, chunk, table)
+                .map_err(|_| VectorCanisterError::StableGrowFailed)?;
+            chunk += 1;
+            slot = 0;
+            table = PageTableChunk::default();
+        }
+        table.entries.push(*entry);
+        slot += 1;
+    }
+    code_table_chunk_put(index_id, index_version, partition_id, chunk, table)
+        .map_err(|_| VectorCanisterError::StableGrowFailed)
+}
+
 impl VectorSlabStore {
     /// Opens the slab region and validates the reopen matrix against the partition-heads
     /// collection (ADR 0064 §7 invariant, Slice 8 addressing). Traps (fails closed) on any
@@ -707,6 +1045,19 @@ impl VectorSlabStore {
             .occupied_tail();
         for (key, record) in &records {
             match record {
+                PartitionHeadRecord::Code(table) => {
+                    // Every sealed code-page entry must reference a well-formed code page inside
+                    // the slab (ADR 0093 fail-closed reopen).
+                    for entry in &table.entries {
+                        Self::validate_code_page_at(
+                            slab,
+                            key,
+                            entry.seq,
+                            entry.row_count,
+                            occupied_tail,
+                        );
+                    }
+                }
                 PartitionHeadRecord::Table(table) => {
                     // Every sealed entry must reference a well-formed page inside the slab.
                     for entry in &table.entries {
@@ -741,8 +1092,8 @@ impl VectorSlabStore {
                         .filter(|(k, _)| {
                             k.index_id == key.index_id
                                 && k.index_version == key.index_version
-                                && k.partition_id == key.partition_id
-                                && k.level >= PARTITION_LEVEL_PAGE_TABLE_BASE
+                                && (k.partition_id >> 16) == key.partition_id
+                                && k.level == PARTITION_LEVEL_PAGE_TABLE_BASE
                         })
                         .map(|(_, r)| match r {
                             PartitionHeadRecord::Table(t) => t.entries.len() as u64,
@@ -767,13 +1118,96 @@ impl VectorSlabStore {
                         occupied_tail,
                         def_of,
                     );
+                    // ADR 0093: cross-check the code chain against the row counters. Strict
+                    // geometry applies to the active generation only (Slice 6 gating); shadow
+                    // generations validate self-consistently (block + header sanity).
+                    let def = def_of(key.index_id).unwrap_or_else(|| {
+                        panic!(
+                            "vector slab: partition {key:?} references missing index {} definition",
+                            key.index_id
+                        )
+                    });
+                    match CodeRegionGeometry::from_def(&def) {
+                        None if key.index_version == def.active_index_version => {
+                            assert_eq!(
+                                head.mutable_code_seq, 0,
+                                "vector slab: tier-off partition {key:?} carries a code tail"
+                            );
+                            assert!(
+                                !records.iter().any(|(k, r)| {
+                                    k.index_id == key.index_id
+                                        && k.index_version == key.index_version
+                                        && k.partition_id == key.partition_id
+                                        && matches!(r, PartitionHeadRecord::Code(_))
+                                }),
+                                "vector slab: tier-off partition {key:?} carries a code table"
+                            );
+                        }
+                        Some(geo) if key.index_version == def.active_index_version => {
+                            let sealed =
+                                head.code_pages_sealed(geo.code_rows_per_page, geo.row_capacity);
+                            let sealed_entries: u64 = records
+                                .iter()
+                                .filter(|(k, _)| {
+                                    k.index_id == key.index_id
+                                        && k.index_version == key.index_version
+                                        && (k.partition_id >> 16) == key.partition_id
+                                        && k.level == PARTITION_LEVEL_CODE_TABLE_BASE
+                                })
+                                .map(|(_, r)| match r {
+                                    PartitionHeadRecord::Code(t) => t.entries.len() as u64,
+                                    _ => panic!(
+                                        "vector slab: partition {key:?} code chunk key holds a                                          non-code record"
+                                    ),
+                                })
+                                .sum();
+                            assert_eq!(
+                                sealed_entries, sealed,
+                                "vector slab: partition {key:?} code table has {sealed_entries} \
+                                 entries for {} derived sealed code pages",
+                                sealed
+                            );
+                            let tail_exists =
+                                head.code_tail_exists(geo.code_rows_per_page, geo.row_capacity);
+                            assert_eq!(
+                                head.mutable_code_seq != 0,
+                                tail_exists,
+                                "vector slab: partition {key:?} code tail mirror inconsistent"
+                            );
+                            if tail_exists {
+                                Self::validate_code_page_at(
+                                    slab,
+                                    key,
+                                    head.mutable_code_seq,
+                                    head.code_tail_rows(geo.code_rows_per_page, geo.row_capacity),
+                                    occupied_tail,
+                                );
+                            }
+                        }
+                        // Shadow generations validate self-consistently (block + header only).
+                        _ => {
+                            if head.mutable_code_seq != 0 {
+                                Self::validate_code_page_at(
+                                    slab,
+                                    key,
+                                    head.mutable_code_seq,
+                                    u32::MAX,
+                                    occupied_tail,
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
         // Orphan tables (no owning head) are partial layouts.
         for (key, record) in &records {
-            if matches!(record, PartitionHeadRecord::Table(_)) {
-                let head_key = PartitionKey::new(key.index_id, key.index_version, key.partition_id);
+            if matches!(
+                record,
+                PartitionHeadRecord::Table(_) | PartitionHeadRecord::Code(_)
+            ) {
+                let head_key =
+                    PartitionKey::new(key.index_id, key.index_version, key.partition_id >> 16);
                 assert!(
                     records.iter().any(|(k, r)| {
                         k == &head_key && matches!(r, PartitionHeadRecord::Head(_))
@@ -783,6 +1217,39 @@ impl VectorSlabStore {
             }
         }
         occupied_tail
+    }
+
+    /// Validates one referenced **code page** (ADR 0093): its block lies inside the allocated
+    /// window, its on-slab `VCP1` header decodes, and — for the index's active generation only —
+    /// the geometry matches the authoritative def exactly (Slice 6 gating).
+    fn validate_code_page_at(
+        slab: &Memory,
+        owner: &PartitionKey,
+        seq: u32,
+        rows: u32,
+        occupied_tail: u64,
+    ) {
+        assert!(
+            u64::from(seq) < u64::from(tail_next_seq(occupied_tail)),
+            "vector slab: code page block {seq} outside allocated blocks (corrupt record)"
+        );
+        let base = block_offset(seq);
+        let mut hdr = [0u8; CodePageHeader::SIZE];
+        slab.read(base, &mut hdr);
+        let header = CodePageHeader::from_bytes(&hdr);
+        assert!(
+            base >= SLAB_HEADER_SIZE as u64
+                && base
+                    + CodePageHeader::SIZE as u64
+                    + u64::from(header.capacity) * u64::from(header.code_stride)
+                    <= occupied_tail,
+            "vector slab: code page span at {base} outside [header, occupied_tail={occupied_tail})"
+        );
+        assert!(
+            rows <= header.capacity,
+            "vector slab: code page rows {rows} exceed capacity {} (corrupt directory) at {owner:?}",
+            header.capacity
+        );
     }
 
     /// Validates one referenced page: its block lies inside the allocated window, its on-slab
@@ -830,16 +1297,14 @@ impl VectorSlabStore {
             )
         });
         if owner.index_version == def.active_index_version {
+            // ADR 0093: row pages never carry per-row code bytes — the code_stride is 0 in every
+            // tier (tier-on generations carry their codes in the columnar code region instead).
             let expected = PageHeader::with_code_stride(
                 def.slots_per_page,
                 def.pad_stride_bytes,
                 def.meta_stride_bytes,
                 def.run_capacity,
-                if def.has_code_tier() {
-                    def.code_stride_bytes
-                } else {
-                    0
-                },
+                0,
             )
             .expect("def geometry builds a valid page header");
             assert!(
@@ -944,6 +1409,77 @@ impl VectorSlabStore {
     /// Fallible on slab `grow`; must run before any directory mutation. The lease's deferred tail
     /// publication happens via [`Self::commit_leases`]. `code_stride = 0` reserves the unchanged
     /// tier-off geometry.
+    /// ADR 0093: reserves a leased **code page** block — writes the columnar code-page header
+    /// (`capacity` entry slots, `rows = 0`) at the block base. Entry bytes follow per-append.
+    fn reserve_code_leased(
+        &self,
+        lease: &BlockLease,
+        code_rows_per_page: u32,
+        code_stride: u32,
+    ) -> Result<(), VectorCanisterError> {
+        let header = CodePageHeader::new(code_rows_per_page, code_stride, 0);
+        let base = block_offset(lease.seq);
+        let end = base.checked_add(BLOCK_LEN).expect("slab offset overflow");
+        grow_to_at_least(&self.slab, end)?;
+        let mut image = vec![0u8; BLOCK_LEN as usize];
+        image[..CodePageHeader::SIZE].copy_from_slice(&header.to_bytes());
+        self.slab.write(base, &image);
+        Ok(())
+    }
+
+    /// ADR 0093: writes one code entry at `offset` of the code page at `base` and refreshes the
+    /// page header's consumed-rows count. Infallible (the block is already reserved/grown).
+    fn write_code_entry(&self, base: u64, entry_offset: u64, code_stride: u32, segment: &[u8]) {
+        debug_assert_eq!(
+            segment.len(),
+            code_stride as usize,
+            "code segment width mismatch"
+        );
+        let start = base + CodePageHeader::SIZE as u64 + entry_offset * u64::from(code_stride);
+        self.slab.write(start, segment);
+        let mut hdr = [0u8; CodePageHeader::SIZE];
+        self.slab.read(base, &mut hdr);
+        let header = CodePageHeader::from_bytes(&hdr);
+        let consumed = entry_offset as u32 + 1;
+        debug_assert!(
+            consumed <= header.capacity && consumed > header.rows,
+            "code page header rows must advance monotonically"
+        );
+        let updated = CodePageHeader {
+            rows: consumed,
+            ..header
+        };
+        let image = updated.to_bytes();
+        self.slab.write(base, &image);
+    }
+
+    /// ADR 0093: resolves code page `code_page_id` of a partition to its block sequence. Sealed
+    /// pages come from the code-page table; the tail comes from the head's `mutable_code_seq`
+    /// mirror. `None` when the code page does not exist (beyond the written entries).
+    pub(crate) fn resolve_code_page_seq(
+        &self,
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+        code_page_id: u64,
+        geometry: &CodeRegionGeometry,
+        head: &PartitionHead,
+    ) -> Option<u32> {
+        // Sealed code pages: positions below the derived sealed count; the tail (if any) is
+        // mirrored in the head. Address counts derive arithmetically from the row counters.
+        let sealed = head.code_pages_sealed(geometry.code_rows_per_page, geometry.row_capacity);
+        if code_page_id < sealed {
+            code_sealed_entry_at(index_id, index_version, partition_id, code_page_id)
+                .map(|entry| entry.seq)
+        } else if code_page_id == sealed
+            && head.code_tail_exists(geometry.code_rows_per_page, geometry.row_capacity)
+        {
+            Some(head.mutable_code_seq)
+        } else {
+            None
+        }
+    }
+
     fn reserve_leased(
         &self,
         lease: &BlockLease,
@@ -990,7 +1526,6 @@ impl VectorSlabStore {
         payload: VertexPayload,
         bytes: &[u8],
         aux: &[u8; 8],
-        code: Option<&[u8]>,
     ) {
         let meta = RowMeta::new(payload, *aux);
         let meta_range = layout.row_meta_range_at(slot);
@@ -1004,15 +1539,6 @@ impl VectorSlabStore {
 
         let vec_start = base + layout.vector_range_at(slot).start as u64;
         self.slab.write(vec_start, bytes);
-        if let Some(code) = code {
-            debug_assert_eq!(
-                code.len(),
-                layout.code_stride(),
-                "code segment width mismatch"
-            );
-            let code_start = base + layout.code_range_at(slot).start as u64;
-            self.slab.write(code_start, code);
-        }
     }
 
     /// Writes the run entry for the append landing at `slot` of the page at `base`: either extends
@@ -1132,11 +1658,9 @@ impl VectorSlabStore {
             let _scope = bench_scope("append_code_encoder_new");
             crate::code_tier::CodeEncoder::from_def(def)
         };
-        let code_stride = if def.has_code_tier() {
-            def.code_stride_bytes
-        } else {
-            0
-        };
+        // ADR 0093: row pages never carry per-row code bytes; tier-on generations dual-write the
+        // code into the partition's columnar code region instead.
+        let code_geometry = CodeRegionGeometry::from_def(def);
         debug_assert!(
             bytes.len() <= row_stride as usize,
             "append row stride mismatch"
@@ -1156,7 +1680,7 @@ impl VectorSlabStore {
             def.pad_stride_bytes,
             def.meta_stride_bytes,
             run_capacity,
-            code_stride,
+            0,
         )
         .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
         let layout =
@@ -1175,8 +1699,8 @@ impl VectorSlabStore {
             || head.mutable_rows >= capacity
             || (shard != head.mutable_last_shard && head.mutable_run_count >= run_capacity);
 
+        let mut pending_tail = tail_next_seq(self.occupied_tail);
         let (page_seq, slot, prev_run_count) = if need_new_page {
-            let mut pending_tail = tail_next_seq(self.occupied_tail);
             let lease = self.lease_block(&mut pending_tail)?;
             {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1187,7 +1711,7 @@ impl VectorSlabStore {
                     def.pad_stride_bytes,
                     def.meta_stride_bytes,
                     run_capacity,
-                    code_stride,
+                    0,
                 )?;
             }
             if head.page_count > 0 {
@@ -1211,11 +1735,87 @@ impl VectorSlabStore {
         } else {
             (head.mutable_seq, head.mutable_rows, head.mutable_run_count)
         };
-        let pending_tail = need_new_page.then_some(BlockLease {
+        let pending_tail_lease = need_new_page.then_some(BlockLease {
             seq: page_seq,
             fresh_tail: true,
         });
         let base = block_offset(page_seq);
+
+        // ADR 0093: the appended row's code entry lands at global entry index
+        // `e = page_id × capacity + slot`; a code-page boundary crossing leases the next code
+        // page and seals the previous one (same lease/seal/commit discipline as row pages).
+        let e_new = if need_new_page {
+            head.next_page_id * u64::from(capacity)
+        } else {
+            head.mutable_page * u64::from(capacity) + u64::from(head.mutable_rows)
+        };
+        let mut pending_code: Option<BlockLease> = None;
+        let mut code_base = None;
+        // Code tail mirror after this append (`None` when the write completed a code page).
+        let mut code_tail_seq: Option<u32> = None;
+        let code_seq_current = if let Some(geometry) = &code_geometry {
+            let cp_new = geometry.code_page_of_entry(e_new);
+            let sealed_cp = head.code_pages_sealed(geometry.code_rows_per_page, capacity);
+            let tail_exists = head.code_tail_exists(geometry.code_rows_per_page, capacity);
+            if !tail_exists {
+                // No tail code page: the next entry opens one at position `cp_new` (== sealed
+                // count — fail closed otherwise, the address counters are the only truth).
+                debug_assert_eq!(
+                    cp_new, sealed_cp,
+                    "code page id must equal the sealed count"
+                );
+                let lease = self.lease_block(&mut pending_tail)?;
+                self.reserve_code_leased(
+                    &lease,
+                    geometry.code_rows_per_page,
+                    geometry.code_stride,
+                )?;
+                pending_code = Some(BlockLease {
+                    seq: lease.seq,
+                    fresh_tail: true,
+                });
+                code_base = Some(block_offset(lease.seq));
+                lease.seq
+            } else if cp_new == sealed_cp {
+                // The tail code page continues filling.
+                code_base = Some(block_offset(head.mutable_code_seq));
+                head.mutable_code_seq
+            } else {
+                // Boundary crossing: seal the fully-consumed tail at its positional id, then
+                // lease the next code page (seal precedes the committing head insert).
+                debug_assert_eq!(cp_new, sealed_cp + 1, "code page ids must be dense");
+                append_code_sealed_entries(
+                    index_id,
+                    index_version,
+                    partition_id,
+                    sealed_cp,
+                    &[PageTableEntry {
+                        seq: head.mutable_code_seq,
+                        row_count: geometry.code_rows_per_page,
+                        live_count: 0,
+                        block_bound: 0.0,
+                    }],
+                )?;
+                debug_assert_eq!(
+                    cp_new, sealed_cp,
+                    "code page id must equal the sealed count"
+                );
+                let lease = self.lease_block(&mut pending_tail)?;
+                self.reserve_code_leased(
+                    &lease,
+                    geometry.code_rows_per_page,
+                    geometry.code_stride,
+                )?;
+                pending_code = Some(BlockLease {
+                    seq: lease.seq,
+                    fresh_tail: true,
+                });
+                code_base = Some(block_offset(lease.seq));
+                lease.seq
+            }
+        } else {
+            0
+        };
 
         // Infallible page writes (the block is already reserved/grown).
         let new_run_count = {
@@ -1238,7 +1838,8 @@ impl VectorSlabStore {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_code_encode");
             encoder.as_mut().map(|encoder| {
-                let mut seg = vec![0u8; layout.code_stride()];
+                let mut seg =
+                    vec![0u8; code_geometry.as_ref().map_or(0, |g| g.code_stride as usize)];
                 encoder.encode_segment(bytes, aux, &mut seg);
                 seg
             })
@@ -1246,15 +1847,36 @@ impl VectorSlabStore {
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_row_write");
-            self.write_row(
-                base,
-                &layout,
-                slot,
-                payload,
-                bytes,
-                aux,
-                code_segment.as_deref(),
+            self.write_row(base, &layout, slot, payload, bytes, aux);
+        }
+        if let (Some(geometry), Some(seg), Some(cbase)) =
+            (&code_geometry, code_segment.as_deref(), code_base)
+        {
+            self.write_code_entry(
+                cbase,
+                geometry.entry_offset(e_new),
+                geometry.code_stride,
+                seg,
             );
+            if (e_new + 1) % u64::from(geometry.code_rows_per_page) == 0 {
+                // The write completed this code page's address range: seal it eagerly so the
+                // derived sealed count (rows_written / code_rows) matches the table exactly.
+                append_code_sealed_entries(
+                    index_id,
+                    index_version,
+                    partition_id,
+                    geometry.code_page_of_entry(e_new),
+                    &[PageTableEntry {
+                        seq: code_seq_current,
+                        row_count: geometry.code_rows_per_page,
+                        live_count: 0,
+                        block_bound: 0.0,
+                    }],
+                )?;
+                code_tail_seq = None;
+            } else {
+                code_tail_seq = Some(code_seq_current);
+            }
         }
 
         // Commit: the head insert is the single fallible step from here on.
@@ -1272,6 +1894,9 @@ impl VectorSlabStore {
         head.mutable_last_shard = shard;
         head.mutable_rows = slot + 1;
         head.mutable_live += 1;
+        if let Some(tail) = code_tail_seq {
+            head.mutable_code_seq = tail;
+        }
         // Conservative monotone block bound: M = max(M, ‖row‖); tombstones never lower it.
         let norm_sq = Self::stored_row_norm_sq(def.encoding, bytes, aux, def.dims);
         head.mutable_bound = head.mutable_bound.max(norm_sq.sqrt());
@@ -1280,8 +1905,15 @@ impl VectorSlabStore {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_head_insert");
             // Infallible deferred-tail publication precedes the committing head insert.
-            if let Some(lease) = pending_tail {
-                self.commit_leases(&[lease]);
+            let mut leases = Vec::with_capacity(2);
+            if let Some(lease) = pending_tail_lease {
+                leases.push(lease);
+            }
+            if let Some(lease) = pending_code {
+                leases.push(lease);
+            }
+            if !leases.is_empty() {
+                self.commit_leases(&leases);
             }
             partition_head_insert(head_key, head)
                 .map_err(|_| VectorCanisterError::StableGrowFailed)?;
@@ -1331,11 +1963,9 @@ impl VectorSlabStore {
         let run_capacity = def.run_capacity;
         // One encoder per batch call; `None` keeps the tier-off geometry.
         let mut encoder = crate::code_tier::CodeEncoder::from_def(def);
-        let code_stride = if def.has_code_tier() {
-            def.code_stride_bytes
-        } else {
-            0
-        };
+        // ADR 0093: row pages never carry per-row code bytes; tier-on batches dual-write codes
+        // into the partition's columnar code region.
+        let code_geometry = CodeRegionGeometry::from_def(def);
 
         // Validate every row and the page geometry before reserving any slab bytes. The validated
         // payloads also keep the write phase free of returned errors. This header is exactly what
@@ -1345,7 +1975,7 @@ impl VectorSlabStore {
             row_stride,
             def.meta_stride_bytes,
             run_capacity,
-            code_stride,
+            0,
         )
         .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
         let layout =
@@ -1410,6 +2040,76 @@ impl VectorSlabStore {
             page_id = page_id.checked_add(1).expect("page id overflow");
         }
 
+        // ADR 0093: plan the batch's code-page footprint. Global entry index of row `i` is
+        // `page_id × capacity + slot`; the batch's addresses run contiguously upward (short
+        // run-rolled pages leave address holes that are simply never written). Touched code
+        // pages below the derived sealed count reuse the head's tail mirror; every other touched
+        // code page is leased here, and every fully-consumed one is sealed in the directory
+        // publish below (address-consumption accounting includes holes by construction).
+        let mut code_bases: BTreeMap<u64, (u32, u64)> = BTreeMap::new();
+        let mut code_leases: Vec<BlockLease> = Vec::new();
+        let mut new_code_seals: Vec<PageTableEntry> = Vec::new();
+        let mut first_code_seal_pos = 0u64;
+        let mut final_code_seq = 0u32;
+        if let Some(geometry) = &code_geometry {
+            let e0 = head.next_page_id * u64::from(capacity);
+            let e_end = e0 + rows.len() as u64;
+            let sealed_before = head.code_pages_sealed(geometry.code_rows_per_page, capacity);
+            let tail_exists = head.code_tail_exists(geometry.code_rows_per_page, capacity);
+            let last_cp = geometry.code_page_of_entry(e_end - 1);
+            // Leases for every touched code page that is not the existing mutable tail.
+            for cp in geometry.code_page_of_entry(e0)..=last_cp {
+                let reuse = cp == sealed_before && tail_exists;
+                let seq = if reuse {
+                    head.mutable_code_seq
+                } else {
+                    let lease = self.lease_block(&mut pending_tail)?;
+                    self.reserve_code_leased(
+                        &lease,
+                        geometry.code_rows_per_page,
+                        geometry.code_stride,
+                    )?;
+                    code_leases.push(BlockLease {
+                        seq: lease.seq,
+                        fresh_tail: true,
+                    });
+                    lease.seq
+                };
+                code_bases.insert(cp, (seq, block_offset(seq)));
+            }
+            // Seals: every code page whose full address range is consumed by the batch gets a
+            // sealed entry at its positional id (holes included in the address accounting). The
+            // partially-consumed survivor becomes the new mutable tail.
+            let complete_pages = e_end / u64::from(geometry.code_rows_per_page);
+            first_code_seal_pos = sealed_before;
+            for cp in sealed_before..complete_pages {
+                let seq = if cp == sealed_before && tail_exists {
+                    head.mutable_code_seq
+                } else {
+                    code_bases
+                        .get(&cp)
+                        .map(|(seq, _)| *seq)
+                        .unwrap_or(head.mutable_code_seq)
+                };
+                new_code_seals.push(PageTableEntry {
+                    seq,
+                    row_count: geometry.code_rows_per_page,
+                    live_count: 0,
+                    block_bound: 0.0,
+                });
+            }
+            let tail_cp = geometry.code_page_of_entry(e_end.saturating_sub(1));
+            final_code_seq = if e_end.is_multiple_of(u64::from(geometry.code_rows_per_page)) {
+                // The batch completed its last code page: no mutable code tail remains.
+                0
+            } else {
+                code_bases
+                    .get(&tail_cp)
+                    .map(|(seq, _)| *seq)
+                    .unwrap_or(head.mutable_code_seq)
+            };
+        }
+
         // Reserve every planned block (headers written beyond the committed state are unreachable).
         for (_plan, lease) in plans.iter().zip(&leases) {
             #[cfg(test)]
@@ -1422,7 +2122,7 @@ impl VectorSlabStore {
                 row_stride,
                 def.meta_stride_bytes,
                 run_capacity,
-                code_stride,
+                0,
             )?;
         }
 
@@ -1484,8 +2184,20 @@ impl VectorSlabStore {
             0
         };
         append_sealed_entries(index_id, index_version, partition_id, start_pos, &new_seals)?;
+        append_code_sealed_entries(
+            index_id,
+            index_version,
+            partition_id,
+            first_code_seal_pos,
+            &new_code_seals,
+        )?;
         // Infallible deferred-tail publication precedes the committing head insert.
         self.commit_leases(&leases);
+        if !code_leases.is_empty() {
+            self.commit_leases(&code_leases);
+        }
+        // The code tail mirror commits with the head (last fallible step).
+        final_head.mutable_code_seq = final_code_seq;
         partition_head_insert(head_key, final_head)
             .map_err(|_| VectorCanisterError::StableGrowFailed)?;
 
@@ -1543,19 +2255,26 @@ impl VectorSlabStore {
                     last_run_len = 1;
                 }
                 let code_segment = encoder.as_mut().map(|encoder| {
-                    let mut seg = vec![0u8; layout.code_stride()];
+                    let mut seg =
+                        vec![0u8; code_geometry.as_ref().map_or(0, |g| g.code_stride as usize)];
                     encoder.encode_segment(bytes, &aux, &mut seg);
                     seg
                 });
-                self.write_row(
-                    plan.slab_offset,
-                    &layout,
-                    slot,
-                    payload,
-                    bytes,
-                    &aux,
-                    code_segment.as_deref(),
-                );
+                self.write_row(plan.slab_offset, &layout, slot, payload, bytes, &aux);
+                if let (Some(geometry), Some(seg)) = (&code_geometry, code_segment.as_deref()) {
+                    let entry = plan.page_id * u64::from(capacity) + u64::from(slot);
+                    let cp = geometry.code_page_of_entry(entry);
+                    let base = code_bases
+                        .get(&cp)
+                        .map(|(_, base)| *base)
+                        .unwrap_or_else(|| panic!("code page {cp} missing from the batch plan"));
+                    self.write_code_entry(
+                        base,
+                        geometry.entry_offset(entry),
+                        geometry.code_stride,
+                        seg,
+                    );
+                }
                 slots.push(SlotRef {
                     index_version: index_version as u32,
                     partition_id,
@@ -1698,6 +2417,46 @@ impl VectorSlabStore {
             return false;
         }
         scratch.load(&self.slab, block_offset(seq), row_count, &header);
+        true
+    }
+
+    /// ADR 0093 Stage A loader: streams one row page's identity/liveness prefix
+    /// `[header | run table | row meta]` plus the page's entries of the partition's columnar code
+    /// region — the vector bytes are never read. `code_page_seq` is the caller-cached resolution
+    /// of the covering code page (one code table read per code page, not per row page). Returns
+    /// `false` when the row page does not resolve.
+    pub(crate) fn load_page_stage_a(
+        &self,
+        page_key: PageKey,
+        geometry: &CodeRegionGeometry,
+        code_page_seq: u32,
+        scratch: &mut PageScratch,
+    ) -> bool {
+        let Some((seq, row_count)) = self.resolve_page(
+            page_key.index_id,
+            page_key.index_version,
+            page_key.partition_id,
+            page_key.page_id,
+        ) else {
+            return false;
+        };
+        scratch.load_meta_prefix(
+            &self.slab,
+            block_offset(seq),
+            row_count,
+            geometry.row_meta_prefix,
+        );
+        // This page's code entries sit contiguously at
+        // `[ (page_id mod G) * capacity .. + row_count )` within its code page.
+        let entry = page_key.page_id * u64::from(geometry.row_capacity);
+        let offset = geometry.entry_offset(entry);
+        scratch.load_code_span(
+            &self.slab,
+            block_offset(code_page_seq),
+            geometry.code_stride,
+            offset as u32,
+            row_count,
+        );
         true
     }
 
@@ -1845,7 +2604,7 @@ impl VectorSlabStore {
             if key.index_id != index_id || key.index_version != version || head.page_count == 0 {
                 continue;
             }
-            let seqs = sealed_entries_of(
+            let mut seqs = sealed_entries_of(
                 index_id,
                 version,
                 key.partition_id,
@@ -1855,6 +2614,19 @@ impl VectorSlabStore {
             .map(|entry| entry.seq)
             .chain([head.mutable_seq])
             .collect::<Vec<u32>>();
+            // ADR 0093: the partition's code pages share the block space and are torn down with
+            // it (sealed code chunks plus the mutable tail mirror).
+            for chunk in 0..MAX_PAGE_TABLE_CHUNKS {
+                let Some(code_chunk) =
+                    code_table_chunk_get(index_id, version, key.partition_id, chunk)
+                else {
+                    break;
+                };
+                seqs.extend(code_chunk.entries.iter().map(|entry| entry.seq));
+            }
+            if head.mutable_code_seq != 0 {
+                seqs.push(head.mutable_code_seq);
+            }
             partitions.push((key.partition_id, head, seqs));
         }
 
@@ -1948,28 +2720,54 @@ impl VectorSlabStore {
         for (key, record) in collect_head_records() {
             match record {
                 PartitionHeadRecord::Head(head) if head.page_count > 0 => {
+                    let owner =
+                        PartitionKey::new(key.index_id, key.index_version, key.partition_id);
                     all.push(CompactCandidate {
                         positional: head.page_count - 1,
                         src_seq: head.mutable_seq,
                         mutable: true,
-                        owner: PartitionKey::new(key.index_id, key.index_version, key.partition_id),
+                        code: false,
+                        owner,
                     });
+                    // ADR 0093: the partition's mutable code page is a live candidate too.
+                    if head.mutable_code_seq != 0 {
+                        all.push(CompactCandidate {
+                            positional: u64::MAX,
+                            src_seq: head.mutable_code_seq,
+                            mutable: true,
+                            code: true,
+                            owner,
+                        });
+                    }
                 }
                 PartitionHeadRecord::Head(_) => {}
                 PartitionHeadRecord::Table(table) => {
-                    // Chunk keys carry the chunk index in their level byte; the global
-                    // positional id is `chunk * ENTRIES_PER_TABLE_CHUNK + slot`.
-                    let chunk_index = (key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize;
+                    // Chunk keys pack the chunk index into the partition field's low bits; the
+                    // global positional id is `chunk * ENTRIES_PER_TABLE_CHUNK + slot`.
+                    let chunk = (key.partition_id & 0xFFFF) as usize;
+                    let owner =
+                        PartitionKey::new(key.index_id, key.index_version, key.partition_id >> 16);
                     for (i, entry) in table.entries.iter().enumerate() {
                         all.push(CompactCandidate {
-                            positional: (chunk_index * ENTRIES_PER_TABLE_CHUNK + i) as u64,
+                            positional: (chunk * ENTRIES_PER_TABLE_CHUNK + i) as u64,
                             src_seq: entry.seq,
                             mutable: false,
-                            owner: PartitionKey::new(
-                                key.index_id,
-                                key.index_version,
-                                key.partition_id,
-                            ),
+                            code: false,
+                            owner,
+                        });
+                    }
+                }
+                PartitionHeadRecord::Code(table) => {
+                    let chunk = (key.partition_id & 0xFFFF) as usize;
+                    let owner =
+                        PartitionKey::new(key.index_id, key.index_version, key.partition_id >> 16);
+                    for (i, entry) in table.entries.iter().enumerate() {
+                        all.push(CompactCandidate {
+                            positional: (chunk * ENTRIES_PER_TABLE_CHUNK + i) as u64,
+                            src_seq: entry.seq,
+                            mutable: false,
+                            code: true,
+                            owner,
                         });
                     }
                 }
@@ -2075,41 +2873,63 @@ impl VectorSlabStore {
             if group.iter().any(|(c, _)| c.mutable) {
                 let mut head = partition_head_get(&owner)
                     .expect("compact: owning partition head vanished mid-move");
-                for (_, dest) in group.iter().filter(|(c, _)| c.mutable) {
+                for (_, dest) in group.iter().filter(|(c, _)| c.mutable && !c.code) {
                     head.mutable_seq = *dest;
+                }
+                // ADR 0093: the mutable code tail moves with its own head mirror.
+                for (_, dest) in group.iter().filter(|(c, _)| c.mutable && c.code) {
+                    head.mutable_code_seq = *dest;
                 }
                 partition_head_insert(owner, head).expect("compact head update");
             } else {
-                // Sealed entries live in chunks; rewrite each touched chunk once.
-                let mut touched: Vec<(u32, PageTableChunk)> = Vec::new();
+                // Sealed entries live in chunks; rewrite each touched chunk once, routed by
+                // kind (row-page table vs ADR 0093 code-page table).
+                let mut touched: Vec<(bool, u32, PageTableChunk)> = Vec::new();
                 for (cand, dest) in group.iter().filter(|(c, _)| !c.mutable) {
                     let chunk = (cand.positional as usize / ENTRIES_PER_TABLE_CHUNK) as u32;
                     let slot = cand.positional as usize % ENTRIES_PER_TABLE_CHUNK;
-                    let table = match touched.iter_mut().find(|(c, _)| *c == chunk) {
-                        Some((_, t)) => t,
-                        None => {
-                            let t = page_table_chunk_get(
+                    let table = {
+                        let t = if cand.code {
+                            code_table_chunk_get(
                                 owner.index_id,
                                 owner.index_version,
                                 owner.partition_id,
                                 chunk,
                             )
-                            .expect("compact: owning chunk vanished mid-move");
-                            touched.push((chunk, t));
-                            &mut touched.last_mut().expect("just pushed").1
+                        } else {
+                            page_table_chunk_get(
+                                owner.index_id,
+                                owner.index_version,
+                                owner.partition_id,
+                                chunk,
+                            )
                         }
+                        .expect("compact: owning chunk vanished mid-move");
+                        touched.push((cand.code, chunk, t));
+                        &mut touched.last_mut().expect("just pushed").2
                     };
                     table.entries[slot].seq = *dest;
                 }
-                for (chunk, table) in touched {
-                    page_table_chunk_put(
-                        owner.index_id,
-                        owner.index_version,
-                        owner.partition_id,
-                        chunk,
-                        table,
-                    )
-                    .expect("compact table update");
+                for (code, chunk, table) in touched {
+                    if code {
+                        code_table_chunk_put(
+                            owner.index_id,
+                            owner.index_version,
+                            owner.partition_id,
+                            chunk,
+                            table,
+                        )
+                        .expect("compact code table update");
+                    } else {
+                        page_table_chunk_put(
+                            owner.index_id,
+                            owner.index_version,
+                            owner.partition_id,
+                            chunk,
+                            table,
+                        )
+                        .expect("compact table update");
+                    }
                 }
             }
         }
@@ -2178,7 +2998,16 @@ impl VectorSlabStore {
                          gap [{wc_seq}, {re_seq})",
                         head.mutable_seq
                     );
+                    // ADR 0093: the partition's mutable code page is live too.
+                    assert!(
+                        head.mutable_code_seq == 0
+                            || !(head.mutable_code_seq >= wc_seq && head.mutable_code_seq < re_seq),
+                        "vector slab compaction: live mutable code page {} sits inside the \
+                         reclaimed gap [{wc_seq}, {re_seq})",
+                        head.mutable_code_seq
+                    );
                     highest_seq = highest_seq.max(head.mutable_seq);
+                    highest_seq = highest_seq.max(head.mutable_code_seq);
                 }
                 PartitionHeadRecord::Head(_) => {}
                 PartitionHeadRecord::Table(table) => {
@@ -2187,6 +3016,17 @@ impl VectorSlabStore {
                             !(entry.seq >= wc_seq && entry.seq < re_seq),
                             "vector slab compaction: live page {} sits inside the reclaimed gap \
                              [{wc_seq}, {re_seq})",
+                            entry.seq
+                        );
+                        highest_seq = highest_seq.max(entry.seq);
+                    }
+                }
+                PartitionHeadRecord::Code(table) => {
+                    for entry in &table.entries {
+                        assert!(
+                            !(entry.seq >= wc_seq && entry.seq < re_seq),
+                            "vector slab compaction: live code page {} sits inside the reclaimed \
+                             gap [{wc_seq}, {re_seq})",
                             entry.seq
                         );
                         highest_seq = highest_seq.max(entry.seq);
@@ -2232,14 +3072,14 @@ impl VectorSlabStore {
                 }
                 PartitionHeadRecord::Head(_) => {}
                 PartitionHeadRecord::Table(table) => {
-                    let chunk_base = ((key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize)
-                        * ENTRIES_PER_TABLE_CHUNK;
+                    let chunk_base =
+                        ((key.partition_id & 0xFFFF) as usize) * ENTRIES_PER_TABLE_CHUNK;
                     for (i, entry) in table.entries.iter().enumerate() {
                         acc.observe(
                             &PageKey::new(
                                 key.index_id,
                                 key.index_version,
-                                key.partition_id,
+                                key.partition_id >> 16,
                                 (chunk_base + i) as u64,
                             ),
                             entry.row_count,
@@ -2247,6 +3087,9 @@ impl VectorSlabStore {
                         );
                     }
                 }
+                // ADR 0093: code pages are excluded from the row-oriented stats (row_count/live
+                // semantics); their block footprint is reclaimed by compaction enumeration.
+                PartitionHeadRecord::Code(_) => {}
             }
         }
         let (scope, versions, referenced_global) = acc.finish();
@@ -2313,25 +3156,28 @@ impl VectorSlabStore {
                     )]
                 }
                 PartitionHeadRecord::Head(_) => Vec::new(),
-                PartitionHeadRecord::Table(t) => t
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| {
-                        let chunk_base = ((key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize)
-                            * ENTRIES_PER_TABLE_CHUNK;
-                        (
-                            PageKey::new(
-                                key.index_id,
-                                key.index_version,
-                                key.partition_id,
-                                (chunk_base + i) as u64,
-                            ),
-                            e.row_count,
-                            e.live_count,
-                        )
-                    })
-                    .collect(),
+                PartitionHeadRecord::Table(t) => {
+                    let chunk_base =
+                        ((key.partition_id & 0xFFFF) as usize) * ENTRIES_PER_TABLE_CHUNK;
+                    t.entries
+                        .iter()
+                        .enumerate()
+                        .map(|(i, e)| {
+                            (
+                                PageKey::new(
+                                    key.index_id,
+                                    key.index_version,
+                                    key.partition_id >> 16,
+                                    (chunk_base + i) as u64,
+                                ),
+                                e.row_count,
+                                e.live_count,
+                            )
+                        })
+                        .collect()
+                }
+                // ADR 0093: code pages are excluded from the row-oriented stats.
+                PartitionHeadRecord::Code(_) => Vec::new(),
             };
             for (page_key, rows, live) in pages {
                 if resume.as_ref().is_some_and(|r| page_key <= *r) {
@@ -2418,14 +3264,14 @@ impl VectorSlabStore {
                 }
                 PartitionHeadRecord::Head(_) => {}
                 PartitionHeadRecord::Table(table) => {
-                    let chunk_base = ((key.level - PARTITION_LEVEL_PAGE_TABLE_BASE) as usize)
-                        * ENTRIES_PER_TABLE_CHUNK;
+                    let chunk_base =
+                        ((key.partition_id & 0xFFFF) as usize) * ENTRIES_PER_TABLE_CHUNK;
                     for (i, entry) in table.entries.iter().enumerate() {
                         pages.push((
                             PageKey::new(
                                 index_id,
                                 active_version,
-                                key.partition_id,
+                                key.partition_id >> 16,
                                 (chunk_base + i) as u64,
                             ),
                             entry.row_count,
@@ -2433,6 +3279,8 @@ impl VectorSlabStore {
                         ));
                     }
                 }
+                // ADR 0093: code pages are excluded from the row-oriented health scan.
+                PartitionHeadRecord::Code(_) => {}
             }
         }
         pages.sort_by_key(|(k, _, _)| *k);
@@ -4050,5 +4898,75 @@ mod tests {
             store.occupied_tail(),
             SLAB_HEADER_SIZE as u64 + 4 * BLOCK_LEN
         );
+    }
+
+    /// ADR 0093: a tier-on generation round-trips its columnar code region through reopen and
+    /// compaction — code entries resolve identically before/after, and the search-facing
+    /// `load_page_stage_a` path keeps working across both.
+    #[test]
+    fn tier_on_code_region_survives_reopen_and_compact() {
+        clear_heads();
+        let mm = fresh_mm();
+        let mut d = def(4);
+        d.code_tier = true;
+        d.code_stride_bytes = VectorIndexDef::canonical_code_stride_bytes(d.dims);
+        let mut store = open(&mm, &d);
+        let geometry = CodeRegionGeometry::from_def(&d).expect("tier-on geometry");
+        for v in 0..40u32 {
+            store
+                .append_row(7, 1, 0, &d, subject(v), &bytes(v as f32, 1.0), &zaux())
+                .unwrap();
+        }
+        // Stage A resolves every row page's code span before the structural round-trip.
+        let head = partition_head_get(&PartitionKey::new(7, 1, 0)).expect("head");
+        let mut scratch = PageScratch::new();
+        let mut entries_by_page =
+            |store: &VectorSlabStore, geometry: &CodeRegionGeometry, head: &PartitionHead| {
+                (0..store.version_page_count(7, 1))
+                    .map(|page_id| {
+                        (0..4)
+                            .map(|slot| {
+                                let page_key = PageKey::new(7, 1, 0, page_id as u64);
+                                let cp = geometry.code_page_of_row_page(page_id as u64);
+                                let code_seq = store
+                                    .resolve_code_page_seq(7, 1, 0, cp, geometry, head)
+                                    .unwrap_or_else(|| panic!("code page {cp} must resolve"));
+                                assert!(store.load_page_stage_a(
+                                    page_key,
+                                    geometry,
+                                    code_seq,
+                                    &mut scratch
+                                ));
+                                scratch.code_slice_at(slot).to_vec()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            };
+        let before = entries_by_page(&store, &geometry, &head);
+
+        // Reopen: the code chain cross-validates fail-closed against the row counters.
+        let store = open(&mm, &d);
+        let after_reopen = entries_by_page(&store, &geometry, &head);
+        assert_eq!(before, after_reopen, "code entries survive reopen");
+
+        // Compact: block-granular moves rewrite both regions' references; entries follow.
+        // Drive compaction exactly like the admin driver: the advanced write cursor persists
+        // across steps (a stale cursor would re-copy the same blocks forever).
+        let range_end = store.occupied_tail();
+        let mut store = store;
+        let mut write_cursor = SLAB_HEADER_SIZE as u64;
+        let mut scan_cursor = None;
+        for _ in 0..8 {
+            let outcome = store
+                .compact_step(write_cursor, range_end, scan_cursor, u32::MAX, u64::MAX)
+                .expect("compact step");
+            (write_cursor, scan_cursor) = (outcome.write_cursor, outcome.scan_cursor);
+            if outcome.finalized {
+                break;
+            }
+        }
+        let after_compact = entries_by_page(&store, &geometry, &head);
+        assert_eq!(before, after_compact, "code entries survive compaction");
     }
 }

@@ -44,6 +44,11 @@ pub(crate) const PARTITION_LEVEL_LEAF: u8 = 1;
 /// Sealed-page-table chunk base: chunk `i` of a partition's table lives at level
 /// `PARTITION_LEVEL_PAGE_TABLE_BASE + i` (`i < MAX_PAGE_TABLE_CHUNKS`).
 pub(crate) const PARTITION_LEVEL_PAGE_TABLE_BASE: u8 = 2;
+/// ADR 0093: sealed **code-page** table chunk base. The chunk index packs into the key's
+/// `partition_id` low bits exactly like the row-page table, so one level tag addresses every
+/// code-table chunk of every leaf partition. Level space: `2..=201` is reserved for the row
+/// page-table family; `202` is the code table.
+pub(crate) const PARTITION_LEVEL_CODE_TABLE_BASE: u8 = 201;
 /// Maximum sealed-page-table chunks per partition. The chunk index is packed into the key's
 /// `partition_id` high bits (`(partition << 16) | chunk`), giving 65,536 chunks x 3 entries =
 /// 196,608 sealed pages per partition before the fail-closed cap.
@@ -196,6 +201,26 @@ impl PartitionKey {
             index_id,
             index_version,
             level: PARTITION_LEVEL_PAGE_TABLE_BASE,
+            partition_id: (partition_id << 16) | chunk,
+        }
+    }
+
+    /// ADR 0093 sealed code-page-table chunk key: same `(real_partition << 16) | chunk` packing
+    /// as [`Self::page_table_chunk`] under the dedicated code-table level tag.
+    pub(crate) fn code_table_chunk(
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+        chunk: u32,
+    ) -> Self {
+        assert!(
+            partition_id < (1 << 16) && chunk < (1 << 16),
+            "code-table key overflow: partition {partition_id} chunk {chunk}"
+        );
+        Self {
+            index_id,
+            index_version,
+            level: PARTITION_LEVEL_CODE_TABLE_BASE,
             partition_id: (partition_id << 16) | chunk,
         }
     }
@@ -820,6 +845,35 @@ pub struct PartitionHead {
     pub mutable_last_shard: u32,
     /// Slab block sequence of the mutable tail page.
     pub mutable_seq: u32,
+    /// ADR 0093: slab block sequence of the partition's mutable tail **code page** (the columnar
+    /// code region's tail block). The tail's written-entry count and the sealed code-page count
+    /// derive arithmetically from the row counters (`mutable_page × slots_per_page +
+    /// mutable_rows`), so this is the only code-region state the head carries. Tier-off
+    /// generations leave it `0` (never dereferenced without a tier-on def).
+    pub mutable_code_seq: u32,
+}
+
+impl PartitionHead {
+    /// ADR 0093: global code-entry address count of this partition
+    /// (`mutable_page × row_capacity + mutable_rows`).
+    pub(crate) fn code_entries_written(&self, row_capacity: u32) -> u64 {
+        self.mutable_page * u64::from(row_capacity) + u64::from(self.mutable_rows)
+    }
+
+    /// ADR 0093: number of sealed (fully address-consumed) code pages.
+    pub(crate) fn code_pages_sealed(&self, code_rows_per_page: u32, row_capacity: u32) -> u64 {
+        self.code_entries_written(row_capacity) / u64::from(code_rows_per_page)
+    }
+
+    /// ADR 0093: consumed entry addresses in the mutable tail code page.
+    pub(crate) fn code_tail_rows(&self, code_rows_per_page: u32, row_capacity: u32) -> u32 {
+        (self.code_entries_written(row_capacity) % u64::from(code_rows_per_page)) as u32
+    }
+
+    /// ADR 0093: whether a mutable tail code page exists (`rows_written % code_rows > 0`).
+    pub(crate) fn code_tail_exists(&self, code_rows_per_page: u32, row_capacity: u32) -> bool {
+        self.code_tail_rows(code_rows_per_page, row_capacity) > 0
+    }
 }
 
 impl Eq for PartitionHead {}
@@ -834,29 +888,36 @@ impl Eq for PartitionHead {}
 pub(crate) enum PartitionHeadRecord {
     Head(PartitionHead),
     Table(PageTableChunk),
+    /// ADR 0093: sealed **code-page** table chunk (same chunk codec as the sealed row-page
+    /// table; entries carry the code page's `{seq, rows}` in `seq`/`row_count`).
+    Code(PageTableChunk),
 }
 
 impl PartitionHeadRecord {
     const TAG_HEAD: u8 = 0;
     const TAG_TABLE: u8 = 1;
+    /// ADR 0093: sealed **code-page** table chunk (same chunk codec as [`PageTableChunk`],
+    /// entries carry `{seq, rows}`; `live_count`/`block_bound` are unused there).
+    const TAG_CODE_TABLE: u8 = 2;
     /// Common encoded payload width: the head is the widest member (the slab free list lives in
     /// intrusive block headers anchored by the compaction-state record, not here).
-    const PAYLOAD_WIDTH: usize = PageTableChunk::ENCODED_LEN;
+    const PAYLOAD_WIDTH: usize = PartitionHead::BOUND.max_size() as usize;
 
-    // Invariant: `PageTableChunk::ENCODED_LEN >= 56` (the head width), so the head payload
-    // zero-pads into the chunk-sized slot.
+    // Invariant: `PartitionHead::BOUND.max_size() (60) >= PageTableChunk::ENCODED_LEN (56)`, so
+    // the table payload zero-pads into the head-sized slot.
 
     fn tag(&self) -> u8 {
         match self {
             Self::Head(_) => Self::TAG_HEAD,
             Self::Table(_) => Self::TAG_TABLE,
+            Self::Code(_) => Self::TAG_CODE_TABLE,
         }
     }
 
     fn encode_payload(&self) -> Vec<u8> {
         let mut payload = match self {
             Self::Head(head) => head.to_bytes().into_owned(),
-            Self::Table(table) => table.encode(),
+            Self::Table(table) | Self::Code(table) => table.encode(),
         };
         assert!(payload.len() <= Self::PAYLOAD_WIDTH);
         payload.resize(Self::PAYLOAD_WIDTH, 0);
@@ -866,9 +927,10 @@ impl PartitionHeadRecord {
     fn decode_payload(tag: u8, payload: &[u8]) -> Self {
         match tag {
             Self::TAG_HEAD => Self::Head(PartitionHead::from_bytes(Cow::Owned(
-                payload[..56].to_vec(),
+                payload[..60].to_vec(),
             ))),
             Self::TAG_TABLE => Self::Table(PageTableChunk::decode(payload)),
+            Self::TAG_CODE_TABLE => Self::Code(PageTableChunk::decode(payload)),
             other => panic!("PartitionHeadRecord: unknown tag {other}"),
         }
     }
@@ -911,12 +973,12 @@ impl StableMapValue for PartitionHeadRecord {
 
 impl Storable for PartitionHead {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 56,
+        max_size: 60,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut out = [0u8; 56];
+        let mut out = [0u8; 60];
         out[0..8].copy_from_slice(&self.mutable_page.to_le_bytes());
         out[8..16].copy_from_slice(&self.page_count.to_le_bytes());
         out[16..24].copy_from_slice(&self.live_len.to_le_bytes());
@@ -927,6 +989,7 @@ impl Storable for PartitionHead {
         out[44..48].copy_from_slice(&self.mutable_run_count.to_le_bytes());
         out[48..52].copy_from_slice(&self.mutable_last_shard.to_le_bytes());
         out[52..56].copy_from_slice(&self.mutable_seq.to_le_bytes());
+        out[56..60].copy_from_slice(&self.mutable_code_seq.to_le_bytes());
         Cow::Owned(out.to_vec())
     }
 
@@ -936,7 +999,7 @@ impl Storable for PartitionHead {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let b = bytes.as_ref();
-        assert_eq!(b.len(), 56, "PartitionHead expects exactly 56 bytes");
+        assert_eq!(b.len(), 60, "PartitionHead expects exactly 60 bytes");
         Self {
             mutable_page: u64::from_le_bytes(b[0..8].try_into().expect("mutable_page")),
             page_count: u64::from_le_bytes(b[8..16].try_into().expect("page_count")),
@@ -952,6 +1015,7 @@ impl Storable for PartitionHead {
                 b[48..52].try_into().expect("mutable_last_shard"),
             ),
             mutable_seq: u32::from_le_bytes(b[52..56].try_into().expect("mutable_seq")),
+            mutable_code_seq: u32::from_le_bytes(b[56..60].try_into().expect("mutable_code_seq")),
         }
     }
 }
