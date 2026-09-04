@@ -150,6 +150,23 @@ Chinese strategy), or Korean irregular-verb completeness beyond enumerated table
 spike (reusing the 0331 region-16 dictionary machinery if a dictionary-based analyzer is
 ever adopted).
 
+**Vibrato-integrated composite (refined proposal, production-precedented):** the composite
+can carry a DICTIONARY-BACKED layer — the charabia pattern (Meilisearch's production
+tokenizer) dispatches per detected script/language to specialized segmenters including
+dictionary-backed ones (Japanese = lindera + IPA-dict, Korean = lindera KO-dict, Chinese =
+jieba; see the charabia README language table). The Gleaph shape: script-run chunking over
+the NFKC pre-pass, then {kanji∪kana} chunks → vibrato (ipadic lemma, the 0331 dictionary
+machinery), Hangul chunks → 조사 strip layer, Latin chunks → Porter, pure-Han chunks → bigram
+(fundamental zh/ja ambiguity: bigram is safe for both; dual-emission of vibrato+bigram units
+is the quality option at ~2× Han postings). Consistency holds because index-time and
+query-time run the same composite; per-chunk vibrato loses sentence context across script
+boundaries (accepted, same as charabia). Implementation deltas vs the pure-rule composite:
+generalize the 0331 region-16 dictionary machinery from id-2-specific to "any dictionary-
+carrying analyzer" and include the vibrato engine (228 KB, getrandom-free — verified). The
+id-2 pure-Japanese analyzer coexists: the composite is the multilingual single-index answer;
+per-language indexes remain the precision-maximal shape (the ES multi-fields pattern is the
+N-index equivalent).
+
 ## Lifecycle and lag semantics (mapping onto derived-state contracts)
 
 | Phase | Behavior | Lag class |
