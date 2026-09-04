@@ -393,7 +393,11 @@ fn jit_elevation_loop_end_to_end() {
             is_home: true,
             shards: vec![RegisterGraphShard {
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                graph_canister: Principal::management_canister(),
+                // A distinct dummy graph-canister principal: the registry binds one graph
+                // canister to exactly one logical graph (ROUTER_SHARD_BY_GRAPH keys
+                // inter-canister tenancy auth), so reusing TARGET_GRAPH's canister here
+                // is rejected with `graph canister already registered`.
+                graph_canister: Principal::from_slice(&[0xE1; 29]),
             }],
             requested_resources: Vec::new(),
         },
