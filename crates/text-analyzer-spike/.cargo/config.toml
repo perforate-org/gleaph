@@ -1,0 +1,4 @@
+# Scratch spike crate only: allow the 10-day-old lindera 6.0.0 release (plan 0330
+# pins it explicitly for the measurement; never a production dependency).
+[resolver]
+incompatible-publish-age = "allow"
