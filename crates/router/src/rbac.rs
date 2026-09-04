@@ -63,6 +63,13 @@ pub fn authorize_adhoc_gql(
         // not require a resolvable graph context — the very first `CREATE GRAPH` runs while
         // no home graph exists. The CALL_PROCEDURE / authorization-modification gates above
         // still apply; only the graph-context resolution is skipped.
+        //
+        // Capability gate (ADR 0074 §1): `MANAGE_CATALOG` is the narrowest governing
+        // capability for graph-type catalog statements. ADR 0070 §Authorization relied on
+        // the former role ladder ("Write or higher"); without this successor check the
+        // context skip would admit anonymous and caps-less callers to write the type
+        // catalog or trigger graph provisioning.
+        authorize_catalog_ddl(caller)?;
         return Ok(());
     }
     let store = crate::facade::store::RouterStore::new();
@@ -101,6 +108,26 @@ pub(crate) fn program_is_catalog_ddl_only(program: &GqlProgram) -> bool {
 /// legacy `admin_set_indexed_*` compat endpoints): holds `INDEX_CREATE` or `INDEX_DROP`.
 pub fn authorize_index_ddl(caller: &Principal) -> Result<(), RouterError> {
     if auth::caps_of(caller).intersects(AdminCaps::INDEX_CREATE | AdminCaps::INDEX_DROP) {
+        Ok(())
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
+/// Catalog DDL (GQL `CREATE GRAPH TYPE` / `CREATE GRAPH` / `DROP GRAPH TYPE` / `DROP GRAPH`,
+/// standalone or mixed with executable statements): holds `MANAGE_CATALOG`.
+///
+/// The single capability gate for the graph-type catalog statements that
+/// `apply_catalog_statement_block` executes. [ADR 0070] §Authorization relied on the former
+/// role ladder ("Write or higher"); ADR 0074 replaced the ladder with narrowest governing
+/// capabilities, and the `MANAGE_CATALOG` bit is documented as the owner of graph-type
+/// catalog statements. Enforced at both execution surfaces — the pure-DDL pre-plan branch
+/// (which skips graph-context resolution, so the capability check is what fails closed)
+/// and the mixed-DDL branch in the ad-hoc mutate flow.
+///
+/// [ADR 0070]: https://github.com/gleaph/gleaph/blob/main/design/adr/0070-create-graph-provisions-shards-and-sets-home.md
+pub fn authorize_catalog_ddl(caller: &Principal) -> Result<(), RouterError> {
+    if auth::caps_of(caller).contains(AdminCaps::MANAGE_CATALOG) {
         Ok(())
     } else {
         Err(RouterError::Forbidden)
@@ -230,22 +257,60 @@ mod tests {
     fn catalog_ddl_only_skips_graph_context_resolution() {
         // ADR 0070: a pure `CREATE GRAPH` program must not require a resolvable graph
         // context — the very first `CREATE GRAPH` runs while no home graph exists. A
-        // caps-less caller with no tenancy is admitted past the pre-plan gate (the
+        // `MANAGE_CATALOG` holder is admitted past the pre-plan gate (the
         // CALL_PROCEDURE / authorization-modification gates still apply).
         let p = principal(1);
+        upsert_caps(p, AdminCaps::MANAGE_CATALOG);
         let program = parser_program("CREATE GRAPH g");
         assert!(program_is_catalog_ddl_only(&program));
         authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &program)
             .expect("catalog-DDL-only program must not require graph context");
 
         // A mixed program (catalog DDL + data) is not catalog-DDL-only and still requires
-        // graph context, so a caps-less caller is denied.
+        // graph context, so a MANAGE_CATALOG holder without visibility is denied.
         let mixed = parser_program("CREATE GRAPH g NEXT MATCH (n) RETURN n");
         assert!(!program_is_catalog_ddl_only(&mixed));
         assert!(matches!(
             authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &mixed),
             Err(RouterError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn catalog_ddl_requires_manage_catalog() {
+        // ADR 0074 §1 + ADR 0070 §Authorization: graph-type catalog statements are governed
+        // by `MANAGE_CATALOG` (the narrowest successor of the former "Write or higher" role
+        // gate). The catalog-DDL-only pre-plan branch skips graph-context resolution, so
+        // this capability check is what keeps anonymous and caps-less callers from writing
+        // the type catalog or triggering provisioning — fail closed.
+        let p = principal(4);
+        let program = parser_program("CREATE GRAPH g");
+        assert!(program_is_catalog_ddl_only(&program));
+        assert!(matches!(
+            authorize_adhoc_gql(
+                &Principal::anonymous(),
+                ProgramModificationFlags::default(),
+                &program
+            ),
+            Err(RouterError::Forbidden)
+        ));
+        assert!(matches!(
+            authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &program),
+            Err(RouterError::Forbidden)
+        ));
+        // An unrelated capability does not govern catalog DDL.
+        upsert_caps(p, AdminCaps::PREPARE_REGISTER);
+        assert!(matches!(
+            authorize_adhoc_gql(&p, ProgramModificationFlags::default(), &program),
+            Err(RouterError::Forbidden)
+        ));
+        // The direct helper agrees with the pre-plan gate.
+        assert!(matches!(
+            authorize_catalog_ddl(&p),
+            Err(RouterError::Forbidden)
+        ));
+        upsert_caps(p, AdminCaps::MANAGE_CATALOG);
+        authorize_catalog_ddl(&p).expect("MANAGE_CATALOG governs catalog DDL");
     }
 
     #[test]

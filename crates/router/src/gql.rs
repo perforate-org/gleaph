@@ -3680,6 +3680,10 @@ async fn run_gql_unchecked(
     // Mixed programs (catalog DDL plus data statements) keep the context-resolved path; their
     // schema bindings are committed before planning/dispatch. Pure DDL returned above.
     if crate::facade::stable::graph_type_catalog::block_has_catalog_ddl(block) {
+        // Catalog DDL inside a mixed program is governed by the same `MANAGE_CATALOG` gate
+        // the pure-DDL pre-plan branch enforces (`rbac::authorize_catalog_ddl`): one
+        // capability gate for every graph-type catalog statement execution.
+        crate::rbac::authorize_catalog_ddl(&caller)?;
         crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(block, query)?;
     }
 
