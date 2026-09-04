@@ -7,8 +7,10 @@
 //!    re-requests `ceil(k·2^r)` candidates until the visible subset fills k. The naive
 //!    fetch-k-then-filter flow would have returned zero rows here.
 //! 2. **Hidden-heavy exhaustion**: fewer than k authorized vertices exist; rounds stop at
-//!    candidate exhaustion and the result carries `truncated = Some(true)` with the
-//!    deterministic authorized prefix, identically across repeated invocations.
+//!    candidate exhaustion and the result carries the deterministic authorized prefix,
+//!    identically across repeated invocations. Under ADR 0092 §4 the NonLeading receipt
+//!    rules make a fully-consumed candidate universe a **complete, non-truncated** answer
+//!    (`truncated = Some(false)`): only budget exhaustion truncates.
 //! 3. **Policy parity**: conditional grants filter SEARCH candidates exactly as they
 //!    filter an ordinary labeled scan — the PUBLIC/member union matrix of [ADR 0075]
 //!    applied to vector results, with the ordinary-scan baseline equivalence.
@@ -458,14 +460,15 @@ fn k_preserved_when_hidden_vertices_rank_higher() {
     assert_eq!(tags(&again), tags(&result));
     assert_eq!(again.truncated, Some(false));
 
-    // k=3 exceeds the authorized subset size: full prefix, explicit truncation.
+    // k=3 exceeds the authorized subset size: full prefix, complete answer — a fully-consumed
+    // candidate universe is non-truncated for NonLeading receipts (ADR 0092 §4 exhaustion rule).
     let over = search_as(&env, Principal::anonymous(), 3).expect("partial at k=3");
     assert_eq!(tags(&over), vec![3, 4]);
-    assert_eq!(over.truncated, Some(true));
+    assert_eq!(over.truncated, Some(false));
 }
 
 #[test]
-fn hidden_heavy_graph_returns_partial_rows_with_truncated_marker() {
+fn hidden_heavy_graph_returns_complete_answer_at_candidate_exhaustion() {
     let (env, vector) = setup_env();
     let (doc_label, visibility_id, tag_id, _) = doc_label_and_property_ids(&env);
 
@@ -535,14 +538,14 @@ fn hidden_heavy_graph_returns_partial_rows_with_truncated_marker() {
     );
     assert_eq!(
         result.truncated,
-        Some(true),
-        "candidate exhaustion sets the marker"
+        Some(false),
+        "candidate exhaustion is a complete, non-truncated answer (ADR 0092 §4)"
     );
 
     // Determinism across identical states: same prefix, same marker.
     let repeat = search_as(&env, Principal::anonymous(), 3).expect("repeat partial");
     assert_eq!(tags(&repeat), vec![20, 21]);
-    assert_eq!(repeat.truncated, Some(true));
+    assert_eq!(repeat.truncated, Some(false));
 }
 
 #[test]
@@ -625,10 +628,11 @@ fn policy_predicates_filter_candidates_like_ordinary_rows() {
     let anon = search_as(&env, Principal::anonymous(), 2).expect("anon search");
     assert_eq!(tags(&anon), vec![30, 40]);
     assert_eq!(anon.truncated, Some(false));
-    // ...and k=4 exceeds the authorized subset size: full prefix plus the marker.
+    // ...and k=4 exceeds the authorized subset size: full prefix, complete answer — the
+    // consumed candidate universe is non-truncated for NonLeading receipts (ADR 0092 §4).
     let anon_over = search_as(&env, Principal::anonymous(), 4).expect("anon oversampled");
     assert_eq!(tags(&anon_over), vec![30, 40]);
-    assert_eq!(anon_over.truncated, Some(true));
+    assert_eq!(anon_over.truncated, Some(false));
 
     // Alice observes the PUBLIC ∪ own-private union through vector candidates; her
     // three authorized rows satisfy k=3 exactly.

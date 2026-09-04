@@ -1,12 +1,16 @@
 //! Per-query execution context threaded through plan operators.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql_planner::plan::AggregateSpec;
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
-use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
+use gleaph_graph_kernel::plan_exec::{
+    ResolvedLabelTable, ResolvedPropertyTable, SearchChainReceiptRecord,
+};
 
 use crate::facade::{GraphStore, assert_no_canonical_segment};
 use crate::federation::StandaloneFederation;
@@ -21,6 +25,13 @@ pub(crate) struct ExecuteCtx<'a> {
     pub index: Option<&'a dyn PropertyIndexLookup>,
     pub execution: GqlExecutionContext,
     pub federation: StandaloneFederation,
+    /// ADR 0092 chain-survivor receipt slot: the `PlanOp::Search` arm records the
+    /// per-shard `{dispatched, chain_survivors}` counts here; the query read path
+    /// drains it into the execution result. Clones share the slot, so nested
+    /// `execute_ops_from` runs (semi-apply probes) observe the same cell. A second
+    /// SEARCH-bearing arm finding a filled slot fails closed (ADR 0092 §5: one SEARCH
+    /// binding per query).
+    pub search_chain_receipt: Rc<RefCell<Option<SearchChainReceiptRecord>>>,
 }
 
 impl<'a> ExecuteCtx<'a> {
@@ -43,7 +54,15 @@ impl<'a> ExecuteCtx<'a> {
             index,
             execution,
             federation: StandaloneFederation::from_store(store),
+            search_chain_receipt: Rc::new(RefCell::new(None)),
         }
+    }
+
+    /// Drains the ADR 0092 chain-survivor receipt recorded by the `PlanOp::Search` arm
+    /// (`None` for executions whose plan carries no SEARCH binding).
+    #[inline]
+    pub fn take_search_chain_receipt(&self) -> Option<SearchChainReceiptRecord> {
+        self.search_chain_receipt.borrow_mut().take()
     }
 
     #[inline]

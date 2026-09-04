@@ -307,6 +307,7 @@ mod tests {
             row_count: 2,
             rows_blob: Some(rows_blob),
             hot_forward_vertices: Vec::new(),
+            search_chain_receipt: None,
         };
         apply_federated_aggregate_having(&mut result, &spec, &BTreeMap::new()).expect("apply");
         assert_eq!(result.row_count, 1);

@@ -882,6 +882,10 @@ pub struct ExecutePlanResult {
     pub rows_blob: Option<Vec<u8>>,
     /// Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
+    /// ADR 0092 chain-survivor receipt: the executing shard's per-round counts when the
+    /// executed plan carries a `PlanOp::Search` (`None` otherwise). Ephemeral
+    /// deepening-control metadata — never persisted, never client-visible.
+    pub search_chain_receipt: Option<Vec<SearchChainReceiptRecord>>,
 }
 
 /// Federated mutation lifecycle phase (ADR 0029).
@@ -1003,6 +1007,26 @@ pub struct GqlQueryResult {
     /// (candidate or instruction-budget exhaustion); `Some(false)` when the search
     /// converged; `None` for every non-search result.
     pub truncated: Option<bool>,
+    /// ADR 0092 chain-survivor receipt: per shard, how many dispatched search candidates
+    /// passed the lowered authorization chain at the SEARCH binding. `None` for every
+    /// execution whose plan carries no `PlanOp::Search`. Ephemeral deepening-control
+    /// metadata — never persisted, never client-visible.
+    pub search_chain_receipt: Option<Vec<SearchChainReceiptRecord>>,
+}
+
+/// ADR 0092: one shard's chain-survivor counts for one deepening round.
+///
+/// Candid shape: `record { shard_id : nat32; dispatched : nat64; chain_survivors : nat64 }`.
+/// A dispatched candidate survives iff its searched-binding vertex passes the lowered
+/// authorization chain (grant coverage, ReBAC exists traversal, policy predicates, label
+/// membership) — survival is independent of the prefix join. The graph fills one entry
+/// per SEARCH-bearing execution; the Router aggregates the per-shard entries across the
+/// deepening rounds.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct SearchChainReceiptRecord {
+    pub shard_id: u32,
+    pub dispatched: u64,
+    pub chain_survivors: u64,
 }
 
 impl GqlQueryResult {
@@ -1013,6 +1037,7 @@ impl GqlQueryResult {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: merged.search_chain_receipt.clone(),
         }
     }
 
@@ -1023,6 +1048,7 @@ impl GqlQueryResult {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         }
     }
 
@@ -1044,6 +1070,13 @@ impl GqlQueryResult {
     #[must_use]
     pub fn with_truncated(mut self, truncated: bool) -> Self {
         self.truncated = Some(truncated);
+        self
+    }
+
+    /// Attach the ADR 0092 chain-survivor receipt (per-shard entries).
+    #[must_use]
+    pub fn with_search_chain_receipt(mut self, receipt: Vec<SearchChainReceiptRecord>) -> Self {
+        self.search_chain_receipt = Some(receipt);
         self
     }
 }
@@ -2038,6 +2071,7 @@ mod tests {
             row_count: 1,
             rows_blob: None,
             hot_forward_vertices: vec![7, 42],
+            search_chain_receipt: None,
         };
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
@@ -2068,6 +2102,52 @@ mod tests {
         .expect("decode ordered batch contract");
         assert_eq!(identity, decoded_identity);
         assert_eq!(receipt, decoded_receipt);
+    }
+
+    /// ADR 0092: the chain-survivor receipt rides the graph→router wires as
+    /// `opt vec record { shard_id : nat32; dispatched : nat64; chain_survivors : nat64 }`
+    /// and round-trips through Candid byte-identically.
+    #[test]
+    fn search_chain_receipt_candid_roundtrip() {
+        let receipt = vec![SearchChainReceiptRecord {
+            shard_id: 0,
+            dispatched: 2,
+            chain_survivors: 1,
+        }];
+        let result = GqlQueryResult {
+            row_count: 1,
+            rows_blob: None,
+            phase: None,
+            token: None,
+            truncated: Some(false),
+            search_chain_receipt: Some(receipt.clone()),
+        };
+        let bytes = Encode!(&result).expect("encode search receipt");
+        let decoded: GqlQueryResult =
+            Decode!(&bytes, GqlQueryResult).expect("decode search receipt");
+        assert_eq!(decoded.search_chain_receipt.as_ref(), Some(&receipt));
+        assert_eq!(decoded.truncated, Some(false));
+
+        // Non-SEARCH executions carry the additive field as `None`.
+        let plain = GqlQueryResult::row_count_only(3);
+        let bytes = Encode!(&plain).expect("encode plain");
+        let decoded: GqlQueryResult = Decode!(&bytes, GqlQueryResult).expect("decode plain");
+        assert_eq!(decoded.search_chain_receipt, None);
+
+        // The graph→shard wire carries the per-round record too.
+        let shard_result = ExecutePlanResult {
+            row_count: 0,
+            rows_blob: None,
+            hot_forward_vertices: Vec::new(),
+            search_chain_receipt: Some(receipt),
+        };
+        let bytes = Encode!(&shard_result).expect("encode shard result");
+        let decoded: ExecutePlanResult =
+            Decode!(&bytes, ExecutePlanResult).expect("decode shard result");
+        assert_eq!(
+            decoded.search_chain_receipt.as_ref().map(|r| r.len()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2483,6 +2563,7 @@ mod tests {
             row_count: 2,
             rows_blob: Some(vec![1, 2, 3]),
             hot_forward_vertices: Vec::new(),
+            search_chain_receipt: None,
         };
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
@@ -2497,6 +2578,7 @@ mod tests {
                     row_count: 3,
                     rows_blob: None,
                     hot_forward_vertices: vec![9],
+                    search_chain_receipt: None,
                 }),
                 Err("item failed".to_string()),
             ],

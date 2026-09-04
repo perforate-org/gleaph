@@ -28,6 +28,13 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 /// Cheaply-cloneable string type for identifiers (variable names, labels, properties, etc.).
 pub type Str = Rc<str>;
 
+/// `PlanOp::PropertyFilter::stage` value marking a filter the Router's authorization lowering
+/// inserted ([ADR 0092] chain-survivor receipts). The graph executor evaluates chain-stage
+/// filters that reference only the SEARCH binding per dispatched candidate seed at the
+/// `PlanOp::Search` stage — early seed rejection plus the per-shard `chain_survivors`
+/// count — while user-authored filters (stage 0) never participate in the receipt.
+pub const PROPERTY_FILTER_STAGE_POLICY_CHAIN: usize = usize::MAX;
+
 /// A node-label reference in a physical plan.
 ///
 /// This is intentionally a planner-generic name wrapper, not a backend label id.

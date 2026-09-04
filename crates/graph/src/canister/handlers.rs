@@ -1218,6 +1218,7 @@ async fn execute_plan_batch_internal(
                                 row_count: *row_count,
                                 rows_blob: None,
                                 hot_forward_vertices: Vec::new(),
+                                search_chain_receipt: None,
                             })
                         })
                         .collect(),
@@ -1276,6 +1277,7 @@ async fn execute_plan_batch_internal(
                 row_count,
                 rows_blob: None,
                 hot_forward_vertices: Vec::new(),
+                search_chain_receipt: None,
             }));
             continue;
         }
@@ -1631,6 +1633,7 @@ async fn execute_plan_impl(
         row_count: run.row_count as u64,
         rows_blob: run.rows_blob,
         hot_forward_vertices: run.hot_forward_vertices.clone(),
+        search_chain_receipt: run.search_chain_receipt.map(|record| vec![record]),
     };
     let emitted_delta_first_seq = run.emitted_delta_first_seq;
     let emitted_delta_last_seq = run.emitted_delta_last_seq;
@@ -3035,6 +3038,7 @@ mod tests {
             row_count: 0,
             rows_blob: Some(vec![0; payload_len]),
             hot_forward_vertices: Vec::new(),
+            search_chain_receipt: None,
         };
         let mut low = 0usize;
         let mut high = limit;

@@ -49,6 +49,13 @@ pub fn merge_execute_plan_result(
     mode: FederatedMergeMode,
 ) -> Result<(), String> {
     ensure_execute_plan_result_payload(&shard)?;
+    // ADR 0092: per-shard chain-survivor receipts aggregate by appending entries — the
+    // Router's deepening loop consumes the per-shard breakdown (and its cumulative
+    // totals) across rounds.
+    if let Some(shard_receipt) = shard.search_chain_receipt {
+        let entries = acc.search_chain_receipt.get_or_insert_with(Vec::new);
+        entries.extend(shard_receipt);
+    }
     acc.rows_blob = match &mode {
         FederatedMergeMode::UnionRows => {
             acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
@@ -82,6 +89,7 @@ pub fn empty_execute_plan_result() -> ExecutePlanResult {
         row_count: 0,
         rows_blob: None,
         hot_forward_vertices: Vec::new(),
+        search_chain_receipt: None,
     }
 }
 
@@ -96,7 +104,7 @@ mod tests {
     use gleaph_gql::Value;
     use gleaph_gql_ic::{GqlWireRow, GqlWireRows, GqlWireValue};
 
-    use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
+    use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, SearchChainReceiptRecord};
 
     use super::{
         empty_execute_plan_result, merge_add_row_count, merge_execute_plan_result, merge_row_counts,
@@ -119,6 +127,61 @@ mod tests {
         .expect("encode")
     }
 
+    /// ADR 0092: per-shard chain-survivor receipts aggregate by appending entries so the
+    /// Router's deepening loop can consume per-shard breakdowns and cumulative totals.
+    #[test]
+    fn merge_appends_per_shard_chain_receipt_entries() {
+        let mut acc = empty_execute_plan_result();
+        merge_execute_plan_result(
+            &mut acc,
+            ExecutePlanResult {
+                row_count: 1,
+                rows_blob: None,
+                hot_forward_vertices: Vec::new(),
+                search_chain_receipt: Some(vec![SearchChainReceiptRecord {
+                    shard_id: 0,
+                    dispatched: 2,
+                    chain_survivors: 1,
+                }]),
+            },
+            FederatedMergeMode::UnionRows,
+        )
+        .expect("merge shard 0");
+        merge_execute_plan_result(
+            &mut acc,
+            ExecutePlanResult {
+                row_count: 3,
+                rows_blob: None,
+                hot_forward_vertices: Vec::new(),
+                search_chain_receipt: Some(vec![SearchChainReceiptRecord {
+                    shard_id: 1,
+                    dispatched: 2,
+                    chain_survivors: 2,
+                }]),
+            },
+            FederatedMergeMode::UnionRows,
+        )
+        .expect("merge shard 1");
+
+        let receipt = acc.search_chain_receipt.expect("aggregated receipt");
+        assert_eq!(receipt.len(), 2, "one entry per contributing shard");
+        assert_eq!(
+            receipt
+                .iter()
+                .map(|entry| (entry.shard_id, entry.dispatched, entry.chain_survivors))
+                .collect::<Vec<_>>(),
+            vec![(0, 2, 1), (1, 2, 2)],
+            "entries arrive in dispatch order with per-shard counts"
+        );
+        let total_dispatched: u64 = receipt.iter().map(|entry| entry.dispatched).sum();
+        let total_survivors: u64 = receipt.iter().map(|entry| entry.chain_survivors).sum();
+        assert_eq!(
+            (total_dispatched, total_survivors),
+            (4, 3),
+            "the deepening loop consumes cumulative loss (4 - 3) vs sparsity from the totals"
+        );
+    }
+
     #[test]
     fn merge_rejects_result_envelope_over_transport_limit() {
         let oversized = ExecutePlanResult {
@@ -128,6 +191,7 @@ mod tests {
                 gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
             ]),
             hot_forward_vertices: Vec::new(),
+            search_chain_receipt: None,
         };
         let mut acc = empty_execute_plan_result();
         let err = merge_execute_plan_result(&mut acc, oversized, FederatedMergeMode::UnionRows)
@@ -157,6 +221,7 @@ mod tests {
                 row_count: 1,
                 rows_blob: Some(sample_rows_blob(&[1])),
                 hot_forward_vertices: vec![1],
+                search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
         )
@@ -167,6 +232,7 @@ mod tests {
                 row_count: 2,
                 rows_blob: Some(sample_rows_blob(&[2, 3])),
                 hot_forward_vertices: vec![2, 3],
+                search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
         )
@@ -214,6 +280,7 @@ mod tests {
                 row_count: 1,
                 rows_blob: Some(count_blob(5)),
                 hot_forward_vertices: Vec::new(),
+                search_chain_receipt: None,
             },
             FederatedMergeMode::Aggregate(spec.clone()),
         )
@@ -224,6 +291,7 @@ mod tests {
                 row_count: 1,
                 rows_blob: Some(count_blob(3)),
                 hot_forward_vertices: Vec::new(),
+                search_chain_receipt: None,
             },
             FederatedMergeMode::Aggregate(spec),
         )

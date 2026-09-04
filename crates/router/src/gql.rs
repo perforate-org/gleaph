@@ -3397,6 +3397,7 @@ fn execute_explain_authorization(
         phase: None,
         token: None,
         truncated: None,
+        search_chain_receipt: None,
     })
 }
 
@@ -3997,6 +3998,7 @@ async fn dispatch_multi_graph_use_segments(
                 row_count: result.row_count,
                 rows_blob: result.rows_blob,
                 hot_forward_vertices: Vec::new(),
+                search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
         )
@@ -4071,6 +4073,7 @@ async fn dispatch_use_graph_join(
         phase: None,
         token: None,
         truncated: None,
+        search_chain_receipt: None,
         rows_blob: Some(
             projected
                 .encode_blob()
@@ -5202,6 +5205,7 @@ async fn execute_prepared_mutation(
                             row_count: entry.row_count(),
                             rows_blob: None,
                             hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                            search_chain_receipt: None,
                         },
                         merge_mode.clone(),
                     )
@@ -6424,6 +6428,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         };
         let err = super::ensure_gql_query_result_payload(&result, "test")
             .expect_err("oversized GQL result");
@@ -9230,6 +9235,7 @@ mod tests {
             row_count: 1,
             rows_blob: Some(rows_blob.clone()),
             hot_forward_vertices: Vec::new(),
+            search_chain_receipt: None,
         };
         let out = GqlQueryResult::from_merged(&merged);
         assert_eq!(out.row_count, 1);

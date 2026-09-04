@@ -16,6 +16,7 @@ pub use mutation::{
     execute_mutation_tail_async, execute_ops, plan_contains_gleaph_finalize_call, read_prefix_len,
 };
 pub use query::PlanQueryExecutor;
+pub(crate) use query::execute_plan_query_bindings_with_outcome;
 pub use query::{
     EdgeBinding, PathBinding, PlanBinding, PlanQueryBindings, PlanQueryError, PlanQueryResult,
     PlanQueryRow, empty_row_for_plan, execute_plan_query, execute_plan_query_bindings,

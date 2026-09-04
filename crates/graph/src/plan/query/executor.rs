@@ -7,6 +7,7 @@ mod join;
 mod ops;
 mod path;
 mod scan;
+mod search_chain;
 mod set_operation;
 mod wcoj;
 
@@ -48,7 +49,7 @@ use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::gql_dialect::INSERTION;
-use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
+use gleaph_graph_kernel::plan_exec::{EdgeOrderingPolicy, SearchChainReceiptRecord};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
@@ -152,6 +153,37 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     initial_rows: Vec<PlanRow>,
     skip_leading_index_scan: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    execute_plan_query_bindings_with_outcome(
+        store,
+        plan,
+        parameters,
+        index,
+        execution,
+        initial_rows,
+        skip_leading_index_scan,
+    )
+    .await
+    .map(|outcome| outcome.rows)
+}
+
+/// Outcome of one read-plan execution: binding rows plus the ADR 0092 chain-survivor
+/// receipt when the plan carried a SEARCH binding (`None` otherwise).
+pub(crate) struct PlanBindingRunOutcome {
+    pub rows: Vec<PlanRow>,
+    pub search_chain_receipt: Option<SearchChainReceiptRecord>,
+}
+
+/// Like [`execute_plan_query_bindings_with_initial_rows`] but also drains the ADR 0092
+/// chain-survivor receipt recorded by the `PlanOp::Search` arm.
+pub(crate) async fn execute_plan_query_bindings_with_outcome(
+    store: &GraphStore,
+    plan: &PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    initial_rows: Vec<PlanRow>,
+    skip_leading_index_scan: bool,
+) -> Result<PlanBindingRunOutcome, PlanQueryError> {
     // The router-issued element-id key is carried as owned data in the per-op evaluator
     // (`QueryExprEvaluator::element_id_key`), never parked in ambient thread-local state across the
     // `await`s in `execute_ops_from`. Materialization resolves the same key explicitly from
@@ -176,7 +208,7 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
     execution: GqlExecutionContext,
     initial_rows: Vec<PlanRow>,
     skip_leading_index_scan: bool,
-) -> Result<Vec<PlanRow>, PlanQueryError> {
+) -> Result<PlanBindingRunOutcome, PlanQueryError> {
     let ops = if skip_leading_index_scan {
         skip_leading_index_anchor_ops(&plan.ops)
     } else {
@@ -186,7 +218,11 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
     super::arena::QueryArena::with(|arena| arena.reset());
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = bench_scope("plan_query_execute_ops");
-    execute_ops_from(&ctx, ops, initial_rows).await
+    let rows = execute_ops_from(&ctx, ops, initial_rows).await?;
+    Ok(PlanBindingRunOutcome {
+        rows,
+        search_chain_receipt: ctx.take_search_chain_receipt(),
+    })
 }
 
 fn is_router_seed_skippable_op(op: &PlanOp) -> bool {

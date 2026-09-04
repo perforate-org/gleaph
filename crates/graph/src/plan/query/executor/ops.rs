@@ -26,6 +26,7 @@ use super::scan::{
     execute_index_scan, execute_limited_streaming_prefix, execute_node_scan,
     limited_streaming_prefix_limit_idx,
 };
+use super::search_chain;
 use super::set_operation::execute_set_operation;
 use super::wcoj::execute_wcoj;
 use super::{
@@ -997,8 +998,30 @@ pub(crate) fn execute_ops_from<'a>(
                             "SEARCH is parsed and planned but Router lowering is not implemented yet",
                         ));
                     };
-                    let lookup =
+                    let mut lookup =
                         build_search_lookup(binding.as_ref(), output.alias.as_ref(), wire)?;
+                    // ADR 0092: evaluate the lowered authorization chain per dispatched
+                    // candidate seed BEFORE the prefix join. Dead seeds are dropped from
+                    // the join lookup (they never join) and the per-shard survival counts
+                    // are recorded as the execution receipt.
+                    let receipt = search_chain::evaluate_search_chain_survivors(
+                        ctx,
+                        ops,
+                        op_idx,
+                        binding.as_ref(),
+                        wire,
+                        &mut lookup,
+                    )
+                    .await?;
+                    {
+                        let mut slot = ctx.search_chain_receipt.borrow_mut();
+                        if slot.is_some() {
+                            return Err(PlanQueryError::UnsupportedOp(
+                                "SEARCH receipt already recorded: exactly one SEARCH binding per query (ADR 0092 §5)",
+                            ));
+                        }
+                        *slot = Some(receipt);
+                    }
                     rows.into_iter()
                         .filter_map(|row| match row.get(binding.as_ref()) {
                             None => None,

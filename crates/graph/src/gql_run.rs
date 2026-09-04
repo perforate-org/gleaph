@@ -7,8 +7,8 @@ use crate::index::pending;
 use crate::plan::{
     PlanBinding, PlanMutationBindings, PlanQueryResult, PlanQueryRow, SeededMutationRow,
     execute_mutation_tail_async, execute_plan_query, execute_plan_query_bindings,
-    execute_plan_query_bindings_with_initial_rows, plan_contains_gleaph_finalize_call,
-    read_prefix_len,
+    execute_plan_query_bindings_with_initial_rows, execute_plan_query_bindings_with_outcome,
+    plan_contains_gleaph_finalize_call, read_prefix_len,
 };
 use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, Statement, StatementBlock};
@@ -22,8 +22,8 @@ use gleaph_graph_kernel::federation::{
     ClaimId, EffectId, ElementIdEncodingKey, UniqueEffectOp, UniqueEffectReceipt,
 };
 use gleaph_graph_kernel::plan_exec::{
-    GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId, SeedBindingsWire,
-    ShardEventSeq, UniqueClaimDispatch,
+    GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId,
+    SearchChainReceiptRecord, SeedBindingsWire, ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_prepared_runtime::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
@@ -559,6 +559,9 @@ struct TransactionBlockRun {
     emitted_delta_first_seq: Option<ShardEventSeq>,
     emitted_delta_last_seq: Option<ShardEventSeq>,
     hot_forward_vertices: Vec<u32>,
+    /// ADR 0092 chain-survivor receipt recorded by the plan's `PlanOp::Search` arm
+    /// (`None` when the bundle carries no SEARCH binding).
+    search_chain_receipt: Option<SearchChainReceiptRecord>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -568,6 +571,8 @@ pub struct WirePlanRunResult {
     pub hot_forward_vertices: Vec<u32>,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
+    /// ADR 0092 chain-survivor receipt for one SEARCH-bearing execution round.
+    pub search_chain_receipt: Option<SearchChainReceiptRecord>,
 }
 
 fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[VertexId]) {
@@ -953,6 +958,7 @@ async fn run_transaction_block_inner(
         emitted_delta_first_seq: None,
         emitted_delta_last_seq: None,
         hot_forward_vertices,
+        search_chain_receipt: None,
     })
 }
 
@@ -1400,6 +1406,7 @@ async fn run_wire_plans_inner(
                 emitted_delta_first_seq: journal.emitted_delta_first_seq(),
                 emitted_delta_last_seq: journal.emitted_delta_last_seq(),
                 hot_forward_vertices: journal.hot_forward_vertices().to_vec().clone(),
+                search_chain_receipt: None,
             });
         }
         return Err(GqlRunError::Plan(format!(
@@ -1434,6 +1441,9 @@ async fn run_wire_plans_inner(
     let mut emitted_delta_first_seq = None;
     let mut emitted_delta_last_seq = None;
     let mut hot_forward_vertices = Vec::new();
+    // ADR 0092: the SEARCH-bearing plan's chain-survivor receipt (last SEARCH wins for
+    // multi-plan bundles; each plan execution owns exactly one receipt slot).
+    let mut search_chain_receipt = None;
     // ADR 0030 slice 5b: the mutation-wide `Release` `effect_ordinal` cursor, carried across every
     // canonical segment so a multi-statement DELETE/REMOVE never re-mints an `EffectId`. Starts past
     // the mutation's `Acquire` ordinals (which occupy `0..unique_claims.len()`).
@@ -1553,7 +1563,7 @@ async fn run_wire_plans_inner(
             let skip = use_seeds;
             match materialize {
                 TransactionReadMaterialize::Full => {
-                    last_query_rows = execute_plan_query_with_rows(
+                    let outcome = execute_plan_query_bindings_with_outcome(
                         store,
                         plan,
                         parameters,
@@ -1563,9 +1573,19 @@ async fn run_wire_plans_inner(
                         skip,
                     )
                     .await?;
+                    last_query_rows = PlanQueryResult {
+                        rows: crate::plan::materialize_plan_rows(
+                            store,
+                            &crate::element_id_encoding::resolve_or_host_fixture(
+                                execution.element_id_encoding_key(),
+                            ),
+                            &outcome.rows,
+                        )?,
+                    };
+                    search_chain_receipt = outcome.search_chain_receipt;
                 }
                 TransactionReadMaterialize::LastReadRowCountOnly => {
-                    let rows = execute_plan_query_bindings_with_initial_rows(
+                    let outcome = execute_plan_query_bindings_with_outcome(
                         store,
                         plan,
                         parameters,
@@ -1575,10 +1595,11 @@ async fn run_wire_plans_inner(
                         skip,
                     )
                     .await?;
-                    last_read_row_count = rows.len();
+                    last_read_row_count = outcome.rows.len();
+                    search_chain_receipt = outcome.search_chain_receipt;
                 }
                 TransactionReadMaterialize::LastReadBindingsOnly => {
-                    last_read_plan_rows = execute_plan_query_bindings_with_initial_rows(
+                    let outcome = execute_plan_query_bindings_with_outcome(
                         store,
                         plan,
                         parameters,
@@ -1588,7 +1609,9 @@ async fn run_wire_plans_inner(
                         skip,
                     )
                     .await?;
-                    last_read_row_count = last_read_plan_rows.len();
+                    last_read_row_count = outcome.rows.len();
+                    last_read_plan_rows = outcome.rows;
+                    search_chain_receipt = outcome.search_chain_receipt;
                 }
             }
         }
@@ -1601,32 +1624,7 @@ async fn run_wire_plans_inner(
         emitted_delta_first_seq,
         emitted_delta_last_seq,
         hot_forward_vertices,
-    })
-}
-
-async fn execute_plan_query_with_rows(
-    store: &GraphStore,
-    plan: &gleaph_gql_planner::PhysicalPlan,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
-    execution: GqlExecutionContext,
-    initial_rows: Vec<PlanQueryRow>,
-    skip_leading_index_scan: bool,
-) -> Result<PlanQueryResult, GqlRunError> {
-    let element_id_key =
-        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
-    let rows = execute_plan_query_bindings_with_initial_rows(
-        store,
-        plan,
-        parameters,
-        index,
-        execution,
-        initial_rows,
-        skip_leading_index_scan,
-    )
-    .await?;
-    Ok(PlanQueryResult {
-        rows: crate::plan::materialize_plan_rows(store, &element_id_key, &rows)?,
+        search_chain_receipt,
     })
 }
 
@@ -1719,6 +1717,7 @@ pub async fn run_wire_plans_last_read_row_count(
         hot_forward_vertices: run.hot_forward_vertices,
         emitted_delta_first_seq: run.emitted_delta_first_seq,
         emitted_delta_last_seq: run.emitted_delta_last_seq,
+        search_chain_receipt: run.search_chain_receipt,
     })
 }
 

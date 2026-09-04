@@ -41,7 +41,8 @@ use gleaph_auth::{
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
-    EdgeLabelRef, NodeLabelRef, PhysicalPlan, PlanOp, ScanValue, SemiHop, Str,
+    EdgeLabelRef, NodeLabelRef, PROPERTY_FILTER_STAGE_POLICY_CHAIN, PhysicalPlan, PlanOp,
+    ScanValue, SemiHop, Str,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 
@@ -471,22 +472,27 @@ fn lower_ops_slice(
         if let Some(replacement) = decision.replacement {
             *ops.get_mut(index).expect("index within slice") = replacement;
         }
-        if !decision.dst_injections.is_empty()
-            && let PlanOp::ExpandFilter { dst_filter, .. } =
-                ops.get_mut(index).expect("index within slice")
-        {
-            for expr in &decision.dst_injections {
-                if !dst_filter.contains(expr) {
-                    dst_filter.push(expr.clone());
-                }
-            }
+        // ADR 0092: policy predicates on an expanded destination lower as chain-stage
+        // `PropertyFilter` ops directly after the site (not `dst_filter` injections) so
+        // the executor can identify the lowered chain per SEARCH binding and evaluate it
+        // per dispatched candidate seed. Evaluation order is unchanged: the filter runs
+        // immediately after the expansion, before any projection drops the binding.
+        for expr in &decision.dst_injections {
+            ops.insert(
+                index + offset,
+                PlanOp::PropertyFilter {
+                    predicates: vec![expr.clone()],
+                    stage: PROPERTY_FILTER_STAGE_POLICY_CHAIN,
+                },
+            );
+            offset += 1;
         }
         for expr in decision.filters {
             ops.insert(
                 index + offset,
                 PlanOp::PropertyFilter {
                     predicates: vec![expr],
-                    stage: 0,
+                    stage: PROPERTY_FILTER_STAGE_POLICY_CHAIN,
                 },
             );
             offset += 1;
@@ -1476,10 +1482,16 @@ mod tests {
         }]);
         lower_into_plan(&ctx, &mut plan, &policies_state);
         assert_eq!(plan.ops.len(), 2, "filter inserted after the scan");
-        assert!(matches!(
-            plan.ops[1],
-            PlanOp::PropertyFilter { stage: 0, .. }
-        ));
+        assert!(
+            matches!(
+                plan.ops[1],
+                PlanOp::PropertyFilter {
+                    stage: PROPERTY_FILTER_STAGE_POLICY_CHAIN,
+                    ..
+                }
+            ),
+            "lowered chain filters carry the ADR 0092 chain stage marker"
+        );
 
         // No policies → plan unchanged.
         let empty = ResolvedPolicies {
@@ -1496,11 +1508,12 @@ mod tests {
     }
 
     #[test]
-    fn expansion_destination_injects_into_planner_label_fact() {
+    fn expansion_destination_lowers_chain_stage_filter_after_the_site() {
         let _ = fixture();
         // ExpandFilter destinations carry the planner's `IsLabeled(p, Post)` fact; the
-        // policy conjuncts must inject into that existing filter (whose label name is
-        // wire-registered) instead of a separate op.
+        // policy conjuncts lower as an ADR 0092 chain-stage `PropertyFilter` directly
+        // after the expansion so the executor can evaluate the chain per SEARCH
+        // candidate seed (the planner label fact stays wire-registered in dst_filter).
         let mut parsed = crate::prepared::plan_prepared_query(
             "MATCH (u:User)-[:POSTED]->(p:Post) RETURN p.tag AS tag",
             principal(9),
@@ -1536,21 +1549,25 @@ mod tests {
         let ctx = LoweringContext::new(&store, GraphId::from_raw(7));
         lower_into_plan(&ctx, &mut parsed, &policies);
 
-        // Every comparison conjunct lands inside the planner's dst_filter — no
-        // standalone PropertyFilter is added.
-        let mut saw_visibility_in_dst_filter = false;
+        // Every comparison conjunct lands in a chain-stage PropertyFilter directly
+        // after the expansion; the dst_filter keeps only the planner label fact.
+        let mut saw_visibility_in_chain_filter = false;
         for op in &parsed.ops {
-            if let PlanOp::ExpandFilter { dst_filter, .. } = op {
-                saw_visibility_in_dst_filter = dst_filter
+            if let PlanOp::PropertyFilter {
+                predicates,
+                stage: PROPERTY_FILTER_STAGE_POLICY_CHAIN,
+            } = op
+            {
+                saw_visibility_in_chain_filter = predicates
                     .iter()
                     .any(|expr| format!("{expr:?}").contains("visibility"));
             }
         }
         assert!(
-            saw_visibility_in_dst_filter,
-            "policy conjunct must join the planner label-fact filter"
+            saw_visibility_in_chain_filter,
+            "policy conjunct must lower as a chain-stage filter after the expansion"
         );
-        assert_eq!(parsed.ops.len(), 3, "no extra ops inserted");
+        assert_eq!(parsed.ops.len(), 4, "one chain-stage filter inserted");
     }
 
     #[test]

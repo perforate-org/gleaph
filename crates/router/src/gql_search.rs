@@ -257,7 +257,8 @@ fn deepening_may_start_round(next_round: u32) -> bool {
         )
 }
 
-/// Why a deepening search stopped after a finished round (ADR 0078 §3/§4).
+/// Why a deepening search stopped after a finished round (ADR 0078 §3/§4; NonLeading per
+/// ADR 0092 §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeepeningStop {
     /// At least k authorized rows were observed; not truncated.
@@ -265,8 +266,40 @@ enum DeepeningStop {
     /// The vector index returned fewer candidates than requested: the candidate universe
     /// holds fewer than k authorized rows.
     CandidatesExhausted,
+    /// ADR 0092 §4 (NonLeading only): cumulative `chain_survivors == cumulative dispatched`
+    /// and both below k — the global top-k was consumed with no chain loss, so the join was
+    /// sparse. Complete, non-truncated answer (ADR 0034 Slice 5).
+    Sparsity,
     /// The next round would exceed the query instruction budget bound.
     BudgetExhausted,
+}
+
+/// Cumulative ADR 0092 chain-survivor totals across deepening rounds, per shard aggregated
+/// to sums (multi-shard graphs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ChainReceiptTotals {
+    dispatched: u64,
+    chain_survivors: u64,
+}
+
+/// Read one round's ADR 0092 chain-survivor receipt from an execution result and aggregate
+/// the per-shard entries into sums. Fail-closed: a SEARCH-bearing execution MUST carry the
+/// receipt (both graph and router ship from one tree), so an absent receipt is a bug and
+/// must never degrade the convergence signal — `None` is rejected outright. Receipts are
+/// ephemeral in-memory deepening-control metadata; this only ever reads them.
+fn search_chain_receipt_totals(result: &GqlQueryResult) -> Result<ChainReceiptTotals, RouterError> {
+    let Some(receipt) = &result.search_chain_receipt else {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH-bearing execution returned no chain-survivor receipt (ADR 0092): fail-closed"
+                .into(),
+        ));
+    };
+    let mut totals = ChainReceiptTotals::default();
+    for entry in receipt {
+        totals.dispatched += entry.dispatched;
+        totals.chain_survivors += entry.chain_survivors;
+    }
+    Ok(totals)
 }
 
 /// Classify one finished round (ADR 0078 §3/§4, **Leading** SEARCH). `None` means another
@@ -294,33 +327,34 @@ fn deepening_stop(
     None
 }
 
-/// Classify one finished round for a **NonLeading** SEARCH. The convergence signal is the
-/// joined `row_count`, because NonLeading deepening exists to recover **authorization loss**
-/// (ADR 0082 exists-traversal, ADR 0078 §3 authz-aware deepening): the raw ANN hits are
-/// pre-authz, so a hit-count criterion cannot see rows dropped by the authorization path —
-/// only the joined row count reflects it.
-/// The ONLY divergence from the Leading classifier is therefore the absence of the
-/// `cap_result_rows` application (see the call site): the join output must keep ADR 0034
-/// Slice 5 multiplicity (one surviving hit may join to many prefix rows), so it is never
-/// truncated to k.
+/// Classify one finished round for a **NonLeading** SEARCH on the ADR 0092 §4 receipt
+/// criterion, cumulative across rounds (per shard aggregated to sums by the caller). The
+/// graph executor reports per shard how many dispatched candidates passed the lowered
+/// authorization/policy chain at the SEARCH binding, so the classifier can distinguish the
+/// two loss modes the joined `row_count` conflates:
 ///
-/// OPEN CONFLICT (ADR 0034 vs ADR 0082, deliberately unresolved here — escalated to the
-/// design owner via the user): joined row count cannot distinguish *join sparsity* (a
-/// globally-nearest hit that legitimately joins to nothing — ADR 0034 Slice 5 expects an
-/// empty, non-truncated answer) from *authorization loss* (ADR 0082 expects the deepening
-/// loop to fetch more candidates until k authorized rows exist). Converging on `row_count`
-/// keeps the ADR 0082 recovery but over-deepens past a sparse join, so the
-/// `non_leading_search_where_global_top_k_consumes_unlinked_qualifying_vertex` contract stays
-/// red under this ruling. Distinguishing the two requires a chain-survivor receipt signal
-/// (per-hit chain survival carried out of the graph dispatch) — designed in ADR 0092, which
-/// supersedes this interim ruling once implemented.
+/// - cumulative `chain_survivors >= k` → `Converged`: complete answer. The join output is
+///   **never capped** at the call site (ADR 0034 Slice 5 multiplicity: one surviving hit may
+///   join to many prefix rows).
+/// - cumulative `survivors < cumulative dispatched` → observed authorization loss (ADR 0082
+///   recovery): keep deepening while the budget allows — `None`.
+/// - cumulative `survivors == cumulative dispatched` and `< k` → the global top-k was
+///   consumed with no chain loss, so the join is sparse → `Sparsity`: complete,
+///   **non-truncated** answer even when fewer than k rows joined (ADR 0034 Slice 5: a
+///   globally-nearest hit that legitimately joins to nothing yields an empty,
+///   non-truncated answer).
+/// - candidate exhaustion with survivors < k → `CandidatesExhausted`: the fully-consumed
+///   candidate universe is a **complete, non-truncated** answer for NonLeading receipts;
+///   only budget exhaustion truncates (ADR 0092 §4 exhaustion rule).
+/// - budget exhaustion with survivors < k → `BudgetExhausted`: truncated — more candidates
+///   exist beyond the budget bound.
 fn non_leading_deepening_stop(
-    authorized_rows: u64,
+    totals: ChainReceiptTotals,
     top_k: u32,
     candidates_exhausted: bool,
     next_round_allowed: bool,
 ) -> Option<DeepeningStop> {
-    if authorized_rows >= u64::from(top_k) {
+    if totals.chain_survivors >= u64::from(top_k) {
         return Some(DeepeningStop::Converged);
     }
     if !next_round_allowed {
@@ -329,7 +363,14 @@ fn non_leading_deepening_stop(
     if candidates_exhausted {
         return Some(DeepeningStop::CandidatesExhausted);
     }
-    None
+    if totals.chain_survivors < totals.dispatched {
+        // Authorization loss observed at the lowered chain: deepen to recover k authorized
+        // rows (ADR 0082).
+        return None;
+    }
+    // No loss observed and fewer than k survivors: the join was sparse over the consumed
+    // top-k — a complete answer, not a reason to deepen.
+    Some(DeepeningStop::Sparsity)
 }
 
 /// Cap materialized rows at `cap` (ADR 0078 §2/§4 "return exactly k"): deepening can
@@ -418,6 +459,8 @@ where
     let allowlist_is_empty = matches!(&candidate_subjects, Some(subjects) if subjects.is_empty());
 
     let mut round: u32 = 0;
+    // ADR 0092 §4: cumulative chain-survivor totals across deepening rounds (NonLeading).
+    let mut cumulative = ChainReceiptTotals::default();
     loop {
         let request_size = deepening_request_size(top_k, round);
         let hits: Vec<VectorSearchHit> = if allowlist_is_empty {
@@ -494,6 +537,12 @@ where
                     cap_result_rows(&mut gql_result, top_k)?;
                     return Ok(gql_result.with_truncated(false));
                 }
+                Some(DeepeningStop::Sparsity) => {
+                    // Leading rows map 1:1 onto surviving hits, so a k-prefix-converged join
+                    // can never be sparse while short of k; this variant is unreachable on the
+                    // Leading classifier.
+                    unreachable!("deepening_stop never reports sparsity for Leading SEARCH")
+                }
                 Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
                     debug_assert!(
                         gql_result.row_count < u64::from(top_k),
@@ -503,13 +552,17 @@ where
                 }
             },
             SearchPosition::NonLeading(_) => {
-                // Convergence is row_count based (authorization-loss recovery, ADR 0082/0078
-                // §3 — see non_leading_deepening_stop). The ONLY divergence from Leading is
-                // that the join output is never capped: ADR 0034 Slice 5 multiplicity means a
-                // k-hit join can legitimately produce more than k rows, so capping here would
-                // destroy contract-correct multiplicities.
+                // ADR 0092 §4: convergence runs on the chain-survivor receipt, cumulative
+                // across rounds (per shard aggregated to sums). The receipt distinguishes
+                // authorization loss (deepen — ADR 0082) from join sparsity (stop,
+                // complete — ADR 0034 Slice 5). The join output is never capped: ADR 0034
+                // Slice 5 multiplicity means a k-hit join can legitimately produce more than
+                // k rows, so capping here would destroy contract-correct multiplicities.
+                let round_totals = search_chain_receipt_totals(&gql_result)?;
+                cumulative.dispatched += round_totals.dispatched;
+                cumulative.chain_survivors += round_totals.chain_survivors;
                 match non_leading_deepening_stop(
-                    gql_result.row_count,
+                    cumulative,
                     top_k,
                     candidates_exhausted,
                     deepening_may_start_round(round + 1),
@@ -523,13 +576,14 @@ where
                         // non_leading_search_global_top_k_computed_before_join).
                         return Ok(gql_result.with_truncated(false));
                     }
-                    Some(DeepeningStop::CandidatesExhausted | DeepeningStop::BudgetExhausted) => {
-                        // The converge check ran first, so a non-converged stop still held
-                        // fewer than k authorized rows.
-                        debug_assert!(
-                            gql_result.row_count < u64::from(top_k),
-                            "non-converged stops require fewer than k authorized rows"
-                        );
+                    // Sparsity and candidate exhaustion are both complete answers for
+                    // NonLeading receipts: the candidate universe was fully consumed with no
+                    // chain loss (sparsity) or at all (exhaustion) — only budget exhaustion
+                    // truncates (ADR 0092 §4).
+                    Some(DeepeningStop::Sparsity | DeepeningStop::CandidatesExhausted) => {
+                        return Ok(gql_result.with_truncated(false));
+                    }
+                    Some(DeepeningStop::BudgetExhausted) => {
                         return Ok(gql_result.with_truncated(true));
                     }
                 }
@@ -2930,33 +2984,229 @@ mod tests {
         // assertions by returning early exhaustion instead.
     }
 
+    use gleaph_graph_kernel::plan_exec::SearchChainReceiptRecord;
+
+    fn non_leading_receipt_totals(receipt: &[SearchChainReceiptRecord]) -> ChainReceiptTotals {
+        let mut totals = ChainReceiptTotals::default();
+        for entry in receipt {
+            totals.dispatched += entry.dispatched;
+            totals.chain_survivors += entry.chain_survivors;
+        }
+        totals
+    }
+
     #[test]
     fn non_leading_deepening_stop_matches_leading_signal_but_skips_the_cap() {
-        // The Leading/NonLeading divergence is ONLY whether the join output is capped at the
-        // call site: both classifiers converge on the joined row count (deepening exists to
-        // recover authorization loss — ADR 0082/0078 §3 — which only row_count can observe),
-        // while NonLeading must never truncate the ADR 0034 Slice 5 multiplicity of the join.
+        // ADR 0092 §4: the NonLeading classifier runs on the cumulative chain-survivor
+        // receipt. Matrix over loss / sparsity / converged × budget states.
         const K: u32 = 2;
-        // Identical stop decisions for the same observed state.
-        for rows in [0u64, 1, 2, 5] {
-            for exhausted in [false, true] {
-                for allowed in [false, true] {
+
+        // Convergence wins over every exhaustion signal: cumulative survivors >= k is a
+        // complete answer regardless of budget or candidate state.
+        for exhausted in [false, true] {
+            for allowed in [false, true] {
+                for (dispatched, survivors) in [(2u64, 2u64), (7, 5), (9, 2)] {
                     assert_eq!(
-                        non_leading_deepening_stop(rows, K, exhausted, allowed),
-                        deepening_stop(rows, K, exhausted, allowed),
-                        "the classifiers must agree on every observed state (rows={rows}, \
+                        non_leading_deepening_stop(
+                            ChainReceiptTotals {
+                                dispatched,
+                                chain_survivors: survivors,
+                            },
+                            K,
+                            exhausted,
+                            allowed,
+                        ),
+                        Some(DeepeningStop::Converged),
+                        "survivors >= k must converge ({dispatched}, {survivors}, \
                          exhausted={exhausted}, allowed={allowed})"
                     );
                 }
             }
         }
-        // The cap difference is asserted structurally at the call site; this probe pins the
-        // classifier contract the separation relies on: convergence is row_count based, so a
-        // full k-hit join that produced zero rows keeps deepening on both positions.
-        assert_eq!(non_leading_deepening_stop(0, K, false, true), None);
+
+        // Authorization loss (survivors < dispatched) with room left: keep deepening (ADR
+        // 0082 recovery), even at zero rows.
         assert_eq!(
-            non_leading_deepening_stop(0, K, true, true),
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 2,
+                    chain_survivors: 0,
+                },
+                K,
+                false,
+                true,
+            ),
+            None,
+            "chain loss observed with budget left must deepen"
+        );
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 3,
+                    chain_survivors: 1,
+                },
+                K,
+                false,
+                true,
+            ),
+            None
+        );
+
+        // Authorization loss with the budget spent: truncated (budget reason).
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 2,
+                    chain_survivors: 0,
+                },
+                K,
+                false,
+                false,
+            ),
+            Some(DeepeningStop::BudgetExhausted)
+        );
+
+        // Sparsity: survivors == dispatched < k with budget left — the global top-k was
+        // consumed with no chain loss, so the join was sparse; complete, non-truncated.
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 3,
+                    chain_survivors: 3,
+                },
+                4,
+                false,
+                true,
+            ),
+            Some(DeepeningStop::Sparsity)
+        );
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 1,
+                    chain_survivors: 1,
+                },
+                K,
+                false,
+                true,
+            ),
+            Some(DeepeningStop::Sparsity),
+            "zero-joined survivor with no chain loss is sparsity, not deepening (ADR 0034 \
+             Slice 5 empty answer)"
+        );
+
+        // Candidate exhaustion dominates loss/sparsity below k: the fully-consumed universe
+        // is a complete answer for NonLeading receipts (ADR 0092 §4 exhaustion rule).
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 2,
+                    chain_survivors: 0,
+                },
+                K,
+                true,
+                true,
+            ),
             Some(DeepeningStop::CandidatesExhausted)
+        );
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 2,
+                    chain_survivors: 1,
+                },
+                K,
+                true,
+                true,
+            ),
+            Some(DeepeningStop::CandidatesExhausted),
+            "no-loss short universe (sparsity below k) exhausted is still a complete answer"
+        );
+        // Budget exhaustion truncates even when the universe is exhausted (checked first).
+        assert_eq!(
+            non_leading_deepening_stop(
+                ChainReceiptTotals {
+                    dispatched: 2,
+                    chain_survivors: 0,
+                },
+                K,
+                true,
+                false,
+            ),
+            Some(DeepeningStop::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn search_chain_receipt_totals_aggregates_shards() {
+        // Multi-shard receipts aggregate to per-shard sums (dispatched and survivors
+        // independently).
+        let receipt = vec![
+            SearchChainReceiptRecord {
+                shard_id: 7,
+                dispatched: 3,
+                chain_survivors: 2,
+            },
+            SearchChainReceiptRecord {
+                shard_id: 9,
+                dispatched: 4,
+                chain_survivors: 0,
+            },
+            SearchChainReceiptRecord {
+                shard_id: 11,
+                dispatched: 1,
+                chain_survivors: 1,
+            },
+        ];
+        assert_eq!(
+            non_leading_receipt_totals(&receipt),
+            ChainReceiptTotals {
+                dispatched: 8,
+                chain_survivors: 3,
+            }
+        );
+        // The empty receipt (no dispatched candidates anywhere) sums to zero.
+        assert_eq!(
+            non_leading_receipt_totals(&[]),
+            ChainReceiptTotals::default()
+        );
+        // Zero-hit shards are reported explicitly and count as dispatched.
+        let zero_hit = vec![SearchChainReceiptRecord {
+            shard_id: 7,
+            dispatched: 0,
+            chain_survivors: 0,
+        }];
+        assert_eq!(
+            non_leading_receipt_totals(&zero_hit),
+            ChainReceiptTotals::default()
+        );
+    }
+
+    #[test]
+    fn search_chain_receipt_totals_fails_closed_on_missing_receipt() {
+        // A SEARCH-bearing execution without a receipt is a cross-stream bug: fail closed,
+        // never degrade the convergence signal (ADR 0092 §3).
+        let bare = GqlQueryResult::row_count_only(1);
+        assert!(search_chain_receipt_totals(&bare).is_err());
+        // Present receipts always succeed.
+        let with_receipt = GqlQueryResult {
+            row_count: 1,
+            rows_blob: None,
+            phase: None,
+            token: None,
+            truncated: None,
+            search_chain_receipt: Some(vec![SearchChainReceiptRecord {
+                shard_id: 0,
+                dispatched: 1,
+                chain_survivors: 1,
+            }]),
+        };
+        assert_eq!(
+            search_chain_receipt_totals(&with_receipt).expect("receipt"),
+            ChainReceiptTotals {
+                dispatched: 1,
+                chain_survivors: 1,
+            }
         );
     }
 
@@ -2982,6 +3232,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         };
         cap_result_rows(&mut result, 4).expect("cap");
         assert_eq!(result.row_count, 4);
@@ -2999,6 +3250,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         };
         let mut passthrough = exact.clone();
         cap_result_rows(&mut passthrough, 4).expect("cap");
@@ -3011,6 +3263,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         };
         cap_result_rows(&mut count_only, 4).expect("cap");
         assert_eq!(count_only.row_count, 9);
@@ -3033,6 +3286,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         }
         .with_truncated(true);
         assert_eq!(truncated.truncated, Some(true));
