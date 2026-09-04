@@ -117,6 +117,21 @@ Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB z
 sudachi absent from crates.io + 117 MB dictionary, rule-stemmer smallest but coarse (kanji stems,
 no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
 
+**Language coverage (measured, plan 0330/0331 cross-language fixtures):**
+
+- `unicode_bigram` is the multilingual baseline: Han runs bigram (Chinese works — standard CJK
+  strategy), Latin words whole (no stemming: `running` never matches `run`), kana bigrams.
+- `vibrato` is **Japanese-only in practice**: its ipadic lexicon fragments Chinese mid-word
+  (知识图谱 → 知/识图; query 数据库 misses) and Korean emits ZERO units (ipadic has no Hangul
+  category; tokens are dropped). Measured in
+  `crates/text-analyzer-spike/tests/cross_language.rs` — `ANALYZER vibrato` must not be selected
+  for Chinese or Korean content.
+- Korean is the weakest language today under BOTH pipelines: `unicode_bigram` keeps whole eojeol
+  tokens with particles attached (학교에서 never matches a 학교 query), vibrato drops Hangul
+  entirely. A future `ANALYZER_ID=3` could be a dictionary-free particle-stripper (Korean 조사
+  suffix tables are rule-friendly) or a MeCab-compatible `mecab-ko-dic` model compiled for
+  vibrato; both recorded as later slices, not implemented.
+
 ## Lifecycle and lag semantics (mapping onto derived-state contracts)
 
 | Phase | Behavior | Lag class |
