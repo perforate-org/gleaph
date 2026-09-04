@@ -189,11 +189,19 @@ fn mutation_key_for(caller: Principal, graph_id: GraphId, client_key: &str) -> C
 /// iterates only vertices carrying that label), so restricting the plan's scan set
 /// to the caller's grantable labels is sufficient — no executor change.
 ///
-/// Returns `None` when the plan needs no rewrite (caller holds the wildcard `NODES *`
-/// row, or the plan has no unconstrained vertex scans). Returns `Some(rewritten_plan)`
-/// otherwise. A caller with zero grantable vertex labels produces a plan that yields
-/// zero rows (a `Filter` that always rejects) so the query returns an empty result
-/// without erroring.
+/// The caller's authority is derived from the single grant evaluation
+/// [`crate::authz::unconstrained_scan_authority`], the same evaluation the plan-time
+/// probe (`crate::authz::requirements_cover`) consumes — grant evaluation lives in one
+/// place, so request-build cannot drift from enforcement. In particular a registry
+/// tenant (owner/admin) takes the `Tenancy` arm and gets **no rewrite**: rewriting from
+/// stored grants alone would turn a tenant with zero `MATCH` rows into an always-false
+/// plan even though tenancy admits them.
+///
+/// Returns `None` when the plan needs no rewrite (caller is a tenant, holds the
+/// wildcard `NODES *` row, or the plan has no unconstrained vertex scans). Returns
+/// `Some(rewritten_plan)` otherwise. A non-tenant caller with zero grantable vertex
+/// labels produces a plan that yields zero rows (a `Filter` that always rejects) so the
+/// query returns an empty result without erroring.
 pub(crate) fn specialize_plan_for_caller(
     plan: &PhysicalPlan,
     store: &RouterStore,
@@ -222,12 +230,23 @@ pub(crate) fn specialize_plan_for_caller(
     if unconstrained_vars.is_empty() {
         return Ok(None);
     }
-    // Resolve the caller's grantable vertex label set (label ids) plus the wildcard.
-    let (granted_ids, has_wildcard) =
-        crate::facade::auth::collect_vertex_label_match_set(graph_id.raw(), caller);
-    if has_wildcard {
-        return Ok(None);
-    }
+    // Derive the caller's unconstrained-scan authority from the single grant evaluation
+    // shared with the enforcement probe. Tenancy arm: an owner/admin is unrestricted —
+    // return no rewrite (the tenancy shortcut the probe applies; rewriting from stored
+    // grants alone turned a tenant's own-graph scan into an always-false plan, the ADR
+    // 0089 D-1 production bug). Stored-grant arm: the wildcard `NODES *` row lifts the
+    // per-label restriction entirely.
+    let granted_ids = match crate::authz::unconstrained_scan_authority(store, graph_id, caller) {
+        crate::authz::VertexScanAuthority::Tenancy => return Ok(None),
+        crate::authz::VertexScanAuthority::Grants {
+            label_ids: _,
+            wildcard: true,
+        } => return Ok(None),
+        crate::authz::VertexScanAuthority::Grants {
+            label_ids,
+            wildcard: false,
+        } => label_ids,
+    };
     // Reverse-resolve label ids to names; skip ids that no longer resolve (dead
     // monotonic ids, see ADR 0074 invariant 4). A caller with zero grantable labels
     // yields an empty plan — the executor will scan zero buckets.

@@ -59,6 +59,16 @@ on labels `{A, B}` running `MATCH (n)` sees exactly the `A` and `B` vertices —
 > table (`execute_node_scan`). The restriction must therefore be applied at the **plan** level
 > (rewrite the unconstrained scan into per-label scans of the caller's grantable labels), not
 > at the request's resolved-label table.
+>
+> **Correction (2026-09-03, production bug D-1):** the §1 specialization consults only
+> stored `MATCH` grant rows; a registry tenant (owner/admin) holds no grant rows by design
+> (ADR 0074 §3 invariant 3 — tenancy is the implicit root, never materialized as rows), so
+> a tenant running an unconstrained scan on their **own** graph was rewritten into an
+> always-false plan and saw zero rows. The specialization must apply the same tenancy arm
+> the enforcement probe applies: a tenant takes **no rewrite**. Both consumers now derive
+> from one evaluation (`authz::vertex_scan_authority` — tenancy arm first, then the
+> stored-grant set with the §5 wildcard), so probe (`requirements_cover`) and request-build
+> (`specialize_plan_for_caller`) cannot drift again.
 
 ### 2. Walker marker for unconstrained scans
 

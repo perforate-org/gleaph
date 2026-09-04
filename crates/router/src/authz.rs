@@ -1600,10 +1600,72 @@ fn resolve_vertex_property_read(
 pub(crate) trait EffectiveGrants {
     fn covers(&self, caller: &Principal, privilege: &Privilege) -> bool;
 
-    /// Whether `caller` (or `PUBLIC`) holds at least one unexpired vertex-label `MATCH`
-    /// grant on `graph`, including the wildcard `NODES *` row ([ADR 0089] §2). Backs
-    /// the unconstrained-scan marker demand.
-    fn holds_any_vertex_label_match(&self, caller: &Principal, graph: u32) -> bool;
+    /// Every unexpired vertex-label `MATCH` grant `caller` (or `PUBLIC`) holds on
+    /// `graph`, as `(concrete label ids, wildcard present)`, the wildcard `NODES *`
+    /// row included ([ADR 0089] §5). The single projection backing the
+    /// unconstrained-scan authority: the enforcement probe derives the marker demand
+    /// from it and the request-build rewrite derives the per-label expansion set from
+    /// it, both via [`vertex_scan_authority`] — one grant evaluation, no second walk
+    /// of the grant store.
+    fn vertex_label_match_set(&self, caller: &Principal, graph: u32) -> (BTreeSet<u32>, bool);
+}
+
+/// Caller authority for vertex scans on one graph ([ADR 0089] §1).
+///
+/// The single grant evaluation every unconstrained-scan consumer derives from: the
+/// enforcement probe (`authorize_requirements` marker demand) and the request-build
+/// rewrite (`gql::specialize_plan_for_caller`). Tenancy arm first — the ownership root
+/// (ADR 0074 §3 invariant 3) makes an owner/admin unrestricted — then the stored-grant
+/// arm ([ADR 0089] §5 wildcard included).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VertexScanAuthority {
+    /// Tenancy arm: the caller is a registry tenant of the graph. No per-label
+    /// restriction applies and the request-build rewrite must be a no-op.
+    Tenancy,
+    /// Stored-grant arm: `wildcard` (`NODES *`) lifts the per-label restriction
+    /// entirely; otherwise only the concrete `label_ids` are matchable. An empty set
+    /// with no wildcard means zero matchable labels — the probe denies via the marker
+    /// demand, and the request-build rewrite to an always-false plan is
+    /// defense-in-depth only (unreachable behind the probe).
+    Grants {
+        label_ids: BTreeSet<u32>,
+        wildcard: bool,
+    },
+}
+
+/// Evaluate [`VertexScanAuthority`] over the same seam pair [`authorize_requirements`]
+/// consumes, so probe and plan-build cannot drift: there is no second tenancy or grant
+/// walk anywhere else.
+pub(crate) fn vertex_scan_authority(
+    grants: &dyn EffectiveGrants,
+    tenancy: &dyn GraphTenancy,
+    graph_raw: u32,
+    caller: &Principal,
+) -> VertexScanAuthority {
+    if tenancy.is_tenant(graph_raw, caller) {
+        return VertexScanAuthority::Tenancy;
+    }
+    let (label_ids, wildcard) = grants.vertex_label_match_set(caller, graph_raw);
+    VertexScanAuthority::Grants {
+        label_ids,
+        wildcard,
+    }
+}
+
+/// Store-backed [`VertexScanAuthority`] for the request-build path (the concrete
+/// [`StoredGrants`] + [`StoreTenancy`] pair, i.e. the same evaluation
+/// [`requirements_cover`] runs).
+pub(crate) fn unconstrained_scan_authority(
+    store: &RouterStore,
+    graph_id: GraphId,
+    caller: &Principal,
+) -> VertexScanAuthority {
+    vertex_scan_authority(
+        &StoredGrants,
+        &StoreTenancy { store },
+        graph_id.raw(),
+        caller,
+    )
 }
 
 /// Implicit-root coverage (ADR 0074 §3 invariant 3): the registry owner's (and admins')
@@ -1634,9 +1696,18 @@ pub(crate) fn authorize_requirements(
         }
         // Unconstrained-vertex-match marker ([ADR 0089] §2): the caller must hold `MATCH`
         // on at least one vertex label (or the wildcard `NODES *` row) on this graph.
-        // The per-bucket restriction is applied at request build time.
+        // The per-bucket restriction is applied at request build time, and both sides
+        // derive from the same [`vertex_scan_authority`] evaluation — a tenant is
+        // unrestricted (arm already handled by the `continue` above), a non-tenant with
+        // zero grantable labels is denied here.
         if demands.unconstrained_vertex_match
-            && !grants.holds_any_vertex_label_match(caller, *graph_raw)
+            && matches!(
+                vertex_scan_authority(grants, tenancy, *graph_raw, caller),
+                VertexScanAuthority::Grants {
+                    label_ids,
+                    wildcard: false,
+                } if label_ids.is_empty()
+            )
         {
             return false;
         }
@@ -1697,8 +1768,8 @@ impl EffectiveGrants for StoredGrants {
         }
     }
 
-    fn holds_any_vertex_label_match(&self, caller: &Principal, graph: u32) -> bool {
-        crate::facade::auth::holds_any_vertex_label_match(graph, caller)
+    fn vertex_label_match_set(&self, caller: &Principal, graph: u32) -> (BTreeSet<u32>, bool) {
+        crate::facade::auth::collect_vertex_label_match_set(graph, caller)
     }
 }
 
@@ -2447,14 +2518,19 @@ mod tests {
                 || self.state.holds(GrantSubject::Public, privilege, NOW_NS)
         }
 
-        fn holds_any_vertex_label_match(&self, caller: &Principal, graph: u32) -> bool {
-            self.state.holds_any_vertex_label_match(
+        fn vertex_label_match_set(&self, caller: &Principal, graph: u32) -> (BTreeSet<u32>, bool) {
+            // Same composition as the store-backed projection: `own ∪ PUBLIC` rows.
+            let (own, own_wildcard) = self.state.collect_vertex_label_match_set(
                 GrantSubject::effective_for(caller),
                 graph,
                 NOW_NS,
-            ) || self
-                .state
-                .holds_any_vertex_label_match(GrantSubject::Public, graph, NOW_NS)
+            );
+            let (public, public_wildcard) =
+                self.state
+                    .collect_vertex_label_match_set(GrantSubject::Public, graph, NOW_NS);
+            let mut labels = own;
+            labels.extend(public);
+            (labels, own_wildcard || public_wildcard)
         }
     }
 
@@ -2494,8 +2570,8 @@ mod tests {
             true
         }
 
-        fn holds_any_vertex_label_match(&self, _: &Principal, _: u32) -> bool {
-            true
+        fn vertex_label_match_set(&self, _: &Principal, _: u32) -> (BTreeSet<u32>, bool) {
+            (BTreeSet::new(), true)
         }
     }
 
@@ -3987,17 +4063,35 @@ mod tests {
             self.0.holds_own_row(caller, privilege) || self.0.holds_public_row(privilege)
         }
 
-        fn holds_any_vertex_label_match(&self, _caller: &Principal, _graph: u32) -> bool {
+        fn vertex_label_match_set(
+            &self,
+            _caller: &Principal,
+            _graph: u32,
+        ) -> (BTreeSet<u32>, bool) {
             // The snapshot stores concrete rows only; the fixture's own/public lists carry
             // vertex-label MATCH rows directly, so the caller-agnostic scan suffices. The
-            // `Privilege::Graph` arm of `covers` already proves per-row coverage; this
-            // marker is only set on unconstrained scans where per-row evaluation is not
-            // needed.
-            self.0
-                .own
-                .iter()
-                .chain(self.0.public.iter())
-                .any(is_vertex_label_match)
+            // `Privilege::Graph` arm of `covers` already proves per-row coverage; the
+            // unconstrained-scan authority is only consulted for unconstrained scans
+            // where per-row evaluation is not needed.
+            let mut labels = BTreeSet::new();
+            let mut wildcard = false;
+            for privilege in self.0.own.iter().chain(self.0.public.iter()) {
+                if let Privilege::Graph(GraphPrivilege {
+                    operation: GraphOperation::Match,
+                    resource,
+                    ..
+                }) = privilege
+                {
+                    match resource {
+                        GraphResource::VertexLabel(id) => {
+                            labels.insert(*id);
+                        }
+                        GraphResource::AllVertexLabels => wildcard = true,
+                        _ => {}
+                    }
+                }
+            }
+            (labels, wildcard)
         }
     }
 
@@ -4009,20 +4103,6 @@ mod tests {
         fn is_tenant(&self, graph_raw: u32, _c: &Principal) -> bool {
             self.tenants.contains(&graph_raw)
         }
-    }
-
-    /// Whether a privilege is a vertex-label `MATCH` row covering a concrete label or
-    /// the wildcard `NODES *` resource. Used by the test probe to evaluate the
-    /// unconstrained-vertex-match marker.
-    fn is_vertex_label_match(privilege: &Privilege) -> bool {
-        matches!(
-            privilege,
-            Privilege::Graph(GraphPrivilege {
-                operation: GraphOperation::Match,
-                resource: GraphResource::VertexLabel(_) | GraphResource::AllVertexLabels,
-                ..
-            })
-        )
     }
 
     fn match_person(graph: u32) -> Privilege {

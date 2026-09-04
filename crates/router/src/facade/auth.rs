@@ -241,28 +241,15 @@ pub fn holds_any_graph_grant(graph_raw: u32, caller: &Principal) -> bool {
     })
 }
 
-/// Whether `caller` (or the `PUBLIC` baseline) holds at least one unexpired
-/// vertex-label `MATCH` grant on `graph`, including the wildcard `NODES *` row
-/// ([ADR 0089] §5).
-///
-/// Backs the unconstrained-scan marker demand: a caller may run an unconstrained vertex
-/// scan only when they hold `MATCH` on at least one vertex label (or the wildcard
-/// equivalent). The anonymous principal evaluates as the `PUBLIC` subject only.
-pub fn holds_any_vertex_label_match(graph_raw: u32, caller: &Principal) -> bool {
-    let now_ns = crate::facade::store::ic_time_ns();
-    ROUTER_AUTH_GRANTS.with_borrow(|grants| {
-        grants.holds_any_vertex_label_match(GrantSubject::effective_for(caller), graph_raw, now_ns)
-            || grants.holds_any_vertex_label_match(GrantSubject::Public, graph_raw, now_ns)
-    })
-}
-
 /// Collect every unexpired vertex-label `MATCH` grant `caller` (or `PUBLIC`) holds on
 /// `graph`, including the wildcard `NODES *` row ([ADR 0089] §5).
 ///
 /// Returns `(concrete_labels, has_wildcard)`: the set of concrete vertex label ids the
-/// caller can match, plus whether the wildcard row is present. Used by the request-build
-/// bucket restriction to intersect the plan's resolved vertex labels with the caller's
-/// grantable set. Expired rows are excluded (fail closed).
+/// caller can match, plus whether the wildcard row is present. The sole grant-store
+/// walk for the unconstrained-scan authority: consumed by the
+/// `authz::StoredGrants` projection backing [`authz::vertex_scan_authority`], which
+/// both the enforcement probe (marker demand) and the request-build rewrite derive
+/// from. Expired rows are excluded (fail closed).
 pub fn collect_vertex_label_match_set(graph_raw: u32, caller: &Principal) -> (BTreeSet<u32>, bool) {
     let now_ns = crate::facade::store::ic_time_ns();
     ROUTER_AUTH_GRANTS.with_borrow(|grants| {
