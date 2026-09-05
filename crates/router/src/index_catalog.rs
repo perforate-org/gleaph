@@ -255,13 +255,13 @@ pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 1;
 /// Names are implementation names (MySQL `WITH PARSER ngram/mecab` precedent); ids stay
 /// internal. Unknown names fail closed at admission with this recorded wording.
 pub(crate) fn resolve_analyzer_name(name: &str) -> Result<u32, RouterError> {
-    // Ids mirror `text_canister::ANALYZER_UNICODE_BIGRAM` / `ANALYZER_VIBRATO` (the
+    // Ids mirror `text_canister::ANALYZER_UNICODE_BIGRAM` / `ANALYZER_MECAB` (the
     // Router does not depend on the canister crate).
     match name {
         "unicode_bigram" => Ok(1),
-        "vibrato" => Ok(2),
+        "mecab" => Ok(2),
         other => Err(RouterError::InvalidArgument(format!(
-            "unknown ANALYZER name `{other}` (admitted set: unicode_bigram, vibrato)"
+            "unknown ANALYZER name `{other}` (admitted set: unicode_bigram, mecab)"
         ))),
     }
 }
@@ -1239,13 +1239,13 @@ mod tests {
     #[test]
     fn analyzer_names_resolve_to_registered_ids() {
         assert_eq!(resolve_analyzer_name("unicode_bigram").expect("bigram"), 1);
-        assert_eq!(resolve_analyzer_name("vibrato").expect("vibrato"), 2);
+        assert_eq!(resolve_analyzer_name("mecab").expect("mecab"), 2);
         let err = resolve_analyzer_name("nonsense").expect_err("unknown name");
         match err {
             RouterError::InvalidArgument(message) => {
                 assert!(
                     message.contains("unknown ANALYZER name `nonsense`")
-                        && message.contains("unicode_bigram, vibrato"),
+                        && message.contains("unicode_bigram, mecab"),
                     "unexpected wording: {message}"
                 );
             }

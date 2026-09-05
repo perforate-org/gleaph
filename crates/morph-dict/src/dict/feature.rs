@@ -5,7 +5,7 @@
 //! This module handles the feature string table that maps feature IDs
 //! to human-readable feature strings (POS, reading, pronunciation, etc.).
 
-use crate::mecrab_vendor::error::{Error, Result};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Feature table storing feature strings

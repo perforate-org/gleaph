@@ -1017,15 +1017,21 @@ fn every_swapped_structure_survives_reopen_round_trip() {
 
 // -- Analyzer-2 dictionary lifecycle (plan 0331) ---------------------------------------------
 
-/// The pinned ZSTD artifact bytes (the region-16 payload; the digest is over THESE
-/// bytes), or `None` when the gitignored fetch hasn't run — tests needing the
-/// dictionary SKIP loudly; the E2E fetch helper is fail-closed.
-fn vibrato_artifact() -> Option<Vec<u8>> {
-    std::fs::read(concat!(
+/// The MORPHDICT1 container bytes (the region-16 payload; the digest is over THESE
+/// bytes), built from the four MeCab-format images under the gitignored
+/// `pocket-ic-tests/resources/mecrab/`, or `None` when the fetch hasn't run — tests
+/// needing the dictionary SKIP loudly; the E2E fetch helper is fail-closed.
+fn mecab_container() -> Option<Vec<u8>> {
+    let dir = std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../pocket-ic-tests/resources/vibrato/system.dic.zst"
-    ))
-    .ok()
+        "/../pocket-ic-tests/resources/mecrab"
+    ));
+    let names = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
+    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    for n in names {
+        images.push((n.to_string(), std::fs::read(dir.join(n)).ok()?));
+    }
+    Some(morph_dict::container::build(images))
 }
 
 fn upload_all(stores: &mut TestStores, bytes: &[u8]) -> u64 {
@@ -1037,7 +1043,7 @@ fn upload_all(stores: &mut TestStores, bytes: &[u8]) -> u64 {
 
 #[test]
 fn analyzer2_dict_upload_finalize_and_gates() {
-    let Some(raw) = vibrato_artifact() else {
+    let Some(raw) = mecab_container() else {
         eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
         return;
     };
@@ -1059,7 +1065,7 @@ fn analyzer2_dict_upload_finalize_and_gates() {
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
     };
-    let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_VIBRATO));
+    let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_MECAB));
 
     // Pre-finalize fail-closed gates.
     assert!(
@@ -1108,15 +1114,15 @@ fn analyzer2_dict_upload_finalize_and_gates() {
     assert!(stores.upload_dict_chunk(vec![1; 16]).is_err());
 
     // The pinned tokenizer is resident: recall works engine-side.
-    let units = crate::analyzer::analyze_pinned(ANALYZER_VIBRATO, "昨日、公園を全力で走った。");
+    let units = crate::analyzer::analyze_pinned(ANALYZER_MECAB, "昨日、公園を全力で走った。");
     assert!(
         units.contains(&"走る".to_string()),
         "lemma recall: {units:?}"
     );
 
     // Reopen rebuilds the tokenizer eagerly from the finalized region.
-    let mut reopened = TextStores::init_with_analyzer(regions, Some(ANALYZER_VIBRATO));
-    assert!(crate::analyzer_vibrato::dictionary_loaded());
+    let mut reopened = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    assert!(crate::analyzer_mecab::dictionary_loaded());
     let hits = reopened.search("走った", 10).expect("post-reopen search");
     // (no documents ingested — the assertion is that analysis did not trap)
     assert!(hits.is_empty());

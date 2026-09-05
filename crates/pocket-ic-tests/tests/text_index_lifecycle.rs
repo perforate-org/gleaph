@@ -77,7 +77,13 @@ fn install_text_canister(pic: &PocketIc, controller: Option<Principal>) -> Princ
     pic.install_canister(
         id,
         ensure_text_wasm(),
-        Encode!(&text_canister::TextCanisterInitArgs { controller }).expect("encode text init"),
+        Encode!(&text_canister::TextCanisterInitArgs {
+            controller,
+            // Plan 0331: the bare lifecycle probe stays on the default unicode-bigram
+            // pipeline (no dictionary needed).
+            analyzer_id: Some(text_canister::ANALYZER_UNICODE_BIGRAM),
+        })
+        .expect("encode text init"),
         None,
     );
     id

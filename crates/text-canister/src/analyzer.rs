@@ -22,10 +22,10 @@ use unicode_segmentation::UnicodeSegmentation;
 /// CJK bigrams). Registered identities are creation-fixed per index (plan 0331); ids stay
 /// internal — DDL names resolve at admission.
 pub const ANALYZER_UNICODE_BIGRAM: u32 = 1;
-/// Registered identity of the vibrato + ipadic lemma pipeline (plan 0330 decision B,
-/// plan 0331 landing). Requires the stable-resident ipadic dictionary to be finalized
-/// before any analyze-touching operation.
-pub const ANALYZER_VIBRATO: u32 = 2;
+/// Registered identity of the MeCab-format ipadic lemma pipeline (plan 0330 decision B,
+/// plan 0333 proof, plan 0334 landing). Requires the stable-resident MeCab-format
+/// dictionary container to be finalized before any analyze-touching operation.
+pub const ANALYZER_MECAB: u32 = 2;
 /// Deprecated alias of [`ANALYZER_UNICODE_BIGRAM`] kept for the v1 references across
 /// meta defaults, backfill scope validation, and the Router's v0 admission constant.
 #[deprecated(since = "0.1.0", note = "use ANALYZER_UNICODE_BIGRAM or the dispatch")]
@@ -37,7 +37,7 @@ pub const ANALYZER_ID: u32 = ANALYZER_UNICODE_BIGRAM;
 pub fn analyze_pinned(id: u32, text: &str) -> Vec<String> {
     match id {
         ANALYZER_UNICODE_BIGRAM => analyze(text),
-        ANALYZER_VIBRATO => crate::analyzer_vibrato::analyze(text),
+        ANALYZER_MECAB => crate::analyzer_mecab::analyze(text),
         other => unreachable!(
             "unregistered analyzer id {other} passed open validation — broken invariant"
         ),

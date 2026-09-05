@@ -10,16 +10,16 @@
 //! Binary format: u16 lsize, u16 rsize, then lsize * rsize i16 costs.
 //! Index formula: matrix[rcAttr + lsize * lcAttr]
 
-use crate::mecrab_vendor::byteimage::ByteImage;
-use crate::mecrab_vendor::error::{Error, Result};
+use crate::byteimage::ByteImage;
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use std::sync::Arc;
 
-/// Connection matrix storing transition costs
+/// Connection matrix storing transition costs. Fully RESIDENT at load (the whole
+/// matrix is a hot random-access region — 2-byte reads through a lazy image would be
+/// syscall-hostile), materialized into a flat `Vec<i16>`.
 pub struct ConnectionMatrix {
-    image: Arc<dyn ByteImage>,
-    /// Offset of the cost array (after the 4-byte header)
-    data_offset: u64,
+    costs: Vec<i16>,
     lsize: usize,
     rsize: usize,
 }
@@ -33,13 +33,6 @@ impl std::fmt::Debug for ConnectionMatrix {
     }
 }
 
-#[inline]
-fn read_u16_at(image: &dyn ByteImage, offset: u64) -> u16 {
-    let mut b = [0u8; 2];
-    image.read_exact_at(offset, &mut b);
-    LittleEndian::read_u16(&b)
-}
-
 impl ConnectionMatrix {
     /// Load connection matrix from a byte image (upstream: `from_mmap(Arc<Mmap>)`).
     pub fn from_image(image: Arc<dyn ByteImage>) -> Result<Self> {
@@ -50,8 +43,10 @@ impl ConnectionMatrix {
             ));
         }
 
-        let lsize = read_u16_at(image.as_ref(), 0) as usize;
-        let rsize = read_u16_at(image.as_ref(), 2) as usize;
+        let mut hdr = [0u8; 4];
+        image.read_exact_at(0, &mut hdr);
+        let lsize = LittleEndian::read_u16(&hdr[0..2]) as usize;
+        let rsize = LittleEndian::read_u16(&hdr[2..4]) as usize;
 
         let expected_size = 4 + lsize * rsize * 2;
         if len as usize != expected_size {
@@ -61,9 +56,16 @@ impl ConnectionMatrix {
             )));
         }
 
+        // Materialize the resident matrix (memcpy from the image).
+        let mut costs = vec![0i16; lsize * rsize];
+        let mut bytes = vec![0u8; lsize * rsize * 2];
+        image.read_exact_at(4, &mut bytes);
+        for (i, cell) in costs.iter_mut().enumerate() {
+            *cell = LittleEndian::read_i16(&bytes[i * 2..i * 2 + 2]);
+        }
+
         Ok(Self {
-            image,
-            data_offset: 4,
+            costs,
             lsize,
             rsize,
         })
@@ -81,7 +83,7 @@ impl ConnectionMatrix {
         }
 
         let index = rc + self.lsize * lc;
-        read_u16_at(self.image.as_ref(), self.data_offset + (index * 2) as u64) as i16
+        self.costs[index]
     }
 
     /// Get the number of left context IDs

@@ -1,0 +1,17 @@
+Text Index canister — third-party notices
+==========================================
+
+morph-dict / ic-morph-dict (dictionary engine)
+  Derived from MeCrab (github.com/cool-japan/mecrab @ 85444b5, v0.1.0).
+  Copyright 2026 COOLJAPAN OU (Team KitaSan).
+  Licensed under MIT OR Apache-2.0 (see crates/morph-dict/LICENSE-MECRAB).
+
+mecab-ipadic 2.7.0 (compiled dictionary images distributed in region 16)
+  Copyright 2000-2003 Nara Institute of Science and Technology (NAIST);
+  2023 LegalOn Technologies, Inc.; portions from ICOT Free Software.
+  BSD license + acknowledgment text: crates/morph-dict/LICENSE-IPADIC
+  (also shipped with the dictionary distribution in
+  crates/pocket-ic-tests/resources/vibrato/COPYING and the artifact source
+  PyPI ipadic 1.0.0, ipadic/dicdir/COPYING).
+
+xxhash-rust 0.8 (BSD-3-Clause) — dictionary/term digests.

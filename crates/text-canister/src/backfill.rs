@@ -252,7 +252,7 @@ fn validate_request(
     if request.scope.label_id == 0 || request.scope.property_id.raw() == 0 {
         return Err("text scope needs a non-zero label and property id".to_string());
     }
-    if request.scope.analyzer_id == crate::analyzer::ANALYZER_VIBRATO {
+    if request.scope.analyzer_id == crate::analyzer::ANALYZER_MECAB {
         // Analyzer-2 registration additionally requires the finalized dictionary
         // (plan 0331): the gate is a recorded hold, never a silent skip — the migration
         // driver surfaces the rejection as retryable progress and replays the SAME
@@ -426,13 +426,16 @@ pub(crate) fn prepare_text_backfill_pull<M: ic_stable_structures::Memory>(
 /// the whole batch before the first append), then the cursor cell. Every failure path —
 /// stale sequence, foreign projection, oversized cursor, analysis cap — returns before
 /// the first write, leaving the cursor exactly as the prepare saw it.
-pub(crate) fn apply_text_backfill_pull<M: ic_stable_structures::Memory>(
+pub(crate) fn apply_text_backfill_pull<M>(
     engine: &mut TextStores<M>,
     cells: &mut BackfillCells<M>,
     control: &TextBackfillControl,
     prepared: &PreparedTextBackfillPull,
     page: CanonicalExportPage,
-) -> Result<TextBackfillStatus, String> {
+) -> Result<TextBackfillStatus, String>
+where
+    M: ic_stable_structures::Memory + Clone + 'static,
+{
     let registration = cells.registration().ok_or("no text backfill registered")?;
     ensure_control(&registration, control)?;
     if registration.phase != TextBackfillPhase::Building {
@@ -784,7 +787,7 @@ mod tests {
             (
                 RegisterTextBackfillRequest {
                     scope: TextBackfillScope {
-                        analyzer_id: crate::analyzer::ANALYZER_VIBRATO + 1,
+                        analyzer_id: crate::analyzer::ANALYZER_MECAB + 1,
                         ..scope()
                     },
                     ..request(TEXT_ID)

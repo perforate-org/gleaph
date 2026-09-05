@@ -23,7 +23,7 @@
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
 
 pub mod analyzer;
-mod analyzer_vibrato;
+mod analyzer_mecab;
 mod backfill;
 mod guards;
 mod init;
@@ -37,7 +37,7 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 
 #[allow(deprecated)] // deprecated alias kept for the v1 test references across the workspace
-pub use analyzer::{ANALYZER_ID, ANALYZER_UNICODE_BIGRAM, ANALYZER_VIBRATO};
+pub use analyzer::{ANALYZER_ID, ANALYZER_MECAB, ANALYZER_UNICODE_BIGRAM};
 pub use backfill::{
     RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
     TextBackfillSealProof, TextBackfillStatus,

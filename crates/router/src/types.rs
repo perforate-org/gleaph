@@ -2929,7 +2929,7 @@ pub struct ProvisionGraphArgs {
     /// Additional graph admins seeded at registration.
     pub admins: BTreeSet<Principal>,
     /// Analyzer id baked into the install args of a provisioned TEXT canister
-    /// (plan 0331): 1 = unicode-bigram, 2 = vibrato. Ignored for other resource kinds;
+    /// (plan 0334): 1 = unicode-bigram, 2 = mecab. Ignored for other resource kinds;
     /// absent/0 semantics are not part of the contract — the issuer always sets it.
     #[serde(default)]
     pub text_analyzer_id: u32,

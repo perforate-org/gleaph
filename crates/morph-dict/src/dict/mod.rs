@@ -12,22 +12,20 @@
 
 mod char_def;
 mod connection_matrix;
-mod double_array_trie;
+pub mod double_array_trie;
 mod feature;
-mod overlay;
-mod sys_dic;
 mod unknown;
+pub mod sys_dic;
+
 
 pub use char_def::{CharCategory, CharDef, CharInfo};
 pub use connection_matrix::ConnectionMatrix;
-pub use double_array_trie::{DartsResult, DoubleArrayTrie};
 pub use feature::FeatureTable;
-pub use overlay::{OverlayDictionary, OverlayEntry};
-pub use sys_dic::{SysDic, Token};
+pub use sys_dic::{DictEntryLite, SysDic, Token};
 pub use unknown::UnknownDictionary;
 
-use crate::mecrab_vendor::byteimage::{ByteImage, HeapImage};
-use crate::mecrab_vendor::error::{Error, Result};
+use crate::byteimage::{ByteImage, HeapImage};
+use crate::error::{Error, Result};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -47,7 +45,6 @@ pub struct Dictionary {
     pub unknown: UnknownDictionary,
     pub matrix: ConnectionMatrix,
     pub char_def: CharDef,
-    pub overlay: OverlayDictionary,
 }
 
 impl std::fmt::Debug for Dictionary {
@@ -56,12 +53,31 @@ impl std::fmt::Debug for Dictionary {
             .field("sys_dic", &self.sys_dic)
             .field("matrix", &self.matrix)
             .field("char_def", &self.char_def)
-            .field("overlay", &self.overlay)
             .finish()
     }
 }
 
 impl Dictionary {
+    /// Assemble with the standard residency split: sys.dic already built as
+    /// resident-prefix + lazy-feature (`SysDic::from_parts`), the other three images
+    /// fully resident.
+    pub fn from_parts(
+        sys_dic: crate::dict::sys_dic::SysDic,
+        unk: Arc<dyn ByteImage>,
+        matrix: Arc<dyn ByteImage>,
+        char_bin: Arc<dyn ByteImage>,
+    ) -> Result<Self> {
+        let unknown = UnknownDictionary::from_image(unk)?;
+        let matrix = ConnectionMatrix::from_image(matrix)?;
+        let char_def = CharDef::from_image(char_bin)?;
+        Ok(Self {
+            sys_dic,
+            unknown,
+            matrix,
+            char_def,
+        })
+    }
+
     /// Load the four images from a directory (native only; `std::fs::read` into
     /// `HeapImage` — no mmap).
     pub fn load(path: &Path) -> Result<Self> {
@@ -80,8 +96,11 @@ impl Dictionary {
         )
     }
 
-    /// Assemble a dictionary from four in-memory images (the canister landing shape:
-    /// each image arrives from stable memory behind a `ByteImage` impl).
+    /// Assemble a dictionary from four in-memory images (each image arrives from
+    /// stable memory behind a `ByteImage` impl). sys.dic is taken WHOLE (residency
+    /// decided by the caller); prefer [`Dictionary::from_parts`] for the standard
+    /// resident-prefix/lazy-feature split.
+    #[allow(dead_code)]
     pub fn from_images(
         sys: Arc<dyn ByteImage>,
         unk: Arc<dyn ByteImage>,
@@ -97,19 +116,22 @@ impl Dictionary {
             unknown,
             matrix,
             char_def,
-            overlay: OverlayDictionary::new(),
         })
     }
 
-    /// Common prefix lookup: overlay first, then system dictionary.
+    /// Common prefix lookup over the system dictionary (with features).
     pub fn lookup(&self, key: &str) -> Vec<DictionaryEntry> {
-        let mut results = self.overlay.lookup(key);
-        results.extend(self.sys_dic.common_prefix_search(key));
-        results
+        self.sys_dic.common_prefix_search(key)
     }
 
-    pub fn add_word(&self, surface: &str, entry: OverlayEntry) {
-        self.overlay.add_word(surface, entry);
+    /// Feature-free common prefix lookup (lattice hot path).
+    pub fn lookup_lite(&self, key: &str) -> Vec<DictEntryLite> {
+        self.sys_dic.common_prefix_search_lite(key)
+    }
+
+    /// Buffer-reusing variant of [`Dictionary::lookup_lite`].
+    pub fn lookup_lite_into(&self, key: &str, out: &mut Vec<DictEntryLite>) {
+        self.sys_dic.common_prefix_search_lite_into(key, out)
     }
 
     #[inline]

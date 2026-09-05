@@ -1,0 +1,13 @@
+[package]
+name = "ic-morph-dict"
+version = "0.1.0"
+edition = "2024"
+description = "Internet Computer adapter for morph-dict: stable-memory-backed ByteImage over ic0.stable64_read (via the ic-stable-structures Memory trait), with an optional 64 KiB LRU frame cache."
+repository = "https://github.com/gleaph/gleaph"
+license = "MIT OR Apache-2.0"
+publish = true
+readme = "README.md"
+
+[dependencies]
+morph-dict = { path = "../morph-dict" }
+ic-stable-structures = { workspace = true }

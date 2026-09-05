@@ -7,10 +7,11 @@
 //! Plan 0333 refactor: `from_mmap(Arc<Mmap>)` → `from_image(Arc<dyn ByteImage>)`
 //! (delegates to the refactored `SysDic`).
 
-use crate::mecrab_vendor::byteimage::ByteImage;
-use crate::mecrab_vendor::dict::sys_dic::SysDic;
-use crate::mecrab_vendor::dict::DictionaryEntry;
-use crate::mecrab_vendor::error::Result;
+use crate::byteimage::ByteImage;
+use crate::dict::sys_dic::SysDic;
+use crate::dict::DictionaryEntry;
+use crate::dict::DictEntryLite;
+use crate::error::Result;
 use std::sync::Arc;
 
 /// Unknown word dictionary (same binary format as sys.dic, entries keyed by
@@ -34,7 +35,7 @@ impl UnknownDictionary {
 
         // Verify this is actually an unknown dictionary (type = 2)
         if inner.dict_type() != super::MECAB_UNK_DIC {
-            return Err(crate::mecrab_vendor::error::Error::InvalidDictionaryFormat(
+            return Err(crate::error::Error::InvalidDictionaryFormat(
                 format!("Expected unknown dictionary (type=2), got type={}", inner.dict_type()),
             ));
         }
@@ -45,6 +46,11 @@ impl UnknownDictionary {
     /// Look up entries for a category name (e.g. "DEFAULT", "HIRAGANA")
     pub fn lookup(&self, category_name: &str) -> Vec<DictionaryEntry> {
         self.inner.common_prefix_search(category_name)
+    }
+
+    /// Feature-free category lookup (the hot path).
+    pub fn lookup_lite(&self, category_name: &str) -> Vec<DictEntryLite> {
+        self.inner.common_prefix_search_lite(category_name)
     }
 
     /// Get all tokens for a category (exact match)
@@ -60,12 +66,25 @@ impl UnknownDictionary {
         self.inner.charset()
     }
 
-    /// Generate entries for unknown words based on category + surface length
+    /// Generate feature-free entries for unknown words based on category + surface length
     pub fn generate_entries(
         &self,
         category: super::CharCategory,
         length: usize,
-    ) -> Vec<DictionaryEntry> {
+    ) -> Vec<DictEntryLite> {
+        let mut out = Vec::new();
+        self.generate_entries_into(category, length, &mut out);
+        out
+    }
+
+    /// Buffer-reusing variant of [`UnknownDictionary::generate_entries`].
+    pub fn generate_entries_into(
+        &self,
+        category: super::CharCategory,
+        length: usize,
+        out: &mut Vec<DictEntryLite>,
+    ) {
+        out.clear();
         let category_name = match category {
             super::CharCategory::Default => "DEFAULT",
             super::CharCategory::Space => "SPACE",
@@ -79,13 +98,10 @@ impl UnknownDictionary {
             super::CharCategory::Greek => "GREEK",
             super::CharCategory::Cyrillic => "CYRILLIC",
         };
-
-        self.get_entries_for_category(category_name)
-            .into_iter()
-            .map(|mut e| {
-                e.length = length;
-                e
-            })
-            .collect()
+        for mut e in self.lookup_lite(category_name) {
+            e.length = length;
+            out.push(e);
+        }
     }
+
 }

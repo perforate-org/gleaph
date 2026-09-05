@@ -43,18 +43,21 @@ if [ ! -d lindera/lindera-ipadic ]; then
   rm -f /tmp/lindera-ipadic.zip
 fi
 
-# ── Candidate E (plan 0333): MeCab-format ipadic 2.7.0-20070801 binary images ─────────
+# ── Candidate E (plan 0333/0334): MeCab-format ipadic 2.7.0 binary images ────────────
 # Four images: sys.dic, unk.dic, matrix.bin, char.bin (utf8 charset, DIC_VERSION 102).
-# Source: Homebrew bottle mecab-ipadic 2.7.0-20070801 (Cellar/lib/mecab/dic/ipadic);
-# equivalent upstream source: mecab-ipadic 2.7.0 CSVs compiled with mecab-dict-index
-# (MeCrab itself ships NO prebuilt artifacts and its builder is Wikidata-only — recorded
-# in plan 0333). License: mecab-ipadic BSD + acknowledgment (see resources/vibrato/COPYING).
+# Source (plan 0334, replaces the macOS-only Homebrew bottle): the immutable PyPI
+# `ipadic 1.0.0` sdist — the compiled MeCab-format four-image set (the Debian snapshot
+# mecab-ipadic-utf8 .deb is an install-time stub with no binary images). License:
+# mecab-ipadic BSD + acknowledgment (see resources/vibrato/COPYING).
+IPADIC_URL="https://files.pythonhosted.org/packages/e7/4e/c459f94d62a0bef89f866857bc51b9105aff236b83928618315b41a26b7b/ipadic-1.0.0.tar.gz"
 if [ ! -f mecrab/sys.dic ]; then
   mkdir -p mecrab
-  brew install -q mecab-ipadic 2>/dev/null || true
+  curl -sL "$IPADIC_URL" -o /tmp/ipadic-1.0.0.tar.gz
+  tar -xzf /tmp/ipadic-1.0.0.tar.gz -C /tmp
   for f in sys.dic unk.dic matrix.bin char.bin; do
-    cp "/opt/homebrew/lib/mecab/dic/ipadic/$f" mecrab/
+    cp "/tmp/ipadic-1.0.0/ipadic/dicdir/$f" mecrab/
   done
+  rm -f /tmp/ipadic-1.0.0.tar.gz && rm -rf /tmp/ipadic-1.0.0
 fi
 
 echo "resources ready:"; du -sh vibrato sudachi lindera mecrab

@@ -3889,6 +3889,7 @@ dependencies = [
  "gleaph-provision",
  "gleaph-router",
  "ic-management-canister-types 0.9.0",
+ "morph-dict",
  "pocket-ic",
  "pollster 1.0.1",
  "serde",
@@ -5475,6 +5476,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-morph-dict"
+version = "0.1.0"
+dependencies = [
+ "ic-stable-structures",
+ "morph-dict",
+]
+
+[[package]]
 name = "ic-sqlite-vfs"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6811,6 +6820,15 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "morph-dict"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -10604,16 +10622,14 @@ name = "text-analyzer-spike"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "byteorder",
  "lindera",
  "lindera-ipadic",
+ "morph-dict",
  "ruzstd",
  "suiko-sudachi",
- "thiserror 2.0.20",
  "unicode-normalization",
  "unicode-segmentation",
  "vibrato",
- "yada",
 ]
 
 [[package]]
@@ -10625,16 +10641,16 @@ dependencies = [
  "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",
+ "ic-morph-dict",
  "ic-stable-linear-hash-map",
  "ic-stable-memory-backend",
  "ic-stable-structures",
  "ic-stable-text-postings",
  "ic-stable-vec-deque",
- "ruzstd",
+ "morph-dict",
  "serde",
  "unicode-normalization",
  "unicode-segmentation",
- "vibrato",
  "xxhash-rust",
 ]
 

@@ -52,9 +52,10 @@ fn corpus() -> String {
 fn mecrab() -> &'static text_analyzer_spike::mecrab_vendor::MecrabAnalyzer {
     static A: OnceLock<text_analyzer_spike::mecrab_vendor::MecrabAnalyzer> = OnceLock::new();
     A.get_or_init(|| {
-        text_analyzer_spike::mecrab_vendor::MecrabAnalyzer::from_dir(Path::new(RESOURCES_DIR)
-            .join("mecrab")
-            .as_path())
+        text_analyzer_spike::mecrab_vendor::MecrabAnalyzer::from_dir(
+            Path::new(RESOURCES_DIR).join("mecrab").as_path(),
+            text_analyzer_spike::mecrab_vendor::DictionaryProfile::japanese_ipadic(),
+        )
         .expect("mecrab dictionary load from resources/mecrab")
     })
 }

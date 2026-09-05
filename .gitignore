@@ -25,3 +25,9 @@ crates/gql/reference/
 # SDK build artifacts (generated from source)
 sdk/client/js/dist/
 sdk/canister/rust/target/
+
+# **Text analyzer (plans 0330/0333/0334)** — dictionary binaries stay out of git
+# (reproduce via crates/text-analyzer-spike/fetch_resources.sh)
+crates/text-analyzer-spike/resources/
+crates/pocket-ic-tests/resources/
+wasm-out/

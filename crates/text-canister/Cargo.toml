@@ -33,9 +33,8 @@ gleaph-graph-kernel.workspace = true
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1"
-# Plan 0331 ANALYZER_ID=2: vibrato + ipadic lemma pipeline, pinned WITHOUT the training
-# stack (default-features = false — verified getrandom-free on wasm32 per plan 0330
-# audit / commit 4150e59d0) plus the pure-Rust ruzstd zstd decoder. The dictionary is
-# NOT embedded: it lives in stable region 16 (see `state`).
-vibrato = { version = "=0.5.2", default-features = false }
-ruzstd = "0.7"
+# Plan 0334 ANALYZER_ID=2: MeCab-format ipadic Viterbi over byte-image dictionaries.
+# The dictionary is NOT embedded: region 16 carries the MORPHDICT1 container (see
+# `state`); `ic-morph-dict` backs the container with stable-memory offset accessors.
+morph-dict = { path = "../morph-dict" }
+ic-morph-dict = { path = "../ic-morph-dict" }

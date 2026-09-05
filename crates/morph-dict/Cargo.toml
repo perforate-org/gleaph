@@ -1,0 +1,15 @@
+[package]
+name = "morph-dict"
+version = "0.1.0"
+edition = "2024"
+description = "MeCab-format morphological dictionary engine over byte-image, offset-accessed dictionaries (double-array trie + connection matrix + char def + unknown dict + Viterbi), with a container format and per-language DictionaryProfile parameterization."
+repository = "https://github.com/gleaph/gleaph"
+license = "MIT OR Apache-2.0"
+publish = true
+readme = "README.md"
+
+[dependencies]
+byteorder = "1.5"
+thiserror = "2.0"
+sha2 = { workspace = true }
+

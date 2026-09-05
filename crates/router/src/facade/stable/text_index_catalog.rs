@@ -187,7 +187,7 @@ pub(crate) fn register_text_index(
         ));
     }
     // Catalog pin lift (plan 0331): the creation-pinned analyzer must be one of the
-    // admitted set — ids mirror text_canister::{ANALYZER_UNICODE_BIGRAM, ANALYZER_VIBRATO}.
+    // admitted set — ids mirror text_canister::{ANALYZER_UNICODE_BIGRAM, ANALYZER_MECAB}.
     if !matches!(analyzer_id, 1 | 2) {
         return Err(RouterError::InvalidArgument(format!(
             "unregistered text analyzer id {analyzer_id} (admitted set: 1, 2)"

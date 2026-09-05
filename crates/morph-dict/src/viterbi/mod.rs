@@ -10,9 +10,9 @@
 
 pub mod analysis;
 
-use crate::mecrab_vendor::dict::Dictionary;
-use crate::mecrab_vendor::error::{Error, Result};
-use crate::mecrab_vendor::lattice::{Lattice, LatticeNode};
+use crate::dict::Dictionary;
+use crate::error::{Error, Result};
+use crate::lattice::{Lattice, LatticeNode};
 
 /// Result node after Viterbi path finding
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ impl<'a> ViterbiSolver<'a> {
         }
 
         let entries = self.forward_pass(lattice);
-        let path = Self::backward_pass(&entries, lattice)?;
+        let path = Self::backward_pass(&self.dictionary, &entries, lattice)?;
         Ok(path)
     }
 
@@ -96,25 +96,14 @@ impl<'a> ViterbiSolver<'a> {
                     }
                 }
 
-                // Also check connections from earlier positions (for longer words)
-                for check_pos in 1..prev_pos {
-                    if check_pos < entries.len() {
-                        for (prev_idx, prev_entry) in entries[check_pos].iter().enumerate() {
-                            if prev_entry.node.end == node.start {
-                                let conn_cost = self
-                                    .dictionary
-                                    .connection_cost(prev_entry.node.right_id, node.left_id)
-                                    as i64;
-                                let total_cost = prev_entry.cost + conn_cost + node.wcost as i64;
-                                if total_cost < best_cost {
-                                    best_cost = total_cost;
-                                    best_prev = Some(prev_idx);
-                                    best_prev_pos = check_pos;
-                                }
-                            }
-                        }
-                    }
-                }
+                // Landing patch (runtime lever 2): upstream's secondary scan over
+                // EARLIER slots (1..prev_pos) is provably dead AND the O(n²) hazard.
+                // Nodes are indexed by end byte + 1, so the only slot that can hold a
+                // predecessor ending at `node.start` is `node.start + 1 == prev_pos`,
+                // which the primary scan above already covers — every secondary
+                // iteration compared `prev_entry.node.end == node.start` against slots
+                // that structurally cannot match, at O(entries) cost per node.
+                // Behavior-identical (parity re-verified after removal).
 
                 if best_cost < i64::MAX {
                     entries[pos].push(ViterbiEntry {
@@ -132,6 +121,7 @@ impl<'a> ViterbiSolver<'a> {
 
     /// Backward pass: trace the optimal path
     fn backward_pass<'b>(
+        dictionary: &Dictionary,
         entries: &[Vec<ViterbiEntry<'b>>],
         lattice: &'b Lattice<'b>,
     ) -> Result<Vec<PathNode>> {
@@ -167,12 +157,29 @@ impl<'a> ViterbiSolver<'a> {
 
             let entry = &entries[prev_pos][idx];
             if !entry.node.surface.is_empty() {
+                // Feature resolution: dictionary nodes read the feature here (the ONLY
+                // feature-region touch — output path, after the drop-set filter scope is
+                // known); unknown/synthetic nodes carry their feature inline.
+                let feature = match &entry.node.feature {
+                    Some(f) => f.clone(),
+                    None => {
+                        if entry.node.word_id != u32::MAX {
+                            dictionary
+                                .sys_dic
+                                .token_at(entry.node.word_id as usize)
+                                .map(|t| dictionary.sys_dic.get_feature(&t))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    }
+                };
                 path.push(PathNode {
                     surface: entry.node.surface.to_string(),
                     word_id: entry.node.word_id,
                     pos_id: entry.node.pos_id,
                     wcost: entry.node.wcost,
-                    feature: entry.node.feature.clone(),
+                    feature,
                 });
             }
 

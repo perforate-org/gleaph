@@ -1,0 +1,44 @@
+LICENSE-MECRAB — vendored MeCrab source provenance and licensing
+================================================================
+
+The dictionary structures, lattice, and Viterbi sources in this crate are vendored
+from MeCrab github.com/cool-japan/mecrab at commit
+85444b56dd85e5f239396fbc574854d2b6d4137c (v0.1.0), which is distributed under
+"MIT OR Apache-2.0" (per its workspace Cargo.toml `license` field):
+
+    Copyright 2026 COOLJAPAN OU (Team KitaSan)
+
+    Licensed under either of
+      - Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
+      - MIT license (below)
+    at your option.
+
+    MIT License
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Modifications since the vendored commit are recorded in the per-file headers and
+the landing plan (0334): the `Arc<Mmap>` dictionary parameter was replaced by the
+`ByteImage` trait, the overlay/user-dictionary/semantic/wasm surfaces were removed,
+and three behavioral patches (Viterbi EOS-node preference, MeCab-faithful unknown-
+word invoke policy, bounded common-prefix search) were applied. Every vendored
+file retains its original copyright header line.
+
+The mecab-ipadic BSD license acknowledgment that MUST accompany any distributed
+compiled ipadic dictionary is in LICENSE-IPADIC.

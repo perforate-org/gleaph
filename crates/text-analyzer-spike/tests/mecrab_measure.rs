@@ -1,6 +1,8 @@
-//! Plan 0333 — measurement harness (todo 4): dictionary load time, ByteImage access
-//! statistics across LRU budgets, native throughput vs vibrato, upgrade-rebind
-//! projection inputs. Prints tables to stdout; numbers are recorded in the plan/report.
+//! Plan 0334 re-measure against the landed `morph-dict` engine: open cost (container
+//! validation + resident-set materialization), per-structure access classification
+//! (sys.dic trie / word-params / feature-region), and native throughput vs vibrato.
+//! The 0333 LRU-budget sweep moved to the `ic-morph-dict` adapter tests (native
+//! `VectorMemory`).
 //!
 //! Run: `cargo test --features "vibrato,mecrab-dict" --test mecrab_measure -- --nocapture --release`
 
@@ -8,69 +10,30 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use text_analyzer_spike::mecrab_vendor::byteimage::{
-    ByteImage, HeapImage, SimulatedStableImage,
-};
-use text_analyzer_spike::mecrab_vendor::MecrabAnalyzer;
+use morph_dict::byteimage::{ByteImage, CountingImage, HeapImage, SplitImage};
+use morph_dict::container;
+use morph_dict::dict::Dictionary;
+use morph_dict::DictionaryProfile;
+use text_analyzer_spike::mecrab_vendor::Analyzer;
 
 const RESOURCES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/resources");
 
-fn read_file(name: &str) -> Vec<u8> {
-    std::fs::read(Path::new(RESOURCES_DIR).join("mecrab").join(name))
-        .unwrap_or_else(|e| panic!("{name}: {e}"))
-}
-
-fn image_sizes() -> [(&'static str, u64); 4] {
+fn container_bytes() -> Vec<u8> {
     let names = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
-    names.map(|n| (n, read_file(n).len() as u64))
-}
-
-/// Load the four images as HeapImage, run the analyzer over `text`, return (load_ms, units).
-fn run_heap(text: &str) -> (f64, usize) {
-    let t = Instant::now();
-    let sys = Arc::new(HeapImage::from_vec(read_file("sys.dic"))) as Arc<dyn ByteImage>;
-    let unk = Arc::new(HeapImage::from_vec(read_file("unk.dic"))) as Arc<dyn ByteImage>;
-    let matrix = Arc::new(HeapImage::from_vec(read_file("matrix.bin"))) as Arc<dyn ByteImage>;
-    let char_bin = Arc::new(HeapImage::from_vec(read_file("char.bin"))) as Arc<dyn ByteImage>;
-    let a = MecrabAnalyzer::from_images(
-        std::sync::Arc::clone(&sys),
-        unk,
-        matrix,
-        char_bin,
-    )
-    .expect("load");
-    let load_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let units = a.analyze(text).len();
-    (load_ms, units)
-}
-
-/// Same images through SimulatedStableImage with a cache budget; returns
-/// (load_ms, units, AccessStats aggregated over the four images).
-fn run_simulated(text: &str, budget: usize) -> (f64, usize, Vec<(String, text_analyzer_spike::mecrab_vendor::byteimage::AccessStats)>) {
-    let t = Instant::now();
-    let names = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
-    let mut images: Vec<Arc<SimulatedStableImage>> = Vec::new();
-    for n in names {
-        images.push(Arc::new(SimulatedStableImage::new(read_file(n), budget)));
-    }
-    let a = MecrabAnalyzer::from_images(
-        images[0].clone(),
-        images[1].clone(),
-        images[2].clone(),
-        images[3].clone(),
-    )
-    .expect("simulated image dict load");
-    let load_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let units = a.analyze(text).len();
-    let stats = images
+    let images: Vec<(String, Vec<u8>)> = names
         .iter()
-        .zip(names)
-        .map(|(img, n)| (n.to_string(), img.stats()))
+        .map(|n| {
+            (
+                n.to_string(),
+                std::fs::read(Path::new(RESOURCES_DIR).join("mecrab").join(n))
+                    .unwrap_or_else(|e| panic!("{n}: {e}")),
+            )
+        })
         .collect();
-    (load_ms, units, stats)
+    container::build(images)
 }
 
-/// ~1 MB newline-separated Japanese corpus (same generator as the parity test).
+/// ~1 MB newline-separated Japanese corpus (0330/0333 method).
 fn corpus() -> String {
     let sentences = [
         "昨日、公園を全力で走った。",
@@ -115,67 +78,117 @@ fn mean(v: &[f64]) -> f64 {
 #[test]
 fn measure_tables() {
     let corpus = corpus();
-    println!("corpus bytes = {}", corpus.len());
+    let container = container_bytes();
+    println!("container bytes = {}", container.len());
 
-    // ── (1) load time: HeapImage (3 runs) ──
-    let mut heap_loads = Vec::new();
+    // ── open cost: container validation + resident-set materialization ──
+    let mut opens = Vec::new();
     for _ in 0..3 {
-        let (ms, units) = run_heap(&corpus);
-        heap_loads.push(ms);
-        println!("heap: load_ms={ms:.1} units={units}");
+        let t = Instant::now();
+        let a = Analyzer::open(
+            Arc::new(HeapImage::from_vec(container.clone())),
+            DictionaryProfile::japanese_ipadic(),
+        )
+        .expect("open");
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        opens.push(ms);
+        let _ = a;
     }
-    println!("HEAP load_ms (mean of 3, incl. file read + validation) = {:.1}", mean(&heap_loads));
+    println!("OPEN (validate + resident memcpy, mean of 3) = {:.1} ms", mean(&opens));
 
-    // warm heap load excluding fs::read: simulate the upgrade shape where bytes are
-    // already in memory (from stable memory read) — time from_image only.
-    let bytes: Vec<Vec<u8>> = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"]
-        .iter()
-        .map(|n| read_file(n))
-        .collect();
-    let t = Instant::now();
-    let _ = MecrabAnalyzer::from_images(
-        Arc::new(HeapImage::from_vec(bytes[0].clone())),
-        Arc::new(HeapImage::from_vec(bytes[1].clone())),
-        Arc::new(HeapImage::from_vec(bytes[2].clone())),
-        Arc::new(HeapImage::from_vec(bytes[3].clone())),
-    )
-    .unwrap();
-    println!(
-        "HEAP from_images only (bytes pre-resident): {:.3} ms",
-        t.elapsed().as_secs_f64() * 1000.0
-    );
+    // ── per-structure access classification over the corpus run ──
+    // Wrap each container entry: sys.dic through SplitImage (trie/params resident,
+    // feature region lazy) with CountingImage accounting per side.
+    {
+        let img = Arc::new(HeapImage::from_vec(container.clone()));
+        let entries = container::validate(img.as_ref()).expect("validate");
+        let sys = container::entry(&entries, "sys.dic").unwrap().clone();
+        let sys_view =
+            morph_dict::byteimage::OffsetImage::new(img.clone(), sys.offset, sys.len);
+        let feature_offset =
+            morph_dict::dict::sys_dic::SysDic::header_feature_offset(&sys_view).unwrap();
+        let mut prefix = vec![0u8; feature_offset as usize];
+        sys_view.read_exact_at(0, &mut prefix);
 
-    // ── (2) SimulatedStableImage budgets ──
-    for budget in [256 * 1024usize, 1 << 20, 4 << 20, 16 << 20] {
-        let (load_ms, units, stats) = run_simulated(&corpus, budget);
-        println!("SIMULATED budget={}KiB load_ms={:.1} units={}", budget / 1024, load_ms, units);
-        let mut tot_calls = 0u64;
-        let mut tot_bytes = 0u64;
-        let mut tot_unique = 0u64;
-        let mut tot_loads = 0u64;
-        for (name, s) in &stats {
-            println!(
-                "    {name}: read_calls={} bytes_read={} unique_frames={} hot_set_KiB={} frame_loads={} hit_rate={:.3}",
-                s.read_calls,
-                s.bytes_read,
-                s.unique_frames,
-                s.hot_set_bytes() / 1024,
-                s.frame_loads,
-                s.hit_rate()
-            );
-            tot_calls += s.read_calls;
-            tot_bytes += s.bytes_read;
-            tot_unique += s.hot_set_bytes();
-            let _ = tot_loads;
-            tot_loads += s.frame_loads;
-        }
+        // Counting wrappers over the same images.
+        let counted_sys_prefix = Arc::new(CountingImage::new(Arc::new(HeapImage::from_vec(
+            prefix.clone(),
+        ))));
+        let counted_sys_lazy =
+            Arc::new(CountingImage::new(Arc::new(morph_dict::byteimage::OffsetImage::new(
+                img.clone(),
+                sys.offset,
+                sys.len,
+            ))));
+        let split = Arc::new(SplitImage::new(
+            counted_sys_prefix.clone(),
+            counted_sys_lazy.clone(),
+            feature_offset,
+        ));
+        let matrix_entry = container::entry(&entries, "matrix.bin").unwrap().clone();
+        let char_entry = container::entry(&entries, "char.bin").unwrap().clone();
+        let unk_entry = container::entry(&entries, "unk.dic").unwrap().clone();
+        let read_heap = |e: &morph_dict::container::ContainerEntry| {
+            let mut b = vec![0u8; e.len as usize];
+            img.read_exact_at(e.offset, &mut b);
+            Arc::new(HeapImage::from_vec(b)) as Arc<dyn ByteImage>
+        };
+        let dict = Dictionary::from_images(
+            split,
+            read_heap(&unk_entry),
+            read_heap(&matrix_entry),
+            read_heap(&char_entry),
+        )
+        .expect("dict");
+        let a = Analyzer::from_dir(Path::new(RESOURCES_DIR).join("mecrab").as_path(), DictionaryProfile::japanese_ipadic()).expect("dir analyzer");
+        let _ = a.analyze(&corpus); // warm
+
+        // Analyze via the instrumented dictionary (bypass Analyzer; same rules).
+        let units = {
+            let mut out = Vec::new();
+            for line in corpus.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let lat = morph_dict::lattice::Lattice::build(
+                    line,
+                    &dict,
+                    &DictionaryProfile::japanese_ipadic(),
+                )
+                .unwrap();
+                let solver = morph_dict::viterbi::ViterbiSolver::new(&dict);
+                for node in solver.solve(&lat).unwrap() {
+                    let columns: Vec<&str> = node.feature.split(',').collect();
+                    let pos = columns.first().copied().unwrap_or("*");
+                    if matches!(pos, "助詞" | "助動詞" | "記号" | "接頭辞" | "接尾辞" | "フィラー") {
+                        continue;
+                    }
+                    let base = columns.get(6).copied().unwrap_or("*");
+                    if base == "*" || base.is_empty() {
+                        out.push(node.surface.to_string());
+                    } else {
+                        out.push(base.to_string());
+                    }
+                }
+            }
+            out
+        };
+        let sys_stats = counted_sys_prefix.stats();
+        let lazy_stats = counted_sys_lazy.stats();
+        // Classify sys.dic reads: trie region = [72, feature_offset), header < 72.
+        println!("RESIDENT sys.dic prefix (header+trie+word-params, {} bytes):", feature_offset);
+        println!("    read_calls={} bytes_read={} unique_pages={}", sys_stats.read_calls, sys_stats.bytes_read, sys_stats.unique_pages);
         println!(
-            "    TOTAL: read_calls={tot_calls} bytes_read={tot_bytes} unique_bytes={tot_unique} frame_loads={tot_loads}"
+            "LAZY feature region: read_calls={} bytes_read={} unique_pages={} ({} KiB)",
+            lazy_stats.read_calls,
+            lazy_stats.bytes_read,
+            lazy_stats.unique_pages,
+            lazy_stats.unique_pages * 4
         );
+        println!("units = {}", units.len());
     }
 
-    // ── (3) throughput tokens/s ──
-    // vibrato baseline
+    // ── throughput vs vibrato ──
     let v = text_analyzer_spike::vibrato_candidate::Analyzer::from_zstd_file(
         Path::new(RESOURCES_DIR).join("vibrato/system.dic.zst").as_path(),
     )
@@ -190,47 +203,21 @@ fn measure_tables() {
         v_units.len() as f64 / v_elapsed
     );
 
-    let (m_units, m_elapsed) = {
-        let a = MecrabAnalyzer::from_dir(Path::new(RESOURCES_DIR).join("mecrab").as_path())
-            .expect("mecrab load");
-        let t = Instant::now();
-        let u = a.analyze(&corpus);
-        (u.len(), t.elapsed().as_secs_f64())
-    };
+    let a = Analyzer::open(
+        Arc::new(HeapImage::from_vec(container.clone())),
+        DictionaryProfile::japanese_ipadic(),
+    )
+    .expect("open");
+    let t = Instant::now();
+    let m_units = a.analyze(&corpus);
+    let m_elapsed = t.elapsed().as_secs_f64();
+    let ratio = (m_units.len() as f64 / m_elapsed) / (v_units.len() as f64 / v_elapsed);
     println!(
-        "THROUGHPUT mecrab (HeapImage): {m_units} units in {m_elapsed:.3}s = {:.0} units/s (ratio vs vibrato {:.2}x)",
-        m_units as f64 / m_elapsed,
-        (m_units as f64 / m_elapsed) / (v_units.len() as f64 / v_elapsed)
+        "THROUGHPUT morph-dict (resident-split open): {} units in {:.3}s = {:.0} units/s (ratio vs vibrato {:.2}x)",
+        m_units.len(),
+        m_elapsed,
+        m_units.len() as f64 / m_elapsed,
+        ratio
     );
-
-    // throughput under SimulatedStableImage 1 MiB budget (steady-state cache)
-    {
-        let budget = 4 << 20;
-        let images: Vec<Arc<SimulatedStableImage>> = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"]
-            .iter()
-            .map(|n| Arc::new(SimulatedStableImage::new(read_file(n), budget)))
-            .collect();
-        let a = MecrabAnalyzer::from_images(
-            images[0].clone(), images[1].clone(), images[2].clone(), images[3].clone(),
-        )
-        .unwrap();
-        let _ = a.analyze(&corpus); // warm
-        let t = Instant::now();
-        let u = a.analyze(&corpus);
-        let el = t.elapsed().as_secs_f64();
-        let s0 = images[0].stats();
-        println!(
-            "THROUGHPUT mecrab (SimulatedStableImage {budget}KiB budget): {} units in {el:.3}s = {:.0} units/s; sys.dic hit_rate={:.3}",
-            u.len(),
-            u.len() as f64 / el,
-            s0.hit_rate()
-        );
-    }
-
-    // ── image sizes ──
-    for (n, sz) in image_sizes() {
-        println!("IMAGE {n}: {sz} bytes");
-    }
-    let total: u64 = image_sizes().iter().map(|(_, s)| s).sum();
-    println!("IMAGE total: {total} bytes ({:.1} MiB)", total as f64 / 1048576.0);
+    assert_eq!(v_units, m_units, "throughput run must keep 100% parity");
 }

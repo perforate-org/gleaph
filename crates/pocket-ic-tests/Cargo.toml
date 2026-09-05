@@ -97,6 +97,9 @@ serde.workspace = true
 serde_json = "1"
 sha2.workspace = true
 text-canister = { path = "../text-canister" }
+# Plan 0331 E2E: compute the pinned dictionary's xxh3_128 streaming identity locally.
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+morph-dict = { path = "../morph-dict" }
 
 [build-dependencies]
 cargo_metadata = "0.23"

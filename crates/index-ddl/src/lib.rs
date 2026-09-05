@@ -42,7 +42,7 @@ pub enum TextIndexDdlStatement {
         if_not_exists: bool,
         label: String,
         property: String,
-        /// Implementation analyzer name pinned at creation (e.g. `vibrato`); `None` =
+        /// Implementation analyzer name pinned at creation (e.g. `mecab`); `None` =
         /// the default unicode-bigram pipeline, byte-identical to pre-0331 behavior.
         /// Name → id resolution (and unknown-name rejection) is admission-owned, never
         /// parser-owned: the parser only accepts a bare identifier.
@@ -1638,7 +1638,7 @@ mod tests {
     #[test]
     fn text_ddl_parses_analyzer_clause_after_on_group() {
         let parsed =
-            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER vibrato;")
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER mecab;")
                 .expect("text DDL")
                 .expect("parse");
         assert_eq!(
@@ -1648,7 +1648,7 @@ mod tests {
                 if_not_exists: false,
                 label: "Person".into(),
                 property: "bio".into(),
-                analyzer: Some("vibrato".into()),
+                analyzer: Some("mecab".into()),
             }
         );
         // Case-insensitive keyword; case-preserving identifier (admission resolves it).
@@ -1678,7 +1678,7 @@ mod tests {
         assert!(matches!(numeric, TextIndexDdlParseError::Expected(_)));
         // Trailing input after the clause still rejects.
         let trailing = try_parse_text(
-            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER vibrato EXTRA",
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER mecab EXTRA",
         )
         .expect("recognized")
         .expect_err("trailing input");

@@ -17,7 +17,6 @@ use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
-    SchemaMigrationProgressPhase,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
@@ -690,51 +689,68 @@ fn text_score_compound_threshold_topk_lowers_and_ranks() {
     );
 }
 
-// -- Plan 0331: ANALYZER vibrato (ANALYZER_ID=2) + stable-resident ipadic dictionary -----
+// -- Plan 0331: ANALYZER mecab (ANALYZER_ID=2) + stable-resident ipadic dictionary -----
 
-/// The pinned ipadic artifact URL (identical to the plan 0330 spike fetch).
-const VIBRATO_DICT_URL: &str =
-    "https://github.com/daac-tools/vibrato/releases/download/v0.5.0/ipadic-mecab-2_7_0.tar.xz";
+/// The pinned ipadic artifact source (plan 0334): the immutable PyPI `ipadic 1.0.0`
+/// sdist — the compiled MeCab-format 2.7.0 utf8 four-image set. (The Debian snapshot
+/// `mecab-ipadic-utf8` .deb was evaluated first per the plan and REJECTED: it is an
+/// install-time stub — the binary images are built by the package postinst on the
+/// target machine, so the .deb carries no sys.dic/unk.dic/matrix.bin/char.bin.)
+/// Tarball SHA-256: f5923d31eca6131acaaf18ed28d8998665b1347b640d3a6476f64650e9a71c07.
+/// Per-image SHA-256 (recorded in the plan audit):
+///   sys.dic    223af63996d5d9a104d8c8baaf32029fbbf6a370d7dff33fe19fda2e92ac0ac1
+///   unk.dic    f0bf15e3e28259f4470b9c1e775d98bef53207d4b09afcd6d8545209b7b53f88
+///   matrix.bin ee44d7350cdcb680ebd699f83e121be1dc63310f8832d55bcb537a068177611a
+///   char.bin   81bba502ae48fa005a374819f15e44452eb68086a8b323ec20a044d514400832
+const MECAB_DICT_URL: &str = "https://files.pythonhosted.org/packages/e7/4e/c459f94d62a0bef89f866857bc51b9105aff236b83928618315b41a26b7b/ipadic-1.0.0.tar.gz";
 
-/// Returns the pinned `system.dic.zst` bytes from the gitignored
-/// `crates/pocket-ic-tests/resources/` cache, fetching it (curl) when absent.
-/// FAIL-CLOSED: an unreachable artifact aborts the test with fetch instructions —
-/// the vibrato legs never silently skip.
-fn fetch_vibrato_dictionary() -> Vec<u8> {
-    const ARTIFACT: &str = "system.dic.zst";
+/// Returns the MORPHDICT1 container bytes (the region-16 payload; the digest is over
+/// THESE bytes) from the gitignored `crates/pocket-ic-tests/resources/mecrab/` cache,
+/// fetching the pinned source (curl + tar) when absent. FAIL-CLOSED: an unreachable
+/// artifact aborts the test with fetch instructions — the mecab legs never silently
+/// skip.
+fn fetch_mecab_container() -> Vec<u8> {
+    const IMAGES: [&str; 4] = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
-        .join("vibrato");
-    let path = dir.join(ARTIFACT);
-    if !path.exists() {
-        std::fs::create_dir_all(&dir).expect("create resources/vibrato");
-        // The tarball carries system.dic.zst at its root; the E2E cache keeps only the
-        // dictionary file itself.
-        let tarball = dir.join("ipadic-mecab-2_7_0.tar.xz");
+        .join("mecrab");
+    if !dir.join("sys.dic").exists() {
+        std::fs::create_dir_all(&dir).expect("create resources/mecrab");
+        let tarball = dir.join("ipadic-1.0.0.tar.gz");
         let status = Command::new("curl")
             .args(["-sL", "-o"])
             .arg(&tarball)
-            .arg(VIBRATO_DICT_URL)
+            .arg(MECAB_DICT_URL)
             .status()
             .expect("spawn curl for the ipadic dictionary");
-        assert!(status.success(), "curl fetch of {VIBRATO_DICT_URL} failed");
+        assert!(status.success(), "curl fetch of {MECAB_DICT_URL} failed");
         let extracted = Command::new("tar")
-            .args(["-xf"])
+            .args(["-xzf"])
             .arg(&tarball)
             .arg("-C")
             .arg(&dir)
             .status()
             .expect("spawn tar");
-        assert!(
-            extracted.success(),
-            "tar extract of the ipadic tarball failed"
-        );
-        let extracted_path = dir.join("ipadic-mecab-2_7_0").join(ARTIFACT);
-        std::fs::rename(&extracted_path, &path).expect("move system.dic.zst into place");
+        assert!(extracted.success(), "tar extract of the ipadic tarball failed");
+        let dicdir = dir.join("ipadic-1.0.0").join("ipadic").join("dicdir");
+        for name in IMAGES {
+            std::fs::copy(dicdir.join(name), dir.join(name))
+                .unwrap_or_else(|e| panic!("move {name} into place: {e}"));
+        }
         let _ = std::fs::remove_file(&tarball);
-        let _ = std::fs::remove_dir_all(dir.join("ipadic-mecab-2_7_0"));
+        let _ = std::fs::remove_dir_all(dir.join("ipadic-1.0.0"));
     }
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    let images: Vec<(String, Vec<u8>)> = IMAGES
+        .iter()
+        .map(|n| {
+            (
+                n.to_string(),
+                std::fs::read(dir.join(n))
+                    .unwrap_or_else(|e| panic!("read {n}: {e}")),
+            )
+        })
+        .collect();
+    morph_dict::container::build(images)
 }
 
 /// Read-only dictionary status query on the text canister.
@@ -774,11 +790,11 @@ fn call_text_canister<R: candid::CandidType + serde::de::DeserializeOwned>(
         .expect("reply ok")
 }
 
-const VIBRATO_INDEX_NAME: &str = "text_score_vibrato_idx";
-const VIBRATO_MIGRATION_ID: &str = "000104_text_score_vibrato";
+const MECAB_INDEX_NAME: &str = "text_score_mecab_idx";
+const MECAB_MIGRATION_ID: &str = "000104_text_score_mecab";
 
 #[test]
-fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
+fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     let wired = bootstrap_with_active_release();
     let env = Env {
         fed: finish_provision_wired_single_shard_federation(wired),
@@ -794,9 +810,9 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     // LEG 1 — GQL-surface admission with the ANALYZER clause: the provisioned canister
     // pins analyzer 2 (install-arg flow through Provision).
     let statement = format!(
-        "CREATE TEXT INDEX {VIBRATO_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER vibrato"
+        "CREATE TEXT INDEX {MECAB_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER mecab"
     );
-    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "vibrato-ddl");
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "mecab-ddl");
     let info = {
         let bytes = env
             .fed
@@ -805,14 +821,14 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
                 env.fed.router,
                 env.fed.admin,
                 "get_text_index",
-                Encode!(&GRAPH_NAME.to_string(), &VIBRATO_INDEX_NAME).expect("encode"),
+                Encode!(&GRAPH_NAME.to_string(), &MECAB_INDEX_NAME).expect("encode"),
             )
             .unwrap_or_else(|e| panic!("get_text_index on router: {e:?}"));
         Decode!(&bytes, Result<TextIndexInfo, RouterError>)
             .expect("decode get_text_index")
             .expect("definition exists")
     };
-    assert_eq!(info.analyzer_id, 2, "the ANALYZER vibrato clause pins id 2");
+    assert_eq!(info.analyzer_id, 2, "the ANALYZER mecab clause pins id 2");
     let canister = info.canister.expect("provisioned canister attached");
     env.fed.pic.add_cycles(canister, 50_000_000_000_000);
     env.fed
@@ -827,7 +843,7 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     let err = gleaph_pocket_ic_tests::gql_mutate_as_admin_expect_err(
         &env.fed,
         &nonsense,
-        "vibrato-ddl-nonsense",
+        "mecab-ddl-nonsense",
     );
     assert!(
         err.to_string().contains("unknown ANALYZER name `nonsense`"),
@@ -888,8 +904,19 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         "unexpected hold wording: {hold}"
     );
 
-    // Upload the pinned artifact in 1 MiB chunks (8,045,952 bytes = 8 chunks).
-    let dict = fetch_vibrato_dictionary();
+    // Baseline upgrade on the SAME canister with the dictionary still absent (the open
+    // path skips the rebind) — isolates pocket-ic's install overhead from the rebind.
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
+    let cycles_before = env.fed.pic.cycle_balance(canister);
+    env.fed
+        .pic
+        .upgrade_canister(canister, text_wasm(), empty.clone(), Some(env.fed.admin))
+        .expect("pre-finalize upgrade (no dictionary: no rebind work)");
+    let install_overhead = cycles_before.saturating_sub(env.fed.pic.cycle_balance(canister));
+    println!("plan-0334 upgrade install overhead (dict absent): {install_overhead}");
+
+    // Upload the pinned container in 1 MiB chunks (52,930,923 bytes = 51 chunks).
+    let dict = fetch_mecab_container();
     for (index, chunk) in dict.chunks(1024 * 1024).enumerate() {
         let total: u64 =
             call_text_canister(&env, canister, "admin_upload_dict_chunk", &chunk.to_vec());
@@ -933,7 +960,7 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
     let cycles_after = env.fed.pic.cycle_balance(canister);
     println!(
-        "plan-0331 finalize (8 MB zstd decode + tokenizer build) cycles: {}",
+        "plan-0334 finalize (digest + container validation + resident-set memcpy) cycles: {}",
         cycles_before.saturating_sub(cycles_after)
     );
     assert_eq!(finalized.state, text_canister::DictState::Finalized);
@@ -943,20 +970,41 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
     assert_eq!(replay, finalized, "exact re-finalize is a no-op");
 
+    // LEG 5b — post_upgrade rebind measurement (the plan 0334 headline): the DELTA
+    // against the pre-finalize upgrade of the SAME canister isolates the rebind work
+    // (structural container validation + resident-set memcpy over batched stable
+    // reads; NO decode, NO full-container copy; the feature region stays lazy over
+    // stable memory). Recorded vs the 0331 4.75B-cycle eager-decode baseline.
+    let cycles_before_upgrade = env.fed.pic.cycle_balance(canister);
+    env.fed
+        .pic
+        .upgrade_canister(canister, text_wasm(), empty, Some(env.fed.admin))
+        .expect("in-place upgrade of the text canister (rebind leg)");
+    let rebind_cycles = cycles_before_upgrade.saturating_sub(env.fed.pic.cycle_balance(canister));
+    let rebind_delta = rebind_cycles.saturating_sub(install_overhead);
+    println!("plan-0334 post_upgrade total: {rebind_cycles}; rebind DELTA vs dict-absent upgrade: {rebind_delta}");
+    // Per the IC cost model the rebind is dominated by the unavoidable 4 KiB page
+    // charges of the resident memcpy (~5.2K pages x 5,000 = ~26M) + structural
+    // validation reads — MUST be orders below the 4.75B eager-decode baseline.
+    assert!(
+        rebind_delta < 500_000_000,
+        "post_upgrade rebind delta {rebind_delta} cycles — expected ~10-100M (page-charge dominated), not the 4.75B baseline (total {rebind_cycles})"
+    );
+
     // LEG 6 — the SAME registration that held before finalize now replays idempotently:
     // drive the migration (statement carries the matching ANALYZER clause) to Ready.
     let args = migration_args(
-        VIBRATO_MIGRATION_ID,
+        MECAB_MIGRATION_ID,
         &format!(
-            "CREATE TEXT INDEX {VIBRATO_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER vibrato"
+            "CREATE TEXT INDEX {MECAB_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER mecab"
         ),
     );
-    drive_to_ready_for(&env, &args, VIBRATO_INDEX_NAME);
+    drive_to_ready_for(&env, &args, MECAB_INDEX_NAME);
     assert_eq!(
-        get_text_index_named(&env, VIBRATO_INDEX_NAME).status,
+        get_text_index_named(&env, MECAB_INDEX_NAME).status,
         TextIndexStatusView::Ready
     );
-    flush_until_done_for(&env, VIBRATO_INDEX_NAME);
+    flush_until_done_for(&env, MECAB_INDEX_NAME);
 
     // LEG 7 — RECALL through GQL: doc 走った ranks under query 走る (lemma shares the
     // unit), the unrelated doc is absent, deterministic order, alias ride-along intact.
@@ -974,7 +1022,7 @@ fn vibrato_analyzer_recalls_lemma_through_gql_and_fails_closed() {
 }
 
 #[test]
-fn vibrato_counter_leg_bigram_default_does_not_recall_lemma() {
+fn mecab_counter_leg_bigram_default_does_not_recall_lemma() {
     let wired = bootstrap_with_active_release();
     let env = Env {
         fed: finish_provision_wired_single_shard_federation(wired),

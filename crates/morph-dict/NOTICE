@@ -1,0 +1,10 @@
+morph-dict
+==========
+
+Derived from MeCrab (github.com/cool-japan/mecrab @ 85444b5, MIT OR Apache-2.0;
+Copyright 2026 COOLJAPAN OU (Team KitaSan)) — see LICENSE-MECRAB and the per-file
+copyright headers.
+
+Distributed compiled mecab-ipadic dictionaries carry the BSD license and
+acknowledgment text in LICENSE-IPADIC (mecab-ipadic 2.7.0, NAIST / LegalOn
+Technologies / ICOT Free Software).

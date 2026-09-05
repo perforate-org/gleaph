@@ -10,8 +10,8 @@
 //! Binary format (char.bin): u32 csize; csize * 32-byte category names;
 //! 0xffff * 4-byte packed CharInfo indexed by UCS-2 code point.
 
-use crate::mecrab_vendor::byteimage::ByteImage;
-use crate::mecrab_vendor::error::{Error, Result};
+use crate::byteimage::ByteImage;
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use std::sync::Arc;
 
@@ -98,11 +98,10 @@ impl CharInfo {
     }
 }
 
-/// Character definition table
+/// Character definition table. The 0xFFFF-entry CharInfo table is RESIDENT at load
+/// (256 KiB flat `Vec<u32>`; a hot 4-byte random-access region).
 pub struct CharDef {
-    image: Arc<dyn ByteImage>,
-    /// Offset of the CharInfo table (4 + csize * 32)
-    map_offset: u64,
+    map: Vec<u32>,
     categories: Vec<String>,
 }
 
@@ -152,10 +151,17 @@ impl CharDef {
             categories.push(String::from_utf8_lossy(&name_bytes[..name_end]).to_string());
         }
 
+        // Materialize the resident CharInfo table.
+        let mut map = vec![0u32; Self::TABLE_SIZE];
+        let mut bytes = vec![0u8; Self::TABLE_SIZE * CharInfo::SIZE];
+        image.read_exact_at((4 + csize * 32) as u64, &mut bytes);
+        for (i, cell) in map.iter_mut().enumerate() {
+            *cell = LittleEndian::read_u32(&bytes[i * 4..i * 4 + 4]);
+        }
+
         Ok(Self {
-            map_offset: (4 + csize * 32) as u64,
+            map,
             categories,
-            image,
         })
     }
 
@@ -164,11 +170,8 @@ impl CharDef {
     pub fn get_char_info(&self, c: char) -> CharInfo {
         let code = c as u32;
         if code < Self::TABLE_SIZE as u32 {
-            let mut b = [0u8; 4];
-            self.image
-                .read_exact_at(self.map_offset + (code as usize * CharInfo::SIZE) as u64, &mut b);
             CharInfo {
-                packed: LittleEndian::read_u32(&b),
+                packed: self.map[code as usize],
             }
         } else {
             CharInfo::default()
