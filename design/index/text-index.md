@@ -128,19 +128,20 @@ no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
 
 - `unicode_bigram` is the multilingual baseline: Han runs bigram (Chinese works — standard CJK
   strategy), Latin words whole (no stemming: `running` never matches `run`), kana bigrams.
-- `vibrato` is **Japanese-only in practice**: its ipadic lexicon fragments Chinese mid-word
+- `mecab` (the ipadic Viterbi engine; vibrato-era measurements transfer — parity-proven,
+  plan 0333) is **Japanese-only in practice**: its ipadic lexicon fragments Chinese mid-word
   (知识图谱 → 知/识图; query 数据库 misses) and Korean emits ZERO units (ipadic has no Hangul
   category; tokens are dropped). Measured in
   `crates/text-analyzer-spike/tests/cross_language.rs` — `ANALYZER mecab` must not be selected
   for Chinese or Korean content.
 - Korean is the weakest language today under BOTH pipelines: `unicode_bigram` keeps whole eojeol
-  tokens with particles attached (학교에서 never matches a 학교 query), vibrato drops Hangul
-  entirely. A future `ANALYZER_ID=3` could be a dictionary-free particle-stripper (Korean 조사
-  suffix tables are rule-friendly) or a MeCab-compatible `mecab-ko-dic` model compiled for
-  vibrato; both recorded as later slices, not implemented.
+  tokens with particles attached (학교에서 never matches a 학교 query), the engine drops Hangul
+  entirely. Fixes recorded as later slices: a dictionary-free particle-stripper (Korean 조사
+  suffix tables are rule-friendly) or a `mecab-ko-dic` container through the morph-dict
+  pipeline — neither implemented.
 
-**Tier-0 rule analyzer family (recorded design — one plan, not implemented):** the remaining
-recall gaps (Korean 조사, English stemming, Japanese inflection without vibrato) are all
+**Tier-0 rule analyzer family (plan 0332, drafted — koine, not implemented):** the remaining
+recall gaps (Korean 조사, English stemming, Japanese inflection) are all
 rule-closable without dictionaries. They compose into ONE script-dispatched composite analyzer
 (candidate `ANALYZER_ID=3`, name `rule_multilingual` — strategy-named like id 1, no dictionary):
 UAX #29 segmentation, deterministic Unicode-script classification per run (no statistical
@@ -166,7 +167,7 @@ the NFKC pre-pass, then {kanji∪kana} chunks → the mecab engine (ipadic lemma
 machinery), Hangul chunks → 조사 strip layer, Latin chunks → Porter, pure-Han chunks → bigram
 (fundamental zh/ja ambiguity: bigram is safe for both; dual-emission of mecab+bigram units
 is the quality option at ~2× Han postings). Consistency holds because index-time and
-query-time run the same composite; per-chunk vibrato loses sentence context across script
+query-time run the same composite; per-chunk dispatch loses sentence context across script
 boundaries (accepted, same as charabia). Implementation deltas vs the pure-rule composite:
 generalize the 0331 region-16 dictionary machinery from id-2-specific to "any dictionary-
 carrying analyzer" and include the morph-dict engine (~100 KB wasm layer, getrandom-free — verified). The
