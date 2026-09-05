@@ -174,6 +174,34 @@ id-2 pure-Japanese analyzer coexists: the composite is the multilingual single-i
 per-language indexes remain the precision-maximal shape (the ES multi-fields pattern is the
 N-index equivalent).
 
+**Performance roadmap (morph-dict engine — opportunistic, recorded 2026-09-05):** measured
+native throughput is 0.47–0.62× the vibrato engine (plan 0334 gate ≥0.5×); per-doc analyze
+is ~40K instructions of the ~8.3 M ingest/doc baseline, so closing the gap moves ingest cost
+by only a few percent — implement only on a trigger below. Levers, with vibrato-author
+evidence (Kanda, "MeCab互換な形態素解析器Vibratoの高速化技法", LegalOn Technologies
+Engineering Blog 2022-09-20; all numbers native, mecab-ipadic 2.7.0):
+
+- **Codepoint-unit trie** (Crawdad-style: patterns as codepoint sequences, not UTF-8 bytes —
+  3 transitions/char → 1): −12.3% analysis time on ipadic. COST: sys.dic's trie section
+  becomes a morph-dict-owned layout (MeCab-format compat is dropped) + a builder is needed;
+  `sys_dic::from_parts` already owns the parser. Second IC payoff: the DMT page-charge model
+  (5,000 instr/4 KiB page, uniform heap/stable) rewards any hot-structure shrink.
+- **Persistent scratch arena** (lattice nodes/edge/slot vectors, single-threaded pinned
+  analyzer): kills per-sentence allocation churn (the recorded 0334 residual). Cheapest
+  lever; estimate 5–15% pending profile.
+- **Feature-read short-circuit** (bounded POS-prefix read for the drop decision before the
+  full feature string): the feature region is only ~5% of bytes read — minor.
+- **Frequency-ordered context-ID mapping** (reorder matrix IDs by training-corpus usage
+  frequency): −3.4% on ipadic (3.3 MiB matrix fits in L3) but −35.6% on unidic-cwj's
+  459 MiB matrix — implement ONLY with a UniDic-class dictionary (pairs with the
+  vibrato-rkyv/compact-matrix reconsideration trigger).
+- **IC-specific**: DMT page charges make compact hot structures (bitset connector,
+  vibrato 0.5.x dual-connector pattern; codepoint trie) reduce BOTH instructions and
+  touched pages; wasm SIMD is available on IC but vibrato's simd is nightly AVX2 — a wasm
+  port is a long-shot research item.
+- Triggers: mass backfill where analyze dominates ingest cost; UniDic-class dictionary
+  adoption; measured query-latency complaints (queries are short — unlikely).
+
 ## Lifecycle and lag semantics (mapping onto derived-state contracts)
 
 | Phase | Behavior | Lag class |
