@@ -14,9 +14,8 @@ mod char_def;
 mod connection_matrix;
 pub mod double_array_trie;
 mod feature;
-mod unknown;
 pub mod sys_dic;
-
+mod unknown;
 
 pub use char_def::{CharCategory, CharDef, CharInfo};
 pub use connection_matrix::ConnectionMatrix;

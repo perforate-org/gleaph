@@ -10,10 +10,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use morph_dict::DictionaryProfile;
 use morph_dict::byteimage::{ByteImage, CountingImage, HeapImage, SplitImage};
 use morph_dict::container;
 use morph_dict::dict::Dictionary;
-use morph_dict::DictionaryProfile;
 use text_analyzer_spike::mecrab_vendor::Analyzer;
 
 const RESOURCES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/resources");
@@ -94,7 +94,10 @@ fn measure_tables() {
         opens.push(ms);
         let _ = a;
     }
-    println!("OPEN (validate + resident memcpy, mean of 3) = {:.1} ms", mean(&opens));
+    println!(
+        "OPEN (validate + resident memcpy, mean of 3) = {:.1} ms",
+        mean(&opens)
+    );
 
     // ── per-structure access classification over the corpus run ──
     // Wrap each container entry: sys.dic through SplitImage (trie/params resident,
@@ -103,8 +106,7 @@ fn measure_tables() {
         let img = Arc::new(HeapImage::from_vec(container.clone()));
         let entries = container::validate(img.as_ref()).expect("validate");
         let sys = container::entry(&entries, "sys.dic").unwrap().clone();
-        let sys_view =
-            morph_dict::byteimage::OffsetImage::new(img.clone(), sys.offset, sys.len);
+        let sys_view = morph_dict::byteimage::OffsetImage::new(img.clone(), sys.offset, sys.len);
         let feature_offset =
             morph_dict::dict::sys_dic::SysDic::header_feature_offset(&sys_view).unwrap();
         let mut prefix = vec![0u8; feature_offset as usize];
@@ -114,12 +116,9 @@ fn measure_tables() {
         let counted_sys_prefix = Arc::new(CountingImage::new(Arc::new(HeapImage::from_vec(
             prefix.clone(),
         ))));
-        let counted_sys_lazy =
-            Arc::new(CountingImage::new(Arc::new(morph_dict::byteimage::OffsetImage::new(
-                img.clone(),
-                sys.offset,
-                sys.len,
-            ))));
+        let counted_sys_lazy = Arc::new(CountingImage::new(Arc::new(
+            morph_dict::byteimage::OffsetImage::new(img.clone(), sys.offset, sys.len),
+        )));
         let split = Arc::new(SplitImage::new(
             counted_sys_prefix.clone(),
             counted_sys_lazy.clone(),
@@ -140,7 +139,11 @@ fn measure_tables() {
             read_heap(&char_entry),
         )
         .expect("dict");
-        let a = Analyzer::from_dir(Path::new(RESOURCES_DIR).join("mecrab").as_path(), DictionaryProfile::japanese_ipadic()).expect("dir analyzer");
+        let a = Analyzer::from_dir(
+            Path::new(RESOURCES_DIR).join("mecrab").as_path(),
+            DictionaryProfile::japanese_ipadic(),
+        )
+        .expect("dir analyzer");
         let _ = a.analyze(&corpus); // warm
 
         // Analyze via the instrumented dictionary (bypass Analyzer; same rules).
@@ -160,7 +163,10 @@ fn measure_tables() {
                 for node in solver.solve(&lat).unwrap() {
                     let columns: Vec<&str> = node.feature.split(',').collect();
                     let pos = columns.first().copied().unwrap_or("*");
-                    if matches!(pos, "助詞" | "助動詞" | "記号" | "接頭辞" | "接尾辞" | "フィラー") {
+                    if matches!(
+                        pos,
+                        "助詞" | "助動詞" | "記号" | "接頭辞" | "接尾辞" | "フィラー"
+                    ) {
                         continue;
                     }
                     let base = columns.get(6).copied().unwrap_or("*");
@@ -176,8 +182,14 @@ fn measure_tables() {
         let sys_stats = counted_sys_prefix.stats();
         let lazy_stats = counted_sys_lazy.stats();
         // Classify sys.dic reads: trie region = [72, feature_offset), header < 72.
-        println!("RESIDENT sys.dic prefix (header+trie+word-params, {} bytes):", feature_offset);
-        println!("    read_calls={} bytes_read={} unique_pages={}", sys_stats.read_calls, sys_stats.bytes_read, sys_stats.unique_pages);
+        println!(
+            "RESIDENT sys.dic prefix (header+trie+word-params, {} bytes):",
+            feature_offset
+        );
+        println!(
+            "    read_calls={} bytes_read={} unique_pages={}",
+            sys_stats.read_calls, sys_stats.bytes_read, sys_stats.unique_pages
+        );
         println!(
             "LAZY feature region: read_calls={} bytes_read={} unique_pages={} ({} KiB)",
             lazy_stats.read_calls,
@@ -190,7 +202,9 @@ fn measure_tables() {
 
     // ── throughput vs vibrato ──
     let v = text_analyzer_spike::vibrato_candidate::Analyzer::from_zstd_file(
-        Path::new(RESOURCES_DIR).join("vibrato/system.dic.zst").as_path(),
+        Path::new(RESOURCES_DIR)
+            .join("vibrato/system.dic.zst")
+            .as_path(),
     )
     .expect("vibrato load");
     let t = Instant::now();

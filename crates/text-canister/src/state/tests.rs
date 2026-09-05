@@ -1017,7 +1017,7 @@ fn every_swapped_structure_survives_reopen_round_trip() {
 
 // -- Analyzer-2 dictionary lifecycle (plan 0331) ---------------------------------------------
 
-/// The MORPHDICT1 container bytes (the region-16 payload; the digest is over THESE
+/// The MPD container bytes (the region-16 payload; the digest is over THESE
 /// bytes), built from the four MeCab-format images under the gitignored
 /// `pocket-ic-tests/resources/mecrab/`, or `None` when the fetch hasn't run — tests
 /// needing the dictionary SKIP loudly; the E2E fetch helper is fail-closed.

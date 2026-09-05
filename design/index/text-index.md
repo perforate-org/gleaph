@@ -101,17 +101,25 @@ Two registered pipelines (creation-fixed per index definition; plan 0330 spike +
 - **`unicode_bigram` (id 1, default)** — Unicode segmentation + NFKC + lowercase; CJK character
   runs expand to overlapping bigrams (lone characters stay unigrams); ASCII words whole. Trigram
   indexing is a separate future index kind, not part of v1.
-- **`vibrato` (ANALYZER_ID=2, plan 0331)**: vibrato 0.5.2 + ipadic-mecab lemma units — whole-text
-  NFKC + lowercase pre-pass, per-line tokenization, ipadic base-form (feature column 6) for
-  content words with particles/auxiliaries/symbols dropped. Deterministic and strict-idempotent.
-  The dictionary is NOT in the wasm (engine 1.85 MB canister wasm): the pinned ZSTD artifact
-  (8.0 MB compressed, about $0.0088/month) lives in stable region 16, uploaded via
-  controller-guarded `admin_upload_dict_chunk` (<= 1 MiB/call) + `admin_finalize_dict_upload`
-  (xxh3_128 identity verified at finalize; exact replay idempotent), and eagerly decompressed at
-  open (ruzstd) into the ~52 MB heap-resident tokenizer. The DDL clause contract lives in
-  [extension-syntax.md](../gql/extension-syntax.md).
+- **`mecab` (ANALYZER_ID=2, plan 0334)**: MeCab-format ipadic 2.7.0 Viterbi lemma units over the
+  `morph-dict` byte-image engine (derived from MeCrab, MIT OR Apache-2.0) — whole-text NFKC +
+  lowercase pre-pass, per-line bounded common-prefix search + Viterbi, ipadic base-form
+  (基本形, feature column 6) for content words with particles/auxiliaries/symbols dropped, all
+  parameterized by the Japanese `DictionaryProfile`. Deterministic and strict-idempotent;
+  100% unit-sequence parity with the previous vibrato engine (plan 0333 gate). The dictionary is
+  NOT in the wasm (~1.6 MB canister wasm): stable region 16 carries the MPD container
+  (52,930,923 bytes — sys.dic 49,199,027 + unk.dic 5,684 + matrix.bin 3,463,716 + char.bin
+  262,496, about $0.058/month), uploaded via controller-guarded `admin_upload_dict_chunk`
+  (<= 1 MiB/call, raw contiguous appends) + `admin_finalize_dict_upload` (one xxh3_128 over the
+  container; exact replay idempotent). Upgrade rebind = structural container validation +
+  resident-set memcpy over batched stable reads — NO decode, NO full-container copy: the
+  resident set is ~21 MB (matrix.bin + char.bin + unk.dic + sys.dic trie/word-params), the
+  feature-string region stays lazy over stable memory (measured hot set ~472 KiB of pages per
+  MB of text). Measured rebind delta 59,900,562 cycles vs the 4,752,264,345-cycle eager-decode
+  baseline (79x). Native throughput 0.5-0.6x vibrato (bounded-lookup engine); the DDL clause
+  contract lives in [extension-syntax.md](../gql/extension-syntax.md).
 
-Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB zstd dictionary /
+Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB zstd dictionary (0330 baseline; superseded by the morph-dict engine 0334) /
 51.8 MB heap / ~400k chars/s vs lindera 48 MB wasm (path-only dictionary API, wasm-embedded-only),
 sudachi absent from crates.io + 117 MB dictionary, rule-stemmer smallest but coarse (kanji stems,
 no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
@@ -123,7 +131,7 @@ no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
 - `vibrato` is **Japanese-only in practice**: its ipadic lexicon fragments Chinese mid-word
   (知识图谱 → 知/识图; query 数据库 misses) and Korean emits ZERO units (ipadic has no Hangul
   category; tokens are dropped). Measured in
-  `crates/text-analyzer-spike/tests/cross_language.rs` — `ANALYZER vibrato` must not be selected
+  `crates/text-analyzer-spike/tests/cross_language.rs` — `ANALYZER mecab` must not be selected
   for Chinese or Korean content.
 - Korean is the weakest language today under BOTH pipelines: `unicode_bigram` keeps whole eojeol
   tokens with particles attached (학교에서 never matches a 학교 query), vibrato drops Hangul
@@ -145,23 +153,23 @@ construction (pure text functions). It does NOT deliver dictionary-grade lemmas 
 走る-grade recall remains ANALYZER_ID=2's role), Chinese word boundaries (bigram remains the
 Chinese strategy), or Korean irregular-verb completeness beyond enumerated tables. Korean
 조사 stripping + English Porter + Japanese stem FSA are small enough to land as one plan
-(working title 0332); the quality upgrade path for Korean stays a vibrato × mecab-ko-dic
+(working title 0332); the quality upgrade path for Korean stays a morph-dict × mecab-ko-dic
 spike (reusing the 0331 region-16 dictionary machinery if a dictionary-based analyzer is
 ever adopted).
 
-**Vibrato-integrated composite (refined proposal, production-precedented):** the composite
+**Dictionary-integrated composite (refined proposal, production-precedented):** the composite
 can carry a DICTIONARY-BACKED layer — the charabia pattern (Meilisearch's production
 tokenizer) dispatches per detected script/language to specialized segmenters including
 dictionary-backed ones (Japanese = lindera + IPA-dict, Korean = lindera KO-dict, Chinese =
 jieba; see the charabia README language table). The Gleaph shape: script-run chunking over
-the NFKC pre-pass, then {kanji∪kana} chunks → vibrato (ipadic lemma, the 0331 dictionary
+the NFKC pre-pass, then {kanji∪kana} chunks → the mecab engine (ipadic lemma, the 0334 dictionary
 machinery), Hangul chunks → 조사 strip layer, Latin chunks → Porter, pure-Han chunks → bigram
-(fundamental zh/ja ambiguity: bigram is safe for both; dual-emission of vibrato+bigram units
+(fundamental zh/ja ambiguity: bigram is safe for both; dual-emission of mecab+bigram units
 is the quality option at ~2× Han postings). Consistency holds because index-time and
 query-time run the same composite; per-chunk vibrato loses sentence context across script
 boundaries (accepted, same as charabia). Implementation deltas vs the pure-rule composite:
 generalize the 0331 region-16 dictionary machinery from id-2-specific to "any dictionary-
-carrying analyzer" and include the vibrato engine (228 KB, getrandom-free — verified). The
+carrying analyzer" and include the morph-dict engine (~100 KB wasm layer, getrandom-free — verified). The
 id-2 pure-Japanese analyzer coexists: the composite is the multilingual single-index answer;
 per-language indexes remain the precision-maximal shape (the ES multi-fields pattern is the
 N-index equivalent).

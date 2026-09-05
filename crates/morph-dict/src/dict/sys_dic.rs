@@ -14,8 +14,8 @@
 //!    out a borrowed slice, so the NUL scan is re-expressed as bounded chunked reads.
 
 use crate::byteimage::ByteImage;
-use crate::dict::double_array_trie::DoubleArrayTrie;
 use crate::dict::DictionaryEntry;
+use crate::dict::double_array_trie::DoubleArrayTrie;
 use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use std::sync::Arc;
@@ -28,8 +28,6 @@ pub const DIC_VERSION: u32 = 102;
 
 /// Header size: 10 * u32 (40 bytes) + 32 bytes charset = 72 bytes
 pub const HEADER_SIZE: usize = 72;
-
-/// Maximum number of results from common prefix search
 
 /// Feature-free lookup result: the lattice hot path never touches the feature region
 /// (residency lever — features are read only for the Viterbi-optimal path at emission).
@@ -157,11 +155,8 @@ impl SysDic {
         }
 
         let trie_offset = HEADER_SIZE as u64;
-        let trie = DoubleArrayTrie::from_image(
-            std::sync::Arc::clone(&image),
-            trie_offset,
-            da_size,
-        )?;
+        let trie =
+            DoubleArrayTrie::from_image(std::sync::Arc::clone(&image), trie_offset, da_size)?;
         let token_offset = (HEADER_SIZE + da_size) as u64;
         let tokens_count = token_size / Token::SIZE;
         let feature_offset = (HEADER_SIZE + da_size + token_size) as u64;
@@ -294,13 +289,13 @@ impl SysDic {
         };
         // Contiguous fast path (whole-image mode over a heap copy): scan the NUL
         // terminator directly instead of chunked reads.
-        if self.feature_image.is_none() {
-            if let Some(slice) = image.as_contiguous() {
-                let start = pos as usize;
-                let end = (self.feature_offset as usize + self.feature_size).min(slice.len());
-                if let Some(nul) = slice[start..end].iter().position(|&b| b == 0) {
-                    return String::from_utf8_lossy(&slice[start..start + nul]).into_owned();
-                }
+        if self.feature_image.is_none()
+            && let Some(slice) = image.as_contiguous()
+        {
+            let start = pos as usize;
+            let end = (self.feature_offset as usize + self.feature_size).min(slice.len());
+            if let Some(nul) = slice[start..end].iter().position(|&b| b == 0) {
+                return String::from_utf8_lossy(&slice[start..start + nul]).into_owned();
             }
         }
         let mut chunk = [0u8; 256];
@@ -493,7 +488,9 @@ impl SysDic {
     /// structure, e.g. directly over a container-backed image). `image` covers the
     /// WHOLE dictionary; for a resident-prefix image use
     /// [`SysDic::header_feature_offset_for`] with the full dictionary size.
-    pub fn header_feature_offset(image: &dyn crate::byteimage::ByteImage) -> crate::error::Result<u64> {
+    pub fn header_feature_offset(
+        image: &dyn crate::byteimage::ByteImage,
+    ) -> crate::error::Result<u64> {
         let len = image.len();
         Self::header_feature_offset_for(image, len)
     }

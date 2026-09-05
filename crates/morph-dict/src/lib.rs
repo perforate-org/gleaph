@@ -12,17 +12,21 @@
 //! ([`byteimage::OffsetImage`]), or a stable-memory-backed image from the companion
 //! `ic-morph-dict` adapter. Nothing in this crate assumes IC — it is std-only.
 //!
-//! # Container format (`MORPHDICT1`)
+//! # Container format (`MPD`)
 //!
 //! A container bundles the four MeCab-format images (sys.dic, unk.dic, matrix.bin,
 //! char.bin) into ONE addressable byte string so a single stable-memory region can back
-//! the whole dictionary and open-time validation is structural:
+//! the whole dictionary and open-time validation is structural. The magic identifies the
+//! format FAMILY (stable across revisions); the layout version byte identifies the layout
+//! revision — readers fail closed on an unknown version (the fix is "rebuild the container
+//! and re-upload": dictionaries are re-uploadable, no migration exists or is planned).
 //!
 //! ```text
 //! offset  size  field
-//! 0       10    magic b"MORPHDICT1"
-//! 10      4     entry_count: u32 LE
-//! 14      ...   entry table, entry_count times:
+//! 0       3     magic b"MPD"
+//! 3       1     layout_version: u8 (current: 1)
+//! 4       4     entry_count: u32 LE
+//! 8       ...   entry table, entry_count times:
 //!                 1    name_len: u8
 //!                 n    name: UTF-8 bytes
 //!                 8    offset: u64 LE (from container start)

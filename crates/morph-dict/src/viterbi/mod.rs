@@ -50,7 +50,7 @@ impl<'a> ViterbiSolver<'a> {
         }
 
         let entries = self.forward_pass(lattice);
-        let path = Self::backward_pass(&self.dictionary, &entries, lattice)?;
+        let path = Self::backward_pass(self.dictionary, &entries, lattice)?;
         Ok(path)
     }
 

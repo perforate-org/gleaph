@@ -159,10 +159,7 @@ impl CharDef {
             *cell = LittleEndian::read_u32(&bytes[i * 4..i * 4 + 4]);
         }
 
-        Ok(Self {
-            map,
-            categories,
-        })
+        Ok(Self { map, categories })
     }
 
     /// Get CharInfo for a Unicode code point (one 4-byte read)

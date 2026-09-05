@@ -1,7 +1,7 @@
 //! Synthetic MeCab-format dictionary fixtures, built PROGRAMMATICALLY (no 50 MB
 //! artifacts in CI): a valid sys.dic/unk.dic/matrix.bin/char.bin quartet exercising
 //! lemma emission, the drop set, unknown-word handling, determinism/idempotence, the
-//! SplitImage residency split, and the MORPHDICT1 container round-trip.
+//! SplitImage residency split, and the MPD container round-trip.
 //!
 //! The double-array trie is built with `yada` (same Darts unit layout: LE i32 base +
 //! u32 check, leaf value encoded as `-base - 1` — the fixture asserts this equivalence
@@ -10,10 +10,10 @@
 use morph_dict::byteimage::{ByteImage, HeapImage, SplitImage};
 use morph_dict::container;
 mod darts_fixture;
-use sha2::Digest;
+use morph_dict::Analyzer;
 use morph_dict::dict::sys_dic::SysDic;
 use morph_dict::profile::DictionaryProfile;
-use morph_dict::Analyzer;
+use sha2::Digest;
 
 /// One dictionary entry: surface key + its MeCab token fields + feature string.
 struct Entry {
@@ -28,14 +28,13 @@ struct Entry {
 ///
 /// File layout (matches the vendored `SysDic::from_image` parser):
 /// header(72B) | double-array trie | token array (16B each) | feature strings.
-fn build_mecab_dic(
-    dict_type: u32,
-    entries: &[Entry],
-    left_size: u16,
-    right_size: u16,
-) -> Vec<u8> {
-    assert!(entries.windows(2).all(|w| w[0].key.as_bytes() <= w[1].key.as_bytes()),
-        "entries must be sorted byte-wise for the DAT builder");
+fn build_mecab_dic(dict_type: u32, entries: &[Entry], left_size: u16, right_size: u16) -> Vec<u8> {
+    assert!(
+        entries
+            .windows(2)
+            .all(|w| w[0].key.as_bytes() <= w[1].key.as_bytes()),
+        "entries must be sorted byte-wise for the DAT builder"
+    );
 
     // Token array + feature blob.
     let mut tokens = Vec::new();
@@ -54,11 +53,9 @@ fn build_mecab_dic(
 
     // Trie: darts value = (token_start << 8) | token_count.
     let mut trie_entries = Vec::new();
-    let mut token_start = 0usize;
-    for e in entries {
+    for (token_start, e) in entries.iter().enumerate() {
         // Count how many consecutive entries share the key (same surface, multiple tokens).
         trie_entries.push((e.key.as_bytes().to_vec(), ((token_start << 8) as u32) | 1));
-        token_start += 1;
     }
     // NOTE: multi-token keys are not exercised by the synthetic fixture (count=1 per key).
     let dat = darts_fixture::build_double_array(&trie_entries);
@@ -112,7 +109,11 @@ struct TokenRaw {
 /// char.bin: u32 csize | csize × 32B category names | 0xFFFF × 4B packed CharInfo.
 ///
 /// Packed CharInfo: type 18 bits | default_type 8 | length 4 | group 1 | invoke 1.
-fn build_char_bin(categories: &[&str], char_defaults: &[(u32, u8)], flags: &[(u8, bool, bool, u8)]) -> Vec<u8> {
+fn build_char_bin(
+    categories: &[&str],
+    char_defaults: &[(u32, u8)],
+    flags: &[(u8, bool, bool, u8)],
+) -> Vec<u8> {
     let csize = categories.len() as u32;
     let mut out = Vec::new();
     out.extend_from_slice(&csize.to_le_bytes());
@@ -137,7 +138,7 @@ fn build_char_bin(categories: &[&str], char_defaults: &[(u32, u8)], flags: &[(u8
     // Everything else defaults to category 0 (DEFAULT).
     let default_packed = (0u32) << 18;
     for i in 0..0xFFFF {
-        if &map[i * 4..i * 4 + 4] == &[0, 0, 0, 0] {
+        if map[i * 4..i * 4 + 4] == [0, 0, 0, 0] {
             map[i * 4..i * 4 + 4].copy_from_slice(&default_packed.to_le_bytes());
         }
     }
@@ -284,7 +285,7 @@ fn split_image_matches_whole_image_and_classifies_reads() {
             boundary,
         )
     };
-    let split_image = make_split();
+    let _split_image = make_split();
     let via_split = SysDic::from_image(std::sync::Arc::new(make_split())).unwrap();
     let stats_image = make_split();
     let stats_image = std::sync::Arc::new(stats_image);
@@ -314,12 +315,21 @@ fn split_image_matches_whole_image_and_classifies_reads() {
         let _ = stats_dic.common_prefix_search_lite(key);
     }
     let stats = stats_image.stats();
-    assert!(stats.prefix_calls > 0, "trie/token reads hit the resident prefix");
-    assert_eq!(stats.suffix_bytes, 0, "no feature-region reads during lookups");
+    assert!(
+        stats.prefix_calls > 0,
+        "trie/token reads hit the resident prefix"
+    );
+    assert_eq!(
+        stats.suffix_bytes, 0,
+        "no feature-region reads during lookups"
+    );
     // Feature reads flow to the suffix once get_feature is used.
     if let Some(tok) = stats_dic.get_token(0) {
         let _ = stats_dic.get_feature(&tok);
-        assert!(stats_image.stats().suffix_bytes > 0, "feature reads hit the lazy suffix");
+        assert!(
+            stats_image.stats().suffix_bytes > 0,
+            "feature reads hit the lazy suffix"
+        );
     }
 }
 
@@ -338,11 +348,7 @@ fn container_round_trip_and_validation() {
         assert_eq!(e.sha256, sha.finalize().as_slice(), "sha256 of {name}");
         assert_eq!(
             e.sha256,
-            container::attest(
-                &img,
-                e.offset,
-                e.len
-            ),
+            container::attest(&img, e.offset, e.len),
             "attest re-derivation for {name}"
         );
     }
@@ -366,7 +372,10 @@ fn long_line_fails_closed() {
     let a = analyzer_from_container(synthetic_images());
     let long_line: String = "走".repeat(1024 * 1024 + 1);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.analyze(&long_line)));
-    assert!(result.is_err(), "a >max_line_bytes line must fail closed, not hang");
+    assert!(
+        result.is_err(),
+        "a >max_line_bytes line must fail closed, not hang"
+    );
 }
 
 // Silence the unused-field warning on the synthetic builder helper.

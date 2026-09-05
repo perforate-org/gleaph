@@ -40,12 +40,10 @@ impl DictionaryProfile {
     pub fn japanese_ipadic() -> Self {
         Self {
             lemma_column: Some(6),
-            drop_categories: [
-                "助詞", "助動詞", "記号", "接頭辞", "接尾辞", "フィラー",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            drop_categories: ["助詞", "助動詞", "記号", "接頭辞", "接尾辞", "フィラー"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             max_lookup_bytes: 64,
             unk_max_group_bytes: 64,
             max_line_bytes: 1024 * 1024,

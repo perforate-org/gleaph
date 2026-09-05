@@ -8,7 +8,7 @@
 #![allow(clippy::cast_precision_loss)]
 
 /// Unicode normalization form
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NormForm {
     /// No normalization
     None,
@@ -17,15 +17,10 @@ pub enum NormForm {
     /// Canonical decomposition (NFD)
     Nfd,
     /// Compatibility decomposition followed by canonical composition (NFKC)
+    #[default]
     Nfkc,
     /// Compatibility decomposition (NFKD)
     Nfkd,
-}
-
-impl Default for NormForm {
-    fn default() -> Self {
-        Self::Nfkc
-    }
 }
 
 /// Character width for conversion
@@ -182,24 +177,24 @@ impl Normalizer {
     /// Convert a single character's width
     fn convert_char_width(&self, c: char) -> char {
         // Full-width ASCII digits to half-width
-        if self.halfwidth_numbers {
-            if let Some(half) = fullwidth_digit_to_half(c) {
-                return half;
-            }
+        if self.halfwidth_numbers
+            && let Some(half) = fullwidth_digit_to_half(c)
+        {
+            return half;
         }
 
         // Full-width ASCII letters to half-width
-        if self.halfwidth_ascii {
-            if let Some(half) = fullwidth_alpha_to_half(c) {
-                return half;
-            }
+        if self.halfwidth_ascii
+            && let Some(half) = fullwidth_alpha_to_half(c)
+        {
+            return half;
         }
 
         // Half-width katakana to full-width
-        if self.fullwidth_katakana {
-            if let Some(full) = halfwidth_kana_to_full(c) {
-                return full;
-            }
+        if self.fullwidth_katakana
+            && let Some(full) = halfwidth_kana_to_full(c)
+        {
+            return full;
         }
 
         c

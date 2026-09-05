@@ -11,7 +11,7 @@
 //! `analyze(units.join(" ")) == analyze(input)` for every fixture (whitespace surface
 //! tokens are skipped, so re-analyzing the space-joined units reproduces the units).
 //!
-//! Dictionary lifecycle (plan 0334): region 16 carries the MORPHDICT1 container
+//! Dictionary lifecycle (plan 0334): region 16 carries the MPD container
 //! (magic + entry table {name, offset, len, sha256} + the four MeCab-format images:
 //! sys.dic + unk.dic + matrix.bin + char.bin, 52,930,923 bytes for ipadic 2.7.0 utf8).
 //! Open/finalize rebind = structural validation + resident-set memcpy over batched
@@ -25,10 +25,9 @@ use std::sync::Arc;
 
 use unicode_normalization::UnicodeNormalization;
 
-
+use morph_dict::DictionaryProfile;
 #[cfg(test)]
 use morph_dict::byteimage::{ByteImage, HeapImage};
-use morph_dict::DictionaryProfile;
 
 thread_local! {
     /// The pinned analyzer over the finalized MeCab-format container. `None` until the
@@ -48,7 +47,9 @@ fn profile() -> DictionaryProfile {
 ///
 /// Fails closed on any validation miss — the caller must not record Finalized state
 /// (and must not open) for bytes that fail validation.
-pub fn load_dictionary_from_image<M>(region_image: ic_morph_dict::CanisterStableImage<M>) -> Result<(), String>
+pub fn load_dictionary_from_image<M>(
+    region_image: ic_morph_dict::CanisterStableImage<M>,
+) -> Result<(), String>
 where
     M: ic_stable_structures::Memory + 'static,
 {
@@ -169,13 +170,25 @@ mod tests {
             eprintln!("SKIPPED (mecab dictionary not fetched; see pocket-ic-tests resources)");
             return;
         };
-        let fixtures = ["", "走った", "昨日、公園を全力で走った。", "Hello, World!", "㍿"];
+        let fixtures = [
+            "",
+            "走った",
+            "昨日、公園を全力で走った。",
+            "Hello, World!",
+            "㍿",
+        ];
         for fixture in fixtures {
             let first = analyze(fixture);
             let second = analyze(fixture);
-            assert_eq!(first, second, "analysis of {fixture:?} must be deterministic");
+            assert_eq!(
+                first, second,
+                "analysis of {fixture:?} must be deterministic"
+            );
             let replay = analyze(&first.join(" "));
-            assert_eq!(replay, first, "re-analysis of {fixture:?} must be idempotent");
+            assert_eq!(
+                replay, first,
+                "re-analysis of {fixture:?} must be idempotent"
+            );
         }
     }
 }

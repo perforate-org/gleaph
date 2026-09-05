@@ -18,6 +18,11 @@ pub trait ByteImage: Send + Sync {
     /// Total image size in bytes.
     fn len(&self) -> u64;
 
+    /// Whether the image is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Read exactly `buf.len()` bytes at `offset`.
     ///
     /// # Panics
@@ -150,11 +155,7 @@ pub struct SplitImage {
 impl SplitImage {
     /// `prefix` covers image offsets `[0, boundary)`; `suffix` must cover the WHOLE
     /// image (absolute offsets), e.g. an [`OffsetImage`] over the container entry.
-    pub fn new(
-        prefix: Arc<dyn ByteImage>,
-        suffix: Arc<dyn ByteImage>,
-        boundary: u64,
-    ) -> Self {
+    pub fn new(prefix: Arc<dyn ByteImage>, suffix: Arc<dyn ByteImage>, boundary: u64) -> Self {
         Self {
             prefix,
             suffix,
@@ -210,7 +211,8 @@ impl ByteImage for SplitImage {
             stats.suffix_bytes += (buf.len() - head) as u64;
             drop(stats);
             self.prefix.read_exact_at(offset, &mut buf[..head]);
-            self.suffix.read_exact_at(offset + head as u64, &mut buf[head..]);
+            self.suffix
+                .read_exact_at(offset + head as u64, &mut buf[head..]);
         }
     }
 }

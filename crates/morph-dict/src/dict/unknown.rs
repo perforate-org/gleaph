@@ -8,9 +8,9 @@
 //! (delegates to the refactored `SysDic`).
 
 use crate::byteimage::ByteImage;
-use crate::dict::sys_dic::SysDic;
-use crate::dict::DictionaryEntry;
 use crate::dict::DictEntryLite;
+use crate::dict::DictionaryEntry;
+use crate::dict::sys_dic::SysDic;
 use crate::error::Result;
 use std::sync::Arc;
 
@@ -35,9 +35,10 @@ impl UnknownDictionary {
 
         // Verify this is actually an unknown dictionary (type = 2)
         if inner.dict_type() != super::MECAB_UNK_DIC {
-            return Err(crate::error::Error::InvalidDictionaryFormat(
-                format!("Expected unknown dictionary (type=2), got type={}", inner.dict_type()),
-            ));
+            return Err(crate::error::Error::InvalidDictionaryFormat(format!(
+                "Expected unknown dictionary (type=2), got type={}",
+                inner.dict_type()
+            )));
         }
 
         Ok(Self { inner })
@@ -103,5 +104,4 @@ impl UnknownDictionary {
             out.push(e);
         }
     }
-
 }

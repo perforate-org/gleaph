@@ -64,7 +64,9 @@ fn vibrato() -> &'static text_analyzer_spike::vibrato_candidate::Analyzer {
     static A: OnceLock<text_analyzer_spike::vibrato_candidate::Analyzer> = OnceLock::new();
     A.get_or_init(|| {
         text_analyzer_spike::vibrato_candidate::Analyzer::from_zstd_file(
-            Path::new(RESOURCES_DIR).join("vibrato/system.dic.zst").as_path(),
+            Path::new(RESOURCES_DIR)
+                .join("vibrato/system.dic.zst")
+                .as_path(),
         )
         .expect("vibrato dictionary load")
     })
@@ -74,7 +76,10 @@ fn vibrato() -> &'static text_analyzer_spike::vibrato_candidate::Analyzer {
 fn mecrab_lemma_recall_hashitta() {
     let units = mecrab().analyze("走った");
     println!("mecrab 走った -> {units:?}");
-    assert!(units.iter().any(|u| u == "走る"), "mecrab: 走った must yield 走る lemma, got {units:?}");
+    assert!(
+        units.iter().any(|u| u == "走る"),
+        "mecrab: 走った must yield 走る lemma, got {units:?}"
+    );
     let units_doc = mecrab().analyze("昨日、公園を全力で走った。");
     assert!(
         units_doc.iter().any(|u| u == "走る"),
@@ -91,7 +96,11 @@ fn mecrab_determinism() {
         "走った走った走った",
     ];
     for s in samples {
-        assert_eq!(mecrab().analyze(s), mecrab().analyze(s), "not deterministic on {s:?}");
+        assert_eq!(
+            mecrab().analyze(s),
+            mecrab().analyze(s),
+            "not deterministic on {s:?}"
+        );
     }
 }
 
@@ -106,7 +115,10 @@ fn mecrab_idempotence() {
         let units = mecrab().analyze(s);
         let joined = units.join(" ");
         let re = mecrab().analyze(&joined);
-        assert_eq!(re, units, "mecrab: re-analysis of joined units must be a fixed point; input={s:?} units={units:?} re={re:?}");
+        assert_eq!(
+            re, units,
+            "mecrab: re-analysis of joined units must be a fixed point; input={s:?} units={units:?} re={re:?}"
+        );
     }
 }
 

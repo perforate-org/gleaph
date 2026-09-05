@@ -24,12 +24,12 @@
 //! | 13 | dense vector of `TermEntrySlot` | term_id → canonical term string (arena ref) + live df |
 //! | 14 | `Cell<Option<backfill::BackfillRegistration>>` | text backfill build identity + lifecycle phase (`crate::backfill`) |
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
-//! | 16 | raw contiguous bytes | ANALYZER_ID=2 MORPHDICT1 container (MeCab-format ipadic 4-image set, plain appends during upload, see "Analyzer-2 dictionary") |
+//! | 16 | raw contiguous bytes | ANALYZER_ID=2 MPD container (MeCab-format ipadic 4-image set, plain appends during upload, see "Analyzer-2 dictionary") |
 //!
 //! ## Analyzer-2 dictionary (plan 0331, container swap plan 0334)
 //!
 //! The mecab engine keeps its ipadic dictionary OUT of the wasm: region 16 is a PLAIN
-//! byte string carrying the MORPHDICT1 container (magic + entry table {name, offset,
+//! byte string carrying the MPD container (magic + layout version + entry table {name, offset,
 //! len, sha256} + the four MeCab-format images: sys.dic + unk.dic + matrix.bin +
 //! char.bin, 52,930,923 bytes for ipadic 2.7.0 utf8), appended in controller-supplied
 //! chunks (`MAX_DICT_CHUNK_BYTES` per call, raw appends at the running offset). The
@@ -96,7 +96,6 @@ mod arena;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-
 
 use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_linear_hash_map::StableLinearHashMap;
@@ -577,10 +576,7 @@ where
             header.layout_version
         );
         assert!(
-            matches!(
-                header.analyzer_id,
-                ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB
-            ),
+            matches!(header.analyzer_id, ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB),
             "text index meta carries unregistered analyzer id {}",
             header.analyzer_id
         );

@@ -6,10 +6,8 @@
 //! as a directed acyclic graph (DAG). Each node represents a potential
 //! word, and edges connect adjacent words.
 
-
-
+use crate::dict::{DictEntryLite, Dictionary, DictionaryEntry};
 use crate::error::Result;
-use crate::dict::{Dictionary, DictionaryEntry, DictEntryLite};
 
 /// A node in the lattice representing a potential word/token
 #[derive(Debug, Clone)]
@@ -155,7 +153,11 @@ impl<'a> Lattice<'a> {
     /// # Errors
     ///
     /// Returns an error if lattice construction fails.
-    pub fn build(text: &'a str, dict: &Dictionary, profile: &crate::profile::DictionaryProfile) -> Result<Self> {
+    pub fn build(
+        text: &'a str,
+        dict: &Dictionary,
+        profile: &crate::profile::DictionaryProfile,
+    ) -> Result<Self> {
         // Fail-closed line bound: the lattice is linear in the bounded-lookup regime
         // (see the per-position clamp below), but a pathological no-boundary line has
         // no place in an index pipeline — reject it loudly instead of hanging.
@@ -253,7 +255,8 @@ impl<'a> Lattice<'a> {
         let char_len = c.len_utf8();
 
         // 1) single-char candidate (with unk.dic entries; fallback default node)
-        dict.unknown.generate_entries_into(category, char_len, unk_buf);
+        dict.unknown
+            .generate_entries_into(category, char_len, unk_buf);
         let entries: &Vec<DictEntryLite> = unk_buf;
         if entries.is_empty() {
             let end_pos = pos + char_len;
@@ -331,10 +334,12 @@ impl<'a> Lattice<'a> {
         for entry in entries {
             let end = start + entry.length;
             if end <= text.len()
-                && !nodes_at[end + 1].iter().any(|n| n.start == start && n.end == end)
+                && !nodes_at[end + 1]
+                    .iter()
+                    .any(|n| n.start == start && n.end == end)
             {
                 // Feature resolved at emission via word_id (unknown dict entry).
-                let node = LatticeNode::unknown(text, start, entry.length, &entry, String::new());
+                let node = LatticeNode::unknown(text, start, entry.length, entry, String::new());
                 nodes_at[end + 1].push(node);
             }
         }

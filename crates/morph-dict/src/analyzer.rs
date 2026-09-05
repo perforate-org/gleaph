@@ -1,6 +1,6 @@
 //! The morph-dict analyzer: container-backed dictionary + profile-driven unit emission.
 //!
-//! `open` builds the analyzer from a MORPHDICT1 container image with the measurement-
+//! `open` builds the analyzer from a MPD container image with the measurement-
 //! driven residency split: matrix.bin + char.bin + unk.dic and sys.dic's trie/word-params
 //! region are copied to the heap (the random 2–16 B hot path, syscall-hostile); sys.dic's
 //! feature-string region stays LAZY over the supplied container image (output-path reads
@@ -39,7 +39,7 @@ impl Analyzer {
         container::validate(container)
     }
 
-    /// Builds the analyzer over a MORPHDICT1 container image with the default residency
+    /// Builds the analyzer over a MPD container image with the default residency
     /// policy: matrix.bin + char.bin + unk.dic fully resident, sys.dic split at its
     /// feature-region boundary (resident prefix = header + trie + word params; feature
     /// region lazy over `container`). The container image must stay alive (it backs the
@@ -53,8 +53,7 @@ impl Analyzer {
 
         // Feature-region boundary from the sys.dic header alone (no materialization).
         let sys_view = OffsetImage::new(Arc::clone(&container), sys.offset, sys.len);
-        let feature_offset =
-            crate::dict::sys_dic::SysDic::header_feature_offset(&sys_view)?;
+        let feature_offset = crate::dict::sys_dic::SysDic::header_feature_offset(&sys_view)?;
 
         // Residency policy: sys.dic's header + trie + word-params region is copied to
         // the heap (random 2–16 B hot path, syscall-hostile, contiguous fast path); the
@@ -160,11 +159,7 @@ impl Analyzer {
                 if self.profile.drops(pos) {
                     continue;
                 }
-                match self
-                    .profile
-                    .lemma_column
-                    .and_then(|c| columns.nth(c - 1))
-                {
+                match self.profile.lemma_column.and_then(|c| columns.nth(c - 1)) {
                     Some(base) if base != "*" && !base.is_empty() => out.push(base.to_string()),
                     _ => out.push(node.surface.to_string()),
                 }

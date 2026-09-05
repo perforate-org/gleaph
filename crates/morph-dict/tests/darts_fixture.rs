@@ -37,7 +37,13 @@ fn insert_keys(keys: &[(Vec<u8>, u32)]) -> Node {
             node.children.iter().all(|(c, _)| *c != 0),
             "duplicate key in fixture"
         );
-        node.children.push((0, Node { value: Some(*value), ..Default::default() }));
+        node.children.push((
+            0,
+            Node {
+                value: Some(*value),
+                ..Default::default()
+            },
+        ));
     }
     root
 }
