@@ -17,7 +17,14 @@ sudachi = ["dep:sudachi"]
 # the lindera 6.0 system-dictionary API is path-only — recorded in plan 0330).
 lindera = ["dep:lindera", "dep:lindera-ipadic"]
 
+# Candidate E (plan 0333 spike): vendored MeCrab dict layer over a ByteImage parameter
+mecrab-dict = ["dep:byteorder", "dep:thiserror", "dep:yada"]
+
 [dependencies]
+byteorder = { version = "1.5", optional = true }
+thiserror = { version = "2.0", optional = true }
+yada = { version = "0.5", optional = true }
+
 unicode-normalization = "0.1"
 unicode-segmentation = "1.12"
 anyhow = "1"
@@ -31,3 +38,14 @@ ruzstd = { version = "0.7", optional = true }
 sudachi = { version = "=0.6.11", package = "suiko-sudachi", optional = true }
 lindera = { version = "=6.0.0", optional = true, features = ["embed-ipadic"] }
 lindera-ipadic = { version = "=6.0.0", optional = true }
+[[test]]
+name = "mecrab_parity"
+required-features = ["vibrato", "mecrab-dict"]
+
+[[test]]
+name = "mecrab_measure"
+required-features = ["vibrato", "mecrab-dict"]
+
+[[test]]
+name = "cross_language"
+required-features = ["vibrato"]

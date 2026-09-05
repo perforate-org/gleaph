@@ -10604,13 +10604,16 @@ name = "text-analyzer-spike"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byteorder",
  "lindera",
  "lindera-ipadic",
  "ruzstd",
  "suiko-sudachi",
+ "thiserror 2.0.20",
  "unicode-normalization",
  "unicode-segmentation",
  "vibrato",
+ "yada",
 ]
 
 [[package]]

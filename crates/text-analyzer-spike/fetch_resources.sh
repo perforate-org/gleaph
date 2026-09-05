@@ -43,4 +43,18 @@ if [ ! -d lindera/lindera-ipadic ]; then
   rm -f /tmp/lindera-ipadic.zip
 fi
 
-echo "resources ready:"; du -sh vibrato sudachi lindera
+# ── Candidate E (plan 0333): MeCab-format ipadic 2.7.0-20070801 binary images ─────────
+# Four images: sys.dic, unk.dic, matrix.bin, char.bin (utf8 charset, DIC_VERSION 102).
+# Source: Homebrew bottle mecab-ipadic 2.7.0-20070801 (Cellar/lib/mecab/dic/ipadic);
+# equivalent upstream source: mecab-ipadic 2.7.0 CSVs compiled with mecab-dict-index
+# (MeCrab itself ships NO prebuilt artifacts and its builder is Wikidata-only — recorded
+# in plan 0333). License: mecab-ipadic BSD + acknowledgment (see resources/vibrato/COPYING).
+if [ ! -f mecrab/sys.dic ]; then
+  mkdir -p mecrab
+  brew install -q mecab-ipadic 2>/dev/null || true
+  for f in sys.dic unk.dic matrix.bin char.bin; do
+    cp "/opt/homebrew/lib/mecab/dic/ipadic/$f" mecrab/
+  done
+fi
+
+echo "resources ready:"; du -sh vibrato sudachi lindera mecrab

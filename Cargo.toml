@@ -34,6 +34,7 @@ members = [
     "crates/ic-stable-vec-deque",
     "crates/ic-stable-linear-hash-map",
     "crates/ic-stable-text-postings",
+    "crates/text-analyzer-spike",
     "crates/text-canister",
     "crates/text-index-fts5-arm",
     "crates/index-ddl",

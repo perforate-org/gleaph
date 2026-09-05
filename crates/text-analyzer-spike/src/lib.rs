@@ -26,6 +26,8 @@
 pub mod harness;
 #[cfg(feature = "lindera")]
 pub mod lindera_candidate;
+#[cfg(feature = "mecrab-dict")]
+pub mod mecrab_vendor;
 #[cfg(feature = "rule")]
 pub mod rule;
 #[cfg(feature = "sudachi")]
@@ -95,6 +97,21 @@ pub unsafe extern "C" fn spike_probe(ptr: *const u8, len: usize) -> usize {
     #[cfg(feature = "vibrato")]
     {
         if let Ok(a) = vibrato_candidate::Analyzer::from_bytes(&[]) {
+            total += a.analyze(text).len();
+        }
+    }
+    #[cfg(feature = "mecrab-dict")]
+    {
+        // Reachable call path keeps the vendored MeCrab dict layer linked for wasm
+        // size accounting; empty images error at load (magic/size validation), which
+        // is fine for probing — at landing the four images arrive from stable memory.
+        use std::sync::Arc;
+        if let Ok(a) = mecrab_vendor::MecrabAnalyzer::from_images(
+            Arc::new(mecrab_vendor::byteimage::HeapImage::from_vec(Vec::new())),
+            Arc::new(mecrab_vendor::byteimage::HeapImage::from_vec(Vec::new())),
+            Arc::new(mecrab_vendor::byteimage::HeapImage::from_vec(Vec::new())),
+            Arc::new(mecrab_vendor::byteimage::HeapImage::from_vec(Vec::new())),
+        ) {
             total += a.analyze(text).len();
         }
     }
