@@ -2,8 +2,9 @@
 
 use crate::types::{
     ArtifactAuditEntry, ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata,
-    ArtifactUpload, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
-    ReleaseId, ReleaseManifest,
+    ArtifactUpload, DictCatalogAuditEntry, DictCatalogEntry, DictCatalogKey, DictChunk,
+    DictChunkKey, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey, ReleaseId,
+    ReleaseManifest,
 };
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
@@ -48,6 +49,13 @@ pub(crate) const PROVISION_ARTIFACT_AUDIT_LOG: MemoryId = MemoryId::new(11);
 // ADR 0036 Slice 8a: internal artifact storage-id counter (MemoryId 12).
 pub(crate) const PROVISION_ARTIFACT_STORAGE_ID: MemoryId = MemoryId::new(12);
 
+// Plan 0335: versioned dictionary catalog (MemoryId 13) and its ≤1 MiB compressed chunk
+// appends (MemoryId 14). Chunk rows key on the fixed-length DictChunkKey, mirroring the
+// ADR 0036 chunk-store shape.
+pub(crate) const PROVISION_DICT_CATALOG: MemoryId = MemoryId::new(13);
+pub(crate) const PROVISION_DICT_CHUNKS: MemoryId = MemoryId::new(14);
+pub(crate) const PROVISION_DICT_CATALOG_AUDIT_LOG: MemoryId = MemoryId::new(15);
+
 // Deployment grants: the set of principals authorized to request issuance (deployment = issuer).
 pub(crate) type StableDeploymentGrantSet = StableBTreeSet<Principal, Memory>;
 pub(crate) type StableJobByRequestMap =
@@ -69,6 +77,11 @@ pub(crate) type StableActiveReleaseCell = StableCell<Option<ReleaseId>, Memory>;
 
 pub(crate) type StableArtifactAuditLogMap =
     StableBTreeMap<(Principal, u64), ArtifactAuditEntry, Memory>;
+
+pub(crate) type StableDictCatalogMap = StableBTreeMap<DictCatalogKey, DictCatalogEntry, Memory>;
+pub(crate) type StableDictChunksMap = StableBTreeMap<DictChunkKey, DictChunk, Memory>;
+pub(crate) type StableDictAuditLogMap =
+    StableBTreeMap<(Principal, u64), DictCatalogAuditEntry, Memory>;
 
 pub(crate) fn init_deployment_grants() -> StableDeploymentGrantSet {
     StableBTreeSet::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_GRANTS)))
@@ -122,4 +135,18 @@ pub(crate) fn init_active_release() -> StableActiveReleaseCell {
 
 pub(crate) fn init_artifact_audit_log() -> StableArtifactAuditLogMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ARTIFACT_AUDIT_LOG)))
+}
+
+pub(crate) fn init_dict_catalog() -> StableDictCatalogMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_DICT_CATALOG)))
+}
+
+pub(crate) fn init_dict_chunks() -> StableDictChunksMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_DICT_CHUNKS)))
+}
+
+pub(crate) fn init_dict_audit_log() -> StableDictAuditLogMap {
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_DICT_CATALOG_AUDIT_LOG)),
+    )
 }

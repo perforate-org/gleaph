@@ -231,6 +231,52 @@ type ProvisioningIntentKey = record {
 };
 // Arguments for `release_activate`.
 type ReleaseActivateArgs = record { release_id : text };
+// Composite stable key identifying one dictionary catalog entry: dictionary kind plus
+// dictionary version (first expected entry: kind "ipadic", version "2.7.0").
+type DictCatalogKey = record { kind : text; version : text };
+// Lifecycle of a dictionary catalog entry: Uploading -> Finalized. Finalized is terminal;
+// digest mismatch at finalize is fail-closed and leaves the entry unchanged.
+type DictCatalogState = variant { Finalized; Uploading };
+// Bytes-free status view returned by the dictionary catalog endpoints.
+type DictCatalogStatus = record {
+  raw_len : opt nat64;
+  raw_digest : opt nat;
+  key : DictCatalogKey;
+  state : DictCatalogState;
+  chunks_received : nat32;
+  compressed_len : nat64;
+  compressed_digest : opt nat;
+};
+// Arguments for `admin_upload_dict_catalog_chunk`.
+type DictCatalogUploadChunkArgs = record {
+  chunk_index : nat32;
+  key : DictCatalogKey;
+  bytes : blob;
+};
+// Arguments for `admin_finalize_dict_catalog`. compressed_digest is verified against the
+// accumulated stream; raw_digest/raw_len are pinned as uploader metadata (Provision never
+// decompresses).
+type DictCatalogFinalizeArgs = record {
+  compressed_digest : nat;
+  raw_digest : nat;
+  raw_len : nat64;
+  key : DictCatalogKey;
+};
+// Errors returned by dictionary catalog ingress methods.
+type DictCatalogError = variant {
+  AlreadyFinalized : DictCatalogKey;
+  ChunkOutOfOrder : record { expected_chunk_index : nat32; received : nat32 };
+  CompressedDigestMismatch : record { actual : nat; expected : nat };
+  CompressedTooLarge : record { len : nat64; max : nat64 };
+  ChunkReplayMismatch : record { chunk_index : nat32 };
+  ChunkTooLarge : record { len : nat64; max : nat32 };
+  EmptyChunk;
+  IdentifierTooLong : record { max : nat32 };
+  InvalidRawLen;
+  NotFound : DictCatalogKey;
+  ReplayMismatch;
+  Unauthorized;
+};
 // Return value of `release_activate` confirming the active release that was swapped.
 // The `previous_release_id` field records the active release before the swap and
 // enforces the non-retroactivity invariant: no job/receipt region is mutated.
@@ -289,26 +335,30 @@ type ResourceJobView = record {
   logical_resource : LogicalResource;
   canister_id : opt principal;
 };
-type Result = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
-type Result_1 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
-type Result_2 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_3 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_4 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_5 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_6 = variant { Ok : BootstrapAuthEntry; Err : UpsertDeploymentGrantError };
+type Result = variant { Ok : DictCatalogStatus; Err : DictCatalogError };
+type Result_1 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
+type Result_2 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
+type Result_3 = variant { Ok : ArtifactUpload; Err : ArtifactError };
+type Result_4 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_5 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_6 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_7 = variant { Ok : BootstrapAuthEntry; Err : UpsertDeploymentGrantError };
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
-  artifact_audit_history : () -> (Result) query;
+  artifact_audit_history : () -> (Result_1) query;
   artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query;
-  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_1);
-  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_2);
+  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_2);
+  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_3);
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
   query_job : (blob, text) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_3);
+  release_activate : (ReleaseActivateArgs) -> (Result_4);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_4);
-  release_publish : (ReleasePublishArgs) -> (Result_5);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_6);
+  release_install : (ReleaseInstallArgs) -> (Result_5);
+  release_publish : (ReleasePublishArgs) -> (Result_6);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_7);
+  admin_upload_dict_catalog_chunk : (DictCatalogUploadChunkArgs) -> (Result);
+  admin_finalize_dict_catalog : (DictCatalogFinalizeArgs) -> (Result);
+  admin_get_dict_catalog_status : (DictCatalogKey) -> (opt DictCatalogStatus) query;
 }

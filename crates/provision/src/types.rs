@@ -632,6 +632,229 @@ pub struct ReleaseActivateArgs {
     pub release_id: ReleaseId,
 }
 
+// === Dictionary catalog types (plan 0335 todo 1) ============================
+
+/// Max length of each identifier component (`kind`, `version`) of a `DictCatalogKey`
+/// (mirrors MAX_ARTIFACT_SEMANTIC_VERSION_LEN).
+pub const MAX_DICT_CATALOG_ID_LEN: usize = 128;
+/// Per-chunk append cap for `admin_upload_dict_catalog_chunk` (ADR 0087 1 MiB precedent).
+pub const MAX_DICT_CATALOG_CHUNK_LEN: usize = 1024 * 1024;
+/// Hard cap on one catalog entry's accumulated compressed bytes. The measured operating
+/// point is 10,900,552 B (ipadic 2.7.0, zstd-19); this bound is fail-closed headroom.
+pub const MAX_DICT_CATALOG_COMPRESSED_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Bounded per-principal audit log entries for dictionary catalog operations (R5 strict,
+/// mirrors ARTIFACT_AUDIT_LOG_PER_PRINCIPAL_CAP).
+pub const MAX_DICT_CATALOG_AUDIT_PER_PRINCIPAL_CAP: usize = 1024;
+
+/// Composite stable key identifying one dictionary catalog entry: dictionary kind plus
+/// dictionary version (first expected entry: kind "ipadic", version "2.7.0").
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct DictCatalogKey {
+    pub kind: String,
+    pub version: String,
+}
+
+/// Lifecycle of a dictionary catalog entry: Uploading -> Finalized. Finalized is terminal;
+/// digest mismatch at finalize is fail-closed and leaves the entry unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DictCatalogState {
+    Uploading,
+    Finalized,
+}
+
+/// Catalog entry metadata. The compressed bytes themselves live as `DictChunk` rows in the
+/// dedicated chunk region (ADR 0087 chunk-store shape) so the relay (todo 3) can re-stream
+/// them chunk by chunk without reassembling a megabyte-scale blob.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DictCatalogEntry {
+    pub key: DictCatalogKey,
+    pub state: DictCatalogState,
+    /// Number of appended chunks. During Uploading, the next append must target this index.
+    pub chunks_received: u32,
+    /// Accumulated compressed byte length across all appended chunks.
+    pub compressed_len: u64,
+    /// xxh3_128 over the entire compressed byte stream; pinned at finalize.
+    pub compressed_digest: Option<u128>,
+    /// xxh3_128 over the RAW container, computed off-band by the uploader and pinned as
+    /// metadata (Provision never decompresses).
+    pub raw_digest: Option<u128>,
+    pub raw_len: Option<u64>,
+    pub started_at_ns: u64,
+    pub finalized_at_ns: Option<u64>,
+}
+
+/// One ≤1 MiB compressed chunk of a dictionary catalog entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DictChunk {
+    pub bytes: Vec<u8>,
+}
+
+/// Stable key for one chunk of one catalog entry.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct DictChunkKey {
+    pub catalog_key: DictCatalogKey,
+    pub chunk_index: u32,
+}
+
+/// Bytes-free status view returned by the three dictionary catalog endpoints.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DictCatalogStatus {
+    pub key: DictCatalogKey,
+    pub state: DictCatalogState,
+    pub chunks_received: u32,
+    pub compressed_len: u64,
+    /// Pinned at finalize; None while Uploading.
+    pub compressed_digest: Option<u128>,
+    pub raw_digest: Option<u128>,
+    pub raw_len: Option<u64>,
+}
+
+/// Arguments for `admin_upload_dict_catalog_chunk`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DictCatalogUploadChunkArgs {
+    pub key: DictCatalogKey,
+    pub chunk_index: u32,
+    pub bytes: Vec<u8>,
+}
+
+/// Arguments for `admin_finalize_dict_catalog`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DictCatalogFinalizeArgs {
+    pub key: DictCatalogKey,
+    /// xxh3_128 over the entire compressed byte stream (uploader-computed, verified here).
+    pub compressed_digest: u128,
+    /// xxh3_128 over the RAW container (pinned as metadata, never verified here).
+    pub raw_digest: u128,
+    pub raw_len: u64,
+}
+
+/// Errors returned by dictionary catalog ingress methods.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DictCatalogError {
+    Unauthorized,
+    NotFound(DictCatalogKey),
+    IdentifierTooLong {
+        max: u32,
+    },
+    EmptyChunk,
+    ChunkTooLarge {
+        len: u64,
+        max: u32,
+    },
+    /// Append received at an index other than the next append position.
+    ChunkOutOfOrder {
+        expected_chunk_index: u32,
+        received: u32,
+    },
+    /// Replay of an already-received chunk whose bytes do not match the stored chunk.
+    ChunkReplayMismatch {
+        chunk_index: u32,
+    },
+    CompressedTooLarge {
+        len: u64,
+        max: u64,
+    },
+    /// Finalize digest mismatch: fail-closed, no state change.
+    CompressedDigestMismatch {
+        expected: u128,
+        actual: u128,
+    },
+    /// Chunk append against an entry that already reached Finalized.
+    AlreadyFinalized(DictCatalogKey),
+    /// Replay of finalize (or metadata pin) with different values: fail-closed.
+    ReplayMismatch,
+    InvalidRawLen,
+}
+
+/// Action recorded for every dictionary catalog decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DictCatalogAuditAction {
+    UploadChunk,
+    Finalize,
+}
+
+/// One durable audit row for dictionary catalog operations (mirrors the artifact audit
+/// precedent, ADR 0087; per-principal bounded).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DictCatalogAuditEntry {
+    pub caller: Principal,
+    pub action: DictCatalogAuditAction,
+    pub key: Option<DictCatalogKey>,
+    pub outcome: ArtifactAuditOutcome,
+    pub reason: Option<String>,
+    pub timestamp_ns: u64,
+}
+
+impl Storable for DictCatalogKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode DictCatalogKey"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode DictCatalogKey")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode DictCatalogKey")
+    }
+}
+
+impl Storable for DictCatalogEntry {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode DictCatalogEntry"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode DictCatalogEntry")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode DictCatalogEntry")
+    }
+}
+
+impl Storable for DictChunkKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode DictChunkKey"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode DictChunkKey")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode DictChunkKey")
+    }
+}
+
+impl Storable for DictChunk {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode DictChunk"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode DictChunk")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode DictChunk")
+    }
+}
+
+impl Storable for DictCatalogAuditEntry {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode DictCatalogAuditEntry"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode DictCatalogAuditEntry")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode DictCatalogAuditEntry")
+    }
+}
+
 //
 // All stable-collection keys and values use Candid encoding with StorableBound::Unbounded
 // (Plan 0061a R10 composite stable-key compatibility; round-trip verified by test (j)).

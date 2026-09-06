@@ -20,13 +20,16 @@ use crate::types::{
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
     ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, ArtifactUploadState,
-    BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, JobState,
-    LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS, MAX_ARTIFACT_SEMANTIC_VERSION_LEN,
-    ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionResult, ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult,
-    ReleaseError, ReleaseId, ReleaseManifest, ReleasePublishArgs, ResourceJobEntry,
-    RouterRegistrationAck, RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256,
-    state_name,
+    BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, DictCatalogAuditAction,
+    DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError, DictCatalogFinalizeArgs,
+    DictCatalogKey, DictCatalogStatus, DictCatalogUploadChunkArgs, DictChunk, DictChunkKey,
+    JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
+    MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_CHUNK_LEN,
+    MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError,
+    ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest, ProvisionResult,
+    ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId,
+    ReleaseManifest, ReleasePublishArgs, ResourceJobEntry, RouterRegistrationAck,
+    RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256, state_name,
 };
 
 pub mod handlers;
@@ -934,6 +937,397 @@ pub(crate) fn artifact_upload_chunk_with_caller(
 pub(crate) fn artifact_get_status(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
     let store = ProvisionArtifactStore::new();
     store.get_upload(&artifact_id)
+}
+
+// === Dictionary catalog handlers (plan 0335 todo 1) ==========================
+
+/// Governance/bootstrap-authority guard for dictionary catalog admin endpoints, mirroring
+/// the artifact upload precedent (ADR 0087). Provision's own controller identity is not
+/// consulted: this canister's admin plane is the seeded governance principal.
+fn require_dict_catalog_authority(caller: Principal) -> Result<(), DictCatalogError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    match auth_store.get_authority() {
+        Some(record) if record.governance_principal == caller => Ok(()),
+        _ => Err(DictCatalogError::Unauthorized),
+    }
+}
+
+fn append_dict_catalog_audit(
+    caller: Principal,
+    action: DictCatalogAuditAction,
+    key: Option<DictCatalogKey>,
+    outcome: crate::types::ArtifactAuditOutcome,
+    reason: Option<String>,
+    timestamp_ns: u64,
+) {
+    use crate::stable::dict_catalog::ProvisionDictCatalogStore;
+    ProvisionDictCatalogStore::new().append_audit_entry(DictCatalogAuditEntry {
+        caller,
+        action,
+        key,
+        outcome,
+        reason,
+        timestamp_ns,
+    });
+}
+
+fn dict_catalog_status(entry: &DictCatalogEntry) -> DictCatalogStatus {
+    DictCatalogStatus {
+        key: entry.key.clone(),
+        state: entry.state.clone(),
+        chunks_received: entry.chunks_received,
+        compressed_len: entry.compressed_len,
+        compressed_digest: entry.compressed_digest,
+        raw_digest: entry.raw_digest,
+        raw_len: entry.raw_len,
+    }
+}
+
+/// Append one ≤1 MiB compressed chunk to a dictionary catalog entry. Governance-only.
+/// Append-only semantics: chunks must arrive in order; a replay of an already-received
+/// chunk is idempotent only when the bytes match the stored chunk exactly.
+#[allow(clippy::result_large_err)]
+pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
+    caller: Principal,
+    args: DictCatalogUploadChunkArgs,
+    now_ns: u64,
+) -> Result<DictCatalogStatus, DictCatalogError> {
+    use crate::stable::dict_catalog::ProvisionDictCatalogStore;
+
+    if let Err(e) = require_dict_catalog_authority(caller) {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::UploadChunk,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("caller is not the governance principal".to_owned()),
+            now_ns,
+        );
+        return Err(e);
+    }
+    if args.key.kind.len() > MAX_DICT_CATALOG_ID_LEN
+        || args.key.version.len() > MAX_DICT_CATALOG_ID_LEN
+    {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::UploadChunk,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("catalog identifier too long".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::IdentifierTooLong {
+            max: MAX_DICT_CATALOG_ID_LEN as u32,
+        });
+    }
+    if args.bytes.is_empty() {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::UploadChunk,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("empty chunk".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::EmptyChunk);
+    }
+    if args.bytes.len() > MAX_DICT_CATALOG_CHUNK_LEN {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::UploadChunk,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("chunk exceeds 1 MiB cap".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::ChunkTooLarge {
+            len: args.bytes.len() as u64,
+            max: MAX_DICT_CATALOG_CHUNK_LEN as u32,
+        });
+    }
+
+    let store = ProvisionDictCatalogStore::new();
+    let chunk_key = DictChunkKey {
+        catalog_key: args.key.clone(),
+        chunk_index: args.chunk_index,
+    };
+    match store.get_entry(&args.key) {
+        None => {
+            if args.chunk_index != 0 {
+                append_dict_catalog_audit(
+                    caller,
+                    DictCatalogAuditAction::UploadChunk,
+                    Some(args.key.clone()),
+                    crate::types::ArtifactAuditOutcome::Rejected,
+                    Some("first chunk must be index 0".to_owned()),
+                    now_ns,
+                );
+                return Err(DictCatalogError::ChunkOutOfOrder {
+                    expected_chunk_index: 0,
+                    received: args.chunk_index,
+                });
+            }
+            if args.bytes.len() as u64 > MAX_DICT_CATALOG_COMPRESSED_BYTES {
+                append_dict_catalog_audit(
+                    caller,
+                    DictCatalogAuditAction::UploadChunk,
+                    Some(args.key.clone()),
+                    crate::types::ArtifactAuditOutcome::Rejected,
+                    Some("compressed stream exceeds cap".to_owned()),
+                    now_ns,
+                );
+                return Err(DictCatalogError::CompressedTooLarge {
+                    len: args.bytes.len() as u64,
+                    max: MAX_DICT_CATALOG_COMPRESSED_BYTES,
+                });
+            }
+            let entry = DictCatalogEntry {
+                key: args.key.clone(),
+                state: crate::types::DictCatalogState::Uploading,
+                chunks_received: 1,
+                compressed_len: args.bytes.len() as u64,
+                compressed_digest: None,
+                raw_digest: None,
+                raw_len: None,
+                started_at_ns: now_ns,
+                finalized_at_ns: None,
+            };
+            store.put_chunk(chunk_key, DictChunk { bytes: args.bytes });
+            store.put_entry(entry);
+            let entry = store.get_entry(&args.key).expect("entry just inserted");
+            append_dict_catalog_audit(
+                caller,
+                DictCatalogAuditAction::UploadChunk,
+                Some(args.key),
+                crate::types::ArtifactAuditOutcome::Success,
+                None,
+                now_ns,
+            );
+            Ok(dict_catalog_status(&entry))
+        }
+        Some(entry) => {
+            if args.chunk_index < entry.chunks_received {
+                // Replay of an already-received chunk: idempotent only when bytes match.
+                let replay_ok = matches!(store.get_chunk(&chunk_key), Some(stored) if stored.bytes == args.bytes);
+                if replay_ok {
+                    return Ok(dict_catalog_status(&entry));
+                }
+                append_dict_catalog_audit(
+                    caller,
+                    DictCatalogAuditAction::UploadChunk,
+                    Some(args.key.clone()),
+                    crate::types::ArtifactAuditOutcome::Rejected,
+                    Some("chunk replay bytes mismatch".to_owned()),
+                    now_ns,
+                );
+                return Err(DictCatalogError::ChunkReplayMismatch {
+                    chunk_index: args.chunk_index,
+                });
+            }
+            if args.chunk_index > entry.chunks_received {
+                append_dict_catalog_audit(
+                    caller,
+                    DictCatalogAuditAction::UploadChunk,
+                    Some(args.key.clone()),
+                    crate::types::ArtifactAuditOutcome::Rejected,
+                    Some("chunk out of order".to_owned()),
+                    now_ns,
+                );
+                return Err(DictCatalogError::ChunkOutOfOrder {
+                    expected_chunk_index: entry.chunks_received,
+                    received: args.chunk_index,
+                });
+            }
+            if matches!(entry.state, crate::types::DictCatalogState::Finalized) {
+                append_dict_catalog_audit(
+                    caller,
+                    DictCatalogAuditAction::UploadChunk,
+                    Some(args.key.clone()),
+                    crate::types::ArtifactAuditOutcome::Rejected,
+                    Some("entry already finalized".to_owned()),
+                    now_ns,
+                );
+                return Err(DictCatalogError::AlreadyFinalized(args.key));
+            }
+            let new_len = entry.compressed_len + args.bytes.len() as u64;
+            if new_len > MAX_DICT_CATALOG_COMPRESSED_BYTES {
+                append_dict_catalog_audit(
+                    caller,
+                    DictCatalogAuditAction::UploadChunk,
+                    Some(args.key.clone()),
+                    crate::types::ArtifactAuditOutcome::Rejected,
+                    Some("compressed stream exceeds cap".to_owned()),
+                    now_ns,
+                );
+                return Err(DictCatalogError::CompressedTooLarge {
+                    len: new_len,
+                    max: MAX_DICT_CATALOG_COMPRESSED_BYTES,
+                });
+            }
+            let mut entry = entry;
+            entry.chunks_received += 1;
+            entry.compressed_len = new_len;
+            store.put_chunk(chunk_key, DictChunk { bytes: args.bytes });
+            store.put_entry(entry);
+            let entry = store.get_entry(&args.key).expect("entry just updated");
+            append_dict_catalog_audit(
+                caller,
+                DictCatalogAuditAction::UploadChunk,
+                Some(args.key),
+                crate::types::ArtifactAuditOutcome::Success,
+                None,
+                now_ns,
+            );
+            Ok(dict_catalog_status(&entry))
+        }
+    }
+}
+
+/// Finalize a dictionary catalog entry: verify the accumulated compressed stream against
+/// `args.compressed_digest` (xxh3_128, seeded default), pin the uploader-supplied raw
+/// metadata, and flip Uploading -> Finalized. Exact replay of an already-finalized entry
+/// with identical metadata is idempotent; any mismatch is fail-closed with no state change.
+/// Provision never decompresses: the raw digest is pinned as metadata only.
+#[allow(clippy::result_large_err)]
+pub(crate) fn admin_finalize_dict_catalog_with_caller(
+    caller: Principal,
+    args: DictCatalogFinalizeArgs,
+    now_ns: u64,
+) -> Result<DictCatalogStatus, DictCatalogError> {
+    use crate::stable::dict_catalog::ProvisionDictCatalogStore;
+
+    if let Err(e) = require_dict_catalog_authority(caller) {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::Finalize,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("caller is not the governance principal".to_owned()),
+            now_ns,
+        );
+        return Err(e);
+    }
+    if args.raw_len == 0 {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::Finalize,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("raw_len must be non-zero".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::InvalidRawLen);
+    }
+
+    let store = ProvisionDictCatalogStore::new();
+    let entry = match store.get_entry(&args.key) {
+        Some(entry) => entry,
+        None => {
+            append_dict_catalog_audit(
+                caller,
+                DictCatalogAuditAction::Finalize,
+                Some(args.key.clone()),
+                crate::types::ArtifactAuditOutcome::Rejected,
+                Some("catalog entry not found".to_owned()),
+                now_ns,
+            );
+            return Err(DictCatalogError::NotFound(args.key));
+        }
+    };
+
+    if matches!(entry.state, crate::types::DictCatalogState::Finalized) {
+        if entry.compressed_digest == Some(args.compressed_digest)
+            && entry.raw_digest == Some(args.raw_digest)
+            && entry.raw_len == Some(args.raw_len)
+        {
+            return Ok(dict_catalog_status(&entry));
+        }
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::Finalize,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("finalize replay metadata mismatch".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::ReplayMismatch);
+    }
+
+    // Stream every appended chunk through the xxh3_128 hasher without materializing the
+    // whole compressed stream.
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    let mut stream_ok = true;
+    for i in 0..entry.chunks_received {
+        let chunk_key = DictChunkKey {
+            catalog_key: args.key.clone(),
+            chunk_index: i,
+        };
+        match store.get_chunk(&chunk_key) {
+            Some(chunk) => hasher.update(&chunk.bytes),
+            None => {
+                stream_ok = false;
+                break;
+            }
+        }
+    }
+    if !stream_ok {
+        // A chunk is missing from the store: fail closed without any state change
+        // (mirrors the artifact precedent of a zero digest on an incomplete stream).
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::Finalize,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Failed,
+            Some("chunk store incomplete during verification".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::CompressedDigestMismatch {
+            expected: args.compressed_digest,
+            actual: 0,
+        });
+    }
+    let actual: u128 = hasher.digest128();
+    if actual != args.compressed_digest {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::Finalize,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("compressed digest mismatch".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::CompressedDigestMismatch {
+            expected: args.compressed_digest,
+            actual,
+        });
+    }
+
+    let mut entry = entry;
+    entry.state = crate::types::DictCatalogState::Finalized;
+    entry.compressed_digest = Some(actual);
+    entry.raw_digest = Some(args.raw_digest);
+    entry.raw_len = Some(args.raw_len);
+    entry.finalized_at_ns = Some(now_ns);
+    store.put_entry(entry);
+    let entry = store.get_entry(&args.key).expect("entry just updated");
+    append_dict_catalog_audit(
+        caller,
+        DictCatalogAuditAction::Finalize,
+        Some(args.key),
+        crate::types::ArtifactAuditOutcome::Success,
+        None,
+        now_ns,
+    );
+    Ok(dict_catalog_status(&entry))
+}
+
+/// Query the dictionary catalog status. Any caller (read-only).
+pub(crate) fn admin_get_dict_catalog_status(key: DictCatalogKey) -> Option<DictCatalogStatus> {
+    use crate::stable::dict_catalog::ProvisionDictCatalogStore;
+    ProvisionDictCatalogStore::new()
+        .get_entry(&key)
+        .map(|entry| dict_catalog_status(&entry))
 }
 
 // === Release manifest + active release handlers (ADR 0036 Slice 8b) ===========

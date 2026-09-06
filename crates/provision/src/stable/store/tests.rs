@@ -1868,3 +1868,431 @@ fn artifact_audit_round_trip_stable_encoding() {
         assert_eq!(ArtifactAuditOutcome::from_bytes(encoded), outcome);
     }
 }
+
+// === Dictionary catalog tests (plan 0335 todo 1) =====================================
+
+use crate::canister::{
+    admin_finalize_dict_catalog_with_caller, admin_get_dict_catalog_status,
+    admin_upload_dict_catalog_chunk_with_caller,
+};
+use crate::stable::dict_catalog::ProvisionDictCatalogStore;
+use crate::types::{
+    DictCatalogAuditAction, DictCatalogAuditEntry, DictCatalogError, DictCatalogFinalizeArgs,
+    DictCatalogKey, DictCatalogState, DictCatalogUploadChunkArgs, DictChunk, DictChunkKey,
+    MAX_DICT_CATALOG_CHUNK_LEN,
+};
+
+fn dict_key(kind: &str, version: &str) -> DictCatalogKey {
+    DictCatalogKey {
+        kind: kind.to_owned(),
+        version: version.to_owned(),
+    }
+}
+
+/// Three synthetic "compressed" chunks; provision is content-agnostic.
+fn dict_chunks() -> Vec<Vec<u8>> {
+    vec![vec![0xA0; 300], vec![0xB1; 250], vec![0xC2; 100]]
+}
+
+fn dict_upload_chunk(
+    caller: Principal,
+    key: &DictCatalogKey,
+    chunk_index: u32,
+    bytes: Vec<u8>,
+) -> Result<crate::types::DictCatalogStatus, DictCatalogError> {
+    admin_upload_dict_catalog_chunk_with_caller(
+        caller,
+        DictCatalogUploadChunkArgs {
+            key: key.clone(),
+            chunk_index,
+            bytes,
+        },
+        10 + chunk_index as u64,
+    )
+}
+
+fn dict_finalize(
+    caller: Principal,
+    key: &DictCatalogKey,
+    compressed_digest: u128,
+    raw_digest: u128,
+    raw_len: u64,
+) -> Result<crate::types::DictCatalogStatus, DictCatalogError> {
+    admin_finalize_dict_catalog_with_caller(
+        caller,
+        DictCatalogFinalizeArgs {
+            key: key.clone(),
+            compressed_digest,
+            raw_digest,
+            raw_len,
+        },
+        20,
+    )
+}
+
+/// Happy path: chunk upload -> finalize -> status Finalized with pinned digests.
+#[test]
+fn dict_catalog_upload_chunks_then_finalize_reaches_finalized() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let key = dict_key("ipadic", "2.7.0");
+    let chunks = dict_chunks();
+    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&all);
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let status = dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone())
+            .unwrap_or_else(|e| panic!("chunk {i} upload failed: {e:?}"));
+        assert_eq!(status.state, DictCatalogState::Uploading);
+        assert_eq!(status.chunks_received, i as u32 + 1);
+        assert_eq!(status.compressed_digest, None);
+    }
+
+    let status = dict_finalize(
+        release_test_principal(),
+        &key,
+        compressed_digest,
+        0xDEADBEEF,
+        52_930_923,
+    )
+    .unwrap();
+    assert_eq!(status.state, DictCatalogState::Finalized);
+    assert_eq!(status.compressed_digest, Some(compressed_digest));
+    assert_eq!(status.raw_digest, Some(0xDEADBEEF));
+    assert_eq!(status.raw_len, Some(52_930_923));
+
+    let queried = admin_get_dict_catalog_status(key).expect("status query");
+    assert_eq!(queried, status);
+}
+
+/// Full replay (identical chunk bytes and digests) after finalize is idempotent.
+#[test]
+fn dict_catalog_full_replay_is_idempotent() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let key = dict_key("ipadic", "2.7.0");
+    let chunks = dict_chunks();
+    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&all);
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone()).unwrap();
+    }
+    let finalized =
+        dict_finalize(release_test_principal(), &key, compressed_digest, 42, 1000).unwrap();
+
+    // Replay every chunk byte-identically.
+    for (i, chunk) in chunks.iter().enumerate() {
+        let status = dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone())
+            .expect("chunk replay must be idempotent");
+        assert_eq!(status.state, DictCatalogState::Finalized);
+        assert_eq!(status.chunks_received, chunks.len() as u32);
+    }
+    // Replay finalize with identical metadata.
+    let replayed =
+        dict_finalize(release_test_principal(), &key, compressed_digest, 42, 1000).unwrap();
+    assert_eq!(replayed, finalized);
+
+    // Stored state is unchanged.
+    let stored = admin_get_dict_catalog_status(key).unwrap();
+    assert_eq!(stored, finalized);
+}
+
+/// Finalize with a wrong compressed_digest is fail-closed: error, entry stays Uploading.
+#[test]
+fn dict_catalog_compressed_digest_mismatch_is_fail_closed() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let key = dict_key("ipadic", "2.7.0");
+    let chunks = dict_chunks();
+    for (i, chunk) in chunks.iter().enumerate() {
+        dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone()).unwrap();
+    }
+    let before = admin_get_dict_catalog_status(key.clone()).unwrap();
+
+    let err = dict_finalize(release_test_principal(), &key, 0x1234, 42, 1000).unwrap_err();
+    assert_eq!(
+        err,
+        DictCatalogError::CompressedDigestMismatch {
+            expected: 0x1234,
+            actual: xxhash_rust::xxh3::xxh3_128(
+                &chunks
+                    .iter()
+                    .flat_map(|c| c.iter().copied())
+                    .collect::<Vec<u8>>()
+            ),
+        }
+    );
+
+    let after = admin_get_dict_catalog_status(key).unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after.state, DictCatalogState::Uploading);
+}
+
+/// Chunk caps and ordering are enforced; append after finalize is rejected.
+#[test]
+fn dict_catalog_chunk_caps_and_ordering_enforced() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let key = dict_key("ipadic", "2.7.0");
+    let caller = release_test_principal();
+
+    // Empty chunk.
+    assert_eq!(
+        dict_upload_chunk(caller, &key, 0, Vec::new()),
+        Err(DictCatalogError::EmptyChunk)
+    );
+    // Oversized chunk (> 1 MiB cap).
+    let oversized = vec![0u8; MAX_DICT_CATALOG_CHUNK_LEN + 1];
+    assert_eq!(
+        dict_upload_chunk(caller, &key, 0, oversized),
+        Err(DictCatalogError::ChunkTooLarge {
+            len: (MAX_DICT_CATALOG_CHUNK_LEN + 1) as u64,
+            max: MAX_DICT_CATALOG_CHUNK_LEN as u32,
+        })
+    );
+    // Out-of-order first chunk.
+    assert_eq!(
+        dict_upload_chunk(caller, &key, 1, vec![1, 2, 3]),
+        Err(DictCatalogError::ChunkOutOfOrder {
+            expected_chunk_index: 0,
+            received: 1,
+        })
+    );
+    // Skip-ahead after one appended chunk.
+    dict_upload_chunk(caller, &key, 0, vec![7u8; 10]).unwrap();
+    assert_eq!(
+        dict_upload_chunk(caller, &key, 2, vec![1, 2, 3]),
+        Err(DictCatalogError::ChunkOutOfOrder {
+            expected_chunk_index: 1,
+            received: 2,
+        })
+    );
+
+    // Finalize, then a fresh append at the next index is rejected as AlreadyFinalized.
+    let all = [vec![7u8; 10], vec![8u8; 5]].concat();
+    dict_upload_chunk(caller, &key, 1, vec![8u8; 5]).unwrap();
+    dict_finalize(caller, &key, xxhash_rust::xxh3::xxh3_128(&all), 1, 2).unwrap();
+    assert_eq!(
+        dict_upload_chunk(caller, &key, 2, vec![9u8; 5]),
+        Err(DictCatalogError::AlreadyFinalized(key.clone()))
+    );
+}
+
+/// Non-governance callers are rejected and no state is created.
+#[test]
+fn dict_catalog_rejects_non_governance_caller() {
+    super::reset_all_maps();
+    // Authority not seeded at all.
+    let key = dict_key("ipadic", "2.7.0");
+    assert_eq!(
+        dict_upload_chunk(release_test_principal(), &key, 0, vec![1, 2, 3]),
+        Err(DictCatalogError::Unauthorized)
+    );
+
+    release_seed_bootstrap();
+    let impostor = test_principal(99);
+    assert_eq!(
+        dict_upload_chunk(impostor, &key, 0, vec![1, 2, 3]),
+        Err(DictCatalogError::Unauthorized)
+    );
+    assert_eq!(
+        dict_finalize(impostor, &key, 1, 1, 1),
+        Err(DictCatalogError::Unauthorized)
+    );
+    assert!(admin_get_dict_catalog_status(key).is_none());
+}
+
+/// Distinct kind+version keys hold independent entries.
+#[test]
+fn dict_catalog_kind_version_entries_coexist() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let caller = release_test_principal();
+    let k1 = dict_key("ipadic", "2.7.0");
+    let k2 = dict_key("ipadic", "3.0.0");
+    let k3 = dict_key("unidic", "2.7.0");
+
+    dict_upload_chunk(caller, &k1, 0, vec![1u8; 10]).unwrap();
+    dict_upload_chunk(caller, &k2, 0, vec![2u8; 20]).unwrap();
+    dict_upload_chunk(caller, &k3, 0, vec![3u8; 30]).unwrap();
+
+    assert_eq!(
+        admin_get_dict_catalog_status(k1.clone())
+            .unwrap()
+            .compressed_len,
+        10
+    );
+    assert_eq!(
+        admin_get_dict_catalog_status(k2.clone())
+            .unwrap()
+            .compressed_len,
+        20
+    );
+    assert_eq!(
+        admin_get_dict_catalog_status(k3.clone())
+            .unwrap()
+            .compressed_len,
+        30
+    );
+
+    // Finalizing one entry does not affect the others.
+    dict_finalize(caller, &k1, xxhash_rust::xxh3::xxh3_128(&[1u8; 10]), 1, 1).unwrap();
+    assert_eq!(
+        admin_get_dict_catalog_status(k2).unwrap().state,
+        DictCatalogState::Uploading
+    );
+    assert_eq!(
+        admin_get_dict_catalog_status(k3).unwrap().state,
+        DictCatalogState::Uploading
+    );
+}
+
+/// Re-opening the regions (upgrade mirror) preserves the finalized entry and its chunks.
+#[test]
+fn dict_catalog_reopen_preserves_finalized_entry() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let key = dict_key("ipadic", "2.7.0");
+    let chunks = dict_chunks();
+    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&all);
+    for (i, chunk) in chunks.iter().enumerate() {
+        dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone()).unwrap();
+    }
+    let finalized = dict_finalize(release_test_principal(), &key, compressed_digest, 7, 7).unwrap();
+
+    crate::stable::dict_catalog::reopen_dict_catalog_regions_for_test();
+
+    let after = admin_get_dict_catalog_status(key).expect("entry survives reopen");
+    assert_eq!(after, finalized);
+    let store = ProvisionDictCatalogStore::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert_eq!(
+            store
+                .get_chunk(&DictChunkKey {
+                    catalog_key: dict_key("ipadic", "2.7.0"),
+                    chunk_index: i as u32,
+                })
+                .expect("chunk survives reopen"),
+            DictChunk {
+                bytes: chunk.clone()
+            }
+        );
+    }
+}
+
+/// Storable round-trip for the dict catalog stable key/value/audit types.
+#[test]
+fn dict_catalog_round_trip_stable_encoding() {
+    use ic_stable_structures::Storable;
+
+    let key = dict_key("ipadic", "2.7.0");
+    let entry = crate::types::DictCatalogEntry {
+        key: key.clone(),
+        state: DictCatalogState::Finalized,
+        chunks_received: 11,
+        compressed_len: 10_900_552,
+        compressed_digest: Some(0x1122334455667788_99AABBCCDDEEFF00),
+        raw_digest: Some(1),
+        raw_len: Some(52_930_923),
+        started_at_ns: 5,
+        finalized_at_ns: Some(9),
+    };
+    assert_eq!(
+        crate::types::DictCatalogEntry::from_bytes(entry.clone().into_bytes().into()),
+        entry
+    );
+    assert_eq!(
+        DictCatalogKey::from_bytes(key.clone().into_bytes().into()),
+        key
+    );
+
+    let chunk_key = DictChunkKey {
+        catalog_key: key.clone(),
+        chunk_index: 10,
+    };
+    assert_eq!(
+        DictChunkKey::from_bytes(chunk_key.clone().into_bytes().into()),
+        chunk_key
+    );
+    let chunk = DictChunk {
+        bytes: vec![1, 2, 3],
+    };
+    assert_eq!(
+        DictChunk::from_bytes(chunk.clone().into_bytes().into()),
+        chunk
+    );
+
+    let audit = DictCatalogAuditEntry {
+        caller: test_principal(3),
+        action: DictCatalogAuditAction::Finalize,
+        key: Some(key),
+        outcome: ArtifactAuditOutcome::Success,
+        reason: None,
+        timestamp_ns: 42,
+    };
+    assert_eq!(
+        DictCatalogAuditEntry::from_bytes(audit.clone().into_bytes().into()),
+        audit
+    );
+}
+
+/// Audit rows record success and rejection outcomes in sequence order.
+#[test]
+fn dict_catalog_audit_records_outcomes() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let caller = release_test_principal();
+    let key = dict_key("ipadic", "2.7.0");
+
+    dict_upload_chunk(caller, &key, 0, vec![1u8; 10]).unwrap();
+    dict_upload_chunk(test_principal(99), &key, 0, vec![1u8; 10]).unwrap_err(); // rejected
+    dict_finalize(caller, &key, 0xBAD, 1, 1).unwrap_err(); // rejected
+
+    let history = ProvisionDictCatalogStore::new().audit_history(caller);
+    assert_eq!(history.len(), 2);
+    assert!(matches!(
+        history[0].action,
+        DictCatalogAuditAction::UploadChunk
+    ));
+    assert!(matches!(history[0].outcome, ArtifactAuditOutcome::Success));
+    assert!(matches!(
+        history[1].action,
+        DictCatalogAuditAction::Finalize
+    ));
+    assert!(matches!(history[1].outcome, ArtifactAuditOutcome::Rejected));
+
+    let impostor_history = ProvisionDictCatalogStore::new().audit_history(test_principal(99));
+    assert_eq!(impostor_history.len(), 1);
+    assert!(matches!(
+        impostor_history[0].outcome,
+        ArtifactAuditOutcome::Rejected
+    ));
+}
+
+/// A missing chunk row makes finalize fail closed with no state change.
+#[test]
+fn dict_catalog_missing_chunk_fails_closed() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let key = dict_key("ipadic", "2.7.0");
+    dict_upload_chunk(release_test_principal(), &key, 0, vec![1u8; 10]).unwrap();
+    dict_upload_chunk(release_test_principal(), &key, 1, vec![2u8; 5]).unwrap();
+    ProvisionDictCatalogStore::new().remove_chunk(&DictChunkKey {
+        catalog_key: key.clone(),
+        chunk_index: 1,
+    });
+    let before = admin_get_dict_catalog_status(key.clone()).unwrap();
+
+    let full = [vec![1u8; 10], vec![2u8; 5]].concat();
+    let digest = xxhash_rust::xxh3::xxh3_128(&full);
+    assert_eq!(
+        dict_finalize(release_test_principal(), &key, digest, 1, 1),
+        Err(DictCatalogError::CompressedDigestMismatch {
+            expected: digest,
+            actual: 0,
+        })
+    );
+    assert_eq!(admin_get_dict_catalog_status(key).unwrap(), before);
+}

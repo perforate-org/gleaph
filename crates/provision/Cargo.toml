@@ -17,6 +17,9 @@ ic-stable-structures = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 sha2 = "0.11"
+# Plan 0335: 128-bit dictionary catalog digests (xxh3_128, u128 wire representation).
+# Disclosed dep addition scoped to this crate, same form as text-canister (plan 0295).
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 gleaph-graph-kernel = { workspace = true }
 
 [dev-dependencies]

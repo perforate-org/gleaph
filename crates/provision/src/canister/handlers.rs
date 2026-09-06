@@ -6,11 +6,12 @@
 
 use crate::canister::{
     ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
-    accept_envelope_with_caller, artifact_audit_history_with_caller, artifact_get_status,
-    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    complete_graph_registration_with_caller, query_job_with_caller, release_activate_with_caller,
-    release_get_active, release_install_with_caller, release_publish_with_caller,
-    upsert_deployment_grant_with_caller,
+    accept_envelope_with_caller, admin_finalize_dict_catalog_with_caller,
+    admin_get_dict_catalog_status, admin_upload_dict_catalog_chunk_with_caller,
+    artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
+    artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
+    query_job_with_caller, release_activate_with_caller, release_get_active,
+    release_install_with_caller, release_publish_with_caller, upsert_deployment_grant_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -138,4 +139,29 @@ pub async fn release_install_handler(
 ) -> Result<ReleaseInstallResult, InstallError> {
     let caller = ic_cdk::api::msg_caller();
     release_install_with_caller(caller, args, crate::ic_time_ns()).await
+}
+
+/// Authorize `admin_upload_dict_catalog_chunk` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn admin_upload_dict_catalog_chunk_handler(
+    args: crate::types::DictCatalogUploadChunkArgs,
+) -> Result<crate::types::DictCatalogStatus, crate::types::DictCatalogError> {
+    let caller = ic_cdk::api::msg_caller();
+    admin_upload_dict_catalog_chunk_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Authorize `admin_finalize_dict_catalog` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn admin_finalize_dict_catalog_handler(
+    args: crate::types::DictCatalogFinalizeArgs,
+) -> Result<crate::types::DictCatalogStatus, crate::types::DictCatalogError> {
+    let caller = ic_cdk::api::msg_caller();
+    admin_finalize_dict_catalog_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Forward `admin_get_dict_catalog_status` (read-only, any caller) to the handler.
+pub fn admin_get_dict_catalog_status_handler(
+    key: crate::types::DictCatalogKey,
+) -> Option<crate::types::DictCatalogStatus> {
+    admin_get_dict_catalog_status(key)
 }

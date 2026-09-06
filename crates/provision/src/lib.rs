@@ -19,8 +19,9 @@ use crate::canister::{
 use crate::types::UpsertDeploymentGrantError;
 use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
-    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, InstallError, ProvisionRequest,
-    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
+    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DictCatalogError,
+    DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs, InstallError,
+    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
     ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
     UpsertDeploymentGrantArgs,
 };
@@ -104,6 +105,27 @@ fn artifact_audit_history() -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
 #[update]
 async fn release_install(args: ReleaseInstallArgs) -> Result<ReleaseInstallResult, InstallError> {
     handlers::release_install_handler(args).await
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+fn admin_upload_dict_catalog_chunk(
+    args: DictCatalogUploadChunkArgs,
+) -> Result<DictCatalogStatus, DictCatalogError> {
+    handlers::admin_upload_dict_catalog_chunk_handler(args)
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+fn admin_finalize_dict_catalog(
+    args: DictCatalogFinalizeArgs,
+) -> Result<DictCatalogStatus, DictCatalogError> {
+    handlers::admin_finalize_dict_catalog_handler(args)
+}
+
+#[query]
+fn admin_get_dict_catalog_status(key: crate::types::DictCatalogKey) -> Option<DictCatalogStatus> {
+    handlers::admin_get_dict_catalog_status_handler(key)
 }
 
 #[cfg(test)]

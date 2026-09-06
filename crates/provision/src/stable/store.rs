@@ -6,6 +6,8 @@ use super::artifact::reset_artifact_audit_log;
 use super::artifact::reset_artifact_maps;
 #[cfg(test)]
 use super::bootstrap_auth::reset_bootstrap_auth_maps;
+#[cfg(test)]
+use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
     StableDeploymentGrantSet, StableJobByDeploymentMap, StableJobByRequestMap,
     StableJobIntentLockMap, init_deployment_grants, init_job_by_deployment, init_job_by_request,
@@ -46,6 +48,7 @@ pub(crate) fn reset_all_maps() {
     reset_artifact_maps();
     reset_release_maps();
     reset_artifact_audit_log();
+    reset_dict_catalog_maps();
     set_force_advance_error(false);
 }
 
