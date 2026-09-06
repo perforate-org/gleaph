@@ -240,25 +240,15 @@ fn seed_text_vertex(env: &Env, _key: &str, bio: &str) {
 }
 
 fn create_text_index_definition(env: &Env) -> TextIndexInfo {
-    let bytes = env
-        .fed
-        .pic
-        .update_call(
-            env.fed.router,
-            env.fed.admin,
-            "create_text_index",
-            Encode!(
-                &GRAPH_NAME.to_string(),
-                &INDEX_NAME.to_string(),
-                &LABEL.to_string(),
-                &PROPERTY.to_string()
-            )
-            .expect("encode create_text_index"),
-        )
-        .unwrap_or_else(|e| panic!("create_text_index on router: {e:?}"));
-    Decode!(&bytes, Result<TextIndexInfo, RouterError>)
-        .expect("decode create_text_index")
-        .expect("provisioned definition created")
+    // Re-pinned (plan 0332): the absent `ANALYZER` clause now resolves to the
+    // multilingual composite (id 0); this leg's backfill corpus + assertions are
+    // bigram-era, so the definition pins `ANALYZER unicode_bigram` explicitly (the
+    // id-1 pipeline is byte-unchanged by the promotion).
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "text-ddl");
+    get_text_index(env)
 }
 
 fn get_text_index(env: &Env) -> TextIndexInfo {
@@ -436,7 +426,10 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
     }
 
     // Drive the migration one bounded step per apply.
-    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    // Matches the definition (pinned ANALYZER unicode_bigram, plan 0332 re-pin).
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
     let args = migration_args(MIGRATION_ID, &statement);
 
     // Step 1 — prepare only: pending ledger row + durable build identity; no remote effects.

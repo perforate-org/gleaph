@@ -24,6 +24,7 @@
 
 pub mod analyzer;
 mod analyzer_mecab;
+mod analyzer_multilingual;
 mod backfill;
 mod guards;
 mod init;
@@ -37,7 +38,7 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 
 #[allow(deprecated)] // deprecated alias kept for the v1 test references across the workspace
-pub use analyzer::{ANALYZER_ID, ANALYZER_MECAB, ANALYZER_UNICODE_BIGRAM};
+pub use analyzer::{ANALYZER_ID, ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM};
 pub use backfill::{
     RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
     TextBackfillSealProof, TextBackfillStatus,
@@ -199,23 +200,27 @@ fn admin_merge_step(budget: u32) -> Result<MergeStepReport, String> {
 // -- Analyzer-2 dictionary upload (plan 0331, ADR 0087 chunk analogy) -----------------------
 
 /// Controller-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] bytes).
-/// Fail-closed unless this index pins analyzer 2 and the dictionary is not yet
-/// finalized; returns the new total blob length.
+/// Fail-closed unless this index pins a dictionary-carrying analyzer (id 0 or id 2,
+/// the `DICT_REQUIRED` set) and the dictionary is not yet finalized; returns the new
+/// total blob length. The same MPD container and chunk upload path serve both ids
+/// (plan 0332 widening).
 #[update(guard = "guards::guard_controller")]
 fn admin_upload_dict_chunk(bytes: Vec<u8>) -> Result<u64, String> {
     state::with_stores(|stores| stores.upload_dict_chunk(bytes))
 }
 
 /// Controller-guarded dictionary finalize: verifies the streaming identity
-/// (xxh3_128 over the concatenated region) against `expected_digest`, then eagerly
-/// decompresses + builds the pinned tokenizer. Idempotent on an exact Finalized replay;
-/// a wrong digest rejects WITHOUT touching state.
+/// (xxh3_128 over the concatenated region) against `expected_digest`, then
+/// structurally validates + materializes the resident set (plan 0334 rebind:
+/// validate + resident memcpy, NO zstd decode). Idempotent on an exact Finalized
+/// replay; a wrong digest rejects WITHOUT touching state. Serves both id 0 and id
+/// 2 indexes (plan 0332 widening).
 #[update(guard = "guards::guard_controller")]
 fn admin_finalize_dict_upload(expected_digest: u128) -> Result<DictStatus, String> {
     state::with_stores(|stores| stores.finalize_dict_upload(expected_digest))
 }
 
-/// Read-only analyzer-2 dictionary status (state / digest / len).
+/// Read-only dictionary status (state / digest / len).
 #[query]
 fn admin_get_dict_status() -> DictStatus {
     state::with_stores(|stores| stores.dict_status())

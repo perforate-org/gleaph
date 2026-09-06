@@ -18,6 +18,12 @@
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Registered identity of the script-dispatched multilingual composite (plan 0332,
+/// branded `koine`). DDL identifier: `multilingual`. The DEFAULT for any absent
+/// `ANALYZER` clause and the canonical install default. Carries the dictionary
+/// machinery (the same MPD container as id 2) AND the per-script rule layers
+/// (Hangul 조사/어미, Latin Porter, pure-Han bigram fallback).
+pub const ANALYZER_MULTILINGUAL: u32 = 0;
 /// Registered identity of the unicode-bigram pipeline (segmentation + NFKC + lowercase +
 /// CJK bigrams). Registered identities are creation-fixed per index (plan 0331); ids stay
 /// internal — DDL names resolve at admission.
@@ -31,17 +37,26 @@ pub const ANALYZER_MECAB: u32 = 2;
 #[deprecated(since = "0.1.0", note = "use ANALYZER_UNICODE_BIGRAM or the dispatch")]
 pub const ANALYZER_ID: u32 = ANALYZER_UNICODE_BIGRAM;
 
-/// Dispatches one analysis by pinned pipeline id (plan 0331). Ids are open-validated at
-/// the open/admission boundaries, so an unknown id reaching here is a broken invariant:
-/// fail closed loudly instead of silently misanalyzing.
+/// Dispatches one analysis by pinned pipeline id (plan 0331, plan 0332 widening). Ids
+/// are open-validated at the open/admission boundaries, so an unknown id reaching here
+/// is a broken invariant: fail closed loudly instead of silently misanalyzing.
 pub fn analyze_pinned(id: u32, text: &str) -> Vec<String> {
     match id {
+        ANALYZER_MULTILINGUAL => crate::analyzer_multilingual::analyze(text),
         ANALYZER_UNICODE_BIGRAM => analyze(text),
         ANALYZER_MECAB => crate::analyzer_mecab::analyze(text),
         other => unreachable!(
             "unregistered analyzer id {other} passed open validation — broken invariant"
         ),
     }
+}
+
+/// True for ids that carry the stable-resident MPD dictionary container. Drives the
+/// dictionary upload / backfill-hold / open-rebind gates (plan 0332: id 0 and id 2
+/// both go through the same dictionary machinery; id 1 is dictionary-free). The
+/// `DICT_REQUIRED` gate is the single source of truth.
+pub const fn dict_required(id: u32) -> bool {
+    matches!(id, ANALYZER_MULTILINGUAL | ANALYZER_MECAB)
 }
 
 /// True for characters eligible for CJK-run bigram expansion: Hiragana
@@ -203,5 +218,79 @@ mod tests {
     fn duplicates_are_preserved_for_tf_counting() {
         assert_eq!(units("red red red"), vec!["red"; 3]);
         assert_eq!(units("東京都 東京都"), vec!["東京", "京都", "東京", "京都"]);
+    }
+
+    // -- Plan 0332 regression fixtures: ids 1 and 2 stay byte-unchanged -------------------
+
+    /// The id-1 dispatch is byte-identical to the v1 direct call (contract frozen:
+    /// the composite promotion must never change what id 1 emits).
+    #[test]
+    fn id1_dispatch_matches_v1_pipeline_exactly() {
+        let fixtures = [
+            "Hello, World!",
+            "東京都",
+            "GQL 東京都 FULLTEXT ﾊﾟﾈﾙ v2",
+            "running 학교에서 数据库",
+            "Ｈｅｌｌｏ ①② 東 京都 visit",
+        ];
+        for fixture in fixtures {
+            assert_eq!(
+                analyze_pinned(ANALYZER_UNICODE_BIGRAM, fixture),
+                analyze(fixture),
+                "id-1 dispatch must equal the v1 pipeline on {fixture:?}"
+            );
+        }
+        // The id-1 units are pure bigram: NO rule layers (no Porter stem, no 조사
+        // strip) leak into id 1.
+        assert_eq!(
+            analyze_pinned(ANALYZER_UNICODE_BIGRAM, "running"),
+            vec!["running"],
+            "id 1 must NOT stem Latin words"
+        );
+        assert_eq!(
+            analyze_pinned(ANALYZER_UNICODE_BIGRAM, "학교에서"),
+            vec!["학교에서"],
+            "id 1 must NOT strip 조사"
+        );
+    }
+
+    /// The id-2 dispatch is byte-identical to the whole-text mecab call (contract
+    /// frozen). Requires the dictionary when present (skipped loudly otherwise);
+    /// the dispatch wiring itself is checked with the dictionary-free fixtures.
+    #[test]
+    fn id2_dispatch_is_whole_text_mecab() {
+        // Without the dictionary resident, id-2 dispatch panics fail-closed — the
+        // same contract as before the composite landed.
+        if !crate::analyzer_mecab::dictionary_loaded() {
+            // dispatch wiring: id 2 routes to analyzer_mecab::analyze (panics); id 0
+            // routes to the composite (Hangul layer works WITHOUT the dictionary —
+            // the distinguishing observable between the two dictionary-carrying ids).
+            assert_eq!(
+                analyze_pinned(ANALYZER_MULTILINGUAL, "학교에서"),
+                vec!["학교에서", "학교"],
+                "id-0 Hangul layer works without the dictionary (rule layer)"
+            );
+            let result = std::panic::catch_unwind(|| analyze_pinned(ANALYZER_MECAB, "走った"));
+            assert!(
+                result.is_err(),
+                "id-2 without the dictionary must fail closed"
+            );
+            return;
+        }
+        assert_eq!(
+            analyze_pinned(ANALYZER_MECAB, "走った"),
+            crate::analyzer_mecab::analyze("走った"),
+            "id-2 dispatch must equal the whole-text mecab call"
+        );
+    }
+
+    /// The dictionary-carrying id set is exactly {0, 2}; id 1 is dictionary-free.
+    #[test]
+    fn dict_required_gate_is_exactly_ids_0_and_2() {
+        assert!(dict_required(ANALYZER_MULTILINGUAL));
+        assert!(!dict_required(ANALYZER_UNICODE_BIGRAM));
+        assert!(dict_required(ANALYZER_MECAB));
+        assert!(!dict_required(3));
+        assert!(!dict_required(u32::MAX));
     }
 }

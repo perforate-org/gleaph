@@ -81,10 +81,6 @@ fn graph_wasm() -> Vec<u8> {
     wasm_bytes("GRAPH_WASM")
 }
 
-fn router_wasm() -> Vec<u8> {
-    wasm_bytes("ROUTER_WASM")
-}
-
 // -- Provision calls --------------------------------------------------------------------------
 
 #[allow(clippy::result_large_err)]
@@ -234,25 +230,15 @@ fn seed_text_vertex(env: &Env, bio: &str) {
 }
 
 fn create_text_index_definition(env: &Env) -> TextIndexInfo {
-    let bytes = env
-        .fed
-        .pic
-        .update_call(
-            env.fed.router,
-            env.fed.admin,
-            "create_text_index",
-            Encode!(
-                &GRAPH_NAME.to_string(),
-                &INDEX_NAME.to_string(),
-                &LABEL.to_string(),
-                &PROPERTY.to_string()
-            )
-            .expect("encode create_text_index"),
-        )
-        .unwrap_or_else(|e| panic!("create_text_index on router: {e:?}"));
-    Decode!(&bytes, Result<TextIndexInfo, RouterError>)
-        .expect("decode create_text_index")
-        .expect("provisioned definition created")
+    // Re-pinned (plan 0332): the absent `ANALYZER` clause now resolves to the
+    // multilingual composite (id 0); this leg's assertions are bigram-specific, so
+    // the definition pins `ANALYZER unicode_bigram` explicitly through the GQL DDL
+    // surface — the id-1 pipeline is byte-unchanged by the promotion.
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "text-ddl");
+    get_text_index(env)
 }
 
 fn get_text_index(env: &Env) -> TextIndexInfo {
@@ -500,7 +486,10 @@ fn text_score_ranks_through_gql_after_ready_and_fails_closed_before() {
     );
 
     // Drive the migration to convergence, then flush so docs are searchable.
-    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    // Matches the definition (pinned ANALYZER unicode_bigram, plan 0332 re-pin).
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
     let args = migration_args(MIGRATION_ID, &statement);
     drive_to_ready(&env, &args);
     assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
@@ -593,7 +582,10 @@ fn text_score_compound_threshold_topk_lowers_and_ranks() {
         .pic
         .add_cycles(env.fed.graph_source, 20_000_000_000_000);
 
-    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    // Matches the definition (pinned ANALYZER unicode_bigram, plan 0332 re-pin).
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
     let args = migration_args(MIGRATION_ID, &statement);
     drive_to_ready(&env, &args);
     assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
@@ -731,7 +723,10 @@ fn fetch_mecab_container() -> Vec<u8> {
             .arg(&dir)
             .status()
             .expect("spawn tar");
-        assert!(extracted.success(), "tar extract of the ipadic tarball failed");
+        assert!(
+            extracted.success(),
+            "tar extract of the ipadic tarball failed"
+        );
         let dicdir = dir.join("ipadic-1.0.0").join("ipadic").join("dicdir");
         for name in IMAGES {
             std::fs::copy(dicdir.join(name), dir.join(name))
@@ -745,8 +740,7 @@ fn fetch_mecab_container() -> Vec<u8> {
         .map(|n| {
             (
                 n.to_string(),
-                std::fs::read(dir.join(n))
-                    .unwrap_or_else(|e| panic!("read {n}: {e}")),
+                std::fs::read(dir.join(n)).unwrap_or_else(|e| panic!("read {n}: {e}")),
             )
         })
         .collect();
@@ -982,7 +976,9 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         .expect("in-place upgrade of the text canister (rebind leg)");
     let rebind_cycles = cycles_before_upgrade.saturating_sub(env.fed.pic.cycle_balance(canister));
     let rebind_delta = rebind_cycles.saturating_sub(install_overhead);
-    println!("plan-0334 post_upgrade total: {rebind_cycles}; rebind DELTA vs dict-absent upgrade: {rebind_delta}");
+    println!(
+        "plan-0334 post_upgrade total: {rebind_cycles}; rebind DELTA vs dict-absent upgrade: {rebind_delta}"
+    );
     // Per the IC cost model the rebind is dominated by the unavoidable 4 KiB page
     // charges of the resident memcpy (~5.2K pages x 5,000 = ~26M) + structural
     // validation reads — MUST be orders below the 4.75B eager-decode baseline.
@@ -1022,7 +1018,7 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
 }
 
 #[test]
-fn mecab_counter_leg_bigram_default_does_not_recall_lemma() {
+fn mecab_counter_leg_explicit_bigram_pin_does_not_recall_lemma() {
     let wired = bootstrap_with_active_release();
     let env = Env {
         fed: finish_provision_wired_single_shard_federation(wired),
@@ -1031,7 +1027,10 @@ fn mecab_counter_leg_bigram_default_does_not_recall_lemma() {
     gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
     seed_text_vertex(&env, "毎日公園を走った。");
 
-    // Declare via the bare admin endpoint (analyzer defaults to unicode_bigram).
+    // Declare via the GQL DDL surface with the explicit bigram pin (plan 0332 re-pin:
+    // the ABSENT clause now defaults to the multilingual composite, so this counter-leg
+    // pins `ANALYZER unicode_bigram` to keep testing the id-1 pipeline's no-lemma
+    // behavior byte-unchanged).
     let info = create_text_index_definition(&env);
     env.fed.pic.add_cycles(
         info.canister.expect("provisioned canister attached"),
@@ -1041,8 +1040,10 @@ fn mecab_counter_leg_bigram_default_does_not_recall_lemma() {
         .pic
         .add_cycles(env.fed.graph_source, 20_000_000_000_000);
 
-    // Default admission (no ANALYZER clause): the unicode-bigram pipeline, byte-compatibly.
-    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    // Explicit bigram pin (matches the definition; the id-1 pipeline is unchanged).
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
     let args = migration_args(MIGRATION_ID, &statement);
     drive_to_ready(&env, &args);
     assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
@@ -1054,4 +1055,167 @@ fn mecab_counter_leg_bigram_default_does_not_recall_lemma() {
     // …while its own surface bigrams match (sanity that the corpus IS indexed).
     let own = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走っ", 10));
     assert_eq!(own.row_count, 1, "bigram index matches its own unit");
+}
+
+// -- Plan 0332: the multilingual composite (ANALYZER_ID=0) is the DEFAULT -------------------
+
+const COMPOSITE_MIGRATION_ID: &str = "000105_text_score_composite";
+
+/// One composite index, four languages: the plan 0332 default-promotion leg. The
+/// definition is declared with the ABSENT `ANALYZER` clause (the bare admin
+/// endpoint) — proving end-to-end that the default resolves to the multilingual
+/// composite (id 0) — then the same MPD container as id 2 finalizes into region 16
+/// and the multilingual recall matrix recalls through GQL:
+/// - Japanese 走った doc ⇄ 走る query (the mecab layer over {kanji∪kana} runs),
+/// - Korean 학교에서 doc ⇄ 학교 query (the 조사 strip layer),
+/// - English running doc ⇄ run query (the Porter layer),
+/// - Chinese 数据库 doc ⇄ 数据 query (the pure-Han bigram fallback).
+///
+/// The dict-not-finalized hold applies to the id-0 index exactly like id 2 (the
+/// DICT_REQUIRED gate is shared).
+#[test]
+fn multilingual_composite_default_recalls_across_languages() {
+    let wired = bootstrap_with_active_release();
+    let env = Env {
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    // One doc per language layer (insertion order ascends the docids).
+    seed_text_vertex(&env, "毎日公園を走った。");
+    seed_text_vertex(&env, "학교에서 공부했다");
+    seed_text_vertex(&env, "I was running fast yesterday");
+    seed_text_vertex(&env, "知识图谱数据库应用");
+    seed_text_vertex(&env, "unrelated zebra");
+
+    // LEG 1 — DEFAULT admission: the bare admin endpoint carries NO analyzer
+    // argument; the absent clause must resolve to the composite (id 0).
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            env.fed.router,
+            env.fed.admin,
+            "create_text_index",
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &INDEX_NAME.to_string(),
+                &LABEL.to_string(),
+                &PROPERTY.to_string()
+            )
+            .expect("encode create_text_index"),
+        )
+        .unwrap_or_else(|e| panic!("create_text_index on router: {e:?}"));
+    let info: TextIndexInfo = Decode!(&bytes, Result<TextIndexInfo, RouterError>)
+        .expect("decode create_text_index")
+        .expect("provisioned definition created");
+    assert_eq!(
+        info.analyzer_id, 0,
+        "the ABSENT clause must pin the multilingual composite (id 0)"
+    );
+    let canister = info.canister.expect("provisioned canister attached");
+    env.fed.pic.add_cycles(canister, 50_000_000_000_000);
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
+
+    // LEG 2 — the DICT_REQUIRED gate covers id 0: backfill registration HOLDS
+    // until the dictionary is finalized (same recorded wording as id 2).
+    let request = text_canister::RegisterTextBackfillRequest {
+        text_index_id: gleaph_graph_kernel::federation::TextIndexId::new(1),
+        graph_canister: env.fed.graph_source,
+        graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(3),
+        index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(5),
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_100).unwrap(),
+        catalog_epoch: 1,
+        scope: text_canister::TextBackfillScope {
+            label_id: 1,
+            property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(1),
+            analyzer_id: 0,
+        },
+    };
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            canister,
+            env.fed.router,
+            "admin_register_text_backfill",
+            Encode!(&request).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("admin_register_text_backfill: {e:?}"));
+    let hold: Result<text_canister::TextBackfillStatus, String> =
+        Decode!(&bytes, Result<text_canister::TextBackfillStatus, String>).expect("decode reply");
+    let hold = hold.expect_err("pre-finalize registration must hold for id 0 too");
+    assert!(
+        hold.contains("until the ipadic dictionary is finalized"),
+        "unexpected hold wording: {hold}"
+    );
+
+    // LEG 3 — upload + finalize the SAME MPD container as id 2 (no new machinery).
+    let dict = fetch_mecab_container();
+    for chunk in dict.chunks(1024 * 1024) {
+        let _total: u64 =
+            call_text_canister(&env, canister, "admin_upload_dict_chunk", &chunk.to_vec());
+    }
+    let digest = xxhash_rust::xxh3::xxh3_128(&dict);
+    let finalized: text_canister::DictStatus =
+        call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
+    assert_eq!(finalized.state, text_canister::DictState::Finalized);
+
+    // LEG 4 — the SAME registration that held now replays idempotently; the
+    // migration statement carries the ABSENT clause (the default IS id 0).
+    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    let args = migration_args(COMPOSITE_MIGRATION_ID, &statement);
+    drive_to_ready_for(&env, &args, INDEX_NAME);
+    assert_eq!(
+        get_text_index_named(&env, INDEX_NAME).status,
+        TextIndexStatusView::Ready
+    );
+    flush_until_done_for(&env, INDEX_NAME);
+
+    // LEG 5 — the multilingual recall matrix through GQL, all on ONE index.
+    // Japanese: 走った doc recalls under the lemma 走る.
+    let jp = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走る", 10));
+    let jp_rows = scored_rows(&jp);
+    assert_eq!(
+        jp.row_count, 1,
+        "mecab layer: 走った doc recalls under 走る"
+    );
+    assert!(jp_rows[0].1 > 0.0, "the hit carries a positive score");
+    // Korean: 학교에서 doc recalls under the stem 학교 (조사 strip).
+    let kr = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("학교", 10));
+    assert_eq!(
+        kr.row_count, 1,
+        "조사 layer: 학교에서 doc recalls under 학교"
+    );
+    // English: running doc recalls under the Porter stem run.
+    let en = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("run", 10));
+    assert_eq!(
+        en.row_count, 1,
+        "Porter layer: running doc recalls under run"
+    );
+    // Chinese: 数据库 doc recalls under the bigram 数据.
+    let zh = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("数据", 10));
+    assert_eq!(
+        zh.row_count, 1,
+        "bigram fallback: 数据库 doc recalls under 数据"
+    );
+    // The unrelated doc stays out of every candidate set.
+    let zebra = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("zebra", 10));
+    assert_eq!(zebra.row_count, 1, "zebra still matches its own doc");
+    // Cross-language precision: the English query does not surface the Japanese doc.
+    let cross = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("run", 10));
+    assert_ne!(
+        cross.row_count, 2,
+        "Porter stem must not leak into the Japanese doc's candidate set"
+    );
+
+    // Determinism: an identical re-run returns the identical order.
+    let replay = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("走る", 10));
+    assert_eq!(
+        scored_rows(&replay),
+        jp_rows,
+        "recall must be deterministic"
+    );
 }

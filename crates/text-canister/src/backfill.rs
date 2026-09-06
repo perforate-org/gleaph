@@ -252,21 +252,22 @@ fn validate_request(
     if request.scope.label_id == 0 || request.scope.property_id.raw() == 0 {
         return Err("text scope needs a non-zero label and property id".to_string());
     }
-    if request.scope.analyzer_id == crate::analyzer::ANALYZER_MECAB {
-        // Analyzer-2 registration additionally requires the finalized dictionary
-        // (plan 0331): the gate is a recorded hold, never a silent skip — the migration
-        // driver surfaces the rejection as retryable progress and replays the SAME
-        // registration idempotently once the dictionary lands.
+    if crate::analyzer::dict_required(request.scope.analyzer_id) {
+        // Dictionary-carrying registration additionally requires the finalized
+        // dictionary (plan 0331, plan 0332 widening to id 0): the gate is a
+        // recorded hold, never a silent skip — the migration driver surfaces the
+        // rejection as retryable progress and replays the SAME registration
+        // idempotently once the dictionary lands.
         if !dict_finalized {
             return Err(
-                "analyzer-2 backfill registration holds until the ipadic dictionary is \
+                "backfill registration holds until the ipadic dictionary is \
                  finalized (admin_finalize_dict_upload)"
                     .to_string(),
             );
         }
     } else if request.scope.analyzer_id != crate::analyzer::ANALYZER_UNICODE_BIGRAM {
         return Err(format!(
-            "unknown analyzer {} (this canister serves analyzers 1 and 2)",
+            "unknown analyzer {} (this canister serves analyzers 0, 1, and 2)",
             request.scope.analyzer_id
         ));
     }

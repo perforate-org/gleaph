@@ -1147,3 +1147,95 @@ fn analyzer1_rejects_dict_upload_and_search_serves_without_dictionary() {
         .expect("ingest");
     assert!(stores.search("hello", 10).is_ok());
 }
+
+// -- Plan 0332: the multilingual composite (id 0) shares the dictionary machinery -------
+
+#[test]
+fn init_rejects_unregistered_analyzer_id() {
+    let result =
+        std::panic::catch_unwind(|| TextStores::init_with_analyzer(fresh_regions(), Some(3)));
+    assert!(
+        result.is_err(),
+        "analyzer id 3 is unregistered and must fail the open"
+    );
+}
+
+#[test]
+fn analyzer0_dict_gates_and_composite_recall() {
+    let Some(raw) = mecab_container() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    let regions = fresh_regions();
+    let clone_regions = || TestMemories {
+        meta: regions.meta.clone(),
+        segments: regions.segments.clone(),
+        dict: regions.dict.clone(),
+        postings: regions.postings.clone(),
+        block_max: regions.block_max.clone(),
+        key_by_docid: regions.key_by_docid.clone(),
+        docid_by_key: regions.docid_by_key.clone(),
+        tombstones: regions.tombstones.clone(),
+        stats: regions.stats.clone(),
+        pending: regions.pending.clone(),
+        merge_cursor: regions.merge_cursor.clone(),
+        controller: regions.controller.clone(),
+        arena: regions.arena.clone(),
+        term_entries: regions.term_entries.clone(),
+        dict_blob: regions.dict_blob.clone(),
+    };
+    let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_MULTILINGUAL));
+
+    // Pre-finalize fail-closed gates (the DICT_REQUIRED gate covers id 0).
+    assert!(
+        stores.enqueue_ingest(vec![doc(1, "학교에서")]).is_err(),
+        "id-0 ingest must hold until finalize"
+    );
+    assert!(
+        stores.search("학교", 10).is_err(),
+        "id-0 search must hold until finalize"
+    );
+    // Dictionary upload accepted for id 0 (the plan 0332 widening).
+    upload_all(&mut stores, &raw);
+    let expected = xxhash_rust::xxh3::xxh3_128(&raw);
+    let finalized = stores.finalize_dict_upload(expected).expect("finalize");
+    assert_eq!(finalized.state, crate::DictState::Finalized);
+
+    // Post-finalize: composite recall across the layers through the engine search.
+    stores
+        .enqueue_ingest(vec![doc(1, "running fast")])
+        .expect("latin ingest");
+    stores
+        .enqueue_ingest(vec![doc(2, "학교에서 공부")])
+        .expect("hangul ingest");
+    stores
+        .enqueue_ingest(vec![doc(3, "数据库 应用")])
+        .expect("han ingest");
+    flush_all(&mut stores);
+    // Latin Porter stem recall.
+    let hits = stores.search("run", 10).expect("porter recall");
+    assert_eq!(hits.len(), 1, "running doc recalls under run (Porter stem)");
+    assert_eq!(hits[0].key, 1);
+    // Hangul 조사 recall.
+    let hits = stores.search("학교", 10).expect("josa recall");
+    assert_eq!(hits.len(), 1, "학교에서 doc recalls under 학교 (조사 stem)");
+    assert_eq!(hits[0].key, 2);
+    // Pure-Han bigram recall.
+    let hits = stores.search("数据", 10).expect("bigram recall");
+    assert_eq!(hits.len(), 1, "数据库 doc recalls under the bigram 数据");
+    assert_eq!(hits[0].key, 3);
+
+    // Reopen rebuilds the resident dictionary eagerly for id 0 (the plan 0332
+    // open-rebind widening) and the composite analysis works post-reopen.
+    let mut reopened = TextStores::init_with_analyzer(regions, Some(ANALYZER_MULTILINGUAL));
+    assert!(crate::analyzer_mecab::dictionary_loaded());
+    assert!(reopened.enqueue_ingest(vec![doc(4, "走った")]).is_ok());
+    flush_all(&mut reopened);
+    let hits = reopened.search("走る", 10).expect("mecab-layer recall");
+    assert_eq!(
+        hits.len(),
+        1,
+        "composite mecab layer: 走った doc recalls under 走る"
+    );
+    assert_eq!(hits[0].key, 4);
+}

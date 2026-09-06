@@ -30,8 +30,9 @@ pub enum IndexDdlStatement {
 /// `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>) [ ANALYZER <ident> ]`
 /// and `DROP TEXT INDEX <name> [IF EXISTS]`. The optional analyzer clause parses after
 /// the ON group, case-insensitive keyword, identifier token (implementation name, never
-/// a numeric id). An absent clause is `None` = the default analyzer, byte-compatibly
-/// with every pre-0331 statement.
+/// a numeric id). An absent clause is `None` = the default analyzer — plan 0332
+/// changes the default to the multilingual composite (id 0); the parse itself is
+/// name-agnostic and stays byte-compatible with every pre-0331 statement.
 ///
 /// Deliberately separate from [`IndexDdlStatement`]: a text declaration routes through the
 /// text-canister backfill lifecycle, never the property-posting build.
@@ -42,7 +43,9 @@ pub enum TextIndexDdlStatement {
         if_not_exists: bool,
         label: String,
         property: String,
-        /// Implementation analyzer name pinned at creation (e.g. `mecab`); `None` =
+        /// Implementation analyzer name pinned at creation (e.g. `mecab`);
+        /// `None` = the default analyzer (plan 0332: the multilingual composite,
+        /// id 0); the parse accepts any identifier — names resolve at admission.
         /// the default unicode-bigram pipeline, byte-identical to pre-0331 behavior.
         /// Name → id resolution (and unknown-name rejection) is admission-owned, never
         /// parser-owned: the parser only accepts a bare identifier.
@@ -1667,6 +1670,24 @@ mod tests {
                 analyzer: Some("UNICODE_BIGRAM".into()),
             }
         );
+        // Plan 0332: the composite's DDL identifier parses like any other name
+        // (admission maps `multilingual` → id 0); the default (absent clause) is
+        // also id 0.
+        let composite = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER multilingual",
+        )
+        .expect("text DDL")
+        .expect("parse");
+        assert_eq!(
+            composite,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "Person".into(),
+                property: "bio".into(),
+                analyzer: Some("multilingual".into()),
+            }
+        );
     }
 
     #[test]
@@ -1677,11 +1698,10 @@ mod tests {
             .expect_err("numeric analyzer id");
         assert!(matches!(numeric, TextIndexDdlParseError::Expected(_)));
         // Trailing input after the clause still rejects.
-        let trailing = try_parse_text(
-            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER mecab EXTRA",
-        )
-        .expect("recognized")
-        .expect_err("trailing input");
+        let trailing =
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER mecab EXTRA")
+                .expect("recognized")
+                .expect_err("trailing input");
         assert_eq!(trailing, TextIndexDdlParseError::TrailingInput);
     }
 

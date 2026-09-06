@@ -111,14 +111,31 @@ Adopt the **custom segment-LSM inverted index** for the Text Index, as prototype
    trigram indexing as a separate future kind. Analyzer identity is part of the index
    definition and never enters gleaph-gql/planner.
    - Execution note (2026-09-04, plan 0331): the plan 0330 spike (measured on wasm32) selected
-     **vibrato 0.5.2 + ipadic-mecab** over lindera 6.0 (system-dictionary API is path-only — no
+     **vibrato 0.5.2 + ipadic-mecab (superseded 0334 by the morph-dict MeCab-format engine, 100% unit-sequence parity)** over lindera 6.0 (system-dictionary API is path-only — no
      bytes-based load, so no stable-resident landing shape; engine+dict wasm 48 MB) and over
      sudachi (crate absent from crates.io; 117 MB small dictionary; wasm build fails on its
      dynamic plugin loader) and vaporetto (pointwise prediction is not segmentation-consistent;
      no lemma tag without license-restricted BCCWJ training data). Landed as ANALYZER_ID=2 with
      the 8.0 MB ZSTD dictionary in stable region 16 (not the wasm: canister 1.85 MB, engine-only
      vibrato 228 KB per the corrected 0330 audit) and the `ANALYZER <name>` DDL clause
-     (`unicode_bigram` | `vibrato`).
+     (`unicode_bigram` | `mecab`).
+   - Execution note (2026-09-05, plan 0334): analyzer-2 internals were swapped to the
+     `morph-dict` byte-image Viterbi engine (derived from MeCrab, MIT OR Apache-2.0) with 100%
+     unit-sequence parity vs the vibrato pipeline; region 16 now carries the MORPHDICT1
+     container (52,930,923 B) and the DDL name was honestly renamed `vibrato` → `mecab` with
+     NO compatibility identifiers (no aliases, no migration, layout stays 1). Rebind collapsed
+     from 4,752,264,345 eager-decode cycles to a 59,900,562-cycle validate+memcpy delta.
+   - Execution note (2026-09-05, plan 0332): the script-dispatched multilingual composite
+     became ANALYZER_ID=0, the DEFAULT (absent clause, provision default, and admission
+     default all resolve to 0; ids 1/2 kept non-default and byte-unchanged). The composite
+     (branded koine; DDL identifier stays `multilingual`) follows the charabia precedent —
+     a script-dispatched pipeline carrying a dictionary-backed layer is the production-
+     proven multilingual pattern (Meilisearch/charabia dispatches to lindera-IPA, lindera-KO,
+     jieba per script; the ES multi-fields N-index pattern is the alternative and stays the
+     per-language precision-maximal shape). Script dispatch is a pure codepoint-range
+     function (determinism contract, no statistical language detection); the `DICT_REQUIRED`
+     gate widened to {0, 2}, so the DEFAULT index path carries the dictionary upload flow
+     (recorded friction; Router-side dictionary relay is the Later-Slice mitigation).
 6. **Partition strategy remains open** (ADR 0054), with docid-range sharding and same-subnet
    scatter-gather as the working assumption.
 

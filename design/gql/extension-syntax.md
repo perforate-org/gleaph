@@ -969,30 +969,36 @@ The TEXT definition itself is declared with the vendor DDL
 `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>) [ ANALYZER <ident> ]`
 and removed with `DROP TEXT INDEX <name> [IF EXISTS]`.
 
-### ANALYZER clause (plan 0331)
+### ANALYZER clause (plan 0331, default promotion plan 0332)
 
 The optional `ANALYZER <ident>` clause (case-insensitive keyword, identifier token — never a
 numeric id) pins the tokenization pipeline at creation, mirroring MySQL's `WITH PARSER`:
 
 | Name | Id | Pipeline |
 |---|---|---|
-| `unicode_bigram` | 1 | Unicode segmentation + NFKC + lowercase; CJK runs expand to overlapping bigrams (the default, byte-compatible with pre-0331 declarations) |
-| `vibrato` | 2 | vibrato 0.5.2 + ipadic-mecab lemma units (走った ⇄ 走る recall); requires the stable-resident ipadic dictionary (8.0 MB zstd in stable region 16, controller-uploaded) before backfill/ingest/search |
+| `multilingual` | 0 | **DEFAULT** (plan 0332, branded koine): the script-dispatched composite — NFKC+lowercase pre-pass → UAX #29 → deterministic script dispatch: {kanji∪kana} runs through the mecab engine, pure-Han runs through bigram, Hangul runs through the 조사/어미 strip (surface+stem), Latin words through surface+Porter stem. Carries the dictionary (`DICT_REQUIRED`) |
+| `unicode_bigram` | 1 | Unicode segmentation + NFKC + lowercase; CJK runs expand to overlapping bigrams; ASCII words whole. No rule layers (byte-unchanged) |
+| `mecab` | 2 | MeCab-format ipadic 2.7.0 Viterbi lemma units over the morph-dict engine (走った ⇄ 走る recall, whole-text); carries the dictionary |
 
 ```gql
-CREATE TEXT INDEX jp_docs FOR (v:Document) ON (v.body) ANALYZER vibrato
+CREATE TEXT INDEX jp_docs FOR (v:Document) ON (v.body) ANALYZER mecab
 ```
 
 Contract:
 
-- An absent clause defaults to `unicode_bigram`; names are implementation names resolved at
-  Router admission, ids stay internal (MySQL `WITH PARSER ngram/mecab` precedent).
+- An absent clause defaults to the `multilingual` composite (id 0) — the plan 0332 breaking
+  change (V1 fresh-install policy; pre-0332 declarations pinned 1). The DEFAULT index path now
+  requires the dictionary upload flow (the same MPD container as id 2).
+- Names are implementation names resolved at Router admission, ids stay internal (MySQL
+  `WITH PARSER ngram/mecab` precedent).
 - Unknown names fail closed at admission with `unknown ANALYZER name \`<name>\`
-  (admitted set: unicode_bigram, vibrato)` — no durable or remote effect precedes the check.
+  (admitted set: multilingual, unicode_bigram, mecab)` — no durable or remote effect precedes
+  the check.
 - The analyzer is creation-fixed: a later migration statement's clause must resolve to the
   same pinned id or the admission rejects it; changing analyzers requires a new index +
   re-backfill.
-- For analyzer 2, backfill registration holds fail-closed until the dictionary is finalized
+- For the dictionary-carrying analyzers (ids 0 and 2), backfill registration holds fail-closed
+  until the dictionary is finalized
   (`admin_upload_dict_chunk` ≤ 1 MiB chunks → `admin_finalize_dict_upload` verifying the
   xxh3_128 streaming identity); the hold surfaces as retryable migration progress, never a
   silent skip.
@@ -1092,7 +1098,8 @@ This expresses the intended flow:
 | 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
 | 9     | Add the ADR 0074 slice 2a `GRANT`/`REVOKE` data-plane grammar: feature-gated parsing, owner-only Router execution with catalog/schema validation, grant introspection, and revoke; plan-time enforcement stays deferred to slice 2b | Implemented                                                                                                          |
 | 10    | Add the ADR 0074 slice 3 `GRANT`/`REVOKE EXECUTE ON PREPARED QUERY` publication form with invariant-7-bounded authority gates and the synthesized implicit-root introspection marker | Implemented                                                                                                          |
-| 12    | Add the `ANALYZER <name>` clause to `CREATE TEXT INDEX` (plan 0331): optional clause after the ON group, admission-resolved names {unicode_bigram→1, vibrato→2} with fail-closed unknown-name rejection and creation-fixed pinning; analyzer-2 canister lands the vibrato + ipadic lemma pipeline with the stable-resident ZSTD dictionary (chunk upload ≤ 1 MiB + digest-verified finalize, backfill registration gated on finalize) | Implemented (vibrato + unicode_bigram; backfill-hold + fail-closed admission legs in `text_score_query.rs`) |
+| 12    | Add the `ANALYZER <name>` clause to `CREATE TEXT INDEX` (plan 0331): optional clause after the ON group, admission-resolved names with fail-closed unknown-name rejection and creation-fixed pinning; analyzer-2 lands the MeCab-format ipadic Viterbi pipeline with the MORPHDICT1 container in region 16 (chunk upload ≤ 1 MiB + digest-verified finalize, backfill registration gated on finalize; plan 0334 rename `vibrato`→`mecab`, no aliases) | Implemented (mecab + unicode_bigram; backfill-hold + fail-closed admission legs in `text_score_query.rs`) |
+| 13    | Plan 0332 default promotion: the script-dispatched multilingual composite (`multilingual`, id 0, branded koine) becomes the DEFAULT — absent clause, provision default, and admission default all resolve to 0; ids 1/2 stay registered and byte-unchanged; the `DICT_REQUIRED` gate widens to {0, 2} so the default index path carries the same dictionary upload + finalize flow as id 2; composite legs cover the four-language recall matrix (走った⇄走る, 학교에서⇄학교, running⇄run, 数据库⇄数据) on ONE index in `text_score_query.rs` | Implemented (`multilingual` legs in `text_score_query.rs`; composite module `analyzer_multilingual.rs`) |
 | 11    | Add the `text_score(prop, query)` scalar function (plan 0297): generic function-call syntax end-to-end; planner lowering of covered uses into `PlanOp::TextScan` (top-k and threshold modes) with TEXT-coverage-gated seed selection; Router execution resolves `Ready` TEXT definitions, dispatches the definition canister as a same-subnet composite query, merges deterministically under `(score desc, key asc)`, and binds projected score aliases; fail-closed absent resolution with no sequential-scan fallback; vendor DDL `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>)` / `DROP TEXT INDEX <name> [IF EXISTS]`. Nested placements, aggregates over scores, and multi-shard text fan-out remain deferred with triggers | Implemented (top-k + threshold + compound threshold-top-k)                                                           |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.

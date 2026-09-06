@@ -1,15 +1,29 @@
 benches:
+  bench_analyze_bigram_per_doc:
+    total:
+      calls: 1
+      instructions: 113217
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_analyze_composite_per_doc:
+    total:
+      calls: 1
+      instructions: 131309
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
   bench_query_term_top100:
     total:
       calls: 1
-      instructions: 4002333
+      instructions: 4002625
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_query_term_top100_unscored:
     total:
       calls: 1
-      instructions: 205808
+      instructions: 203704
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

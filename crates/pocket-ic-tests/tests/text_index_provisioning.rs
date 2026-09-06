@@ -431,6 +431,10 @@ fn create_text_index(
     label: &str,
     property: &str,
 ) -> Result<TextIndexInfo, RouterError> {
+    // Plan 0332: the absent `ANALYZER` clause (the bare admin endpoint carries no
+    // analyzer argument) now resolves to the multilingual composite — id 0, the
+    // DEFAULT. This provisioning lifecycle leg exercises exactly that default path;
+    // the id-0 backfill registration requires the dictionary upload legs below.
     let bytes = env
         .pic
         .update_call(
@@ -468,6 +472,55 @@ fn get_text_index(
 }
 
 /// Controller-guarded `admin_flush` on the provisioned canister, called as `from`.
+// -- Plan 0332: the id-0 default requires the finalized dictionary -------------------------
+
+/// Returns the MORPHDICT1 container bytes (identical source discipline to the
+/// text_score_query legs: the pinned PyPI ipadic 1.0.0 four-image set, fail-closed).
+fn fetch_mecab_container() -> Vec<u8> {
+    const IMAGES: [&str; 4] = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
+    const MECAB_DICT_URL: &str = "https://files.pythonhosted.org/packages/e7/4e/c459f94d62a0bef89f866857bc51b9105aff236b83928618315b41a26b7b/ipadic-1.0.0.tar.gz";
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("mecrab");
+    if !dir.join("sys.dic").exists() {
+        std::fs::create_dir_all(&dir).expect("create resources/mecrab");
+        let tarball = dir.join("ipadic-1.0.0.tar.gz");
+        let status = Command::new("curl")
+            .args(["-sL", "-o"])
+            .arg(&tarball)
+            .arg(MECAB_DICT_URL)
+            .status()
+            .expect("spawn curl for the ipadic dictionary");
+        assert!(status.success(), "curl fetch of {MECAB_DICT_URL} failed");
+        let extracted = Command::new("tar")
+            .args(["-xzf"])
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&dir)
+            .status()
+            .expect("spawn tar");
+        assert!(
+            extracted.success(),
+            "tar extract of the ipadic tarball failed"
+        );
+        let dicdir = dir.join("ipadic-1.0.0").join("ipadic").join("dicdir");
+        for name in IMAGES {
+            std::fs::copy(dicdir.join(name), dir.join(name))
+                .unwrap_or_else(|e| panic!("move {name} into place: {e}"));
+        }
+        std::fs::remove_dir_all(dir.join("ipadic-1.0.0")).expect("remove extracted tree");
+        std::fs::remove_file(&tarball).expect("remove tarball");
+    }
+    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    for name in IMAGES {
+        images.push((
+            name.to_string(),
+            std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}")),
+        ));
+    }
+    morph_dict::container::build(images)
+}
+
 fn admin_flush_as(env: &Env, from: Principal) -> text_canister::FlushReport {
     let bytes = env
         .pic
@@ -617,8 +670,8 @@ fn text_index_provisions_replays_and_guards() {
     assert_eq!(info.status, TextIndexStatusView::Backfilling);
     assert_eq!(
         info.analyzer_id,
-        text_canister::ANALYZER_ID,
-        "the v1 admission pins the production analyzer"
+        text_canister::ANALYZER_MULTILINGUAL,
+        "the absent-clause admission pins the multilingual composite default (plan 0332)"
     );
 
     // The definition is durably registered and readable through the query surface.
@@ -655,7 +708,7 @@ fn text_index_provisions_replays_and_guards() {
         Decode!(&stats_bytes, text_canister::TextIndexStats).expect("decode get_stats");
     assert_eq!(
         stats.analyzer_id,
-        text_canister::ANALYZER_ID,
+        text_canister::ANALYZER_MULTILINGUAL,
         "the installed wasm is the real text canister"
     );
 
@@ -681,10 +734,49 @@ fn text_index_provisions_replays_and_guards() {
         denied.reject_message
     );
 
+    // --- (a.1) the id-0 default requires the finalized dictionary (plan 0332) ---
+    // The default CREATE TEXT INDEX path now carries the dictionary upload flow
+    // (recorded friction; the Router-side relay stays the Later-Slice mitigation).
+    // The same MPD container as id 2, the same chunk + digest discipline.
+    env.pic.add_cycles(canister, 50_000_000_000_000);
+    let dict = fetch_mecab_container();
+    for chunk in dict.chunks(1024 * 1024) {
+        let bytes = env
+            .pic
+            .update_call(
+                canister,
+                env.router,
+                "admin_upload_dict_chunk",
+                Encode!(&chunk.to_vec()).expect("encode chunk"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
+        let _total: Result<u64, String> =
+            Decode!(&bytes, Result<u64, String>).expect("decode upload reply");
+    }
+    let digest = xxhash_rust::xxh3::xxh3_128(&dict);
+    let bytes = env
+        .pic
+        .update_call(
+            canister,
+            env.router,
+            "admin_finalize_dict_upload",
+            Encode!(&digest).expect("encode digest"),
+        )
+        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
+    let finalized: Result<text_canister::DictStatus, String> =
+        Decode!(&bytes, Result<text_canister::DictStatus, String>).expect("decode finalize reply");
+    let finalized = finalized.expect("dictionary finalizes for the id-0 default");
+    assert_eq!(
+        finalized.state,
+        text_canister::DictState::Finalized,
+        "the default index must reach Finalized before the backfill can register"
+    );
+
     // --- (a.2) drive the migration lane to convergence: Backfilling → Ready ---
     // The definition is planner-invisible until the migration ledger reaches Applied (scan-done
     // AND flushed watermark). Drive `apply_schema_migration` one bounded step per call, mirroring
     // adr0059_text_backfill_migration; the empty corpus still converges (0 docs scanned).
+    // Bare statement (absent clause): matches the definition's id-0 default pin.
     let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:Document) ON (v.title)");
     let args = migration_args(MIGRATION_ID, &statement);
     let mut applied_result = None;

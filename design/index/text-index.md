@@ -96,11 +96,29 @@ document records the steady-state contract those imply.
 
 ## Analyzers
 
-Two registered pipelines (creation-fixed per index definition; plan 0330 spike + 0331 landing):
+Three registered pipelines (creation-fixed per index definition; plan 0330 spike + 0331/0334
+landings + plan 0332 default promotion):
 
-- **`unicode_bigram` (id 1, default)** — Unicode segmentation + NFKC + lowercase; CJK character
-  runs expand to overlapping bigrams (lone characters stay unigrams); ASCII words whole. Trigram
-  indexing is a separate future index kind, not part of v1.
+- **`multilingual` (id 0, DEFAULT — plan 0332, branded koine)** — the script-dispatched
+  composite: whole-text NFKC + lowercase pre-pass → UAX #29 segmentation → deterministic
+  codepoint-range script classification (NO statistical language detection) → per-run layers:
+  {kanji∪kana} runs through the mecab engine (id 2's analyzer, the MPD container — the same
+  `DICT_REQUIRED` gate as id 2), pure-Han runs through v1 bigram (zh/ja ambiguity: bigram is
+  correct for both), Hangul runs through the 조사/어미 closed-class suffix strip (받침
+  allomorphy, surface+stem dual emission), Latin words through surface+Porter stem (non-English
+  Latin over-stem accepted and recorded). Deterministic and idempotent (monotone: re-analysis
+  of the joined units preserves every unit). Module: `analyzer_multilingual.rs`; DDL identifier
+  stays `multilingual` (the Meilisearch precedent: crate charabia, config field descriptive).
+  The ABSENT `ANALYZER` clause, the provision default, and the DDL admission default all
+  resolve to 0 — the breaking V1-fresh-install consequence is that the DEFAULT index path now
+  requires the dictionary upload flow (the same 52,930,923-byte MPD container as id 2; the
+  Router-side dictionary catalog + relay remains the Later-Slice mitigation). Per-doc analysis
+  cycles (canbench, ASCII fixture): composite 131.3K vs bigram 113.2K instructions (~16%
+  Latin-layer overhead; the Japanese mecab layer rides the id-2 engine cost).
+- **`unicode_bigram` (id 1, non-default, byte-unchanged)** — Unicode segmentation + NFKC +
+  lowercase; CJK character runs expand to overlapping bigrams (lone characters stay unigrams);
+  ASCII words whole; NO rule layers (no Porter stem, no 조사 strip). Trigram indexing is a
+  separate future index kind, not part of v1.
 - **`mecab` (ANALYZER_ID=2, plan 0334)**: MeCab-format ipadic 2.7.0 Viterbi lemma units over the
   `morph-dict` byte-image engine (derived from MeCrab, MIT OR Apache-2.0) — whole-text NFKC +
   lowercase pre-pass, per-line bounded common-prefix search + Viterbi, ipadic base-form
@@ -140,7 +158,7 @@ no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
   suffix tables are rule-friendly) or a `mecab-ko-dic` container through the morph-dict
   pipeline — neither implemented.
 
-**Tier-0 rule analyzer family (plan 0332, drafted — koine, not implemented):** the remaining
+**Tier-0 rule analyzer family (superseded 0332 — landed as the dictionary-integrated composite):** the remaining
 recall gaps (Korean 조사, English stemming, Japanese inflection) are all
 rule-closable without dictionaries. They compose into ONE script-dispatched composite analyzer
 (candidate `ANALYZER_ID=3`, name `rule_multilingual` — strategy-named like id 1, no dictionary):
@@ -158,8 +176,8 @@ Chinese strategy), or Korean irregular-verb completeness beyond enumerated table
 spike (reusing the 0331 region-16 dictionary machinery if a dictionary-based analyzer is
 ever adopted).
 
-**Dictionary-integrated composite (refined proposal, production-precedented):** the composite
-can carry a DICTIONARY-BACKED layer — the charabia pattern (Meilisearch's production
+**Dictionary-integrated composite (LANDED plan 0332 as id 0 — production-precedented):** the composite
+carries a DICTIONARY-BACKED layer — the charabia pattern (Meilisearch's production
 tokenizer) dispatches per detected script/language to specialized segmenters including
 dictionary-backed ones (Japanese = lindera + IPA-dict, Korean = lindera KO-dict, Chinese =
 jieba; see the charabia README language table). The Gleaph shape: script-run chunking over
@@ -169,8 +187,8 @@ machinery), Hangul chunks → 조사 strip layer, Latin chunks → Porter, pure-
 is the quality option at ~2× Han postings). Consistency holds because index-time and
 query-time run the same composite; per-chunk dispatch loses sentence context across script
 boundaries (accepted, same as charabia). Implementation deltas vs the pure-rule composite:
-generalize the 0331 region-16 dictionary machinery from id-2-specific to "any dictionary-
-carrying analyzer" and include the morph-dict engine (~100 KB wasm layer, getrandom-free — verified). The
+generalize the region-16 dictionary machinery from id-2-specific to the shared `DICT_REQUIRED`
+gate ({0, 2}) and include the morph-dict engine (getrandom-free — verified). The
 id-2 pure-Japanese analyzer coexists: the composite is the multilingual single-index answer;
 per-language indexes remain the precision-maximal shape (the ES multi-fields pattern is the
 N-index equivalent).

@@ -247,21 +247,26 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
     }
 }
 
-/// Default analyzer for TEXT definitions with no explicit `ANALYZER` clause (ADR 0077
-/// v0 production pipeline = 1; plan 0331 keeps it the byte-compatible default).
-pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 1;
+/// Default analyzer for TEXT definitions with no explicit `ANALYZER` clause (plan 0332:
+/// the script-dispatched multilingual composite, ANALYZER_ID=0, is the DEFAULT; ids 1
+/// and 2 stay registered and non-default). Breaking DDL-semantics change under the V1
+/// fresh-install policy — a default CREATE TEXT INDEX now requires the dictionary
+/// upload flow (the same MPD container as id 2).
+pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 0;
 
-/// Resolves an `ANALYZER <name>` clause to its registered pipeline id (plan 0331).
-/// Names are implementation names (MySQL `WITH PARSER ngram/mecab` precedent); ids stay
-/// internal. Unknown names fail closed at admission with this recorded wording.
+/// Resolves an `ANALYZER <name>` clause to its registered pipeline id (plan 0331,
+/// plan 0332 widening). Names are implementation names (MySQL `WITH PARSER
+/// ngram/mecab` precedent); ids stay internal. Unknown names fail closed at admission
+/// with this recorded wording.
 pub(crate) fn resolve_analyzer_name(name: &str) -> Result<u32, RouterError> {
-    // Ids mirror `text_canister::ANALYZER_UNICODE_BIGRAM` / `ANALYZER_MECAB` (the
-    // Router does not depend on the canister crate).
+    // Ids mirror `text_canister::ANALYZER_MULTILINGUAL` / `ANALYZER_UNICODE_BIGRAM` /
+    // `ANALYZER_MECAB` (the Router does not depend on the canister crate).
     match name {
+        "multilingual" => Ok(0),
         "unicode_bigram" => Ok(1),
         "mecab" => Ok(2),
         other => Err(RouterError::InvalidArgument(format!(
-            "unknown ANALYZER name `{other}` (admitted set: unicode_bigram, mecab)"
+            "unknown ANALYZER name `{other}` (admitted set: multilingual, unicode_bigram, mecab)"
         ))),
     }
 }
@@ -1238,6 +1243,7 @@ mod tests {
 
     #[test]
     fn analyzer_names_resolve_to_registered_ids() {
+        assert_eq!(resolve_analyzer_name("multilingual").expect("composite"), 0);
         assert_eq!(resolve_analyzer_name("unicode_bigram").expect("bigram"), 1);
         assert_eq!(resolve_analyzer_name("mecab").expect("mecab"), 2);
         let err = resolve_analyzer_name("nonsense").expect_err("unknown name");
@@ -1245,12 +1251,19 @@ mod tests {
             RouterError::InvalidArgument(message) => {
                 assert!(
                     message.contains("unknown ANALYZER name `nonsense`")
-                        && message.contains("unicode_bigram, mecab"),
+                        && message.contains("multilingual, unicode_bigram, mecab"),
                     "unexpected wording: {message}"
                 );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
+    }
+
+    /// Plan 0332: the absent `ANALYZER` clause resolves to the multilingual
+    /// composite (id 0) at admission.
+    #[test]
+    fn absent_clause_defaults_to_multilingual() {
+        assert_eq!(TEXT_INDEX_ANALYZER_V0, 0);
     }
 
     #[test]

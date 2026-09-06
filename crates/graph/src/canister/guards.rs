@@ -9,7 +9,7 @@ pub fn guard_router_canister() -> Result<(), String> {
 /// Canonical export page reads are admitted per-scope inside the handler: every frozen scope
 /// names exactly one authorized puller (`authorize_page_pull`), replacing the former
 /// single-canister fn guard.
-
+///
 /// Production graph shards accept plan execution only from the configured router.
 #[cfg(target_family = "wasm")]
 pub fn guard_router_canister() -> Result<(), String> {

@@ -24,11 +24,12 @@
 //! | 13 | dense vector of `TermEntrySlot` | term_id → canonical term string (arena ref) + live df |
 //! | 14 | `Cell<Option<backfill::BackfillRegistration>>` | text backfill build identity + lifecycle phase (`crate::backfill`) |
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
-//! | 16 | raw contiguous bytes | ANALYZER_ID=2 MPD container (MeCab-format ipadic 4-image set, plain appends during upload, see "Analyzer-2 dictionary") |
+//! | 16 | raw contiguous bytes | MPD container (MeCab-format ipadic 4-image set, plain appends during upload, see "Dictionary region") |
 //!
-//! ## Analyzer-2 dictionary (plan 0331, container swap plan 0334)
+//! ## Dictionary region (plan 0331, container swap plan 0334, plan 0332 widening to id 0)
 //!
-//! The mecab engine keeps its ipadic dictionary OUT of the wasm: region 16 is a PLAIN
+//! The dictionary-carrying analyzers (ids 0 and 2 — the `dict_required` set) keep their
+//! ipadic dictionary OUT of the wasm: region 16 is a PLAIN
 //! byte string carrying the MPD container (magic + layout version + entry table {name, offset,
 //! len, sha256} + the four MeCab-format images: sys.dic + unk.dic + matrix.bin +
 //! char.bin, 52,930,923 bytes for ipadic 2.7.0 utf8), appended in controller-supplied
@@ -37,13 +38,13 @@
 //! re-read at `admin_finalize_dict_upload` (a ~53 MB transient copy at finalize ONLY)
 //! and pinned in [`TextMeta`] with the declared length. States: `Absent` (fresh open),
 //! `Uploading` (append-only, interrupted uploads fail the open loudly), `Finalized`.
-//! With `analyzer_id == 2` the open rebinds WITHOUT decode: structural container
+//! With `dict_required(analyzer_id) == true` the open rebinds WITHOUT decode: structural container
 //! validation + resident-set memcpy over batched stable reads (~21 MB: matrix.bin +
 //! char.bin + unk.dic + sys.dic trie/word-params); the feature-string region stays lazy
 //! over stable memory via the ic-morph-dict `StableImage` (eager rebind, NOT lazy
 //! construction: the 5B query-call budget never pays dictionary construction). While
 //! `Absent`, analyze-touching operations fail closed with a recorded message until
-//! finalize lands.
+//! finalize lands. Id 1 (`unicode_bigram`) is dictionary-free and never touches region 16.
 //!
 //! Per-segment posting/dict stores materialize lazily on flush: the structures above bind
 //! their regions at first open but stay empty until the first applied delta.
@@ -111,7 +112,9 @@ use ic_stable_vec_deque::VecDeque as StableVecDeque;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{xxh3_128, xxh3_128_with_seed};
 
-use crate::analyzer::{ANALYZER_MECAB, ANALYZER_UNICODE_BIGRAM, analyze_pinned};
+use crate::analyzer::{
+    ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM, analyze_pinned, dict_required,
+};
 use crate::{DictStatus, FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
 
 use arena::{BlobArena, BlobRef};
@@ -559,7 +562,12 @@ where
         Self::init_with_analyzer(memories, None)
     }
 
-    /// [`init`](Self::init) with the install-arg analyzer id (validated ∈ {1, 2}).
+    /// [`init`](Self::init) with the install-arg analyzer id (validated ∈ {0, 1, 2};
+    /// plan 0332 widens the registered set to include the multilingual composite
+    /// ANALYZER_ID=0 — the DEFAULT for any absent `ANALYZER` clause. The init default
+    /// stays `ANALYZER_UNICODE_BIGRAM` for the bare-wasm-install path (canbench +
+    /// diagnostics) — the production default is set by the Router's `register_provisioned_graph`
+    /// install-arg, NOT by an open-time fallback here.
     pub fn init_with_analyzer(memories: TextMemories<M>, init_analyzer: Option<u32>) -> Self {
         let meta = Cell::init(
             memories.meta,
@@ -576,7 +584,10 @@ where
             header.layout_version
         );
         assert!(
-            matches!(header.analyzer_id, ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB),
+            matches!(
+                header.analyzer_id,
+                ANALYZER_MULTILINGUAL | ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB
+            ),
             "text index meta carries unregistered analyzer id {}",
             header.analyzer_id
         );
@@ -588,7 +599,7 @@ where
                 header.analyzer_id
             );
         }
-        if header.analyzer_id == ANALYZER_MECAB && header.dict_state == DICT_STATE_UPLOADING {
+        if dict_required(header.analyzer_id) && header.dict_state == DICT_STATE_UPLOADING {
             panic!(
                 "analyzer-2 dictionary upload was interrupted (state Uploading); \
                  the canister cannot open — re-install with fresh state"
@@ -618,16 +629,19 @@ where
                 .segments
                 .insert(ACTIVE_SEGMENT_ID, SegmentRow { active: true });
         }
-        // Eager analyzer-2 dictionary rebind (plan 0334): a finalized region is
-        // validated structurally and the resident set materialized NOW — the query
-        // budget never pays dictionary construction. Corrupt bytes fail the open
-        // loudly — the canister cannot operate on a broken dictionary. No decode, no
-        // full-container copy: the feature region stays lazy over stable memory.
-        if stores.meta.get().analyzer_id == ANALYZER_MECAB
+        // Eager dictionary rebind (plan 0334, plan 0332 widening to id 0): a
+        // finalized region is validated structurally and the resident set
+        // materialized NOW — the query budget never pays dictionary construction.
+        // Corrupt bytes fail the open loudly — the canister cannot operate on a
+        // broken dictionary. No decode, no full-container copy: the feature region
+        // stays lazy over stable memory. The mecab analyzer is the SHARED resident
+        // token surface for both id 0 and id 2 (id 0 dispatches `{kanji∪kana}` runs
+        // through it via the composite; id 2 dispatches the whole text through it).
+        if dict_required(stores.meta.get().analyzer_id)
             && stores.meta.get().dict_state == DICT_STATE_FINALIZED
         {
             crate::analyzer_mecab::load_dictionary_from_image(stores.dict_container_image())
-                .unwrap_or_else(|error| panic!("analyzer-2 dictionary open failed: {error}"));
+                .unwrap_or_else(|error| panic!("dictionary open failed: {error}"));
         }
         stores
     }
@@ -836,15 +850,17 @@ where
         ic_morph_dict::CanisterStableImage::new(self.dict_region.clone(), self.meta.get().dict_len)
     }
 
-    /// Controller-guarded append of one dictionary chunk. Fail-closed: analyzer ≠ 2,
-    /// an oversized chunk, a runaway total, or an already-finalized dictionary all
-    /// reject without mutation. Returns the new total blob length.
+    /// Controller-guarded append of one dictionary chunk. Fail-closed: analyzer
+    /// not in the dictionary-carrying set, an oversized chunk, a runaway total, or an
+    /// already-finalized dictionary all reject without mutation. Returns the new
+    /// total blob length. The `DICT_REQUIRED` gate is the single source of truth
+    /// (plan 0332: ids {0, 2} both carry the same MPD container).
     pub fn upload_dict_chunk(&mut self, bytes: Vec<u8>) -> Result<u64, String> {
         let meta = self.meta.get();
-        if meta.analyzer_id != ANALYZER_MECAB {
+        if !dict_required(meta.analyzer_id) {
             return Err(format!(
-                "dictionary upload requires analyzer {}, this index pins analyzer {}",
-                ANALYZER_MECAB, meta.analyzer_id
+                "dictionary upload requires a dictionary-carrying analyzer (ids 0 or 2), this index pins analyzer {}",
+                meta.analyzer_id
             ));
         }
         if meta.dict_state == DICT_STATE_FINALIZED {
@@ -885,14 +901,15 @@ where
     /// Controller-guarded finalize: re-reads the full region, hashes the concatenated
     /// bytes (xxh3_128) and compares against `expected_digest`. Idempotent no-op on an
     /// exact Finalized match; a mismatch rejects WITHOUT touching state. On success the
-    /// dictionary decompresses and the pinned tokenizer becomes resident BEFORE the
+    /// dictionary is structurally validated + the resident set materialized BEFORE the
     /// Finalized state is recorded, so a corrupt artifact leaves the state untouched.
+    /// The `DICT_REQUIRED` gate covers ids {0, 2} (plan 0332 widening).
     pub fn finalize_dict_upload(&mut self, expected_digest: u128) -> Result<DictStatus, String> {
         let meta = self.meta.get();
-        if meta.analyzer_id != ANALYZER_MECAB {
+        if !dict_required(meta.analyzer_id) {
             return Err(format!(
-                "dictionary finalize requires analyzer {}, this index pins analyzer {}",
-                ANALYZER_MECAB, meta.analyzer_id
+                "dictionary finalize requires a dictionary-carrying analyzer (ids 0 or 2), this index pins analyzer {}",
+                meta.analyzer_id
             ));
         }
         if meta.dict_state == DICT_STATE_FINALIZED {
@@ -963,13 +980,14 @@ where
                 docs.len()
             ));
         }
-        // Analyzer-2 gate (plan 0331): ingestion analyzes every document, so it is
-        // fail-closed until the pinned dictionary is finalized.
+        // Dictionary-carrying gate (plan 0331, plan 0332 widening to id 0):
+        // ingestion analyzes every document, so it is fail-closed until the pinned
+        // dictionary is finalized. The `DICT_REQUIRED` gate is the single source of
+        // truth (ids {0, 2} both carry the dictionary; id 1 is dictionary-free).
         let meta = self.meta.get();
-        if meta.analyzer_id == ANALYZER_MECAB && meta.dict_state != DICT_STATE_FINALIZED {
+        if dict_required(meta.analyzer_id) && meta.dict_state != DICT_STATE_FINALIZED {
             return Err(
-                "analyzer-2 dictionary is not finalized; ingestion is rejected until finalize"
-                    .to_string(),
+                "dictionary is not finalized; ingestion is rejected until finalize".to_string(),
             );
         }
         // Preflight-then-write: analyze everything up front so any cap violation rejects
@@ -1234,13 +1252,12 @@ where
         if k == 0 {
             return Ok(Vec::new());
         }
-        // Analyzer-2 gate (plan 0331): no query analysis without a finalized dictionary.
+        // Dictionary-carrying gate (plan 0331, plan 0332 widening to id 0): no
+        // query analysis without a finalized dictionary. The `DICT_REQUIRED` gate
+        // is the single source of truth (ids {0, 2} both carry the dictionary).
         let meta = self.meta.get();
-        if meta.analyzer_id == ANALYZER_MECAB && meta.dict_state != DICT_STATE_FINALIZED {
-            return Err(
-                "analyzer-2 dictionary is not finalized; the index cannot serve queries"
-                    .to_string(),
-            );
+        if dict_required(meta.analyzer_id) && meta.dict_state != DICT_STATE_FINALIZED {
+            return Err("dictionary is not finalized; the index cannot serve queries".to_string());
         }
 
         // Caller-built scoring data: identity tf→part table (contribution part = tf)

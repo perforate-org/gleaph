@@ -186,11 +186,12 @@ pub(crate) fn register_text_index(
             "text index target canister must not be the anonymous principal".to_owned(),
         ));
     }
-    // Catalog pin lift (plan 0331): the creation-pinned analyzer must be one of the
-    // admitted set — ids mirror text_canister::{ANALYZER_UNICODE_BIGRAM, ANALYZER_MECAB}.
-    if !matches!(analyzer_id, 1 | 2) {
+    // Catalog pin lift (plan 0331, plan 0332 widening): the creation-pinned analyzer
+    // must be one of the admitted set — ids mirror text_canister::{ANALYZER_MULTILINGUAL,
+    // ANALYZER_UNICODE_BIGRAM, ANALYZER_MECAB}; id 0 is the DEFAULT (absent clause).
+    if analyzer_id > 2 {
         return Err(RouterError::InvalidArgument(format!(
-            "unregistered text analyzer id {analyzer_id} (admitted set: 1, 2)"
+            "unregistered text analyzer id {analyzer_id} (admitted set: 0, 1, 2)"
         )));
     }
 

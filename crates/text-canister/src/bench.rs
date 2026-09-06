@@ -224,3 +224,75 @@ fn bench_query_term_top100_unscored() -> canbench_rs::BenchResult {
         black_box(truth);
     })
 }
+
+// -- Plan 0332: composite per-doc analysis cycles -------------------------------------------
+
+/// Analyzer-driven per-doc analysis cycles (plan 0332): ONE `analyze_pinned` call over
+/// ONE fixture doc, id 0 (the multilingual composite default) vs id 1 (pure bigram).
+/// The measured doc renders from the fixture corpus's ASCII vocabulary slots ONLY
+/// (even indices — the odd slots are synthetic Japanese whose mecab layer requires
+/// the stable dictionary, which the canbench wasm does not carry). So the measured
+/// scope is the composite's non-dictionary half: script dispatch + the Latin Porter
+/// layer, against id 1's whole-word pass; the Japanese mecab layer's per-unit cost is
+/// the id-2 engine's (measured in plan 0334).
+#[bench(raw)]
+fn bench_analyze_composite_per_doc() -> canbench_rs::BenchResult {
+    // Build the doc OUTSIDE the measured closure from the same fixture family.
+    let corpus = ic_stable_text_postings::corpus::generate(ic_stable_text_postings::CorpusConfig {
+        seed: CORPUS_SEED,
+        docs: 8,
+        avg_len: CORPUS_AVG_LEN,
+        vocab_size: CORPUS_VOCAB,
+        zipf_s: CORPUS_ZIPF_S,
+    });
+    let doc_text = corpus.docs[0]
+        .iter()
+        // ASCII vocabulary slots only (even indices): the composite's Latin layer.
+        .filter(|&token| token % 2 == 0)
+        .map(|&token| corpus.vocab[token as usize].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let doc_text = black_box(doc_text);
+    // Correctness gate outside the measured closure: the composite emits a superset
+    // of the bigram units (dual emission adds stems, never removes surfaces).
+    let bigram =
+        crate::analyzer::analyze_pinned(crate::analyzer::ANALYZER_UNICODE_BIGRAM, &doc_text);
+    let composite =
+        crate::analyzer::analyze_pinned(crate::analyzer::ANALYZER_MULTILINGUAL, &doc_text);
+    for unit in &bigram {
+        assert!(
+            composite.contains(unit),
+            "composite must preserve every bigram unit: {unit:?}"
+        );
+    }
+    canbench_rs::bench_fn(move || {
+        let units =
+            crate::analyzer::analyze_pinned(crate::analyzer::ANALYZER_MULTILINGUAL, &doc_text);
+        black_box(units);
+    })
+}
+
+/// The id-1 counterpart of the composite per-doc bench (same doc, pure bigram) — the
+/// measured DELTA between the two benches is the composite's per-doc rule-layer cost.
+#[bench(raw)]
+fn bench_analyze_bigram_per_doc() -> canbench_rs::BenchResult {
+    let corpus = ic_stable_text_postings::corpus::generate(ic_stable_text_postings::CorpusConfig {
+        seed: CORPUS_SEED,
+        docs: 8,
+        avg_len: CORPUS_AVG_LEN,
+        vocab_size: CORPUS_VOCAB,
+        zipf_s: CORPUS_ZIPF_S,
+    });
+    let doc_text = corpus.docs[0]
+        .iter()
+        .filter(|&token| token % 2 == 0)
+        .map(|&token| corpus.vocab[token as usize].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let doc_text = black_box(doc_text);
+    canbench_rs::bench_fn(move || {
+        let units =
+            crate::analyzer::analyze_pinned(crate::analyzer::ANALYZER_UNICODE_BIGRAM, &doc_text);
+        black_box(units);
+    })
+}
