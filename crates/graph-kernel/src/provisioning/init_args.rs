@@ -64,8 +64,8 @@ pub struct VectorCanisterInitArgs {
 
 /// Candid init args for a Text canister issued by Provision (plan 0297; analyzer id per
 /// plan 0331). The Candid shape mirrors `text_canister::TextCanisterInitArgs` exactly
-/// (`controller`, `analyzer_id`); this module only fixes the wire shape so Router-built
-/// install args decode in the text canister's init handler.
+/// (`controller`, `analyzer_id`, `dict_relay_caller`); this module only fixes the wire shape
+/// so Router-built install args decode in the text canister's init handler.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct TextCanisterInitArgs {
     /// Controller allowed to call the text canister's admin endpoints (`admin_flush`,
@@ -75,4 +75,54 @@ pub struct TextCanisterInitArgs {
     /// Pinned analyzer id (plan 0331): 1 = unicode-bigram, 2 = vibrato + ipadic lemma
     /// pipeline. The text canister validates ∈ {1, 2} fail-closed at the open.
     pub analyzer_id: Option<u32>,
+    /// Principal allowed to call the dictionary-relay endpoints (`admin_upload_dict_chunk` /
+    /// `admin_finalize_dict_upload`) in addition to the stored controller. Wired to the
+    /// Provision canister principal by the Router at build time. `None` (or anonymous) is
+    /// fail-closed on the text side: no relay caller is authorized.
+    pub dict_relay_caller: Option<Principal>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{decode_args, encode_args};
+
+    #[test]
+    fn text_canister_init_args_candid_roundtrip() {
+        for dict_relay_caller in [None, Some(Principal::from_slice(&[0x42; 29]))] {
+            let args = TextCanisterInitArgs {
+                controller: Some(Principal::from_slice(&[0x41; 29])),
+                analyzer_id: Some(2),
+                dict_relay_caller,
+            };
+            let bytes = encode_args((args.clone(),)).unwrap();
+            let decoded: (TextCanisterInitArgs,) = decode_args(&bytes).unwrap();
+            assert_eq!(decoded.0.controller, args.controller);
+            assert_eq!(decoded.0.analyzer_id, args.analyzer_id);
+            assert_eq!(decoded.0.dict_relay_caller, args.dict_relay_caller);
+        }
+    }
+
+    #[test]
+    fn old_two_field_init_args_decodes_with_none_relay_caller() {
+        // A pre-0335 sender that only encodes `(controller, analyzer_id)` must decode under
+        // the new receiver as `dict_relay_caller = None` (Candid fills the missing optional).
+        #[derive(CandidType, Deserialize, Clone, Debug)]
+        struct OldTextCanisterInitArgs {
+            controller: Option<Principal>,
+            analyzer_id: Option<u32>,
+        }
+        let old = OldTextCanisterInitArgs {
+            controller: Some(Principal::from_slice(&[0x41; 29])),
+            analyzer_id: Some(0),
+        };
+        let bytes = encode_args((old,)).unwrap();
+        let decoded: (TextCanisterInitArgs,) = decode_args(&bytes).unwrap();
+        assert_eq!(
+            decoded.0.controller,
+            Some(Principal::from_slice(&[0x41; 29]))
+        );
+        assert_eq!(decoded.0.analyzer_id, Some(0));
+        assert_eq!(decoded.0.dict_relay_caller, None);
+    }
 }

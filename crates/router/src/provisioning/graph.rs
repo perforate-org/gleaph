@@ -167,7 +167,8 @@ where
     );
     let request_key = ProvisioningRequestKey::new(&request_id, &deployment_id);
     let store = RouterProvisioningRequestStore::new();
-    let install_args = build_install_args_with_router(args, router_principal);
+    let install_args =
+        build_install_args_with_router(args, router_principal, Some(provision_canister));
     let graph_name_for_request = args.graph_name.clone();
     let requested_resources_for_request = args.requested_resources.clone();
     let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
@@ -552,6 +553,7 @@ async fn reconcile_provisioned_graph(
 fn build_install_args_with_router(
     args: &types::ProvisionGraphArgs,
     router_principal: Principal,
+    dict_relay_caller: Option<Principal>,
 ) -> Vec<Vec<u8>> {
     use candid::Encode;
     use gleaph_graph_kernel::provisioning::init_args::{
@@ -595,6 +597,9 @@ fn build_install_args_with_router(
                 let init = TextCanisterInitArgs {
                     controller: Some(router_principal),
                     analyzer_id: Some(args.text_analyzer_id),
+                    // The Provision canister is authorized to drive the dictionary relay
+                    // (plan 0335); the text side fails closed if this is None/anonymous.
+                    dict_relay_caller,
                 };
                 Encode!(&init).expect("encode TextCanisterInitArgs")
             }
@@ -718,7 +723,7 @@ mod tests {
             reserved_graph_id: None,
             graph_name: args.graph_name.clone(),
             requested_resources: args.requested_resources.clone(),
-            install_args: build_install_args_with_router(args, caller),
+            install_args: build_install_args_with_router(args, caller, None),
             authorized_caller: args.authorized_caller,
             release_id: args.release_id.clone(),
         };
@@ -732,6 +737,30 @@ mod tests {
             state: RouterProvisioningRequestState::AwaitingAck,
             created_at_ns: 1,
         }
+    }
+
+    #[test]
+    fn text_index_install_args_carry_dict_relay_caller() {
+        use candid::Decode;
+        use gleaph_graph_kernel::federation::TextIndexId;
+        use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
+
+        let router = Principal::from_slice(&[0x41; 29]);
+        let provision = Principal::from_slice(&[0x42; 29]);
+        let args = graph_args(
+            "dep-1",
+            "tenant.main",
+            vec![ProvisionableResource {
+                logical_resource: LogicalResource::TextIndex(TextIndexId::new(0)),
+            }],
+        );
+        let install_args = build_install_args_with_router(&args, router, Some(provision));
+        assert_eq!(install_args.len(), 1);
+        let init: TextCanisterInitArgs = Decode!(install_args[0].as_slice(), TextCanisterInitArgs)
+            .expect("decode TextCanisterInitArgs");
+        assert_eq!(init.controller, Some(router));
+        assert_eq!(init.analyzer_id, Some(1));
+        assert_eq!(init.dict_relay_caller, Some(provision));
     }
 
     #[test]
@@ -1471,7 +1500,7 @@ mod tests {
                 reserved_graph_id: None,
                 graph_name: args.graph_name.clone(),
                 requested_resources: args.requested_resources.clone(),
-                install_args: build_install_args_with_router(&args, admin),
+                install_args: build_install_args_with_router(&args, admin, None),
                 authorized_caller: args.authorized_caller,
                 release_id: args.release_id.clone(),
             };
