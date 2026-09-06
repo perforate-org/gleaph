@@ -143,5 +143,6 @@ impl Storable for ProvisioningIntentKey {
 #[cfg(test)]
 mod tests;
 
+pub mod dictionary;
 pub mod init_args;
 pub mod wire;
