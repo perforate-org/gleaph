@@ -5,8 +5,8 @@ use super::{
     ProvisionResultOutcome, accept_envelope_with_caller, artifact_get_status,
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     build_record_from_request, complete_graph_registration_with_caller, query_job_with_caller,
-    record_to_result, release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, upsert_deployment_grant_with_caller,
+    record_to_result, release_activate_with_caller, release_get_active,
+    release_install_with_caller, release_publish_with_caller, upsert_deployment_grant_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -321,8 +321,10 @@ fn test_provision_no_partial_writes_on_lock_failure() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     // Pre-lock the only intent.
-    let held_key =
-        ProvisioningIntentKey::new(dep_id().as_str(), LogicalResource::GraphShard(ShardId::new(0)));
+    let held_key = ProvisioningIntentKey::new(
+        dep_id().as_str(),
+        LogicalResource::GraphShard(ShardId::new(0)),
+    );
     assert!(store.acquire_intent_lock(held_key.clone()));
 
     let req = test_request(
@@ -634,8 +636,10 @@ fn registration_ack_fresh_requires_map2_owner_and_map3_presence() {
     let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
     advance_to_registration_pending(&store, &key, 10);
     // Release the lock behind the store's back.
-    let lock_key =
-        ProvisioningIntentKey::new(dep_id().as_str(), LogicalResource::GraphShard(ShardId::new(0)));
+    let lock_key = ProvisioningIntentKey::new(
+        dep_id().as_str(),
+        LogicalResource::GraphShard(ShardId::new(0)),
+    );
     assert!(store.release_intent_lock(&lock_key));
     let result = complete_graph_registration_with_caller(
         router_principal(),
@@ -754,7 +758,10 @@ fn registration_ack_completed_replay_preserves_new_foreign_rows() {
         Ok(RouterRegistrationAckResponse::Applied)
     );
 
-    let intent = ProvisioningIntentKey::new(dep_id().as_str(), LogicalResource::GraphShard(ShardId::new(0)));
+    let intent = ProvisioningIntentKey::new(
+        dep_id().as_str(),
+        LogicalResource::GraphShard(ShardId::new(0)),
+    );
     let foreign = ProvisionJobRequestKey::new(&test_request_id("foreign"), dep_id().as_str());
     store.set_intent_owner_for_test(intent.clone(), Some(foreign.clone()));
     store.set_intent_lock_for_test(intent.clone(), true);
@@ -960,9 +967,11 @@ fn test_granted_agent_may_issue_under_account_deployment() {
         matches!(result, ProvisionAcceptResponse::Accepted { .. }),
         "a granted issuer may issue under the deployment id it names"
     );
-    assert!(store
-        .get_by_request(&test_request_id("req-boot"), &other_dep_id())
-        .is_some());
+    assert!(
+        store
+            .get_by_request(&test_request_id("req-boot"), &other_dep_id())
+            .is_some()
+    );
 }
 
 #[test]
@@ -1021,8 +1030,10 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     .unwrap();
 
     let key_a = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
-    let intent_key =
-        ProvisioningIntentKey::new(dep_id().as_str(), LogicalResource::GraphShard(ShardId::new(0)));
+    let intent_key = ProvisioningIntentKey::new(
+        dep_id().as_str(),
+        LogicalResource::GraphShard(ShardId::new(0)),
+    );
 
     // Job B: same deployment, same resource, different request_id.
     let req_b = test_request(
@@ -1486,14 +1497,12 @@ fn upsert_deployment_grant_by_governance_is_idempotent() {
     let deployment_store = DeploymentGrantStore::new();
     let issuer = pid(10);
 
-    let first =
-        upsert_deployment_grant_with_caller(bootstrap, upsert_args(issuer), 1).unwrap();
+    let first = upsert_deployment_grant_with_caller(bootstrap, upsert_args(issuer), 1).unwrap();
     assert_eq!(first.action, BootstrapAuthAction::Upsert);
     assert_eq!(first.caller, bootstrap);
 
     // Idempotent: upserting again succeeds with no state change.
-    let second =
-        upsert_deployment_grant_with_caller(bootstrap, upsert_args(issuer), 2).unwrap();
+    let second = upsert_deployment_grant_with_caller(bootstrap, upsert_args(issuer), 2).unwrap();
     assert_eq!(second.action, BootstrapAuthAction::Upsert);
     assert!(deployment_store.contains(&issuer));
     assert!(!deployment_store.contains(&pid(11)));
@@ -1525,12 +1534,8 @@ fn upsert_deployment_grant_by_non_governance_returns_unauthorized_with_reject_au
     });
     let auth_store = ProvisionBootstrapAuthStore::new();
 
-    let err = upsert_deployment_grant_with_caller(
-        other_principal(),
-        upsert_args(pid(10)),
-        1,
-    )
-    .unwrap_err();
+    let err = upsert_deployment_grant_with_caller(other_principal(), upsert_args(pid(10)), 1)
+        .unwrap_err();
     assert_eq!(err, ProvisionAdminError::Unauthorized);
     let latest = auth_store.latest(other_principal()).unwrap();
     assert_eq!(latest.action, BootstrapAuthAction::RejectUnauthorized);
@@ -1542,12 +1547,8 @@ fn upsert_deployment_grant_with_no_bootstrap_authority_returns_not_seeded_with_r
     reset_all_maps();
     let auth_store = ProvisionBootstrapAuthStore::new();
 
-    let err = upsert_deployment_grant_with_caller(
-        other_principal(),
-        upsert_args(pid(10)),
-        1,
-    )
-    .unwrap_err();
+    let err = upsert_deployment_grant_with_caller(other_principal(), upsert_args(pid(10)), 1)
+        .unwrap_err();
     assert_eq!(err, ProvisionAdminError::NoBootstrapAuthority);
     let latest = auth_store.latest(other_principal()).unwrap();
     assert_eq!(latest.action, BootstrapAuthAction::RejectNotSeeded);
@@ -1562,16 +1563,16 @@ fn upsert_deployment_grant_audit_log_survives_handler_return_path() {
     let bootstrap = gov_principal();
     let auth_store = ProvisionBootstrapAuthStore::new();
 
-    let entry = upsert_deployment_grant_with_caller(
-        bootstrap,
-        upsert_args(deployment_issuer()),
-        1,
-    )
-    .unwrap();
+    let entry = upsert_deployment_grant_with_caller(bootstrap, upsert_args(deployment_issuer()), 1)
+        .unwrap();
     assert_eq!(entry.action, BootstrapAuthAction::Upsert);
 
     let history = auth_store.history(bootstrap);
-    assert!(history.iter().any(|e| e.action == BootstrapAuthAction::Upsert));
+    assert!(
+        history
+            .iter()
+            .any(|e| e.action == BootstrapAuthAction::Upsert)
+    );
     assert_eq!(auth_store.latest(bootstrap), Some(entry));
     // The grant is durably persisted.
     assert!(DeploymentGrantStore::new().contains(&deployment_issuer()));
@@ -2163,8 +2164,10 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
     assert_eq!(completed_record.resources, pending_record.resources);
     assert_eq!(completed_record.completed_effect_count, 3);
     assert_eq!(completed_record.immutable_request_digest, expected_digest);
-    let intent_key =
-        ProvisioningIntentKey::new(dep_id().as_str(), LogicalResource::GraphShard(ShardId::new(0)));
+    let intent_key = ProvisioningIntentKey::new(
+        dep_id().as_str(),
+        LogicalResource::GraphShard(ShardId::new(0)),
+    );
     assert_eq!(
         reopened_store.assert_intent_to_request_for_test(
             dep_id().as_str(),

@@ -5,9 +5,9 @@
 //! `pub(crate)` so the 33+ unit tests and the candid export tests can drive every branch without WASM.
 
 use crate::canister::{
-    ArtifactUpload, ProvisionIngressResult, ProvisionJobView,
-    RouterRegistrationAckResult, accept_envelope_with_caller, artifact_audit_history_with_caller,
-    artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
+    accept_envelope_with_caller, artifact_audit_history_with_caller, artifact_get_status,
+    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     complete_graph_registration_with_caller, query_job_with_caller, release_activate_with_caller,
     release_get_active, release_install_with_caller, release_publish_with_caller,
     upsert_deployment_grant_with_caller,
@@ -16,8 +16,8 @@ use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, InstallError, ProvisionRequest, ReleaseActivateArgs,
-    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult,
-    ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck, UpsertDeploymentGrantArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
+    ReleasePublishArgs, RouterRegistrationAck, UpsertDeploymentGrantArgs,
 };
 
 /// Bootstrap the deployment trust store from init args.

@@ -14,8 +14,7 @@ pub mod canister;
 mod candid;
 
 use crate::canister::{
-    ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
-    handlers,
+    ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult, handlers,
 };
 use crate::types::UpsertDeploymentGrantError;
 use crate::types::{

@@ -83,6 +83,11 @@ where
         } => created_resources,
         types::ProvisionGraphResponse::Completed => unreachable!(),
     };
+    // No active release on Provision: the job stays Reserved with nothing created to register.
+    // Surface success; a later retry folds the reconcile once artifacts are available.
+    if created_resources.is_empty() {
+        return Ok(response);
+    }
     let store = RouterProvisioningRequestStore::new();
     let record = store
         .get_by_request_id(&request_key)
@@ -151,12 +156,11 @@ where
         .requested_resources
         .first()
         .ok_or_else(|| RouterError::InvalidArgument("requested_resources is empty".to_owned()))?;
-    let intent_key = ProvisioningIntentKey::new(&args.deployment_id, canonical.logical_resource);
-
-    // Seed the Router-side provisioning-request catalog before the outbound send so the
-    // ack callback has a canonical record to advance. We need deployment_id for the key, so
-    // clone it before moving fields into the ProvisionRequest wire struct.
-    let deployment_id = args.deployment_id.clone();
+    // Under the deployment-grant model the Router is the deployment: the envelope's
+    // deployment_id must be the Router's own principal (`deployment_id = issuer = caller`),
+    // regardless of what the caller passed — Provision rejects any mismatching deployment.
+    let deployment_id = router_principal.to_text();
+    let intent_key = ProvisioningIntentKey::new(&deployment_id, canonical.logical_resource);
     let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
         &args.graph_name,
         &args.requested_resources,

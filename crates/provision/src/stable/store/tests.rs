@@ -693,10 +693,7 @@ fn bootstrap_auth_facade_uses_separate_memory_ids() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].action, BootstrapAuthAction::InitialSeed);
     // A bug that placed both structures on one MemoryId would likely corrupt one of these reads.
-    assert_eq!(
-        auth_store.get_authority().unwrap().seeded_at_ns,
-        100
-    );
+    assert_eq!(auth_store.get_authority().unwrap().seeded_at_ns, 100);
 }
 
 #[test]
