@@ -28,7 +28,8 @@ const DIRECT_SELECTED_SLOT_COUNT: usize = 2;
 const INLINE_VALUE_WIDTH: u16 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BenchEdge(u32);
+// Plan 0336: shared with the sibling `bench_workload` module (bench-scope only).
+pub(super) struct BenchEdge(pub(super) u32);
 
 impl CsrEdge for BenchEdge {
     const BYTES: usize = 10;
@@ -123,11 +124,15 @@ impl CsrEdgeTombstone for InlinePropertyBenchEdge {
 }
 
 const OFFSET_LIVE_ROWS: u32 = 1_024;
-const OFFSET_WINDOW_OFFSET: u32 = 960;
-const OFFSET_WINDOW_LIMIT: u32 = 32;
+pub(super) const OFFSET_WINDOW_OFFSET: u32 = 960;
+pub(super) const OFFSET_WINDOW_LIMIT: u32 = 32;
 const OFFSET_EDGE_CAPACITY: u64 = 16_384;
 const OFFSET_TARGET_BASE: u32 = 10_000;
 const OFFSET_EXTENTS: [u32; 4] = [1_024, 2_048, 4_096, 8_192];
+
+// Plan 0336: bench-scope constants shared with `bench_workload`.
+pub(super) const OFFSET_WORKLOAD_EXTENT: u32 = 8_192;
+pub(super) const OFFSET_WORKLOAD_STRIDE: u32 = 8;
 
 struct OffsetFixture {
     graph: LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
@@ -138,6 +143,21 @@ struct OffsetFixture {
 
 fn offset_target(slot: u32) -> u32 {
     OFFSET_TARGET_BASE + slot
+}
+
+// Plan 0336: bench-scope helpers shared with `bench_workload`.
+pub(super) fn workload_target(slot: u32) -> u32 {
+    offset_target(slot)
+}
+
+pub(super) fn workload_dense_graph(
+    extent: u32,
+) -> (
+    LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    VertexId,
+    BucketLabelKey,
+) {
+    build_dense_offset_graph(extent)
 }
 
 fn offset_bucket(

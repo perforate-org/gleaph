@@ -34,6 +34,9 @@ use crate::traverse::{Traversal, TraversalOrder, TraversalRequest, TraversalWind
 #[cfg(feature = "canbench")]
 mod bench;
 
+#[cfg(feature = "canbench")]
+mod bench_workload;
+
 use super::{
     BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, OutEdgeOrder, error::LabeledOperationError,
 };
