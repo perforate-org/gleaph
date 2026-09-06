@@ -251,7 +251,7 @@ pub(crate) async fn create_graph_admission(
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
-        text_analyzer_id: 1,
+        text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
     };
     create_graph_admission_with(
         caller,

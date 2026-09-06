@@ -221,7 +221,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
-        text_analyzer_id: 1,
+        text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -825,7 +825,7 @@ async fn provision_index_canisters(
         release_id: "default".to_owned(),
         owner: caller,
         admins: std::collections::BTreeSet::new(),
-        text_analyzer_id: 1,
+        text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
