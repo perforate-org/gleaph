@@ -1087,6 +1087,10 @@ fn multilingual_composite_default_recalls_across_languages() {
     seed_text_vertex(&env, "I was running fast yesterday");
     seed_text_vertex(&env, "知识图谱数据库应用");
     seed_text_vertex(&env, "unrelated zebra");
+    // Mixed-language doc for LEG 6: all four layers in ONE document, with terms
+    // chosen to NOT overlap the single-language docs' query units above
+    // (ねこ/walking/책에서/图书 vs 走る/학교/run/数据).
+    seed_text_vertex(&env, "ねこが walking 중 책과 图书");
 
     // LEG 1 — DEFAULT admission: the bare admin endpoint carries NO analyzer
     // argument; the absent clause must resolve to the composite (id 0).
@@ -1209,6 +1213,23 @@ fn multilingual_composite_default_recalls_across_languages() {
     assert_ne!(
         cross.row_count, 2,
         "Porter stem must not leak into the Japanese doc's candidate set"
+    );
+
+    // LEG 6 — a MIXED-language query against the MIXED-language doc: every layer
+    // dispatches inside ONE query string and all four units hit the same doc.
+    // ねこ → mecab layer, walking → Porter walk, 책 (from 책과) → 조사 strip, 图书 → Han bigram.
+    let mixed = gql_query_with_params_as_admin(
+        &env.fed,
+        QUERY,
+        scored_query_params("ねこ walking 책 图书", 10),
+    );
+    assert_eq!(
+        mixed.row_count, 1,
+        "the mixed query must recall exactly the mixed-language doc"
+    );
+    assert!(
+        scored_rows(&mixed)[0].1 > 0.0,
+        "the mixed-language hit carries a positive score"
     );
 
     // Determinism: an identical re-run returns the identical order.
