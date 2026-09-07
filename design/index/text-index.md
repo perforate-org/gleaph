@@ -111,8 +111,9 @@ landings + plan 0332 default promotion):
   stays `multilingual` (the Meilisearch precedent: crate charabia, config field descriptive).
   The ABSENT `ANALYZER` clause, the provision default, and the DDL admission default all
   resolve to 0 — the breaking V1-fresh-install consequence is that the DEFAULT index path now
-  requires the dictionary upload flow (the same 52,930,923-byte MPD container as id 2; the
-  Router-side dictionary catalog + relay remains the Later-Slice mitigation). Per-doc analysis
+  requires the dictionary (the same MPD container as id 2), which the Provision canister now
+  supplies automatically through the plan 0335 catalog + relay — a newly provisioned
+  dictionary-carrying index reaches Ready with ZERO manual dictionary steps. Per-doc analysis
   cycles (canbench, ASCII fixture): composite 131.3K vs bigram 113.2K instructions (~16%
   Latin-layer overhead; the Japanese mecab layer rides the id-2 engine cost).
 - **`unicode_bigram` (id 1, non-default, byte-unchanged)** — Unicode segmentation + NFKC +
@@ -125,11 +126,13 @@ landings + plan 0332 default promotion):
   (基本形, feature column 6) for content words with particles/auxiliaries/symbols dropped, all
   parameterized by the Japanese `DictionaryProfile`. Deterministic and strict-idempotent;
   100% unit-sequence parity with the previous vibrato engine (plan 0333 gate). The dictionary is
-  NOT in the wasm (~1.6 MB canister wasm): stable region 16 carries the MPD container
-  (52,930,923 bytes — sys.dic 49,199,027 + unk.dic 5,684 + matrix.bin 3,463,716 + char.bin
-  262,496, about $0.058/month), uploaded via relay-guarded `admin_upload_dict_chunk` in two
+  NOT in the wasm (1,797,134 B after plan 0335 re-added ruzstd, +157 KB): stable region 16 carries the MPD container
+  (52,931,159 bytes total — the four images sum to 52,930,923: sys.dic 49,199,027 + unk.dic
+  5,684 + matrix.bin 3,463,716 + char.bin 262,496 — plus the 8-byte MPD header and the
+  228-byte entry table; about $0.058/month), uploaded via relay-guarded `admin_upload_dict_chunk` in two
   transport modes (plan 0335): RAW (≤ 1 MiB/call, raw contiguous appends into region 16;
-  the manual/E2E path, byte-identical to the pre-0353 shape) and COMPRESSED (~1.9 MiB/call
+  the manual path for directly-installed canisters — unreachable from provisioning targets,
+  whose relay auto-finalizes — byte-identical to the pre-0335 shape) and COMPRESSED (~1.9 MiB/call
   under the shared `MAX_DICT_COMPRESSED_CHUNK_BYTES = 1,945,600` cap, the cross-subnet 2 MiB
   inter-canister payload limit minus Candid/envelope headroom; zstd container bytes staged
   into region 17 during the provision relay, ~6 calls for the 10.9 MB zstd-19 artifact).
@@ -147,7 +150,8 @@ landings + plan 0332 default promotion):
   container validation + resident-set memcpy over batched stable reads — NO decode, NO
   full-container copy: the resident set is ~21 MB (matrix.bin + char.bin + unk.dic + sys.dic
   trie/word-params), the feature-string region stays lazy over stable memory (measured hot set
-  ~472 KiB of pages per MB of text). Measured rebind delta 59,900,562 cycles vs the
+  ~472 KiB of pages per MB of text). Measured rebind delta 59,900,850 cycles (plan 0335 gate 6, same-run bare-canister baseline;
+  matching the 0334 measurement 59,900,562 within 288 cycles) vs the
   4,752,264,345-cycle eager-decode baseline (79x). Native throughput 0.5-0.6x vibrato
   (bounded-lookup engine); the DDL clause contract lives in
   [extension-syntax.md](../gql/extension-syntax.md).
