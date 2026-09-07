@@ -19,8 +19,9 @@ use gleaph_migration_api::{
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
 };
 use gleaph_pocket_ic_tests::{
+    FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
     finish_provision_wired_single_shard_federation, gql_query_with_params_as_admin,
-    install_provision_wired_router, wasm_bytes, FederationEnv, ProvisionWiredRouterEnv, GRAPH_NAME,
+    install_provision_wired_router, wasm_bytes,
 };
 use gleaph_router::types::{TextIndexInfo, TextIndexStatusView};
 use pocket_ic::PocketIc;
@@ -128,8 +129,8 @@ fn publish_verified_artifact(
     wasm: &[u8],
 ) -> gleaph_provision::types::ArtifactId {
     use gleaph_provision::types::{
-        sha256, ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload,
-        ArtifactUploadChunkArgs,
+        ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
+        sha256,
     };
 
     let full_sha = sha256(wasm);
