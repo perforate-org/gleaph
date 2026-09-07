@@ -28,7 +28,6 @@ mod analyzer_multilingual;
 mod backfill;
 mod guards;
 mod init;
-mod normalization;
 mod state;
 
 #[cfg(feature = "canbench")]

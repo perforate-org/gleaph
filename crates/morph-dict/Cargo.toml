@@ -12,4 +12,5 @@ readme = "README.md"
 byteorder = "1.5"
 thiserror = "2.0"
 sha2 = { workspace = true }
+unicode-normalization = "0.1"
 

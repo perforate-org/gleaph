@@ -2,7 +2,7 @@
 //! plan 0333 proof, plan 0334 landing) over the `morph-dict` engine with the
 //! `ic-morph-dict` stable-memory adapter.
 //!
-//! Pipeline: whole-text pre-pass (the shared [`crate::normalization`] module: NFKC +
+//! Pipeline: whole-text pre-pass (the shared [`morph_dict::normalize`] module: NFKC +
 //! Unicode lowercase + variation-selector strip — the v1 analyzer's normalization order,
 //! applied to the whole text so word adjacency survives for the dictionary; the strip is
 //! safe pre-tokenization because no ipadic surface contains a variation selector, pinned
@@ -125,9 +125,9 @@ fn analyze_with(analyzer: &morph_dict::Analyzer, text: &str) -> Vec<String> {
     // (茅ヶ崎, 関ヶ原), so pre-tokenization folding would rewrite the input away from the
     // dictionary; the fold applies to the EMITTED units below (plan 0339 key design
     // decision — dictionary fidelity).
-    let normalized = crate::normalization::prepass(text);
+    let normalized = morph_dict::normalize::prepass(text);
     let mut units = analyzer.analyze(&normalized);
-    crate::normalization::fold_units(&mut units);
+    morph_dict::normalize::fold_units(&mut units);
     units
 }
 
@@ -208,7 +208,7 @@ mod tests {
                 assert!(
                     !field
                         .chars()
-                        .any(crate::normalization::is_variation_selector_for_scan),
+                        .any(morph_dict::normalize::is_variation_selector_for_scan),
                     "{name} carries a variation selector in a valid-UTF-8 field: {field:?}"
                 );
             }

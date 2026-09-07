@@ -2,7 +2,7 @@
 //!
 //! Pipeline: UAX #29 word boundaries over the raw text, then per segment NFKC
 //! normalization followed by Unicode lowercasing and the variation-selector strip
-//! (the shared [`crate::normalization`] pre-pass), then the kana counter-variant
+//! (the shared [`morph_dict::normalize`] pre-pass), then the kana counter-variant
 //! fold (ヶ/ヵ → ケ) applied per segment BEFORE the CJK run accumulates — so the run
 //! bigrams form over folded chars and non-CJK tokens emit folded (an emitted-unit
 //! fold; the mecab analyzer folds its emitted lemmas instead, and the fold NEVER
@@ -96,8 +96,8 @@ pub fn analyze(text: &str) -> Vec<String> {
         // The kana counter-variant fold runs per segment BEFORE the CJK run
         // accumulates, so the run bigrams form over folded chars and non-CJK tokens
         // emit folded (emitted-unit fold — never applied to pre-mecab input).
-        let mut normalized = crate::normalization::prepass(segment);
-        crate::normalization::fold_unit(&mut normalized);
+        let mut normalized = morph_dict::normalize::prepass(segment);
+        morph_dict::normalize::fold_unit(&mut normalized);
         if !normalized.chars().any(is_word_char) {
             continue; // pure separator/symbol segment; the gap breaks CJK adjacency
         }

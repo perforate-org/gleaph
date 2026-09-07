@@ -5,7 +5,7 @@
 //! ## Pipeline
 //!
 //! 1. Shared pre-pass: whole-text NFKC + Unicode lowercase + variation-selector strip
-//!    (the shared [`crate::normalization`] module — the same pre-pass the id-2 mecab
+//!    (the shared [`morph_dict::normalize`] module — the same pre-pass the id-2 mecab
 //!    analyzer runs; the strip is safe pre-tokenization because no ipadic surface
 //!    contains a variation selector);
 //! 2. UAX #29 segmentation (per-word boundaries, the v1 contract);
@@ -852,7 +852,7 @@ fn layer_latin(run: &str, out: &mut Vec<String>) {
 /// accumulates maximal per-class script runs, and dispatches each run to its
 /// layer. Output order follows input order; duplicates preserved.
 pub fn analyze(text: &str) -> Vec<String> {
-    let pre = crate::normalization::prepass(text);
+    let pre = morph_dict::normalize::prepass(text);
     let mut out = Vec::new();
     // Per UAX #29 segment, accumulate the per-class run. A segment break is a
     // word-boundary that the layers treat as a hard separator (the mecab layer

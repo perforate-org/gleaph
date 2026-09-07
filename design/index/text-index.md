@@ -1,6 +1,6 @@
 # Text index
 
-Last updated: 2026-09-07 (plan 0339 docs-sync)
+Last updated: 2026-09-07 (plan 0340 docs-sync)
 Status: **Implemented (v1)** — engine accepted ([ADR 0077](../adr/0077-text-index-engine.md));
 canister wired and lifecycle-verified on PocketIC (plan 0294, 2026-08-24); density-matched hot
 stores + whole-path term-search bench (plan 0295); driver economics closed (plan 0296). Plan
@@ -163,11 +163,11 @@ landings + plan 0332 default promotion):
   (bounded-lookup engine); the DDL clause contract lives in
   [extension-syntax.md](../gql/extension-syntax.md).
 
-### Shared normalization + Japanese folding (plan 0339)
+### Shared normalization + Japanese folding (plan 0339, ported to morph-dict in plan 0340)
 
-A single normalization module, `crates/text-canister/src/normalization.rs`, is the choke point
-for the wired pipelines (ids 1 and 2; koine's Japanese layer inherits it through the id-2
-delegation). Two pure, deterministic steps apply at different stages:
+A single normalization module, `morph_dict::normalize` (`crates/morph-dict/src/normalize.rs`),
+is the choke point for the wired pipelines (ids 1 and 2; koine's Japanese layer inherits it
+through the id-2 delegation). Two pure, deterministic steps apply at different stages:
 
 - **Pre-pass (before tokenization): NFKC → Unicode lowercase → variation-selector strip.**
   The strip removes U+FE00–FE0F, U+180B–180D, U+180F, and U+E0100–E01EF. It is safe
