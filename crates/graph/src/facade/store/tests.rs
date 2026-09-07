@@ -2438,6 +2438,125 @@ fn unordered_default_reuses_tombstoned_slot() {
 }
 
 #[test]
+// --- Plan 0339: remove-side maintenance admission trigger (facade entry) ---
+#[test]
+fn delete_past_hysteresis_enqueues_span_compaction_and_left_packs() {
+    use gleaph_graph_kernel::plan_exec::{
+        EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
+    };
+    // End-to-end: deletes on an Insertion-policy bucket cross the hysteresis, the
+    // facade trigger enqueues the span compaction, and the same message's drain
+    // left-packs the tombstoned slab (`stored` returns to `degree`).
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let label_id = crate::test_labels::edge_label_id_for_name("RemoveSideTrigger");
+    let resolved = ResolvedLabelTable {
+        vertex: vec![],
+        edge: vec![
+            ResolvedEdgeLabel::new(
+                "RemoveSideTrigger".to_string(),
+                label_id,
+                gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::no_inline_property(),
+            )
+            .with_ordering(EdgeOrderingPolicy::Insertion),
+        ],
+    };
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
+    let mut targets = Vec::new();
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let target = store.insert_vertex().expect("target");
+        handles.push(
+            store
+                .insert_directed_edge(source, target, Some(label_id))
+                .expect("insert"),
+        );
+        targets.push(target);
+    }
+    store
+        .finalize_bulk_ingest(&BulkIngestFinalizeSpec {
+            forward_vertices: vec![source],
+            reverse_vertices: targets,
+        })
+        .expect("fold log to slab");
+    // 9 of 16 removed: tombstones=9 > stored/2=8 => the facade trigger must fire.
+    for handle in &handles[..9] {
+        store.delete_edge_by_handle(*handle).expect("delete");
+    }
+    let storage_label = ic_stable_lara::BucketLabelKey::directed_from_index(label_id.raw());
+    let info = store
+        .with_graph_mut(|graph| {
+            graph
+                .read_forward_bucket_placement_info(source, storage_label)
+                .expect("placement read")
+        })
+        .expect("bucket exists");
+    assert_eq!(info.degree, 7);
+    assert_eq!(
+        info.stored_edge_slots, 7,
+        "the triggered drain must left-pack the tombstoned slab"
+    );
+    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
+}
+
+#[test]
+fn delete_below_hysteresis_leaves_tombstones_for_append() {
+    use gleaph_graph_kernel::plan_exec::{
+        EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
+    };
+    // 8 of 16 removed: tombstones=8, not > stored/2=8 => no trigger. The bucket keeps
+    // its slack so the ADR 0052 §6 append-past-tombstone contract stays observable.
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let label_id = crate::test_labels::edge_label_id_for_name("RemoveSideTriggerLow");
+    let resolved = ResolvedLabelTable {
+        vertex: vec![],
+        edge: vec![
+            ResolvedEdgeLabel::new(
+                "RemoveSideTriggerLow".to_string(),
+                label_id,
+                gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::no_inline_property(),
+            )
+            .with_ordering(EdgeOrderingPolicy::Insertion),
+        ],
+    };
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
+    let mut targets = Vec::new();
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let target = store.insert_vertex().expect("target");
+        handles.push(
+            store
+                .insert_directed_edge(source, target, Some(label_id))
+                .expect("insert"),
+        );
+        targets.push(target);
+    }
+    store
+        .finalize_bulk_ingest(&BulkIngestFinalizeSpec {
+            forward_vertices: vec![source],
+            reverse_vertices: targets,
+        })
+        .expect("fold log to slab");
+    for handle in &handles[..8] {
+        store.delete_edge_by_handle(*handle).expect("delete");
+    }
+    let storage_label = ic_stable_lara::BucketLabelKey::directed_from_index(label_id.raw());
+    let info = store
+        .with_graph_mut(|graph| {
+            graph
+                .read_forward_bucket_placement_info(source, storage_label)
+                .expect("placement read")
+        })
+        .expect("bucket exists");
+    assert_eq!(info.degree, 8);
+    assert_eq!(
+        info.stored_edge_slots, 16,
+        "below the hysteresis no compaction may fire; the slack survives"
+    );
+    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
+}
+
 fn resolved_insertion_policy_preserves_append_order() {
     use gleaph_graph_kernel::plan_exec::{
         EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,

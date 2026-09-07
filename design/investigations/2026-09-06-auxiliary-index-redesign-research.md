@@ -547,3 +547,11 @@ timer-driven (ADR 0020), and the hot-path cost is one bounded enqueue — the sa
 the Plan 0319 demote trigger safe. Quadratic full-bucket compaction under alternating tombstones
 is already handled by the stepped compaction cursor. Candidate gap entry + small plan; owner
 `ic-stable-lara`.
+
+**Implemented (2026-09-07, Plan 0339, slab side):** the remove-side trigger now lands for
+Insertion-policy slab buckets — after a successful removal, if post-removal tombstones exceed
+half the stored width, the existing `CompactVertexEdgeSpanV1` work item is enqueued
+(`DeferredBidirectionalLabeledLaraGraph::maybe_enqueue_remove_side_compaction`, deferred.rs;
+Unordered and tree buckets excluded). This is the recorded lever that keeps the deferred slab
+OFFSET candidate closed by reclaiming delete-only tombstones. The default-label bypass-row half
+of the proposal remains deferred (GAP-2026-09-07-001, bypass side).

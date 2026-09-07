@@ -2,7 +2,11 @@
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{VertexId, labeled::LabeledOrientation, traits::CsrEdge};
+use ic_stable_lara::{
+    VertexId,
+    labeled::{BucketLabelKey, LabeledOrientation},
+    traits::CsrEdge,
+};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -149,6 +153,12 @@ impl GraphStore {
             mutation_id,
         )
         .unwrap_or_else(trap_post_fence_commit);
+        self.maybe_enqueue_remove_side_compaction(
+            LabeledOrientation::Forward,
+            canonical.owner_vertex_id,
+            canonical.label_id,
+        )
+        .unwrap_or_else(trap_post_fence_commit);
         let Some(counterpart) = counterpart else {
             self.drain_deferred_maintenance()
                 .unwrap_or_else(trap_post_fence_commit);
@@ -173,6 +183,12 @@ impl GraphStore {
                     mutation_id,
                 )
                 .unwrap_or_else(trap_post_fence_commit);
+                self.maybe_enqueue_remove_side_compaction(
+                    LabeledOrientation::Forward,
+                    counterpart.owner_vertex_id,
+                    counterpart.label_id,
+                )
+                .unwrap_or_else(trap_post_fence_commit);
             }
         } else {
             debug_assert_eq!(counterpart.orientation, LabeledOrientation::Reverse);
@@ -193,10 +209,47 @@ impl GraphStore {
                 mutation_id,
             )
             .unwrap_or_else(trap_post_fence_commit);
+            self.maybe_enqueue_remove_side_compaction(
+                LabeledOrientation::Reverse,
+                counterpart.owner_vertex_id,
+                counterpart.label_id,
+            )
+            .unwrap_or_else(trap_post_fence_commit);
         }
         self.drain_deferred_maintenance()
             .unwrap_or_else(trap_post_fence_commit);
         Ok(())
+    }
+
+    /// Plan 0339: after a successful canonical removal, admit remove-side deferred
+    /// compaction for the affected Insertion-policy slab bucket.
+    ///
+    /// The policy closure resolves the insert-side placement via
+    /// [`Self::gate_placement_for_label`] (ADR 0052 §1: undeclared labels are
+    /// `Unordered`). This serves both the gate — Unordered buckets self-heal via
+    /// insert-side tombstone reuse and never fire — and the work item's policy
+    /// capture, which then matches what inserts into that bucket actually do.
+    /// It is deliberately NOT [`Self::maintenance_policy_for_label`], whose
+    /// no-policy→`Insertion` mapping is a drain-safety rule for captured compaction
+    /// policies, not a placement fact; using it as the gate predicate would compact
+    /// Unordered-default buckets and break the delete-then-insert tombstone-reuse
+    /// contract. Admission failure traps (same class as the insert-side admission
+    /// trap).
+    fn maybe_enqueue_remove_side_compaction(
+        &self,
+        orientation: LabeledOrientation,
+        vid: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<(), GraphStoreError> {
+        self.with_graph_mut(|graph| {
+            graph.maybe_enqueue_remove_side_compaction(
+                orientation,
+                vid,
+                label_id,
+                &Self::trigger_placement_for_label,
+            )
+        })
+        .map_err(GraphStoreError::from)
     }
 
     fn journal_and_maintain_edge_insert(

@@ -2995,10 +2995,17 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   new bench surface). 159 → 161 entries (+2 honest benches; the
   partial slice's bogus 540-ins entries were removed).
 
-### GAP-2026-09-07-001 — OPEN: Delete-only workloads accumulate tombstones indefinitely on Insertion-policy slab buckets and default-label bypass rows
+### GAP-2026-09-07-001 — RESOLVED (Insertion-policy slab side) / OPEN (default-label bypass side): Delete-only workloads accumulate tombstones indefinitely on Insertion-policy slab buckets and default-label bypass rows
 
-- **Status:** Open (recorded 2026-09-07; Plan 0339 survey stopped at its mandatory work-item
-  survey step — the bypass-row half is not satisfiable by any existing compaction work item).
+- **Status:** Slab side Resolved (2026-09-07, Plan 0339 remove-side trigger); bypass side still Open.
+  The slab-bucket half is closed by the Plan 0339 remove-side hysteresis admission trigger
+  (`DeferredBidirectionalLabeledLaraGraph::maybe_enqueue_remove_side_compaction`, deferred.rs):
+  after a successful removal, if post-removal tombstones exceed half the stored width on an
+  Insertion-policy slab bucket, the existing `CompactVertexEdgeSpanV1` work item is enqueued and
+  the same message's drain left-packs the span. Regression tests: `remove_side_compaction_*`
+  (deferred.rs) and `delete_past_hysteresis_enqueues_span_compaction_and_left_packs` /
+  `delete_below_hysteresis_leaves_tombstones_for_append` (facade/store/tests.rs). The bypass-row
+  half remains Open (see survey finding 2 below).
 - **Severity:** P2 maintenance-coverage gap (slow scan/memory degradation, no correctness risk;
   extent-bounded per row)
 - **Owner:** `ic-stable-lara` deferred maintenance admission (`deferred.rs`) + bypass row

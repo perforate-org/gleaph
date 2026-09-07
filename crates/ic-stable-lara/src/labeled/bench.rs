@@ -1349,6 +1349,128 @@ fn bench_l_df_mnt_cv_1() -> canbench_rs::BenchResult {
     })
 }
 
+/// Plan 0339: build a 16-edge Insertion-policy slab bucket. Segment 16 keeps the bucket
+/// on the slab (no overflow), so `stored_slots` reflects the tombstone slack the
+/// remove-side trigger reads.
+fn remove_churn_slab_bucket(
+    graph: &DeferredBidirectionalLabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+) -> (VertexId, BucketLabelKey, Vec<VertexId>) {
+    let vid = graph.push_vertex().expect("vertex");
+    let dsts: Vec<VertexId> = (0..16u32)
+        .map(|_| graph.push_vertex().expect("vertex"))
+        .collect();
+    let label = BucketLabelKey::from_raw(2);
+    for (k, dst) in dsts.iter().enumerate() {
+        graph
+            .insert_directed_edge(
+                vid,
+                *dst,
+                label,
+                BenchEdge(k as u32),
+                BenchEdge(0),
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert");
+    }
+    graph
+        .maintenance(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("settle inserts");
+    (vid, label, dsts)
+}
+
+/// Plan 0339: delete-only churn past the hysteresis on an Insertion-policy slab bucket,
+/// with the remove-side trigger + drain. Records the post-trigger compacted state
+/// (`stored` returns to ≈ `degree`), proving the trigger bounds tombstone accumulation.
+#[bench(raw)]
+fn bench_remove_churn_accumulation() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = deferred_bench_graph(8192);
+        let (vid, label, dsts) = remove_churn_slab_bucket(&graph);
+        // 9 of 16 removed: tombstones=9 > stored/2=8 => the trigger fires.
+        for (k, dst) in dsts.iter().enumerate().take(9) {
+            graph
+                .remove_directed_deferred(vid, *dst, BenchEdge(k as u32))
+                .expect("remove");
+        }
+        graph
+            .maybe_enqueue_remove_side_compaction(
+                crate::labeled::bidirectional::Orientation::Forward,
+                vid,
+                label,
+                &|_| EdgePlacementPolicy::Insertion,
+            )
+            .expect("trigger");
+        graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("drain");
+        let info = graph
+            .read_forward_bucket_placement_info(vid, label)
+            .expect("placement")
+            .expect("bucket");
+        black_box((info.degree, info.stored_edge_slots));
+    })
+}
+
+/// Plan 0339: the remove-side trigger's enqueue-only cost (one O(1) gate evaluation +
+/// work-item enqueue) after delete-only churn past the hysteresis. The compaction itself
+/// is the existing stepped drain, measured separately by `bench_remove_churn_accumulation`.
+#[bench(raw)]
+fn bench_remove_churn_trigger_cost() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = deferred_bench_graph(8192);
+        let (vid, label, dsts) = remove_churn_slab_bucket(&graph);
+        for (k, dst) in dsts.iter().enumerate().take(9) {
+            graph
+                .remove_directed_deferred(vid, *dst, BenchEdge(k as u32))
+                .expect("remove");
+        }
+        graph
+            .maybe_enqueue_remove_side_compaction(
+                crate::labeled::bidirectional::Orientation::Forward,
+                vid,
+                label,
+                &|_| EdgePlacementPolicy::Insertion,
+            )
+            .expect("trigger");
+        black_box(graph.maintenance_queue_len());
+    })
+}
+
+/// Plan 0339: delete-only churn WITHOUT the remove-side trigger — the tombstone slack
+/// accumulates (`stored` stays well above `degree`). The honest "without" side of the
+/// accumulation comparison.
+#[bench(raw)]
+fn bench_remove_churn_no_trigger() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = deferred_bench_graph(8192);
+        let (vid, label, dsts) = remove_churn_slab_bucket(&graph);
+        for (k, dst) in dsts.iter().enumerate().take(9) {
+            graph
+                .remove_directed_deferred(vid, *dst, BenchEdge(k as u32))
+                .expect("remove");
+        }
+        let info = graph
+            .read_forward_bucket_placement_info(vid, label)
+            .expect("placement")
+            .expect("bucket");
+        black_box((info.degree, info.stored_edge_slots));
+    })
+}
+
 /// ADR 0016: inline property attach over hybrid slab + 8 B inline property overflow log.
 #[bench(raw)]
 fn bench_l_ip_log_8b_of() -> canbench_rs::BenchResult {

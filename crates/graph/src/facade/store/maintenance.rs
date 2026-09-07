@@ -16,6 +16,7 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 use super::helpers::{
     GraphDeleteEdgeObserver, GraphSidecarMoveObserver, catalog_edge_label_from_wire,
+    lara_edge_placement,
 };
 
 /// Caller-supplied vertices to compact after a tombstone-free bulk ingest batch.
@@ -55,6 +56,25 @@ impl GraphStore {
             Some(EdgeOrderingPolicy::Unordered) => EdgePlacementPolicy::Unordered,
             None => EdgePlacementPolicy::Insertion,
         }
+    }
+
+    /// Insert-side placement resolution for the Plan 0339 remove-side trigger.
+    ///
+    /// Resolves the same way the insert path does (`lara_edge_placement`, ADR 0052 §1):
+    /// an undeclared/unknown label is `Unordered`. One closure therefore serves both
+    /// the remove-side gate — Undeclared/`Unordered` buckets self-heal via insert-side
+    /// tombstone reuse and must never fire — and the enqueued work item's policy
+    /// capture, which then matches what inserts into that bucket actually do.
+    /// This is deliberately distinct from [`Self::maintenance_policy_for_label`], whose
+    /// no-policy→`Insertion` mapping is a drain-safety rule for captured compaction
+    /// policies, not a placement fact; using it as the gate predicate would compact
+    /// Unordered-default buckets and break the delete-then-insert tombstone-reuse
+    /// contract.
+    pub(crate) fn trigger_placement_for_label(label: BucketLabelKey) -> EdgePlacementPolicy {
+        lara_edge_placement(
+            catalog_edge_label_from_wire(label)
+                .and_then(|l| resolved_edge_label_with(None, l).map(|entry| entry.ordering)),
+        )
     }
 
     pub fn run_maintenance_best_effort(

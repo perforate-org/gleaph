@@ -16,12 +16,16 @@ use crate::{
         },
         graph::traverse::{EdgeFindScope, EdgeWithInlinePropertyRef, FoundEdge},
         graph::{
-            BucketEntryPosition, EdgePlacementPolicy, EdgeRemoval, EdgeSlotMove, InitError,
-            LabeledLaraGraph, LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
+            BucketEntryPosition, BucketSearch, EdgePlacementPolicy, EdgeRemoval, EdgeSlotMove,
+            InitError, LabeledLaraGraph, LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
         },
+        record::LabelBucket,
     },
-    lara::maintenance::{
-        DeferredConfig, DeferredConfigError, MaintenanceBudget, MaintenanceWorkReport,
+    lara::{
+        maintenance::{
+            DeferredConfig, DeferredConfigError, MaintenanceBudget, MaintenanceWorkReport,
+        },
+        operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
@@ -1569,6 +1573,91 @@ where
                 policies,
             });
         Ok(())
+    }
+
+    /// Plan 0339: pure remove-side admission gate.
+    ///
+    /// Returns `true` when the post-removal bucket state crosses the fixed hysteresis
+    /// threshold for an Insertion-policy slab bucket: tombstones
+    /// (`stored_slots - degree`) must exceed half the stored width (`>` on the integer
+    /// `stored_slots / 2`). Tree-mode buckets and non-`Insertion` policies are excluded.
+    /// O(1) descriptor arithmetic — no scans.
+    ///
+    /// The strict `>` (rather than `>=`) preserves two documented pre-existing
+    /// invariants at the tiny-bucket boundary: ADR 0052 §6 append-past-tombstone and
+    /// the delete-fence slot-divergence fixtures both hold a single interior tombstone
+    /// in a 2–3-slot bucket, which must keep surviving until a later insert or the
+    /// explicitly-triggered compaction consumes it. The all-dead case still fires
+    /// (`stored > 0`, `degree == 0` → `stored > stored/2`), so delete-only churn on an
+    /// emptied bucket always compacts.
+    fn remove_side_compaction_should_fire(
+        bucket: &LabelBucket,
+        policy: EdgePlacementPolicy,
+    ) -> bool {
+        if bucket.is_tree_mode() {
+            return false;
+        }
+        if policy != EdgePlacementPolicy::Insertion {
+            return false;
+        }
+        let stored = u64::from(bucket.stored_slots);
+        let degree = u64::from(bucket.degree);
+        stored >= degree && stored - degree > stored / 2
+    }
+
+    /// Plan 0339: remove-side maintenance admission trigger for Insertion-policy
+    /// slab buckets.
+    ///
+    /// After a successful edge removal, the facade calls this to decide whether the
+    /// affected label bucket's post-removal tombstone slack crosses the fixed
+    /// hysteresis threshold. When it does, the existing `CompactVertexEdgeSpanV1`
+    /// work item is enqueued (via [`Self::mark_compact_vertex_edge_span`]) so the
+    /// drain left-packs the tombstonged slab span.
+    ///
+    /// The gate is O(1) descriptor arithmetic — no scans:
+    ///   * bypass rows (`is_default_edge_labeled`) and missing buckets are skipped;
+    ///   * tree-mode buckets are excluded (slab-only regime; bypass rows deferred to
+    ///     GAP-2026-09-07-001);
+    ///   * only `Insertion` placement policy qualifies (`Unordered` is excluded);
+    ///   * hysteresis: post-removal tombstones = `stored_slots - degree` must exceed
+    ///     half the stored width (strict `>` on the integer `stored_slots / 2` — see
+    ///     [`Self::remove_side_compaction_should_fire`] for the boundary rationale).
+    ///
+    /// Admission failure traps (same class as the insert-side admission trap).
+    pub fn maybe_enqueue_remove_side_compaction(
+        &self,
+        orientation: Orientation,
+        vid: VertexId,
+        label_id: BucketLabelKey,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let graph = self.graph_for(orientation);
+        let vertex = graph.vertices().get(vid);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+        let bucket_search = graph
+            .find_bucket(vid, &vertex, label_id)
+            .map_err(|err| self.wrap_orientation_error(orientation, err))?;
+        let BucketSearch::Found { slot, bucket } = bucket_search else {
+            return Ok(());
+        };
+        if !Self::remove_side_compaction_should_fire(&bucket, policy_for_label(label_id)) {
+            return Ok(());
+        }
+        let bucket_index = slot.checked_sub(vertex.base_slot_start()).ok_or_else(|| {
+            self.wrap_orientation_error(
+                orientation,
+                LaraOperationError::CollectAllocationOverflow.into(),
+            )
+        })?;
+        let bucket_index = u32::try_from(bucket_index).map_err(|_| {
+            self.wrap_orientation_error(
+                orientation,
+                LaraOperationError::CollectAllocationOverflow.into(),
+            )
+        })?;
+        self.mark_compact_vertex_edge_span(orientation, vid, bucket_index, policy_for_label)
     }
 
     /// Enqueues label-bucket vertex-segment compaction then vertex-edge-span compaction,
@@ -6989,5 +7078,229 @@ mod tests {
             BucketLabelKey::from_raw(1),
         )
         .expect("bidi inline property graph")
+    }
+
+    // ---- Plan 0339: remove-side maintenance admission trigger ----
+
+    fn tombstoned_sixteen_edge_bucket(
+        graph: &DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory>,
+        policy: crate::labeled::graph::EdgePlacementPolicy,
+    ) -> (VertexId, BucketLabelKey) {
+        let src = graph.push_vertex().expect("src");
+        let label = BucketLabelKey::directed_from_index(3);
+        for _ in 0..16u32 {
+            graph.push_vertex().expect("dst");
+        }
+        for dst in 1u32..=16 {
+            graph
+                .insert_directed_edge(
+                    src,
+                    VertexId::from(dst),
+                    label,
+                    TestEdge(dst),
+                    TestEdge(u32::from(src)),
+                    policy,
+                )
+                .expect("insert");
+        }
+        graph
+            .maintenance(unbounded_budget())
+            .expect("settle inserts");
+        (src, label)
+    }
+
+    #[test]
+    fn remove_side_compaction_fires_at_hysteresis() {
+        // Post-removal tombstones (stored - degree) crossing stored/2 must enqueue the
+        // existing CompactVertexEdgeSpanV1 work item, and draining must reclaim them.
+        let graph = graph();
+        let (src, label) = tombstoned_sixteen_edge_bucket(
+            &graph,
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        for odd in [1u32, 3, 5, 7, 9, 11, 13, 15, 2] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        // stored=16, degree=7 => tombstones=9 > 16/2=8 => fire.
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, src, label, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("admit remove-side compaction");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            1,
+            "hysteresis must enqueue a CompactVertexEdgeSpanV1 work item"
+        );
+        graph.maintenance(unbounded_budget()).expect("drain");
+        let info = graph
+            .read_forward_bucket_placement_info(src, label)
+            .expect("placement info")
+            .expect("bucket exists");
+        assert_eq!(info.degree, 7);
+        assert_eq!(
+            info.stored_edge_slots, 7,
+            "compaction must left-pack the tombstonged span"
+        );
+    }
+
+    #[test]
+    fn remove_side_compaction_below_threshold_no_fire() {
+        // stored=16, degree=8 => tombstones=8, not > 16/2=8 => no enqueue (exact boundary).
+        let graph = graph();
+        let (src, label) = tombstoned_sixteen_edge_bucket(
+            &graph,
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        for odd in [1u32, 3, 5, 7, 9, 11, 13, 15] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, src, label, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("admit");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            0,
+            "below-threshold slack must not enqueue"
+        );
+    }
+
+    #[test]
+    fn remove_side_compaction_excludes_unordered() {
+        // Unordered buckets are excluded: swap-compaction is a permission, not a duty.
+        let graph = graph();
+        let (src, label) = tombstoned_sixteen_edge_bucket(
+            &graph,
+            crate::labeled::graph::EdgePlacementPolicy::Unordered,
+        );
+        for odd in [1u32, 3, 5, 7, 9, 11, 13, 15] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, src, label, &|_| {
+                EdgePlacementPolicy::Unordered
+            })
+            .expect("admit");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            0,
+            "Unordered policy must not enqueue remove-side compaction"
+        );
+    }
+
+    #[test]
+    fn remove_side_compaction_dedups_pending_span() {
+        // A second trigger for the same vertex is absorbed by the per-vid span dedup.
+        let graph = graph();
+        let (src, label) = tombstoned_sixteen_edge_bucket(
+            &graph,
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        for odd in [1u32, 3, 5, 7, 9, 11, 13, 15, 2] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, src, label, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("admit 1");
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, src, label, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("admit 2");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            1,
+            "a second trigger for the same vertex must dedup"
+        );
+    }
+
+    #[test]
+    fn remove_side_compaction_skips_missing_bucket() {
+        // A label with no bucket on the vertex must not enqueue.
+        let graph = graph();
+        let (src, _label) = tombstoned_sixteen_edge_bucket(
+            &graph,
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        );
+        for odd in [1u32, 3, 5, 7, 9, 11, 13, 15] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        let other_label = BucketLabelKey::directed_from_index(7);
+        graph
+            .maybe_enqueue_remove_side_compaction(Orientation::Forward, src, other_label, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("admit");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            0,
+            "a missing bucket must not enqueue"
+        );
+    }
+
+    #[test]
+    fn remove_side_compaction_gate_is_pure_descriptor_arithmetic() {
+        // The pure gate: hysteresis boundary, degree-0-with-stored, Unordered and
+        // tree-mode exclusion. No store access required.
+        use crate::labeled::record::LabelBucket;
+        let label = BucketLabelKey::directed_from_index(3);
+        let slab = |degree, stored| LabelBucket::from_parts(label, 0, degree, stored, -1);
+        let fire = |bucket: &LabelBucket, policy| {
+            DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::remove_side_compaction_should_fire(
+                bucket,
+                policy,
+            )
+        };
+        // stored=16, degree=7 => tombstones=9 > 8 => fire.
+        assert!(fire(&slab(7, 16), EdgePlacementPolicy::Insertion));
+        // stored=16, degree=8 => tombstones=8, not > 8 => no fire (exact boundary).
+        assert!(!fire(&slab(8, 16), EdgePlacementPolicy::Insertion));
+        // stored=16, degree=9 => tombstones=7 < 8 => no fire.
+        assert!(!fire(&slab(9, 16), EdgePlacementPolicy::Insertion));
+        // Tiny-bucket boundary: a single tombstone in a 2- or 3-slot bucket must not
+        // fire (ADR 0052 §6 append-past-tombstone and delete-fence fixtures rely on it).
+        assert!(!fire(&slab(1, 2), EdgePlacementPolicy::Insertion));
+        assert!(!fire(&slab(2, 3), EdgePlacementPolicy::Insertion));
+        // Exactly half must not fire (strict >).
+        assert!(!fire(&slab(4, 8), EdgePlacementPolicy::Insertion));
+        // degree 0 with stored > 0 qualifies (all-dead rows compact).
+        assert!(fire(&slab(0, 8), EdgePlacementPolicy::Insertion));
+        assert!(fire(&slab(0, 2), EdgePlacementPolicy::Insertion));
+        // Unordered excluded.
+        assert!(!fire(&slab(4, 8), EdgePlacementPolicy::Unordered));
+        // Tree-mode excluded.
+        assert!(!fire(
+            &slab(4, 8).with_tree_mode(true),
+            EdgePlacementPolicy::Insertion
+        ));
     }
 }

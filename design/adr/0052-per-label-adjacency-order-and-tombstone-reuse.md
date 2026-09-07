@@ -308,6 +308,11 @@ result.
 The policy is the single source of truth for insert, batch placement, and compaction behavior.
 Separate persisted `TombstoneReusePolicy` or `CompactionPolicy` fields are not introduced.
 
+> **Amendment (2026-09-07, Plan 0339):** compaction admission now also fires from the remove
+> path — after a successful removal, if post-removal tombstones exceed half the stored width on
+> an Insertion-policy slab bucket, the existing `CompactVertexEdgeSpanV1` work item is enqueued
+> (Unordered and tree buckets are excluded by the gate).
+
 ### 8. Edge identity and compaction
 
 `GlobalEdgeId` / `EncodedEdgeId` remain query-time physical handles containing the owner and
