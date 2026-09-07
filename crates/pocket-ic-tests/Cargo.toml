@@ -100,6 +100,9 @@ text-canister = { path = "../text-canister" }
 # Plan 0331 E2E: compute the pinned dictionary's xxh3_128 streaming identity locally.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 morph-dict = { path = "../morph-dict" }
+# Plan 0335 E2E: the catalog-seeding leg compresses the REAL MPD container (zstd-19) before
+# the catalog upload — the same artifact shape the production catalog owner produces.
+zstd = "0.13"
 
 [build-dependencies]
 cargo_metadata = "0.23"

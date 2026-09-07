@@ -21,8 +21,8 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
-use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
@@ -31,11 +31,11 @@ use gleaph_migration_api::{
 };
 use gleaph_pocket_ic_tests::new_pocket_ic;
 use gleaph_provision::types::{
-    ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
+    sha256, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
 };
-use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{RegisterGraphArgs, TextIndexInfo, TextIndexStatusView};
+use gleaph_router::RouterInitArgs;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
@@ -521,6 +521,89 @@ fn fetch_mecab_container() -> Vec<u8> {
     morph_dict::container::build(images)
 }
 
+/// The pinned catalog compression level (plan 0335 gate 1: level 19 = 10,900,552 B on the
+/// real container; `compressed_digest` pins the exact bytes, so the level is contract).
+const CATALOG_ZSTD_LEVEL: i32 = 19;
+
+/// Plan 0335 todo 4: seeds the Provision dictionary catalog with the ZSTD-compressed REAL
+/// MPD container. Size correction (management-verified): the container is the FULL
+/// `morph_dict::container::build` output — 52,931,159 B = image sum 52,930,923 + 236 B
+/// framing (header + entry table) — so `raw_len`/`raw_digest` pin the full bytes, not the
+/// four-image sum. Rows are ≤ 1 MiB per `MAX_DICT_CATALOG_CHUNK_LEN`.
+fn seed_dict_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
+    use gleaph_provision::types::{
+        DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs,
+    };
+    let raw = fetch_mecab_container();
+    let compressed =
+        zstd::stream::encode_all(&raw[..], CATALOG_ZSTD_LEVEL).expect("zstd-19 catalog encode");
+    let key = DictCatalogKey {
+        kind: "ipadic".to_owned(),
+        version: "2.7.0".to_owned(),
+    };
+    for (chunk_index, chunk) in compressed.chunks(1024 * 1024).enumerate() {
+        let bytes = env
+            .pic
+            .update_call(
+                env.provision,
+                env.admin,
+                "admin_upload_dict_catalog_chunk",
+                Encode!(&DictCatalogUploadChunkArgs {
+                    key: key.clone(),
+                    chunk_index: chunk_index as u32,
+                    bytes: chunk.to_vec(),
+                })
+                .expect("encode catalog chunk"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_catalog_chunk: {e:?}"));
+        let status: Result<
+            gleaph_provision::types::DictCatalogStatus,
+            gleaph_provision::types::DictCatalogError,
+        > = Decode!(
+            &bytes,
+            Result<
+                gleaph_provision::types::DictCatalogStatus,
+                gleaph_provision::types::DictCatalogError,
+            >
+        )
+        .expect("decode catalog upload reply");
+        status.expect("catalog chunk accepted");
+    }
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_finalize_dict_catalog",
+            Encode!(&DictCatalogFinalizeArgs {
+                key: key.clone(),
+                compressed_digest: xxhash_rust::xxh3::xxh3_128(&compressed),
+                raw_digest: xxhash_rust::xxh3::xxh3_128(&raw),
+                raw_len: raw.len() as u64,
+            })
+            .expect("encode catalog finalize"),
+        )
+        .unwrap_or_else(|e| panic!("admin_finalize_dict_catalog: {e:?}"));
+    let status: Result<
+        gleaph_provision::types::DictCatalogStatus,
+        gleaph_provision::types::DictCatalogError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::DictCatalogStatus,
+            gleaph_provision::types::DictCatalogError,
+        >
+    )
+    .expect("decode catalog finalize reply");
+    let status = status.expect("catalog finalize accepted");
+    assert_eq!(
+        status.state,
+        gleaph_provision::types::DictCatalogState::Finalized,
+        "catalog must be Finalized before provisioning"
+    );
+    (compressed, raw)
+}
+
 fn admin_flush_as(env: &Env, from: Principal) -> text_canister::FlushReport {
     let bytes = env
         .pic
@@ -659,10 +742,87 @@ fn text_index_provisions_replays_and_guards() {
     ensure_vertex_label(&env, "Document");
     ensure_property(&env, "title");
 
+    // --- (a.0) fail-closed POSITIVE legs (plan 0335 todo 4): provisioning a
+    // dictionary-required text index without a Finalized catalog entry must fail closed
+    // with the relay's internal reason — never a silently dictionary-less canister.
+    // Distinct index names keep the failed jobs clear of the main INDEX_NAME flow.
+    let unseeded_err = create_text_index(&env, env.admin, "unseeded_text_idx", "Document", "title")
+        .expect_err("provisioning without a seeded catalog must fail closed");
+    assert!(
+        matches!(unseeded_err, RouterError::Internal(ref m) if m.contains("missing from created_resources")),
+        "unexpected unseeded error: {unseeded_err:?}"
+    );
+
+    // One chunk uploaded but NOT finalized → the relay must still refuse (entry is not
+    // Finalized); the main seeding then completes over the same key.
+    {
+        use gleaph_provision::types::{DictCatalogKey, DictCatalogUploadChunkArgs};
+        let raw = fetch_mecab_container();
+        let compressed =
+            zstd::stream::encode_all(&raw[..], CATALOG_ZSTD_LEVEL).expect("zstd-19 catalog encode");
+        let key = DictCatalogKey {
+            kind: "ipadic".to_owned(),
+            version: "2.7.0".to_owned(),
+        };
+        let bytes = env
+            .pic
+            .update_call(
+                env.provision,
+                env.admin,
+                "admin_upload_dict_catalog_chunk",
+                Encode!(&DictCatalogUploadChunkArgs {
+                    key: key.clone(),
+                    chunk_index: 0,
+                    bytes: compressed[..1024 * 1024].to_vec(),
+                })
+                .expect("encode catalog chunk"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_catalog_chunk: {e:?}"));
+        let status: Result<
+            gleaph_provision::types::DictCatalogStatus,
+            gleaph_provision::types::DictCatalogError,
+        > = Decode!(
+            &bytes,
+            Result<
+                gleaph_provision::types::DictCatalogStatus,
+                gleaph_provision::types::DictCatalogError,
+            >
+        )
+        .expect("decode catalog upload reply");
+        let status = status.expect("first chunk accepted");
+        assert_eq!(
+            status.state,
+            gleaph_provision::types::DictCatalogState::Uploading,
+            "catalog entry with one chunk is Uploading, not Finalized"
+        );
+        let not_finalized_err = create_text_index(
+            &env,
+            env.admin,
+            "unfinalized_catalog_text_idx",
+            "Document",
+            "title",
+        )
+        .expect_err("provisioning against a non-Finalized catalog must fail closed");
+        assert!(
+            matches!(not_finalized_err, RouterError::Internal(ref m) if m.contains("missing from created_resources")),
+            "unexpected non-Finalized error: {not_finalized_err:?}"
+        );
+    }
+
     // --- (a) issue → canister created with Text kind + definition registered + born Backfilling ---
+    let (_compressed, raw) = seed_dict_catalog(&env);
+    // Gate-2 measurement (plan 0335): the provision canister executes the relay (catalog
+    // streaming + the text canister's compressed finalize). Its cycle delta across
+    // create_text_index isolates the relayed work end-to-end (inter-canister send costs
+    // included; the raw-path finalize measured 275,016,142 cycles in 0334 for scale).
+    let provision_cycles_before = env.pic.cycle_balance(env.provision);
     let info = create_text_index(&env, env.admin, INDEX_NAME, "Document", "title")
         .expect("issue must succeed");
     let canister = info.canister.expect("provisioned canister attached");
+    let relay_cycles = provision_cycles_before.saturating_sub(env.pic.cycle_balance(env.provision));
+    println!(
+        "plan-0335 relay cost (provision-side: catalog streaming + relay calls incl. the text canister's compressed finalize) cycles: {relay_cycles}"
+    );
     assert_ne!(canister, Principal::anonymous());
     // ADR 0059: a provisioned text definition is born Backfilling (planner-invisible) and flips
     // to Ready only after the migration ledger's convergence proof (scan-done AND flushed
@@ -734,43 +894,86 @@ fn text_index_provisions_replays_and_guards() {
         denied.reject_message
     );
 
-    // --- (a.1) the id-0 default requires the finalized dictionary (plan 0332) ---
-    // The default CREATE TEXT INDEX path now carries the dictionary upload flow
-    // (recorded friction; the Router-side relay stays the Later-Slice mitigation).
-    // The same MPD container as id 2, the same chunk + digest discipline.
+    // --- (a.1) plan 0335 todo 4: the RELAY-driven dictionary path --------------------
+    // The catalog was seeded before issuance; the default CREATE TEXT INDEX path (id 0,
+    // dictionary-required) provisioned its canister and the post-install relay streamed
+    // the catalog's compressed container and finalized the dictionary — ZERO manual
+    // dictionary operations (the former manual raw upload is superseded; raw correctness
+    // is pinned by the text-canister unit tests).
+    let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
     env.pic.add_cycles(canister, 50_000_000_000_000);
-    let dict = fetch_mecab_container();
-    for chunk in dict.chunks(1024 * 1024) {
+    let status_bytes = env
+        .pic
+        .query_call(
+            canister,
+            env.router,
+            "admin_get_dict_status",
+            Encode!(&()).expect("encode get status"),
+        )
+        .unwrap_or_else(|e| panic!("admin_get_dict_status: {e:?}"));
+    let relayed: text_canister::DictStatus =
+        Decode!(&status_bytes, text_canister::DictStatus).expect("decode status");
+    assert_eq!(
+        relayed.state,
+        text_canister::DictState::Finalized,
+        "the relay must finalize the dictionary during provisioning"
+    );
+    assert_eq!(
+        relayed.digest,
+        Some(raw_digest),
+        "relay pins the catalog's raw digest"
+    );
+    assert_eq!(
+        relayed.len as usize,
+        raw.len(),
+        "raw length matches the full container (the 52,931,159 B correction)"
+    );
+    assert_eq!(
+        relayed.compressed, None,
+        "compressed staging is deactivated after the relayed finalize"
+    );
+
+    // Fail-closed (positive asserts): a THIRD principal is rejected by the relay guard
+    // (plan 0335 §5-2), and a wrong digest cannot masquerade as the catalog identity.
+    let outsider = Principal::from_slice(&[0x3E; 29]);
+    let err = env
+        .pic
+        .update_call(
+            canister,
+            outsider,
+            "admin_finalize_dict_upload",
+            Encode!(
+                &raw_digest,
+                &None::<gleaph_graph_kernel::provisioning::dictionary::CompressedDictFinalize>
+            )
+            .expect("encode"),
+        )
+        .expect_err("third principal must not finalize the dictionary");
+    assert!(
+        err.reject_message
+            .contains("is neither the text index controller"),
+        "unexpected guard reject: {}",
+        err.reject_message
+    );
+
+    // Post-finalize uploads reject in both modes (idempotence of the pinned identity).
+    let rejected_upload: Result<u64, String> = {
         let bytes = env
             .pic
             .update_call(
                 canister,
                 env.router,
                 "admin_upload_dict_chunk",
-                Encode!(&chunk.to_vec()).expect("encode chunk"),
+                Encode!(
+                    &vec![1u8; 16],
+                    &None::<gleaph_graph_kernel::provisioning::dictionary::CompressedDictUpload>
+                )
+                .expect("encode"),
             )
             .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
-        let _total: Result<u64, String> =
-            Decode!(&bytes, Result<u64, String>).expect("decode upload reply");
-    }
-    let digest = xxhash_rust::xxh3::xxh3_128(&dict);
-    let bytes = env
-        .pic
-        .update_call(
-            canister,
-            env.router,
-            "admin_finalize_dict_upload",
-            Encode!(&digest).expect("encode digest"),
-        )
-        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
-    let finalized: Result<text_canister::DictStatus, String> =
-        Decode!(&bytes, Result<text_canister::DictStatus, String>).expect("decode finalize reply");
-    let finalized = finalized.expect("dictionary finalizes for the id-0 default");
-    assert_eq!(
-        finalized.state,
-        text_canister::DictState::Finalized,
-        "the default index must reach Finalized before the backfill can register"
-    );
+        Decode!(&bytes, Result<u64, String>).expect("decode upload reply")
+    };
+    assert!(rejected_upload.is_err(), "post-finalize upload must reject");
 
     // --- (a.2) drive the migration lane to convergence: Backfilling → Ready ---
     // The definition is planner-invisible until the migration ledger reaches Applied (scan-done
@@ -835,6 +1038,50 @@ fn text_index_provisions_replays_and_guards() {
         ready_info,
         "no second creation: the original row survives unchanged"
     );
+
+    // (b.1) plan 0335 todo 4 idempotence: the re-provision replay must NOT re-append the
+    // dictionary — the relay's short-circuit (Finalized + matching digest) leaves both the
+    // catalog rows and the canister's staged bytes untouched.
+    {
+        use gleaph_provision::types::{DictCatalogKey, DictCatalogState};
+        let status_bytes = env
+            .pic
+            .query_call(
+                env.provision,
+                env.admin,
+                "admin_get_dict_catalog_status",
+                Encode!(&DictCatalogKey {
+                    kind: "ipadic".to_owned(),
+                    version: "2.7.0".to_owned(),
+                })
+                .expect("encode catalog status"),
+            )
+            .unwrap_or_else(|e| panic!("admin_get_dict_catalog_status: {e:?}"));
+        let catalog: Option<gleaph_provision::types::DictCatalogStatus> = Decode!(
+            &status_bytes,
+            Option<gleaph_provision::types::DictCatalogStatus>
+        )
+        .expect("decode catalog status");
+        let catalog = catalog.expect("seeded catalog entry");
+        assert_eq!(catalog.state, DictCatalogState::Finalized);
+        let dict_status_bytes = env
+            .pic
+            .query_call(
+                canister,
+                env.router,
+                "admin_get_dict_status",
+                Encode!(&()).expect("encode"),
+            )
+            .unwrap_or_else(|e| panic!("admin_get_dict_status: {e:?}"));
+        let dict_status: text_canister::DictStatus =
+            Decode!(&dict_status_bytes, text_canister::DictStatus).expect("decode status");
+        assert_eq!(dict_status.state, text_canister::DictState::Finalized);
+        assert_eq!(dict_status.digest, Some(raw_digest));
+        assert_eq!(
+            dict_status.compressed, None,
+            "re-provision must not resurrect the compressed staging"
+        );
+    }
 
     // --- (c) anonymous caller rejected per guard conventions ---
     let err = create_text_index(

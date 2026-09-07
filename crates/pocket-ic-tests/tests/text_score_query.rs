@@ -19,9 +19,8 @@ use gleaph_migration_api::{
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
     finish_provision_wired_single_shard_federation, gql_query_with_params_as_admin,
-    install_provision_wired_router, wasm_bytes,
+    install_provision_wired_router, wasm_bytes, FederationEnv, ProvisionWiredRouterEnv, GRAPH_NAME,
 };
 use gleaph_router::types::{TextIndexInfo, TextIndexStatusView};
 use pocket_ic::PocketIc;
@@ -38,6 +37,9 @@ const PUBLISH_CHUNK_BYTES: usize = 1024 * 1024;
 
 struct Env {
     fed: FederationEnv,
+    /// The Provision canister (catalog owner); captured from the wired bootstrap before
+    /// the federation finish consumes it (plan 0335 todo-4 catalog seeding).
+    provision: Principal,
 }
 
 // -- Wasm acquisition -------------------------------------------------------------------------
@@ -126,8 +128,8 @@ fn publish_verified_artifact(
     wasm: &[u8],
 ) -> gleaph_provision::types::ArtifactId {
     use gleaph_provision::types::{
-        ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
-        sha256,
+        sha256, ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload,
+        ArtifactUploadChunkArgs,
     };
 
     let full_sha = sha256(wasm);
@@ -452,7 +454,9 @@ fn scored_query_params(query: &str, k: i64) -> Vec<u8> {
 #[test]
 fn text_score_ranks_through_gql_after_ready_and_fails_closed_before() {
     let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
     let env = Env {
+        provision,
         fed: finish_provision_wired_single_shard_federation(wired),
     };
 
@@ -562,7 +566,9 @@ fn combined_query_params(query: &str, min: f64) -> Vec<u8> {
 #[test]
 fn text_score_compound_threshold_topk_lowers_and_ranks() {
     let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
     let env = Env {
+        provision,
         fed: finish_provision_wired_single_shard_federation(wired),
     };
 
@@ -700,7 +706,9 @@ const MECAB_DICT_URL: &str = "https://files.pythonhosted.org/packages/e7/4e/c459
 /// THESE bytes) from the gitignored `crates/pocket-ic-tests/resources/mecrab/` cache,
 /// fetching the pinned source (curl + tar) when absent. FAIL-CLOSED: an unreachable
 /// artifact aborts the test with fetch instructions — the mecab legs never silently
-/// skip.
+/// skip. Size note (management-verified correction): the container is the FULL
+/// `container::build` output — 52,931,159 B = image sum 52,930,923 + 236 B framing
+/// (header + entry table); digests/lengths pin these full bytes, not the image sum.
 fn fetch_mecab_container() -> Vec<u8> {
     const IMAGES: [&str; 4] = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -762,26 +770,84 @@ fn get_dict_status(env: &Env, canister: candid::Principal) -> text_canister::Dic
     Decode!(&bytes, text_canister::DictStatus).expect("decode status")
 }
 
-/// Calls a text-canister admin endpoint as the Router (its controller).
-fn call_text_canister<R: candid::CandidType + serde::de::DeserializeOwned>(
-    env: &Env,
-    canister: candid::Principal,
-    method: &str,
-    args: &impl candid::CandidType,
-) -> R {
+/// Plan 0335 todo-4 fixture leg: seeds the Provision dictionary catalog with the
+/// ZSTD-compressed REAL MPD container (level 19, the pinned catalog artifact level) so
+/// the post-install relay (`relay_dict_catalog`, todo 3) auto-finalizes every
+/// dictionary-required text canister this test provisions. MUST run before the first
+/// `CREATE TEXT INDEX`; the management's size correction is load-bearing here: the
+/// catalog's `raw_len`/`raw_digest` pin the FULL `container::build` output
+/// (52,931,159 B = image sum + 236 B framing), not the four-image sum. Returns the
+/// (compressed, raw) pair for the manual raw-mode legs to reuse without re-reading.
+fn seed_dictionary_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
+    let raw = fetch_mecab_container();
+    let compressed = zstd::stream::encode_all(&raw[..], 19).expect("zstd-19 catalog encode");
+    let key = gleaph_provision::types::DictCatalogKey {
+        kind: "ipadic".to_owned(),
+        version: "2.7.0".to_owned(),
+    };
+    for (chunk_index, chunk) in compressed.chunks(1024 * 1024).enumerate() {
+        let bytes = env
+            .fed
+            .pic
+            .update_call(
+                env.provision,
+                env.fed.admin,
+                "admin_upload_dict_catalog_chunk",
+                Encode!(&gleaph_provision::types::DictCatalogUploadChunkArgs {
+                    key: key.clone(),
+                    chunk_index: chunk_index as u32,
+                    bytes: chunk.to_vec(),
+                })
+                .expect("encode catalog chunk"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_catalog_chunk: {e:?}"));
+        let status: Result<
+            gleaph_provision::types::DictCatalogStatus,
+            gleaph_provision::types::DictCatalogError,
+        > = Decode!(
+            &bytes,
+            Result<
+                gleaph_provision::types::DictCatalogStatus,
+                gleaph_provision::types::DictCatalogError,
+            >
+        )
+        .expect("decode catalog upload reply");
+        status.expect("catalog chunk accepted");
+    }
     let bytes = env
         .fed
         .pic
         .update_call(
-            canister,
-            env.fed.router,
-            method,
-            Encode!(args).expect("encode"),
+            env.provision,
+            env.fed.admin,
+            "admin_finalize_dict_catalog",
+            Encode!(&gleaph_provision::types::DictCatalogFinalizeArgs {
+                key: key.clone(),
+                compressed_digest: xxhash_rust::xxh3::xxh3_128(&compressed),
+                raw_digest: xxhash_rust::xxh3::xxh3_128(&raw),
+                raw_len: raw.len() as u64,
+            })
+            .expect("encode catalog finalize"),
         )
-        .unwrap_or_else(|e| panic!("{method} on text canister: {e:?}"));
-    Decode!(&bytes, Result<R, String>)
-        .expect("decode reply")
-        .expect("reply ok")
+        .unwrap_or_else(|e| panic!("admin_finalize_dict_catalog: {e:?}"));
+    let status: Result<
+        gleaph_provision::types::DictCatalogStatus,
+        gleaph_provision::types::DictCatalogError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::DictCatalogStatus,
+            gleaph_provision::types::DictCatalogError,
+        >
+    )
+    .expect("decode catalog finalize reply");
+    let status = status.expect("catalog finalize accepted");
+    assert_eq!(
+        status.state,
+        gleaph_provision::types::DictCatalogState::Finalized,
+        "catalog must be Finalized before provisioning"
+    );
+    (compressed, raw)
 }
 
 const MECAB_INDEX_NAME: &str = "text_score_mecab_idx";
@@ -790,7 +856,9 @@ const MECAB_MIGRATION_ID: &str = "000104_text_score_mecab";
 #[test]
 fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
     let env = Env {
+        provision,
         fed: finish_provision_wired_single_shard_federation(wired),
     };
 
@@ -800,6 +868,92 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     seed_text_vertex(&env, "毎日公園を走った。");
     seed_text_vertex(&env, "走った走った走った");
     seed_text_vertex(&env, "unrelated zebra");
+
+    // LEG 0 — catalog seeding (plan 0335 todo 4): compress the REAL MPD container once and
+    // pin it in the Provision catalog; the post-install relay then auto-finalizes the
+    // dictionary on every dictionary-required text canister this test provisions.
+    let (compressed, raw) = seed_dictionary_catalog(&env);
+
+    // LEG 0b — gate-2 measurement (plan 0335): the COMPRESSED finalize is ONE update call
+    // (verify compressed digest → ruzstd stream decompress of the ~10.9 MB container into
+    // region 16 → raw digest → MPD validation → pin). The relayed canister is born
+    // Finalized, so the single-call cost is measured on a bare id-2 canister (installed
+    // directly, no relay) driven through the compressed path manually — the exact code
+    // path the relay invokes, in one call. The cycle delta of that ONE call is the
+    // gate-2 number (update-call budget ~10B instructions).
+    let bare = env.fed.pic.create_canister();
+    env.fed.pic.add_cycles(bare, 50_000_000_000_000);
+    env.fed.pic.install_canister(
+        bare,
+        text_wasm(),
+        Encode!(&text_canister::TextCanisterInitArgs {
+            controller: Some(env.fed.router),
+            analyzer_id: Some(text_canister::ANALYZER_MECAB),
+            dict_relay_caller: None,
+        })
+        .expect("encode bare init"),
+        None,
+    );
+    use gleaph_graph_kernel::provisioning::dictionary::{
+        CompressedDictFinalize, CompressedDictUpload,
+    };
+    for chunk in compressed.chunks(1_945_600) {
+        let bytes = env
+            .fed
+            .pic
+            .update_call(
+                bare,
+                env.fed.router,
+                "admin_upload_dict_chunk",
+                Encode!(
+                    &chunk.to_vec(),
+                    &Some(CompressedDictUpload {
+                        compressed_len: compressed.len() as u64,
+                    })
+                )
+                .expect("encode compressed chunk"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
+        let total: u64 = Decode!(&bytes, Result<u64, String>)
+            .expect("decode upload reply")
+            .expect("compressed chunk ok");
+        assert!(total > 0, "compressed staging appends");
+    }
+    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&compressed);
+    let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
+    let cycles_before_finalize = env.fed.pic.cycle_balance(bare);
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            bare,
+            env.fed.router,
+            "admin_finalize_dict_upload",
+            Encode!(
+                &raw_digest,
+                &Some(CompressedDictFinalize {
+                    compressed_digest,
+                    raw_digest,
+                    raw_len: raw.len() as u64,
+                })
+            )
+            .expect("encode compressed finalize"),
+        )
+        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
+    let finalized: text_canister::DictStatus =
+        Decode!(&bytes, Result<text_canister::DictStatus, String>)
+            .expect("decode finalize reply")
+            .expect("compressed finalize ok");
+    let finalize_cycles = cycles_before_finalize.saturating_sub(env.fed.pic.cycle_balance(bare));
+    println!(
+        "plan-0335 gate-2: single compressed finalize call (digest verify + 10.9MB ruzstd stream + validation + pin) cycles: {finalize_cycles}"
+    );
+    assert_eq!(finalized.state, text_canister::DictState::Finalized);
+    // Gate 2: the whole streaming finalize must fit ONE update message (~10B instructions).
+    assert!(
+        finalize_cycles < 10_000_000_000,
+        "single compressed finalize took {finalize_cycles} cycles — exceeds the update-message budget; per-chunk decompression fallback required"
+    );
 
     // LEG 1 — GQL-surface admission with the ANALYZER clause: the provisioned canister
     // pins analyzer 2 (install-arg flow through Provision).
@@ -844,147 +998,102 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         "unexpected admission error: {err}"
     );
 
-    // LEG 3 — canister-side dictionary gates before finalize.
-    // 3a: oversized chunk rejected.
-    let oversized = vec![0u8; 1024 * 1024 + 1];
-    let err: String = {
-        let bytes = env
-            .fed
-            .pic
-            .update_call(
-                canister,
-                env.fed.router,
-                "admin_upload_dict_chunk",
-                Encode!(&oversized).expect("encode"),
-            )
-            .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
-        Decode!(&bytes, Result<u64, String>)
-            .expect("decode reply")
-            .expect_err("oversized chunk must reject")
-    };
-    assert!(
-        err.contains("MAX_DICT_CHUNK_BYTES"),
-        "unexpected chunk error: {err}"
+    // LEG 3 — the post-install RELAY (plan 0335 todo 3): provisioning a
+    // dictionary-required analyzer auto-relayed the catalog's compressed container and
+    // finalized it — no manual dictionary steps. Assert the full observable end state.
+    let status = get_dict_status(&env, canister);
+    assert_eq!(
+        status.state,
+        text_canister::DictState::Finalized,
+        "the relay must finalize the dictionary during provisioning"
     );
-    // 3b: backfill registration HOLDS until finalize (recorded wording, no state change).
-    let request = text_canister::RegisterTextBackfillRequest {
-        text_index_id: gleaph_graph_kernel::federation::TextIndexId::new(1),
-        graph_canister: env.fed.graph_source,
-        graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(3),
-        index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(5),
-        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_100).unwrap(),
-        catalog_epoch: 1,
-        scope: text_canister::TextBackfillScope {
-            label_id: 1,
-            property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(1),
-            analyzer_id: 2,
-        },
-    };
-    let bytes = env
+    let dict = fetch_mecab_container();
+    let digest = xxhash_rust::xxh3::xxh3_128(&dict);
+    assert_eq!(
+        status.digest,
+        Some(digest),
+        "relay pins the raw container digest"
+    );
+    assert_eq!(
+        status.len,
+        dict.len() as u64,
+        "raw length matches the container"
+    );
+    assert_eq!(
+        status.compressed, None,
+        "compressed staging is deactivated after the relayed finalize"
+    );
+    // The relay caller (Provision) is authorized on the relay endpoints; a THIRD
+    // principal is not (plan 0335 §5-2 guard scoping — exercised through the real wasm
+    // guard, whose Err surfaces as a PocketIC CanisterReject).
+    let outsider = Principal::from_slice(&[0x3D; 29]);
+    let err = env
         .fed
         .pic
         .update_call(
             canister,
-            env.fed.router,
-            "admin_register_text_backfill",
-            Encode!(&request).expect("encode"),
+            outsider,
+            "admin_finalize_dict_upload",
+            Encode!(
+                &digest,
+                &None::<gleaph_graph_kernel::provisioning::dictionary::CompressedDictFinalize>
+            )
+            .expect("encode"),
         )
-        .unwrap_or_else(|e| panic!("admin_register_text_backfill: {e:?}"));
-    let hold: Result<text_canister::TextBackfillStatus, String> =
-        Decode!(&bytes, Result<text_canister::TextBackfillStatus, String>).expect("decode reply");
-    let hold = hold.expect_err("pre-finalize registration must hold");
+        .expect_err("a third principal must not finalize the dictionary");
     assert!(
-        hold.contains("until the ipadic dictionary is finalized"),
-        "unexpected hold wording: {hold}"
+        err.reject_message
+            .contains("is neither the text index controller"),
+        "unexpected guard reject: {}",
+        err.reject_message
     );
 
-    // Baseline upgrade on the SAME canister with the dictionary still absent (the open
-    // path skips the rebind) — isolates pocket-ic's install overhead from the rebind.
+    // LEG 4 — post_upgrade rebind on the relayed canister (the plan 0335 invariant: the
+    // compressed path must NOT touch open/upgrade). The dictionary is already Finalized,
+    // so this upgrade exercises the 0334 rebind: structural validation + resident memcpy,
+    // NO decode. The install-overhead BASELINE is measured IN THIS RUN on a bare id-1
+    // canister (same wasm, no dictionary → the open path skips the rebind), so the delta
+    // isolates the rebind work under identical PocketIC conditions.
     let empty = Encode!(&()).expect("encode empty upgrade arg");
-    let cycles_before = env.fed.pic.cycle_balance(canister);
+    let bare_id1 = env.fed.pic.create_canister();
+    env.fed.pic.add_cycles(bare_id1, 50_000_000_000_000);
     env.fed
         .pic
-        .upgrade_canister(canister, text_wasm(), empty.clone(), Some(env.fed.admin))
-        .expect("pre-finalize upgrade (no dictionary: no rebind work)");
-    let install_overhead = cycles_before.saturating_sub(env.fed.pic.cycle_balance(canister));
-    println!("plan-0334 upgrade install overhead (dict absent): {install_overhead}");
-
-    // Upload the pinned container in 1 MiB chunks (52,930,923 bytes = 51 chunks).
-    let dict = fetch_mecab_container();
-    for (index, chunk) in dict.chunks(1024 * 1024).enumerate() {
-        let total: u64 =
-            call_text_canister(&env, canister, "admin_upload_dict_chunk", &chunk.to_vec());
-        let expected = ((index + 1) * 1024 * 1024).min(dict.len());
-        assert_eq!(total as usize, expected, "append accounting");
-    }
-    let status = get_dict_status(&env, canister);
-    assert_eq!(status.state, text_canister::DictState::Uploading);
-    assert_eq!(status.len, dict.len() as u64);
-    assert_eq!(status.digest, None, "digest pins at finalize only");
-
-    // LEG 4 — finalize with a wrong digest rejects WITHOUT touching state.
-    let wrong_digest = xxhash_rust::xxh3::xxh3_128(&dict) ^ 1;
-    let bytes = env
-        .fed
+        .set_controllers(bare_id1, None, vec![env.fed.admin, Principal::anonymous()])
+        .expect("set bare controllers");
+    env.fed.pic.install_canister(
+        bare_id1,
+        text_wasm(),
+        Encode!(&text_canister::TextCanisterInitArgs {
+            controller: Some(env.fed.admin),
+            analyzer_id: Some(text_canister::ANALYZER_UNICODE_BIGRAM),
+            dict_relay_caller: None,
+        })
+        .expect("encode bare id-1 init"),
+        None,
+    );
+    let cycles_before_baseline = env.fed.pic.cycle_balance(bare_id1);
+    env.fed
         .pic
-        .update_call(
-            canister,
-            env.fed.router,
-            "admin_finalize_dict_upload",
-            Encode!(&wrong_digest).expect("encode"),
-        )
-        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
-    let mismatch: Result<text_canister::DictStatus, String> =
-        Decode!(&bytes, Result<text_canister::DictStatus, String>).expect("decode reply");
-    let mismatch = mismatch.expect_err("wrong digest must reject");
-    assert!(
-        mismatch.contains("digest mismatch"),
-        "unexpected: {mismatch}"
-    );
-    let status = get_dict_status(&env, canister);
-    assert_eq!(status.state, text_canister::DictState::Uploading);
-
-    // LEG 5 — correct digest finalizes; an exact replay is an idempotent no-op.
-    // Instruction accounting (plan 0331 validation): cycle delta across the finalize
-    // call covers the zstd decode + tokenizer build of the eager load (recorded in the
-    // plan audit).
-    let digest = xxhash_rust::xxh3::xxh3_128(&dict);
-    let cycles_before = env.fed.pic.cycle_balance(canister);
-    let finalized: text_canister::DictStatus =
-        call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
-    let cycles_after = env.fed.pic.cycle_balance(canister);
-    println!(
-        "plan-0334 finalize (digest + container validation + resident-set memcpy) cycles: {}",
-        cycles_before.saturating_sub(cycles_after)
-    );
-    assert_eq!(finalized.state, text_canister::DictState::Finalized);
-    assert_eq!(finalized.digest, Some(digest));
-    assert_eq!(finalized.len, dict.len() as u64);
-    let replay: text_canister::DictStatus =
-        call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
-    assert_eq!(replay, finalized, "exact re-finalize is a no-op");
-
-    // LEG 5b — post_upgrade rebind measurement (the plan 0334 headline): the DELTA
-    // against the pre-finalize upgrade of the SAME canister isolates the rebind work
-    // (structural container validation + resident-set memcpy over batched stable
-    // reads; NO decode, NO full-container copy; the feature region stays lazy over
-    // stable memory). Recorded vs the 0331 4.75B-cycle eager-decode baseline.
+        .upgrade_canister(bare_id1, text_wasm(), empty.clone(), Some(env.fed.admin))
+        .expect("dict-absent upgrade (install-overhead baseline leg)");
+    let install_overhead =
+        cycles_before_baseline.saturating_sub(env.fed.pic.cycle_balance(bare_id1));
+    println!("plan-0335 upgrade install overhead (bare id-1, dict absent): {install_overhead}");
     let cycles_before_upgrade = env.fed.pic.cycle_balance(canister);
     env.fed
         .pic
         .upgrade_canister(canister, text_wasm(), empty, Some(env.fed.admin))
-        .expect("in-place upgrade of the text canister (rebind leg)");
+        .expect("in-place upgrade of the relayed text canister (rebind leg)");
     let rebind_cycles = cycles_before_upgrade.saturating_sub(env.fed.pic.cycle_balance(canister));
     let rebind_delta = rebind_cycles.saturating_sub(install_overhead);
     println!(
-        "plan-0334 post_upgrade total: {rebind_cycles}; rebind DELTA vs dict-absent upgrade: {rebind_delta}"
+        "plan-0335 post_upgrade over relayed dictionary: {rebind_cycles} total; rebind DELTA vs same-run install overhead: {rebind_delta}"
     );
-    // Per the IC cost model the rebind is dominated by the unavoidable 4 KiB page
-    // charges of the resident memcpy (~5.2K pages x 5,000 = ~26M) + structural
-    // validation reads — MUST be orders below the 4.75B eager-decode baseline.
+    // Same bound as the 0334 gate: page-charge dominated, orders below the decode era.
     assert!(
         rebind_delta < 500_000_000,
-        "post_upgrade rebind delta {rebind_delta} cycles — expected ~10-100M (page-charge dominated), not the 4.75B baseline (total {rebind_cycles})"
+        "post_upgrade rebind delta {rebind_delta} cycles — expected ~10-100M (page-charge dominated), not the decode-era baseline (total {rebind_cycles})"
     );
 
     // LEG 6 — the SAME registration that held before finalize now replays idempotently:
@@ -1020,7 +1129,9 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
 #[test]
 fn mecab_counter_leg_explicit_bigram_pin_does_not_recall_lemma() {
     let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
     let env = Env {
+        provision,
         fed: finish_provision_wired_single_shard_federation(wired),
     };
     gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
@@ -1076,7 +1187,9 @@ const COMPOSITE_MIGRATION_ID: &str = "000105_text_score_composite";
 #[test]
 fn multilingual_composite_default_recalls_across_languages() {
     let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
     let env = Env {
+        provision,
         fed: finish_provision_wired_single_shard_federation(wired),
     };
     gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
@@ -1091,6 +1204,10 @@ fn multilingual_composite_default_recalls_across_languages() {
     // chosen to NOT overlap the single-language docs' query units above
     // (ねこ/walking/책에서/图书 vs 走る/학교/run/数据).
     seed_text_vertex(&env, "ねこが walking 중 책과 图书");
+
+    // LEG 0 — catalog seeding (plan 0335 todo 4): the relay (todo 3) then auto-finalizes
+    // the id-0 canister's dictionary during provisioning.
+    seed_dictionary_catalog(&env);
 
     // LEG 1 — DEFAULT admission: the bare admin endpoint carries NO analyzer
     // argument; the absent clause must resolve to the composite (id 0).
@@ -1123,49 +1240,16 @@ fn multilingual_composite_default_recalls_across_languages() {
         .pic
         .add_cycles(env.fed.graph_source, 20_000_000_000_000);
 
-    // LEG 2 — the DICT_REQUIRED gate covers id 0: backfill registration HOLDS
-    // until the dictionary is finalized (same recorded wording as id 2).
-    let request = text_canister::RegisterTextBackfillRequest {
-        text_index_id: gleaph_graph_kernel::federation::TextIndexId::new(1),
-        graph_canister: env.fed.graph_source,
-        graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(3),
-        index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(5),
-        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_100).unwrap(),
-        catalog_epoch: 1,
-        scope: text_canister::TextBackfillScope {
-            label_id: 1,
-            property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(1),
-            analyzer_id: 0,
-        },
-    };
-    let bytes = env
-        .fed
-        .pic
-        .update_call(
-            canister,
-            env.fed.router,
-            "admin_register_text_backfill",
-            Encode!(&request).expect("encode"),
-        )
-        .unwrap_or_else(|e| panic!("admin_register_text_backfill: {e:?}"));
-    let hold: Result<text_canister::TextBackfillStatus, String> =
-        Decode!(&bytes, Result<text_canister::TextBackfillStatus, String>).expect("decode reply");
-    let hold = hold.expect_err("pre-finalize registration must hold for id 0 too");
-    assert!(
-        hold.contains("until the ipadic dictionary is finalized"),
-        "unexpected hold wording: {hold}"
-    );
-
-    // LEG 3 — upload + finalize the SAME MPD container as id 2 (no new machinery).
+    // LEG 2 — the post-install RELAY covers id 0 (the plan 0332 widening: ids {0, 2}
+    // share the dictionary machinery): the provisioned canister's dictionary is
+    // already relay-Finalized, and the backfill registration that used to HOLD now
+    // proceeds (fail-closed → success is the observable widening).
+    let status = get_dict_status(&env, canister);
+    assert_eq!(status.state, text_canister::DictState::Finalized);
     let dict = fetch_mecab_container();
-    for chunk in dict.chunks(1024 * 1024) {
-        let _total: u64 =
-            call_text_canister(&env, canister, "admin_upload_dict_chunk", &chunk.to_vec());
-    }
     let digest = xxhash_rust::xxh3::xxh3_128(&dict);
-    let finalized: text_canister::DictStatus =
-        call_text_canister(&env, canister, "admin_finalize_dict_upload", &digest);
-    assert_eq!(finalized.state, text_canister::DictState::Finalized);
+    assert_eq!(status.digest, Some(digest));
+    assert_eq!(status.len, dict.len() as u64);
 
     // LEG 4 — the SAME registration that held now replays idempotently; the
     // migration statement carries the ABSENT clause (the default IS id 0).
