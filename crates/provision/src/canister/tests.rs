@@ -1,10 +1,10 @@
 //! Unit tests for the Provision ingress handlers.
 
 use super::{
-    ProvisionAcceptResponse, ProvisionIngressError, ProvisionQueryError, ProvisionResult,
-    ProvisionResultOutcome, accept_envelope_with_caller, admin_finalize_dict_catalog_with_caller,
-    admin_upload_dict_catalog_chunk_with_caller, artifact_get_status,
-    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    DictRelayCall, ProvisionAcceptResponse, ProvisionIngressError, ProvisionQueryError,
+    ProvisionResult, ProvisionResultOutcome, accept_envelope_with_caller,
+    admin_finalize_dict_catalog_with_caller, admin_upload_dict_catalog_chunk_with_caller,
+    artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     build_record_from_request, complete_graph_registration_with_caller,
     dict_relay_call_log_for_test, query_job_with_caller, record_to_result,
     release_activate_with_caller, release_get_active, release_install_with_caller,
@@ -28,7 +28,9 @@ use crate::types::{
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
-use gleaph_graph_kernel::provisioning::dictionary::{DictState, DictStatus};
+use gleaph_graph_kernel::provisioning::dictionary::{
+    DictState, DictStatus, MAX_DICT_COMPRESSED_CHUNK_BYTES,
+};
 use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
@@ -2336,9 +2338,9 @@ fn dict_relay_success_streams_catalog_chunks_and_finalizes() {
     let (raw_digest, raw_len) = seed_finalized_catalog(&chunks);
     seed_active_release();
 
-    // Fresh canister status, two upload replies (one per catalog row), then finalize.
+    // Fresh canister status, one coalesced upload reply (300 + 200 bytes under the cap),
+    // then finalize.
     script_dict_relay_call(scripted_status(DictState::Absent, None));
-    script_dict_relay_call(Some(Encode!(&Ok::<u64, String>(300)).unwrap()));
     script_dict_relay_call(Some(Encode!(&Ok::<u64, String>(500)).unwrap()));
     script_dict_relay_call(Some(
         Encode!(&Ok::<DictStatus, String>(DictStatus {
@@ -2380,15 +2382,174 @@ fn dict_relay_success_streams_catalog_chunks_and_finalizes() {
         }
     }
     assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+    // 300 + 200 bytes fit in one relay call: the two catalog rows coalesce verbatim.
+    let mut coalesced = vec![0xA0u8; 300];
+    coalesced.extend_from_slice(&[0xB1u8; 200]);
     assert_eq!(
         dict_relay_call_log_for_test(),
         vec![
-            "admin_get_dict_status",
-            "admin_upload_dict_chunk",
-            "admin_upload_dict_chunk",
-            "admin_finalize_dict_upload",
+            DictRelayCall::Status,
+            DictRelayCall::Upload { bytes: coalesced },
+            DictRelayCall::Finalize,
         ]
     );
+}
+
+/// (1b) Small containers coalesce into exactly ceil(total / cap) relay calls, and the
+/// concatenated upload bytes are byte-identical to the catalog's full compressed stream.
+#[test]
+fn dict_relay_coalesced_uploads_preserve_stream_bytes() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    // 7 rows of 307,200 bytes = 2,150,400 total -> 2 relay calls (1,945,600 + 204,800).
+    let row = [0xC3u8; 300 * 1024]; // 307,200 bytes per stored row
+    let chunks: Vec<Vec<u8>> = (0..7)
+        .map(|i| {
+            let mut r = row;
+            r[0] = i as u8; // distinguish rows inside the stream
+            r.to_vec()
+        })
+        .collect();
+    let refs: Vec<&[u8]> = chunks.iter().map(|c| c.as_slice()).collect();
+    let (raw_digest, raw_len) = seed_finalized_catalog(&refs);
+    seed_active_release();
+
+    script_dict_relay_call(scripted_status(DictState::Absent, None));
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<u64, String>(MAX_DICT_COMPRESSED_CHUNK_BYTES as u64)).unwrap(),
+    ));
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<u64, String>(
+            (7 * 300 * 1024 - MAX_DICT_COMPRESSED_CHUNK_BYTES) as u64
+        ))
+        .unwrap(),
+    ));
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<DictStatus, String>(DictStatus {
+            state: DictState::Finalized,
+            digest: Some(raw_digest),
+            len: raw_len,
+            compressed: None,
+        }))
+        .unwrap(),
+    ));
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(0))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
+        }
+        _ => panic!("expected Accepted"),
+    }
+
+    let log = dict_relay_call_log_for_test();
+    let uploads: Vec<&Vec<u8>> = log
+        .iter()
+        .filter_map(|call| match call {
+            DictRelayCall::Upload { bytes } => Some(bytes),
+            _ => None,
+        })
+        .collect();
+    // ceil(2,100,000 / 1,945,600) = 2 relay calls; every call is at or under the cap and the
+    // final one carries exactly what remains.
+    assert_eq!(uploads.len(), 2);
+    assert_eq!(uploads[0].len(), MAX_DICT_COMPRESSED_CHUNK_BYTES);
+    assert_eq!(
+        uploads[1].len(),
+        7 * 300 * 1024 - MAX_DICT_COMPRESSED_CHUNK_BYTES
+    );
+    let transferred: Vec<u8> = uploads.iter().flat_map(|b| b.iter().copied()).collect();
+    let catalog_stream: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    assert_eq!(transferred, catalog_stream);
+    assert_eq!(log.first(), Some(&DictRelayCall::Status));
+    assert_eq!(log.last(), Some(&DictRelayCall::Finalize));
+}
+
+/// (1c) Boundary: rows that exactly fill the cap flush at the cap boundary without an
+/// empty trailing call.
+#[test]
+fn dict_relay_exact_cap_boundary_flushes_without_trailing_empty_call() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    // Two rows whose concatenation is exactly the relay cap: 1 MiB + 945,600 bytes.
+    const SECOND_LEN: usize = MAX_DICT_COMPRESSED_CHUNK_BYTES - 1024 * 1024;
+    let chunks: [&[u8]; 2] = [&[0xD4u8; 1024 * 1024], &[0xD5u8; SECOND_LEN]];
+    let (raw_digest, raw_len) = seed_finalized_catalog(&chunks);
+    seed_active_release();
+
+    script_dict_relay_call(scripted_status(DictState::Absent, None));
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<u64, String>(MAX_DICT_COMPRESSED_CHUNK_BYTES as u64)).unwrap(),
+    ));
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<DictStatus, String>(DictStatus {
+            state: DictState::Finalized,
+            digest: Some(raw_digest),
+            len: raw_len,
+            compressed: None,
+        }))
+        .unwrap(),
+    ));
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(0))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
+        }
+        _ => panic!("expected Accepted"),
+    }
+
+    let log = dict_relay_call_log_for_test();
+    let uploads: Vec<&Vec<u8>> = log
+        .iter()
+        .filter_map(|call| match call {
+            DictRelayCall::Upload { bytes } => Some(bytes),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0].len(), MAX_DICT_COMPRESSED_CHUNK_BYTES);
+    let transferred: Vec<u8> = uploads.iter().flat_map(|b| b.iter().copied()).collect();
+    assert_eq!(
+        transferred,
+        [chunks[0], chunks[1]].concat(),
+        "transferred stream must be byte-identical to the concatenated catalog rows"
+    );
+    // No trailing empty upload between the last upload and finalize.
+    assert_eq!(log.len(), 3);
+    assert_eq!(log.last(), Some(&DictRelayCall::Finalize));
 }
 
 /// (2) A non-dictionary-required analyzer skips the relay entirely: zero seam calls even
@@ -2462,10 +2623,7 @@ fn dict_relay_short_circuits_on_finalized_match() {
         _ => panic!("expected Accepted"),
     }
     assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
-    assert_eq!(
-        dict_relay_call_log_for_test(),
-        vec!["admin_get_dict_status"]
-    );
+    assert_eq!(dict_relay_call_log_for_test(), vec![DictRelayCall::Status]);
 }
 
 /// (4) Relay call failure is fail-closed with the exact install-failure vocabulary: one
@@ -2516,7 +2674,12 @@ fn dict_relay_failure_records_failed_and_returns_partial_created() {
     );
     assert_eq!(
         dict_relay_call_log_for_test(),
-        vec!["admin_get_dict_status", "admin_upload_dict_chunk"]
+        vec![
+            DictRelayCall::Status,
+            DictRelayCall::Upload {
+                bytes: vec![0xA0; 300]
+            }
+        ]
     );
 }
 

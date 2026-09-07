@@ -6,7 +6,8 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::dictionary::{
-    CompressedDictFinalize, CompressedDictUpload, DictState, DictStatus, dict_required,
+    CompressedDictFinalize, CompressedDictUpload, DictState, DictStatus,
+    MAX_DICT_COMPRESSED_CHUNK_BYTES, dict_required,
 };
 use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
 use serde::{Deserialize, Serialize};
@@ -439,10 +440,20 @@ thread_local! {
     #[cfg(not(target_family = "wasm"))]
     static DICT_RELAY_CALL_SCRIPT: std::cell::RefCell<Vec<Option<Vec<u8>>>> =
         const { std::cell::RefCell::new(Vec::new()) };
-    /// Test-only ordered log of relay seam calls, for call-count assertions.
+    /// Test-only ordered log of relay seam calls, for call-order and byte-exactness
+    /// assertions.
     #[cfg(not(target_family = "wasm"))]
-    static DICT_RELAY_CALL_LOG: std::cell::RefCell<Vec<&'static str>> =
+    static DICT_RELAY_CALL_LOG: std::cell::RefCell<Vec<DictRelayCall>> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test-only ordered log of relay seam calls (native builds).
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DictRelayCall {
+    Status,
+    Upload { bytes: Vec<u8> },
+    Finalize,
 }
 
 /// Test-only: enqueue one scripted seam outcome. `None` fails the call (transport error);
@@ -454,7 +465,7 @@ pub(crate) fn script_dict_relay_call(reply: Option<Vec<u8>>) {
 
 /// Test-only: ordered log of issued relay seam calls.
 #[cfg(all(not(target_family = "wasm"), test))]
-pub(crate) fn dict_relay_call_log_for_test() -> Vec<&'static str> {
+pub(crate) fn dict_relay_call_log_for_test() -> Vec<DictRelayCall> {
     DICT_RELAY_CALL_LOG.with_borrow(|log| log.clone())
 }
 
@@ -466,8 +477,7 @@ pub(crate) fn reset_dict_relay_script_for_test() {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn pop_dict_relay_call_script(method: &'static str) -> Option<Vec<u8>> {
-    DICT_RELAY_CALL_LOG.with_borrow_mut(|log| log.push(method));
+fn pop_dict_relay_call_script() -> Option<Vec<u8>> {
     DICT_RELAY_CALL_SCRIPT.with_borrow_mut(|script| {
         if script.is_empty() {
             None
@@ -491,7 +501,8 @@ async fn dict_relay_status_call(target: Principal) -> Result<DictStatus, String>
 #[cfg(not(target_family = "wasm"))]
 async fn dict_relay_status_call(target: Principal) -> Result<DictStatus, String> {
     let _ = target;
-    match pop_dict_relay_call_script("admin_get_dict_status") {
+    DICT_RELAY_CALL_LOG.with_borrow_mut(|log| log.push(DictRelayCall::Status));
+    match pop_dict_relay_call_script() {
         Some(bytes) => Ok(Decode!(&bytes, DictStatus).expect("scripted DictStatus bytes")),
         None => Err("admin_get_dict_status call failed (no scripted reply)".to_owned()),
     }
@@ -517,11 +528,16 @@ async fn dict_relay_upload_chunk_call(
 #[cfg(not(target_family = "wasm"))]
 async fn dict_relay_upload_chunk_call(
     target: Principal,
-    _bytes: Vec<u8>,
+    bytes: Vec<u8>,
     _meta: CompressedDictUpload,
 ) -> Result<u64, String> {
     let _ = target;
-    match pop_dict_relay_call_script("admin_upload_dict_chunk") {
+    DICT_RELAY_CALL_LOG.with_borrow_mut(|log| {
+        log.push(DictRelayCall::Upload {
+            bytes: bytes.clone(),
+        })
+    });
+    match pop_dict_relay_call_script() {
         Some(bytes) => {
             let reply: Result<u64, String> =
                 Decode!(&bytes, Result<u64, String>).expect("scripted upload reply bytes");
@@ -558,7 +574,8 @@ async fn dict_relay_finalize_call(
     _meta: CompressedDictFinalize,
 ) -> Result<DictStatus, String> {
     let _ = target;
-    match pop_dict_relay_call_script("admin_finalize_dict_upload") {
+    DICT_RELAY_CALL_LOG.with_borrow_mut(|log| log.push(DictRelayCall::Finalize));
+    match pop_dict_relay_call_script() {
         Some(bytes) => {
             let reply: Result<DictStatus, String> =
                 Decode!(&bytes, Result<DictStatus, String>).expect("scripted finalize reply bytes");
@@ -619,8 +636,14 @@ async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Re
         return Ok(());
     }
 
-    // Stream the catalog chunk rows verbatim (no coalescing): the 1,945,600-byte relay cap
-    // is the text canister's per-call acceptance bound, and catalog rows are already ≤ 1 MiB.
+    // Coalesce the stored catalog rows into relay calls of up to
+    // MAX_DICT_COMPRESSED_CHUNK_BYTES, filling one window to the cap before starting the
+    // next (a row may be sliced across two calls). Compressed-mode digests accumulate over
+    // the whole stream, so stored-row boundaries carry no meaning; the plan targets ~6
+    // relay calls for the ~10.9 MB container and the stored ≤1 MiB rows stay untouched.
+    // The transient window never exceeds the ~1.9 MB relay cap, and the final call carries
+    // everything that remains.
+    let mut window: Vec<u8> = Vec::with_capacity(MAX_DICT_COMPRESSED_CHUNK_BYTES);
     for chunk_index in 0..entry.chunks_received {
         let chunk = dict_store
             .get_chunk(&DictChunkKey {
@@ -630,9 +653,29 @@ async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Re
             .ok_or_else(|| {
                 format!("dictionary catalog chunk {chunk_index} missing for {catalog_key:?}")
             })?;
+        let mut row: &[u8] = &chunk.bytes;
+        while !row.is_empty() {
+            let space = MAX_DICT_COMPRESSED_CHUNK_BYTES - window.len();
+            let take = space.min(row.len());
+            window.extend_from_slice(&row[..take]);
+            row = &row[take..];
+            if window.len() == MAX_DICT_COMPRESSED_CHUNK_BYTES {
+                dict_relay_upload_chunk_call(
+                    text_canister,
+                    std::mem::take(&mut window),
+                    CompressedDictUpload {
+                        compressed_len: entry.compressed_len,
+                    },
+                )
+                .await?;
+                window = Vec::with_capacity(MAX_DICT_COMPRESSED_CHUNK_BYTES);
+            }
+        }
+    }
+    if !window.is_empty() {
         dict_relay_upload_chunk_call(
             text_canister,
-            chunk.bytes,
+            window,
             CompressedDictUpload {
                 compressed_len: entry.compressed_len,
             },
