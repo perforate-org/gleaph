@@ -1274,10 +1274,25 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
 
-- **Status:** Deferred after bounded research (2026-08-23; ADR not justified). Contract-equivalent
-  candidates cleared the query threshold, but the winning query-only candidate remains slower than
-  the existing owner's compacted query and omitted integrated costs prevent a substitution claim.
-- **Severity:** P2 traversal performance and stable-layout research gap
+- **Status:** Resolved for the tree regime by [ADR 0094](adr/0094-ltb-block-tombstone-count-level1-offset.md)
+  + Plan 0338 (`73ba30e01` field/maintenance, `ec52f28a8` read path, 2026-09-07): the LTB block
+  header carries a per-block `u16 tombstone_count` maintained by the single tree-mode remove
+  funnel, and `visit_edges_window`'s tree arm resolves only the blocks overlapping the window's
+  position range (S1, arithmetic under the Plan 0327 tombstone-inclusive position contract)
+  skipping fully-dead in-window blocks via the header count (S2, fail-closed scan
+  self-verification). Measured attribution (ADR 0094 implementation-status appendix): the
+  dead-prefix paging case reclaims ≈ 99.97% of the tree walk (39.79M → 14,399 instructions,
+  S1-dominated); a window spanning 512 fully-dead blocks removes their payload reads at ≈ 29,151
+  instructions per skip (S1+S2 = 40.92M vs S0 64.29M, S2-dominated). **Slab/bypass regimes remain
+  intentionally status-quo** (research doc §5.5): slab extent is capped at `T_PROMOTE = 4,096`, the
+  worst-case re-anchored overshoot is ~109K instructions/query (Plan 0337 slab leg, 1.09× above
+  the declared 100K bar — deferred-with-evidence, not opened), the compact-or-promote insert-path
+  cycle answers churn, and the remove-side maintenance-admission trigger for Insertion-policy slab
+  buckets and bypass rows is recorded as a separate deferred improvement (research doc §5.5).
+  Level 2 (a dedicated contiguous per-bucket directory region) stays evidence-gated (§5.2) —
+  Level 1 already reclaims ~98% of the measured tree gap.
+- **Severity:** P2 traversal performance and stable-layout research gap (closed for tree;
+  slab-side residual recorded as deferred-with-evidence)
 - **Owner:** `ic-stable-lara` traversal and LARA logical-slot metadata
 - **Observed behavior:** `TraversalWindow.offset` can jump directly only for a proven dense bucket.
   Sparse or tombstone-bearing buckets inspect logical rows to count live matches before delivering
@@ -1306,10 +1321,19 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 - **Impact:** Large sparse buckets can spend instructions scanning tombstones for OFFSET/LIMIT.
   Introducing durable metadata now would expand the storage format and add mutation,
   compaction/rebuild, reopen, and benchmark obligations before the design is understood.
-- **Next decision:** Retain the exact sparse scan and current compaction ownership; do not open an
-  ADR from this slice. Revisit only if integrated candidate build/mutation/update/validation costs
-  and a demonstrated workload establish a substitution benefit beyond compaction's query and
-  storage obligations. Any adoption remains a separate ADR/storage slice.
+- **Next decision:** None for the tree regime — resolved by ADR 0094 + Plan 0338 (S1+S2, measured,
+  attribution recorded in the ADR implementation-status appendix). The Plan 0283-era numbers below
+  are historical: the extent-8,192 slab fixture predates ADR 0088's `T_PROMOTE` slab cap (legal
+  ceiling 4,096 today), and the candidate-C reactive design was rejected by Plan 0336's fixed gate.
+  Slab-side residual: status-quo + deferred-with-evidence (research doc §5.5); Level 2 escalation
+  evidence-gated. The 2026-08-23 deferred decision text is preserved below as the historical
+  record of that slice's scope boundary.
+
+  **Historical record (2026-08-23, Plan 0283 decision at that time):** Retain the exact sparse
+  scan and current compaction ownership; do not open an ADR from that slice. Revisit only if
+  integrated candidate build/mutation/update/validation costs and a demonstrated workload
+  establish a substitution benefit beyond compaction's query and storage obligations. Any
+  adoption remains a separate ADR/storage slice.
 
 ### GAP-2026-07-25-001 — Paired canonical edge writes expose recoverable post-write errors
 

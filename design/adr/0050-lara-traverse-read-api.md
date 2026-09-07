@@ -406,10 +406,22 @@ cardinality. Otherwise Graph continues to apply the window at the row-execution 
 
 #### Known gap: tombstone-aware offset acceleration
 
+**Resolved for tree buckets (2026-09-07):** [ADR 0094](0094-ltb-block-tombstone-count-level1-offset.md)
+adds a per-block `u16 tombstone_count` to the LTB block header (single-funnel maintenance,
+fail-closed scan self-verification) and restructures `visit_edges_window`'s tree arm to resolve
+only the blocks overlapping the window's position range, skipping fully-dead in-window blocks
+(Plan 0338; measured attribution in the ADR implementation-status appendix). The tree window cost
+is bounded by the window extent, not the bucket extent. The paragraph below is retained as the
+historical scope boundary for the slab and bypass regimes, which remain intentionally status-quo:
+research investigation §5.5 records the measured slab overshoot (~109K instructions/query at the
+post-ADR-0088 `T_PROMOTE` extent cap), the compact-or-promote cycle that answers churn, and the
+deferred remove-side maintenance-admission improvement.
+
 The current contract does not introduce persistent tombstone-count, live-count, bitmap, or
-rank/select metadata. A sparse or tombstone-bearing bucket may therefore inspect logical rows while
-counting live matches for `TraversalWindow.offset`; only a proven dense bucket may jump directly to
-the offset. This is an intentional scope boundary, not a claim that the scan cost is optimal.
+rank/select metadata **for slab and bypass buckets**. A sparse or tombstone-bearing slab bucket may
+therefore inspect logical rows while counting live matches for `TraversalWindow.offset`; only a
+proven dense bucket may jump directly to the offset. This remains an intentional scope boundary for
+those regimes, not a claim that the scan cost is optimal.
 
 Persistent interval summaries and live-bitmaps are a future research/implementation topic. Candidate
 designs include fixed-width logical-slot block summaries, hierarchical live-count directories, and
