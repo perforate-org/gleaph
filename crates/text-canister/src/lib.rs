@@ -43,11 +43,11 @@ pub use backfill::{
     RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
     TextBackfillSealProof, TextBackfillStatus,
 };
-/// Dictionary-relay protocol types (plan 0335): SINGLE SOURCE OF TRUTH is the shared
-/// kernel module (the Provision catalog owner and this relay receiver agree on one Candid
-/// shape and one `dict_required` predicate; no copy is kept here).
+/// Dictionary-relay protocol types (plans 0335/0342). SINGLE SOURCE OF TRUTH is the shared
+/// kernel module (`gleaph_graph_kernel::provisioning::dictionary`) — re-exported here for the
+/// canister's Candid surface.
 pub use gleaph_graph_kernel::provisioning::dictionary::{
-    CompressedDictFinalize, CompressedDictStatus, CompressedDictUpload, DictState, DictStatus,
+    CompressedDictFinalize, CompressedDictUpload, DictState, DictStatus,
     MAX_DICT_COMPRESSED_CHUNK_BYTES,
 };
 pub use init::TextCanisterInitArgs;
@@ -190,12 +190,13 @@ fn admin_merge_step(budget: u32) -> Result<MergeStepReport, String> {
 
 // -- Analyzer-2 dictionary upload (plan 0331, ADR 0087 chunk analogy) -----------------------
 
-/// Relay-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] raw / [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] compressed).
+/// Relay-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] raw / [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] framed).
 /// Accepts the stored controller (Router) OR the provision relay caller (plan 0335 §5-2).
 /// Wire (plan 0353): trailing `opt` mode — `None` = raw (byte-identical behavior), `Some`
-/// = compressed staging into region 17. Fail-closed unless this index pins a
-/// dictionary-carrying analyzer (id 0 or id 2) and the dictionary is not yet finalized;
-/// returns the new TOTAL length of the selected staging region.
+/// = framed (plan 0342: verify THIS frame's digest, decode it immediately, append the raw
+/// bytes to region 16 — compressed bytes are never persisted). Fail-closed unless this
+/// index pins a dictionary-carrying analyzer (id 0 or id 2) and the dictionary is not yet
+/// finalized; returns the new TOTAL raw length of region 16.
 #[update(guard = "guards::guard_controller_or_relay_caller")]
 fn admin_upload_dict_chunk(
     bytes: Vec<u8>,
@@ -207,11 +208,13 @@ fn admin_upload_dict_chunk(
 /// Relay-guarded dictionary finalize (trailing `opt` mode per plan 0335). RAW mode:
 /// verifies the streaming identity (xxh3_128 over the concatenated region) against
 /// `expected_digest`, then structurally validates + materializes the resident set
-/// (plan 0334 rebind: validate + resident memcpy, NO decode). COMPRESSED mode: verifies
-/// the compressed staging digest, streams ruzstd into region 16, checks length + raw
-/// digest, then runs the same validation. Accepts the stored controller (Router) OR the
-/// provision relay caller (plan 0335 §5-2). Idempotent on an exact Finalized replay in
-/// both modes; any failure rejects WITHOUT recording Finalized state.
+/// (plan 0334 rebind: validate + resident memcpy, NO decode). FRAMED mode (plan 0342):
+/// verifies the ACCUMULATED raw digest (streamed over region 16 during upload) + the total
+/// raw length against the declared record, then runs the same validation. Accepts the
+/// stored controller (Router) OR the provision relay caller (plan 0335 §5-2). Idempotent
+/// on an exact Finalized replay in both modes; any failure rejects WITHOUT recording
+/// Finalized state (framed failures reset region 16 + frame counter so a retry re-streams
+/// from frame 0).
 #[update(guard = "guards::guard_controller_or_relay_caller")]
 fn admin_finalize_dict_upload(
     expected_digest: u128,
@@ -296,14 +299,14 @@ fn get_text_backfill_status() -> Result<Option<TextBackfillStatus>, String> {
 #[cfg(test)]
 mod wire_contract_tests {
     use candid::{decode_args, encode_args};
-    use gleaph_graph_kernel::provisioning::dictionary::{
-        CompressedDictFinalize, CompressedDictUpload, MAX_DICT_COMPRESSED_CHUNK_BYTES,
-    };
+    use gleaph_graph_kernel::provisioning::dictionary::MAX_DICT_COMPRESSED_CHUNK_BYTES;
+
+    use crate::{CompressedDictFinalize, CompressedDictUpload};
 
     /// Sender/receiver encoding match (the agreed plan-0335 completion condition): the
     /// relay endpoints gained a trailing `opt` mode argument, so OLD single-arg raw
     /// senders must decode under the NEW receivers with the mode filled as `None`
-    /// (Candid optional-field evolution), and the compressed sender shape must round-trip.
+    /// (Candid optional-field evolution), and the framed sender shape must round-trip.
     #[test]
     fn old_raw_single_arg_sender_decodes_as_none_mode() {
         // Old upload sender `(blob)` under the new receiver `(blob, opt CompressedDictUpload)`.
@@ -318,16 +321,16 @@ mod wire_contract_tests {
     }
 
     #[test]
-    fn compressed_sender_shapes_roundtrip_against_receivers() {
+    fn framed_sender_shapes_roundtrip_against_receivers() {
         let upload = CompressedDictUpload {
-            compressed_len: 10_900_552,
+            frame_digest: 0xDEADBEEF,
+            raw_len: 52_931_159,
         };
         let bytes = encode_args((vec![7u8; 16], Some(upload.clone()))).unwrap();
         let decoded: (Vec<u8>, Option<CompressedDictUpload>) = decode_args(&bytes).unwrap();
         assert_eq!(decoded, (vec![7; 16], Some(upload)));
 
         let finalize = CompressedDictFinalize {
-            compressed_digest: 0xAABB,
             raw_digest: 0xCCDD,
             raw_len: 52_931_159,
         };
@@ -343,7 +346,8 @@ mod wire_contract_tests {
         let args = (
             vec![0u8; MAX_DICT_COMPRESSED_CHUNK_BYTES],
             Some(CompressedDictUpload {
-                compressed_len: 10_900_552,
+                frame_digest: 0xABCD,
+                raw_len: 52_931_159,
             }),
         );
         let bytes = encode_args(args).unwrap();

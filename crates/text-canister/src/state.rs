@@ -25,8 +25,12 @@
 //! | 14 | `Cell<Option<backfill::BackfillRegistration>>` | text backfill build identity + lifecycle phase (`crate::backfill`) |
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
 //! | 16 | raw contiguous bytes | MPD container (MeCab-format ipadic 4-image set, plain appends during upload, see "Dictionary region") |
-//! | 17 | raw contiguous bytes | compressed MPD staging (plan 0335: zstd container bytes during the provision relay, streamed-decompressed into 16 at finalize) |
 //! | 18 | `Cell<Principal>` | provision relay caller (plan 0335 §5-2: the Provision canister principal allowed on the two relay endpoints) |
+//!
+//! Region 17 (plan 0335 compressed MPD staging) is DELETED by plan 0342: the catalog
+//! artifact is N independent zstd frames, the relay sends ONE FRAME PER CALL, and the text
+//! canister decodes THAT call's frame immediately into region 16 — compressed bytes are
+//! never persisted. Layout version stays 1 (fresh-state policy; old staged state disposable).
 //!
 //! ## Dictionary region (plan 0331, container swap plan 0334, plan 0332 widening to id 0)
 //!
@@ -118,10 +122,9 @@ use xxhash_rust::xxh3::{xxh3_128, xxh3_128_with_seed};
 use crate::analyzer::{
     ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM, analyze_pinned, dict_required,
 };
-use crate::{DictStatus, FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
+use crate::{FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
 use gleaph_graph_kernel::provisioning::dictionary::{
-    CompressedDictFinalize, CompressedDictStatus, CompressedDictUpload,
-    MAX_DICT_COMPRESSED_CHUNK_BYTES,
+    CompressedDictFinalize, CompressedDictUpload, DictStatus, MAX_DICT_COMPRESSED_CHUNK_BYTES,
 };
 
 use arena::{BlobArena, BlobRef};
@@ -203,10 +206,6 @@ const TEXT_BLOB_ARENA: MemoryId = MemoryId::new(12);
 const TEXT_TERM_ENTRIES: MemoryId = MemoryId::new(13);
 /// Analyzer-2 dictionary blob (plan 0331); the backfill cells own 14/15 (see `backfill`).
 const TEXT_DICT_BLOB: MemoryId = MemoryId::new(16);
-/// Compressed MPD staging (plan 0335): the zstd-compressed container bytes appended during
-/// the provision relay, streamed-decompressed into region 16 at compressed finalize, then
-/// deactivated. Layout version stays 1 (states are disposable; fresh state on deploy).
-const TEXT_DICT_COMPRESSED: MemoryId = MemoryId::new(17);
 /// Provision relay caller (plan 0335 §5-2): the Provision canister principal allowed on the
 /// two relay endpoints (`admin_upload_dict_chunk`, `admin_finalize_dict_upload`) in addition
 /// to the stored controller (Router). Anonymous sentinel = deny everyone.
@@ -236,14 +235,12 @@ pub(crate) struct TextMemories<M: ic_stable_structures::Memory> {
     arena: M,
     term_entries: M,
     dict_blob: M,
-    /// Compressed MPD staging (plan 0335): region 17, zstd-compressed container bytes.
-    dict_compressed: M,
     /// Provision relay caller (plan 0335 §5-2): region 18, the Provision canister principal.
     dict_relay_caller: M,
 }
 
 impl TextMemories<Memory> {
-    /// Binds all fourteen production regions through the single `MemoryManager`.
+    /// Binds all thirteen production regions through the single `MemoryManager`.
     pub(crate) fn production() -> Self {
         Self {
             meta: region(TEXT_META),
@@ -261,7 +258,6 @@ impl TextMemories<Memory> {
             arena: region(TEXT_BLOB_ARENA),
             term_entries: region(TEXT_TERM_ENTRIES),
             dict_blob: region(TEXT_DICT_BLOB),
-            dict_compressed: region(TEXT_DICT_COMPRESSED),
             dict_relay_caller: region(TEXT_DICT_RELAY_CALLER),
         }
     }
@@ -286,12 +282,12 @@ struct TextMeta {
     /// Dictionary lifecycle (see the module "Analyzer-2 dictionary" section):
     /// [`DICT_STATE_ABSENT`] / [`DICT_STATE_UPLOADING`] / [`DICT_STATE_FINALIZED`].
     dict_state: u8,
-    /// Compressed staging progress (plan 0335): compressed bytes received into region 17
-    /// during the provision relay (0 in raw mode and after a compressed finalize).
-    dict_compressed_len: u64,
-    /// Declared total compressed length (`CompressedDictUpload.compressed_len` of the
-    /// relay; 0 in raw mode and after a compressed finalize).
-    dict_compressed_total: u64,
+    /// Framed-mode progress (plan 0342): raw bytes appended to region 16 so far during the
+    /// provision relay (0 in raw mode and after a compressed finalize).
+    dict_raw_received_len: u64,
+    /// Framed-mode progress (plan 0342): the accumulated xxh3_128 over the raw bytes appended
+    /// to region 16 so far (0 in raw mode and after a compressed finalize).
+    dict_raw_digest: u128,
 }
 
 /// Dictionary lifecycle states of [`TextMeta::dict_state`].
@@ -312,8 +308,8 @@ impl Default for TextMeta {
             dict_digest: 0,
             dict_len: 0,
             dict_state: DICT_STATE_ABSENT,
-            dict_compressed_len: 0,
-            dict_compressed_total: 0,
+            dict_raw_received_len: 0,
+            dict_raw_digest: 0,
         }
     }
 }
@@ -562,8 +558,6 @@ pub struct TextStores<M: ic_stable_structures::Memory> {
     /// Raw region 16 memory (the MeCab-format dictionary container; plan 0334 keeps it
     /// a PLAIN byte string addressed by offset accessors — no framing).
     dict_region: M,
-    /// Compressed MPD staging (plan 0335): region 17, zstd-compressed container bytes.
-    dict_compressed_region: M,
     /// Provision relay caller (plan 0335 §5-2): region 18, the Provision canister principal.
     dict_relay_caller: Cell<Principal, M>,
 }
@@ -572,28 +566,6 @@ pub struct TextStores<M: ic_stable_structures::Memory> {
 fn dict_digests(term: &str) -> [u128; DICT_PROBES] {
     let bytes = term.as_bytes();
     [xxh3_128(bytes), xxh3_128_with_seed(bytes, DICT_PROBE_SEED)]
-}
-
-/// A `std::io::Read` adapter over a stable region slice (bounded window reads; one read =
-/// one batched `stable64_read` syscall). Used to feed the compressed staging region to the
-/// ruzstd streaming decoder (plan 0335).
-struct RegionReader<'a, M: ic_stable_structures::Memory> {
-    region: &'a M,
-    pos: u64,
-    len: u64,
-}
-
-impl<M: ic_stable_structures::Memory> std::io::Read for RegionReader<'_, M> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let remaining = self.len - self.pos;
-        if remaining == 0 {
-            return Ok(0);
-        }
-        let take = (buf.len() as u64).min(remaining) as usize;
-        self.region.read(self.pos, &mut buf[..take]);
-        self.pos += take as u64;
-        Ok(take)
-    }
 }
 
 impl<M> TextStores<M>
@@ -678,7 +650,6 @@ where
             controller: Cell::init(memories.controller, Principal::anonymous()),
             arena: BlobArena::init(memories.arena),
             dict_region: memories.dict_blob,
-            dict_compressed_region: memories.dict_compressed,
             dict_relay_caller: Cell::init(memories.dict_relay_caller, Principal::anonymous()),
         };
         if stores.segments.is_empty() {
@@ -882,23 +853,6 @@ where
 
     // -- Analyzer-2 dictionary upload / finalize (plan 0331) -----------------------------
 
-    /// The region-16 dictionary bytes as a contiguous heap copy, trimmed to the
-    /// recorded upload length (~53 MB transient at finalize ONLY; the open/rebind
-    /// path never copies the container — see `dict_container_image`).
-    fn dict_blob_bytes(&self) -> Vec<u8> {
-        let total = self.meta.get().dict_len as usize;
-        let mut out = Vec::with_capacity(total);
-        let mut buf = vec![0u8; MAX_DICT_CHUNK_BYTES];
-        let mut pos = 0u64;
-        while pos < total as u64 {
-            let take = ((total as u64 - pos) as usize).min(MAX_DICT_CHUNK_BYTES);
-            self.dict_region.read(pos, &mut buf[..take]);
-            out.extend_from_slice(&buf[..take]);
-            pos += take as u64;
-        }
-        out
-    }
-
     /// The durable container as a byte IMAGE over region 16 (zero-copy: offset
     /// accessors address stable memory directly; batched `stable64_read` syscalls).
     /// The `CanisterStableImage` wrapper is Send/Sync by fiat — sound because IC
@@ -908,7 +862,9 @@ where
     }
 
     /// Streaming xxh3_128 over a stable region in bounded windows (no full materialization).
-    /// Used to verify the compressed staging digest before decompression (plan 0335).
+    /// The single streaming-hash helper (plan 0342): used by raw finalize (replacing the old
+    /// full-container `dict_blob_bytes` heap copy) and by framed upload to accumulate the raw
+    /// digest over the received region-16 prefix.
     fn stream_hash_region(&self, region: &M, len: u64) -> u128 {
         let mut hasher = xxhash_rust::xxh3::Xxh3::new();
         let mut buf = vec![0u8; MAX_DICT_CHUNK_BYTES];
@@ -922,69 +878,58 @@ where
         hasher.digest128()
     }
 
-    /// Streams ruzstd decompression from a compressed staging region into a raw destination
-    /// region, computing the raw xxh3_128 incrementally. Bounded heap: one read window + one
-    /// write window + ruzstd's internal decode window (no full materialization — the 0331
-    /// 675 MB peak must NOT return). `expected_raw_len` bounds the decompressed output
-    /// fail-closed: a mid-stream overrun rejects as a decompression bomb, a short EOF
-    /// rejects as a truncated stream (ruzstd's read returns 0 at source EOF without
-    /// knowing the frame was cut short — the declared length is the authority). Returns
-    /// `(raw_len, raw_digest)` with `raw_len == expected_raw_len` on success.
-    fn stream_decompress_to_region(
+    /// Decodes ONE zstd frame from `bytes` (heap) and appends the raw output to `dst` at
+    /// `dst_offset`, growing pages to cover. A FRESH ruzstd `StreamingDecoder` per call over
+    /// the frame bytes — self-contained, no cross-call decoder state (the plan-0342 rejected
+    /// alternative is binding). Bounded heap: one read window + ruzstd's internal decode
+    /// window (no full materialization — the 0331 675 MB peak must NOT return). `max_total`
+    /// bounds the cumulative raw length fail-closed (bomb overrun guard; the declared raw_len
+    /// is only known at finalize, so the per-call guard is the runaway bound). Returns the
+    /// number of raw bytes appended.
+    fn decode_frame_append(
         &self,
-        src: &M,
-        src_len: u64,
+        bytes: &[u8],
         dst: &M,
-        expected_raw_len: u64,
-    ) -> Result<(u64, u128), String> {
-        let reader = RegionReader {
-            region: src,
-            pos: 0,
-            len: src_len,
-        };
-        let mut decoder = ruzstd::StreamingDecoder::new(reader)
-            .map_err(|e| format!("compressed dictionary stream is corrupt or truncated: {e:?}"))?;
-        let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+        dst_offset: u64,
+        max_total: u64,
+    ) -> Result<u64, String> {
+        let mut decoder = ruzstd::StreamingDecoder::new(bytes)
+            .map_err(|e| format!("compressed dictionary frame is corrupt or truncated: {e:?}"))?;
         let mut out = vec![0u8; MAX_DICT_CHUNK_BYTES];
         let mut raw_len: u64 = 0;
         loop {
             let n = decoder
                 .read(&mut out)
-                .map_err(|e| format!("compressed dictionary stream decode failed: {e:?}"))?;
+                .map_err(|e| format!("compressed dictionary frame decode failed: {e:?}"))?;
             if n == 0 {
                 break;
             }
-            hasher.update(&out[..n]);
-            let end = raw_len + n as u64;
-            if end > expected_raw_len {
+            let end = dst_offset + raw_len + n as u64;
+            if end > max_total {
                 return Err(format!(
-                    "decompressed dictionary exceeds the declared raw length {expected_raw_len} (possible decompression bomb)"
+                    "decompressed dictionary exceeds the maximum raw length {max_total} (possible decompression bomb)"
                 ));
             }
             let pages = end.div_ceil(65536);
             if dst.size() < pages {
                 dst.grow(pages - dst.size());
             }
-            dst.write(raw_len, &out[..n]);
+            dst.write(dst_offset + raw_len, &out[..n]);
             raw_len += n as u64;
         }
-        if raw_len != expected_raw_len {
-            return Err(format!(
-                "compressed dictionary stream is truncated: decoded {raw_len} bytes, expected {expected_raw_len}"
-            ));
-        }
-        Ok((raw_len, hasher.digest128()))
+        Ok(raw_len)
     }
 
     /// Relay-guarded append of one dictionary chunk (plan 0335 wire: `(bytes, opt mode)`;
-    /// `None` selects the RAW mode byte-identically, `Some` the compressed mode). Shared
+    /// `None` selects the RAW mode byte-identically, `Some` the framed mode). Shared
     /// fail-closed gates (analyzer in the `DICT_REQUIRED` set, not already finalized,
     /// non-empty chunk, runaway total) run before any mutation; the mode then selects the
-    /// staging region and the per-call cap: raw appends region 16 under the 1 MiB
-    /// [`MAX_DICT_CHUNK_BYTES`] cap, compressed appends region 17 under the shared
-    /// [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] cap (~1.9 MiB, the cross-subnet 2 MiB payload
-    /// limit minus Candid/envelope headroom). Mixing modes within one upload session
-    /// rejects. Returns the new TOTAL length of the selected staging region.
+    /// per-call cap: raw appends region 16 under the 1 MiB [`MAX_DICT_CHUNK_BYTES`] cap,
+    /// framed decodes ONE zstd frame under the shared [`MAX_DICT_COMPRESSED_CHUNK_BYTES`]
+    /// cap (~1.9 MiB, the cross-subnet 2 MiB payload limit minus Candid/envelope headroom)
+    /// and appends the DECODED bytes to region 16 immediately (plan 0342 — compressed bytes
+    /// are never persisted). Mixing modes within one upload session rejects. Returns the new
+    /// TOTAL length of the selected staging region (raw bytes for framed mode).
     pub fn upload_dict_chunk(
         &mut self,
         bytes: Vec<u8>,
@@ -1005,9 +950,9 @@ where
         }
         let upload = match mode {
             None => {
-                if meta.dict_compressed_len > 0 {
+                if meta.dict_raw_received_len > 0 {
                     return Err(
-                        "dictionary upload started in compressed mode; raw chunks are rejected"
+                        "dictionary upload started in framed mode; raw chunks are rejected"
                             .to_string(),
                     );
                 }
@@ -1040,10 +985,10 @@ where
             }
             Some(upload) => upload,
         };
-        // -- Compressed mode: staging goes to region 17 under the shared cap. ----------
+        // -- Framed mode: verify THIS frame's digest, decode it, append raw bytes to 16. --
         if meta.dict_len > 0 {
             return Err(
-                "dictionary upload started in raw mode; compressed chunks are rejected".to_string(),
+                "dictionary upload started in raw mode; framed chunks are rejected".to_string(),
             );
         }
         if bytes.len() > MAX_DICT_COMPRESSED_CHUNK_BYTES {
@@ -1052,33 +997,33 @@ where
                 bytes.len()
             ));
         }
-        if upload.compressed_len > MAX_DICT_TOTAL_BYTES {
+        // Verify the frame digest FIRST (fail THAT call, no mutation — region 16 and meta
+        // are untouched on a mismatch).
+        let received_digest = xxh3_128(&bytes);
+        if received_digest != upload.frame_digest {
             return Err(format!(
-                "declared compressed length {} exceeds MAX_DICT_TOTAL_BYTES ({MAX_DICT_TOTAL_BYTES})",
-                upload.compressed_len
+                "frame digest mismatch: received bytes hash {:#032x}, expected {:#032x}",
+                received_digest, upload.frame_digest
             ));
         }
-        let new_len = meta.dict_compressed_len + bytes.len() as u64;
-        if new_len > upload.compressed_len {
-            return Err(format!(
-                "compressed staging would exceed the declared compressed length {}",
-                upload.compressed_len
-            ));
-        }
-        // Append at the running compressed offset (same plain-bytes discipline as raw).
-        let pages = new_len.div_ceil(65536);
-        if self.dict_compressed_region.size() < pages {
-            self.dict_compressed_region
-                .grow(pages - self.dict_compressed_region.size());
-        }
-        self.dict_compressed_region
-            .write(meta.dict_compressed_len, &bytes);
+        // Decode THIS frame (a fresh ruzstd StreamingDecoder per call — self-contained, no
+        // cross-call decoder state) and append the raw bytes to region 16 at the running raw
+        // offset. The bomb-overrun gate bounds the cumulative raw length against the declared
+        // raw_len (reject the call that exceeds it) AND the runaway guard (a maliciously large
+        // raw_len must not let region 16 grow unboundedly).
+        let raw_offset = meta.dict_raw_received_len;
+        let max_total = upload.raw_len.min(MAX_DICT_TOTAL_BYTES);
+        let decoded = self.decode_frame_append(&bytes, &self.dict_region, raw_offset, max_total)?;
+        let new_raw_len = raw_offset + decoded;
+        // Accumulate the raw streaming digest over the received region-16 prefix (windowed,
+        // no full materialization) and record the new raw offset.
+        let raw_digest = self.stream_hash_region(&self.dict_region, new_raw_len);
         let mut meta = meta.clone();
         meta.dict_state = DICT_STATE_UPLOADING;
-        meta.dict_compressed_len = new_len;
-        meta.dict_compressed_total = upload.compressed_len;
+        meta.dict_raw_received_len = new_raw_len;
+        meta.dict_raw_digest = raw_digest;
         self.meta.set(meta);
-        Ok(new_len)
+        Ok(new_raw_len)
     }
 
     /// Relay-guarded finalize (plan 0335 wire: `(digest, opt mode)`; `None` selects the
@@ -1088,16 +1033,22 @@ where
     /// RAW mode: re-reads the full region, hashes the concatenated bytes (xxh3_128) and
     /// compares against `expected_digest`; idempotent no-op on an exact Finalized match;
     /// a mismatch rejects WITHOUT touching state.
+    /// Relay-guarded finalize (plan 0335 wire: `(digest, opt mode)`; `None` selects the
+    /// RAW mode byte-identically, `Some` the framed mode). The leading digest argument
+    /// keeps one uniform meaning in both modes: the expected RAW container identity.
     ///
-    /// COMPRESSED mode: verifies the streaming compressed digest over region 17 FIRST
-    /// (fail-closed before any mutation), then streams ruzstd decompression into region 16
-    /// (overwritten from offset 0 — every byte in `0..raw_len` is rewritten this call, so
-    /// stale tail bytes beyond the pinned length stay unreachable), checks the streaming
-    /// raw length + digest against the declared record, then runs the existing structural
-    /// MPD validation + resident-set materialization. Every failure path leaves TextMeta
-    /// non-Finalized. A Finalized exact replay (same raw digest) is an idempotent no-op in
-    /// both modes. On success the compressed staging is deactivated (its recorded progress
-    /// resets; the region bytes remain until fresh state — stable memory has no shrink).
+    /// RAW mode: streams one xxh3_128 over region 16 (bounded windows — no full-container
+    /// heap copy) and compares against `expected_digest`; idempotent no-op on an exact
+    /// Finalized match; a mismatch rejects WITHOUT touching state.
+    ///
+    /// FRAMED mode (plan 0342): the frames were decoded into region 16 on arrival, so this
+    /// call verifies the ACCUMULATED raw digest (streamed over region 16 during upload)
+    /// against the argument, verifies the total raw length against the declared raw_len
+    /// (the final truncation gate), then runs the existing structural MPD validation +
+    /// resident-set materialization. Every failure path leaves TextMeta non-Finalized and
+    /// RESETS the framed progress (region 16 + frame counter) so a retry re-streams from
+    /// frame 0. A Finalized exact replay (same raw digest) is an idempotent no-op in both
+    /// modes. NO deactivate step — region 17 no longer exists.
     pub fn finalize_dict_upload(
         &mut self,
         expected_digest: u128,
@@ -1124,23 +1075,15 @@ where
         }
         let expected = match mode {
             None => {
-                if meta.dict_compressed_len > 0 {
+                if meta.dict_raw_received_len > 0 {
                     return Err(
-                        "dictionary was staged in compressed mode; finalize requires the compressed record"
+                        "dictionary was staged in framed mode; finalize requires the framed record"
                             .to_string(),
                     );
                 }
-                // Digest: one xxh3_128 over the container bytes (a ~53 MB transient heap copy
-                // at finalize ONLY — the open/rebind path never copies the container).
-                let bytes = self.dict_blob_bytes();
-                if bytes.len() as u64 != meta.dict_len {
-                    return Err(format!(
-                        "dictionary blob length {} does not match the recorded upload length {}",
-                        bytes.len(),
-                        meta.dict_len
-                    ));
-                }
-                let digest = xxh3_128(&bytes);
+                // Digest: one streaming xxh3_128 over region 16 (bounded windows — no
+                // full-container heap copy; the open/rebind path never copies the container).
+                let digest = self.stream_hash_region(&self.dict_region, meta.dict_len);
                 if digest != expected_digest {
                     return Err(format!(
                         "dictionary digest mismatch: region hashes {:#032x}, expected {:#032x}",
@@ -1148,29 +1091,30 @@ where
                     ));
                 }
                 // Structural validation + resident-set materialization FIRST; a corrupt
-                // artifact must not persist Finalized state. The analyzer's lazy feature
-                // region addresses the durable region via the ic-morph-dict StableImage, so
-                // the transient copy drops at the end of this call.
+                // artifact must not persist Finalized state.
                 crate::analyzer_mecab::load_dictionary_from_image(self.dict_container_image())?;
                 let mut meta = meta.clone();
                 meta.dict_state = DICT_STATE_FINALIZED;
                 meta.dict_digest = digest;
-                meta.dict_len = bytes.len() as u64;
                 self.meta.set(meta);
                 return Ok(self.dict_status());
             }
             Some(expected) => expected,
         };
-        // -- Compressed mode: digest verify → stream decompress → validate → pin. ------
-        if meta.dict_compressed_len == 0 {
-            return Err("no compressed dictionary chunks uploaded".to_string());
+        // -- Framed mode: verify accumulated digest + total length → validate → pin. ------
+        // Read the accumulated progress into locals so the reset calls below don't fight
+        // the immutable `meta` borrow.
+        let raw_received_len = meta.dict_raw_received_len;
+        let raw_digest = meta.dict_raw_digest;
+        if raw_received_len == 0 {
+            return Err("no framed dictionary chunks uploaded".to_string());
         }
         if expected.raw_digest != expected_digest {
             // The shared record carries both digests; a mismatch with the leading digest
             // argument (uniform raw-digest vocabulary in both modes) is a malformed relay
             // call, rejected before any mutation.
             return Err(format!(
-                "compressed finalize record contradicts the digest argument: record raw digest {:#032x}, argument {:#032x}",
+                "framed finalize record contradicts the digest argument: record raw digest {:#032x}, argument {:#032x}",
                 expected.raw_digest, expected_digest
             ));
         }
@@ -1180,51 +1124,70 @@ where
                 expected.raw_len
             ));
         }
-        // Transfer integrity FIRST: one streaming xxh3_128 over the received compressed
-        // bytes (bounded windows, no materialization). A mismatch rejects without touching
-        // region 16 or meta.
-        let compressed_digest =
-            self.stream_hash_region(&self.dict_compressed_region, meta.dict_compressed_len);
-        if compressed_digest != expected.compressed_digest {
+        // Verify the total raw length == declared raw_len (the raw-length gate: a truncated
+        // frame sequence — finalize with frames missing — rejects here as truncated; a
+        // bomb overrun — total decoded size across frames exceeding raw_len — rejects as
+        // exceeding the declared length). Checked BEFORE the digest so a truncated sequence
+        // reports the length gate (the plan's truncation contract).
+        if raw_received_len != expected.raw_len {
+            self.reset_framed_progress();
+            if raw_received_len < expected.raw_len {
+                return Err(format!(
+                    "framed dictionary is truncated: received {} raw bytes, expected {}",
+                    raw_received_len, expected.raw_len
+                ));
+            }
             return Err(format!(
-                "compressed digest mismatch: staging hashes {:#032x}, expected {:#032x}",
-                compressed_digest, expected.compressed_digest
+                "framed dictionary exceeds the declared raw length {} (possible decompression bomb)",
+                expected.raw_len
             ));
         }
-        // Stream decompress region 17 → region 16 (overwritten from offset 0). The
-        // declared raw length gates the stream fail-closed (bomb overrun + truncated EOF);
-        // a decode failure leaves TextMeta non-Finalized (partial raw bytes are
-        // unreachable: the recorded dict_len only pins on success) and a retry re-runs
-        // the whole flow.
-        let (raw_len, raw_digest) = self.stream_decompress_to_region(
-            &self.dict_compressed_region,
-            meta.dict_compressed_len,
-            &self.dict_region,
-            expected.raw_len,
-        )?;
-        if raw_digest != expected.raw_digest {
+        // Verify the ACCUMULATED raw digest (streamed over region 16 during upload) against
+        // the argument. A mismatch means a corrupt-but-decodable frame slipped through the
+        // per-frame digest — the final raw digest is the ultimate authority. Reject and
+        // reset so a retry re-streams from frame 0.
+        if raw_digest != expected_digest {
+            self.reset_framed_progress();
             return Err(format!(
-                "decompressed dictionary digest mismatch: region hashes {:#032x}, expected {:#032x}",
-                raw_digest, expected.raw_digest
+                "accumulated raw digest mismatch: region hashes {:#032x}, expected {:#032x}",
+                raw_digest, expected_digest
             ));
         }
         // Structural validation + resident-set materialization over the durable region —
         // the exact open path the raw mode uses, so the end state is byte-identical.
-        let image = ic_morph_dict::CanisterStableImage::new(self.dict_region.clone(), raw_len);
-        crate::analyzer_mecab::load_dictionary_from_image(image)?;
+        let image =
+            ic_morph_dict::CanisterStableImage::new(self.dict_region.clone(), expected.raw_len);
+        if let Err(e) = crate::analyzer_mecab::load_dictionary_from_image(image) {
+            self.reset_framed_progress();
+            return Err(e);
+        }
         let mut meta = meta.clone();
         meta.dict_state = DICT_STATE_FINALIZED;
-        meta.dict_digest = raw_digest;
-        meta.dict_len = raw_len;
-        // Deactivate the compressed staging (plan 0335): progress resets; the region-17
-        // bytes remain until fresh state (stable memory has no shrink primitive).
-        meta.dict_compressed_len = 0;
-        meta.dict_compressed_total = 0;
+        meta.dict_digest = expected_digest;
+        meta.dict_len = expected.raw_len;
+        // NO deactivate step (plan 0342): region 17 no longer exists. The framed progress
+        // fields are simply superseded by the pinned Finalized state.
         self.meta.set(meta);
         Ok(self.dict_status())
     }
 
-    /// Read-only dictionary status (state / raw digest+len / compressed progress).
+    /// Resets the framed-mode progress (plan 0342): region 16 + frame counter re-stream
+    /// from frame 0 after a failed finalize. The recorded raw offset and accumulated digest
+    /// clear so the next upload appends at offset 0 (stale region-16 bytes beyond the new
+    /// offset stay unreachable — the recorded length only pins on success).
+    fn reset_framed_progress(&mut self) {
+        let mut meta = self.meta.get().clone();
+        meta.dict_raw_received_len = 0;
+        meta.dict_raw_digest = 0;
+        self.meta.set(meta);
+    }
+
+    /// Read-only dictionary status (state / raw digest+len). During `Uploading`, `len` is
+    /// the cumulative raw offset (progress) in both modes — raw mode tracks it in `dict_len`,
+    /// framed mode in `dict_raw_received_len`; mode mixing is rejected, so exactly one is
+    /// non-zero. On `Finalized`, `len` is the pinned raw container length. There is no
+    /// separate compressed progress field (region 17 is gone; the accumulated raw digest is
+    /// internal and verified at finalize).
     pub fn dict_status(&self) -> DictStatus {
         let meta = self.meta.get();
         let state = match meta.dict_state {
@@ -1232,21 +1195,15 @@ where
             DICT_STATE_UPLOADING => crate::DictState::Uploading,
             _ => crate::DictState::Finalized,
         };
-        // Compressed progress is upload-scoped: reported while compressed chunks are in
-        // flight (the digest streams over the received region-17 prefix), `None` in raw
-        // mode and after finalize (the staging is deactivated on success).
-        let compressed = (meta.dict_state == DICT_STATE_UPLOADING && meta.dict_compressed_len > 0)
-            .then(|| CompressedDictStatus {
-                digest: self
-                    .stream_hash_region(&self.dict_compressed_region, meta.dict_compressed_len),
-                received_len: meta.dict_compressed_len,
-                total_len: meta.dict_compressed_total,
-            });
+        let len = if meta.dict_state == DICT_STATE_UPLOADING {
+            meta.dict_raw_received_len.max(meta.dict_len)
+        } else {
+            meta.dict_len
+        };
         DictStatus {
             state,
             digest: (meta.dict_state == DICT_STATE_FINALIZED).then_some(meta.dict_digest),
-            len: meta.dict_len,
-            compressed,
+            len,
         }
     }
 
@@ -2120,7 +2077,6 @@ pub(crate) fn fresh_vector_memories() -> TextMemories<ic_stable_structures::Vect
         arena: Default::default(),
         term_entries: Default::default(),
         dict_blob: Default::default(),
-        dict_compressed: Default::default(),
         dict_relay_caller: Default::default(),
     }
 }

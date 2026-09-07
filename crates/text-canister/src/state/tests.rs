@@ -36,7 +36,6 @@ fn fresh_regions() -> TestMemories {
         arena: VectorMemory::default(),
         term_entries: VectorMemory::default(),
         dict_blob: VectorMemory::default(),
-        dict_compressed: VectorMemory::default(),
         dict_relay_caller: VectorMemory::default(),
     }
 }
@@ -59,7 +58,6 @@ fn reopen(regions: &TestMemories) -> TestStores {
         arena: regions.arena.clone(),
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
-        dict_compressed: regions.dict_compressed.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
     };
     TestStores::init(clone_all())
@@ -1093,7 +1091,6 @@ fn analyzer2_dict_upload_finalize_and_gates() {
         arena: regions.arena.clone(),
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
-        dict_compressed: regions.dict_compressed.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
     };
     let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_MECAB));
@@ -1216,7 +1213,6 @@ fn analyzer0_dict_gates_and_composite_recall() {
         arena: regions.arena.clone(),
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
-        dict_compressed: regions.dict_compressed.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
     };
     let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_MULTILINGUAL));
@@ -1277,20 +1273,9 @@ fn analyzer0_dict_gates_and_composite_recall() {
     assert_eq!(hits[0].key, 4);
 }
 
-// -- Plan 0335: compressed finalize streaming core (wire-independent) --------------------
+// -- Plan 0342: framed streaming decode (per-frame immediate decode, no region 17) --------
 
-/// Writes `bytes` into a region at offset 0, growing pages to cover (mirrors the raw
-/// upload append; used to stage the compressed container in region 17 for the streaming
-/// core tests).
-fn write_region(region: &VectorMemory, bytes: &[u8]) {
-    let pages = (bytes.len() as u64).div_ceil(65536);
-    if region.size() < pages {
-        region.grow(pages - region.size());
-    }
-    region.write(0, bytes);
-}
-
-/// Reads `len` bytes from a region at offset 0 (mirrors `dict_blob_bytes`).
+/// Reads `len` bytes from a region at offset 0 (mirrors the raw upload append).
 fn read_region(region: &VectorMemory, len: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(len as usize);
     let mut buf = vec![0u8; MAX_DICT_CHUNK_BYTES];
@@ -1304,207 +1289,119 @@ fn read_region(region: &VectorMemory, len: u64) -> Vec<u8> {
     out
 }
 
-/// The zstd-compressed MPD container (level 19, the catalog artifact level), or `None`
-/// when the dictionary resources haven't been fetched (skip-loudly, like `mecab_container`).
-fn compressed_container() -> Option<Vec<u8>> {
-    let raw = mecab_container()?;
-    Some(zstd::stream::encode_all(&raw[..], 19).expect("zstd level-19 encode"))
+/// Splits `raw` into N INDEPENDENT zstd frames (level 19, the catalog artifact level), each
+/// ≤ [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] compressed, using the plan's adaptive slice-to-cap
+/// recipe (grow a raw window until the frame's compressed size would exceed the cap, then
+/// emit the frame). Returns the frames. `None` when the dictionary resources haven't been
+/// fetched (skip-loudly, like `mecab_container`).
+fn framed_container(raw: &[u8]) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    let mut start = 0usize;
+    // Start with a raw window that compresses to ~the cap at level 19 (ipadic ~9 MB raw →
+    // ~1.8 MB compressed); shrink on overshoot.
+    let mut window = 9 * 1024 * 1024;
+    while start < raw.len() {
+        let end = (start + window).min(raw.len());
+        let frame = zstd::stream::encode_all(&raw[start..end], 19).expect("zstd level-19 encode");
+        if frame.len() > MAX_DICT_COMPRESSED_CHUNK_BYTES && window > 1 {
+            window /= 2;
+            continue;
+        }
+        frames.push(frame);
+        start = end;
+    }
+    frames
 }
 
-#[test]
-fn compressed_streaming_round_trip_matches_raw_and_opens_as_mpd() {
-    let Some(raw) = mecab_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let Some(compressed) = compressed_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let regions = fresh_regions();
-    let stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-
-    // Stage the compressed container in region 17.
-    write_region(&stores.dict_compressed_region, &compressed);
-
-    // Stream-decompress region 17 → region 16, computing the raw digest incrementally.
-    let (raw_len, raw_digest) = stores
-        .stream_decompress_to_region(
-            &stores.dict_compressed_region,
-            compressed.len() as u64,
-            &stores.dict_region,
-            raw.len() as u64,
-        )
-        .expect("streaming decompress");
-    assert_eq!(
-        raw_len,
-        raw.len() as u64,
-        "decompressed length matches the raw container"
-    );
-    assert_eq!(
-        raw_digest,
-        xxh3_128(&raw),
-        "streamed raw digest equals the one-shot xxh3_128 over the container"
-    );
-
-    // Region-16 end state is byte-equal to the raw container (the headline assertion).
-    let region16 = read_region(&stores.dict_region, raw_len);
-    assert_eq!(region16, raw, "region-16 bytes equal the raw container");
-
-    // The decompressed region opens as an MPD (structural validation + resident set).
-    // Construct the image directly over region 16 with the decompressed length (the
-    // finalize path pins `dict_len` in meta only after validation succeeds).
-    let image = ic_morph_dict::CanisterStableImage::new(stores.dict_region.clone(), raw_len);
-    crate::analyzer_mecab::load_dictionary_from_image(image)
-        .expect("decompressed container opens as an MPD");
-    let units = crate::analyzer::analyze_pinned(ANALYZER_MECAB, "昨日、公園を全力で走った。");
-    assert!(
-        units.contains(&"走る".to_string()),
-        "lemma recall after compressed finalize: {units:?}"
-    );
-}
-
-#[test]
-fn compressed_streaming_digest_verification_matches_region_hash() {
-    let Some(compressed) = compressed_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let regions = fresh_regions();
-    let stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    write_region(&stores.dict_compressed_region, &compressed);
-
-    // The streaming region hash must equal the one-shot xxh3_128 over the compressed bytes.
-    let streamed =
-        stores.stream_hash_region(&stores.dict_compressed_region, compressed.len() as u64);
-    assert_eq!(
-        streamed,
-        xxh3_128(&compressed),
-        "streamed compressed digest matches one-shot"
-    );
-}
-
-#[test]
-fn compressed_streaming_truncated_and_corrupt_fail_closed() {
-    let Some(raw_container) = mecab_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let raw_container_len = raw_container.len() as u64;
-    let Some(compressed) = compressed_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    // Truncated stream: drop the last 30% of the compressed bytes.
-    let truncated = &compressed[..compressed.len() * 7 / 10];
-    let regions = fresh_regions();
-    let stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    write_region(&stores.dict_compressed_region, truncated);
-    let err = stores
-        .stream_decompress_to_region(
-            &stores.dict_compressed_region,
-            truncated.len() as u64,
-            &stores.dict_region,
-            raw_container_len,
-        )
-        .expect_err("truncated compressed stream must fail closed");
-    assert!(
-        err.contains("truncated") || err.contains("decode failed"),
-        "unexpected truncation error: {err}"
-    );
-
-    // Corrupt stream: flip a byte in the middle. zstd frames carry NO content checksum by
-    // default, so a single-byte corruption may still DECODE (to wrong output) — corruption
-    // is caught fail-closed at finalize by the raw-digest pin, not by the decoder. The
-    // core contract: full length decodes, and the streamed digest differs from the true
-    // container digest.
-    let mut corrupt = compressed.clone();
-    let mid = corrupt.len() / 2;
-    corrupt[mid] ^= 0xFF;
-    let regions = fresh_regions();
-    let stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    write_region(&stores.dict_compressed_region, &corrupt);
-    let (corrupt_len, corrupt_digest) = stores
-        .stream_decompress_to_region(
-            &stores.dict_compressed_region,
-            corrupt.len() as u64,
-            &stores.dict_region,
-            raw_container_len,
-        )
-        .expect("corrupt-but-decodable stream decodes to the full length");
-    assert_eq!(corrupt_len, raw_container_len);
-    assert_ne!(
-        corrupt_digest,
-        xxh3_128(&raw_container),
-        "corruption must change the streamed raw digest (the finalize pin catches it)"
-    );
-}
-
-/// Store-level compressed round trip (plan 0335 todo 2 headline): relay-compressed chunks
-/// → compressed finalize → the region-16 end state is byte-equal to the raw-upload path
-/// AND the pinned analyzer recalls. Uses the shared kernel record types directly.
-#[test]
-fn compressed_mode_round_trip_matches_raw_end_state() {
-    let Some(raw) = mecab_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let Some(compressed) = compressed_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    let compressed_digest = xxh3_128(&compressed);
-    let raw_digest = xxh3_128(&raw);
-
-    // Compressed relay: chunks under the shared kernel cap.
+/// Uploads `frames` (each an independent zstd frame) through the framed path, returning the
+/// final raw offset. Each frame's digest is computed as xxh3_128 over its bytes.
+fn upload_frames(stores: &mut TestStores, frames: &[Vec<u8>], raw_len: u64) -> u64 {
     let mut received = 0u64;
-    for chunk in compressed.chunks(MAX_DICT_COMPRESSED_CHUNK_BYTES) {
+    for frame in frames {
         received = stores
             .upload_dict_chunk(
-                chunk.to_vec(),
+                frame.clone(),
                 Some(CompressedDictUpload {
-                    compressed_len: compressed.len() as u64,
+                    frame_digest: xxh3_128(frame),
+                    raw_len,
                 }),
             )
-            .expect("compressed chunk");
+            .expect("framed chunk");
     }
-    assert_eq!(received, compressed.len() as u64);
+    received
+}
+
+/// Cached `(raw container, framed container)` fixture type.
+type DictFixture = (Vec<u8>, Vec<Vec<u8>>);
+
+static DICT_FIXTURE: std::sync::OnceLock<Option<DictFixture>> = std::sync::OnceLock::new();
+
+/// Cached `(raw container, framed container)` fixture, or `None` when the dictionary
+/// resources haven't been fetched (skip-loudly). Cached so the expensive level-19 frame
+/// split runs once per process, not once per test.
+fn dict_fixture() -> Option<&'static DictFixture> {
+    DICT_FIXTURE
+        .get_or_init(|| {
+            let raw = mecab_container()?;
+            let frames = framed_container(&raw);
+            Some((raw, frames))
+        })
+        .as_ref()
+}
+
+/// Store-level framed round trip (plan 0342 headline): relay frames → per-frame immediate
+/// decode into region 16 → framed finalize → the region-16 end state is byte-equal to the
+/// raw-upload path AND the pinned analyzer recalls. Uses the plan's per-frame record shape.
+#[test]
+fn framed_round_trip_matches_raw_end_state() {
+    let Some((raw, frames)) = dict_fixture() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    assert!(
+        frames.len() >= 2,
+        "framed container must split into multiple independent frames, got {}",
+        frames.len()
+    );
+    let raw_digest = xxh3_128(raw);
+    let regions = fresh_regions();
+    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+
+    // Framed relay: one frame per call, each with its own digest.
+    let received = upload_frames(&mut stores, frames, raw.len() as u64);
+    assert_eq!(
+        received,
+        raw.len() as u64,
+        "raw offset accumulates to the container length"
+    );
     let status = stores.dict_status();
     assert_eq!(status.state, crate::DictState::Uploading);
-    assert_eq!(status.len, 0, "raw length pins only at finalize");
-    let progress = status
-        .compressed
-        .expect("compressed progress reported mid-upload");
-    assert_eq!(progress.received_len, compressed.len() as u64);
-    assert_eq!(progress.total_len, compressed.len() as u64);
     assert_eq!(
-        progress.digest, compressed_digest,
-        "streamed digest matches one-shot"
+        status.len,
+        raw.len() as u64,
+        "len is the cumulative raw offset during Uploading"
     );
 
-    // Compressed finalize: both digests + the declared raw length.
+    // Framed finalize: the accumulated raw digest + the declared raw length.
     let finalized = stores
         .finalize_dict_upload(
             raw_digest,
             Some(CompressedDictFinalize {
-                compressed_digest,
                 raw_digest,
                 raw_len: raw.len() as u64,
             }),
         )
-        .expect("compressed finalize");
+        .expect("framed finalize");
     assert_eq!(finalized.state, crate::DictState::Finalized);
     assert_eq!(finalized.digest, Some(raw_digest));
     assert_eq!(finalized.len, raw.len() as u64);
-    assert_eq!(finalized.compressed, None, "staging deactivates on success");
 
     // Region-16 end state is byte-equal to the raw path's (the headline assertion).
     let region16 = read_region(&stores.dict_region, raw.len() as u64);
     assert_eq!(
-        region16, raw,
-        "compressed end state equals the raw container"
+        region16.as_slice(),
+        raw.as_slice(),
+        "framed end state equals the raw container"
     );
 
     // The pinned analyzer recalls: the end state is engine-identical to raw upload.
@@ -1514,18 +1411,17 @@ fn compressed_mode_round_trip_matches_raw_end_state() {
         "lemma recall: {units:?}"
     );
 
-    // Exact replay is an idempotent no-op (same raw digest in both modes).
+    // Exact replay is an idempotent no-op (same raw digest).
     let replay = stores
         .finalize_dict_upload(
             raw_digest,
             Some(CompressedDictFinalize {
-                compressed_digest,
                 raw_digest,
                 raw_len: raw.len() as u64,
             }),
         )
         .expect("replay");
-    assert_eq!(replay, finalized, "exact compressed re-finalize is a no-op");
+    assert_eq!(replay, finalized, "exact framed re-finalize is a no-op");
 
     // Post-finalize uploads reject in both modes.
     assert!(stores.upload_dict_chunk(vec![1; 16], None).is_err());
@@ -1533,142 +1429,156 @@ fn compressed_mode_round_trip_matches_raw_end_state() {
         stores
             .upload_dict_chunk(
                 vec![1; 16],
-                Some(CompressedDictUpload { compressed_len: 16 })
+                Some(CompressedDictUpload {
+                    frame_digest: 16,
+                    raw_len: raw.len() as u64
+                }),
             )
             .is_err()
     );
 }
 
+/// A frame whose digest does not match its received bytes rejects THAT call with NO
+/// mutation — region 16 and meta are untouched (the plan-0342 fail-closed posture).
 #[test]
-fn compressed_digest_mismatch_rejects_without_state_change() {
-    let Some(compressed) = compressed_container() else {
+fn frame_digest_mismatch_rejects_without_state_change() {
+    let Some((raw, frames)) = dict_fixture() else {
         eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
         return;
     };
     let regions = fresh_regions();
     let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    for chunk in compressed.chunks(MAX_DICT_COMPRESSED_CHUNK_BYTES) {
-        stores
-            .upload_dict_chunk(
-                chunk.to_vec(),
-                Some(CompressedDictUpload {
-                    compressed_len: compressed.len() as u64,
-                }),
-            )
-            .expect("compressed chunk");
-    }
+    // Upload the first frame validly, then a frame with a WRONG digest.
+    upload_frames(&mut stores, &frames[..1], raw.len() as u64);
     let before = stores.dict_status();
-    // Wrong compressed digest rejects WITHOUT touching region 16 or meta.
-    let wrong = CompressedDictFinalize {
-        compressed_digest: before.compressed.as_ref().expect("progress").digest ^ 1,
-        raw_digest: 42,
-        raw_len: 52_930_923,
-    };
+    let before_region_size = stores.dict_region.size();
     let err = stores
-        .finalize_dict_upload(42, Some(wrong))
-        .expect_err("digest mismatch must reject");
-    assert!(
-        err.contains("compressed digest mismatch"),
-        "unexpected: {err}"
-    );
+        .upload_dict_chunk(
+            frames[1].clone(),
+            Some(CompressedDictUpload {
+                frame_digest: xxh3_128(&frames[1]) ^ 1,
+                raw_len: raw.len() as u64,
+            }),
+        )
+        .expect_err("frame digest mismatch must reject");
+    assert!(err.contains("frame digest mismatch"), "unexpected: {err}");
     let after = stores.dict_status();
     assert_eq!(after.state, crate::DictState::Uploading);
-    assert_eq!(after.len, 0);
     assert_eq!(
-        after.compressed.as_ref().map(|p| p.received_len),
-        before.compressed.as_ref().map(|p| p.received_len)
+        after.len, before.len,
+        "meta untouched by the rejected frame (cumulative raw offset unchanged)"
     );
     assert_eq!(
         stores.dict_region.size(),
-        0,
-        "region 16 untouched by the rejected finalize"
+        before_region_size,
+        "region 16 untouched by the rejected frame"
     );
 }
 
+/// A corrupt-but-decodable frame (its digest matches the received bytes, so the per-frame
+/// check passes) decodes to WRONG bytes — caught fail-closed at finalize by the final raw
+/// digest pin (zstd frames carry no content checksum).
 #[test]
-fn compressed_truncated_stream_fails_closed_non_finalized() {
-    let Some(compressed) = compressed_container() else {
+fn corrupt_but_decodable_frame_caught_by_final_raw_digest() {
+    let Some((raw, frames)) = dict_fixture() else {
         eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
         return;
     };
-    // Relay a truncated stream: declare the truncated length as the total (the digest is
-    // computed over exactly the received bytes), so the failure comes from the decoder.
-    let truncated = &compressed[..compressed.len() * 7 / 10];
-    let truncated_digest = xxh3_128(truncated);
-    let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    for chunk in truncated.chunks(MAX_DICT_COMPRESSED_CHUNK_BYTES) {
-        stores
-            .upload_dict_chunk(
-                chunk.to_vec(),
-                Some(CompressedDictUpload {
-                    compressed_len: truncated.len() as u64,
-                }),
-            )
-            .expect("truncated chunk");
-    }
-    let err = stores
-        .finalize_dict_upload(
-            7,
-            Some(CompressedDictFinalize {
-                compressed_digest: truncated_digest,
-                raw_digest: 7,
-                raw_len: 52_930_923,
-            }),
-        )
-        .expect_err("truncated stream must fail closed");
-    assert!(
-        err.contains("decode failed") || err.contains("corrupt or truncated"),
-        "unexpected: {err}"
-    );
-    assert_eq!(
-        stores.dict_status().state,
-        crate::DictState::Uploading,
-        "TextMeta stays non-Finalized"
-    );
-}
-
-#[test]
-fn compressed_corrupt_payload_rejected_by_raw_digest_pin() {
-    let Some(raw) = mecab_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let Some(compressed) = compressed_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    // Flip one compressed byte mid-stream: zstd frames carry no content checksum, so the
-    // stream may still decode to the full length — but to WRONG bytes. The finalize-time
-    // raw-digest pin is the fail-closed authority for payload corruption.
-    let mut corrupt = compressed.clone();
+    // Corrupt one frame's bytes; pass its NEW digest so the per-frame check passes. zstd
+    // frames carry no content checksum, so the frame may still decode (to wrong bytes) —
+    // caught at finalize by the raw-digest pin — or fail to decode — caught at upload.
+    // Either way the dictionary is never finalized.
+    let mut corrupt = frames[2].clone();
     let mid = corrupt.len() / 2;
     corrupt[mid] ^= 0xFF;
     let corrupt_digest = xxh3_128(&corrupt);
     let regions = fresh_regions();
     let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    for chunk in corrupt.chunks(MAX_DICT_COMPRESSED_CHUNK_BYTES) {
-        stores
-            .upload_dict_chunk(
-                chunk.to_vec(),
-                Some(CompressedDictUpload {
-                    compressed_len: corrupt.len() as u64,
+    upload_frames(&mut stores, &frames[..2], raw.len() as u64);
+    let upload = stores.upload_dict_chunk(
+        corrupt.clone(),
+        Some(CompressedDictUpload {
+            frame_digest: corrupt_digest,
+            raw_len: raw.len() as u64,
+        }),
+    );
+    if upload.is_ok() {
+        // The corrupt frame decoded (to wrong bytes). Finalize with the TRUE raw digest:
+        // the accumulated raw digest over region 16 differs → reject.
+        let err = stores
+            .finalize_dict_upload(
+                xxh3_128(raw),
+                Some(CompressedDictFinalize {
+                    raw_digest: xxh3_128(raw),
+                    raw_len: raw.len() as u64,
                 }),
             )
-            .expect("corrupt chunk");
+            .expect_err("corrupt-but-decodable frame must fail the final raw digest");
+        assert!(
+            err.contains("accumulated raw digest mismatch"),
+            "unexpected: {err}"
+        );
     }
+    assert_eq!(
+        stores.dict_status().state,
+        crate::DictState::Uploading,
+        "TextMeta stays non-Finalized"
+    );
+}
+
+/// A truncated frame sequence (finalize with the last frame missing) is rejected at finalize
+/// by the raw-length gate (the final truncation gate).
+#[test]
+fn truncated_frame_sequence_rejected_at_finalize() {
+    let Some((raw, frames)) = dict_fixture() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    let regions = fresh_regions();
+    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    // Upload all but the last frame.
+    upload_frames(&mut stores, &frames[..frames.len() - 1], raw.len() as u64);
     let err = stores
         .finalize_dict_upload(
-            xxh3_128(&raw),
+            xxh3_128(raw),
             Some(CompressedDictFinalize {
-                compressed_digest: corrupt_digest,
-                raw_digest: xxh3_128(&raw),
+                raw_digest: xxh3_128(raw),
                 raw_len: raw.len() as u64,
             }),
         )
-        .expect_err("corrupted payload must fail the raw-digest pin");
+        .expect_err("truncated frame sequence must fail the raw-length gate");
+    assert!(err.contains("truncated"), "unexpected: {err}");
+    assert_eq!(
+        stores.dict_status().state,
+        crate::DictState::Uploading,
+        "TextMeta stays non-Finalized"
+    );
+}
+
+/// A bomb overrun ACROSS frames: the total decoded size across all frames exceeds the
+/// declared raw_len, rejected at finalize by the raw-length gate.
+#[test]
+fn bomb_overrun_across_frames_rejected() {
+    let Some((raw, frames)) = dict_fixture() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    let regions = fresh_regions();
+    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    upload_frames(&mut stores, frames, raw.len() as u64);
+    // Declare a raw_len SMALLER than the actual total: the cumulative raw offset exceeds it.
+    let too_small = raw.len() as u64 - 1;
+    let err = stores
+        .finalize_dict_upload(
+            xxh3_128(raw),
+            Some(CompressedDictFinalize {
+                raw_digest: xxh3_128(raw),
+                raw_len: too_small,
+            }),
+        )
+        .expect_err("bomb overrun across frames must fail the raw-length gate");
     assert!(
-        err.contains("decompressed dictionary digest mismatch"),
+        err.contains("exceeds the declared raw length"),
         "unexpected: {err}"
     );
     assert_eq!(
@@ -1678,13 +1588,73 @@ fn compressed_corrupt_payload_rejected_by_raw_digest_pin() {
     );
 }
 
+/// Retry semantics (plan 0342): after a failed finalize the framed progress resets (region
+/// 16 + frame counter), so a re-stream from frame 0 reaches Finalized. An exact finalize
+/// replay is a no-op.
 #[test]
-fn compressed_mode_gates() {
-    let Some(compressed) = compressed_container() else {
+fn retry_after_failed_finalize_re_streams_from_frame_0() {
+    let Some((raw, frames)) = dict_fixture() else {
         eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
         return;
     };
-    // Oversized compressed chunk rejects without mutation.
+    let raw_digest = xxh3_128(raw);
+    let regions = fresh_regions();
+    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    upload_frames(&mut stores, frames, raw.len() as u64);
+    // Finalize with a WRONG raw digest → reject AND reset the framed progress.
+    let err = stores
+        .finalize_dict_upload(
+            raw_digest ^ 1,
+            Some(CompressedDictFinalize {
+                raw_digest: raw_digest ^ 1,
+                raw_len: raw.len() as u64,
+            }),
+        )
+        .expect_err("wrong raw digest must reject");
+    assert!(
+        err.contains("accumulated raw digest mismatch"),
+        "unexpected: {err}"
+    );
+    let reset = stores.dict_status();
+    assert_eq!(reset.state, crate::DictState::Uploading);
+    assert_eq!(
+        reset.len, 0,
+        "framed progress resets (cumulative raw offset 0) so a retry re-streams from frame 0"
+    );
+    // Re-stream from frame 0 → Finalized.
+    upload_frames(&mut stores, frames, raw.len() as u64);
+    let finalized = stores
+        .finalize_dict_upload(
+            raw_digest,
+            Some(CompressedDictFinalize {
+                raw_digest,
+                raw_len: raw.len() as u64,
+            }),
+        )
+        .expect("re-stream finalize");
+    assert_eq!(finalized.state, crate::DictState::Finalized);
+    // Exact replay is a no-op.
+    let replay = stores
+        .finalize_dict_upload(
+            raw_digest,
+            Some(CompressedDictFinalize {
+                raw_digest,
+                raw_len: raw.len() as u64,
+            }),
+        )
+        .expect("replay");
+    assert_eq!(replay, finalized);
+}
+
+/// Framed-mode gates: oversized frame rejects without mutation; a frame at the shared cap
+/// is accepted; mode mixing (raw after framed, framed after raw) rejects symmetrically.
+#[test]
+fn framed_mode_gates() {
+    let Some((raw, frames)) = dict_fixture() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    // Oversized frame rejects without mutation.
     {
         let regions = fresh_regions();
         let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
@@ -1694,28 +1664,28 @@ fn compressed_mode_gates() {
                 .upload_dict_chunk(
                     oversized,
                     Some(CompressedDictUpload {
-                        compressed_len: u64::MAX
-                    })
+                        frame_digest: 0,
+                        raw_len: raw.len() as u64
+                    }),
                 )
                 .is_err()
         );
         assert_eq!(stores.dict_status().state, crate::DictState::Absent);
-        // A chunk at the shared cap is accepted (decompress is a finalize concern).
-        let at_cap = vec![0u8; MAX_DICT_COMPRESSED_CHUNK_BYTES];
-        let declared = (MAX_DICT_COMPRESSED_CHUNK_BYTES * 2) as u64;
+        // A valid frame is accepted (decode is a per-call concern).
         let len = stores
             .upload_dict_chunk(
-                at_cap,
+                frames[0].clone(),
                 Some(CompressedDictUpload {
-                    compressed_len: declared,
+                    frame_digest: xxh3_128(&frames[0]),
+                    raw_len: raw.len() as u64,
                 }),
             )
-            .expect("chunk at cap");
-        assert_eq!(len, MAX_DICT_COMPRESSED_CHUNK_BYTES as u64);
-        // Mode mixing: a raw chunk after compressed staging rejects.
+            .expect("valid frame accepted");
+        assert!(len > 0, "a real frame decodes to non-empty raw bytes");
+        // Mode mixing: a raw chunk after framed staging rejects.
         assert!(stores.upload_dict_chunk(vec![1; 16], None).is_err());
     }
-    // Raw-then-compressed mixing rejects symmetrically.
+    // Raw-then-framed mixing rejects symmetrically.
     {
         let regions = fresh_regions();
         let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
@@ -1725,10 +1695,11 @@ fn compressed_mode_gates() {
         assert!(
             stores
                 .upload_dict_chunk(
-                    compressed[..16].to_vec(),
+                    frames[0].clone(),
                     Some(CompressedDictUpload {
-                        compressed_len: u64::MAX
-                    })
+                        frame_digest: xxh3_128(&frames[0]),
+                        raw_len: raw.len() as u64,
+                    }),
                 )
                 .is_err()
         );
@@ -1737,7 +1708,7 @@ fn compressed_mode_gates() {
     }
 }
 
-// -- Plan 0335: transient-heap peak measurement (compressed finalize) --------------------
+// -- Plan 0342: transient-heap peak measurement (per-frame decode) -----------------------
 
 static MEASURE_ALLOCATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static MEASURE_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -1762,94 +1733,82 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
 #[global_allocator]
 static MEASURE_GLOBAL: Counting = Counting;
 
-/// Transient-heap peak of the FULL compressed finalize against the real container
-/// (plan 0335 gate: ≪ the 0331 675 MB eager-decode peak; streaming must not
-/// materialize). Runs under the process-global counting allocator, so it must run in
-/// isolation for a clean measurement:
+/// Transient-heap peak of ONE framed upload call (decode of a single frame) against the
+/// real container (plan 0342 gate: the per-call decode transient is bounded — one frame's
+/// ruzstd decode window + one read window — NOT the full container; the single-call
+/// decompression budget spike is dissolved). Runs under the process-global counting
+/// allocator, so it must run in isolation for a clean measurement:
 ///
 /// ```sh
 /// cargo test -p text-canister --lib -- --ignored --test-threads=1 \
-///   compressed_finalize_heap_peak --nocapture
+///   framed_upload_decode_heap_peak --nocapture
 /// ```
 ///
-/// The printed decomposition separates the PRODUCTION-relevant transient (streaming
-/// windows + ruzstd decode window + resident-set materialization) from the test-harness
-/// region backing (VectorMemory keeps regions on the heap; production region 16 is
-/// stable memory).
+/// The printed decomposition separates the PRODUCTION-relevant transient (one frame's
+/// decode window + the received frame arg) from the test-harness region backing
+/// (VectorMemory keeps regions on the heap; production region 16 is stable memory).
 #[test]
 #[ignore = "heap-peak measurement: run alone via --ignored --test-threads=1 (global counting allocator)"]
-fn compressed_finalize_heap_peak() {
-    let Some(raw) = mecab_container() else {
-        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
-        return;
-    };
-    let Some(compressed) = compressed_container() else {
+fn framed_upload_decode_heap_peak() {
+    let Some((raw, frames)) = dict_fixture() else {
         eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
         return;
     };
     let regions = fresh_regions();
     let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    for chunk in compressed.chunks(MAX_DICT_COMPRESSED_CHUNK_BYTES) {
-        stores
-            .upload_dict_chunk(
-                chunk.to_vec(),
-                Some(CompressedDictUpload {
-                    compressed_len: compressed.len() as u64,
-                }),
-            )
-            .expect("compressed chunk");
-    }
-    let compressed_digest = xxh3_128(&compressed);
-    let raw_digest = xxh3_128(&raw);
-    let raw_len = raw.len();
-    drop(compressed);
+    // Upload all but the last frame so the measured call is the LAST frame's decode (the
+    // largest raw offset, exercising the region-16 grow path).
+    upload_frames(&mut stores, &frames[..frames.len() - 1], raw.len() as u64);
+    let last = frames.last().expect("at least one frame");
+    let last_digest = xxh3_128(last);
 
-    // Measured window: the finalize call alone (baseline = live bytes at entry; the
-    // held `raw` vector is excluded by the delta).
+    // Measured window: the last upload call alone (baseline = live bytes at entry; the
+    // held `raw` and `frames` vectors are excluded by the delta).
     let baseline = MEASURE_ALLOCATED.load(Ordering::Relaxed);
     MEASURE_PEAK.store(baseline, Ordering::Relaxed);
-    let finalized = stores
-        .finalize_dict_upload(
-            raw_digest,
-            Some(CompressedDictFinalize {
-                compressed_digest,
-                raw_digest,
-                raw_len: raw_len as u64,
+    let received = stores
+        .upload_dict_chunk(
+            last.clone(),
+            Some(CompressedDictUpload {
+                frame_digest: last_digest,
+                raw_len: raw.len() as u64,
             }),
         )
-        .expect("compressed finalize");
-    assert_eq!(finalized.state, crate::DictState::Finalized);
+        .expect("last frame upload");
+    assert_eq!(received, raw.len() as u64);
     let peak = MEASURE_PEAK.load(Ordering::Relaxed);
     let transient = peak - baseline;
 
-    // Region 16 grows by the raw container length inside the measured window; production
+    // Region 16 grows by the last frame's raw slice inside the measured window; production
     // backs it with stable memory, so the production-relevant transient excludes it.
-    let region16_backing = raw_len;
-    let streaming_transient = transient.saturating_sub(region16_backing);
+    let region16_backing = last.len();
+    let decode_transient = transient.saturating_sub(region16_backing);
 
     let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
     println!(
-        "plan-0335 compressed finalize: raw={:.1}MB compressed-staged={:.1}MB \
-         finalize_transient_total={:.1}MB (test region-16 heap backing {:.1}MB) \
-         production_relevant_transient={:.1}MB (streaming windows + ruzstd decode window + \
-         ~21MB resident-set materialization)",
-        mb(raw_len),
-        mb(raw_len) / 4.9,
+        "plan-0342 framed upload decode: frame={:.1}MB compressed raw-slice={:.1}MB \
+         upload_transient_total={:.1}MB (test region-16 heap backing {:.1}MB) \
+         production_relevant_transient={:.1}MB (one frame's ruzstd decode window + the \
+         received frame arg)",
+        mb(last.len()),
+        mb(region16_backing),
         mb(transient),
         mb(region16_backing),
-        mb(streaming_transient),
+        mb(decode_transient),
     );
-    // The gate: far below the 0331 675 MB eager-decode peak (streaming, no materialization).
+    // The gate: the per-call decode transient is bounded (one frame's window), far below
+    // the 0331 675 MB eager-decode peak and the old single-finalize spike.
     assert!(
-        streaming_transient < 96 * 1024 * 1024,
-        "streaming transient {} bytes must stay far below the 675 MB baseline",
-        streaming_transient
+        decode_transient < 32 * 1024 * 1024,
+        "per-frame decode transient {} bytes must stay bounded",
+        decode_transient
     );
 
     // Post-measurement sanity: the end state still byte-equals the raw container.
-    let region16 = read_region(&stores.dict_region, raw_len as u64);
+    let region16 = read_region(&stores.dict_region, raw.len() as u64);
     assert_eq!(
-        region16, raw,
+        region16.as_slice(),
+        raw.as_slice(),
         "region-16 end state equals the raw container"
     );
 }
