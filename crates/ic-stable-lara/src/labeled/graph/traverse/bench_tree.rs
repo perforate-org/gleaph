@@ -17,6 +17,7 @@
 //! only here.
 
 use super::bench::OFFSET_WINDOW_LIMIT;
+use crate::labeled::graph::EdgePlacementPolicy;
 use crate::labeled::{
     BucketLabelKey, LabeledVertex, OutEdgeOrder,
     graph::LabeledLaraGraph,
@@ -793,5 +794,231 @@ fn offset_tree_inwindow_s1s2() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let (count, checksum) = visit_exact_window(&fixture, first_live, None);
         black_box((count, checksum));
+    })
+}
+
+// ===========================================================================
+// Plan 0340 — tree_churn attribution (ADR 0088 follow-up `tree-mode-tombstone-reuse`)
+// ===========================================================================
+//
+// Answers the deferred question "does demotion alone suffice?" with measured
+// footprint evidence. On an Unordered tree bucket driven through alternating
+// and bursty remove→insert churn at the 0337/0338 deepen-fixture scale, we
+// record the stored_slots/degree trajectory with reuse (Unordered policy)
+// vs the no-reuse baseline (Insertion policy — append-only, the incumbent).
+//
+// The FIXED 4-block window is the v1 search bound; widening or a full scan is
+// the recorded escalation, gated on whether the window keeps `stored` within a
+// bounded band of `degree` under the churn pattern.
+
+const CHURN_ROUNDS: u32 = 4096;
+const CHURN_BATCH: u32 = 256;
+
+#[derive(Clone, Copy)]
+enum ChurnPattern {
+    Alternating,
+    Bursty,
+}
+
+fn read_tree_stored(fixture: &TreeFixture) -> u32 {
+    fixture
+        .graph
+        .buckets()
+        .read_label_bucket_slot(fixture.bucket_slot)
+        .expect("bucket")
+        .stored_slots
+}
+
+/// Run a bounded remove→insert churn loop on the fixture and return the final
+/// `(stored_slots, degree, leaf_count)`. `placement` selects reuse (Unordered)
+/// vs the append-only baseline (Insertion).
+fn run_tree_churn(
+    fixture: &TreeFixture,
+    placement: EdgePlacementPolicy,
+    pattern: ChurnPattern,
+) -> (u32, u32, u32) {
+    let mut stored = read_tree_stored(fixture);
+    let mut round = 0u32;
+    match pattern {
+        ChurnPattern::Alternating => {
+            for _ in 0..CHURN_ROUNDS {
+                let slot = stored - 1;
+                fixture
+                    .graph
+                    .remove_edge_at_slot(fixture.vid, fixture.label, slot)
+                    .expect("alternating remove");
+                fixture
+                    .graph
+                    .insert_edge_skip_leaf_cascade(
+                        fixture.vid,
+                        fixture.label,
+                        TreeBenchEdge {
+                            target: 20_000_000 + round,
+                        },
+                        placement,
+                    )
+                    .expect("alternating insert");
+                stored = read_tree_stored(fixture);
+                round += 1;
+            }
+        }
+        ChurnPattern::Bursty => {
+            for _ in 0..(CHURN_ROUNDS / CHURN_BATCH) {
+                // Remove the current tail CHURN_BATCH slots (always within the
+                // fixed window); the refill reuses them when reuse is enabled.
+                for k in 0..CHURN_BATCH {
+                    let slot = stored - 1 - k;
+                    fixture
+                        .graph
+                        .remove_edge_at_slot(fixture.vid, fixture.label, slot)
+                        .expect("bursty remove");
+                }
+                for _ in 0..CHURN_BATCH {
+                    fixture
+                        .graph
+                        .insert_edge_skip_leaf_cascade(
+                            fixture.vid,
+                            fixture.label,
+                            TreeBenchEdge {
+                                target: 20_000_000 + round,
+                            },
+                            placement,
+                        )
+                        .expect("bursty insert");
+                    round += 1;
+                }
+                stored = read_tree_stored(fixture);
+            }
+        }
+    }
+    let bucket = fixture
+        .graph
+        .buckets()
+        .read_label_bucket_slot(fixture.bucket_slot)
+        .expect("bucket");
+    let leaf_count =
+        u32::try_from(u64::from(bucket.stored_slots).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf count");
+    (bucket.stored_slots, bucket.degree, leaf_count)
+}
+
+/// Bench-scope parity: every leaf block's header count == scanned markers and
+/// Σ == stored − degree (mirrors the remove-side 0337 parity gate).
+fn assert_tree_churn_header_parity(fixture: &TreeFixture) {
+    use crate::labeled::tree_csr::B;
+    let bucket = fixture
+        .graph
+        .buckets()
+        .read_label_bucket_slot(fixture.bucket_slot)
+        .expect("bucket");
+    let leaf_count =
+        u32::try_from(u64::from(bucket.stored_slots).div_ceil(B as u64)).expect("leaf count");
+    let mut total = 0u64;
+    for block_index in 0..leaf_count {
+        let block_id =
+            crate::labeled::graph::tree_write::resolve_leaf_block_id::<TreeBenchEdge, _>(
+                &fixture.graph,
+                &bucket,
+                block_index,
+            )
+            .expect("resolve leaf");
+        let header = fixture.graph.ltb().read_block_header(block_id);
+        let start_slot = block_index * B as u32;
+        let end_slot = (start_slot + B as u32).min(bucket.stored_slots);
+        let mut scanned = 0u32;
+        for slot in start_slot..end_slot {
+            let mut buf = [0u8; 4];
+            fixture
+                .graph
+                .ltb()
+                .read_payload_partial(block_id, ((slot - start_slot) * 4) as usize, &mut buf)
+                .expect("read payload");
+            if TreeBenchEdge::read_from(&buf).is_tombstone_edge() {
+                scanned += 1;
+            }
+        }
+        assert_eq!(u32::from(header.tombstone_count), scanned);
+        total += u64::from(header.tombstone_count);
+    }
+    assert_eq!(total, u64::from(bucket.stored_slots - bucket.degree));
+}
+
+/// Alternating churn with reuse (Unordered): stored must stay bounded at the
+/// seed scale (the FIXED 4-block window reuses the tail tombstone each round).
+#[bench(raw)]
+fn tree_churn_alternating_reuse() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(0);
+    bench_fn(|| {
+        let (stored, degree, leaf_count) = run_tree_churn(
+            &fixture,
+            EdgePlacementPolicy::Unordered,
+            ChurnPattern::Alternating,
+        );
+        // Trajectory: reuse keeps stored bounded at the seed scale.
+        assert_eq!(stored, TREE_SEED_SLOTS, "reuse keeps stored bounded");
+        assert_eq!(degree, TREE_SEED_SLOTS, "degree restored after full cycle");
+        assert_tree_churn_header_parity(&fixture);
+        black_box((stored, degree, leaf_count));
+    })
+}
+
+/// Alternating churn WITHOUT reuse (Insertion, append-only baseline): stored
+/// grows by CHURN_ROUNDS — the monotonically-growing incumbent.
+#[bench(raw)]
+fn tree_churn_alternating_append() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(0);
+    bench_fn(|| {
+        let (stored, degree, leaf_count) = run_tree_churn(
+            &fixture,
+            EdgePlacementPolicy::Insertion,
+            ChurnPattern::Alternating,
+        );
+        // Baseline: stored grows by one per round (append-only).
+        assert_eq!(
+            stored,
+            TREE_SEED_SLOTS + CHURN_ROUNDS,
+            "append-only baseline grows stored"
+        );
+        assert_eq!(degree, TREE_SEED_SLOTS, "degree restored after full cycle");
+        assert_tree_churn_header_parity(&fixture);
+        black_box((stored, degree, leaf_count));
+    })
+}
+
+/// Bursty remove-then-refill with reuse (Unordered): stored stays bounded.
+#[bench(raw)]
+fn tree_churn_bursty_reuse() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(0);
+    bench_fn(|| {
+        let (stored, degree, leaf_count) = run_tree_churn(
+            &fixture,
+            EdgePlacementPolicy::Unordered,
+            ChurnPattern::Bursty,
+        );
+        assert_eq!(stored, TREE_SEED_SLOTS, "reuse keeps stored bounded");
+        assert_eq!(degree, TREE_SEED_SLOTS, "degree restored after full cycle");
+        assert_tree_churn_header_parity(&fixture);
+        black_box((stored, degree, leaf_count));
+    })
+}
+
+/// Bursty remove-then-refill WITHOUT reuse (Insertion, append-only baseline).
+#[bench(raw)]
+fn tree_churn_bursty_append() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(0);
+    bench_fn(|| {
+        let (stored, degree, leaf_count) = run_tree_churn(
+            &fixture,
+            EdgePlacementPolicy::Insertion,
+            ChurnPattern::Bursty,
+        );
+        assert_eq!(
+            stored,
+            TREE_SEED_SLOTS + CHURN_ROUNDS,
+            "append-only baseline grows stored"
+        );
+        assert_eq!(degree, TREE_SEED_SLOTS, "degree restored after full cycle");
+        assert_tree_churn_header_parity(&fixture);
+        black_box((stored, degree, leaf_count));
     })
 }

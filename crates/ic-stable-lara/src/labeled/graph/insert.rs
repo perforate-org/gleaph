@@ -320,6 +320,25 @@ where
             // bucket's width (width mismatch is a typed error above
             // at the `ensure_bucket_inline_property_schema_for_insert_with_materialize`
             // call).
+            // Plan 0340 (ADR 0088 follow-up `tree-mode-tombstone-reuse`):
+            // Unordered tree buckets reuse an interior tombstone within
+            // the fixed tail-first window before tail-appending. Insertion
+            // tree buckets never reuse (ADR 0052 §6) — the gate is
+            // structural, enforced by the placement policy passed in.
+            if let Some(reused_slot) = super::tree_write::tree_mode_reuse_tombstone_slot(
+                self,
+                src,
+                bucket_slot,
+                &bucket,
+                label_id,
+                &edge,
+                placement,
+            )? {
+                return Ok(Some(ScalarInsertLocation {
+                    logical_slot: reused_slot,
+                    storage: ScalarInsertStorage::Slab,
+                }));
+            }
             let logical_slot = super::tree_write::tree_mode_insert_edge(
                 self,
                 src,
@@ -371,6 +390,22 @@ where
                 }
             };
             if bucket.is_tree_mode() {
+                // Plan 0340: reuse applies to a freshly-promoted Unordered
+                // tree bucket too (promotion preserves tombstones).
+                if let Some(reused_slot) = super::tree_write::tree_mode_reuse_tombstone_slot(
+                    self,
+                    src,
+                    bucket_slot,
+                    &bucket,
+                    label_id,
+                    &edge,
+                    placement,
+                )? {
+                    return Ok(Some(ScalarInsertLocation {
+                        logical_slot: reused_slot,
+                        storage: ScalarInsertStorage::Slab,
+                    }));
+                }
                 let logical_slot = super::tree_write::tree_mode_insert_edge(
                     self,
                     src,

@@ -298,6 +298,13 @@ ceiling (256 GiB under the shared extent budget, 256 extents/GiB) matches the
 CSR slab's own 36-bit addressing scale — a 32-page policy would cap the
 spillover target (128 GiB) below the slab domain it relieves. Experimental
 value, confirmed by the acceptance-gate footprint measurements.
+
+> **Superseded by code (Plan 0338 reconciliation):** the wired
+> `GRAPH_MEMORY_MANAGER_POLICIES` carries `(FWD_LTB, 16)` / `(REV_LTB, 16)` —
+> a **16-page extent allocation granularity**, not a 64-page capacity cap. The
+> policy value is the per-memory extent granularity in pages (the global
+> `MAX_EXTENTS = 65,536` budget, not the policy value, bounds capacity); see
+> `design/storage/stable-memory-inventory.md` for the authoritative record.
 The store is **lazily created**: the region stays physically unallocated
 (size 0) until the first promotion, so graphs with no tree buckets pay
 nothing (the §8 asymmetric reopen rule already admits the empty region).
@@ -608,7 +615,7 @@ tree buckets) or populated.
 | `T_promote`          | 4,096  | policy (benchmark-gated, hysteresis with compact-or-promote) |
 | `MAX_DEPTH`          | 3      | policy (fail-closed structural boundary; widening = future ADR) |
 | Log cap              | 170    | existing wire                                                |
-| LTB VMM bucket policy | 64 pages | policy (ADR 0043 experimental; footprint-gated)            |
+| LTB VMM bucket policy | 16 pages | policy (ADR 0043 experimental; footprint-gated; superseded-by-code from 64 pages — see §1 note) |
 
 `R_max` is deliberately wire, not policy: a build with a different `R_max`
 would re-derive different depths for the same `stored_slots`.
@@ -992,15 +999,19 @@ demotion as follow-up slices.
   structurally wired (`MAX_DEPTH = 3`) but the production
   fail-closed boundary at 2^30 makes it unreachable; lifting the
   cap to 2^40 (depth 3 in production) is a future ADR amend.
-- `tree-mode-tombstone-reuse` — tree bucket tombstones are not
-  reused on insert (slab mode reuses via
-  `try_reuse_unordered_slab_tombstone`); high-churn tree buckets
-  grow LTB footprint monotonically. **Plan 0319 (2026-09-01)**
-  ships demotion as the primary reclaim path, but in-place
-  tombstone reuse inside LTB blocks is still deferred (needs
-  per-bucket free-ordinal tracking; no spare `LabelBucket` field
-  today). After 0319 telemetry decides whether demotion alone
-  suffices.
+- ~~`tree-mode-tombstone-reuse`~~ — **resolved in Plan 0340** (this
+  slice). Tree bucket tombstones are now reused on insert for
+  **Unordered** tree buckets via header-count-guided, tail-first
+  bounded-window reuse (`tree_mode_reuse_tombstone_slot`, Plan 0340):
+  the ADR 0094 per-block header `tombstone_count` satisfies the
+  follow-up's "needs per-bucket free-ordinal tracking" prerequisite
+  (no `LabelBucket` field used). The FIXED 4-block window keeps
+  `stored` bounded under tail-churn (measured by the `tree_churn_*`
+  attribution bench), answering "does demotion alone suffice?" with
+  **no** — high-degree buckets (`degree > T_DEMOTE = 2,048`) never
+  demote, so without reuse their LTB footprint grows monotonically.
+  **Insertion tree buckets never reuse** (ADR 0052 §6); batch tree
+  runs stay append-only (recorded later slice).
 - `tree-mode-promote-from-bypass` — bypass-mode → tree-mode direct
   transition (current path is bypass → slab → tree). Records as
   a follow-up so the current two-step path is not blocked on

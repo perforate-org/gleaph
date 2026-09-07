@@ -555,3 +555,15 @@ half the stored width, the existing `CompactVertexEdgeSpanV1` work item is enque
 Unordered and tree buckets excluded). This is the recorded lever that keeps the deferred slab
 OFFSET candidate closed by reclaiming delete-only tombstones. The default-label bypass-row half
 of the proposal remains deferred (GAP-2026-09-07-001, bypass side).
+
+### 5.6 Tree-mode tombstone reuse landing (2026-09-07, Plan 0340)
+
+The deferred ADR 0088 follow-up `tree-mode-tombstone-reuse` is **resolved** for Unordered tree
+buckets: header-count-guided, tail-first bounded-window reuse
+(`tree_mode_reuse_tombstone_slot`, Plan 0340) fills an interior LTB tombstone on insert using
+the ADR 0094 per-block `tombstone_count` (no `LabelBucket` field). Insertion tree buckets never
+reuse (ADR 0052 §6); batch tree runs stay append-only. The `tree_churn_*` attribution bench
+answers the deferred "does demotion alone suffice?" question with measured footprint evidence:
+**no** — high-degree buckets (`degree > T_DEMOTE = 2,048`) never demote, and the FIXED 4-block
+window keeps `stored` bounded under tail-churn (alternating and bursty patterns) while the
+append-only baseline grows monotonically. See ADR 0088 follow-ups and ADR 0052 §5/§6.

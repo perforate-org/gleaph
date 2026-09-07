@@ -24,8 +24,11 @@
 //! `compute_bucket_allocation < T_PROMOTE` form. See
 //! `super::promote::promote_bypass_to_tree_mode` for the cap semantics.
 //!
-//! Unordered placement tombstone reuse is **not** implemented for tree
-//! buckets. Tree mode always appends; tombstone reuse is a future slice.
+//! Unordered placement tombstone reuse is implemented for tree buckets
+//! (Plan 0340, ADR 0088 follow-up `tree-mode-tombstone-reuse`): the
+//! insert dispatcher calls [`tree_mode_reuse_tombstone_slot`] before the
+//! tail append, reusing an interior tombstone within a fixed tail-first
+//! window. Insertion tree buckets never reuse (ADR 0052 §6).
 
 use ic_stable_structures::Memory;
 
@@ -52,9 +55,9 @@ pub(crate) const TREE_MODE_REQUIRED_EDGE_BYTES: usize = 4;
 /// published). The bucket descriptor is rewritten only at the end via
 /// the canonical `write_label_bucket_slot` write.
 ///
-/// Unordered placement (`EdgePlacementPolicy::Unordered`) is a no-op
-/// for tree mode: this helper always appends. Reuse of a tombstoned
-/// slot in tree mode is deferred to a future slice.
+/// Unordered placement (`EdgePlacementPolicy::Unordered`) is handled by
+/// the dispatcher's [`tree_mode_reuse_tombstone_slot`] call before this
+/// helper runs; this helper always appends (the reuse fallback).
 pub(crate) fn tree_mode_insert_edge<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     src: VertexId,
@@ -934,6 +937,226 @@ where
         row: 0,
         entry_for_root: Some(new_interior_id),
     })
+}
+
+/// Fixed tail-first search window for Unordered tree-mode tombstone
+/// reuse (Plan 0340, ADR 0088 follow-up `tree-mode-tombstone-reuse`).
+/// The search walks the tail leaf block and up to 3 preceding leaf
+/// blocks (4 total). Widening or a full scan is a recorded escalation,
+/// gated on the `tree_churn_*` attribution bench.
+pub(crate) const TREE_REUSE_WINDOW_BLOCKS: u32 = 4;
+
+/// Attempt Unordered tree-mode tombstone reuse for a single edge insert.
+///
+/// Returns `Some(reused_logical_slot)` when a tombstone hole was found
+/// within the fixed tail-first window and the edge was written there;
+/// `None` when no hole is found (the caller falls through to the tail
+/// append). Never mints, deepens, or promotes: `stored_slots` is
+/// unchanged and only the reused slot's payload + header count + the
+/// bucket descriptor degree are touched.
+///
+/// GATES (all must hold before the search):
+/// - `placement == Unordered` (Insertion tree buckets NEVER reuse —
+///   ADR 0052 §6; the dispatcher passes the resolved policy in).
+/// - `E::BYTES == 4` (tree width guard, unchanged).
+/// - `bucket.stored_slots > bucket.degree()` (O(1) tombstone-exists gate,
+///   same shape as the slab reuse at insert.rs).
+///
+/// Compensation chain (mirror of the remove increment, Plan 0337):
+/// payload write → header count decrement → bucket descriptor
+/// `degree + 1` with `stored_slots` unchanged. On any failure after the
+/// payload write, the payload bytes, the header count, and (for w > 0)
+/// the property bytes are rolled back before returning `Err`.
+pub(crate) fn tree_mode_reuse_tombstone_slot<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    src: VertexId,
+    bucket_slot: u64,
+    bucket: &LabelBucket,
+    _label: BucketLabelKey,
+    edge: &E,
+    placement: super::EdgePlacementPolicy,
+) -> Result<Option<u32>, LabeledOperationError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    // GATE 1: Unordered placement only (Insertion tree buckets never
+    // reuse — ADR 0052 §6). The gate is structural, not a tuning choice.
+    if placement != super::EdgePlacementPolicy::Unordered {
+        return Ok(None);
+    }
+    // GATE 2: tree width guard (unchanged).
+    if E::BYTES != TREE_MODE_REQUIRED_EDGE_BYTES {
+        return Ok(None);
+    }
+    debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
+    // GATE 3: O(1) tombstone-exists gate. A dense bucket has no hole to
+    // reuse; the common no-tombstone case pays nothing beyond this gate.
+    if bucket.stored_slots <= bucket.degree {
+        return Ok(None);
+    }
+    let w = bucket.inline_property_byte_width();
+    // Validate the edge's inline property width up front (before any
+    // canonical write) so a mismatch fails closed with no state change.
+    let property_value_bytes: &[u8] = if w > 0 {
+        let bytes = edge.edge_inline_property_bytes();
+        if bytes.len() != usize::from(w) {
+            return Err(LabeledOperationError::InlinePropertyBytesWidthMismatch {
+                bucket_width: w,
+                edge_inline_property_width: bytes.len() as u16,
+            });
+        }
+        bytes
+    } else {
+        &[]
+    };
+    let stored_slots = bucket.stored_slots;
+    // Tail-first window: the last leaf block and up to
+    // TREE_REUSE_WINDOW_BLOCKS - 1 preceding blocks.
+    let last_block = (stored_slots - 1) / (BLOCK_B as u32);
+    let first_block = last_block.saturating_sub(TREE_REUSE_WINDOW_BLOCKS - 1);
+    let mut target_bytes = [0u8; 4];
+    edge.write_to(&mut target_bytes);
+    let mut tombstone_bytes = [0u8; 4];
+    E::tombstone_edge().write_to(&mut tombstone_bytes);
+    for block_index in (first_block..=last_block).rev() {
+        let block_id = resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
+        let header = graph.ltb().read_block_header(block_id);
+        if header.tombstone_count == 0 {
+            continue;
+        }
+        let block_first = block_index * (BLOCK_B as u32);
+        let extent = stored_slots.min((block_index + 1) * (BLOCK_B as u32));
+        let used = extent - block_first;
+        // Scan the block's used slots for the first tombstone marker.
+        let mut found_in_block = None;
+        for in_block in 0..used {
+            let offset = (in_block as usize) * E::BYTES;
+            let mut bytes = [0u8; 4];
+            graph
+                .ltb()
+                .read_payload_partial(block_id, offset, &mut bytes)
+                .map_err(LabeledOperationError::LtbBlock)?;
+            if bytes == tombstone_bytes {
+                found_in_block = Some(in_block);
+                break;
+            }
+        }
+        let Some(in_block) = found_in_block else {
+            continue;
+        };
+        let reused_slot = block_first + in_block;
+        let payload_offset = (in_block as usize) * E::BYTES;
+        // === Compensation chain (mirror of the remove increment) ===
+        // 1. Write the live edge target into the reused slot.
+        if let Err(e) = graph
+            .ltb()
+            .write_payload_partial(block_id, payload_offset, &target_bytes)
+        {
+            return Err(LabeledOperationError::LtbBlock(e));
+        }
+        // 2. Decrement the block header tombstone count.
+        let mut header = graph.ltb().read_block_header(block_id);
+        let prev_count = header.tombstone_count;
+        header.tombstone_count = header
+            .tombstone_count
+            .checked_sub(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        graph.ltb().write_block_header(block_id, &header);
+        // 3. Write the property value at the reused position (w > 0).
+        //    The tree property stream is tombstone-inclusive 1:1
+        //    (ADR 0088 §5), so the reused slot's property leaf already
+        //    exists; we overwrite its row in place. The original bytes
+        //    are captured for rollback.
+        let mut rollback_property: Option<Vec<u8>> = None;
+        if w > 0 {
+            let mut original = vec![0u8; usize::from(w)];
+            if let Err(e) = super::tree_read::read_property_value_at_slot::<E, M>(
+                graph,
+                bucket,
+                reused_slot,
+                &mut original,
+            ) {
+                // Roll back payload + count.
+                let _ =
+                    graph
+                        .ltb()
+                        .write_payload_partial(block_id, payload_offset, &tombstone_bytes);
+                let mut rb = graph.ltb().read_block_header(block_id);
+                rb.tombstone_count = prev_count;
+                graph.ltb().write_block_header(block_id, &rb);
+                return Err(e);
+            }
+            rollback_property = Some(original);
+            if let Err(e) = super::tree_read::write_property_value_at_slot::<E, M>(
+                graph,
+                bucket,
+                reused_slot,
+                property_value_bytes,
+            ) {
+                // Roll back payload + count + property.
+                let _ =
+                    graph
+                        .ltb()
+                        .write_payload_partial(block_id, payload_offset, &tombstone_bytes);
+                let mut rb = graph.ltb().read_block_header(block_id);
+                rb.tombstone_count = prev_count;
+                graph.ltb().write_block_header(block_id, &rb);
+                if let Some(orig) = &rollback_property {
+                    let _ = super::tree_read::write_property_value_at_slot::<E, M>(
+                        graph,
+                        bucket,
+                        reused_slot,
+                        orig,
+                    );
+                }
+                return Err(e);
+            }
+        }
+        // 4. Publish the descriptor: degree + 1, stored_slots unchanged.
+        let next_degree = bucket
+            .degree
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let new_bucket = bucket
+            .with_degree_field(next_degree)
+            .with_stored_slots(bucket.stored_slots)
+            .with_tree_mode(true);
+        if let Err(e) = graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+        {
+            // Roll back payload + count (+ property).
+            let _ = graph
+                .ltb()
+                .write_payload_partial(block_id, payload_offset, &tombstone_bytes);
+            let mut rb = graph.ltb().read_block_header(block_id);
+            rb.tombstone_count = prev_count;
+            graph.ltb().write_block_header(block_id, &rb);
+            if let Some(orig) = &rollback_property {
+                let _ = super::tree_read::write_property_value_at_slot::<E, M>(
+                    graph,
+                    bucket,
+                    reused_slot,
+                    orig,
+                );
+            }
+            return Err(e.into());
+        }
+        // 5. Bump global accounting (mirror of the tail append).
+        let hdr = graph.edges().header();
+        let next_num_edges = hdr
+            .num_edges
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        graph.edges().set_num_edges(next_num_edges);
+        graph
+            .edges()
+            .bump_vertex_segment_counts(src, 1, 0)
+            .map_err(LabeledOperationError::from)?;
+        return Ok(Some(reused_slot));
+    }
+    Ok(None)
 }
 
 /// Depth-1 tail append: mint a leaf, grow the root by 1, append the
@@ -2905,7 +3128,7 @@ where
 mod tests {
     use super::super::test_support::{TestEdge, test_graph};
     use super::super::tree_read::tree_mode_out_edges_collect;
-    use super::super::{BucketSearch, OutEdgeOrder};
+    use super::super::{BucketSearch, EdgePlacementPolicy, OutEdgeOrder};
     use super::*;
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
@@ -3527,6 +3750,425 @@ mod tests {
         assert_eq!(
             graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
             1
+        );
+    }
+
+    // =================== Plan 0340: tree-mode tombstone reuse ===================
+
+    /// Re-read the tree bucket at `(vid, label)` and return `(bucket, slot)`.
+    fn read_tree_bucket(
+        graph: &LabeledLaraGraph<TestEdge, VectorMemory>,
+        vid: VertexId,
+        label: BucketLabelKey,
+    ) -> (LabelBucket, u64) {
+        let vertex = graph.vertices().get(vid);
+        match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+            BucketSearch::Found { bucket, slot } => (bucket, slot),
+            _ => panic!("tree bucket not found"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_decrements_block_header_count() {
+        // Plan 0340 test 1: a remove→reuse cycle restores the block header
+        // count to 0 and Σ == stored − degree (parity).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        // Reuse insert: the hole at slot 100 (block 0) is within the window.
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let new_edge = TestEdge { target: 7777 };
+        let reused = tree_mode_reuse_tombstone_slot(
+            &graph,
+            vid,
+            slot,
+            &bucket,
+            label,
+            &new_edge,
+            EdgePlacementPolicy::Unordered,
+        )
+        .expect("reuse")
+        .expect("hole found");
+        assert_eq!(reused, 100);
+        assert_tree_header_count_parity(&graph, vid, label);
+        let (bucket, _) = read_tree_bucket(&graph, vid, label);
+        let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            0,
+            "reuse must decrement the block header count back to 0"
+        );
+        assert_eq!(bucket.degree, 4096, "degree restored");
+        assert_eq!(bucket.stored_slots, 4096, "stored_slots unchanged");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_preserves_bucket_entry_position_identity() {
+        // Plan 0340 test 2: the reused slot's position identity is the
+        // tombstoned position; a subsequent walk yields the new edge at that
+        // position in both ascending and descending order.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let new_edge = TestEdge { target: 7777 };
+        let reused = tree_mode_reuse_tombstone_slot(
+            &graph,
+            vid,
+            slot,
+            &bucket,
+            label,
+            &new_edge,
+            EdgePlacementPolicy::Unordered,
+        )
+        .expect("reuse")
+        .expect("hole found");
+        assert_eq!(reused, 100);
+        let (bucket, _) = read_tree_bucket(&graph, vid, label);
+        // Ascending: slot 100 is index 100.
+        let asc = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket,
+            bucket.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("ascending collect");
+        assert_eq!(asc[100].target, 7777, "ascending position 100");
+        // Descending: slot 100 is index degree−1−100.
+        let desc = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket,
+            bucket.degree,
+            OutEdgeOrder::Descending,
+        )
+        .expect("descending collect");
+        assert_eq!(
+            desc[bucket.degree as usize - 1 - 100].target,
+            7777,
+            "descending position 100"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_insertion_policy_never_reuses() {
+        // Plan 0340 test 3: Insertion-policy tree buckets NEVER reuse — the
+        // insert appends at the tail (stored grows, count unchanged).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        // Dispatcher insert with Insertion policy: must append at the tail.
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                TestEdge { target: 8888 },
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("insertion insert");
+        let (bucket, _) = read_tree_bucket(&graph, vid, label);
+        assert_eq!(bucket.stored_slots, 4097, "Insertion insert must append");
+        assert_eq!(bucket.degree, 4096);
+        let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            1,
+            "Insertion insert must NOT reuse the tombstone"
+        );
+        // The new edge landed at the tail (slot 4096).
+        let asc = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket,
+            bucket.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("ascending collect");
+        assert_eq!(asc[4096].target, 8888);
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_window_bound_ignores_out_of_window_tombstones() {
+        // Plan 0340 test 4: tombstones outside the fixed 4-block window are
+        // NOT reused — the append fallback fires and stored grows.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        // 8192 slots = 8 leaf blocks; the window covers blocks 4..7 only.
+        promote_test_bucket(&graph, vid, label, 8192);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        // Tombstone slot 100 (block 0), which is OUTSIDE the window.
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        // Dispatcher insert with Unordered policy: the reuse search misses the
+        // out-of-window tombstone and the append fallback fires.
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                TestEdge { target: 9999 },
+                EdgePlacementPolicy::Unordered,
+            )
+            .expect("unordered insert");
+        // Append fallback: stored grows, block 0 count unchanged.
+        let (bucket, _) = read_tree_bucket(&graph, vid, label);
+        assert_eq!(bucket.stored_slots, 8193, "append fallback grows stored");
+        assert_eq!(bucket.degree, 8192);
+        let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            1,
+            "out-of-window tombstone count unchanged"
+        );
+        // The new edge landed at the tail (slot 8192), not the out-of-window hole.
+        let asc = tree_mode_out_edges_collect(
+            &graph,
+            label.raw(),
+            &bucket,
+            bucket.degree,
+            OutEdgeOrder::Ascending,
+        )
+        .expect("ascending collect");
+        assert_eq!(asc[8192].target, 9999);
+    }
+
+    /// Tombstone a single slot of a w > 0 tree bucket (edge marker + header
+    /// count + descriptor degree), mirroring the remove-side compensation
+    /// chain. Used by the w > 0 reuse test because `tree_mode_remove_edge_at_slot`
+    /// rejects inline-property buckets by debug-assert.
+    fn tombstone_property_tree_slot(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, VectorMemory>,
+        bucket: &LabelBucket,
+        bucket_slot: u64,
+        slot: u32,
+    ) {
+        let block_index = slot / (BLOCK_B as u32);
+        let in_block = slot % (BLOCK_B as u32);
+        let block_id =
+            resolve_leaf_block_id::<InlinePropertyTestEdge, _>(graph, bucket, block_index)
+                .expect("resolve leaf");
+        let mut tombstone = [0u8; 4];
+        InlinePropertyTestEdge::tombstone_edge().write_to(&mut tombstone);
+        graph
+            .ltb()
+            .write_payload_partial(block_id, (in_block as usize) * 4, &tombstone)
+            .expect("write tombstone marker");
+        let mut header = graph.ltb().read_block_header(block_id);
+        header.tombstone_count += 1;
+        graph.ltb().write_block_header(block_id, &header);
+        let new_bucket = bucket
+            .with_degree_field(bucket.degree - 1)
+            .with_stored_slots(bucket.stored_slots)
+            .with_tree_mode(true);
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, new_bucket)
+            .expect("write descriptor");
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_writes_target_and_property_at_reused_position() {
+        // Plan 0340 test 5: w > 0 tree bucket — reuse writes both the 4-byte
+        // target and the w-byte property value at the reused position (the
+        // tree property stream is tombstone-inclusive 1:1, ADR 0088 §5).
+        let graph = inline_property_test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(3);
+        let w: u16 = 4;
+        let stored: u32 = 4096;
+        let seed = |slot: u32| slot ^ 0x5A5A_5A5A;
+        let bucket_slot = 0u64;
+        let pre = build_full_property_root_bucket(&graph, label, bucket_slot, stored, w, seed);
+        // Tombstone slot 5 (block 0, within the window).
+        tombstone_property_tree_slot(&graph, &pre, bucket_slot, 5);
+        // Re-read the descriptor: the tombstone helper published degree − 1.
+        let tombstoned = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("tombstoned read");
+        let new_value: u32 = 0x0BAD_C0DE;
+        let mut prop_bytes = vec![0u8; usize::from(w)];
+        prop_bytes[0..4].copy_from_slice(&new_value.to_le_bytes());
+        let edge = InlinePropertyTestEdge::with_bytes(0x1234, &new_value.to_le_bytes())
+            .with_stored_inline_property_bytes(w, &prop_bytes);
+        let reused = tree_mode_reuse_tombstone_slot(
+            &graph,
+            vid,
+            bucket_slot,
+            &tombstoned,
+            label,
+            &edge,
+            EdgePlacementPolicy::Unordered,
+        )
+        .expect("reuse")
+        .expect("hole found");
+        assert_eq!(reused, 5);
+        let post = graph
+            .buckets()
+            .read_label_bucket_slot(bucket_slot)
+            .expect("post read");
+        // Target at slot 5.
+        let block_index = 5 / (BLOCK_B as u32);
+        let in_block = 5 % (BLOCK_B as u32);
+        let block_id =
+            resolve_leaf_block_id::<InlinePropertyTestEdge, _>(&graph, &post, block_index)
+                .expect("resolve leaf");
+        let mut buf = [0u8; 4];
+        graph
+            .ltb()
+            .read_payload_partial(block_id, (in_block as usize) * 4, &mut buf)
+            .expect("read target");
+        assert_eq!(u32::from_le_bytes(buf), 0x1234, "reused target");
+        // Property value at slot 5.
+        assert_eq!(
+            read_prop_u32(&graph, &post, 5, w),
+            new_value,
+            "reused property"
+        );
+        // Degree restored, stored unchanged.
+        assert_eq!(post.degree, stored);
+        assert_eq!(post.stored_slots, stored);
+        // Header count back to 0.
+        let leaf_ids = collect_leaf_block_ids(&graph, &post).expect("collect leaf ids");
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_never_mints_deepens_or_promotes() {
+        // Plan 0340 test 6: reuse never mints, never deepens, never promotes
+        // — stored_slots and the LTB block count are invariant under reuse.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let tail_before = graph.ltb().tail_next();
+        let free_before = graph.ltb().free_count();
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let depth_before = bucket.tree_mode_physical_depth();
+        let reused = tree_mode_reuse_tombstone_slot(
+            &graph,
+            vid,
+            slot,
+            &bucket,
+            label,
+            &TestEdge { target: 1234 },
+            EdgePlacementPolicy::Unordered,
+        )
+        .expect("reuse")
+        .expect("hole found");
+        assert_eq!(reused, 100);
+        let (bucket, _) = read_tree_bucket(&graph, vid, label);
+        assert_eq!(
+            bucket.stored_slots, 4096,
+            "stored_slots invariant under reuse"
+        );
+        assert_eq!(
+            bucket.tree_mode_physical_depth(),
+            depth_before,
+            "reuse must not deepen"
+        );
+        assert_eq!(graph.ltb().tail_next(), tail_before, "reuse must not mint");
+        assert_eq!(
+            graph.ltb().free_count(),
+            free_before,
+            "reuse must not release"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_then_demote_rebuilds_clean() {
+        // Plan 0340 test 7: after reuse the header counts are exact (parity),
+        // and a subsequent demotion rebuilds a clean slab of only live edges.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_reuse_tombstone_slot(
+            &graph,
+            vid,
+            slot,
+            &bucket,
+            label,
+            &TestEdge { target: 5555 },
+            EdgePlacementPolicy::Unordered,
+        )
+        .expect("reuse")
+        .expect("hole found");
+        assert_tree_header_count_parity(&graph, vid, label);
+        // Demote: rebuild as a fresh slab of only live edges.
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        tree_mode_demote_to_slab(&graph, slot, label, &bucket).expect("demote");
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        assert!(!bucket.is_tree_mode(), "demote must return to slab");
+        assert_eq!(bucket.degree, 4096);
+        assert_eq!(bucket.stored_slots, 4096);
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_reuse_remove_reuse_remove_keeps_counts_exact() {
+        // Plan 0340 test 8: remove → reuse-insert → remove of the same slot
+        // keeps the header counts exact (idempotence of the compensation
+        // chain).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_reuse_tombstone_slot(
+            &graph,
+            vid,
+            slot,
+            &bucket,
+            label,
+            &TestEdge { target: 4444 },
+            EdgePlacementPolicy::Unordered,
+        )
+        .expect("reuse")
+        .expect("hole found");
+        assert_tree_header_count_parity(&graph, vid, label);
+        // Remove the same slot again.
+        let (bucket, slot) = read_tree_bucket(&graph, vid, label);
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        assert_tree_header_count_parity(&graph, vid, label);
+        let (bucket, _) = read_tree_bucket(&graph, vid, label);
+        assert_eq!(bucket.degree, 4095);
+        assert_eq!(bucket.stored_slots, 4096);
+        let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            1,
+            "final remove leaves exactly one tombstone"
         );
     }
 

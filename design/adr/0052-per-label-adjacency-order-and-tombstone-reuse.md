@@ -266,6 +266,10 @@ It may assign pending edges to holes in any physical order. Input logical ordina
 request-local metadata for replay, sidecar association, directed/reverse projection, undirected
 pairing, and exact returned locations; they are not a physical ordering contract.
 
+**Tree-mode extension (Plan 0340, ADR 0088 cross-reference):** step 1 extends to **Unordered TREE
+buckets** via the ADR 0094 per-block header `tombstone_count` — a tail-first bounded-window reuse
+(`tree_mode_reuse_tombstone_slot`) fills an interior LTB tombstone before the tail append.
+
 **Slice 3 implementation note (2026-08-01, Plan 0198):** the scalar reuse gate is O(1). The scan
 runs only when `stored_slots > degree` (a slab tombstone outnumbers the live overflow-log edges).
 For slab-only buckets this is exact. For log-backed buckets it is a sufficient condition, so a
@@ -286,6 +290,10 @@ For an `Insertion` bucket:
 
 The guarantee is per orientation, owner vertex, and edge label bucket. There is no global order
 across different labels.
+
+**Tree-mode note (Plan 0340):** the no-interior-reuse rule applies to **Insertion TREE buckets**
+explicitly — they never reuse an interior LTB tombstone (any interior hole precedes the tail, so
+reuse would place a new row before a surviving row); their reclaim stays compaction/demotion.
 
 ### 7. Policy-specific compaction
 
