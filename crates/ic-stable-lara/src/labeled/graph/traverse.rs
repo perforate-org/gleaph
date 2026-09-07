@@ -37,6 +37,9 @@ mod bench;
 #[cfg(feature = "canbench")]
 mod bench_workload;
 
+#[cfg(feature = "canbench")]
+mod bench_tree;
+
 use super::{
     BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, OutEdgeOrder, error::LabeledOperationError,
 };

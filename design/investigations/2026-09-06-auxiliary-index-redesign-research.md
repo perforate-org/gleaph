@@ -1,8 +1,11 @@
 # Auxiliary index redesign research — tombstone distribution, counterpart mapping, ordered property delivery
 
 Date: 2026-09-06 05:12:03 UTC +0000 (OS anchor; all external claims verified against cited sources on this date).
-Last updated: 2026-09-06 05:55 UTC — §4 rewritten with the implementation-side collaboration
-report from the graph-impl agent (read-only report; no code changed).
+Last updated: 2026-09-07 01:28 UTC — §5 added: design revision after the Plan 0336 gate failure and
+design review. Candidate A evolved from "adaptive bitmap" to the minimal header-count design
+(Level 1); the byte-slab sidecar variant is rejected on single-role discipline; Level 2 is deferred
+behind measured evidence. No design contract changed yet — the header-count field and its ADR are
+Plan 0337 scope.
 Status: **Research notes** — no implemented behavior, no design-contract change. Feeds three open
 workstreams: the GAP-2026-07-25-002 revisit (tombstone-aware OFFSET acceleration), the ADR 0048
 reserved adaptive-accelerator follow-up (counterpart lookup), and edge-side ordered delivery
@@ -377,3 +380,133 @@ it reproduces on the production path.
    membership-filter and hot-relation-only variants against CounterpartScan.
 3. **Area 3**: no new storage; extend ADR 0081 toward Slice B (DESC) and edge-side ordered
    delivery, and treat the edge IN-list probe as a planner-scope gap.
+
+---
+
+## 5. Design revision (2026-09-07, post-0336) — Level 1 header-count, minimal role
+
+After Plan 0336 measured candidate C's structural failure (§4.3), candidate A evolved through two
+intermediate shapes before settling. This section records the accepted design direction and the
+rejections; it supersedes the sidecar-bearing variants described earlier in this document.
+
+### 5.1 Evolution and rejections
+
+1. **Adaptive compressed live bitmap (§1.1/§1.4 candidate A, as originally framed)** — superseded.
+   At LTB block scale (1,024 slots/block) the Navarro-class machinery is unnecessary; the block's
+   own payload already carries per-slot liveness as the tombstone sentinel marker, so a bitmap
+   would duplicate state the block already owns.
+2. **Per-bucket sidecar span on the inline-property-bytes byte-slab (rejected)** — placing the
+   directory as one more span of `FWD/REV_INLINE_PROPERTY_BYTES_SLAB` (graph MemoryId 10/25, the
+   region holding edge INLINE property bytes for slab buckets) would give a canonical
+   single-purpose region a second role: tree-mode invariant rewrite (`inline_property_bytes_offset
+   / slab_slots = 0` repurposed as a sidecar descriptor), descriptor-field overloading, and
+   compaction coupling. Rejected on single-role discipline (management-pane design decision,
+   2026-09-07). Not revisited without new evidence.
+3. **Accepted — Level 1: per-block tombstone count in the LTB block header (tree buckets).**
+   A `u16` count at block-header offset 13-14 (inside the existing 16-byte header; stride 4,112
+   unchanged; no store-header change). **No layout-version bump and no migration framing: the
+   canister is not deployed, so the field is simply added to the current header and used; layout
+   changes continue to require fresh state under the existing pre-production policy.** The count
+   is the block's own accounting (not a second structure): mint initializes it to zero, and the
+   tree-mode remove funnel maintains it inside the existing marker→descriptor compensation chain
+   (`tree_mode_remove_edge_at_slot`, single funnel point). Level 1 is tree-mode-only — slab
+   buckets have no internal blocks; their OFFSET overshoot is bounded by extent 4,096
+   (post-ADR 0088 slab cap) and is decided by measurement, not by this design.
+
+### 5.2 Contracts (Level 1)
+
+- **SSOT:** the block's own marker bytes; the count is derived state stored in the same header,
+  maintained only by the mutation funnel. No second source of edge identity; no
+  `BucketEntryPosition` change; `visit_edges` output unchanged.
+- **Verification:** fail-closed at use — the select/entry block scan recomputes the block's true
+  live count and compares it with the header count; a mismatch is `LabeledOperationError`
+  (block corruption class, ADR 0050), not a silent wrong window. Reopen performs no
+  O(blocks) count validation (ADR 0088 §8 discipline unchanged). Bucket-level Σ check
+  (Σ counts == `stored_slots − degree`) is confirmed during walks at zero extra cost.
+- **Select path (Level 1):** OFFSET resolution walks root entries and reads one header per passed
+  block, skipping fully-dead blocks without touching their slots. Scattered header reads bound the
+  gain at ~5-8× on the dead-block component (page-charge floor: 1 page per passed block).
+- **Deferred — Level 2 (contiguous per-bucket live-count directory in a dedicated single-role
+  region):** escalates only on measured evidence — when the Plan 0337 fixtures show Level 1's
+  integrated economics insufficient for the measured K distribution (blocks passed per OFFSET) and
+  churn shape. Candidate shapes recorded for that gate: (i) global dense u16 array indexed by
+  block id (minimal machinery; select page-efficiency degrades when compaction/reuse churn breaks
+  block_id ≈ logical-order locality), (ii) per-bucket chunked pages (optimal access, heaviest
+  machinery, ADR 0032-style). No byte-slab reuse.
+- **Adjacent pay-off:** the header count is exactly the primitive the deferred ADR 0088
+  follow-up `tree-mode-tombstone-reuse` needs (count > 0 → bounded in-block scan finds the
+  reusable slot), without the "no spare `LabelBucket` field" problem.
+
+### 5.3 Measured expectations (honest ladder)
+
+| Regime / level | OFFSET select cost (1M edge · 50% tombstone · OFFSET ~10K) | Ratio |
+|---|---:|---:|
+| Status quo (slot walk) | hundreds of K instructions (2 pages + slot logic per passed block) | 1× |
+| Level 1 (header count) | 1 header page per passed block | ~5-8× |
+| Level 2 (contiguous directory) | 1-2 pages total | ~100×+ (reference) |
+
+### 5.4 Documentation gaps surfaced by the region-layout review (out of Plan 0337 scope; record and fix separately)
+
+#### Plan 0337 outcome (2026-09-07)
+
+Plan 0337 implemented the production header-count field (`BlockHeader.tombstone_count: u16` at
+offset 13-14, reserved shrunk to 1 byte at offset 15; `LAYOUT_VERSION` unchanged at 1; no
+migration/compat code — the canister is not deployed and dev state is recreated under the
+fresh-state policy), the mint init, the remove-funnel increment inside the existing marker →
+count → descriptor compensation chain (with payload + count rollback on descriptor failure),
+and the parity regression tests (`tree_remove_increments_block_header_tombstone_count`,
+`tree_remove_idempotent_does_not_double_count`: per-block count == scanned markers, Σ ==
+`stored_slots − degree`). Production read paths are unchanged; the counting walk is bench-scoped
+(`bench_tree.rs`). Audited marker writers: compaction rewrite and promote transcription mint
+fresh blocks (count 0 via mint init); batch `RunDestination::Tree` tail writes append live edges
+(count unchanged); demotion emits slab (no tree blocks).
+
+**Tree OFFSET baseline and Level-1 results (first tree-regime OFFSET measurement; 1M+1 stored
+slots, depth-2, contiguous dead-prefix tombstones, OFFSET window 32, canbench grid reduced to
+2 densities × 2 OFFSET points for budget — see deviations in the /tmp report):**
+
+| Point | density | offset | I_D (exact walk) | I_L1 (header-count walk) | I_L1/I_D |
+|---|---|---:|---:|---:|---:|
+| 1 | 50% | 524,288 (first live) | 48,570,803 | 912,629 | 1.9% |
+| 2 | 87.5% | 917,504 (first live) | 48,177,587 | 914,549 | 1.9% |
+| 3 | 87.5% | 983,040 (live+65,536) | 48,112,051 | 914,869 | 1.9% |
+
+- The exact walk is offset-INSENSITIVE in the tree regime (~48.2-48.6M at every OFFSET point) —
+  the tree window walk resolves block ids from the root and does not walk the dead prefix as a
+  slab scan does, so the overshoot is the per-block page charge across ~950 passed blocks, not
+  prefix length. K (blocks passed) = leaf_count ≈ 1,025 for every point — far above the K ≥ 32
+  page-charge threshold.
+- Level 1 achieves ≈ **52.8× per-query gain** (I_L1/I_D ≈ 1.9%), clearing the ε = 0.10 gate at
+  EVERY measured point (`I_L1 < I_D × 0.90`). The gain exceeds the §5.3 "honest ladder"
+  expectation of ~5-8× because the exact tree walk re-reads block payloads for tombstone slots,
+  while the Level-1 walk reads only the 16-byte header for fully-dead blocks and scans payloads
+  only in the window-overlapping block.
+- Count parity held on every measured query (per-block header count == scanned markers; Σ ==
+  `stored_slots − degree`).
+
+**Verdict: Level 1 adopted — ADR draft next.** The measured K distribution (K ≈ 1,025 ≫ 32) also
+confirms Level 2's shape driver (page charges, not slot logic) is real, but Level 1 already
+reclaims ~98% of the gap, so Level 2 escalation is NOT recorded as needed at this fixture scale.
+
+**Slab re-anchor (extent 4,096 — the post-ADR-0088 legal slab ceiling; 0283 worst-case shape,
+87.5% tombstones, OFFSET 960, LIMIT 32):** measured 133,370 instructions/query. Against the
+extent-4,096 dense OFFSET control (~24,243 at the pre-0088 fixture), the worst-case overshoot is
+≈ 109,127 instructions/query — above the declared 100,000 bar. **Slab regime: the status-quo
+rule fails; a slab-side follow-up candidate (512 B bitmap class) is recorded as
+deferred-with-evidence, NOT opened** (the slab overshoot is 1.2× the bar, an order of magnitude
+below the tree-regime overshoot, and the extent-4,096 cap bounds the worst case; a dedicated
+slab slice would need the 0283 two-level counts re-measured at the legal cap).
+
+Existing bench families: `bench_t_off` 10/10 unchanged; `offset_workload` (0336) unchanged
+within ε (all 10 values byte-identical to the 0336 report). All validation passed: cargo check,
+clippy (-D warnings), fmt, `cargo test --lib header` (10 passed), `--lib tree_remove` (4 passed).
+
+### 5.4 Documentation gaps surfaced by the region-layout review (out of Plan 0337 scope; record and fix separately)
+
+1. `design/storage/stable-memory-inventory.md` does not yet record the ADR 0088 LTB regions —
+   the code allocates `FWD_LTB` = graph MemoryId 53 and `REV_LTB` = 54
+   (`crates/graph/src/facade/stable/memory.rs`), i.e. 55 graph regions (0-54), while the
+   inventory status line still reads "54 regions, 0–53".
+2. ADR 0088 §1 states a 64-page VMM bucket policy for the LTB regions, while the code's
+   `GRAPH_MEMORY_MANAGER_POLICIES` lists `(FWD_LTB, 16)` / `(REV_LTB, 16)`. Verify which is
+   intended and align the ADR or the code.

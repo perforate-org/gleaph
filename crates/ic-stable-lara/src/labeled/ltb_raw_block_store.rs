@@ -35,7 +35,8 @@
 //! |      4 |    4 | owner vertex id when `kind != Free`; next-free id when `kind == Free`  |
 //! |      8 |    4 | stream ordinal                                                         |
 //! |     12 |    1 | level (depth-1 leaf = 0; reserved metadata byte)                       |
-//! |     13 |    3 | reserved (zero)                                                        |
+//! |     13 |    2 | tombstone count in this block's payload (Plan 0337 Level 1)             |
+//! |     15 |    1 | reserved (zero)                                                        |
 //!
 //! The 4096-byte payload follows immediately after the 16-byte block header
 //! for a stride of 4112 bytes per block. Blocks are dense: block id `i` lives
@@ -613,7 +614,8 @@ impl<M: Memory> LtbRawBlockStore<M> {
                 owner_or_next_free: 0,
                 ordinal: 0,
                 level: 0,
-                reserved: [0; 3],
+                tombstone_count: 0,
+                reserved: [0; 1],
             };
             self.write_block_header(id, &default_header);
             // Header counter fields change; persist them.
@@ -662,7 +664,8 @@ impl<M: Memory> LtbRawBlockStore<M> {
                 owner_or_next_free: 0,
                 ordinal: 0,
                 level: 0,
-                reserved: [0; 3],
+                tombstone_count: 0,
+                reserved: [0; 1],
             };
             self.write_block_header(id, &default_header);
             self.write_header()?;
@@ -693,7 +696,8 @@ impl<M: Memory> LtbRawBlockStore<M> {
             owner_or_next_free: self.free_head.get(),
             ordinal: 0,
             level: 0,
-            reserved: [0; 3],
+            tombstone_count: 0,
+            reserved: [0; 1],
         };
         self.write_block_header(id, &new_header);
         self.free_head.set(id);
@@ -768,7 +772,10 @@ pub(crate) struct BlockHeader {
     pub(crate) ordinal: u32,
     /// Level (0 = depth-1 leaf; reserved metadata byte).
     pub(crate) level: u8,
-    pub(crate) reserved: [u8; 3],
+    /// Tombstone count in this block's payload (Plan 0337 Level 1; offset 13-14).
+    pub(crate) tombstone_count: u16,
+    /// Reserved byte (offset 15; the former 3 reserved bytes at 13-15 shrink to 1).
+    pub(crate) reserved: [u8; 1],
 }
 
 impl BlockHeader {
@@ -780,7 +787,8 @@ impl BlockHeader {
         buf[4..8].copy_from_slice(&self.owner_or_next_free.to_le_bytes());
         buf[8..12].copy_from_slice(&self.ordinal.to_le_bytes());
         buf[12] = self.level;
-        buf[13..16].copy_from_slice(&self.reserved);
+        buf[13..15].copy_from_slice(&self.tombstone_count.to_le_bytes());
+        buf[15] = self.reserved[0];
         buf
     }
 
@@ -791,7 +799,8 @@ impl BlockHeader {
             owner_or_next_free: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
             ordinal: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
             level: buf[12],
-            reserved: [buf[13], buf[14], buf[15]],
+            tombstone_count: u16::from_le_bytes([buf[13], buf[14]]),
+            reserved: [buf[15]],
         }
     }
 }
@@ -816,7 +825,8 @@ mod tests {
             owner_or_next_free: 0xDEAD_BEEF,
             ordinal: 42,
             level: 0,
-            reserved: [0; 3],
+            tombstone_count: 0xABCD,
+            reserved: [0; 1],
         }
     }
 

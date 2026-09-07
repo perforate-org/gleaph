@@ -397,7 +397,9 @@ where
                 owner_or_next_free: 0,
                 ordinal: 0,
                 level: 0,
-                reserved: [0u8; 3],
+                tombstone_count: 0,
+
+                reserved: [0u8; 1],
             };
             graph.ltb().write_block_header(id, &header);
         }
@@ -494,7 +496,9 @@ where
                     owner_or_next_free: 0,
                     ordinal: 0,
                     level: property_depth as u8,
-                    reserved: [0u8; 3],
+                    tombstone_count: 0,
+
+                    reserved: [0u8; 1],
                 };
                 graph.ltb().write_block_header(id, &header);
             }

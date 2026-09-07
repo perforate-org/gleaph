@@ -640,7 +640,9 @@ where
             owner_or_next_free: 0,
             ordinal: 0,
             level: d as u8,
-            reserved: [0u8; 3],
+            tombstone_count: 0,
+
+            reserved: [0u8; 1],
         };
         graph.ltb().write_block_header(id, &header);
     }
@@ -836,7 +838,9 @@ where
         owner_or_next_free: 0,
         ordinal: 0,
         level: 0,
-        reserved: [0u8; 3],
+        tombstone_count: 0,
+
+        reserved: [0u8; 1],
     };
     graph.ltb().write_block_header(leaf_id, &leaf_header);
     if d == 1 {
@@ -917,7 +921,9 @@ where
         // The minted interior directly holds LPB leaves, so its level
         // (height above the leaves) is 1 at any property depth.
         level: 1,
-        reserved: [0u8; 3],
+        tombstone_count: 0,
+
+        reserved: [0u8; 1],
     };
     graph
         .ltb()
@@ -1465,7 +1471,9 @@ where
         owner_or_next_free: 0,
         ordinal: 0,
         level: 1, // depth 2 → interior at level 1
-        reserved: [0u8; 3],
+        tombstone_count: 0,
+
+        reserved: [0u8; 1],
     };
     graph
         .ltb()
@@ -1730,6 +1738,20 @@ where
     {
         return Err(LabeledOperationError::LtbBlock(e));
     }
+    // 3b. Increment the block's tombstone count (Plan 0337 Level 1). The
+    //     count joins the existing compensation chain: if the bucket
+    //     descriptor write below fails, both the marker payload and the
+    //     header count are rolled back. A block holds at most
+    //     `BLOCK_PAYLOAD_BYTES / E::BYTES = 1024` slots, so the u16 count
+    //     cannot overflow in practice; the checked add keeps the path
+    //     fail-closed.
+    let mut header = graph.ltb().read_block_header(block_id);
+    let prev_count = header.tombstone_count;
+    header.tombstone_count = header
+        .tombstone_count
+        .checked_add(1)
+        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+    graph.ltb().write_block_header(block_id, &header);
     // 4. Decrement degree (stored_slots unchanged — tombstones are
     //    physical slots that may be reused later, even though the
     //    current tree-mode insert path always appends).
@@ -1745,11 +1767,15 @@ where
         .buckets()
         .write_label_bucket_slot(bucket_slot, new_bucket)
     {
-        // Roll back the tombstone write: restore the original 4 bytes.
+        // Roll back the tombstone write and the header count: restore the
+        // original 4 payload bytes and the previous count.
         let _ =
             graph
                 .ltb()
                 .write_payload_partial(block_id, in_block_offset as usize, &current_bytes);
+        let mut rollback_header = graph.ltb().read_block_header(block_id);
+        rollback_header.tombstone_count = prev_count;
+        graph.ltb().write_block_header(block_id, &rollback_header);
         return Err(e.into());
     }
     // 5. Decrement global accounting.
@@ -2255,7 +2281,9 @@ where
             owner_or_next_free: 0,
             ordinal: 0,
             level: (level + 1) as u8,
-            reserved: [0u8; 3],
+            tombstone_count: 0,
+
+            reserved: [0u8; 1],
         };
         graph.ltb().write_block_header(id, &header);
     }
@@ -3373,6 +3401,135 @@ mod tests {
         assert_eq!(bucket3.degree, 4096);
     }
 
+    /// Plan 0337 parity: for every leaf block of a tree bucket, the header
+    /// tombstone count must equal the number of tombstone markers scanned in
+    /// that block's used slots, and the sum must equal `stored_slots - degree`.
+    fn assert_tree_header_count_parity(
+        graph: &LabeledLaraGraph<TestEdge, VectorMemory>,
+        vid: VertexId,
+        label: BucketLabelKey,
+    ) {
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        assert!(bucket.is_tree_mode());
+        let leaf_ids = collect_leaf_block_ids(graph, &bucket).expect("collect leaf ids");
+        let mut total = 0u64;
+        for (block_index, block_id) in leaf_ids.iter().enumerate() {
+            let header = graph.ltb().read_block_header(*block_id);
+            let start_slot = block_index as u32 * crate::labeled::tree_csr::B as u32;
+            let end_slot =
+                (start_slot + crate::labeled::tree_csr::B as u32).min(bucket.stored_slots);
+            let mut scanned = 0u32;
+            for slot in start_slot..end_slot {
+                let in_block = slot - start_slot;
+                let mut buf = [0u8; 4];
+                graph
+                    .ltb()
+                    .read_payload_partial(*block_id, in_block as usize * 4, &mut buf)
+                    .expect("read payload");
+                let edge = TestEdge::read_from(&buf);
+                if edge.is_tombstone_edge() {
+                    scanned += 1;
+                }
+            }
+            assert_eq!(
+                header.tombstone_count as u32, scanned,
+                "block {block_id} header count != scanned markers"
+            );
+            total += u64::from(header.tombstone_count);
+        }
+        assert_eq!(
+            total,
+            u64::from(bucket.stored_slots - bucket.degree),
+            "Σ block counts != stored_slots - degree"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_remove_increments_block_header_tombstone_count() {
+        // Plan 0337 Level 1: a tree-mode remove must increment the owning
+        // leaf block's header tombstone count, and the per-block count must
+        // equal the scanned markers with Σ == stored_slots - degree.
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let mut vertex = graph.vertices().get(vid);
+        let (mut bucket, mut slot) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, slot } => (bucket, slot),
+            _ => panic!("bucket not found"),
+        };
+        for remove_slot in [100u32, 200, 300] {
+            let removed = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, remove_slot)
+                .expect("remove")
+                .expect("slot in range");
+            assert_eq!(removed.target, remove_slot + 100);
+            // Re-read the bucket descriptor after each remove so the next
+            // remove sees the updated degree.
+            vertex = graph.vertices().get(vid);
+            let (b, s) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+                BucketSearch::Found { bucket, slot } => (bucket, slot),
+                _ => panic!("bucket not found"),
+            };
+            bucket = b;
+            slot = s;
+        }
+        assert_tree_header_count_parity(&graph, vid, label);
+        // The single depth-1 leaf block must carry exactly 3 tombstones.
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        // 4096 slots = 4 leaf blocks at B=1024.
+        let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
+        assert_eq!(leaf_ids.len(), 4);
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            3
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_remove_idempotent_does_not_double_count() {
+        // Plan 0337: removing an already-tombstoned slot is idempotent and
+        // must NOT increment the header count again (the early-return path
+        // returns the tombstone without writing).
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(1);
+        promote_test_bucket(&graph, vid, label, 4096);
+        let vertex = graph.vertices().get(vid);
+        let (bucket, slot) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, slot } => (bucket, slot),
+            _ => panic!("bucket not found"),
+        };
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot, &bucket, 100).expect("remove");
+        // Second remove of the same slot: idempotent, returns the tombstone.
+        let vertex = graph.vertices().get(vid);
+        let (bucket2, slot2) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, slot } => (bucket, slot),
+            _ => panic!("bucket not found"),
+        };
+        let _ = tree_mode_remove_edge_at_slot(&graph, vid, slot2, &bucket2, 100).expect("remove");
+        assert_tree_header_count_parity(&graph, vid, label);
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
+        assert_eq!(
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            1
+        );
+    }
+
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn pre_promotion_span_inside_pinned_leaf_helper() {
@@ -4088,7 +4245,9 @@ mod tests {
                 owner_or_next_free: 0,
                 ordinal: 0,
                 level: 1,
-                reserved: [0u8; 3],
+                tombstone_count: 0,
+
+                reserved: [0u8; 1],
             };
             graph.ltb().write_block_header(id, &header);
         }
@@ -4197,7 +4356,9 @@ mod tests {
                 owner_or_next_free: 0,
                 ordinal: 0,
                 level: 1,
-                reserved: [0u8; 3],
+                tombstone_count: 0,
+
+                reserved: [0u8; 1],
             };
             graph.ltb().write_block_header(id, &header);
         }
@@ -4337,7 +4498,9 @@ mod tests {
                 owner_or_next_free: 0,
                 ordinal: 0,
                 level: 1,
-                reserved: [0u8; 3],
+                tombstone_count: 0,
+
+                reserved: [0u8; 1],
             };
             graph.ltb().write_block_header(id, &header);
         }
