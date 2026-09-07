@@ -2,11 +2,14 @@
 
 use super::{
     ProvisionAcceptResponse, ProvisionIngressError, ProvisionQueryError, ProvisionResult,
-    ProvisionResultOutcome, accept_envelope_with_caller, artifact_get_status,
+    ProvisionResultOutcome, accept_envelope_with_caller, admin_finalize_dict_catalog_with_caller,
+    admin_upload_dict_catalog_chunk_with_caller, artifact_get_status,
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    build_record_from_request, complete_graph_registration_with_caller, query_job_with_caller,
-    record_to_result, release_activate_with_caller, release_get_active,
-    release_install_with_caller, release_publish_with_caller, upsert_deployment_grant_with_caller,
+    build_record_from_request, complete_graph_registration_with_caller,
+    dict_relay_call_log_for_test, query_job_with_caller, record_to_result,
+    release_activate_with_caller, release_get_active, release_install_with_caller,
+    release_publish_with_caller, reset_dict_relay_script_for_test, script_dict_relay_call,
+    upsert_deployment_grant_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -16,14 +19,17 @@ use crate::stable::store::{
 };
 use crate::types::{
     ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
-    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, InstallError, JobState,
-    LogicalResource, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId,
-    ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
+    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, DictCatalogFinalizeArgs,
+    DictCatalogKey, DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource,
+    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
+    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
+    ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
     UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
+use gleaph_graph_kernel::provisioning::dictionary::{DictState, DictStatus};
+use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
@@ -2226,4 +2232,383 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
 #[test]
 fn initial_canister_cycles_budget_is_one_trillion() {
     assert_eq!(super::initial_canister_cycles(), 1_000_000_000_000);
+}
+
+// === Dictionary relay tests (plan 0335 todo 3) ================================
+
+fn relay_catalog_key() -> DictCatalogKey {
+    DictCatalogKey {
+        kind: "ipadic".to_owned(),
+        version: "2.7.0".to_owned(),
+    }
+}
+
+/// Seed a Finalized dictionary catalog entry holding `chunks`; returns (raw_digest, raw_len).
+fn seed_finalized_catalog(chunks: &[&[u8]]) -> (u128, u64) {
+    seed_bootstrap();
+    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    for (i, chunk) in chunks.iter().enumerate() {
+        admin_upload_dict_catalog_chunk_with_caller(
+            gov(),
+            DictCatalogUploadChunkArgs {
+                key: relay_catalog_key(),
+                chunk_index: i as u32,
+                bytes: chunk.to_vec(),
+            },
+            300 + i as u64,
+        )
+        .expect("catalog chunk upload");
+    }
+    let raw_digest = 0x1234_5678_9abc_def0_1111_2222_3333_4444u128;
+    let raw_len = 100;
+    admin_finalize_dict_catalog_with_caller(
+        gov(),
+        DictCatalogFinalizeArgs {
+            key: relay_catalog_key(),
+            compressed_digest: xxhash_rust::xxh3::xxh3_128(&all),
+            raw_digest,
+            raw_len,
+        },
+        400,
+    )
+    .expect("catalog finalize");
+    (raw_digest, raw_len)
+}
+
+/// Router-shaped text install args: controller = issuing Router, Provision pinned as the
+/// dictionary-relay caller (plan 0335 authorization).
+fn text_install_args(analyzer_id: Option<u32>) -> Vec<u8> {
+    Encode!(&TextCanisterInitArgs {
+        controller: Some(router_principal()),
+        analyzer_id,
+        dict_relay_caller: Some(pid(200)),
+    })
+    .expect("encode TextCanisterInitArgs")
+}
+
+/// Seed + activate the compatible release so `install_resource` succeeds on the native stubs.
+fn seed_active_release() {
+    seed_bootstrap();
+    let r = release_id("relay-release");
+    publish_compatible_release(r.clone());
+    release_activate_with_caller(gov_principal(), ReleaseActivateArgs { release_id: r }, 500)
+        .expect("activate release");
+}
+
+fn scripted_status(state: DictState, digest: Option<u128>) -> Option<Vec<u8>> {
+    Some(
+        Encode!(&DictStatus {
+            state,
+            digest,
+            len: 0,
+            compressed: None,
+        })
+        .expect("encode status reply"),
+    )
+}
+
+fn relay_request(
+    resources: Vec<ProvisionableResource>,
+    install_args: Vec<Vec<u8>>,
+) -> ProvisionRequest {
+    let mut req = test_request(dep_id().as_str(), "relay-req", "fp-relay", resources);
+    req.install_args = install_args;
+    req
+}
+
+fn relay_job_state(store: &ProvisionJobStore) -> JobState {
+    store
+        .get_by_request_key(&ProvisionJobRequestKey::new(
+            &test_request_id("relay-req"),
+            &dep_id(),
+        ))
+        .expect("relay job record")
+        .current_state
+}
+
+/// (1) Happy path: a dictionary-required text resource streams every catalog chunk row
+/// verbatim and finalizes with both digests; the job completes.
+#[test]
+fn dict_relay_success_streams_catalog_chunks_and_finalizes() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    let chunks: [&[u8]; 2] = [&[0xA0; 300], &[0xB1; 200]];
+    let (raw_digest, raw_len) = seed_finalized_catalog(&chunks);
+    seed_active_release();
+
+    // Fresh canister status, two upload replies (one per catalog row), then finalize.
+    script_dict_relay_call(scripted_status(DictState::Absent, None));
+    script_dict_relay_call(Some(Encode!(&Ok::<u64, String>(300)).unwrap()));
+    script_dict_relay_call(Some(Encode!(&Ok::<u64, String>(500)).unwrap()));
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<DictStatus, String>(DictStatus {
+            state: DictState::Finalized,
+            digest: Some(raw_digest),
+            len: raw_len,
+            compressed: None,
+        }))
+        .unwrap(),
+    ));
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(0))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
+            assert!(matches!(
+                created_resources[0].logical_resource,
+                LogicalResource::TextIndex(_)
+            ));
+        }
+        ProvisionAcceptResponse::Replay { .. } => {
+            panic!("fresh admission must report Accepted")
+        }
+    }
+    assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+    assert_eq!(
+        dict_relay_call_log_for_test(),
+        vec![
+            "admin_get_dict_status",
+            "admin_upload_dict_chunk",
+            "admin_upload_dict_chunk",
+            "admin_finalize_dict_upload",
+        ]
+    );
+}
+
+/// (2) A non-dictionary-required analyzer skips the relay entirely: zero seam calls even
+/// though the catalog entry exists, and the job completes normally.
+#[test]
+fn dict_relay_skipped_for_non_dictionary_analyzer() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_active_release();
+
+    // No script armed: any relay seam call would fail the job; a correct skip completes it.
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(1))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
+        }
+        _ => panic!("expected Accepted"),
+    }
+    assert!(dict_relay_call_log_for_test().is_empty());
+    assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+}
+
+/// (3) Idempotent short-circuit: a canister already Finalized with the catalog's raw digest
+/// is not re-appended — only the status probe is issued.
+#[test]
+fn dict_relay_short_circuits_on_finalized_match() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    let (raw_digest, _raw_len) = seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_active_release();
+    script_dict_relay_call(scripted_status(DictState::Finalized, Some(raw_digest)));
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(2))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
+        }
+        _ => panic!("expected Accepted"),
+    }
+    assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+    assert_eq!(
+        dict_relay_call_log_for_test(),
+        vec!["admin_get_dict_status"]
+    );
+}
+
+/// (4) Relay call failure is fail-closed with the exact install-failure vocabulary: one
+/// terminal Failed transition, the created prefix returned, no retry.
+#[test]
+fn dict_relay_failure_records_failed_and_returns_partial_created() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_active_release();
+    script_dict_relay_call(scripted_status(DictState::Absent, None));
+    script_dict_relay_call(None); // transport-level upload failure
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
+            test_resource(LogicalResource::TextIndex(TextIndexId::new(0))),
+        ],
+        vec![vec![], text_install_args(Some(2))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            // Partial created prefix: only the shard before the failing text resource.
+            assert_eq!(created_resources.len(), 1);
+            assert!(matches!(
+                created_resources[0].logical_resource,
+                LogicalResource::GraphShard(_)
+            ));
+        }
+        _ => panic!("expected Accepted with a partial created prefix"),
+    }
+    assert_eq!(
+        relay_job_state(&store),
+        JobState::Failed {
+            reason: "dictionary relay failed for resource 1".to_owned()
+        }
+    );
+    assert_eq!(
+        dict_relay_call_log_for_test(),
+        vec!["admin_get_dict_status", "admin_upload_dict_chunk"]
+    );
+}
+
+/// (5) A catalog entry that has not reached Finalized fails the relay closed BEFORE any
+/// text-canister call.
+#[test]
+fn dict_relay_requires_finalized_catalog_entry() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_bootstrap();
+    // Uploading entry: chunk ingested, finalize never called.
+    admin_upload_dict_catalog_chunk_with_caller(
+        gov(),
+        DictCatalogUploadChunkArgs {
+            key: relay_catalog_key(),
+            chunk_index: 0,
+            bytes: vec![0xA0; 300],
+        },
+        300,
+    )
+    .expect("catalog chunk upload");
+    seed_active_release();
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(0))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert!(created_resources.is_empty());
+        }
+        _ => panic!("expected Accepted with an empty created list"),
+    }
+    assert_eq!(
+        relay_job_state(&store),
+        JobState::Failed {
+            reason: "dictionary relay failed for resource 0".to_owned()
+        }
+    );
+    assert!(dict_relay_call_log_for_test().is_empty());
+}
+
+/// (6) Undecodable text install args fail the relay closed before any call.
+#[test]
+fn dict_relay_rejects_undecodable_install_args() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_active_release();
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    // Empty bytes cannot decode as TextCanisterInitArgs.
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![vec![]],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert!(created_resources.is_empty());
+        }
+        _ => panic!("expected Accepted with an empty created list"),
+    }
+    assert_eq!(
+        relay_job_state(&store),
+        JobState::Failed {
+            reason: "dictionary relay failed for resource 0".to_owned()
+        }
+    );
+    assert!(dict_relay_call_log_for_test().is_empty());
 }

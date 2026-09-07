@@ -4,7 +4,11 @@
 //! drive every authorization and idempotency branch. Callable canister endpoints
 //! (`#[init]`/`#[query]`/`#[update]` annotations) remain a follow-up slice.
 
-use candid::{CandidType, Encode, Principal};
+use candid::{CandidType, Decode, Encode, Principal};
+use gleaph_graph_kernel::provisioning::dictionary::{
+    CompressedDictFinalize, CompressedDictUpload, DictState, DictStatus, dict_required,
+};
+use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashSet;
@@ -22,8 +26,8 @@ use crate::types::{
     ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, ArtifactUploadState,
     BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, DictCatalogAuditAction,
     DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError, DictCatalogFinalizeArgs,
-    DictCatalogKey, DictCatalogStatus, DictCatalogUploadChunkArgs, DictChunk, DictChunkKey,
-    JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
+    DictCatalogKey, DictCatalogState, DictCatalogStatus, DictCatalogUploadChunkArgs, DictChunk,
+    DictChunkKey, JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
     MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_CHUNK_LEN,
     MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError,
     ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest, ProvisionResult,
@@ -366,6 +370,7 @@ async fn deploy_job_resources(
         // deployment (it issues the graph resources afterwards). Every deploy is independent:
         // the issuer set simply gains one entry per issued Router.
         let is_router = kind == CanisterKind::Router;
+        let is_text_canister = kind == CanisterKind::TextCanister;
 
         // Install the release artifact for this kind.
         let _ = store.advance_state(&key, JobState::InstallPending, Some(index), now_ns);
@@ -388,6 +393,26 @@ async fn deploy_job_resources(
         store.set_resource_artifact_hash(&key, index, artifact_hash);
         let _ = store.advance_state(&key, JobState::Installed, Some(index), now_ns);
 
+        // Plan 0335 todo 3: post-install dictionary relay for dictionary-carrying text
+        // canisters. Relay failure is a provisioning failure with the exact install-failure
+        // vocabulary: one terminal Failed transition, the created prefix returned, and no
+        // retry path (re-provisioning is the only re-entry, short-circuited by the relay).
+        if is_text_canister
+            && relay_dict_catalog(canister_id, &req.install_args[index])
+                .await
+                .is_err()
+        {
+            let _ = store.advance_state(
+                &key,
+                JobState::Failed {
+                    reason: format!("dictionary relay failed for resource {index}"),
+                },
+                None,
+                now_ns,
+            );
+            return created;
+        }
+
         // Auto-grant: a freshly issued Router is authorized to request issuance for its own
         // deployment (it issues the graph resources afterwards). Every deploy is independent:
         // the issuer set simply gains one entry per issued Router.
@@ -405,6 +430,227 @@ async fn deploy_job_resources(
     // All resources installed.
     let _ = store.advance_state(&key, JobState::RouterRegistrationPending, None, now_ns);
     created
+}
+
+thread_local! {
+    /// Test-only script for the dictionary-relay cross-canister call seam (native builds:
+    /// unit tests enqueue one entry per expected seam call). Each entry is consumed in order
+    /// by the next seam invocation; `None` simulates a transport-level call failure.
+    #[cfg(not(target_family = "wasm"))]
+    static DICT_RELAY_CALL_SCRIPT: std::cell::RefCell<Vec<Option<Vec<u8>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Test-only ordered log of relay seam calls, for call-count assertions.
+    #[cfg(not(target_family = "wasm"))]
+    static DICT_RELAY_CALL_LOG: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test-only: enqueue one scripted seam outcome. `None` fails the call (transport error);
+/// `Some(bytes)` returns the encoded Candid reply the text canister would send.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn script_dict_relay_call(reply: Option<Vec<u8>>) {
+    DICT_RELAY_CALL_SCRIPT.with_borrow_mut(|script| script.push(reply));
+}
+
+/// Test-only: ordered log of issued relay seam calls.
+#[cfg(all(not(target_family = "wasm"), test))]
+pub(crate) fn dict_relay_call_log_for_test() -> Vec<&'static str> {
+    DICT_RELAY_CALL_LOG.with_borrow(|log| log.clone())
+}
+
+/// Test-only: clear the relay script and call log.
+#[cfg(all(not(target_family = "wasm"), test))]
+pub(crate) fn reset_dict_relay_script_for_test() {
+    DICT_RELAY_CALL_SCRIPT.with_borrow_mut(|script| script.clear());
+    DICT_RELAY_CALL_LOG.with_borrow_mut(|log| log.clear());
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn pop_dict_relay_call_script(method: &'static str) -> Option<Vec<u8>> {
+    DICT_RELAY_CALL_LOG.with_borrow_mut(|log| log.push(method));
+    DICT_RELAY_CALL_SCRIPT.with_borrow_mut(|script| {
+        if script.is_empty() {
+            None
+        } else {
+            script.remove(0)
+        }
+    })
+}
+
+/// Query the text canister's dictionary status (`admin_get_dict_status`, no args).
+#[cfg(target_family = "wasm")]
+async fn dict_relay_status_call(target: Principal) -> Result<DictStatus, String> {
+    use ic_cdk::call::Call;
+    Call::unbounded_wait(target, "admin_get_dict_status")
+        .await
+        .map_err(|e| format!("admin_get_dict_status call failed: {e:?}"))?
+        .candid::<DictStatus>()
+        .map_err(|e| format!("admin_get_dict_status decode failed: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn dict_relay_status_call(target: Principal) -> Result<DictStatus, String> {
+    let _ = target;
+    match pop_dict_relay_call_script("admin_get_dict_status") {
+        Some(bytes) => Ok(Decode!(&bytes, DictStatus).expect("scripted DictStatus bytes")),
+        None => Err("admin_get_dict_status call failed (no scripted reply)".to_owned()),
+    }
+}
+
+/// Append one compressed chunk (`admin_upload_dict_chunk(bytes, Some(CompressedDictUpload))`).
+#[cfg(target_family = "wasm")]
+async fn dict_relay_upload_chunk_call(
+    target: Principal,
+    bytes: Vec<u8>,
+    meta: CompressedDictUpload,
+) -> Result<u64, String> {
+    use ic_cdk::call::Call;
+    Call::unbounded_wait(target, "admin_upload_dict_chunk")
+        .with_args(&(bytes, Some(meta)))
+        .await
+        .map_err(|e| format!("admin_upload_dict_chunk call failed: {e:?}"))?
+        .candid::<Result<u64, String>>()
+        .map_err(|e| format!("admin_upload_dict_chunk decode failed: {e}"))?
+        .map_err(|e| format!("admin_upload_dict_chunk: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn dict_relay_upload_chunk_call(
+    target: Principal,
+    _bytes: Vec<u8>,
+    _meta: CompressedDictUpload,
+) -> Result<u64, String> {
+    let _ = target;
+    match pop_dict_relay_call_script("admin_upload_dict_chunk") {
+        Some(bytes) => {
+            let reply: Result<u64, String> =
+                Decode!(&bytes, Result<u64, String>).expect("scripted upload reply bytes");
+            reply.map_err(|e| format!("admin_upload_dict_chunk: {e}"))
+        }
+        None => Err("admin_upload_dict_chunk call failed (no scripted reply)".to_owned()),
+    }
+}
+
+/// Finalize the compressed dictionary relay
+/// (`admin_finalize_dict_upload(raw_digest, Some(CompressedDictFinalize))`). The first tuple
+/// element keeps the existing raw-finalize slot vocabulary: the xxh3_128 over the RAW
+/// container, which compressed mode re-pins via the trailing metadata.
+#[cfg(target_family = "wasm")]
+async fn dict_relay_finalize_call(
+    target: Principal,
+    raw_digest: u128,
+    meta: CompressedDictFinalize,
+) -> Result<DictStatus, String> {
+    use ic_cdk::call::Call;
+    Call::unbounded_wait(target, "admin_finalize_dict_upload")
+        .with_args(&(raw_digest, Some(meta)))
+        .await
+        .map_err(|e| format!("admin_finalize_dict_upload call failed: {e:?}"))?
+        .candid::<Result<DictStatus, String>>()
+        .map_err(|e| format!("admin_finalize_dict_upload decode failed: {e}"))?
+        .map_err(|e| format!("admin_finalize_dict_upload: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn dict_relay_finalize_call(
+    target: Principal,
+    _raw_digest: u128,
+    _meta: CompressedDictFinalize,
+) -> Result<DictStatus, String> {
+    let _ = target;
+    match pop_dict_relay_call_script("admin_finalize_dict_upload") {
+        Some(bytes) => {
+            let reply: Result<DictStatus, String> =
+                Decode!(&bytes, Result<DictStatus, String>).expect("scripted finalize reply bytes");
+            reply.map_err(|e| format!("admin_finalize_dict_upload: {e}"))
+        }
+        None => Err("admin_finalize_dict_upload call failed (no scripted reply)".to_owned()),
+    }
+}
+
+/// Provision-owned policy mapping: a dictionary-required analyzer id resolves to the catalog
+/// entry carrying its MPD container. The dict-required gate itself stays the kernel predicate;
+/// the initial catalog pins the ipadic 2.7.0 container for every dictionary-required analyzer.
+fn dict_catalog_key_for_analyzer(_analyzer_id: u32) -> DictCatalogKey {
+    DictCatalogKey {
+        kind: "ipadic".to_owned(),
+        version: "2.7.0".to_owned(),
+    }
+}
+
+/// Relay the Finalized compressed dictionary container from the catalog to a freshly
+/// installed text canister (plan 0335 todo 3). Skipped for analyzer ids without dictionary
+/// requirements and short-circuited when the target is already Finalized with the catalog's
+/// raw digest (re-provision replay). Any call, decode, or catalog failure is fail-closed:
+/// the caller records one terminal `Failed { reason }` and the relay never retries.
+async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Result<(), String> {
+    // Decode the Router-built init args to resolve the pinned analyzer id. Fail-closed on
+    // decode; an absent analyzer id means the 0332 koine default (0).
+    let init: TextCanisterInitArgs = Decode!(install_args, TextCanisterInitArgs)
+        .map_err(|e| format!("dictionary relay decode of install args failed: {e}"))?;
+    let analyzer_id = init.analyzer_id.unwrap_or(0);
+    if !dict_required(analyzer_id) {
+        return Ok(());
+    }
+
+    let catalog_key = dict_catalog_key_for_analyzer(analyzer_id);
+    let dict_store = crate::stable::dict_catalog::ProvisionDictCatalogStore::new();
+    let entry = dict_store
+        .get_entry(&catalog_key)
+        .ok_or_else(|| format!("dictionary catalog entry not found: {catalog_key:?}"))?;
+    if entry.state != DictCatalogState::Finalized {
+        return Err(format!(
+            "dictionary catalog entry {catalog_key:?} is not Finalized"
+        ));
+    }
+    let compressed_digest = entry
+        .compressed_digest
+        .ok_or_else(|| format!("dictionary catalog entry {catalog_key:?} has no pinned digest"))?;
+    let raw_digest = entry
+        .raw_digest
+        .ok_or_else(|| format!("dictionary catalog entry {catalog_key:?} has no raw digest"))?;
+    let raw_len = entry
+        .raw_len
+        .ok_or_else(|| format!("dictionary catalog entry {catalog_key:?} has no raw length"))?;
+
+    // Re-provision replay: an already-relayed canister is not re-appended.
+    let status = dict_relay_status_call(text_canister).await?;
+    if status.state == DictState::Finalized && status.digest == Some(raw_digest) {
+        return Ok(());
+    }
+
+    // Stream the catalog chunk rows verbatim (no coalescing): the 1,945,600-byte relay cap
+    // is the text canister's per-call acceptance bound, and catalog rows are already ≤ 1 MiB.
+    for chunk_index in 0..entry.chunks_received {
+        let chunk = dict_store
+            .get_chunk(&DictChunkKey {
+                catalog_key: catalog_key.clone(),
+                chunk_index,
+            })
+            .ok_or_else(|| {
+                format!("dictionary catalog chunk {chunk_index} missing for {catalog_key:?}")
+            })?;
+        dict_relay_upload_chunk_call(
+            text_canister,
+            chunk.bytes,
+            CompressedDictUpload {
+                compressed_len: entry.compressed_len,
+            },
+        )
+        .await?;
+    }
+
+    dict_relay_finalize_call(
+        text_canister,
+        raw_digest,
+        CompressedDictFinalize {
+            compressed_digest,
+            raw_digest,
+            raw_len,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// Install the release artifact for one resource into an already-created canister. Returns the
