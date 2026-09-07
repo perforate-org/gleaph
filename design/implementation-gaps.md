@@ -2994,3 +2994,57 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   count within the 20,000 char limit. Baseline 15,684 → 15,684 (no
   new bench surface). 159 → 161 entries (+2 honest benches; the
   partial slice's bogus 540-ins entries were removed).
+
+### GAP-2026-09-07-001 — OPEN: Delete-only workloads accumulate tombstones indefinitely on Insertion-policy slab buckets and default-label bypass rows
+
+- **Status:** Open (recorded 2026-09-07; Plan 0339 survey stopped at its mandatory work-item
+  survey step — the bypass-row half is not satisfiable by any existing compaction work item).
+- **Severity:** P2 maintenance-coverage gap (slow scan/memory degradation, no correctness risk;
+  extent-bounded per row)
+- **Owner:** `ic-stable-lara` deferred maintenance admission (`deferred.rs`) + bypass row
+  compaction coverage (`compact.rs` / `bypass.rs`)
+- **Observed behavior:** The insert path admits post-write maintenance — dense-leaf compaction
+  when `labeled_leaf_segment_is_dense(src)` and inline-property-bytes slab compaction
+  (`deferred.rs:2172-2194`, admission failures trap). The remove path admits nothing: production
+  `remove.rs` contains no enqueue/mark_compact/maintenance call, and the sole remove-side trigger
+  is the tree-mode demote check (`degree <= T_DEMOTE`, Plan 0319, best-effort inline). A
+  delete-only workload therefore accumulates tombstones indefinitely on Insertion-policy slab
+  buckets and default-label bypass rows until a later insert touches the same vertex.
+  `Unordered` labels are excluded from the gap by policy: they self-heal on insert (in-slab
+  tombstone reuse before append, `insert.rs:420`) and swap-compact (ADR 0052 §7).
+- **Plan 0339 survey findings (2026-09-07, no code changed):**
+  1. **Insertion-policy slab buckets** are closable with an existing work item:
+     `CompactVertexEdgeSpanV1` (enqueued via `mark_compact_vertex_edge_span`, deferred.rs:1542)
+     drains through `compact_vertex_edge_span_one_step` (compact.rs:1923), which left-packs a
+     tombstoned bucket span. The planned trigger design (hysteresis
+     `tombstones = stored − degree ≥ stored/2` post-removal, Insertion-only policy gate via
+     `maintenance_policy_for_label`, tree/Unordered exclusions, trap-on-admission-failure per the
+     insert-side convention, O(1) descriptor-arithmetic gate) is implementable as written for
+     this regime.
+  2. **Default-label bypass rows are NOT closable today**: every existing edge-span compaction
+     path short-circuits on `is_default_edge_labeled()` (`compact_vertex_edge_span_one_step`
+     compact.rs:1939, `rewrite_vertex_edge_span` compact.rs:739, leaf-span helpers), and
+     `CompactVertexValueSpanV1` drains as a no-op. Enqueuing any existing work item for a bypass
+     row is a drain no-op. The structural reason: bypass rows are vertex-level spans whose
+     left-pack would interact with the bypass-origin geometry (`base_slot_start` updates of
+     later tail rows, `bump_successor_origins_after_bypass_end`) — a real compaction capability
+     that does not exist, not a missing enqueue.
+  3. The planned test update (`bypass_accumulates_many_slab_tombstones_without_promotion`,
+     bypass.rs:617) exercises the unidirectional `LabeledLaraGraph` remove path, not the
+     deferred-wrapper remove side where the trigger would live — the test relocation/rename is
+     part of the bypass work, not the trigger work.
+- **Expected or needed behavior:** (a) a remove-side hysteresis admission trigger for
+  Insertion-policy slab buckets (design fixed in research doc §5.5 and validated by the 0339
+  survey); (b) a bypass-row left-pack compaction capability (new compact step or remove-path
+  maintenance in `compact.rs`/`remove.rs`/`bypass.rs`, respecting the bypass-origin geometry and
+  the ADR 0022 recorded descending-fallback behavior), with the bypass regression test moved to
+  the layer that owns the trigger.
+- **Impact:** Delete-only workloads degrade scan cost and pin memory on affected rows
+  (extent-bounded; the dense fast path re-engages once compaction eventually fires via a later
+  insert). No correctness risk; the 0337 slab rule (slab OFFSET overshoot ~109K at the legal
+  cap) remains deferred-with-evidence, and this trigger is the recorded lever that would also
+  reclaim those tombstones.
+- **Next decision:** Split delivery — (1) a small plan for the slab-bucket trigger
+  (`CompactVertexEdgeSpanV1`, design already fixed), then (2) a separate bypass-row compaction
+  plan (new compact step; needs the bypass-origin geometry contract written down first).
+  Update this entry to Resolved in the same patches as each half lands.
