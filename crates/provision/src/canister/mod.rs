@@ -29,12 +29,12 @@ use crate::types::{
     DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError, DictCatalogFinalizeArgs,
     DictCatalogKey, DictCatalogState, DictCatalogStatus, DictCatalogUploadChunkArgs, DictChunk,
     DictChunkKey, JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
-    MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_CHUNK_LEN,
-    MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError,
-    ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest, ProvisionResult,
-    ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId,
-    ReleaseManifest, ReleasePublishArgs, ResourceJobEntry, RouterRegistrationAck,
-    RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256, state_name,
+    MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN,
+    ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
+    ProvisionResult, ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult,
+    ReleaseError, ReleaseId, ReleaseManifest, ReleasePublishArgs, ResourceJobEntry,
+    RouterRegistrationAck, RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256,
+    state_name,
 };
 
 pub mod handlers;
@@ -620,9 +620,6 @@ async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Re
             "dictionary catalog entry {catalog_key:?} is not Finalized"
         ));
     }
-    let compressed_digest = entry
-        .compressed_digest
-        .ok_or_else(|| format!("dictionary catalog entry {catalog_key:?} has no pinned digest"))?;
     let raw_digest = entry
         .raw_digest
         .ok_or_else(|| format!("dictionary catalog entry {catalog_key:?} has no raw digest"))?;
@@ -636,14 +633,14 @@ async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Re
         return Ok(());
     }
 
-    // Coalesce the stored catalog rows into relay calls of up to
-    // MAX_DICT_COMPRESSED_CHUNK_BYTES, filling one window to the cap before starting the
-    // next (a row may be sliced across two calls). Compressed-mode digests accumulate over
-    // the whole stream, so stored-row boundaries carry no meaning; the plan targets ~6
-    // relay calls for the ~10.9 MB container and the stored ≤1 MiB rows stay untouched.
-    // The transient window never exceeds the ~1.9 MB relay cap, and the final call carries
-    // everything that remains.
-    let mut window: Vec<u8> = Vec::with_capacity(MAX_DICT_COMPRESSED_CHUNK_BYTES);
+    // Frame i = catalog row i = relay call i (plan 0342): no buffering, no boundary logic.
+    // Each frame carries its verified digest for the receiver's pre-decode check, and the
+    // declared raw length drives the receiver's bomb gate.
+    if entry.per_frame_digests.len() != entry.chunks_received as usize {
+        return Err(format!(
+            "dictionary catalog entry {catalog_key:?} is inconsistent (per-frame digests != chunks received)"
+        ));
+    }
     for chunk_index in 0..entry.chunks_received {
         let chunk = dict_store
             .get_chunk(&DictChunkKey {
@@ -653,31 +650,12 @@ async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Re
             .ok_or_else(|| {
                 format!("dictionary catalog chunk {chunk_index} missing for {catalog_key:?}")
             })?;
-        let mut row: &[u8] = &chunk.bytes;
-        while !row.is_empty() {
-            let space = MAX_DICT_COMPRESSED_CHUNK_BYTES - window.len();
-            let take = space.min(row.len());
-            window.extend_from_slice(&row[..take]);
-            row = &row[take..];
-            if window.len() == MAX_DICT_COMPRESSED_CHUNK_BYTES {
-                dict_relay_upload_chunk_call(
-                    text_canister,
-                    std::mem::take(&mut window),
-                    CompressedDictUpload {
-                        compressed_len: entry.compressed_len,
-                    },
-                )
-                .await?;
-                window = Vec::with_capacity(MAX_DICT_COMPRESSED_CHUNK_BYTES);
-            }
-        }
-    }
-    if !window.is_empty() {
         dict_relay_upload_chunk_call(
             text_canister,
-            window,
+            chunk.bytes,
             CompressedDictUpload {
-                compressed_len: entry.compressed_len,
+                frame_digest: entry.per_frame_digests[chunk_index as usize],
+                raw_len,
             },
         )
         .await?;
@@ -687,7 +665,6 @@ async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Re
         text_canister,
         raw_digest,
         CompressedDictFinalize {
-            compressed_digest,
             raw_digest,
             raw_len,
         },
@@ -1267,15 +1244,17 @@ fn dict_catalog_status(entry: &DictCatalogEntry) -> DictCatalogStatus {
         state: entry.state.clone(),
         chunks_received: entry.chunks_received,
         compressed_len: entry.compressed_len,
-        compressed_digest: entry.compressed_digest,
+        per_frame_digests: entry.per_frame_digests.clone(),
         raw_digest: entry.raw_digest,
         raw_len: entry.raw_len,
     }
 }
 
-/// Append one ≤1 MiB compressed chunk to a dictionary catalog entry. Governance-only.
-/// Append-only semantics: chunks must arrive in order; a replay of an already-received
-/// chunk is idempotent only when the bytes match the stored chunk exactly.
+/// Append one compressed zstd frame to a dictionary catalog entry. Governance-only.
+/// Append-only semantics: frames must arrive in order; each frame is digest-verified on
+/// arrival (xxh3_128 over the bytes must equal `args.frame_digest` — plan 0342 per-frame
+/// verification), so finalize never re-hashes the stream. A replay of an already-received
+/// frame is idempotent only when the bytes match the stored row exactly.
 #[allow(clippy::result_large_err)]
 pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
     caller: Principal,
@@ -1321,18 +1300,34 @@ pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
         );
         return Err(DictCatalogError::EmptyChunk);
     }
-    if args.bytes.len() > MAX_DICT_CATALOG_CHUNK_LEN {
+    // Frame i = catalog row i = relay call i: the row cap is the kernel relay cap (SSOT).
+    if args.bytes.len() > MAX_DICT_COMPRESSED_CHUNK_BYTES {
         append_dict_catalog_audit(
             caller,
             DictCatalogAuditAction::UploadChunk,
             Some(args.key.clone()),
             crate::types::ArtifactAuditOutcome::Rejected,
-            Some("chunk exceeds 1 MiB cap".to_owned()),
+            Some("frame exceeds the relay cap".to_owned()),
             now_ns,
         );
         return Err(DictCatalogError::ChunkTooLarge {
             len: args.bytes.len() as u64,
-            max: MAX_DICT_CATALOG_CHUNK_LEN as u32,
+            max: MAX_DICT_COMPRESSED_CHUNK_BYTES as u32,
+        });
+    }
+    // Plan 0342 per-frame verification: reject a frame whose bytes do not hash to the
+    // declared digest BEFORE any state change (this call only fails; the entry is intact).
+    if xxhash_rust::xxh3::xxh3_128(&args.bytes) != args.frame_digest {
+        append_dict_catalog_audit(
+            caller,
+            DictCatalogAuditAction::UploadChunk,
+            Some(args.key.clone()),
+            crate::types::ArtifactAuditOutcome::Rejected,
+            Some("frame digest mismatch".to_owned()),
+            now_ns,
+        );
+        return Err(DictCatalogError::ChunkDigestMismatch {
+            chunk_index: args.chunk_index,
         });
     }
 
@@ -1376,7 +1371,7 @@ pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
                 state: crate::types::DictCatalogState::Uploading,
                 chunks_received: 1,
                 compressed_len: args.bytes.len() as u64,
-                compressed_digest: None,
+                per_frame_digests: vec![args.frame_digest],
                 raw_digest: None,
                 raw_len: None,
                 started_at_ns: now_ns,
@@ -1457,6 +1452,7 @@ pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
             let mut entry = entry;
             entry.chunks_received += 1;
             entry.compressed_len = new_len;
+            entry.per_frame_digests.push(args.frame_digest);
             store.put_chunk(chunk_key, DictChunk { bytes: args.bytes });
             store.put_entry(entry);
             let entry = store.get_entry(&args.key).expect("entry just updated");
@@ -1473,9 +1469,10 @@ pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
     }
 }
 
-/// Finalize a dictionary catalog entry: verify the accumulated compressed stream against
-/// `args.compressed_digest` (xxh3_128, seeded default), pin the uploader-supplied raw
-/// metadata, and flip Uploading -> Finalized. Exact replay of an already-finalized entry
+/// Finalize a dictionary catalog entry. The former whole-stream compressed re-hash is gone
+/// (plan 0342): every frame was digest-verified at upload time, so finalize only checks the
+/// entry invariant (per-frame digest count == chunks_received) and pins the uploader-supplied
+/// raw metadata, flipping Uploading -> Finalized. Exact replay of an already-finalized entry
 /// with identical metadata is idempotent; any mismatch is fail-closed with no state change.
 /// Provision never decompresses: the raw digest is pinned as metadata only.
 #[allow(clippy::result_large_err)]
@@ -1526,10 +1523,7 @@ pub(crate) fn admin_finalize_dict_catalog_with_caller(
     };
 
     if matches!(entry.state, crate::types::DictCatalogState::Finalized) {
-        if entry.compressed_digest == Some(args.compressed_digest)
-            && entry.raw_digest == Some(args.raw_digest)
-            && entry.raw_len == Some(args.raw_len)
-        {
+        if entry.raw_digest == Some(args.raw_digest) && entry.raw_len == Some(args.raw_len) {
             return Ok(dict_catalog_status(&entry));
         }
         append_dict_catalog_audit(
@@ -1543,58 +1537,24 @@ pub(crate) fn admin_finalize_dict_catalog_with_caller(
         return Err(DictCatalogError::ReplayMismatch);
     }
 
-    // Stream every appended chunk through the xxh3_128 hasher without materializing the
-    // whole compressed stream.
-    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
-    let mut stream_ok = true;
-    for i in 0..entry.chunks_received {
-        let chunk_key = DictChunkKey {
-            catalog_key: args.key.clone(),
-            chunk_index: i,
-        };
-        match store.get_chunk(&chunk_key) {
-            Some(chunk) => hasher.update(&chunk.bytes),
-            None => {
-                stream_ok = false;
-                break;
-            }
-        }
-    }
-    if !stream_ok {
-        // A chunk is missing from the store: fail closed without any state change
-        // (mirrors the artifact precedent of a zero digest on an incomplete stream).
-        append_dict_catalog_audit(
-            caller,
-            DictCatalogAuditAction::Finalize,
-            Some(args.key.clone()),
-            crate::types::ArtifactAuditOutcome::Failed,
-            Some("chunk store incomplete during verification".to_owned()),
-            now_ns,
-        );
-        return Err(DictCatalogError::CompressedDigestMismatch {
-            expected: args.compressed_digest,
-            actual: 0,
-        });
-    }
-    let actual: u128 = hasher.digest128();
-    if actual != args.compressed_digest {
+    // Entry invariant: every appended frame carries its verified digest. A mismatch means
+    // the entry was corrupted after upload (impossible through the ingress path) — fail
+    // closed without any state change.
+    if entry.per_frame_digests.len() != entry.chunks_received as usize || entry.chunks_received == 0
+    {
         append_dict_catalog_audit(
             caller,
             DictCatalogAuditAction::Finalize,
             Some(args.key.clone()),
             crate::types::ArtifactAuditOutcome::Rejected,
-            Some("compressed digest mismatch".to_owned()),
+            Some("per-frame digest count mismatch".to_owned()),
             now_ns,
         );
-        return Err(DictCatalogError::CompressedDigestMismatch {
-            expected: args.compressed_digest,
-            actual,
-        });
+        return Err(DictCatalogError::FrameDigestIncomplete);
     }
 
     let mut entry = entry;
     entry.state = crate::types::DictCatalogState::Finalized;
-    entry.compressed_digest = Some(actual);
     entry.raw_digest = Some(args.raw_digest);
     entry.raw_len = Some(args.raw_len);
     entry.finalized_at_ns = Some(now_ns);

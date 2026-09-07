@@ -2245,16 +2245,17 @@ fn relay_catalog_key() -> DictCatalogKey {
     }
 }
 
-/// Seed a Finalized dictionary catalog entry holding `chunks`; returns (raw_digest, raw_len).
+/// Seed a Finalized dictionary catalog entry holding `chunks` (one independent frame per
+/// row, each digest-verified on upload); returns (raw_digest, raw_len).
 fn seed_finalized_catalog(chunks: &[&[u8]]) -> (u128, u64) {
     seed_bootstrap();
-    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
     for (i, chunk) in chunks.iter().enumerate() {
         admin_upload_dict_catalog_chunk_with_caller(
             gov(),
             DictCatalogUploadChunkArgs {
                 key: relay_catalog_key(),
                 chunk_index: i as u32,
+                frame_digest: xxhash_rust::xxh3::xxh3_128(chunk),
                 bytes: chunk.to_vec(),
             },
             300 + i as u64,
@@ -2267,7 +2268,6 @@ fn seed_finalized_catalog(chunks: &[&[u8]]) -> (u128, u64) {
         gov(),
         DictCatalogFinalizeArgs {
             key: relay_catalog_key(),
-            compressed_digest: xxhash_rust::xxh3::xxh3_128(&all),
             raw_digest,
             raw_len,
         },
@@ -2303,7 +2303,6 @@ fn scripted_status(state: DictState, digest: Option<u128>) -> Option<Vec<u8>> {
             state,
             digest,
             len: 0,
-            compressed: None,
         })
         .expect("encode status reply"),
     )
@@ -2328,8 +2327,8 @@ fn relay_job_state(store: &ProvisionJobStore) -> JobState {
         .current_state
 }
 
-/// (1) Happy path: a dictionary-required text resource streams every catalog chunk row
-/// verbatim and finalizes with both digests; the job completes.
+/// (1) Happy path: a dictionary-required text resource streams every catalog frame (one
+/// relay call per frame, byte-exact) and finalizes; the job completes.
 #[test]
 fn dict_relay_success_streams_catalog_chunks_and_finalizes() {
     reset_all_maps();
@@ -2338,16 +2337,19 @@ fn dict_relay_success_streams_catalog_chunks_and_finalizes() {
     let (raw_digest, raw_len) = seed_finalized_catalog(&chunks);
     seed_active_release();
 
-    // Fresh canister status, one coalesced upload reply (300 + 200 bytes under the cap),
-    // then finalize.
+    // Fresh canister status, one upload reply PER FRAME (frame i = relay call i, plan
+    // 0342), then finalize.
     script_dict_relay_call(scripted_status(DictState::Absent, None));
-    script_dict_relay_call(Some(Encode!(&Ok::<u64, String>(500)).unwrap()));
+    for chunk in &chunks {
+        script_dict_relay_call(Some(
+            Encode!(&Ok::<u64, String>(chunk.len() as u64)).unwrap(),
+        ));
+    }
     script_dict_relay_call(Some(
         Encode!(&Ok::<DictStatus, String>(DictStatus {
             state: DictState::Finalized,
             digest: Some(raw_digest),
             len: raw_len,
-            compressed: None,
         }))
         .unwrap(),
     ));
@@ -2382,31 +2384,34 @@ fn dict_relay_success_streams_catalog_chunks_and_finalizes() {
         }
     }
     assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
-    // 300 + 200 bytes fit in one relay call: the two catalog rows coalesce verbatim.
-    let mut coalesced = vec![0xA0u8; 300];
-    coalesced.extend_from_slice(&[0xB1u8; 200]);
+    // Frame i == catalog row i == relay call i: two frames, two calls, byte-exact each.
     assert_eq!(
         dict_relay_call_log_for_test(),
         vec![
             DictRelayCall::Status,
-            DictRelayCall::Upload { bytes: coalesced },
+            DictRelayCall::Upload {
+                bytes: chunks[0].to_vec()
+            },
+            DictRelayCall::Upload {
+                bytes: chunks[1].to_vec()
+            },
             DictRelayCall::Finalize,
         ]
     );
 }
 
-/// (1b) Small containers coalesce into exactly ceil(total / cap) relay calls, and the
-/// concatenated upload bytes are byte-identical to the catalog's full compressed stream.
+/// (1b) The relay streams ONE call per catalog frame and the transferred bytes are
+/// byte-identical to the catalog frames (frame i bytes == relay call i bytes, plan 0342).
 #[test]
-fn dict_relay_coalesced_uploads_preserve_stream_bytes() {
+fn dict_relay_streams_one_call_per_catalog_frame() {
     reset_all_maps();
     reset_dict_relay_script_for_test();
-    // 7 rows of 307,200 bytes = 2,150,400 total -> 2 relay calls (1,945,600 + 204,800).
-    let row = [0xC3u8; 300 * 1024]; // 307,200 bytes per stored row
+    // 7 frames of 307,200 bytes (all <= the relay cap; each frame is an independent row).
+    let row = [0xC3u8; 300 * 1024]; // 307,200 bytes per stored frame
     let chunks: Vec<Vec<u8>> = (0..7)
         .map(|i| {
             let mut r = row;
-            r[0] = i as u8; // distinguish rows inside the stream
+            r[0] = i as u8; // distinguish frames inside the stream
             r.to_vec()
         })
         .collect();
@@ -2415,21 +2420,16 @@ fn dict_relay_coalesced_uploads_preserve_stream_bytes() {
     seed_active_release();
 
     script_dict_relay_call(scripted_status(DictState::Absent, None));
-    script_dict_relay_call(Some(
-        Encode!(&Ok::<u64, String>(MAX_DICT_COMPRESSED_CHUNK_BYTES as u64)).unwrap(),
-    ));
-    script_dict_relay_call(Some(
-        Encode!(&Ok::<u64, String>(
-            (7 * 300 * 1024 - MAX_DICT_COMPRESSED_CHUNK_BYTES) as u64
-        ))
-        .unwrap(),
-    ));
+    for chunk in &chunks {
+        script_dict_relay_call(Some(
+            Encode!(&Ok::<u64, String>(chunk.len() as u64)).unwrap(),
+        ));
+    }
     script_dict_relay_call(Some(
         Encode!(&Ok::<DictStatus, String>(DictStatus {
             state: DictState::Finalized,
             digest: Some(raw_digest),
             len: raw_len,
-            compressed: None,
         }))
         .unwrap(),
     ));
@@ -2466,30 +2466,25 @@ fn dict_relay_coalesced_uploads_preserve_stream_bytes() {
             _ => None,
         })
         .collect();
-    // ceil(2,100,000 / 1,945,600) = 2 relay calls; every call is at or under the cap and the
-    // final one carries exactly what remains.
-    assert_eq!(uploads.len(), 2);
-    assert_eq!(uploads[0].len(), MAX_DICT_COMPRESSED_CHUNK_BYTES);
-    assert_eq!(
-        uploads[1].len(),
-        7 * 300 * 1024 - MAX_DICT_COMPRESSED_CHUNK_BYTES
-    );
-    let transferred: Vec<u8> = uploads.iter().flat_map(|b| b.iter().copied()).collect();
-    let catalog_stream: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
-    assert_eq!(transferred, catalog_stream);
+    // Call count == frame count, and call i carries frame i byte-exactly.
+    assert_eq!(uploads.len(), chunks.len());
+    for (k, frame) in chunks.iter().enumerate() {
+        assert_eq!(
+            uploads[k], frame,
+            "relay call {k} must be frame {k} byte-exact"
+        );
+    }
     assert_eq!(log.first(), Some(&DictRelayCall::Status));
     assert_eq!(log.last(), Some(&DictRelayCall::Finalize));
 }
 
-/// (1c) Boundary: rows that exactly fill the cap flush at the cap boundary without an
-/// empty trailing call.
+/// (1c) Boundary: a frame of exactly the relay cap (the new catalog row cap) streams as
+/// one relay call, byte-exact.
 #[test]
-fn dict_relay_exact_cap_boundary_flushes_without_trailing_empty_call() {
+fn dict_relay_max_cap_frame_passes_through_as_one_call() {
     reset_all_maps();
     reset_dict_relay_script_for_test();
-    // Two rows whose concatenation is exactly the relay cap: 1 MiB + 945,600 bytes.
-    const SECOND_LEN: usize = MAX_DICT_COMPRESSED_CHUNK_BYTES - 1024 * 1024;
-    let chunks: [&[u8]; 2] = [&[0xD4u8; 1024 * 1024], &[0xD5u8; SECOND_LEN]];
+    let chunks: [&[u8]; 1] = [&[0xD4u8; MAX_DICT_COMPRESSED_CHUNK_BYTES]];
     let (raw_digest, raw_len) = seed_finalized_catalog(&chunks);
     seed_active_release();
 
@@ -2502,7 +2497,6 @@ fn dict_relay_exact_cap_boundary_flushes_without_trailing_empty_call() {
             state: DictState::Finalized,
             digest: Some(raw_digest),
             len: raw_len,
-            compressed: None,
         }))
         .unwrap(),
     ));
@@ -2540,14 +2534,10 @@ fn dict_relay_exact_cap_boundary_flushes_without_trailing_empty_call() {
         })
         .collect();
     assert_eq!(uploads.len(), 1);
-    assert_eq!(uploads[0].len(), MAX_DICT_COMPRESSED_CHUNK_BYTES);
-    let transferred: Vec<u8> = uploads.iter().flat_map(|b| b.iter().copied()).collect();
     assert_eq!(
-        transferred,
-        [chunks[0], chunks[1]].concat(),
-        "transferred stream must be byte-identical to the concatenated catalog rows"
+        uploads[0], chunks[0],
+        "the max-cap frame must transfer byte-exact"
     );
-    // No trailing empty upload between the last upload and finalize.
     assert_eq!(log.len(), 3);
     assert_eq!(log.last(), Some(&DictRelayCall::Finalize));
 }
@@ -2696,6 +2686,7 @@ fn dict_relay_requires_finalized_catalog_entry() {
         DictCatalogUploadChunkArgs {
             key: relay_catalog_key(),
             chunk_index: 0,
+            frame_digest: xxhash_rust::xxh3::xxh3_128(&[0xA0u8; 300]),
             bytes: vec![0xA0; 300],
         },
         300,

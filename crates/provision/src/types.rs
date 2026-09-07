@@ -637,10 +637,8 @@ pub struct ReleaseActivateArgs {
 /// Max length of each identifier component (`kind`, `version`) of a `DictCatalogKey`
 /// (mirrors MAX_ARTIFACT_SEMANTIC_VERSION_LEN).
 pub const MAX_DICT_CATALOG_ID_LEN: usize = 128;
-/// Per-chunk append cap for `admin_upload_dict_catalog_chunk` (ADR 0087 1 MiB precedent).
-pub const MAX_DICT_CATALOG_CHUNK_LEN: usize = 1024 * 1024;
 /// Hard cap on one catalog entry's accumulated compressed bytes. The measured operating
-/// point is 10,900,552 B (ipadic 2.7.0, zstd-19); this bound is fail-closed headroom.
+/// point is 10,892,359 B (ipadic 2.7.0, zstd-19); this bound is fail-closed headroom.
 pub const MAX_DICT_CATALOG_COMPRESSED_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Bounded per-principal audit log entries for dictionary catalog operations (R5 strict,
@@ -665,19 +663,23 @@ pub enum DictCatalogState {
     Finalized,
 }
 
-/// Catalog entry metadata. The compressed bytes themselves live as `DictChunk` rows in the
+/// Catalog entry metadata. Each frame (compressed bytes) lives as a `DictChunk` row in the
 /// dedicated chunk region (ADR 0087 chunk-store shape) so the relay (todo 3) can re-stream
-/// them chunk by chunk without reassembling a megabyte-scale blob.
+/// frame i as relay call i without reassembling the artifact. Frame boundaries are part of
+/// the artifact identity: each row is one independent zstd frame whose digest the relay
+/// forwards to the text canister for pre-decode verification (plan 0342).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct DictCatalogEntry {
     pub key: DictCatalogKey,
     pub state: DictCatalogState,
-    /// Number of appended chunks. During Uploading, the next append must target this index.
+    /// Number of appended frames. During Uploading, the next append must target this index.
+    /// Invariant: `per_frame_digests.len() == chunks_received as usize`.
     pub chunks_received: u32,
-    /// Accumulated compressed byte length across all appended chunks.
+    /// Accumulated compressed byte length across all appended frames (status display).
     pub compressed_len: u64,
-    /// xxh3_128 over the entire compressed byte stream; pinned at finalize.
-    pub compressed_digest: Option<u128>,
+    /// xxh3_128 of each appended frame, verified at upload time. Length matches
+    /// `chunks_received`; the relay forwards per-frame digests to the text canister.
+    pub per_frame_digests: Vec<u128>,
     /// xxh3_128 over the RAW container, computed off-band by the uploader and pinned as
     /// metadata (Provision never decompresses).
     pub raw_digest: Option<u128>,
@@ -686,7 +688,7 @@ pub struct DictCatalogEntry {
     pub finalized_at_ns: Option<u64>,
 }
 
-/// One ≤1 MiB compressed chunk of a dictionary catalog entry.
+/// One compressed zstd frame of a dictionary catalog entry (≤ the kernel relay cap).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct DictChunk {
     pub bytes: Vec<u8>,
@@ -708,8 +710,9 @@ pub struct DictCatalogStatus {
     pub state: DictCatalogState,
     pub chunks_received: u32,
     pub compressed_len: u64,
-    /// Pinned at finalize; None while Uploading.
-    pub compressed_digest: Option<u128>,
+    /// xxh3_128 of each frame, verified at upload time (empty while Uploading with no
+    /// frames yet — length always equals chunks_received).
+    pub per_frame_digests: Vec<u128>,
     pub raw_digest: Option<u128>,
     pub raw_len: Option<u64>,
 }
@@ -719,15 +722,17 @@ pub struct DictCatalogStatus {
 pub struct DictCatalogUploadChunkArgs {
     pub key: DictCatalogKey,
     pub chunk_index: u32,
+    /// xxh3_128 over `bytes` (frame i's digest, verified before the row is appended).
+    pub frame_digest: u128,
     pub bytes: Vec<u8>,
 }
 
-/// Arguments for `admin_finalize_dict_catalog`.
+/// Arguments for `admin_finalize_dict_catalog`. The former whole-stream compressed digest
+/// is gone: rows are digest-verified at upload time (plan 0342), so finalize only pins the
+/// raw metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct DictCatalogFinalizeArgs {
     pub key: DictCatalogKey,
-    /// xxh3_128 over the entire compressed byte stream (uploader-computed, verified here).
-    pub compressed_digest: u128,
     /// xxh3_128 over the RAW container (pinned as metadata, never verified here).
     pub raw_digest: u128,
     pub raw_len: u64,
@@ -755,15 +760,17 @@ pub enum DictCatalogError {
     ChunkReplayMismatch {
         chunk_index: u32,
     },
+    /// Frame digest mismatch: the appended bytes do not hash to `frame_digest`. Fail-closed
+    /// for that call only, no state change (plan 0342 per-frame verification).
+    ChunkDigestMismatch {
+        chunk_index: u32,
+    },
     CompressedTooLarge {
         len: u64,
         max: u64,
     },
-    /// Finalize digest mismatch: fail-closed, no state change.
-    CompressedDigestMismatch {
-        expected: u128,
-        actual: u128,
-    },
+    /// Finalize invariant violation (frame-digest/count mismatch): fail-closed, no change.
+    FrameDigestIncomplete,
     /// Chunk append against an entry that already reached Finalized.
     AlreadyFinalized(DictCatalogKey),
     /// Replay of finalize (or metadata pin) with different values: fail-closed.

@@ -1879,8 +1879,8 @@ use crate::stable::dict_catalog::ProvisionDictCatalogStore;
 use crate::types::{
     DictCatalogAuditAction, DictCatalogAuditEntry, DictCatalogError, DictCatalogFinalizeArgs,
     DictCatalogKey, DictCatalogState, DictCatalogUploadChunkArgs, DictChunk, DictChunkKey,
-    MAX_DICT_CATALOG_CHUNK_LEN,
 };
+use gleaph_graph_kernel::provisioning::dictionary::MAX_DICT_COMPRESSED_CHUNK_BYTES;
 
 fn dict_key(kind: &str, version: &str) -> DictCatalogKey {
     DictCatalogKey {
@@ -1889,7 +1889,7 @@ fn dict_key(kind: &str, version: &str) -> DictCatalogKey {
     }
 }
 
-/// Three synthetic "compressed" chunks; provision is content-agnostic.
+/// Three synthetic compressed frames; provision is content-agnostic.
 fn dict_chunks() -> Vec<Vec<u8>> {
     vec![vec![0xA0; 300], vec![0xB1; 250], vec![0xC2; 100]]
 }
@@ -1900,11 +1900,29 @@ fn dict_upload_chunk(
     chunk_index: u32,
     bytes: Vec<u8>,
 ) -> Result<crate::types::DictCatalogStatus, DictCatalogError> {
+    dict_upload_chunk_digest(
+        caller,
+        key,
+        chunk_index,
+        xxhash_rust::xxh3::xxh3_128(&bytes),
+        bytes,
+    )
+}
+
+/// Upload with an explicit (possibly wrong) frame digest.
+fn dict_upload_chunk_digest(
+    caller: Principal,
+    key: &DictCatalogKey,
+    chunk_index: u32,
+    frame_digest: u128,
+    bytes: Vec<u8>,
+) -> Result<crate::types::DictCatalogStatus, DictCatalogError> {
     admin_upload_dict_catalog_chunk_with_caller(
         caller,
         DictCatalogUploadChunkArgs {
             key: key.clone(),
             chunk_index,
+            frame_digest,
             bytes,
         },
         10 + chunk_index as u64,
@@ -1914,7 +1932,6 @@ fn dict_upload_chunk(
 fn dict_finalize(
     caller: Principal,
     key: &DictCatalogKey,
-    compressed_digest: u128,
     raw_digest: u128,
     raw_len: u64,
 ) -> Result<crate::types::DictCatalogStatus, DictCatalogError> {
@@ -1922,7 +1939,6 @@ fn dict_finalize(
         caller,
         DictCatalogFinalizeArgs {
             key: key.clone(),
-            compressed_digest,
             raw_digest,
             raw_len,
         },
@@ -1930,34 +1946,32 @@ fn dict_finalize(
     )
 }
 
-/// Happy path: chunk upload -> finalize -> status Finalized with pinned digests.
+/// Happy path: frame upload (each digest-verified on arrival) -> finalize -> status
+/// Finalized with pinned raw metadata and the accumulated per-frame digests.
 #[test]
 fn dict_catalog_upload_chunks_then_finalize_reaches_finalized() {
     super::reset_all_maps();
     release_seed_bootstrap();
     let key = dict_key("ipadic", "2.7.0");
     let chunks = dict_chunks();
-    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
-    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&all);
 
     for (i, chunk) in chunks.iter().enumerate() {
         let status = dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone())
             .unwrap_or_else(|e| panic!("chunk {i} upload failed: {e:?}"));
         assert_eq!(status.state, DictCatalogState::Uploading);
         assert_eq!(status.chunks_received, i as u32 + 1);
-        assert_eq!(status.compressed_digest, None);
+        assert_eq!(status.per_frame_digests.len(), i + 1);
+        assert_eq!(
+            status.per_frame_digests[i],
+            xxhash_rust::xxh3::xxh3_128(chunk)
+        );
+        assert_eq!(status.raw_digest, None);
+        assert_eq!(status.raw_len, None);
     }
 
-    let status = dict_finalize(
-        release_test_principal(),
-        &key,
-        compressed_digest,
-        0xDEADBEEF,
-        52_930_923,
-    )
-    .unwrap();
+    let status = dict_finalize(release_test_principal(), &key, 0xDEADBEEF, 52_930_923).unwrap();
     assert_eq!(status.state, DictCatalogState::Finalized);
-    assert_eq!(status.compressed_digest, Some(compressed_digest));
+    assert_eq!(status.per_frame_digests.len(), chunks.len());
     assert_eq!(status.raw_digest, Some(0xDEADBEEF));
     assert_eq!(status.raw_len, Some(52_930_923));
 
@@ -1965,23 +1979,20 @@ fn dict_catalog_upload_chunks_then_finalize_reaches_finalized() {
     assert_eq!(queried, status);
 }
 
-/// Full replay (identical chunk bytes and digests) after finalize is idempotent.
+/// Full replay (identical frame bytes and digests) after finalize is idempotent.
 #[test]
 fn dict_catalog_full_replay_is_idempotent() {
     super::reset_all_maps();
     release_seed_bootstrap();
     let key = dict_key("ipadic", "2.7.0");
     let chunks = dict_chunks();
-    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
-    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&all);
 
     for (i, chunk) in chunks.iter().enumerate() {
         dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone()).unwrap();
     }
-    let finalized =
-        dict_finalize(release_test_principal(), &key, compressed_digest, 42, 1000).unwrap();
+    let finalized = dict_finalize(release_test_principal(), &key, 42, 1000).unwrap();
 
-    // Replay every chunk byte-identically.
+    // Replay every frame byte-identically.
     for (i, chunk) in chunks.iter().enumerate() {
         let status = dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone())
             .expect("chunk replay must be idempotent");
@@ -1989,8 +2000,7 @@ fn dict_catalog_full_replay_is_idempotent() {
         assert_eq!(status.chunks_received, chunks.len() as u32);
     }
     // Replay finalize with identical metadata.
-    let replayed =
-        dict_finalize(release_test_principal(), &key, compressed_digest, 42, 1000).unwrap();
+    let replayed = dict_finalize(release_test_principal(), &key, 42, 1000).unwrap();
     assert_eq!(replayed, finalized);
 
     // Stored state is unchanged.
@@ -1998,35 +2008,30 @@ fn dict_catalog_full_replay_is_idempotent() {
     assert_eq!(stored, finalized);
 }
 
-/// Finalize with a wrong compressed_digest is fail-closed: error, entry stays Uploading.
+/// A frame whose bytes do not hash to the declared digest is rejected before any state
+/// change: the entry stays untouched and the next frame appends normally.
 #[test]
-fn dict_catalog_compressed_digest_mismatch_is_fail_closed() {
+fn dict_catalog_frame_digest_mismatch_is_fail_closed() {
     super::reset_all_maps();
     release_seed_bootstrap();
     let key = dict_key("ipadic", "2.7.0");
-    let chunks = dict_chunks();
-    for (i, chunk) in chunks.iter().enumerate() {
-        dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone()).unwrap();
-    }
-    let before = admin_get_dict_catalog_status(key.clone()).unwrap();
+    let caller = release_test_principal();
 
-    let err = dict_finalize(release_test_principal(), &key, 0x1234, 42, 1000).unwrap_err();
+    let err = dict_upload_chunk_digest(caller, &key, 0, 0x1234, vec![0xA0u8; 300]).unwrap_err();
     assert_eq!(
         err,
-        DictCatalogError::CompressedDigestMismatch {
-            expected: 0x1234,
-            actual: xxhash_rust::xxh3::xxh3_128(
-                &chunks
-                    .iter()
-                    .flat_map(|c| c.iter().copied())
-                    .collect::<Vec<u8>>()
-            ),
-        }
+        DictCatalogError::ChunkDigestMismatch { chunk_index: 0 }
     );
+    assert!(admin_get_dict_catalog_status(key.clone()).is_none());
 
-    let after = admin_get_dict_catalog_status(key).unwrap();
-    assert_eq!(before, after);
-    assert_eq!(after.state, DictCatalogState::Uploading);
+    // The failed call left no state: the correct frame 0 appends normally afterwards.
+    dict_upload_chunk(caller, &key, 0, vec![0xA0u8; 300]).unwrap();
+    let status = admin_get_dict_catalog_status(key).unwrap();
+    assert_eq!(status.chunks_received, 1);
+    assert_eq!(
+        status.per_frame_digests,
+        vec![xxhash_rust::xxh3::xxh3_128(&[0xA0u8; 300])]
+    );
 }
 
 /// Chunk caps and ordering are enforced; append after finalize is rejected.
@@ -2042,13 +2047,13 @@ fn dict_catalog_chunk_caps_and_ordering_enforced() {
         dict_upload_chunk(caller, &key, 0, Vec::new()),
         Err(DictCatalogError::EmptyChunk)
     );
-    // Oversized chunk (> 1 MiB cap).
-    let oversized = vec![0u8; MAX_DICT_CATALOG_CHUNK_LEN + 1];
+    // Oversized frame (> the kernel relay cap — frame i = row i = relay call i).
+    let oversized = vec![0u8; MAX_DICT_COMPRESSED_CHUNK_BYTES + 1];
     assert_eq!(
         dict_upload_chunk(caller, &key, 0, oversized),
         Err(DictCatalogError::ChunkTooLarge {
-            len: (MAX_DICT_CATALOG_CHUNK_LEN + 1) as u64,
-            max: MAX_DICT_CATALOG_CHUNK_LEN as u32,
+            len: (MAX_DICT_COMPRESSED_CHUNK_BYTES + 1) as u64,
+            max: MAX_DICT_COMPRESSED_CHUNK_BYTES as u32,
         })
     );
     // Out-of-order first chunk.
@@ -2059,7 +2064,7 @@ fn dict_catalog_chunk_caps_and_ordering_enforced() {
             received: 1,
         })
     );
-    // Skip-ahead after one appended chunk.
+    // Skip-ahead after one appended frame.
     dict_upload_chunk(caller, &key, 0, vec![7u8; 10]).unwrap();
     assert_eq!(
         dict_upload_chunk(caller, &key, 2, vec![1, 2, 3]),
@@ -2070,9 +2075,8 @@ fn dict_catalog_chunk_caps_and_ordering_enforced() {
     );
 
     // Finalize, then a fresh append at the next index is rejected as AlreadyFinalized.
-    let all = [vec![7u8; 10], vec![8u8; 5]].concat();
     dict_upload_chunk(caller, &key, 1, vec![8u8; 5]).unwrap();
-    dict_finalize(caller, &key, xxhash_rust::xxh3::xxh3_128(&all), 1, 2).unwrap();
+    dict_finalize(caller, &key, 1, 2).unwrap();
     assert_eq!(
         dict_upload_chunk(caller, &key, 2, vec![9u8; 5]),
         Err(DictCatalogError::AlreadyFinalized(key.clone()))
@@ -2097,7 +2101,7 @@ fn dict_catalog_rejects_non_governance_caller() {
         Err(DictCatalogError::Unauthorized)
     );
     assert_eq!(
-        dict_finalize(impostor, &key, 1, 1, 1),
+        dict_finalize(impostor, &key, 1, 1),
         Err(DictCatalogError::Unauthorized)
     );
     assert!(admin_get_dict_catalog_status(key).is_none());
@@ -2137,7 +2141,7 @@ fn dict_catalog_kind_version_entries_coexist() {
     );
 
     // Finalizing one entry does not affect the others.
-    dict_finalize(caller, &k1, xxhash_rust::xxh3::xxh3_128(&[1u8; 10]), 1, 1).unwrap();
+    dict_finalize(caller, &k1, 1, 1).unwrap();
     assert_eq!(
         admin_get_dict_catalog_status(k2).unwrap().state,
         DictCatalogState::Uploading
@@ -2155,12 +2159,10 @@ fn dict_catalog_reopen_preserves_finalized_entry() {
     release_seed_bootstrap();
     let key = dict_key("ipadic", "2.7.0");
     let chunks = dict_chunks();
-    let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
-    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&all);
     for (i, chunk) in chunks.iter().enumerate() {
         dict_upload_chunk(release_test_principal(), &key, i as u32, chunk.clone()).unwrap();
     }
-    let finalized = dict_finalize(release_test_principal(), &key, compressed_digest, 7, 7).unwrap();
+    let finalized = dict_finalize(release_test_principal(), &key, 7, 7).unwrap();
 
     crate::stable::dict_catalog::reopen_dict_catalog_regions_for_test();
 
@@ -2192,10 +2194,10 @@ fn dict_catalog_round_trip_stable_encoding() {
         key: key.clone(),
         state: DictCatalogState::Finalized,
         chunks_received: 11,
-        compressed_len: 10_900_552,
-        compressed_digest: Some(0x1122334455667788_99AABBCCDDEEFF00),
-        raw_digest: Some(1),
-        raw_len: Some(52_930_923),
+        compressed_len: 10_892_359,
+        per_frame_digests: vec![0x11, 0x22],
+        raw_digest: Some(0x1122334455667788_99AABBCCDDEEFF00),
+        raw_len: Some(52_931_159),
         started_at_ns: 5,
         finalized_at_ns: Some(9),
     };
@@ -2248,7 +2250,8 @@ fn dict_catalog_audit_records_outcomes() {
 
     dict_upload_chunk(caller, &key, 0, vec![1u8; 10]).unwrap();
     dict_upload_chunk(test_principal(99), &key, 0, vec![1u8; 10]).unwrap_err(); // rejected
-    dict_finalize(caller, &key, 0xBAD, 1, 1).unwrap_err(); // rejected
+    // Frame digest mismatch at the next append: rejected, no state change.
+    dict_upload_chunk_digest(caller, &key, 1, 0xBAD, vec![2u8; 5]).unwrap_err();
 
     let history = ProvisionDictCatalogStore::new().audit_history(caller);
     assert_eq!(history.len(), 2);
@@ -2259,7 +2262,7 @@ fn dict_catalog_audit_records_outcomes() {
     assert!(matches!(history[0].outcome, ArtifactAuditOutcome::Success));
     assert!(matches!(
         history[1].action,
-        DictCatalogAuditAction::Finalize
+        DictCatalogAuditAction::UploadChunk
     ));
     assert!(matches!(history[1].outcome, ArtifactAuditOutcome::Rejected));
 
@@ -2271,9 +2274,11 @@ fn dict_catalog_audit_records_outcomes() {
     ));
 }
 
-/// A missing chunk row makes finalize fail closed with no state change.
+/// The relay fail-closes on a corrupted entry whose stored row is missing: finalize pins
+/// from the accumulated metadata (rows are verified at upload), so the defect surfaces at
+/// relay time as a provisioning failure, never as a silently partial dictionary.
 #[test]
-fn dict_catalog_missing_chunk_fails_closed() {
+fn dict_relay_fails_closed_on_missing_catalog_row() {
     super::reset_all_maps();
     release_seed_bootstrap();
     let key = dict_key("ipadic", "2.7.0");
@@ -2283,16 +2288,20 @@ fn dict_catalog_missing_chunk_fails_closed() {
         catalog_key: key.clone(),
         chunk_index: 1,
     });
-    let before = admin_get_dict_catalog_status(key.clone()).unwrap();
+    // Finalize succeeds: rows are verified at upload; the missing row is a store defect.
+    let finalized = dict_finalize(release_test_principal(), &key, 1, 1).unwrap();
+    assert_eq!(finalized.state, DictCatalogState::Finalized);
 
-    let full = [vec![1u8; 10], vec![2u8; 5]].concat();
-    let digest = xxhash_rust::xxh3::xxh3_128(&full);
-    assert_eq!(
-        dict_finalize(release_test_principal(), &key, digest, 1, 1),
-        Err(DictCatalogError::CompressedDigestMismatch {
-            expected: digest,
-            actual: 0,
-        })
+    let store = ProvisionDictCatalogStore::new();
+    let entry = store.get_entry(&key).unwrap();
+    assert_eq!(entry.chunks_received, 2);
+    // The relay's per-frame fetch loop hits the missing row 1 (row 0 streams fine).
+    assert!(
+        store
+            .get_chunk(&DictChunkKey {
+                catalog_key: key,
+                chunk_index: 1,
+            })
+            .is_none()
     );
-    assert_eq!(admin_get_dict_catalog_status(key).unwrap(), before);
 }

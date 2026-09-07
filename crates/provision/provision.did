@@ -245,19 +245,20 @@ type DictCatalogStatus = record {
   state : DictCatalogState;
   chunks_received : nat32;
   compressed_len : nat64;
-  compressed_digest : opt nat;
+  per_frame_digests : vec nat;
 };
-// Arguments for `admin_upload_dict_catalog_chunk`.
+// Arguments for `admin_upload_dict_catalog_chunk`. frame_digest is verified against the
+// appended bytes before the row is stored (plan 0342 per-frame verification).
 type DictCatalogUploadChunkArgs = record {
   chunk_index : nat32;
   key : DictCatalogKey;
+  frame_digest : nat;
   bytes : blob;
 };
-// Arguments for `admin_finalize_dict_catalog`. compressed_digest is verified against the
-// accumulated stream; raw_digest/raw_len are pinned as uploader metadata (Provision never
-// decompresses).
+// Arguments for `admin_finalize_dict_catalog`. Frames are digest-verified at upload time
+// (per-frame digests replaced the whole-stream digest); raw_digest/raw_len are pinned as
+// uploader metadata (Provision never decompresses).
 type DictCatalogFinalizeArgs = record {
-  compressed_digest : nat;
   raw_digest : nat;
   raw_len : nat64;
   key : DictCatalogKey;
@@ -266,11 +267,12 @@ type DictCatalogFinalizeArgs = record {
 type DictCatalogError = variant {
   AlreadyFinalized : DictCatalogKey;
   ChunkOutOfOrder : record { expected_chunk_index : nat32; received : nat32 };
-  CompressedDigestMismatch : record { actual : nat; expected : nat };
+  ChunkDigestMismatch : record { chunk_index : nat32 };
   CompressedTooLarge : record { len : nat64; max : nat64 };
   ChunkReplayMismatch : record { chunk_index : nat32 };
   ChunkTooLarge : record { len : nat64; max : nat32 };
   EmptyChunk;
+  FrameDigestIncomplete;
   IdentifierTooLong : record { max : nat32 };
   InvalidRawLen;
   NotFound : DictCatalogKey;

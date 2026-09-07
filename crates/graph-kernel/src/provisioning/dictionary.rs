@@ -28,36 +28,28 @@ pub const fn dict_required(analyzer_id: u32) -> bool {
     matches!(analyzer_id, 0 | 2)
 }
 
-/// Compressed-mode metadata for one `admin_upload_dict_chunk` call. `None` on the wire
-/// selects the existing raw mode (byte-identical behavior); `Some` selects compressed mode.
+/// Per-frame metadata for one `admin_upload_dict_chunk` call in framed streaming mode
+/// (plan 0342). `None` on the wire selects the existing raw mode (byte-identical behavior);
+/// `Some` selects framed mode. The catalog artifact is N independent zstd frames; frame i
+/// travels as relay call i and is decoded immediately on arrival (no compressed staging).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct CompressedDictUpload {
-    /// Declared total compressed length of the whole container (bounds the compressed
-    /// staging region on the receiver).
-    pub compressed_len: u64,
+    /// xxh3_128 over THIS call's frame bytes, verified before the receiver decodes.
+    pub frame_digest: u128,
+    /// Declared total RAW container length (bomb gate: the receiver enforces cumulative
+    /// raw offset + frame content size ≤ raw_len on every call).
+    pub raw_len: u64,
 }
 
-/// Compressed-mode metadata for one `admin_finalize_dict_upload` call.
+/// Framed-mode metadata for one `admin_finalize_dict_upload` call. The per-frame digests
+/// replaced the former whole-stream compressed digest: the accumulated RAW digest over
+/// region 16 is the final authority, re-verified here against the pinned catalog metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct CompressedDictFinalize {
-    /// xxh3_128 over the entire compressed byte stream (verified before decompression).
-    pub compressed_digest: u128,
     /// xxh3_128 over the RAW container (pinned as content identity in the text canister).
     pub raw_digest: u128,
     /// Expected decompressed (raw) container length.
     pub raw_len: u64,
-}
-
-/// Compressed-mode progress detail nested inside [`DictStatus`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct CompressedDictStatus {
-    /// xxh3_128 over the compressed bytes received so far; `None`-equivalent before finalize
-    /// is represented by the parent `DictStatus.compressed` being `None`.
-    pub digest: u128,
-    /// Compressed bytes received so far.
-    pub received_len: u64,
-    /// Declared total compressed length.
-    pub total_len: u64,
 }
 
 /// Lifecycle of the dictionary blob on the text canister.
@@ -71,18 +63,16 @@ pub enum DictState {
     Finalized,
 }
 
-/// Read-only dictionary status (`admin_get_dict_status`). The `compressed` field is
-/// `None` in raw mode and `Some` in compressed mode; the raw fields (`state`, `digest`,
-/// `len`) describe the raw container in both modes.
+/// Read-only dictionary status (`admin_get_dict_status`). While Uploading, `len` is the
+/// accumulated RAW offset (framed streaming progress: each decoded frame extends it) and
+/// `digest` is `None`; finalize pins both the raw digest and the final length.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct DictStatus {
     pub state: DictState,
     /// xxh3_128 over the raw container bytes; `None` before finalize.
     pub digest: Option<u128>,
-    /// Raw container byte length.
+    /// Raw container byte length (accumulated raw offset while Uploading).
     pub len: u64,
-    /// Compressed-mode progress; `None` in raw mode.
-    pub compressed: Option<CompressedDictStatus>,
 }
 
 #[cfg(test)]
@@ -100,58 +90,39 @@ mod tests {
     }
 
     #[test]
-    fn compressed_types_candid_roundtrip() {
+    fn framed_types_candid_roundtrip() {
         let upload = CompressedDictUpload {
-            compressed_len: 10_900_552,
+            frame_digest: u128::MAX,
+            raw_len: 52_930_923,
         };
         let bytes = encode_args((upload.clone(),)).unwrap();
         let decoded: (CompressedDictUpload,) = decode_args(&bytes).unwrap();
         assert_eq!(decoded.0, upload);
 
         let finalize = CompressedDictFinalize {
-            compressed_digest: u128::MAX,
             raw_digest: 0xDEADBEEF,
             raw_len: 52_930_923,
         };
         let bytes = encode_args((finalize.clone(),)).unwrap();
         let decoded: (CompressedDictFinalize,) = decode_args(&bytes).unwrap();
         assert_eq!(decoded.0, finalize);
-
-        let status = CompressedDictStatus {
-            digest: 7,
-            received_len: 1_945_600,
-            total_len: 10_900_552,
-        };
-        let bytes = encode_args((status.clone(),)).unwrap();
-        let decoded: (CompressedDictStatus,) = decode_args(&bytes).unwrap();
-        assert_eq!(decoded.0, status);
     }
 
     #[test]
-    fn dict_status_candid_roundtrip_both_modes() {
-        for compressed in [
-            None,
-            Some(CompressedDictStatus {
-                digest: 9,
-                received_len: 1_945_600,
-                total_len: 10_900_552,
-            }),
+    fn dict_status_candid_roundtrip_all_states() {
+        for (state, digest) in [
+            (DictState::Absent, None),
+            (DictState::Uploading, None),
+            (DictState::Finalized, Some(u128::MAX)),
         ] {
-            for state in [
-                DictState::Absent,
-                DictState::Uploading,
-                DictState::Finalized,
-            ] {
-                let status = DictStatus {
-                    state,
-                    digest: Some(u128::MAX),
-                    len: 52_930_923,
-                    compressed: compressed.clone(),
-                };
-                let bytes = encode_args((status.clone(),)).unwrap();
-                let decoded: (DictStatus,) = decode_args(&bytes).unwrap();
-                assert_eq!(decoded.0, status);
-            }
+            let status = DictStatus {
+                state,
+                digest,
+                len: 52_930_923,
+            };
+            let bytes = encode_args((status.clone(),)).unwrap();
+            let decoded: (DictStatus,) = decode_args(&bytes).unwrap();
+            assert_eq!(decoded.0, status);
         }
     }
 
@@ -173,7 +144,8 @@ mod tests {
         let args = (
             vec![0u8; MAX_DICT_COMPRESSED_CHUNK_BYTES],
             Some(CompressedDictUpload {
-                compressed_len: 10_900_552,
+                frame_digest: u128::MAX,
+                raw_len: 52_930_923,
             }),
         );
         let bytes = encode_args(args).unwrap();
@@ -181,39 +153,6 @@ mod tests {
             bytes.len() <= 2 * 1024 * 1024,
             "max compressed chunk + metadata encoded to {} bytes, exceeding 2 MiB",
             bytes.len()
-        );
-    }
-
-    #[test]
-    fn old_client_decodes_new_dict_status_skipping_unknown_field() {
-        // A pre-0335 client that only knows `{ state, digest, len }` must still decode a
-        // new `DictStatus` carrying the extra `compressed` field (Candid skips unknown ids).
-        #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
-        struct OldDictStatus {
-            state: DictState,
-            digest: Option<u128>,
-            len: u64,
-        }
-
-        let new = DictStatus {
-            state: DictState::Finalized,
-            digest: Some(0xABCD),
-            len: 52_930_923,
-            compressed: Some(CompressedDictStatus {
-                digest: 1,
-                received_len: 10_900_552,
-                total_len: 10_900_552,
-            }),
-        };
-        let bytes = encode_args((new,)).unwrap();
-        let decoded: (OldDictStatus,) = decode_args(&bytes).unwrap();
-        assert_eq!(
-            decoded.0,
-            OldDictStatus {
-                state: DictState::Finalized,
-                digest: Some(0xABCD),
-                len: 52_930_923,
-            }
         );
     }
 }
