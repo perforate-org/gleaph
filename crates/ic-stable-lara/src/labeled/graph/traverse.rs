@@ -1702,51 +1702,196 @@ where
         // slab bench).
         if bucket.is_tree_mode() {
             // Tree-mode visits yield tombstone-inclusive slot positions
-            // (ADR 0088 §2). The window's offset/limit apply in this same
-            // space: skip the first `offset` slots (tombstone-inclusive),
-            // then visit up to `limit` slots. The yielded
-            // `BucketEntryPosition` is the absolute tombstone-inclusive
-            // slot, matching the tree primitive's yield.
+            // (ADR 0088 §2, Plan 0327 contract). The window's offset/limit
+            // apply in this same space: ascending position == slot id,
+            // descending position == `extent - 1 - slot`.
+            //
+            // S1 (ADR 0094 §4): only the blocks overlapping the window's
+            // position range are resolved and walked. The start/end block
+            // indices follow the ADR 0088 §2 depth-generic addressing
+            // (`block_index = position / B` through `resolve_leaf_block_id`).
+            //
+            // S2 (ADR 0094 §4): a block whose FULL slot range lies strictly
+            // inside the window range is header-first: when its
+            // `tombstone_count == block used slots` the block is fully dead
+            // and its payload is skipped entirely; otherwise the payload is
+            // scanned and the scanned marker count must equal the header
+            // count (fail closed on mismatch). Boundary blocks always scan
+            // their payload; the position accounting is unchanged because
+            // skipped positions are entirely inside the window.
             //
             // Capture `ControlFlow::Break` via a mutable cell to preserve
             // the `visit_edges_window` API contract.
-            let stored_slots = bucket.stored_slots;
-            let offset = window.offset.min(stored_slots);
+            let extent = bucket.stored_slots;
+            let offset = window.offset.min(extent);
             let limit = window
                 .limit
-                .map(|l| l.min(stored_slots - offset))
-                .unwrap_or(stored_slots - offset);
+                .map(|l| l.min(extent - offset))
+                .unwrap_or(extent - offset);
             let end = offset + limit;
+            // The window maps to a SLOT range in the tombstone-inclusive
+            // position space (Plan 0327): ascending position == slot id, so
+            // the slot range is [offset, end); descending position =
+            // `extent - 1 - slot`, so positions [offset, end) map to slots
+            // [extent - end, extent - offset). S1 resolves only the blocks
+            // overlapping this slot range.
+            let (range_lo, range_hi) = match order {
+                OutEdgeOrder::Ascending => (offset, end),
+                OutEdgeOrder::Descending => (extent - end, extent - offset),
+            };
+            let block_b = crate::labeled::tree_csr::B as u32;
+            let start_block = range_lo / block_b;
+            let end_block_exclusive = u64::from(range_hi).div_ceil(u64::from(block_b)) as u32;
+            let leaf_count = u32::try_from(u64::from(extent).div_ceil(u64::from(block_b)))
+                .expect("leaf_count fits u32 for MAX_DEPTH=3");
+            let end_block = end_block_exclusive.min(leaf_count);
             let mut break_value: Option<B> = None;
-            let mut current: u32 = 0;
-            super::tree_read::visit_tree_mode_label_bucket_edges(
-                self,
-                label.raw(),
-                &bucket,
-                bucket.degree(),
-                order,
-                |slot, edge| {
-                    if break_value.is_some() {
-                        return;
+            let block_slots = |block_index: u32| -> (u32, u32) {
+                let first_slot = block_index * block_b;
+                let used = (extent - first_slot).min(block_b);
+                (first_slot, first_slot + used)
+            };
+            match order {
+                OutEdgeOrder::Ascending => {
+                    for block_index in start_block..end_block {
+                        let (block_first_slot, block_end_slot) = block_slots(block_index);
+                        let block_id = super::tree_write::resolve_leaf_block_id::<E, M>(
+                            self,
+                            &bucket,
+                            block_index,
+                        )?;
+                        let scan_lo = block_first_slot.max(offset);
+                        let scan_hi = block_end_slot.min(end);
+                        // S2: a block fully inside the window position range
+                        // is header-first. Boundary (partial-overlap) blocks
+                        // always scan.
+                        let fully_inside = block_first_slot >= offset && block_end_slot <= end;
+                        if fully_inside {
+                            let header = self.ltb().read_block_header(block_id);
+                            let used = block_end_slot - block_first_slot;
+                            if u32::from(header.tombstone_count) == used {
+                                // Fully dead: skip the payload entirely.
+                                continue;
+                            }
+                            // Fully inside the window ⇒ the scan covers the
+                            // whole block ⇒ the scan self-verifies against
+                            // the header count (fail closed).
+                            super::tree_read::scan_tree_block_range(
+                                self,
+                                label.raw(),
+                                block_id,
+                                block_first_slot,
+                                block_end_slot,
+                                scan_lo,
+                                scan_hi,
+                                header.tombstone_count,
+                                &mut |slot, edge| {
+                                    if let ControlFlow::Break(value) =
+                                        visit(BucketEntryPosition::new(slot), edge)
+                                    {
+                                        break_value = Some(value);
+                                    }
+                                },
+                            )?;
+                            if break_value.is_some() {
+                                break;
+                            }
+                            continue;
+                        }
+                        // Boundary block: payload scan over the window cut;
+                        // the in-closure position cut remains exact. Partial
+                        // scans carry no header verification.
+                        super::tree_read::scan_tree_block_range(
+                            self,
+                            label.raw(),
+                            block_id,
+                            block_first_slot,
+                            block_end_slot,
+                            scan_lo,
+                            scan_hi,
+                            0,
+                            &mut |slot, edge| {
+                                if let ControlFlow::Break(value) =
+                                    visit(BucketEntryPosition::new(slot), edge)
+                                {
+                                    break_value = Some(value);
+                                }
+                            },
+                        )?;
+                        if break_value.is_some() {
+                            break;
+                        }
                     }
-                    if current < offset {
-                        current = current.saturating_add(1);
-                        return;
+                }
+                OutEdgeOrder::Descending => {
+                    // Descending position = extent - 1 - slot: the window
+                    // positions [range_lo, range_hi) map to the SLOT range
+                    // [extent - range_hi, extent - range_lo). Blocks are
+                    // derived from the SLOT range and walked downward
+                    // (ascending positions = descending slots).
+                    for block_index in (start_block..end_block).rev() {
+                        let (block_first_slot, block_end_slot) = block_slots(block_index);
+                        let block_id = super::tree_write::resolve_leaf_block_id::<E, M>(
+                            self,
+                            &bucket,
+                            block_index,
+                        )?;
+                        let fully_inside =
+                            block_first_slot >= range_lo && block_end_slot <= range_hi;
+                        let scan_slot_lo = block_first_slot.max(range_lo);
+                        let scan_slot_hi = block_end_slot.min(range_hi);
+                        if fully_inside {
+                            let header = self.ltb().read_block_header(block_id);
+                            let used = block_end_slot - block_first_slot;
+                            if u32::from(header.tombstone_count) == used {
+                                continue;
+                            }
+                            // Fully inside ⇒ full-block scan ⇒ self-verified.
+                            super::tree_read::scan_tree_block_range_desc(
+                                self,
+                                label.raw(),
+                                block_id,
+                                block_first_slot,
+                                block_end_slot,
+                                scan_slot_lo,
+                                scan_slot_hi,
+                                header.tombstone_count,
+                                &mut |slot, edge| {
+                                    if let ControlFlow::Break(value) =
+                                        visit(BucketEntryPosition::new(slot), edge)
+                                    {
+                                        break_value = Some(value);
+                                    }
+                                },
+                            )?;
+                            if break_value.is_some() {
+                                break;
+                            }
+                            continue;
+                        }
+                        super::tree_read::scan_tree_block_range_desc(
+                            self,
+                            label.raw(),
+                            block_id,
+                            block_first_slot,
+                            block_end_slot,
+                            scan_slot_lo,
+                            scan_slot_hi,
+                            0,
+                            &mut |slot, edge| {
+                                if let ControlFlow::Break(value) =
+                                    visit(BucketEntryPosition::new(slot), edge)
+                                {
+                                    break_value = Some(value);
+                                }
+                            },
+                        )?;
+                        if break_value.is_some() {
+                            break;
+                        }
                     }
-                    if current >= end {
-                        return;
-                    }
-                    current = current.saturating_add(1);
-                    // The window contract yields live edges only; the
-                    // tombstone-inclusive position was already counted above.
-                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                        return;
-                    }
-                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
-                        break_value = Some(value);
-                    }
-                },
-            )?;
+                }
+            }
             if let Some(value) = break_value {
                 return Ok(ControlFlow::Break(value));
             }

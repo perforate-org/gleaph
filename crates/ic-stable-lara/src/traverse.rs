@@ -89,8 +89,13 @@ pub enum TraversalOrder {
 
 /// Execution-time window applied to a logical edge traversal.
 ///
-/// `offset` counts matching live edges in the request's order, while `limit` bounds the number
-/// delivered to the visitor. `None` means there is no upper bound. The window is intentionally
+/// `offset` and `limit` cut the bucket's tombstone-inclusive position space
+/// in the request's order (Plan 0327 contract; ADR 0088 §2): `offset` skips
+/// the first `offset` positions — tombstoned positions included — and
+/// `limit` bounds the number of positions delivered, so the visitor receives
+/// only live edges whose tombstone-inclusive position falls inside
+/// `[offset, offset + limit)`. `None` means there is no upper bound. The
+/// window is intentionally
 /// separate from [`TraversalRequest`]: a request identifies the logical edge set and its order,
 /// whereas a window is a reusable execution/paging control and must not affect point-read or
 /// replay identity.

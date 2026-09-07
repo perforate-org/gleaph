@@ -44,7 +44,7 @@ use crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES;
 use crate::labeled::record::LabelBucket;
 use crate::labeled::tree_csr::{B as BLOCK_B, root_len as derived_root_len};
 use crate::lara::operation_error::LaraOperationError;
-use crate::traits::CsrEdge;
+use crate::traits::{CsrEdge, CsrEdgeTombstone};
 
 /// Read the 4-byte target at logical slot `slot` of a tree-mode bucket.
 ///
@@ -598,6 +598,118 @@ const fn ltb_payload_bytes_const() -> usize {
     BLOCK_B * 4
 }
 
+/// Plan 0338 (ADR 0094 §4 S1/S2 read-path helper): scan one tree leaf
+/// block's payload over the slot sub-range `[scan_lo, scan_hi)` and yield
+/// live edges at their absolute tombstone-inclusive slots in ascending
+/// slot order.
+///
+/// S2 verification: when the scan covers the block's FULL used range
+/// (`scan_lo == block_first_slot && scan_hi == block_end_slot`), the
+/// scanned tombstone/deleted marker count must equal the header
+/// `tombstone_count`; a mismatch is fail-closed block corruption
+/// (`LabeledOperationError::LtbBlock(BlockError::CountMismatch)`).
+/// Partial (boundary-window) scans carry no verification.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan_tree_block_range<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    label_raw: u16,
+    block_id: u32,
+    block_first_slot: u32,
+    block_end_slot: u32,
+    scan_lo: u32,
+    scan_hi: u32,
+    header_tombstone_count: u16,
+    mut visit: impl FnMut(u32, E),
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge + CsrEdgeTombstone,
+    M: Memory,
+{
+    debug_assert_eq!(E::BYTES, 4, "tree scan requires 4-byte edges");
+    debug_assert!(scan_lo >= block_first_slot);
+    debug_assert!(scan_hi <= block_end_slot);
+    let mut payload = [0u8; ltb_payload_bytes_const()];
+    graph
+        .ltb()
+        .read_payload(block_id, &mut payload)
+        .map_err(LabeledOperationError::LtbBlock)?;
+    let mut scanned_tombstones = 0u32;
+    for slot in scan_lo..scan_hi {
+        let byte = (slot - block_first_slot) as usize * E::BYTES;
+        let edge = E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
+        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+            scanned_tombstones += 1;
+            continue;
+        }
+        visit(slot, edge);
+    }
+    if scan_lo == block_first_slot
+        && scan_hi == block_end_slot
+        && scanned_tombstones != u32::from(header_tombstone_count)
+    {
+        return Err(LabeledOperationError::LtbBlock(
+            crate::labeled::ltb_raw_block_store::BlockError::CountMismatch {
+                block_id,
+                header_count: header_tombstone_count,
+                scanned_count: scanned_tombstones,
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// Plan 0338 descending-order twin of [`scan_tree_block_range`]: the
+/// block's slot sub-range is walked downward. The S2 verification is
+/// order-independent (the scanned marker set is identical).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan_tree_block_range_desc<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    label_raw: u16,
+    block_id: u32,
+    block_first_slot: u32,
+    block_end_slot: u32,
+    scan_lo: u32,
+    scan_hi: u32,
+    header_tombstone_count: u16,
+    mut visit: impl FnMut(u32, E),
+) -> Result<(), LabeledOperationError>
+where
+    E: CsrEdge + CsrEdgeTombstone,
+    M: Memory,
+{
+    debug_assert_eq!(E::BYTES, 4, "tree scan requires 4-byte edges");
+    debug_assert!(scan_lo >= block_first_slot);
+    debug_assert!(scan_hi <= block_end_slot);
+    let mut payload = [0u8; ltb_payload_bytes_const()];
+    graph
+        .ltb()
+        .read_payload(block_id, &mut payload)
+        .map_err(LabeledOperationError::LtbBlock)?;
+    let mut scanned_tombstones = 0u32;
+    for slot in (scan_lo..scan_hi).rev() {
+        let byte = (slot - block_first_slot) as usize * E::BYTES;
+        let edge = E::read_from(&payload[byte..byte + E::BYTES]).with_label_id(label_raw);
+        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+            scanned_tombstones += 1;
+            continue;
+        }
+        visit(slot, edge);
+    }
+    if scan_lo == block_first_slot
+        && scan_hi == block_end_slot
+        && scanned_tombstones != u32::from(header_tombstone_count)
+    {
+        return Err(LabeledOperationError::LtbBlock(
+            crate::labeled::ltb_raw_block_store::BlockError::CountMismatch {
+                block_id,
+                header_count: header_tombstone_count,
+                scanned_count: scanned_tombstones,
+            },
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,6 +1160,86 @@ mod tests {
         assert_eq!(desc, vec![(4094, 4194), (4093, 4193)]);
         // bucket_after is re-read to mirror the 0326 test's invariants.
         assert_eq!(bucket_after.degree, stored - 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn tree_window_skip_fails_closed_on_count_mismatch() {
+        // Plan 0338 S2 fail-closed: a fully-inside block whose payload
+        // tombstone markers disagree with the header count must surface as
+        // LabeledOperationError::LtbBlock(CountMismatch), never as a silent
+        // skip (ADR 0094 §3).
+        use std::ops::ControlFlow;
+
+        let graph = make_test_graph();
+        let vid = VertexId::from(0);
+        let stored: u32 = 4096;
+        promote_bucket(&graph, vid, stored);
+        let vertex = graph.vertices().get(vid);
+        let label = BucketLabelKey::directed_from_index(1);
+        let (slot_idx, bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket not found"),
+        };
+        // Remove 2 live slots in block 0 (header count becomes 2).
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, vid, slot_idx, &bucket, 2)
+            .expect("remove")
+            .expect("slot 2");
+        let vertex = graph.vertices().get(vid);
+        let (slot_idx, bucket) = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            super::super::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket not found"),
+        };
+        super::super::tree_write::tree_mode_remove_edge_at_slot(&graph, vid, slot_idx, &bucket, 3)
+            .expect("remove")
+            .expect("slot 3");
+        // Corrupt the header count to 5 (payload holds exactly 2 markers).
+        let vertex = graph.vertices().get(vid);
+        let bucket = match graph.find_bucket(vid, &vertex, label).expect("find") {
+            super::super::BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("bucket not found"),
+        };
+        let block_id = super::super::tree_write::resolve_leaf_block_id::<TestEdge, VectorMemory>(
+            &graph, &bucket, 0,
+        )
+        .expect("resolve leaf");
+        let mut header = graph.ltb().read_block_header(block_id);
+        header.tombstone_count = 5;
+        graph.ltb().write_block_header(block_id, &header);
+        // Window (0, Some(1024)) fully covers block 0 → the scan
+        // self-verification must fail closed.
+        let result = graph.visit_edges_window(
+            vid,
+            label,
+            OutEdgeOrder::Ascending,
+            crate::traverse::TraversalWindow::new(0, Some(1024)),
+            |_slot, _edge| ControlFlow::<()>::Continue(()),
+        );
+        match result {
+            Err(LabeledOperationError::LtbBlock(
+                crate::labeled::ltb_raw_block_store::BlockError::CountMismatch {
+                    block_id: err_block,
+                    header_count,
+                    scanned_count,
+                },
+            )) => {
+                assert_eq!(err_block, block_id);
+                assert_eq!(header_count, 5);
+                assert_eq!(scanned_count, 2);
+            }
+            other => panic!("expected CountMismatch, got {other:?}"),
+        }
+        // A boundary window (partial block overlap) carries no verification:
+        // the same corrupted block is walked without error when the window
+        // does not fully cover it.
+        let boundary = graph.visit_edges_window(
+            vid,
+            label,
+            OutEdgeOrder::Ascending,
+            crate::traverse::TraversalWindow::new(1000, Some(100)),
+            |_slot, _edge| ControlFlow::<()>::Continue(()),
+        );
+        assert!(boundary.is_ok(), "boundary scan must not verify");
     }
 
     // ========================================================================

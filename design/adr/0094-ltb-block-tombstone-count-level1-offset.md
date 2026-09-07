@@ -172,6 +172,65 @@ separate documentation gaps (research doc §5.4), to land with the adoption slic
 - Field, mint init, remove-funnel increment, parity tests, tree OFFSET baseline, counting-walk
   prototype, slab re-anchor: **landed** (Plan 0337, `73ba30e01`).
 - Production read path (S1 + S2), `TraversalWindow` doc correction, S1/S2 attribution
-  measurement, in-window dead-block fixture: **this ADR's implementation slice (pending)**.
-- Adoption paperwork (GAP-2026-07-25-002 closure, inventory rows): **pending**, after the
-  implementation slice's measurements.
+  measurement, in-window dead-block fixture: **landed** (Plan 0338, 2026-09-07) — see the
+  attribution appendix below.
+- Adoption paperwork (GAP-2026-07-25-002 closure): **pending** (the inventory rows landed with
+  Plan 0338's reconciliation note; see `stable-memory-inventory.md`).
+
+### Plan 0338 attribution (2026-09-07)
+
+The production read path (S1 window-restricted block resolution + S2 header-count dead-block
+skip with fail-closed scan verification) landed in `visit_edges_window`'s tree arm; the
+non-window `visit_edges` and the slab/bypass arms are byte-identical. Window parity held on
+every measured query and in the unit suite (`tree_window` filter, 7 tests, including the new
+fail-closed test proving a corrupted header count surfaces as
+`LabeledOperationError::LtbBlock(BlockError::CountMismatch { .. })` and that boundary (partial-
+overlap) windows carry no verification). All three arms run the same window and the same
+visitor work; three-arm parity (identical count+checksum) is asserted before every measured
+closure.
+
+**Fixture 1 — dead-prefix grid (1M+1 slots, depth 2, contiguous dead prefix; 87.5%
+tombstones; OFFSET = first live slot 917,504; LIMIT 32; window spans 1 block, fully live):**
+
+| Arm | Instructions | K entered | Payload-scanned |
+|---|---:|---:|---:|
+| S0 exact walk | 39,790,030 | 1,025 | 1,025 |
+| S1 window-restricted | 13,583 | 1 | 1 |
+| S1+S2 (production) | 14,399 | 1 | 1 |
+
+S1 dominates: the window-restricted arithmetic alone reclaims ≈ 99.97% of S0. S2 is a no-op
+here (no fully-dead block inside the window); the +816-instruction S1→S1+S2 delta is the
+header read + scan self-verification on the entered block (S1's bench twin omits both).
+
+**Fixture 2 — in-window dead blocks (1M+1 slots; every OTHER leaf block fully tombstoned —
+513 dead blocks including the 1-slot tail; OFFSET = first live slot 1,024; LIMIT none — the
+window spans 1,024 blocks of which 512 are fully dead, plus the partial tail):**
+
+| Arm | Instructions | K entered | Payload-scanned |
+|---|---:|---:|---:|
+| S0 exact walk | 64,287,113 | 1,025 | 1,025 |
+| S1 window-restricted | 55,860,813 | 1,024 | 1,024 |
+| S1+S2 (production) | 40,917,532 | 1,024 | 512 |
+
+Fixture-2 attribution: S1's arithmetic saves only the first (dead) block's resolution
+(64.29M → 55.86M, ≈ 13%); the residual is the payload cost of the window's 1,024 blocks. S2
+then removes 512 fully-dead payload reads (55.86M → 40.92M, ≈ 26.8% of the S1 residual ≈
+9.6% of S0). S2's measured per-skip saving ≈ 29,151 instructions/payload (55.86M − 40.92M
+over 512 skips) — the page-charge term ADR 0088 §8's no-O(blocks)-reopen rule was priced
+around.
+
+**Recorded conclusion:** S1 dominates whenever the window is small relative to the bucket
+(the realistic OFFSET paging case — fixture 1 and every 0337 point); S2 dominates the
+residual only for windows that span many fully-dead blocks (fixture 2), where it removes the
+dead blocks' page charges at ≈ 29K instructions per skipped block. Both mechanisms are
+adopted; the §5.3 honest-ladder "~5-8×" expectation was exceeded by two-plus orders of
+magnitude for small windows because the pre-0338 tree arm paid the per-block page charge
+across the full leaf set.
+
+**Inventory reconciliation (same slice):** `stable-memory-inventory.md` now records the LTB
+regions (graph MemoryId 53 `FWD_LTB` / 54 `REV_LTB`; 55 numbered regions, 0–54) and resolves
+the ADR 0088 §1 policy discrepancy: the wired `GRAPH_MEMORY_MANAGER_POLICIES` carries
+`(FWD_LTB, 16)` / `(REV_LTB, 16)`, and the policy value is the per-memory **extent allocation
+granularity** in pages (not a capacity cap) per the `ic-stable-variable-memory-manager`
+implementation; the code's 16-page granularity is authoritative and ADR 0088 §1's 64-page
+statement is the stale side.

@@ -525,3 +525,273 @@ fn offset_slab4096_d875_off960() -> canbench_rs::BenchResult {
         black_box((count, checksum));
     })
 }
+
+// ===========================================================================
+// Plan 0338 — S0/S1/S1+S2 attribution (ADR 0094 §4)
+// ===========================================================================
+//
+// S0: the pre-0338 exact walk — every leaf block resolved and payload-
+//      scanned, position cut applied in the closure (bench-scope twin of
+//      the old production arm via `visit_tree_mode_label_bucket_edges`).
+// S1: window-restricted block resolution (ADR 0088 §2 slot-range
+//      arithmetic), all overlapping payloads scanned, no skip.
+// S1+S2: production `visit_edges_window` — S1 + the header-count dead
+//      block skip with fail-closed scan verification.
+//
+// All three arms run the SAME window and the SAME visitor work; the
+// three-arm parity gate asserts identical (count, checksum) before every
+// measured closure. K per arm = blocks entered; payload-scanned blocks
+// recorded for the S2 skip accounting.
+
+use crate::labeled::graph::tree_read::visit_tree_mode_label_bucket_edges;
+
+/// S0 arm: full leaf-set walk with the pre-0338 counting cut.
+/// Returns (count, checksum, blocks_entered).
+fn s0_exact_walk(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u32, u64, u32) {
+    let bucket = fixture
+        .graph
+        .buckets()
+        .read_label_bucket_slot(fixture.bucket_slot)
+        .expect("bucket");
+    let stored = bucket.stored_slots;
+    let end = match limit {
+        Some(l) => offset.saturating_add(l).min(stored),
+        None => stored,
+    };
+    let mut count = 0u32;
+    let mut checksum = 0u64;
+    let mut current: u32 = 0;
+    visit_tree_mode_label_bucket_edges(
+        &fixture.graph,
+        fixture.label.raw(),
+        &bucket,
+        bucket.degree,
+        OutEdgeOrder::Ascending,
+        |slot, edge| {
+            if current < offset {
+                current += 1;
+                return;
+            }
+            if current >= end {
+                return;
+            }
+            current += 1;
+            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                return;
+            }
+            count += 1;
+            checksum = checksum
+                .wrapping_add(u64::from(slot).wrapping_mul(31))
+                .wrapping_add(u64::from(edge.target));
+            black_box((slot, edge.target));
+        },
+    )
+    .expect("s0 walk");
+    let blocks_entered =
+        u32::try_from(u64::from(stored).div_ceil(crate::labeled::tree_csr::B as u64))
+            .expect("leaf count");
+    (count, checksum, blocks_entered)
+}
+
+/// S1 arm: window-restricted block resolution, NO dead-block skip. Every
+/// overlapping block's payload is scanned. Returns (count, checksum,
+/// blocks_entered, blocks_payload_scanned).
+fn s1_window_walk(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u32, u64, u32, u32) {
+    use crate::labeled::tree_csr::B;
+    let bucket = fixture
+        .graph
+        .buckets()
+        .read_label_bucket_slot(fixture.bucket_slot)
+        .expect("bucket");
+    let stored = bucket.stored_slots;
+    let end = match limit {
+        Some(l) => offset.saturating_add(l).min(stored),
+        None => stored,
+    };
+    let leaf_count = u32::try_from(u64::from(stored).div_ceil(B as u64)).expect("leaf count");
+    let start_block = offset / B as u32;
+    let end_block_exclusive = u64::from(end).div_ceil(B as u64) as u32;
+    let end_block = end_block_exclusive.min(leaf_count);
+    let mut count = 0u32;
+    let mut checksum = 0u64;
+    for block_index in start_block..end_block {
+        let block_first = block_index * B as u32;
+        let block_end = (block_first + B as u32).min(stored);
+        let block_id =
+            crate::labeled::graph::tree_write::resolve_leaf_block_id::<TreeBenchEdge, _>(
+                &fixture.graph,
+                &bucket,
+                block_index,
+            )
+            .expect("resolve leaf");
+        let mut payload = [0u8; crate::labeled::ltb_raw_block_store::BLOCK_PAYLOAD_BYTES];
+        fixture
+            .graph
+            .ltb()
+            .read_payload(block_id, &mut payload)
+            .expect("read payload");
+        for slot in block_first.max(offset)..block_end.min(end) {
+            let byte = (slot - block_first) as usize * 4;
+            let edge = TreeBenchEdge::read_from(&payload[byte..byte + 4]);
+            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                continue;
+            }
+            count += 1;
+            checksum = checksum
+                .wrapping_add(u64::from(slot).wrapping_mul(31))
+                .wrapping_add(u64::from(edge.target));
+            black_box((slot, edge.target));
+        }
+    }
+    (
+        count,
+        checksum,
+        end_block - start_block,
+        end_block - start_block,
+    )
+}
+
+/// The S1+S2 arm is the production `visit_edges_window` (exact window form,
+/// limit-parameterized).
+fn visit_exact_window(fixture: &TreeFixture, offset: u32, limit: Option<u32>) -> (u32, u64) {
+    let request = LabeledTraversalRequest {
+        owner: fixture.vid,
+        label: fixture.label,
+        order: OutEdgeOrder::Ascending,
+    };
+    let mut count = 0u32;
+    let mut checksum = 0u64;
+    let result = Traversal::visit_edges_window(
+        &fixture.graph,
+        &request,
+        TraversalWindow::new(offset, limit),
+        |slot, edge| {
+            count += 1;
+            checksum = checksum
+                .wrapping_add(u64::from(slot.raw()).wrapping_mul(31))
+                .wrapping_add(u64::from(edge.target));
+            black_box((slot.raw(), edge.target));
+            std::ops::ControlFlow::<()>::Continue(())
+        },
+    )
+    .expect("tree window traversal");
+    assert!(result.is_continue());
+    (count, checksum)
+}
+
+/// The three-arm parity gate: identical (count, checksum) across S0, S1,
+/// and the production path for the same window.
+fn assert_three_arm_parity(fixture: &TreeFixture, offset: u32, limit: Option<u32>) {
+    let (s0_count, s0_checksum, _) = s0_exact_walk(fixture, offset, limit);
+    let (s1_count, s1_checksum, _, _) = s1_window_walk(fixture, offset, limit);
+    let (p_count, p_checksum) = visit_exact_window(fixture, offset, limit);
+    assert_eq!(
+        (s0_count, s0_checksum),
+        (s1_count, s1_checksum),
+        "S1 parity vs S0"
+    );
+    assert_eq!(
+        (s0_count, s0_checksum),
+        (p_count, p_checksum),
+        "production parity vs S0"
+    );
+}
+
+// --- Fixture 1: 0337 dead-prefix grid (S1 expected to dominate: the dead
+// prefix lies before the window, so no fully-dead block is inside it). ---
+
+/// S0 on the 87.5% dead-prefix fixture (OFFSET = first live slot).
+#[bench(raw)]
+fn offset_tree_d875_s0() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(TREE_DENSITY_875);
+    let offset = TREE_DENSITY_875;
+    assert_three_arm_parity(&fixture, offset, Some(OFFSET_WINDOW_LIMIT));
+    bench_fn(|| {
+        let (count, checksum, blocks) = s0_exact_walk(&fixture, offset, Some(OFFSET_WINDOW_LIMIT));
+        black_box((count, checksum, blocks));
+    })
+}
+
+/// S1 on the 87.5% dead-prefix fixture (no dead block inside the window).
+#[bench(raw)]
+fn offset_tree_d875_s1() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(TREE_DENSITY_875);
+    let offset = TREE_DENSITY_875;
+    assert_three_arm_parity(&fixture, offset, Some(OFFSET_WINDOW_LIMIT));
+    bench_fn(|| {
+        let (count, checksum, entered, scanned) =
+            s1_window_walk(&fixture, offset, Some(OFFSET_WINDOW_LIMIT));
+        black_box((count, checksum, entered, scanned));
+    })
+}
+
+/// S1+S2 (production) on the 87.5% dead-prefix fixture.
+#[bench(raw)]
+fn offset_tree_d875_s1s2() -> canbench_rs::BenchResult {
+    let fixture = build_tree_fixture(TREE_DENSITY_875);
+    let offset = TREE_DENSITY_875;
+    assert_three_arm_parity(&fixture, offset, Some(OFFSET_WINDOW_LIMIT));
+    bench_fn(|| {
+        let (count, checksum) = visit_exact_window(&fixture, offset, Some(OFFSET_WINDOW_LIMIT));
+        black_box((count, checksum));
+    })
+}
+
+// --- Fixture 2: in-window dead blocks (S2 expected to dominate the
+// residual: every OTHER leaf block fully tombstoned; the window starts at
+// the first live slot and extends to the bucket end — no limit — so it
+// spans 1,024 blocks of which 512 are fully dead, plus the partial tail). ---
+
+/// In-window dead fixture: 1M+1 slots; every even-indexed leaf block fully
+/// tombstoned (513 dead blocks including the 1-slot tail). Returns the
+/// fixture and the first live slot (block 1's first slot).
+fn build_in_window_dead_fixture() -> (TreeFixture, u32) {
+    use crate::labeled::tree_csr::B;
+    let fixture = build_tree_fixture(0);
+    let stored = TREE_SEED_SLOTS;
+    let leaf_count = u32::try_from(u64::from(stored).div_ceil(B as u64)).expect("leaf count");
+    for block_index in (0..leaf_count).step_by(2) {
+        let first = block_index * B as u32;
+        let last = (first + B as u32).min(stored);
+        for slot in first..last {
+            fixture
+                .graph
+                .remove_edge_at_slot(fixture.vid, fixture.label, slot)
+                .expect("in-window tombstone remove");
+        }
+    }
+    (fixture, B as u32)
+}
+
+/// S0 on the in-window dead fixture (full-extent window).
+#[bench(raw)]
+fn offset_tree_inwindow_s0() -> canbench_rs::BenchResult {
+    let (fixture, first_live) = build_in_window_dead_fixture();
+    assert_three_arm_parity(&fixture, first_live, None);
+    bench_fn(|| {
+        let (count, checksum, blocks) = s0_exact_walk(&fixture, first_live, None);
+        black_box((count, checksum, blocks));
+    })
+}
+
+/// S1 on the in-window dead fixture (window-restricted, no skip).
+#[bench(raw)]
+fn offset_tree_inwindow_s1() -> canbench_rs::BenchResult {
+    let (fixture, first_live) = build_in_window_dead_fixture();
+    assert_three_arm_parity(&fixture, first_live, None);
+    bench_fn(|| {
+        let (count, checksum, entered, scanned) = s1_window_walk(&fixture, first_live, None);
+        black_box((count, checksum, entered, scanned));
+    })
+}
+
+/// S1+S2 (production) on the in-window dead fixture.
+#[bench(raw)]
+fn offset_tree_inwindow_s1s2() -> canbench_rs::BenchResult {
+    let (fixture, first_live) = build_in_window_dead_fixture();
+    assert_three_arm_parity(&fixture, first_live, None);
+    bench_fn(|| {
+        let (count, checksum) = visit_exact_window(&fixture, first_live, None);
+        black_box((count, checksum));
+    })
+}

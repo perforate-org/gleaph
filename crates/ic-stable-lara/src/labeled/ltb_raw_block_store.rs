@@ -128,6 +128,14 @@ pub enum BlockError {
     OutOfBounds { id: u32, offset: usize, len: usize },
     /// Reopen header failed magic / reserved / wire-truth / counter checks.
     Init(InitError),
+    /// Plan 0337 / ADR 0094 §3 fail-closed verification: a fully-scanned
+    /// block's payload tombstone markers disagree with the header
+    /// `tombstone_count`.
+    CountMismatch {
+        block_id: u32,
+        header_count: u16,
+        scanned_count: u32,
+    },
 }
 
 /// Errors raised by reopen-time header validation.
