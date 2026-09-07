@@ -510,3 +510,40 @@ clippy (-D warnings), fmt, `cargo test --lib header` (10 passed), `--lib tree_re
 2. ADR 0088 §1 states a 64-page VMM bucket policy for the LTB regions, while the code's
    `GRAPH_MEMORY_MANAGER_POLICIES` lists `(FWD_LTB, 16)` / `(REV_LTB, 16)`. Verify which is
    intended and align the ADR or the code.
+
+### 5.5 Non-tree regimes: status-quo rationale and the remove-side maintenance gap (2026-09-07)
+
+**Slab and bypass stay status-quo.** The header count (Level 1) is defined on LTB block headers
+and has no slab/bypass analogue — those regimes have no internal blocks. The measured case for
+adding one is weak: slab extent is capped at `T_PROMOTE = 4,096` (post-ADR 0088), the 87.5%
+worst-case OFFSET overshoot re-anchored at that cap is ~109K instructions/query (Plan 0337 slab
+leg; ~1/370 of the tree regime), tombstone-free buckets already take the dense bulk-read fast
+path with zero overshoot, and a tombstone-heavy slab bucket crossing `T_PROMOTE` is compacted in
+place (reclaim) or promoted to tree mode by the existing insert-path trigger
+(`insert.rs:357`) — i.e. churn is answered by the existing compact-or-promote cycle. The slab
+follow-up (512 B bitmap class) stays deferred-with-evidence (Plan 0337 slab rule FAILED the
+100K bar by 1.09×; not opened). Bypass rows share this status quo.
+
+**The remove-side maintenance gap (code-verified 2026-09-07).** The insert path admits
+post-write maintenance — dense-leaf compaction when `labeled_leaf_segment_is_dense(src)` and
+inline-property-bytes slab compaction (`deferred.rs:2172-2194`). **The remove path admits
+nothing**: production `remove.rs` contains no enqueue/mark_compact/maintenance call (only a test
+at line 1316); the sole remove-driven trigger is the tree-mode demote check
+(`degree <= T_DEMOTE`, Plan 0319, best-effort inline). Consequence: **a delete-only workload
+accumulates tombstones indefinitely on both bypass rows and Insertion-policy slab buckets** —
+no compaction fires until some later insert touches the same vertex. The accumulation axis is
+not bypass-vs-bucket but **remove-side-trigger presence**, plus label policy: `Unordered`
+labels self-heal on insert (in-slab tombstone reuse before append, `insert.rs:420`) and swap-
+compact (ADR 0052 §7), while `Insertion` labels (and the default-label bypass row) preserve
+adjacency order and leave holes.
+
+**Improvement proposal (recorded; not yet planned):** a remove-side admission trigger symmetric
+to the Plan 0319 demote check — after a successful remove on an Insertion-policy slab bucket or
+a bypass row, if tombstone slack crosses a hysteresis threshold (e.g. `stored − degree ≥ extent/2`,
+mirroring the promote-crossing slack rule), best-effort enqueue the existing compaction work item
+(`mark_compact_dense_labeled_vertex_maintenance` / `mark_compact_label_bucket_vertex_segment`).
+The maintenance queue already dedups per `(vid, orientation)` span, the drain is stepped and
+timer-driven (ADR 0020), and the hot-path cost is one bounded enqueue — the same shape that made
+the Plan 0319 demote trigger safe. Quadratic full-bucket compaction under alternating tombstones
+is already handled by the stepped compaction cursor. Candidate gap entry + small plan; owner
+`ic-stable-lara`.
