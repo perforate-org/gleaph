@@ -1,7 +1,8 @@
 # 0094. Tree-bucket tombstone count in the LTB block header (Level 1 OFFSET acceleration)
 
 Date: 2026-09-07
-Status: proposed
+Status: accepted (2026-09-07, management-pane approval; field+maintenance landed Plan 0337
+`73ba30e01`, read-path slice pending)
 Last revised: 2026-09-07
 Anchor timestamp: 2026-09-07 01:28:58 UTC +0000 (OS anchor; §1/§2 status and all file/line
 references verified at ADR-draft time 2026-09-07 03:19 UTC +0000)
