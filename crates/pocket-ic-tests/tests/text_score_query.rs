@@ -1325,3 +1325,119 @@ fn multilingual_composite_default_recalls_across_languages() {
         "recall must be deterministic"
     );
 }
+
+// -- Plan 0339: Japanese text folding (IVS strip + kana counter-variant unification) --------
+
+const FOLDING_INDEX_NAME: &str = "text_score_folding_idx";
+const FOLDING_MIGRATION_ID: &str = "000106_text_score_folding";
+
+/// The IVS fixture: 葛󠄀 = 葛 (U+845B, UTF-8 E8 91 9B) + VARIATION SELECTOR-17
+/// (U+E0100, UTF-8 F3 A0 84 80). The bare-base query 葛区 must recall this doc.
+const IVS_DOC: &str = "葛\u{E0100}区";
+
+/// One leg proving the plan 0339 folding contract end-to-end through provisioning +
+/// backfill + GQL on the ANALYZER mecab (id 2) pipeline (the dictionary is supplied
+/// automatically by the plan 0335 catalog relay — ZERO manual dict steps):
+///   (a) an IVS-bearing doc is recalled by the bare-base query (and by its own
+///       IVS-literal query — the strip is side-symmetric);
+///   (b) a 3ヶ月 doc is recalled by the ３ケ月 query (fullwidth NFKC + kana fold
+///       chained) and vice versa;
+///   (c) the HONEST negative: 3か月 does NOT fold-match — the か counter is not
+///       unified to ケ, so the か月 doc is absent from the ケ月 candidate set.
+#[test]
+fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
+    let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
+    let env = Env {
+        provision,
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    // Corpus: an IVS-bearing doc, a ヶ-counter doc, a か-counter doc (v1 boundary),
+    // and an unrelated doc. Insertion order fixes vertex ids ascending.
+    seed_text_vertex(&env, IVS_DOC);
+    seed_text_vertex(&env, "3ヶ月");
+    seed_text_vertex(&env, "3か月");
+    seed_text_vertex(&env, "unrelated zebra");
+
+    // Catalog seeding (plan 0335 todo 4): the relay auto-finalizes the dictionary on
+    // the provisioned mecab canister — ZERO manual dict steps.
+    seed_dictionary_catalog(&env);
+
+    // Declare via the GQL DDL surface with ANALYZER mecab (id 2).
+    let statement = format!(
+        "CREATE TEXT INDEX {FOLDING_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER mecab"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "folding-ddl");
+    let info = get_text_index_named(&env, FOLDING_INDEX_NAME);
+    assert_eq!(info.analyzer_id, 2, "the ANALYZER mecab clause pins id 2");
+    let canister = info.canister.expect("provisioned canister attached");
+    env.fed.pic.add_cycles(canister, 50_000_000_000_000);
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
+
+    let args = migration_args(FOLDING_MIGRATION_ID, &statement);
+    drive_to_ready_for(&env, &args, FOLDING_INDEX_NAME);
+    assert_eq!(
+        get_text_index_named(&env, FOLDING_INDEX_NAME).status,
+        TextIndexStatusView::Ready
+    );
+    flush_until_done_for(&env, FOLDING_INDEX_NAME);
+
+    // (a) IVS strip: the IVS-bearing doc is recalled by the bare-base query 葛区.
+    let base = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("葛区", 10));
+    assert_eq!(
+        base.row_count, 1,
+        "IVS doc recalls under the bare base form"
+    );
+    // ...and by the doc's own IVS-literal query (the strip is side-symmetric).
+    let literal = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params(IVS_DOC, 10));
+    assert_eq!(
+        literal.row_count, 1,
+        "IVS-literal query recalls the same doc"
+    );
+    assert_eq!(
+        scored_rows(&literal)[0].0,
+        scored_rows(&base)[0].0,
+        "bare-base and IVS-literal queries hit the same doc"
+    );
+
+    // (b) kana counter fold: the 3ヶ月 doc is recalled by the ３ケ月 query (fullwidth
+    // NFKC ３→3 + the ヶ→ケ emitted-unit fold chained).
+    let ke = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("ケ月", 10));
+    assert_eq!(
+        ke.row_count, 1,
+        "the ヶ doc recalls under the folded ケ月 unit"
+    );
+    let full = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("３ケ月", 10));
+    assert_eq!(
+        full.row_count, 2,
+        "３ケ月 recalls the ヶ doc (2 units) and the か doc (shared 3)"
+    );
+    let full_rows = scored_rows(&full);
+    assert_eq!(
+        full_rows[0].0,
+        scored_rows(&ke)[0].0,
+        "the ヶ doc ranks first (matches both query units)"
+    );
+    assert!(
+        full_rows[0].1 > full_rows[1].1,
+        "strict score order: ヶ doc above the か doc"
+    );
+
+    // (c) the HONEST negative: 3か月 does NOT fold-match. The か counter is not
+    // unified to ケ, so the か月 doc is absent from the ケ月 candidate set (ke above
+    // returned exactly one row — the ヶ doc) and か月/ケ月 are distinct units.
+    let ka = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("か月", 10));
+    assert_eq!(
+        ka.row_count, 1,
+        "the か doc recalls under its own か月 unit"
+    );
+    assert_ne!(
+        scored_rows(&ka)[0].0,
+        scored_rows(&ke)[0].0,
+        "か月 and ケ月 are distinct units (v1 boundary)"
+    );
+}

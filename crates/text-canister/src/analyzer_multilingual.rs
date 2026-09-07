@@ -4,8 +4,10 @@
 //!
 //! ## Pipeline
 //!
-//! 1. Shared pre-pass: whole-text NFKC + Unicode lowercase (the v1 normalization order,
-//!    the same pre-pass the id-2 mecab analyzer runs);
+//! 1. Shared pre-pass: whole-text NFKC + Unicode lowercase + variation-selector strip
+//!    (the shared [`crate::normalization`] module — the same pre-pass the id-2 mecab
+//!    analyzer runs; the strip is safe pre-tokenization because no ipadic surface
+//!    contains a variation selector);
 //! 2. UAX #29 segmentation (per-word boundaries, the v1 contract);
 //! 3. Per-segment script-run classification (deterministic codepoint-range dispatch,
 //!    NO statistical language detection — the determinism contract);
@@ -30,17 +32,9 @@
 //! `analyze(&units.join(" ")) == analyze(input)` (the rule layers are pure functions
 //! of the run; the space-joined surface reproduces the same run-shape input).
 
-use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
 // -- Pre-pass + UAX #29 segmentation -------------------------------------------------------
-
-/// Returns the pre-passed text (whole-text NFKC + lowercase, the v1 normalization
-/// order). The composite runs this once over the whole input so the mecab layer sees
-/// the same adjacency the id-2 whole-text analyzer would see.
-fn prepass(text: &str) -> String {
-    text.nfkc().collect::<String>().to_lowercase()
-}
 
 /// True for characters eligible for CJK-run bigram expansion (the v1 classes):
 /// Hiragana U+3041..=U+3096, Katakana U+30A1..=U+30FF, and CJK Unified Ideographs
@@ -858,7 +852,7 @@ fn layer_latin(run: &str, out: &mut Vec<String>) {
 /// accumulates maximal per-class script runs, and dispatches each run to its
 /// layer. Output order follows input order; duplicates preserved.
 pub fn analyze(text: &str) -> Vec<String> {
-    let pre = prepass(text);
+    let pre = crate::normalization::prepass(text);
     let mut out = Vec::new();
     // Per UAX #29 segment, accumulate the per-class run. A segment break is a
     // word-boundary that the layers treat as a hard separator (the mecab layer

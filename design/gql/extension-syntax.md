@@ -1,6 +1,6 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-08-23
+Last updated: 2026-09-07 (plan 0339 docs-sync)
 Anchor timestamp: 2026-08-23 12:26:48 UTC +0000
 
 ## Status
@@ -977,8 +977,8 @@ numeric id) pins the tokenization pipeline at creation, mirroring MySQL's `WITH 
 | Name | Id | Pipeline |
 |---|---|---|
 | `multilingual` | 0 | **DEFAULT** (plan 0332, branded koine): the script-dispatched composite — NFKC+lowercase pre-pass → UAX #29 → deterministic script dispatch: {kanji∪kana} runs through the mecab engine, pure-Han runs through bigram, Hangul runs through the 조사/어미 strip (surface+stem), Latin words through surface+Porter stem. Carries the dictionary (`DICT_REQUIRED`) |
-| `unicode_bigram` | 1 | Unicode segmentation + NFKC + lowercase; CJK runs expand to overlapping bigrams; ASCII words whole. No rule layers (byte-unchanged) |
-| `mecab` | 2 | MeCab-format ipadic 2.7.0 Viterbi lemma units over the morph-dict engine (走った ⇄ 走る recall, whole-text); carries the dictionary |
+| `unicode_bigram` | 1 | Unicode segmentation + per-segment shared pre-pass (NFKC + lowercase + variation-selector strip) + kana counter-variant fold (ヶ/ヵ → ケ) before CJK-run bigram formation; ASCII words whole. No rule layers |
+| `mecab` | 2 | MeCab-format ipadic 2.7.0 Viterbi lemma units over the morph-dict engine (走った ⇄ 走る recall, whole-text); shared pre-pass (NFKC + lowercase + variation-selector strip) + kana counter-variant fold (ヶ/ヵ → ケ) on the EMITTED units only; carries the dictionary |
 
 ```gql
 CREATE TEXT INDEX jp_docs FOR (v:Document) ON (v.body) ANALYZER mecab

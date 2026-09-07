@@ -1,7 +1,12 @@
 //! Production text analyzer (the ADR 0077 default pipeline).
 //!
 //! Pipeline: UAX #29 word boundaries over the raw text, then per segment NFKC
-//! normalization followed by Unicode lowercasing, then CJK-run expansion — contiguous
+//! normalization followed by Unicode lowercasing and the variation-selector strip
+//! (the shared [`crate::normalization`] pre-pass), then the kana counter-variant
+//! fold (ヶ/ヵ → ケ) applied per segment BEFORE the CJK run accumulates — so the run
+//! bigrams form over folded chars and non-CJK tokens emit folded (an emitted-unit
+//! fold; the mecab analyzer folds its emitted lemmas instead, and the fold NEVER
+//! applies to pre-mecab input) — then CJK-run expansion: contiguous
 //! CJK characters (Hiragana, Katakana, CJK Unified Ideographs) become overlapping
 //! bigrams while a lone CJK character stays a unigram; every other word passes through
 //! whole. Segments consisting purely of separators/symbols are dropped, which also makes
@@ -15,7 +20,6 @@
 //! pipeline identity is recorded as [`ANALYZER_ID`] in the index meta cell so index
 //! definitions can pin the exact analyzer that produced their postings.
 
-use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Registered identity of the script-dispatched multilingual composite (plan 0332,
@@ -85,10 +89,15 @@ pub fn analyze(text: &str) -> Vec<String> {
     let mut token = String::new();
     let mut prev_segment_end: Option<usize> = None;
     for (start, segment) in text.split_word_bound_indices() {
-        // NFKC must see the whole segment: canonical composition crosses characters
-        // (e.g. halfwidth ﾊ + ﾟ → パ, ㍿ → 株式会社). Lowercasing after NFKC matches the
-        // documented pipeline order.
-        let normalized = segment.nfkc().collect::<String>().to_lowercase();
+        // Shared pre-pass (plan 0339 SSOT). NFKC must see the whole segment: canonical
+        // composition crosses characters (e.g. halfwidth ﾊ + ﾟ → パ, ㍿ → 株式会社).
+        // Lowercasing after NFKC matches the documented pipeline order; the
+        // variation-selector strip then removes IVS/FVS sequences that survive NFKC.
+        // The kana counter-variant fold runs per segment BEFORE the CJK run
+        // accumulates, so the run bigrams form over folded chars and non-CJK tokens
+        // emit folded (emitted-unit fold — never applied to pre-mecab input).
+        let mut normalized = crate::normalization::prepass(segment);
+        crate::normalization::fold_unit(&mut normalized);
         if !normalized.chars().any(is_word_char) {
             continue; // pure separator/symbol segment; the gap breaks CJK adjacency
         }
@@ -195,6 +204,11 @@ mod tests {
             "Ｈｅｌｌｏ ①② 東 京都 visit",
             "red RED Red",
             "x3y 漢字a b漢字",
+            // Plan 0339: folded/VS-stripped fixtures must re-analyze to themselves
+            // (the fold target ケ and the stripped base form are both stable units).
+            "3ヶ月",
+            "１６ヵ所",
+            "葛\u{E0100}飾区",
         ];
         for fixture in fixtures {
             let first = units(fixture);
@@ -285,4 +299,37 @@ mod tests {
     // The dictionary-carrying id set lives in the shared kernel predicate
     // (`gleaph_graph_kernel::provisioning::dictionary::dict_required`), which carries its
     // own boundary tests; no local {0, 2} copy is kept (plan 0335 SSOT switch).
+
+    // -- Plan 0339: variation-selector strip + kana counter-variant fold ----------------------
+
+    /// The kana counter-variant fold applies per segment before the CJK run
+    /// accumulates: 3ヶ月 → [3][ケ月], matching ３ケ月 after NFKC+fold composition.
+    #[test]
+    fn kana_counter_variants_fold_before_bigram_formation() {
+        assert_eq!(units("3ヶ月"), vec!["3", "ケ月"]);
+        // Fullwidth digit: NFKC folds ３→3, then the same emitted units.
+        assert_eq!(units("３ケ月"), vec!["3", "ケ月"]);
+        assert_eq!(units("１６ヵ所"), vec!["16", "ケ所"]);
+        // The v1 boundary: the hiragana counter か is NOT folded to ケ.
+        assert_eq!(units("3か月"), vec!["3", "か月"]);
+        // A counter variant inside a longer run folds in place: the bigrams form
+        // over the folded chars.
+        assert_eq!(units("茅ヶ崎"), vec!["茅ケ", "ケ崎"]);
+    }
+
+    /// The IVS strip runs pre-tokenization (per segment): an IVS-bearing CJK run
+    /// analyzes byte-identically to its bare-base form.
+    #[test]
+    fn ivs_strips_before_cjk_run_accumulation() {
+        // 葛󠄀 = 葛 (U+845B) + VARIATION SELECTOR-17 (U+E0100) — the 人名/地名 hazard.
+        assert_eq!(units("葛\u{E0100}飾区"), vec!["葛飾", "飾区"]);
+        assert_eq!(units("葛\u{E0100}飾区"), units("葛飾区"), "IVS-free parity");
+        // A lone base character with a trailing selector stays a unigram.
+        assert_eq!(units("葛\u{E0100}"), vec!["葛"]);
+        // Selector-only segments are dropped (strip → empty → no word chars).
+        assert!(units("\u{FE0F}").is_empty());
+        // Mongolian free variation selectors strip in the non-CJK token path
+        // (U+1820 is a Mongolian letter → word char, not CJK).
+        assert_eq!(units("\u{1820}\u{180B}"), vec!["\u{1820}"]);
+    }
 }

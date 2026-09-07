@@ -1,6 +1,6 @@
 # Text index
 
-Last updated: 2026-08-26 (plan 0297 docs-sync)
+Last updated: 2026-09-07 (plan 0339 docs-sync)
 Status: **Implemented (v1)** — engine accepted ([ADR 0077](../adr/0077-text-index-engine.md));
 canister wired and lifecycle-verified on PocketIC (plan 0294, 2026-08-24); density-matched hot
 stores + whole-path term-search bench (plan 0295); driver economics closed (plan 0296). Plan
@@ -106,7 +106,11 @@ landings + plan 0332 default promotion):
   `DICT_REQUIRED` gate as id 2), pure-Han runs through v1 bigram (zh/ja ambiguity: bigram is
   correct for both), Hangul runs through the 조사/어미 closed-class suffix strip (받침
   allomorphy, surface+stem dual emission), Latin words through surface+Porter stem (non-English
-  Latin over-stem accepted and recorded). Deterministic and idempotent (monotone: re-analysis
+  Latin over-stem accepted and recorded). Its {kanji∪kana} layer delegates to the id-2 mecab
+  analyzer, so it inherits the plan 0339 variation-selector strip and the kana counter-variant
+  fold (ヶ/ヵ → ケ) on Japanese content; the composite's own whole-text pre-pass copy remains
+  (plan 0339 wired ids 1/2; pure-Han/Hangul/Latin runs carry no kana counter variants, so the
+  fold is a no-op there). Deterministic and idempotent (monotone: re-analysis
   of the joined units preserves every unit). Module: `analyzer_multilingual.rs`; DDL identifier
   stays `multilingual` (the Meilisearch precedent: crate charabia, config field descriptive).
   The ABSENT `ANALYZER` clause, the provision default, and the DDL admission default all
@@ -116,15 +120,18 @@ landings + plan 0332 default promotion):
   dictionary-carrying index reaches Ready with ZERO manual dictionary steps. Per-doc analysis
   cycles (canbench, ASCII fixture): composite 131.3K vs bigram 113.2K instructions (~16%
   Latin-layer overhead; the Japanese mecab layer rides the id-2 engine cost).
-- **`unicode_bigram` (id 1, non-default, byte-unchanged)** — Unicode segmentation + NFKC +
-  lowercase; CJK character runs expand to overlapping bigrams (lone characters stay unigrams);
-  ASCII words whole; NO rule layers (no Porter stem, no 조사 strip). Trigram indexing is a
-  separate future index kind, not part of v1.
+- **`unicode_bigram` (id 1, non-default)** — Unicode segmentation + per-segment shared
+  pre-pass (NFKC + lowercase + variation-selector strip) + the kana counter-variant fold
+  (ヶ/ヵ → ケ) applied per segment BEFORE the CJK run accumulates, so the run bigrams form
+  over folded chars and non-CJK tokens emit folded; CJK character runs expand to overlapping
+  bigrams (lone characters stay unigrams); ASCII words whole; NO rule layers (no Porter
+  stem, no 조사 strip). Trigram indexing is a separate future index kind, not part of v1.
 - **`mecab` (ANALYZER_ID=2, plan 0334)**: MeCab-format ipadic 2.7.0 Viterbi lemma units over the
-  `morph-dict` byte-image engine (derived from MeCrab, MIT OR Apache-2.0) — whole-text NFKC +
-  lowercase pre-pass, per-line bounded common-prefix search + Viterbi, ipadic base-form
+  `morph-dict` byte-image engine (derived from MeCrab, MIT OR Apache-2.0) — whole-text shared
+  pre-pass (NFKC + lowercase + variation-selector strip), per-line bounded common-prefix search + Viterbi, ipadic base-form
   (基本形, feature column 6) for content words with particles/auxiliaries/symbols dropped, all
-  parameterized by the Japanese `DictionaryProfile`. Deterministic and strict-idempotent;
+  parameterized by the Japanese `DictionaryProfile`, then the kana counter-variant fold
+  (ヶ/ヵ → ケ) applied to the EMITTED units only. Deterministic and strict-idempotent;
   100% unit-sequence parity with the previous vibrato engine (plan 0333 gate). The dictionary is
   NOT in the wasm (1,797,134 B after plan 0335 re-added ruzstd, +157 KB): stable region 16 carries the MPD container
   (52,931,159 bytes total — the four images sum to 52,930,923: sys.dic 49,199,027 + unk.dic
@@ -155,6 +162,34 @@ landings + plan 0332 default promotion):
   4,752,264,345-cycle eager-decode baseline (79x). Native throughput 0.5-0.6x vibrato
   (bounded-lookup engine); the DDL clause contract lives in
   [extension-syntax.md](../gql/extension-syntax.md).
+
+### Shared normalization + Japanese folding (plan 0339)
+
+A single normalization module, `crates/text-canister/src/normalization.rs`, is the choke point
+for the wired pipelines (ids 1 and 2; koine's Japanese layer inherits it through the id-2
+delegation). Two pure, deterministic steps apply at different stages:
+
+- **Pre-pass (before tokenization): NFKC → Unicode lowercase → variation-selector strip.**
+  The strip removes U+FE00–FE0F, U+180B–180D, U+180F, and U+E0100–E01EF. It is safe
+  pre-tokenization because no ipadic surface (entry text) contains a variation selector —
+  verified at test time by byte-scanning every valid-UTF-8 field of the four dictionary
+  images (sys.dic's binary table regions carry two coincidental 4-byte collisions that
+  decode as nothing, so the predicate is a selector inside a valid-UTF-8 field, not a raw
+  byte scan). Without the strip, 葛󠄀-style sequences (base + U+E0100) survive NFKC, ride into
+  analysis, break dictionary/token identity, and drop recall for 人名/地名/official text.
+- **Emitted-unit fold: ヶ/ヵ → ケ.** Applied to EMITTED UNITS ONLY, never to pre-mecab
+  input. ipadic surfaces contain ヶ (茅ヶ崎, 関ヶ原), so folding pre-tokenization would
+  rewrite the input away from the dictionary and damage Viterbi matching; folding the
+  emitted lemma/surface units instead preserves dictionary fidelity while unifying the
+  index/query space (3ヶ月 ⇄ ３ケ月 recall). The fold is idempotent and adds no error paths.
+
+Index/query parity is structural: both sides run the same `analyze` entry points, so both
+fold identically through the same functions. Known limitations (recorded, not silently
+ignored): the hiragana counter 3か月 is NOT folded (unconditional か→ケ would merge the
+particle か; context-dependent folding deferred), 箇/個所-style context variants are deferred,
+々/〆 and 異体字 equivalence-class folding are out of scope (the latter needs a character-
+variant table and belongs to the future dictionary-profile architecture), and Korean/Chinese
+variant folding is out of scope (ko-dic / UniDic profiles are future work).
 
 Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB zstd dictionary (0330 baseline; superseded by the morph-dict engine 0334) /
 51.8 MB heap / ~400k chars/s vs lindera 48 MB wasm (path-only dictionary API, wasm-embedded-only),
