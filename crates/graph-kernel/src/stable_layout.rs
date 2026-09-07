@@ -1502,6 +1502,36 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
+        // Plan 0335: versioned dictionary catalog (MemoryId 13), its <=1 MiB compressed
+        // chunk rows (MemoryId 14, ADR 0087 chunk-store shape), and the per-principal
+        // dict audit log (MemoryId 15, bounded like the artifact audit log).
+        region(
+            "PROVISION_DICT_CATALOG",
+            13,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "DictCatalogKey -> DictCatalogEntry: versioned ZSTD-compressed MPD dictionary catalog relayed to new dictionary-required text canisters",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
+        region(
+            "PROVISION_DICT_CHUNKS",
+            14,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "DictChunkKey -> DictChunk: <=1 MiB compressed dictionary chunk rows streamed verbatim/coalesced to text canisters during relay",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
+        region(
+            "PROVISION_DICT_CATALOG_AUDIT_LOG",
+            15,
+            StableMemoryClass::Telemetry,
+            "provisioning",
+            "(Principal, u64) -> DictCatalogAuditEntry: append-oriented audit trail of dictionary catalog operations, per-principal cap enforced by eviction",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
     ],
 };
 
@@ -2303,8 +2333,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 13);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(12));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 16);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(15));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived

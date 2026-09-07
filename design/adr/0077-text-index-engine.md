@@ -134,8 +134,13 @@ Adopt the **custom segment-LSM inverted index** for the Text Index, as prototype
      jieba per script; the ES multi-fields N-index pattern is the alternative and stays the
      per-language precision-maximal shape). Script dispatch is a pure codepoint-range
      function (determinism contract, no statistical language detection); the `DICT_REQUIRED`
-     gate widened to {0, 2}, so the DEFAULT index path carries the dictionary upload flow
-     (recorded friction; Router-side dictionary relay is the Later-Slice mitigation).
+     gate widened to {0, 2}, so the DEFAULT index path carries the dictionary. The recorded
+     per-creation upload friction is resolved (plan 0335): the Provision canister holds the
+     ZSTD-compressed container (10,892,359 B at zstd-19) as a versioned catalog and relays it
+     during provisioning (6 coalesced 1,945,600 B calls); the text canister decompresses ONCE
+     at compressed finalize (4.81B cycles, single update budget) — never at open/upgrade (the
+     0334 rebind stays 59.9M cycles). Raw upload remains text-canister machinery but is
+     unreachable for provisioned dict-required canisters (relay-finalized terminal).
 6. **Partition strategy remains open** (ADR 0054), with docid-range sharding and same-subnet
    scatter-gather as the working assumption.
 

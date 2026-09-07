@@ -65,7 +65,14 @@ Router issuance is **on demand**, driven by the first operation that needs a Rou
    `LogicalResource::Router` → `Account.register_router` → cache.
 3. The issued Router carries `provision_canister: Some(provision)`, so graph/shard/index/vector
    provisioning (ADR 0070 / ADR 0071) flows through Provision, not a manual management-canister
-   install.
+   install. The same wiring relays the **dictionary catalog** (plan 0335): Provision keeps a
+   versioned catalog of the ZSTD-compressed MPD text dictionary (`admin_upload_dict_catalog_chunk`
+   / `admin_finalize_dict_catalog` / `admin_get_dict_catalog_status`, the ADR 0087 chunk pattern
+   over MemoryIds 13/14/15) and, when a provisioned text canister's pinned analyzer requires the
+   dictionary (kernel `dict_required`, ids {0, 2}), streams the compressed container to the new
+   canister post-install (6 coalesced 1,945,600 B calls) and triggers its compressed finalize.
+   Relay failure is a provisioning failure (terminal, install-failure vocabulary) — a silently
+   dictionary-less text canister is impossible.
 
 The **Provision artifact-catalog issuance** path (`LogicalResource::Router` and `accept_envelope`)
 is the lazy issuance mechanism; the CLI no longer installs canisters directly via the management
@@ -131,4 +138,6 @@ Org).
 - [ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md) — account model (SSOT).
 - [ADR 0035](../adr/0035-provision-canister-and-issuance-protocol.md) — issuance protocol (Amendment planned for Account trust subject).
 - [ADR 0054](../adr/0054-provisioned-logical-graph-topology-and-resource-activation.md) — bootstrap resource selection and topology.
+- [ADR 0077](../adr/0077-text-index-engine.md) — text index engine; its dictionary supply is the
+  plan 0335 Provision-side catalog + relay wired into the issuance flow above.
 - [ADR 0062](../adr/0062-gleaph-toml-project-configuration.md) — `gleaph.toml` (Amendment planned).
