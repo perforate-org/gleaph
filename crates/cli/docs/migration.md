@@ -3,7 +3,7 @@
 `gleaph migration` manages immutable, additive schema migrations for a Gleaph
 deployment. Migrations are local, versioned packages that Router applies once
 and records in a durable ledger; a migration is never edited after it is
-published (ADR 0058).
+published.
 
 The CLI owns the local package and chain invariants; Router owns the durable
 applied ledger and execution. Local validation (`plan`) never makes a remote
@@ -13,15 +13,23 @@ call.
 
 A migration is a directory named `NNNNNN_slug` (six digits, underscore, and a
 lowercase slug) under the migration root (`--dir`, default `./migrations`),
-containing exactly two regular files:
+containing `migration.toml` and exactly one payload:
 
-| File | Purpose |
+| Entry | Purpose |
 | --- | --- |
 | `migration.toml` | Manifest (below) |
-| `up.gql` | The single additive catalog statement |
+| `up.gql` | The additive payload as a single GQL file, **or** |
+| `up/` | The additive payload as a directory of `*.gql` fragments, concatenated in sorted filename order |
 
-No symlinks or extra files are allowed anywhere in the tree; temporary entries
-prefixed `.gleaph-tmp-` are ignored by discovery.
+`up.gql` and `up/` are mutually exclusive. Fragment names must be unique, must
+end in `.gql`, and every fragment must be LF-terminated so the concatenation is
+deterministic. No symlinks or extra files are allowed anywhere in the tree;
+temporary entries prefixed `.gleaph-tmp-` are ignored by discovery. The
+concatenated payload is limited to 65,536 bytes.
+
+`gleaph migration new --up <PATH>` accepts either form: a single `.gql` file
+scaffolds `up.gql`, a directory scaffolds the `up/` fragment form. Without
+`--up`, a minimal graph-type template is created.
 
 ### Manifest (`migration.toml`)
 
@@ -30,7 +38,7 @@ format_version = 1
 id = "000001_create_person"
 parent = "000000_init"
 description = "Add the Person graph type"
-# graph = "my_graph"   # valid only for CREATE INDEX migrations
+# graph = "my_graph"   # valid only for CREATE INDEX and CREATE VECTOR INDEX migrations
 ```
 
 | Field | Notes |
@@ -38,24 +46,38 @@ description = "Add the Person graph type"
 | `format_version` | Must be `1` |
 | `id` | Canonical id; must equal the directory name (`NNNNNN_slug`) |
 | `parent` | Id of the predecessor; the unique chain root omits it |
-| `graph` | Optional named graph selector; **valid only for `CREATE INDEX`** migrations; omitted → the default graph |
+| `graph` | Optional named graph selector; **valid only for `CREATE INDEX` and `CREATE VECTOR INDEX`** migrations; omitted → the default graph |
 | `description` | Human metadata; excluded from the execution checksum |
 
-### GQL dialect (`up.gql`)
+### GQL dialect (`up.gql` / `up/`)
 
-A migration contains exactly **one** additive catalog statement, one of:
+The payload is one or more additive statements chained with `NEXT` (the only
+chain operator; each statement may carry a trailing semicolon), drawn from:
 
 - `CREATE GRAPH TYPE <name> { ... }` with an explicit body;
 - `CREATE GRAPH <name> TYPED <type>` with simple literal names;
-- `CREATE INDEX ...` (the gleaph index DDL, which starts a separate Router
-  backfill lifecycle).
+- `CREATE INDEX ...` — the property-index DDL; several `NEXT`-chained
+  statements may share one migration and drive sequential Router backfill
+  builds;
+- `CREATE VECTOR INDEX ...` — the vector-index DDL with its `OPTIONS`
+  block; exactly one statement, always the only statement in its migration,
+  which provisions and registers the vector index against the selected graph.
 
 Forbidden in migrations: parameters, `SESSION` commands, transaction commands,
-`NEXT`-chained statements, `IF NOT EXISTS`, `OR REPLACE`, `COPY`, and
-`DROP INDEX`. The statement is limited to 65,536 bytes.
+`INSERT`/`SET`/`DELETE` DML, `IF NOT EXISTS`, `OR REPLACE`, `COPY`, and
+`DROP INDEX`. `CREATE INDEX` and `CREATE VECTOR INDEX` migrations must not mix
+with catalog statements (`CREATE GRAPH TYPE` / `CREATE GRAPH`) in one payload.
+The whole payload is limited to 65,536 bytes and 1,024 statements.
+
+> **`CREATE TEXT INDEX` note:** the Router's migration apply path already
+> drives the text-canister backfill lifecycle for a single-statement
+> `CREATE TEXT INDEX` payload, but the CLI's local validation does not accept
+> text-index payloads yet — author text indexes through the ad-hoc GQL DDL
+> path (`CREATE TEXT INDEX ...`) until the migration lane grows the text
+> parser.
 
 The execution identity is a sha256 checksum over the id, parent, graph
-selector, and statement bytes; `description` does not affect it.
+selector, and exact payload bytes; `description` does not affect it.
 
 ## Command reference
 
@@ -98,7 +120,7 @@ Discovery validates the whole tree before any remote call:
 | `new` | `created <id> (<path>)` |
 | `plan` | One `<id> <checksum-hex>` line per migration, or `no migrations` |
 | `status` | `applied <n>/<total>` |
-| `apply` | One status line per migration (`Applied`, `Replay`, `Progress(...)`) |
+| `apply` | A live progress line per pending migration (rewritten in place on a terminal; index-build targets named with row/percent detail), then a summary (`applied <n> migrations` / `applied <n> new, <m> replay` / `no migrations to apply`) |
 
 ## Remote semantics
 
@@ -114,7 +136,10 @@ envelope:
 - an ambiguous response is resolved by **exact replay** of the same envelope;
 - a `CREATE INDEX` migration returns `Progress(...)` and remains durable and
   resumable: the command polls bounded rounds until `Applied`, and re-running
-  `migration apply` resumes a pending index migration;
+  `migration apply` resumes a pending build (a progress bar tracks the
+  per-target index build when the migration drives several);
+- a `CREATE VECTOR INDEX` migration provisions and registers the vector
+  canister target synchronously before the ledger record commits;
 - a deterministic `Failed` status stops the run.
 
 ## Exit codes
@@ -144,13 +169,25 @@ gleaph migration apply --canister rrkah-fqaaa-aaaaa-aaaaq-cai \
   -n local --identity ~/.config/dfx/identity/default/identity.pem
 ```
 
-A `CREATE INDEX` migration targeting a named graph declares the selector in
-the manifest and starts a resumable Router backfill lifecycle:
+A vector-index migration targeting a named graph declares the selector in
+the manifest; the statement carries the complete physical shape:
 
 ```toml
 format_version = 1
-id = "000003_index_person_email"
+id = "000003_document_embedding"
 parent = "000002_add_person"
-description = "Index Person.email"
+description = "Embedding index over Document.embedding"
 graph = "my_graph"
+```
+
+```gql
+CREATE VECTOR INDEX document_embedding
+FOR (d:Document)
+ON d.embedding
+OPTIONS {
+  dimensions: 768,
+  similarity_function: "cosine",
+  encoding: "i8",
+  algorithm: "ivf_flat"
+}
 ```

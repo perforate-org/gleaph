@@ -5,6 +5,9 @@ per-network deployment profiles) so remote commands run without repeating connec
 file is entirely optional; absence means the built-in defaults below. The contract is defined by
 [ADR 0062](../../../design/adr/0062-gleaph-toml-project-configuration.md).
 
+> Note: ADR 0062 has an amendment planned (account removal, environment/network split,
+> identity-as-name, `.gleaph/` mapping); this page documents the implemented contract.
+
 ## Discovery
 
 The CLI walks up from the current working directory and uses the first `gleaph.toml` found. Set
@@ -20,6 +23,7 @@ default_network = "local"
 [dirs]
 migrations = "migrations"
 prepared = "prepared"
+grants = "grants"
 
 [deployment.local]
 canister = "rrkah-fqaaa-aaaaa-aaaaq-cai"
@@ -52,7 +56,8 @@ state_file = ".load-state.json"
 | `default_network` | `-n/--network` (flag > `GLEAPH_NETWORK` > this > `"ic"`) |
 | `[dirs] migrations` | `gleaph migration --dir` |
 | `[dirs] prepared` | `gleaph prepared --dir` |
-| `[deployment.<network>] canister` | `--canister` on `migration status/apply`, `prepared status/apply/drop`, `load`, and the codegen remote source |
+| `[dirs] grants` | `gleaph grants --dir` |
+| `[deployment.<network>] canister` | `--canister` on `migration status/apply`, the remote `prepared` subcommands (`status/apply/drop/publish/unpublish/run`), `load`, `embed ingest`, `vector activate/deactivate`, `grants apply`, and the codegen remote source |
 | `[deployment.<network>] identity` | `--identity` |
 | `[deployment.<network>] fetch_root_key` | `--fetch-root-key` (custom-URL entries only, see below) |
 | `[codegen] target` | `gleaph codegen --target` |
@@ -94,6 +99,9 @@ Directory settings are not environment-overridable: they exist to be pinned by t
 Relative paths in the file (`identity`, `[dirs]`, `[codegen] output`, `[load] state_file`) resolve
 against the config file's directory; relative paths given as flags or environment variables
 resolve against the current working directory. There is no `~` or shell expansion.
+
+**Identity fallback:** when `--identity` is absent from the flag, environment, and deployment
+profile, the active session (from `gleaph identity new` / `login` / `import`) signs the call.
 
 Parsing is fail-closed: unknown keys, unknown deployment network shapes, a `format_version` other
 than `1`, and a non-boolean `GLEAPH_FETCH_ROOT_KEY` are all errors.

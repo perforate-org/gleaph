@@ -1,10 +1,9 @@
 # `gleaph load` — initial data loading
 
 `gleaph load` loads initial vertices and edges into an existing logical graph
-through the durable Router `bulk_load` lifecycle (ADR 0057, ADR 0060 Decision 4).
-It is the intended entry point for the initial data load of an application
-graph; incremental edge loads can reference existing vertices by property
-instead of by in-artifact ids.
+through the durable Router `bulk_load` lifecycle. It is the intended entry
+point for the initial data load of an application graph; incremental edge loads
+can reference existing vertices by property instead of by in-artifact ids.
 
 The command never hardcodes a chunk size: each request is fitted to the
 inter-canister payload bound with `gleaph-message-sizing`, chunk boundaries are
