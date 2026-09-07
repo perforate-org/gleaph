@@ -52,12 +52,10 @@ pub fn analyze_pinned(id: u32, text: &str) -> Vec<String> {
 }
 
 /// True for ids that carry the stable-resident MPD dictionary container. Drives the
-/// dictionary upload / backfill-hold / open-rebind gates (plan 0332: id 0 and id 2
-/// both go through the same dictionary machinery; id 1 is dictionary-free). The
-/// `DICT_REQUIRED` gate is the single source of truth.
-pub const fn dict_required(id: u32) -> bool {
-    matches!(id, ANALYZER_MULTILINGUAL | ANALYZER_MECAB)
-}
+/// dictionary upload / backfill-hold / open-rebind gates. SINGLE SOURCE OF TRUTH is the
+/// shared kernel definition (plan 0335: both canisters agree on one predicate; the text
+/// canister re-exports it rather than keeping a {0, 2} copy).
+pub use gleaph_graph_kernel::provisioning::dictionary::dict_required;
 
 /// True for characters eligible for CJK-run bigram expansion: Hiragana
 /// U+3041..=U+3096, Katakana U+30A1..=U+30FF, and CJK Unified Ideographs
@@ -284,13 +282,7 @@ mod tests {
         );
     }
 
-    /// The dictionary-carrying id set is exactly {0, 2}; id 1 is dictionary-free.
-    #[test]
-    fn dict_required_gate_is_exactly_ids_0_and_2() {
-        assert!(dict_required(ANALYZER_MULTILINGUAL));
-        assert!(!dict_required(ANALYZER_UNICODE_BIGRAM));
-        assert!(dict_required(ANALYZER_MECAB));
-        assert!(!dict_required(3));
-        assert!(!dict_required(u32::MAX));
-    }
+    // The dictionary-carrying id set lives in the shared kernel predicate
+    // (`gleaph_graph_kernel::provisioning::dictionary::dict_required`), which carries its
+    // own boundary tests; no local {0, 2} copy is kept (plan 0335 SSOT switch).
 }

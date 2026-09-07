@@ -43,32 +43,18 @@ pub use backfill::{
     RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
     TextBackfillSealProof, TextBackfillStatus,
 };
+/// Dictionary-relay protocol types (plan 0335): SINGLE SOURCE OF TRUTH is the shared
+/// kernel module (the Provision catalog owner and this relay receiver agree on one Candid
+/// shape and one `dict_required` predicate; no copy is kept here).
+pub use gleaph_graph_kernel::provisioning::dictionary::{
+    CompressedDictFinalize, CompressedDictStatus, CompressedDictUpload, DictState, DictStatus,
+    MAX_DICT_COMPRESSED_CHUNK_BYTES,
+};
 pub use init::TextCanisterInitArgs;
 pub use state::MAX_DICT_CHUNK_BYTES;
 /// v0 identity-scorer constant weight (see `state` module docs); part of the observable
 /// search contract until catalog-driven scoring lands.
 pub use state::WEIGHT_BASE;
-
-/// Lifecycle of the analyzer-2 dictionary blob (stable region 16, plan 0331).
-#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DictState {
-    /// Fresh open: no dictionary chunks uploaded yet.
-    Absent,
-    /// Appending chunks; interrupted uploads fail the open loudly (no resume this slice).
-    Uploading,
-    /// Digest verified and pinned; the pinned tokenizer is resident.
-    Finalized,
-}
-
-/// Read-only analyzer-2 dictionary status (`admin_get_dict_status`).
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct DictStatus {
-    pub state: DictState,
-    /// xxh3_128 over the concatenated region bytes; `None` before finalize.
-    pub digest: Option<u128>,
-    /// Dictionary blob byte length (pinned upload length while uploading).
-    pub len: u64,
-}
 
 /// One document to index. Keys are caller-owned u64 identities (vertex ids once the
 /// Router wires DML); re-ingesting a key updates it (delete + insert semantics).
@@ -153,7 +139,12 @@ fn init() {
     // the open (∈ {1, 2}); an unset/omitted field defaults to the unicode-bigram
     // pipeline (bare wasm installs such as canbench keep working unchanged).
     state::set_init_analyzer(args.as_ref().and_then(|a| a.analyzer_id));
-    state::with_stores(|stores| stores.set_controller(args.and_then(|a| a.controller)));
+    state::with_stores(|stores| {
+        stores.set_controller(args.as_ref().and_then(|a| a.controller));
+        // Plan 0335 §5-2: the Provision relay caller rides the init args; `None`/anonymous
+        // denies everyone on the two relay endpoints (fail-closed).
+        stores.set_dict_relay_caller(args.as_ref().and_then(|a| a.dict_relay_caller));
+    });
 }
 
 /// Upgrade reopen: rebinds the store through the same validated open path as first use;
@@ -199,25 +190,34 @@ fn admin_merge_step(budget: u32) -> Result<MergeStepReport, String> {
 
 // -- Analyzer-2 dictionary upload (plan 0331, ADR 0087 chunk analogy) -----------------------
 
-/// Controller-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] bytes).
-/// Fail-closed unless this index pins a dictionary-carrying analyzer (id 0 or id 2,
-/// the `DICT_REQUIRED` set) and the dictionary is not yet finalized; returns the new
-/// total blob length. The same MPD container and chunk upload path serve both ids
-/// (plan 0332 widening).
-#[update(guard = "guards::guard_controller")]
-fn admin_upload_dict_chunk(bytes: Vec<u8>) -> Result<u64, String> {
-    state::with_stores(|stores| stores.upload_dict_chunk(bytes))
+/// Relay-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] raw / [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] compressed).
+/// Accepts the stored controller (Router) OR the provision relay caller (plan 0335 §5-2).
+/// Wire (plan 0353): trailing `opt` mode — `None` = raw (byte-identical behavior), `Some`
+/// = compressed staging into region 17. Fail-closed unless this index pins a
+/// dictionary-carrying analyzer (id 0 or id 2) and the dictionary is not yet finalized;
+/// returns the new TOTAL length of the selected staging region.
+#[update(guard = "guards::guard_controller_or_relay_caller")]
+fn admin_upload_dict_chunk(
+    bytes: Vec<u8>,
+    compressed: Option<CompressedDictUpload>,
+) -> Result<u64, String> {
+    state::with_stores(|stores| stores.upload_dict_chunk(bytes, compressed))
 }
 
-/// Controller-guarded dictionary finalize: verifies the streaming identity
-/// (xxh3_128 over the concatenated region) against `expected_digest`, then
-/// structurally validates + materializes the resident set (plan 0334 rebind:
-/// validate + resident memcpy, NO zstd decode). Idempotent on an exact Finalized
-/// replay; a wrong digest rejects WITHOUT touching state. Serves both id 0 and id
-/// 2 indexes (plan 0332 widening).
-#[update(guard = "guards::guard_controller")]
-fn admin_finalize_dict_upload(expected_digest: u128) -> Result<DictStatus, String> {
-    state::with_stores(|stores| stores.finalize_dict_upload(expected_digest))
+/// Relay-guarded dictionary finalize (trailing `opt` mode per plan 0335). RAW mode:
+/// verifies the streaming identity (xxh3_128 over the concatenated region) against
+/// `expected_digest`, then structurally validates + materializes the resident set
+/// (plan 0334 rebind: validate + resident memcpy, NO decode). COMPRESSED mode: verifies
+/// the compressed staging digest, streams ruzstd into region 16, checks length + raw
+/// digest, then runs the same validation. Accepts the stored controller (Router) OR the
+/// provision relay caller (plan 0335 §5-2). Idempotent on an exact Finalized replay in
+/// both modes; any failure rejects WITHOUT recording Finalized state.
+#[update(guard = "guards::guard_controller_or_relay_caller")]
+fn admin_finalize_dict_upload(
+    expected_digest: u128,
+    compressed: Option<CompressedDictFinalize>,
+) -> Result<DictStatus, String> {
+    state::with_stores(|stores| stores.finalize_dict_upload(expected_digest, compressed))
 }
 
 /// Read-only dictionary status (state / digest / len).
@@ -291,6 +291,68 @@ fn get_text_backfill_status() -> Result<Option<TextBackfillStatus>, String> {
     Ok(backfill::with_cells(|cells| {
         backfill::text_backfill_status(cells)
     }))
+}
+
+#[cfg(test)]
+mod wire_contract_tests {
+    use candid::{decode_args, encode_args};
+    use gleaph_graph_kernel::provisioning::dictionary::{
+        CompressedDictFinalize, CompressedDictUpload, MAX_DICT_COMPRESSED_CHUNK_BYTES,
+    };
+
+    /// Sender/receiver encoding match (the agreed plan-0335 completion condition): the
+    /// relay endpoints gained a trailing `opt` mode argument, so OLD single-arg raw
+    /// senders must decode under the NEW receivers with the mode filled as `None`
+    /// (Candid optional-field evolution), and the compressed sender shape must round-trip.
+    #[test]
+    fn old_raw_single_arg_sender_decodes_as_none_mode() {
+        // Old upload sender `(blob)` under the new receiver `(blob, opt CompressedDictUpload)`.
+        let raw = encode_args((vec![1u8, 2, 3],)).unwrap();
+        let decoded: (Vec<u8>, Option<CompressedDictUpload>) = decode_args(&raw).unwrap();
+        assert_eq!(decoded, (vec![1, 2, 3], None));
+
+        // Old finalize sender `(nat)` under the new receiver `(nat, opt CompressedDictFinalize)`.
+        let raw = encode_args((u128::MAX,)).unwrap();
+        let decoded: (u128, Option<CompressedDictFinalize>) = decode_args(&raw).unwrap();
+        assert_eq!(decoded, (u128::MAX, None));
+    }
+
+    #[test]
+    fn compressed_sender_shapes_roundtrip_against_receivers() {
+        let upload = CompressedDictUpload {
+            compressed_len: 10_900_552,
+        };
+        let bytes = encode_args((vec![7u8; 16], Some(upload.clone()))).unwrap();
+        let decoded: (Vec<u8>, Option<CompressedDictUpload>) = decode_args(&bytes).unwrap();
+        assert_eq!(decoded, (vec![7; 16], Some(upload)));
+
+        let finalize = CompressedDictFinalize {
+            compressed_digest: 0xAABB,
+            raw_digest: 0xCCDD,
+            raw_len: 52_931_159,
+        };
+        let bytes = encode_args((finalize.raw_digest, Some(finalize.clone()))).unwrap();
+        let decoded: (u128, Option<CompressedDictFinalize>) = decode_args(&bytes).unwrap();
+        assert_eq!(decoded, (finalize.raw_digest, Some(finalize)));
+    }
+
+    #[test]
+    fn max_compressed_chunk_call_fits_the_2mib_cross_subnet_limit() {
+        // A full-size compressed chunk call plus its Candid metadata (the receiver's arg
+        // tuple) must stay under the 2 MiB cross-subnet inter-canister payload limit.
+        let args = (
+            vec![0u8; MAX_DICT_COMPRESSED_CHUNK_BYTES],
+            Some(CompressedDictUpload {
+                compressed_len: 10_900_552,
+            }),
+        );
+        let bytes = encode_args(args).unwrap();
+        assert!(
+            bytes.len() <= 2 * 1024 * 1024,
+            "max compressed chunk call encoded to {} bytes, exceeding 2 MiB",
+            bytes.len()
+        );
+    }
 }
 
 ic_cdk::export_candid!();

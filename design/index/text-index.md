@@ -127,15 +127,30 @@ landings + plan 0332 default promotion):
   100% unit-sequence parity with the previous vibrato engine (plan 0333 gate). The dictionary is
   NOT in the wasm (~1.6 MB canister wasm): stable region 16 carries the MPD container
   (52,930,923 bytes — sys.dic 49,199,027 + unk.dic 5,684 + matrix.bin 3,463,716 + char.bin
-  262,496, about $0.058/month), uploaded via controller-guarded `admin_upload_dict_chunk`
-  (<= 1 MiB/call, raw contiguous appends) + `admin_finalize_dict_upload` (one xxh3_128 over the
-  container; exact replay idempotent). Upgrade rebind = structural container validation +
-  resident-set memcpy over batched stable reads — NO decode, NO full-container copy: the
-  resident set is ~21 MB (matrix.bin + char.bin + unk.dic + sys.dic trie/word-params), the
-  feature-string region stays lazy over stable memory (measured hot set ~472 KiB of pages per
-  MB of text). Measured rebind delta 59,900,562 cycles vs the 4,752,264,345-cycle eager-decode
-  baseline (79x). Native throughput 0.5-0.6x vibrato (bounded-lookup engine); the DDL clause
-  contract lives in [extension-syntax.md](../gql/extension-syntax.md).
+  262,496, about $0.058/month), uploaded via relay-guarded `admin_upload_dict_chunk` in two
+  transport modes (plan 0335): RAW (≤ 1 MiB/call, raw contiguous appends into region 16;
+  the manual/E2E path, byte-identical to the pre-0353 shape) and COMPRESSED (~1.9 MiB/call
+  under the shared `MAX_DICT_COMPRESSED_CHUNK_BYTES = 1,945,600` cap, the cross-subnet 2 MiB
+  inter-canister payload limit minus Candid/envelope headroom; zstd container bytes staged
+  into region 17 during the provision relay, ~6 calls for the 10.9 MB zstd-19 artifact).
+  `admin_finalize_dict_upload` accepts the same trailing mode: RAW verifies one xxh3_128 over
+  the container (exact replay idempotent); COMPRESSED verifies the streaming compressed digest
+  over region 17 FIRST (fail-closed before any mutation), streams ruzstd decompression into
+  region 16 (bounded windows — no materialization), checks the declared raw length + raw
+  digest, then runs the same structural validation + resident-set materialization — the end
+  state is byte-identical to the raw path. The provision relay caller is a SECOND authorized
+  principal on exactly these two endpoints (plan 0335 §5-2: init arg `dict_relay_caller`,
+  durable region 18; all other `admin_*` endpoints keep controller-only guards;
+  `admin_get_dict_status` is an unguarded read-only query). Shared wire shapes and the
+  `dict_required` predicate live in `gleaph_graph_kernel::provisioning::dictionary` (single
+  source of truth; the text canister re-exports, no copies). Upgrade rebind = structural
+  container validation + resident-set memcpy over batched stable reads — NO decode, NO
+  full-container copy: the resident set is ~21 MB (matrix.bin + char.bin + unk.dic + sys.dic
+  trie/word-params), the feature-string region stays lazy over stable memory (measured hot set
+  ~472 KiB of pages per MB of text). Measured rebind delta 59,900,562 cycles vs the
+  4,752,264,345-cycle eager-decode baseline (79x). Native throughput 0.5-0.6x vibrato
+  (bounded-lookup engine); the DDL clause contract lives in
+  [extension-syntax.md](../gql/extension-syntax.md).
 
 Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB zstd dictionary (0330 baseline; superseded by the morph-dict engine 0334) /
 51.8 MB heap / ~400k chars/s vs lindera 48 MB wasm (path-only dictionary API, wasm-embedded-only),
@@ -246,7 +261,11 @@ cell · pending-ops FIFO deque (payloads in the shared blob arena) · merge-curs
 controller cell · shared fixed-chunk blob arena · term-entry vector — plus the plan 0297 additions:
 backfill registration cell + resumable cursor cell (MemoryIds 14/15, bound by the backfill
 module through `state::region()`) — plus the 0331 addition: the analyzer-2 ZSTD dictionary
-blob (MemoryId 16, bounded 1 MiB chunk slots; upload/finalize contract in the analyzer section).
+blob (MemoryId 16, bounded 1 MiB chunk slots; upload/finalize contract in the analyzer section)
+— plus the plan 0335 additions: the compressed MPD staging region (MemoryId 17, plain zstd
+container bytes during the provision relay, streamed-decompressed into 16 at compressed
+finalize then logically deactivated) and the provision relay caller cell (MemoryId 18,
+`Cell<Principal>`; the second authorized principal on the two relay endpoints).
 
 ## Budgets and capacity
 

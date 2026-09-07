@@ -38,3 +38,13 @@ unicode-segmentation = "1"
 # `state`); `ic-morph-dict` backs the container with stable-memory offset accessors.
 morph-dict = { path = "../morph-dict" }
 ic-morph-dict = { path = "../ic-morph-dict" }
+# Plan 0335 compressed finalize: streaming zstd decompression (wasm-safe, getrandom-free
+# per the 0330 audit — re-verified by `cargo tree -p text-canister --target
+# wasm32-unknown-unknown -e normal -i getrandom`). Decode-only; the catalog artifact is
+# produced off-band with the `zstd` CLI (level 19).
+ruzstd = "0.7"
+
+[dev-dependencies]
+# Host-only zstd compressor for the compressed-finalize round-trip tests (the canister
+# itself only decodes; the catalog artifact is produced off-band with the `zstd` CLI).
+zstd = "0.13"

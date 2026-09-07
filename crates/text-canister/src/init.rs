@@ -17,4 +17,9 @@ pub struct TextCanisterInitArgs {
     /// `TextMeta`. `None` defaults to the unicode-bigram pipeline, byte-compatibly with
     /// pre-0331 installs.
     pub analyzer_id: Option<u32>,
+    /// Provision relay caller (plan 0335 §5-2): the Provision canister principal allowed
+    /// on the two relay endpoints (`admin_upload_dict_chunk`, `admin_finalize_dict_upload`)
+    /// in addition to the stored controller (Router). `None`/anonymous denies everyone on
+    /// those endpoints. Mirrors the shared `graph_kernel::provisioning::init_args` field.
+    pub dict_relay_caller: Option<Principal>,
 }
