@@ -614,43 +614,6 @@ mod tests {
     }
 
     #[test]
-    fn bypass_accumulates_many_slab_tombstones_without_promotion() {
-        let graph = test_graph();
-        let default = graph.default_label();
-        let total = 202u32;
-        for target in 1..=total {
-            graph
-                .insert_edge(
-                    VertexId::from(0),
-                    default,
-                    TestEdge { target },
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .unwrap();
-        }
-
-        for target in 1..=200 {
-            assert!(
-                graph
-                    .remove_edge_matching(VertexId::from(0), default, |edge| edge.target == target)
-                    .unwrap()
-                    .is_some()
-            );
-        }
-
-        let vertex = graph.vertices().get(VertexId::from(0));
-        assert!(vertex.is_default_edge_labeled());
-        assert_eq!(vertex.stored_slots.saturating_sub(vertex.degree), 200);
-        assert_eq!(vertex.degree(), 2);
-        assert_eq!(
-            graph
-                .iter_edges_for_label(VertexId::from(0), default)
-                .unwrap(),
-            vec![TestEdge { target: 202 }, TestEdge { target: 201 }]
-        );
-    }
-
-    #[test]
     fn empty_bypass_promotes_as_empty_when_next_insert_uses_different_label() {
         let graph = test_graph();
         let default = graph.default_label();
@@ -1233,5 +1196,171 @@ mod tests {
         assert!(graph.may_use_homogeneous_bypass(hub));
         assert!(graph.vertices().get(hub).is_default_edge_labeled());
         assert_eq!(graph.vertices().get(hub).degree(), 1);
+    }
+
+    /// Plan 0341: the bypass-row left-pack step shifts live slots down to the
+    /// front of the row, publishes `stored_slots = degree` in one atomic
+    /// `vertices.set`, preserves surviving edges' order and values, and never
+    /// moves a later tail row's origin (bypass-origin geometry contract point (a)).
+    #[test]
+    fn bypass_compact_step_left_packs_and_preserves_order() {
+        let graph = test_graph();
+        let default = graph.default_label();
+        // Push a placeholder so the bypass source can be the tail.
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let src = VertexId::from(1);
+        // Build a bypass row on the tail vertex with interior tombstones.
+        for target in 1..=8u32 {
+            graph
+                .insert_edge(
+                    src,
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        // Push a later tail row after the bypass source so we can assert its
+        // origin is unchanged by the in-row compaction.
+        let successor = graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge(
+                successor,
+                default,
+                TestEdge { target: 900 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
+        let successor_origin_before = graph.vertices().get(successor).base_slot_start();
+
+        for target in [1u32, 3, 5, 7] {
+            assert!(
+                graph
+                    .remove_edge_matching(src, default, |edge| edge.target == target)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let vertex = graph.vertices().get(src);
+        assert!(vertex.is_default_edge_labeled());
+        assert_eq!(vertex.degree(), 4);
+        assert_eq!(vertex.stored_slots, 8);
+
+        let outcome = graph.compact_default_bypass_row(src).unwrap();
+        assert_eq!(outcome, BypassRowCompactOutcome::Compacted);
+
+        let vertex = graph.vertices().get(src);
+        assert_eq!(
+            vertex.stored_slots, vertex.degree,
+            "stored shrinks to degree"
+        );
+        assert_eq!(vertex.degree(), 4);
+        // Surviving edges' order and values preserved (insertion order 2,4,6,8;
+        // descending scan returns 8,6,4,2).
+        assert_eq!(
+            graph.iter_edges_for_label(src, default).unwrap(),
+            vec![
+                TestEdge { target: 8 },
+                TestEdge { target: 6 },
+                TestEdge { target: 4 },
+                TestEdge { target: 2 },
+            ]
+        );
+        // Later tail row's origin unchanged by the in-row compaction.
+        assert_eq!(
+            graph.vertices().get(successor).base_slot_start(),
+            successor_origin_before
+        );
+    }
+
+    /// Plan 0341: an overflow-log-backed bypass row is deferred (v1 boundary) —
+    /// the compact step returns `Deferred` and leaves the row unchanged.
+    #[test]
+    fn bypass_compact_step_deferred_for_overflow_log_backed_row() {
+        let graph = test_graph();
+        let default = graph.default_label();
+        for target in 1..=4u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        // Simulate an overflow-log-backed bypass row by setting a non-negative
+        // log head (the compact step only inspects the head value).
+        let vertex = graph.vertices().get(VertexId::from(0));
+        graph
+            .set_labeled_vertex(VertexId::from(0), vertex.with_bypass_overflow_log_head(42))
+            .unwrap();
+        let before = graph.vertices().get(VertexId::from(0));
+        let outcome = graph.compact_default_bypass_row(VertexId::from(0)).unwrap();
+        assert_eq!(outcome, BypassRowCompactOutcome::Deferred);
+        assert_eq!(
+            graph.vertices().get(VertexId::from(0)),
+            before,
+            "overflow-log-backed row must be left unchanged"
+        );
+    }
+
+    /// Plan 0341: a descending-order scan of the bypass row returns the same
+    /// surviving edges after compaction as before (in-row shift preserves order).
+    #[test]
+    fn bypass_compact_step_descending_parity_after_compaction() {
+        let graph = test_graph();
+        let default = graph.default_label();
+        for target in 1..=8u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        for target in [1u32, 3, 5, 7] {
+            graph
+                .remove_edge_matching(VertexId::from(0), default, |edge| edge.target == target)
+                .unwrap();
+        }
+        let before: Vec<_> = graph
+            .iter_edges_for_label(VertexId::from(0), default)
+            .unwrap();
+        graph.compact_default_bypass_row(VertexId::from(0)).unwrap();
+        let after: Vec<_> = graph
+            .iter_edges_for_label(VertexId::from(0), default)
+            .unwrap();
+        assert_eq!(after, before, "descending scan parity after compaction");
+    }
+
+    /// Plan 0341: the layout invariants suite passes after a bypass-row compaction.
+    #[test]
+    fn bypass_compact_step_invariants_pass() {
+        let graph = test_graph();
+        let default = graph.default_label();
+        for target in 1..=8u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        for target in [1u32, 3, 5, 7] {
+            graph
+                .remove_edge_matching(VertexId::from(0), default, |edge| edge.target == target)
+                .unwrap();
+        }
+        graph.compact_default_bypass_row(VertexId::from(0)).unwrap();
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
     }
 }

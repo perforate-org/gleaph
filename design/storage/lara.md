@@ -198,6 +198,35 @@ Inline property bytes slab ([labeled-edge-inline-properties.md](./labeled-edge-i
 
 **Homogeneous bypass insertion is tail-only (GAP-2026-07-11-004).** A default-label bypass row may extend its contiguous slab region only while it is the tail vertex; extending a non-tail region forces every later row's origin to be rescanned and rewritten, which measured linearly (~1.08M instructions per insert at 4,096 successors). The labeled insert dispatcher therefore promotes a non-tail bypass row to bucket mode — via the existing preflighted `promote_bypass_to_bucket_mode` transition — before its next same-label insert, so per-insert cost is bounded by the owning PMA leaf/segment rather than vertex count: 343K / 363K / 382K instructions for 16 inserts at 256 / 1,024 / 4,096 successors (`bench_labeled_non_tail_bypass_insert_*`). While the row remains the tail, same-label inserts keep the direct slab fast path unchanged.
 
+**Bypass-origin geometry contract (Plan 0341, GAP-2026-09-07-001 bypass side).** A default-label
+homogeneous bypass row is a vertex-level span `[base_slot_start, base_slot_start + stored_slots)`
+in the shared edge slab, optionally with an overflow-log suffix appended beyond `stored_slots`
+(`bypass_overflow_log_head`, `DEFAULT_MAX_LOG_ENTRIES = 170` per leaf segment; the fold path is the
+existing mechanism for log-backed rows). The row's live edges are the first `degree` slots of the
+slab prefix; removes tombstone in place (`remove_default_bypass_edge_at_slot`, remove.rs:147-230)
+and `after_slab_tombstone_delete` keeps `stored_slots` while decrementing `degree` (record.rs:1306),
+so `stored_slots − degree` is the tombstone count. Every later tail row's `base_slot_start` anchors
+at or after this row's region end: `bump_successor_origins_after_bypass_end` (bypass.rs:39-55) only
+ever RAISES a later row's origin to `region_end` when the region grows, never lowers it. Therefore:
+
+- **(a) In-row slot shift is safe.** Moving a live slot `j` to an earlier free slot `j′` within the
+  SAME row changes no other row's origin — the row's `base_slot_start` and every later row's origin
+  are untouched. This is the precondition that makes an in-row left-pack safe where a cross-row
+  rewrite is not (a cross-row rewrite would have to update later origins via
+  `bump_successor_origins_after_bypass_end` semantics, the O(V) cost GAP-2026-07-11-004 records).
+- **(b) Shrinking `stored_slots` is safe.** Dropping trailing dead slots (setting
+  `stored_slots = degree`) never moves a later origin: the region end only grows on insert, and the
+  shrink keeps the freed gap as PMA slack.
+- **(c) Extent changes must publish atomically.** Descending-scan consumers (ADR 0022's recorded
+  fallback) map positions via `extent − 1 − slot` with the CURRENT extent, so any extent change must
+  be a single atomic descriptor publish (`vertices.set`) — no intermediate state may mix the old
+  extent with shifted slots. The left-pack writes the shifted slots and tombstone-fills the vacated
+  tail BEFORE the single `vertices.set` that publishes `stored_slots = degree`.
+
+This contract is what the `compact_default_bypass_row` step (compact.rs) must satisfy, and it is why
+every existing edge-span compactor short-circuits on `is_default_edge_labeled()`: a cross-row
+rewrite of a bypass row would violate (a) by moving another row's origin.
+
 ---
 
 Plan 0158 evaluates a topology-aware policy: ScanOnly for low-degree/cold buckets, rank-indexed

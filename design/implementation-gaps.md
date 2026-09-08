@@ -2995,17 +2995,23 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   new bench surface). 159 → 161 entries (+2 honest benches; the
   partial slice's bogus 540-ins entries were removed).
 
-### GAP-2026-09-07-001 — RESOLVED (Insertion-policy slab side) / OPEN (default-label bypass side): Delete-only workloads accumulate tombstones indefinitely on Insertion-policy slab buckets and default-label bypass rows
+### GAP-2026-09-07-001 — RESOLVED: Delete-only workloads accumulate tombstones indefinitely on Insertion-policy slab buckets and default-label bypass rows
 
-- **Status:** Slab side Resolved (2026-09-07, Plan 0339 remove-side trigger); bypass side still Open.
-  The slab-bucket half is closed by the Plan 0339 remove-side hysteresis admission trigger
+- **Status:** Resolved (2026-09-07, Plan 0339 slab side + Plan 0341 bypass side). The
+  slab-bucket half is closed by the Plan 0339 remove-side hysteresis admission trigger
   (`DeferredBidirectionalLabeledLaraGraph::maybe_enqueue_remove_side_compaction`, deferred.rs):
   after a successful removal, if post-removal tombstones exceed half the stored width on an
   Insertion-policy slab bucket, the existing `CompactVertexEdgeSpanV1` work item is enqueued and
   the same message's drain left-packs the span. Regression tests: `remove_side_compaction_*`
   (deferred.rs) and `delete_past_hysteresis_enqueues_span_compaction_and_left_packs` /
   `delete_below_hysteresis_leaves_tombstones_for_append` (facade/store/tests.rs). The bypass-row
-  half remains Open (see survey finding 2 below).
+  half is closed by Plan 0341: the bypass-origin geometry contract
+  (`design/storage/lara.md`) plus the new `compact_default_bypass_row` left-pack step
+  (compact.rs), the `CompactDefaultBypassRowV1` work item, and the remove-side admission wired
+  into the deferred wrapper's bypass remove paths (deferred.rs). Regression tests:
+  `bypass_tombstones_are_left_packed_at_hysteresis` / `bypass_compaction_below_hysteresis_no_fire`
+  (deferred.rs) and `bypass_compact_step_*` (bypass.rs). The slab trigger + this step together
+  close the full gap.
 - **Severity:** P2 maintenance-coverage gap (slow scan/memory degradation, no correctness risk;
   extent-bounded per row)
 - **Owner:** `ic-stable-lara` deferred maintenance admission (`deferred.rs`) + bypass row
@@ -3055,3 +3061,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   (`CompactVertexEdgeSpanV1`, design already fixed), then (2) a separate bypass-row compaction
   plan (new compact step; needs the bypass-origin geometry contract written down first).
   Update this entry to Resolved in the same patches as each half lands.
+  **Both halves landed (2026-09-07):** Plan 0339 (slab side) and Plan 0341 (bypass side).
+  The bypass v1 boundary (overflow-log-backed rows defer to the existing fold mechanism) and
+  the undirected/vertex-purge remove paths (not wired; a bypass row being purged needs no
+  compaction) are recorded in the Plan 0341 report.

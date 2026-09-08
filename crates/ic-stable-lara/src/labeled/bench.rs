@@ -1471,6 +1471,97 @@ fn bench_remove_churn_no_trigger() -> canbench_rs::BenchResult {
     })
 }
 
+/// Plan 0341: build a default-label bypass row on a tail vertex with 16 edges,
+/// plus 16 destination vertices (bucket rows). Returns `(vid, dsts)`.
+fn remove_churn_bypass_row(
+    graph: &DeferredBidirectionalLabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+) -> (VertexId, Vec<VertexId>) {
+    let dsts: Vec<VertexId> = (0..16u32)
+        .map(|_| graph.push_vertex().expect("vertex"))
+        .collect();
+    // Push the source LAST so it is the tail (bypass-eligible).
+    let vid = graph.push_vertex().expect("source (tail)");
+    let default = BucketLabelKey::from_raw(1); // deferred_bench_graph default
+    for (k, dst) in dsts.iter().enumerate() {
+        graph
+            .insert_directed_edge(
+                vid,
+                *dst,
+                default,
+                BenchEdge(k as u32),
+                BenchEdge(0),
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert");
+    }
+    graph
+        .maintenance(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("settle inserts");
+    (vid, dsts)
+}
+
+/// Plan 0341: delete-only churn past the hysteresis on a default-label bypass row,
+/// with the remove-side trigger + drain. Records the post-drain compacted state
+/// (`stored` returns to `degree`), proving the trigger bounds tombstone accumulation.
+#[bench(raw)]
+fn bench_remove_churn_bypass_accumulation() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = deferred_bench_graph(8192);
+        let (vid, dsts) = remove_churn_bypass_row(&graph);
+        // 9 of 16 removed: tombstones=9 > stored/2=8 => the gate fires automatically.
+        for (k, dst) in dsts.iter().enumerate().take(9) {
+            graph
+                .remove_directed_deferred(vid, *dst, BenchEdge(k as u32))
+                .expect("remove");
+        }
+        graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("drain");
+        let vertex = graph.forward().vertices().get(vid);
+        assert_eq!(
+            vertex.stored_slots, vertex.degree,
+            "drain must left-pack the bypass row (stored == degree)"
+        );
+        black_box((vertex.degree, vertex.stored_slots));
+    })
+}
+
+/// Plan 0341: delete-only churn WITHOUT the drain — the bypass row's tombstone
+/// slack accumulates (`stored` stays well above `degree`). The honest "without"
+/// side of the accumulation comparison.
+#[bench(raw)]
+fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = deferred_bench_graph(8192);
+        let (vid, dsts) = remove_churn_bypass_row(&graph);
+        for (k, dst) in dsts.iter().enumerate().take(9) {
+            graph
+                .remove_directed_deferred(vid, *dst, BenchEdge(k as u32))
+                .expect("remove");
+        }
+        let vertex = graph.forward().vertices().get(vid);
+        assert!(
+            vertex.stored_slots > vertex.degree,
+            "without the drain the bypass row accumulates tombstones (stored > degree)"
+        );
+        black_box((vertex.degree, vertex.stored_slots));
+    })
+}
+
 /// ADR 0016: inline property attach over hybrid slab + 8 B inline property overflow log.
 #[bench(raw)]
 fn bench_l_ip_log_8b_of() -> canbench_rs::BenchResult {

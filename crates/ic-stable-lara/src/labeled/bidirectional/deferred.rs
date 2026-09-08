@@ -201,6 +201,18 @@ pub enum MaintenanceWorkItem {
         orientation: Orientation,
         vid: VertexId,
     },
+    /// v1: Left-pack a tombstoned default-label bypass row in one orientation
+    /// (Plan 0341, GAP-2026-09-07-001 bypass side). The step shifts the row's
+    /// live slots down to the front and publishes `stored_slots = degree` in one
+    /// atomic `vertices.set` (bypass-origin geometry contract,
+    /// design/storage/lara.md). v1 compacts the slab prefix only; overflow-log-
+    /// backed rows are deferred to the existing fold mechanism.
+    CompactDefaultBypassRowV1 {
+        /// Orientation whose bypass row should be left-packed.
+        orientation: Orientation,
+        /// Vertex owning the default-label bypass row.
+        vid: VertexId,
+    },
     /// v1: Stable maintenance tag. It now advances edge compaction only; value maintenance is independent.
     CompactVertexEdgeAndValueSpanV1 {
         orientation: Orientation,
@@ -253,7 +265,7 @@ pub enum MaintenanceWorkItem {
 }
 
 impl MaintenanceWorkItem {
-    /// Stable variant tag byte (0..=7).
+    /// Stable variant tag byte (0..=8).
     fn tag(&self) -> u8 {
         match self {
             Self::CompactLabelBucketVertexSegmentV1 { .. } => 0,
@@ -264,6 +276,7 @@ impl MaintenanceWorkItem {
             Self::DeleteVertexV1 { .. } => 5,
             Self::CompactInlinePropertyBytesSlabV1 { .. } => 6,
             Self::MaterializeInlinePropertyStreamV1 { .. } => 7,
+            Self::CompactDefaultBypassRowV1 { .. } => 8,
         }
     }
 
@@ -278,7 +291,8 @@ impl MaintenanceWorkItem {
             | Self::CompactVertexEdgeAndValueSpanV1 { .. }
             | Self::DeleteVertexV1 { .. }
             | Self::CompactInlinePropertyBytesSlabV1 { .. }
-            | Self::MaterializeInlinePropertyStreamV1 { .. } => 1,
+            | Self::MaterializeInlinePropertyStreamV1 { .. }
+            | Self::CompactDefaultBypassRowV1 { .. } => 1,
         }
     }
 }
@@ -383,6 +397,10 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
             out.push(orientation_byte(*orientation));
             out.extend_from_slice(&u32::from(*vid).to_le_bytes());
         }
+        MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+        }
         MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
             orientation,
             vid,
@@ -469,6 +487,10 @@ impl Storable for MaintenanceWorkItem {
                 policies: decode_policies(&payload[5..]),
             },
             (3, 1) => Self::CompactVertexValueSpanV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
+            },
+            (8, 1) => Self::CompactDefaultBypassRowV1 {
                 orientation: orientation_from_byte(payload[0]),
                 vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
             },
@@ -561,6 +583,13 @@ fn work_item_discriminator(item: &MaintenanceWorkItem) -> u32 {
                 Orientation::Reverse => 1,
             };
             0x8000_0000 | u32::from(*vid).wrapping_mul(2) ^ orient
+        }
+        MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0x9000_0000 | u32::from(*vid).wrapping_mul(2) ^ orient
         }
         MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
             orientation,
@@ -1658,6 +1687,45 @@ where
             )
         })?;
         self.mark_compact_vertex_edge_span(orientation, vid, bucket_index, policy_for_label)
+    }
+
+    /// Plan 0341: remove-side admission for the bypass regime. After a successful
+    /// bypass-row removal, if the row's tombstone slack crosses the fixed hysteresis
+    /// and the row is slab-prefix-only, enqueue the bypass-row left-pack step.
+    ///
+    /// Best-effort (`let _ =`): the bypass row has no compensation chain, so a failed
+    /// enqueue retries on the next remove (mirrors the Plan 0319 demote check). The
+    /// gate is O(1) descriptor arithmetic — no scans.
+    fn maybe_enqueue_bypass_row_compaction(&self, orientation: Orientation, vid: VertexId) {
+        let _ = self.try_enqueue_bypass_row_compaction(orientation, vid);
+    }
+
+    fn try_enqueue_bypass_row_compaction(
+        &self,
+        orientation: Orientation,
+        vid: VertexId,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let graph = self.graph_for(orientation);
+        let vertex = graph.vertices().get(vid);
+        if !vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+        // v1 boundary: slab-prefix-only rows. Overflow-log-backed rows defer to the
+        // existing fold mechanism.
+        if vertex.bypass_overflow_log_head() >= 0 {
+            return Ok(());
+        }
+        let stored = u64::from(vertex.stored_slots);
+        let degree = u64::from(vertex.degree);
+        // Hysteresis: tombstones (`stored - degree`) must exceed half the stored width
+        // (strict `>` on the integer `stored / 2`), the same boundary as the Plan 0339
+        // slab trigger (`remove_side_compaction_should_fire`).
+        if stored < degree || stored - degree <= stored / 2 {
+            return Ok(());
+        }
+        self.maintenance
+            .enqueue(&MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid });
+        Ok(())
     }
 
     /// Enqueues label-bucket vertex-segment compaction then vertex-edge-span compaction,
@@ -3155,6 +3223,11 @@ where
             .forward
             .remove_edge_at_slot(src, label_id, slot_index)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        // Plan 0341: evaluate the bypass-row admission gate once per successful
+        // bypass tombstone (the gate returns early for non-bypass rows).
+        if removed.is_some() {
+            self.maybe_enqueue_bypass_row_compaction(Orientation::Forward, src);
+        }
         Ok(removed)
     }
 
@@ -3180,6 +3253,11 @@ where
             .forward
             .remove_edge_at_slot_with_move(src, label_id, slot_index)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        // Plan 0341: evaluate the bypass-row admission gate once per successful
+        // bypass tombstone (the gate returns early for non-bypass rows).
+        if removal.is_some() {
+            self.maybe_enqueue_bypass_row_compaction(Orientation::Forward, src);
+        }
         Ok(removal)
     }
 
@@ -3253,6 +3331,11 @@ where
             .reverse
             .remove_edge_at_slot(dst, label_id, slot_index)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        // Plan 0341: evaluate the bypass-row admission gate once per successful
+        // bypass tombstone (the gate returns early for non-bypass rows).
+        if removed.is_some() {
+            self.maybe_enqueue_bypass_row_compaction(Orientation::Reverse, dst);
+        }
         Ok(removed)
     }
 
@@ -3278,6 +3361,11 @@ where
             .reverse
             .remove_edge_at_slot_with_move(dst, label_id, slot_index)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        // Plan 0341: evaluate the bypass-row admission gate once per successful
+        // bypass tombstone (the gate returns early for non-bypass rows).
+        if removal.is_some() {
+            self.maybe_enqueue_bypass_row_compaction(Orientation::Reverse, dst);
+        }
         Ok(removal)
     }
 
@@ -3307,6 +3395,11 @@ where
             .reverse
             .remove_edge_at_slot(dst, label_id, slot)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        // Plan 0341: evaluate the bypass-row admission gate once per successful
+        // bypass tombstone (the gate returns early for non-bypass rows).
+        if removed.is_some() {
+            self.maybe_enqueue_bypass_row_compaction(Orientation::Reverse, dst);
+        }
         Ok(removed)
     }
 
@@ -3336,6 +3429,11 @@ where
             .forward
             .remove_edge_at_slot_with_move(src, label_id, slot)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        // Plan 0341: evaluate the bypass-row admission gate once per successful
+        // bypass tombstone (the gate returns early for non-bypass rows).
+        if removal.is_some() {
+            self.maybe_enqueue_bypass_row_compaction(Orientation::Forward, src);
+        }
         Ok(removal)
     }
 
@@ -3583,6 +3681,24 @@ where
                     }
                 }
                 MaintenanceWorkItem::CompactVertexValueSpanV1 { .. } => None,
+                MaintenanceWorkItem::CompactDefaultBypassRowV1 { orientation, vid } => {
+                    let graph = match orientation {
+                        Orientation::Forward => &self.forward,
+                        Orientation::Reverse => &self.reverse,
+                    };
+                    match graph.compact_default_bypass_row(*vid) {
+                        Ok(crate::labeled::graph::BypassRowCompactOutcome::Compacted) => {
+                            report.work.rebalanced_segments =
+                                report.work.rebalanced_segments.saturating_add(1);
+                            None
+                        }
+                        Ok(crate::labeled::graph::BypassRowCompactOutcome::Deferred) => None,
+                        Err(_) => {
+                            stalled = true;
+                            None
+                        }
+                    }
+                }
                 MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
@@ -4017,6 +4133,11 @@ where
                         .remove_edge_matching(dst, label_id, |cand| cand.neighbor_vid() == src)
                         .map_err(DeferredBidirectionalLabeledError::Reverse)?;
                 }
+                // Plan 0341: evaluate the bypass-row admission gate once per successful
+                // bypass tombstone (forward row on src, reverse row on dst). The gate
+                // returns early for non-bypass rows.
+                self.maybe_enqueue_bypass_row_compaction(Orientation::Forward, src);
+                self.maybe_enqueue_bypass_row_compaction(Orientation::Reverse, dst);
                 return Ok(true);
             }
         }
@@ -4107,6 +4228,9 @@ where
                 })
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
             if removed.is_some() {
+                // Plan 0341: evaluate the bypass-row admission gate once per successful
+                // bypass tombstone (the gate returns early for non-bypass rows).
+                self.maybe_enqueue_bypass_row_compaction(Orientation::Forward, src);
                 return Ok(true);
             }
         }
@@ -5384,6 +5508,22 @@ mod tests {
             bytes.len(),
             3 + 8,
             "delete work item is the versioned header plus vid/removed_edges"
+        );
+        assert_eq!(MaintenanceWorkItem::from_bytes(bytes), item);
+    }
+
+    #[test]
+    fn bypass_row_work_item_round_trips() {
+        use ic_stable_structures::Storable;
+        let item = MaintenanceWorkItem::CompactDefaultBypassRowV1 {
+            orientation: Orientation::Reverse,
+            vid: VertexId::from(9),
+        };
+        let bytes = item.to_bytes();
+        assert_eq!(
+            bytes.len(),
+            3 + 1 + 4,
+            "bypass work item is the versioned header plus orientation/vid"
         );
         assert_eq!(MaintenanceWorkItem::from_bytes(bytes), item);
     }
@@ -7302,5 +7442,123 @@ mod tests {
             &slab(4, 8).with_tree_mode(true),
             EdgePlacementPolicy::Insertion
         ));
+    }
+
+    /// Plan 0341: build a default-label bypass row on a tail vertex with `count`
+    /// edges, plus `count` destination vertices (bucket rows). Returns `(src, dsts)`.
+    fn bypass_row_fixture(
+        graph: &DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory>,
+        count: u32,
+    ) -> (VertexId, Vec<VertexId>) {
+        let dsts: Vec<VertexId> = (0..count)
+            .map(|_| graph.push_vertex().expect("dst"))
+            .collect();
+        // Push the source LAST so it is the tail (bypass-eligible).
+        let src = graph.push_vertex().expect("src (tail)");
+        let default = BucketLabelKey::from_raw(1);
+        for dst in &dsts {
+            graph
+                .insert_directed_edge(
+                    src,
+                    *dst,
+                    default,
+                    TestEdge(u32::from(*dst)),
+                    TestEdge(u32::from(src)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph
+            .maintenance(unbounded_budget())
+            .expect("settle inserts");
+        (src, dsts)
+    }
+
+    /// Plan 0341: a delete-only bypass row crossing the hysteresis is left-packed
+    /// by the drained compact step (`stored_slots == degree`), surviving edges'
+    /// order and values are preserved, and a later tail row's origin is unchanged.
+    #[test]
+    fn bypass_tombstones_are_left_packed_at_hysteresis() {
+        let graph = graph();
+        let (src, dsts) = bypass_row_fixture(&graph, 16);
+        // Seed a later tail row so we can assert its origin is unchanged by the
+        // in-row compaction.
+        let later = graph.push_vertex().expect("later tail");
+        let default = BucketLabelKey::from_raw(1);
+        graph
+            .insert_directed_edge(
+                later,
+                VertexId::from(0),
+                default,
+                TestEdge(0),
+                TestEdge(u32::from(later)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert later");
+        // Settle the later insert's post-write maintenance so the queue holds only
+        // the bypass compact work item after the removals.
+        graph.maintenance(unbounded_budget()).expect("settle later");
+        let later_origin_before = graph.forward().vertices().get(later).base_slot_start();
+
+        // Remove 9 of 16: tombstones=9 > 16/2=8 => the gate fires automatically.
+        for (k, dst) in dsts.iter().enumerate().take(9) {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, *dst, TestEdge(u32::from(*dst)))
+                    .expect("remove"),
+                "fixture must tombstone target {k}"
+            );
+        }
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            1,
+            "hysteresis must enqueue a CompactDefaultBypassRowV1 work item"
+        );
+        let surviving_before: Vec<_> = graph
+            .forward()
+            .iter_edges_for_label(src, default)
+            .expect("iter");
+        graph.maintenance(unbounded_budget()).expect("drain");
+        let vertex = graph.forward().vertices().get(src);
+        assert!(vertex.is_default_edge_labeled());
+        assert_eq!(
+            vertex.stored_slots, vertex.degree,
+            "stored shrinks to degree after drain"
+        );
+        assert_eq!(vertex.degree(), 7);
+        let surviving_after: Vec<_> = graph
+            .forward()
+            .iter_edges_for_label(src, default)
+            .expect("iter");
+        assert_eq!(
+            surviving_after, surviving_before,
+            "surviving edges' order and values preserved by the in-row shift"
+        );
+        // Later tail row's origin unchanged by the in-row compaction.
+        assert_eq!(
+            graph.forward().vertices().get(later).base_slot_start(),
+            later_origin_before
+        );
+    }
+
+    /// Plan 0341: below-hysteresis removals never enqueue the bypass compact step.
+    #[test]
+    fn bypass_compaction_below_hysteresis_no_fire() {
+        let graph = graph();
+        let (src, dsts) = bypass_row_fixture(&graph, 16);
+        // Remove 8 of 16: tombstones=8, not > 16/2=8 => no enqueue (exact boundary).
+        for (k, dst) in dsts.iter().enumerate().take(8) {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, *dst, TestEdge(u32::from(*dst)))
+                    .expect("remove"),
+                "fixture must tombstone target {k}"
+            );
+        }
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            0,
+            "below-threshold slack must not enqueue"
+        );
     }
 }

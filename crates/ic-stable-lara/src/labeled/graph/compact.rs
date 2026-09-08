@@ -14,7 +14,10 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{EdgePlacementPolicy, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
+use super::{
+    BypassRowCompactOutcome, EdgePlacementPolicy, EdgeSlotMove, LabeledLaraGraph,
+    VertexEdgeSpanCompactOneStep,
+};
 
 /// One swap-compaction move for an `Unordered` bucket (ADR 0052 §7): the last
 /// live edge moves into the first interior tombstone. Edge-move coordinates are
@@ -2857,6 +2860,79 @@ where
             .release_inline_property_bytes_log_segment(leaf)
             .map_err(LabeledOperationError::from)?;
         Ok(())
+    }
+
+    /// Plan 0341 (GAP-2026-09-07-001 bypass side): left-pack a tombstoned
+    /// default-label bypass row in place.
+    ///
+    /// The bypass row is a vertex-level span `[base_slot_start, base_slot_start + stored_slots)`
+    /// (bypass-origin geometry contract, design/storage/lara.md). This step shifts the live slots
+    /// down to the front of the row (preserving insertion order), tombstone-fills the vacated tail,
+    /// then publishes `stored_slots = degree` in ONE atomic `vertices.set`. An in-row shift never
+    /// moves another row's origin (contract point (a)); shrinking `stored_slots` keeps the freed gap
+    /// as PMA slack (contract point (b)); the single atomic publish satisfies the descending-scan
+    /// extent contract (contract point (c)).
+    ///
+    /// v1 boundary: compacts the slab prefix only. Overflow-log-backed rows
+    /// (`bypass_overflow_log_head >= 0`) are deferred to the existing fold mechanism and return
+    /// `Deferred` (the admission trigger only enqueues slab-prefix-only rows; this is a defensive
+    /// no-op).
+    pub(crate) fn compact_default_bypass_row(
+        &self,
+        vid: VertexId,
+    ) -> Result<BypassRowCompactOutcome, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(vid)?;
+        let vertex = self.vertices.get(vid);
+        if !vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(BypassRowCompactOutcome::Deferred);
+        }
+        // v1 boundary: slab-prefix-only rows. Overflow-log-backed rows defer to the fold mechanism.
+        if vertex.bypass_overflow_log_head() >= 0 {
+            return Ok(BypassRowCompactOutcome::Deferred);
+        }
+        let base = vertex.base_slot_start();
+        let stored = vertex.stored_slots;
+        let degree = vertex.degree;
+        if stored <= degree {
+            return Ok(BypassRowCompactOutcome::Deferred);
+        }
+        // Read the whole slab prefix contiguously (the row is a contiguous slab prefix by
+        // construction). The buffer is `stored * E::BYTES` bytes; for the bench scale this is
+        // small, and a resumable/stepped variant for very large rows is a later-slice concern.
+        let mut buf = vec![0u8; (stored as usize) * E::BYTES];
+        self.edges.read_slots_contiguous(base, &mut buf);
+        // Left-pack: move live slots to the front, preserving insertion order.
+        let mut write = 0usize;
+        for read in 0..stored as usize {
+            let off = read * E::BYTES;
+            let edge = E::read_from(&buf[off..off + E::BYTES]);
+            if edge.is_tombstone_edge() {
+                continue;
+            }
+            if write != read {
+                let woff = write * E::BYTES;
+                buf.copy_within(off..off + E::BYTES, woff);
+            }
+            write += 1;
+        }
+        debug_assert_eq!(write, degree as usize, "live slot count must equal degree");
+        // Tombstone-fill the vacated tail slots (beyond the new extent).
+        let mut tomb_bytes = vec![0u8; E::BYTES];
+        E::tombstone_edge().write_to(&mut tomb_bytes);
+        for slot in write..stored as usize {
+            let off = slot * E::BYTES;
+            buf[off..off + E::BYTES].copy_from_slice(&tomb_bytes);
+        }
+        // Write the compacted buffer back, then publish the new extent atomically.
+        self.edges
+            .write_slots_contiguous(base, &buf)
+            .map_err(LabeledOperationError::from)?;
+        let new_vertex = vertex.with_stored_slots(degree);
+        self.set_labeled_vertex(vid, new_vertex)?;
+        Ok(BypassRowCompactOutcome::Compacted)
     }
 }
 

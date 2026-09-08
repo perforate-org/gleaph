@@ -322,6 +322,16 @@ pub enum VertexEdgeSpanCompactOneStep {
     Finished,
 }
 
+/// Outcome of one bypass-row left-pack compact step (Plan 0341, GAP-2026-09-07-001 bypass side).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BypassRowCompactOutcome {
+    /// The row was left-packed: `stored_slots` shrunk to `degree` in one atomic publish.
+    Compacted,
+    /// The row was not compacted: not a default-label bypass row, already packed, or
+    /// overflow-log-backed (deferred to the existing fold mechanism).
+    Deferred,
+}
+
 // ---- Plan 0318 §Step 3 cap enforcement tests -------------------------------
 
 #[cfg(test)]
