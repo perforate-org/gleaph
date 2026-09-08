@@ -608,4 +608,55 @@ mod tests {
             "AFFINITY.stats inline struct slot must not be reported as sidecar-indexed"
         );
     }
+    #[test]
+    fn active_catalog_projects_nested_leaf_as_indexed_and_range_indexed() {
+        // Plan 0285 slice-4 acceptance (GAP-2026-07-29-005): the Active catalog
+        // projects the interned dotted leaf so planner anchors select it for
+        // equality and range, while the bare ancestor and unindexed names stay
+        // fail-closed.
+        use crate::facade::store::catalog_test_support;
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "stats");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "stats.score",
+        );
+        catalog_test_support::register_active_vertex_index(&store, graph_id, 0, "stats.score");
+        let stats = crate::index_catalog::graph_stats_for(graph_id);
+        assert!(
+            stats.is_vertex_property_indexed("stats.score"),
+            "Active nested leaf must project as equality-indexed"
+        );
+        assert!(
+            stats.is_vertex_property_range_indexed("stats.score"),
+            "Active nested leaf must project as range-indexed (order-preserving named index)"
+        );
+        assert!(
+            !stats.is_vertex_property_indexed("stats"),
+            "bare ancestor record must not resolve as an indexed property"
+        );
+        assert!(
+            !stats.is_vertex_property_indexed("score"),
+            "bare leaf segment must not resolve without its dotted path"
+        );
+        assert!(
+            !stats.is_vertex_property_indexed("missing"),
+            "unindexed names stay fail-closed"
+        );
+        assert!(
+            !stats.is_vertex_property_range_indexed("missing"),
+            "unindexed range names stay fail-closed"
+        );
+        let catalog = stats.to_active_indexed_property_catalog();
+        assert!(
+            catalog
+                .vertex_indexes
+                .iter()
+                .any(|m| m.field_path == "stats.score"),
+            "Active catalog must carry the dotted leaf membership, got: {:?}",
+            catalog.vertex_indexes
+        );
+    }
 }

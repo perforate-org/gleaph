@@ -2386,7 +2386,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-07-29-005 — Vertex nested-record indexes are not yet symmetrical with edge INLINE fields
 
-- **Status:** Open for slice-4 acceptance (updated 2026-08-23). Slices 1–3 are implemented and
+- **Status:** Resolved 2026-09-08 (slice-4 acceptance closed; uncommitted working-tree change, no commit per primary-owns-commits). Slices 1–3 are implemented and
   terminal-validated (focused unit gates, graph/graph-index all-target check/clippy, focused
   canbenches, posting-level PocketIC lifecycle, and an independent detached-worktree run at the
   `aa7fd9124` baseline plus only the remediation patch); domain decision recorded in
@@ -2421,7 +2421,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   cross-shard GQL proof
   `crates/pocket-ic-tests/tests/router_gql_query.rs::federated_vertex_nested_leaf_index_match_equality_and_range`
   — success itself is the anchor proof because unseeded leading index scans are rejected on graph
-  shards. Do not cite slice-4 code as terminal until Plan 0285 closes.
+  shards. **Slice-4 acceptance closed 2026-09-08:** re-added `planner_stats.rs::active_catalog_projects_nested_leaf_as_indexed_and_range_indexed` (Active dotted-leaf projection for equality+range with ancestor/bare-segment/missing fail-closed plus catalog `field_path` membership assertion). Bounded contracts green: gql-planner `match_nested_leaf_*` + `match_unindexed_nested_leaf_range_does_not_emit_index_scan` (4 passed), router `seed::vertex_{equality,range}_anchor_resolves_nested_leaf_property` (2 passed), `planner_stats::` suite (7 passed), PocketIC `federated_vertex_nested_leaf_index_match_equality_and_range --exact` (1 passed / 24 filtered, 12.74s), router lib clippy clean, fmt + diff-check clean, pocket-ic `router_gql_query` target compiles.
 - **Severity:** P2 query capability
 - **Owner:** Planner property-path resolution; decision owned by ADR 0073 slice 4
 - **Observed behavior:** Nested leaf postings were maintained and backfilled end-to-end, but the
