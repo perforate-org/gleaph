@@ -18,7 +18,7 @@ pub const MAX_INDEX_VALUE_KEY_BYTES: usize = 4096;
 /// free to accept longer pure equality conjunctions; the Router lowers 1 arm to a single equality
 /// lookup and 2..=MAX_EQUALITY_INTERSECTION_ARMS arms to the bounded intersection. Requests that
 /// resolve to more arms are rejected with a provider-specific error before any index canister call.
-pub const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
+pub const MAX_EQUALITY_INTERSECTION_ARMS: usize = 16;
 
 /// Maximum number of posting hits materialized by one paginated index read.
 ///

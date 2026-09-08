@@ -652,7 +652,7 @@ enum SearchFilter {
 }
 
 /// Maximum number of `AND`-connected equality arms the Property Index intersection path admits.
-const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
+const MAX_EQUALITY_INTERSECTION_ARMS: usize = 16;
 
 /// Maximum number of `OR`-connected comparison arms the Router will execute as a bounded union of
 /// Property Index sources. This is a single Router-owned fan-out bound for equality, range, and
@@ -5570,7 +5570,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_filter_rejects_nine_arm_conjunction() {
+    fn extract_search_filter_accepts_nine_arm_conjunction() {
         let mut arms: Vec<Expr> = (1..=9)
             .map(|i| filter_eq_expr(format!("p{i}").as_str(), Value::Int64(i)))
             .collect();
@@ -5578,9 +5578,43 @@ mod tests {
         for arm in arms {
             filter = filter_and_expr(filter, arm);
         }
-        let err = extract_search_filter("d", &filter).expect_err("nine arms must fail");
+        let f = extract_search_filter("d", &filter).expect("nine equality arms");
+        let extracted = match f {
+            SearchFilter::Equality(arms) => arms,
+            _ => panic!("expected equality filter"),
+        };
+        assert_eq!(extracted.len(), 9);
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_sixteen_arm_conjunction() {
+        let mut arms: Vec<Expr> = (1..=16)
+            .map(|i| filter_eq_expr(format!("p{i}").as_str(), Value::Int64(i)))
+            .collect();
+        let mut filter = arms.remove(0);
+        for arm in arms {
+            filter = filter_and_expr(filter, arm);
+        }
+        let f = extract_search_filter("d", &filter).expect("sixteen equality arms");
+        let extracted = match f {
+            SearchFilter::Equality(arms) => arms,
+            _ => panic!("expected equality filter"),
+        };
+        assert_eq!(extracted.len(), 16);
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_seventeen_arm_conjunction() {
+        let mut arms: Vec<Expr> = (1..=17)
+            .map(|i| filter_eq_expr(format!("p{i}").as_str(), Value::Int64(i)))
+            .collect();
+        let mut filter = arms.remove(0);
+        for arm in arms {
+            filter = filter_and_expr(filter, arm);
+        }
+        let err = extract_search_filter("d", &filter).expect_err("seventeen arms must fail");
         assert!(
-            err.to_string().contains("at most 8 equality conjuncts"),
+            err.to_string().contains("at most 16 equality conjuncts"),
             "unexpected error: {err}"
         );
     }
@@ -5897,19 +5931,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_filter_rejects_mixed_nine_equality_arms_plus_range() {
+    fn extract_search_filter_accepts_mixed_nine_equality_arms_plus_range() {
         let mut conjunction =
             filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(0));
         for i in 0..9 {
             let arm = filter_eq_expr(&format!("prop_{i}"), Value::Text(format!("v{i}")));
             conjunction = filter_and_expr(conjunction, arm);
         }
-        let err = extract_search_filter("d", &conjunction)
-            .expect_err("nine equality arms plus range must fail");
-        assert!(
-            err.to_string().contains("at most 8 equality conjuncts"),
-            "unexpected error: {err}"
-        );
+        let f = extract_search_filter("d", &conjunction)
+            .expect("nine equality arms plus range must be accepted");
+        assert!(matches!(f, SearchFilter::Mixed { .. }));
     }
 
     #[test]
