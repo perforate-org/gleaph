@@ -172,10 +172,14 @@ separate documentation gaps (research doc §5.4), to land with the adoption slic
 - Field, mint init, remove-funnel increment, parity tests, tree OFFSET baseline, counting-walk
   prototype, slab re-anchor: **landed** (Plan 0337, `73ba30e01`).
 - Production read path (S1 + S2), `TraversalWindow` doc correction, S1/S2 attribution
-  measurement, in-window dead-block fixture: **landed** (Plan 0338, 2026-09-07) — see the
+  measurement, in-window dead-block fixture: **landed** (Plan 0338, `ec52f28a8`) — see the
   attribution appendix below.
-- Adoption paperwork (GAP-2026-07-25-002 closure): **pending** (the inventory rows landed with
-  Plan 0338's reconciliation note; see `stable-memory-inventory.md`).
+- Adoption paperwork (GAP-2026-07-25-002 closure): **landed** (`edf81d3c6`, 2026-09-07) — the
+  GAP records the tree side Resolved and the slab/bypass side status-quo (research doc §5.5);
+  the inventory rows landed with Plan 0338's reconciliation note.
+- Downstream adopters: the remove-side maintenance trigger (Plan 0339, `5c7df238f`, slab side)
+  and the tree-mode tombstone reuse (Plan 0340, `8da0accc6`) both build on the header count;
+  the bypass-row left-pack (Plan 0341, `8b0e0ec86`) completed GAP-2026-09-07-001.
 
 ### Plan 0338 attribution (2026-09-07)
 

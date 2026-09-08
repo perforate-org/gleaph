@@ -373,6 +373,13 @@ path runs; a bursty probe at 1,000 mutations returned `Store(CollectAllocationOv
 (see the Plan 0336 report, §1/§5) and is a candidate for a future implementation-gap entry if
 it reproduces on the production path.
 
+**Reproduction check (2026-09-08, post-0339/0340/0341 HEAD `8b0e0ec86`):** NOT reproduced on
+the current production path — `offset_workload_baseline_bursty` (303,233,375 ins) and
+`offset_workload_candidate_bursty` (270.30M-class) run clean, and `tree_churn_*` completes
+without the fold error. The 0336 observation was taken on the pre-0338 read path; the current
+window/reuse machinery does not hit it at the same scale. Kept closed (no GAP entry); reopen
+only if a production-shaped workload reproduces the fold OOM.
+
 ### 4.4 Remaining areas (unchanged from the first draft)
 
 2. **Area 2**: when drafting the ADR 0048 follow-up, record the DuckDB-derived constraint that
