@@ -35,8 +35,8 @@ use gleaph_graph_kernel::vector_index::{
     decode_i8_to_f32, decode_u8_to_f32, hamming_f32_vs_binary,
 };
 use ic_stable_vector_page_store::kernel::{
-    dot_f32_early_exit, dot_i8_f32_early_exit, l2_squared_f32, l2_squared_f32_early_exit,
-    l2_squared_i8_f32_early_exit,
+    dot_f32_early_exit, dot_i8_f32_early_exit, dot_u8_f32_early_exit, l2_squared_f32,
+    l2_squared_f32_early_exit, l2_squared_i8_f32_early_exit, l2_squared_u8_f32_early_exit,
 };
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::cell::Cell;
@@ -158,12 +158,7 @@ fn score_row(
                 let f32bytes = encode_f32(&decode_bf16_to_f32(bytes, query.len()));
                 l2_squared_f32_early_exit(&f32bytes, query, threshold)
             }
-            VectorEncoding::U8 => {
-                // Minimal U8 slice: upcast via the offset decode, then reuse the exact f32
-                // kernel (a native u8 kernel can replace this alloc later).
-                let f32bytes = encode_f32(&decode_u8_to_f32(bytes, scale, query.len()));
-                l2_squared_f32_early_exit(&f32bytes, query, threshold)
-            }
+            VectorEncoding::U8 => l2_squared_u8_f32_early_exit(bytes, scale, query, threshold),
             VectorEncoding::Binary => {
                 // `Signs` Hamming: ±1 rows give L2² = 4·H exactly (no early exit; popcount is cheap).
                 let h = hamming_f32_vs_binary(query, bytes, query.len()) as f32;
@@ -210,8 +205,16 @@ fn score_row(
                 }
                 VectorEncoding::U8 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
-                    let f32bytes = encode_f32(&decode_u8_to_f32(bytes, scale, query.len()));
-                    dot_f32_early_exit(&f32bytes, query, suffix_norm, dot_threshold)?
+                    // The U8 kernel fuses the finiteness check and uses the conservative `max_norm`
+                    // bound (U8 rows are only approximately unit-normalized), identically to I8.
+                    dot_u8_f32_early_exit(
+                        bytes,
+                        scale,
+                        query,
+                        suffix_norm,
+                        max_norm,
+                        dot_threshold,
+                    )?
                 }
                 VectorEncoding::Binary => {
                     // `Signs` Hamming: ±1 rows have norm √d. The outer `1 − dot/‖q‖` expects a

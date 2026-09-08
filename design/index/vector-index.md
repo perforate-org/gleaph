@@ -460,8 +460,8 @@ pub struct EncodingRecord {
   scale in row-meta aux 4) and scored with a fused i8×f32 kernel (`v_i = i8_i·scale/127`), with **no
   page-level f32 materialization**. `F16`/`Bf16` are implemented (minimal slices 2026-09-08: half-precision
   storage, F32 wire query, upcast scoring via the exact f32 kernels, no aux). `U8` is implemented
-  (minimal slice 2026-09-08: symmetric offset-unsigned twin of `I8`, per-row scale in aux 4,
-  upcast scoring via the exact f32 kernels). `Binary` is implemented (minimal slice 2026-09-08:
+  (minimal slice 2026-09-08: symmetric offset-unsigned twin of `I8`, per-row scale in aux 4;
+  fused u8×f32 kernel since 2026-09-09, `v_i = (byte_i − 128)·scale/127`, no f32 materialization). `Binary` is implemented (minimal slice 2026-09-08:
   `Signs` sign-bit convention, stride `ceil(dims/8)`, no aux, Hamming scoring — `L2² = 4·H`,
   cosine via the √d-normalized dot `(d − 2·H)/√d` through the shared `1 − dot/‖q‖` conversion).
 - **Wire query contract (Model Y)**: `encoding` in the op/request/definition means the **stored/index
