@@ -29,14 +29,15 @@ use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR
 use crate::records::{PageKey, PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VECTOR_EPS_BPS_INFINITY,
-    VectorCanisterError, VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest,
-    VectorSearchResult, VectorSubject, decode_bf16_to_f32, decode_binary_to_f32, decode_f16_to_f32,
-    decode_i8_to_f32, decode_u8_to_f32, hamming_f32_vs_binary, quantize_f32_to_i8,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, QuantizedI8Vector,
+    VECTOR_EPS_BPS_INFINITY, VectorCanisterError, VectorEncoding, VectorMetric, VectorSearchHit,
+    VectorSearchRequest, VectorSearchResult, VectorSubject, decode_bf16_to_f32,
+    decode_binary_to_f32, decode_f16_to_f32, decode_i8_to_f32, decode_u8_to_f32,
+    hamming_f32_vs_binary, quantize_f32_to_i8,
 };
 use ic_stable_vector_page_store::kernel::{
-    dot_f32_early_exit, dot_i8_f32_early_exit, dot_u8_f32_early_exit, l2_squared_f32,
-    l2_squared_f32_early_exit, l2_squared_i8_f32_early_exit, l2_squared_u8_f32_early_exit,
+    dot_f32_early_exit, dot_i8_f32_early_exit, dot_u8_f32_early_exit, l2_squared_f32_early_exit,
+    l2_squared_i8_f32, l2_squared_i8_f32_early_exit, l2_squared_u8_f32_early_exit,
 };
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::cell::Cell;
@@ -373,18 +374,32 @@ pub(super) fn encode_centroid_i8(centroid: &[f32]) -> Result<Vec<u8>, VectorCani
     Ok(out)
 }
 
-/// Decodes one canonical centroid value to `dims` f32 components, returning `None` on any
-/// wrong-width payload or non-finite scale (a partial/stale set is not ready, same as before).
-/// A zero scale (zero centroid) decodes to all-zero components via [`decode_i8_to_f32`].
-pub(super) fn decode_centroid_i8(bytes: &[u8], dims: usize) -> Option<Vec<f32>> {
+/// Splits one canonical centroid value into its I8 payload + scale without materializing f32,
+/// returning `None` on any wrong-width payload or non-finite/negative scale (a partial/stale set
+/// is not ready). Takes the owned stable-map value so no payload byte is copied twice. The fused
+/// centroid scoring paths ([`assign_partition`], [`select_partitions`]) consume this form
+/// directly; [`decode_centroid_i8`] is the decode-once convenience for tests and diagnostics.
+pub(super) fn split_centroid_i8(bytes: Vec<u8>, dims: usize) -> Option<QuantizedI8Vector> {
     if bytes.len() != dims + 4 {
         return None;
     }
-    let scale = f32::from_le_bytes(bytes[dims..dims + 4].try_into().ok()?);
+    let mut bytes = bytes;
+    let scale_bytes = bytes.split_off(dims);
+    let scale = f32::from_le_bytes(scale_bytes.try_into().ok()?);
     if !scale.is_finite() || scale < 0.0 {
         return None;
     }
-    let centroid = decode_i8_to_f32(&bytes[..dims], scale, dims);
+    Some(QuantizedI8Vector { bytes, scale })
+}
+
+/// Decodes one canonical centroid value to `dims` f32 components, returning `None` on any
+/// wrong-width payload or non-finite scale (a partial/stale set is not ready, same as before).
+/// A zero scale (zero centroid) decodes to all-zero components via [`decode_i8_to_f32`].
+/// Test-only: production scoring consumes the quantized form via [`split_centroid_i8`].
+#[cfg(test)]
+pub(super) fn decode_centroid_i8(bytes: &[u8], dims: usize) -> Option<Vec<f32>> {
+    let q = split_centroid_i8(bytes.to_vec(), dims)?;
+    let centroid = decode_i8_to_f32(&q.bytes, q.scale, dims);
     (centroid.len() == dims).then_some(centroid)
 }
 
@@ -1096,20 +1111,22 @@ pub(super) fn candidate_scan_with_membership(
     finalize(heap)
 }
 
-/// Reads centroids `0..nlist` for `(index_id, version)`, returning `None` unless exactly `nlist`
-/// centroids of `dims` components are present (a partial/stale centroid set is not ready). Shared by
-/// search (active version) and the rebuild build/publish paths (shadow target version, Slice 7).
+/// Reads centroids `0..nlist` for `(index_id, version)` in quantized form, returning `None`
+/// unless exactly `nlist` complete centroids are present (a partial/stale centroid set is not
+/// ready). Shared by search (active version) and the rebuild build/publish paths (shadow target
+/// version, Slice 7). No f32 is materialized: scoring consumes the quantized form via the fused
+/// I8 kernel.
 pub(super) fn read_centroids_at(
     index_id: u32,
     version: u64,
     nlist: u32,
     dims: u16,
-) -> Option<Vec<Vec<f32>>> {
+) -> Option<Vec<QuantizedI8Vector>> {
     let mut centroids = Vec::with_capacity(nlist as usize);
     IVF_CENTROIDS.with_borrow(|m| {
         for p in 0..nlist {
             let bytes = m.get(&PartitionKey::new(index_id, version, p))?;
-            centroids.push(decode_centroid_i8(&bytes, dims as usize)?);
+            centroids.push(split_centroid_i8(bytes, dims as usize)?);
         }
         Some(())
     })?;
@@ -1126,12 +1143,12 @@ pub(super) fn read_coarse_centroids_at(
     version: u64,
     nlist: u32,
     dims: u16,
-) -> Option<Vec<Vec<f32>>> {
+) -> Option<Vec<QuantizedI8Vector>> {
     let mut centroids = Vec::with_capacity(nlist as usize);
     IVF_CENTROIDS.with_borrow(|m| {
         for p in 0..nlist {
             let bytes = m.get(&PartitionKey::coarse(index_id, version, p))?;
-            centroids.push(decode_centroid_i8(&bytes, dims as usize)?);
+            centroids.push(split_centroid_i8(bytes, dims as usize)?);
         }
         Some(())
     })?;
@@ -1147,13 +1164,13 @@ pub(super) fn read_leaf_children_at(
     coarse: u32,
     nlist_fine: u32,
     dims: u16,
-) -> Option<Vec<Vec<f32>>> {
+) -> Option<Vec<QuantizedI8Vector>> {
     let base = coarse.checked_mul(nlist_fine)?;
     let mut children = Vec::with_capacity(nlist_fine as usize);
     IVF_CENTROIDS.with_borrow(|m| {
         for rel in 0..nlist_fine {
             let bytes = m.get(&PartitionKey::new(index_id, version, base + rel))?;
-            children.push(decode_centroid_i8(&bytes, dims as usize)?);
+            children.push(split_centroid_i8(bytes, dims as usize)?);
         }
         Some(())
     })?;
@@ -1166,7 +1183,7 @@ pub(super) fn read_leaf_children_at(
 /// `nlist` carrying the cached set's count. Returns `None` when no complete set exists.
 ///
 /// Consults the heap centroid cache first (ADR 0031 Slice 9): a warmed entry returns immediately as
-/// a shared handle, skipping the `IVF_CENTROIDS` stable read + `f32` decode and copying no payload
+/// a shared handle, skipping the `IVF_CENTROIDS` stable read + split and copying no payload
 /// bytes. A miss falls back to a one-call stable read for this call and does **not** populate the
 /// cache (a `#[query]`'s heap writes do not commit on IC; population belongs to update paths).
 fn read_centroids(
@@ -1189,8 +1206,11 @@ fn read_centroids(
 
 /// Nearest-centroid partition id for an encoded vector (ADR 0031 Slice 6/7). Ties break to the
 /// lowest partition id. Shared by the rebuild shadow build, dual-write shadow append, and
-/// post-publish `nlist > 1` active upserts.
-pub(super) fn assign_partition(centroids: &[Vec<f32>], bytes: &[u8]) -> u32 {
+/// post-publish `nlist > 1` active upserts. Scores the quantized centroids with the fused I8
+/// kernel — no centroid f32 materialization; the f32 query bytes decode once per call (assignment
+/// already materializes one f32 row buffer per row, so this adds no new allocation class).
+pub(super) fn assign_partition(centroids: &[QuantizedI8Vector], bytes: &[u8]) -> u32 {
+    let query = decode_f32(bytes);
     let mut best = 0u32;
     let mut best_d = f32::INFINITY;
     for (p, centroid) in centroids.iter().enumerate() {
@@ -1199,7 +1219,8 @@ pub(super) fn assign_partition(centroids: &[Vec<f32>], bytes: &[u8]) -> u32 {
         // does not trigger the strict-exceeds exit, so the full distance is computed and the lowest-id
         // tie-break is preserved. A non-finite centroid returns `None` and is skipped, matching the
         // original (a NaN distance never beats `best_d`).
-        let Some(d) = l2_squared_f32_early_exit(bytes, centroid, best_d) else {
+        let Some(d) = l2_squared_i8_f32_early_exit(&centroid.bytes, centroid.scale, &query, best_d)
+        else {
             continue;
         };
         if d < best_d {
@@ -1225,12 +1246,14 @@ fn centroids_ready(def: &VectorIndexDef, index_id: u32) -> bool {
 /// centroid. Deterministic `(distance asc, partition id asc)` order. `eps_query = 0` selects only the
 /// nearest partition(s); a large value (e.g. `f32::INFINITY`) selects all.
 ///
-/// `query_bytes` is the request's encoded query (≥ `centroid.len() * 4`); distances are scored with
-/// the SIMD `l2_squared_f32(bytes, centroid)` kernel. For **cosine**, the query is unit-normalized so
-/// `L2²(q̂, c) = 2 − 2·cos` over the unit centroids (a tight, cosine-meaningful ε₂ threshold); the raw
-/// query's large `‖q‖²` would otherwise make the relative threshold include (almost) all partitions.
+/// `query_bytes` is the request's encoded query (`dims * 4` f32 bytes); distances are scored with
+/// the fused `l2_squared_i8_f32` kernel over the quantized centroids (no centroid f32
+/// materialization; the query decodes once per search). For **cosine**, the query is
+/// unit-normalized so `L2²(q̂, c) = 2 − 2·cos` over the unit centroids (a tight, cosine-meaningful
+/// ε₂ threshold); the raw query's large `‖q‖²` would otherwise make the relative threshold include
+/// (almost) all partitions.
 fn select_partitions(
-    centroids: &[Vec<f32>],
+    centroids: &[QuantizedI8Vector],
     query_bytes: &[u8],
     metric: VectorMetric,
     dims: usize,
@@ -1243,10 +1266,11 @@ fn select_partitions(
     } else {
         query_bytes.to_vec()
     };
+    let query = decode_f32(&qb);
     let mut scored: Vec<(f32, u32)> = centroids
         .iter()
         .enumerate()
-        .map(|(p, c)| (l2_squared_f32(&qb, c), p as u32))
+        .map(|(p, c)| (l2_squared_i8_f32(&c.bytes, c.scale, &query), p as u32))
         .collect();
     // A full scan (`eps_query = INF`) selects every partition. Special-case it: the generic
     // `(1 + eps) * best` threshold degenerates to `INF * 0 = NaN` when the query sits exactly on a
@@ -1276,7 +1300,7 @@ fn select_partitions(
 fn select_partitions_two_level(
     def: &VectorIndexDef,
     index_id: u32,
-    coarse_set: &[Vec<f32>],
+    coarse_set: &[QuantizedI8Vector],
     query_bytes: &[u8],
     metric: VectorMetric,
     dims: usize,
@@ -1704,6 +1728,14 @@ mod tests {
         encode_f32(values)
     }
 
+    /// Quantized centroid set fixture: the canonical I8 form scoring consumes.
+    fn qcs(cs: &[Vec<f32>]) -> Vec<QuantizedI8Vector> {
+        cs.iter()
+            .map(|c| split_centroid_i8(encode_centroid_i8(c).expect("encode"), c.len()))
+            .collect::<Option<Vec<_>>>()
+            .expect("split")
+    }
+
     #[test]
     fn eps_query_from_bps_maps_sentinel_and_boundaries() {
         // `0` (the default) scans only the nearest partition(s).
@@ -1836,39 +1868,54 @@ mod tests {
 
     #[test]
     fn centroid_quantization_preserves_assignment_on_separated_clusters() {
-        // The read path decodes quantized centroids, so assignment must agree with the f32
-        // centroids on well-separated clusters (quantization error cannot cross the gap).
-        let centroids = vec![
+        // Fused I8 scoring must agree with exact f32 scoring on well-separated clusters
+        // (quantization error cannot cross the gap). Non-uniform values exercise rounding.
+        let f32cs = vec![
             vec![0.0f32, 0.0, 0.0, 0.0],
-            vec![10.0f32, 10.0, 10.0, 10.0],
-            vec![20.0f32, 0.0, 20.0, 0.0],
+            vec![10.0f32, -10.0, 10.0, -10.0],
+            vec![20.0f32, 1.0, -20.0, 0.5],
         ];
-        let quantized: Vec<Vec<f32>> = centroids
-            .iter()
-            .map(|c| {
-                let bytes = encode_centroid_i8(c).expect("encode");
-                assert_eq!(bytes.len(), 4 + 4);
-                decode_centroid_i8(&bytes, 4).expect("decode")
-            })
-            .collect();
+        let quantized = qcs(&f32cs);
         for (query, want) in [
             (vec![0.5f32, -0.5, 0.5, -0.5], 0),
-            (vec![10.5f32, 9.5, 10.5, 9.5], 1),
-            (vec![19.5f32, 0.5, 19.5, 0.5], 2),
+            (vec![10.5f32, -9.5, 10.5, -9.5], 1),
+            (vec![19.5f32, 1.5, -19.5, 0.0], 2),
         ] {
             let qb = encode_f32(&query);
-            assert_eq!(assign_partition(&centroids, &qb), want);
+            let query = decode_f32(&qb);
+            // Reference: naive f32 distances against the original centroids.
+            let mut best = 0u32;
+            let mut best_d = f32::INFINITY;
+            for (p, c) in f32cs.iter().enumerate() {
+                let d: f32 = query.iter().zip(c).map(|(q, v)| (q - v) * (q - v)).sum();
+                if d < best_d {
+                    best_d = d;
+                    best = p as u32;
+                }
+            }
+            assert_eq!(best, want);
             assert_eq!(
                 assign_partition(&quantized, &qb),
                 want,
-                "quantized assignment agrees on separated clusters"
+                "fused assignment agrees with exact f32 on separated clusters"
             );
+            // The fused kernel matches naive scalar math on the same decoded values up to
+            // float accumulation order — isolating kernel error from quantization error.
+            for c in &quantized {
+                let dec = decode_i8_to_f32(&c.bytes, c.scale, 4);
+                let fused = l2_squared_i8_f32(&c.bytes, c.scale, &query);
+                let naive: f32 = query.iter().zip(&dec).map(|(q, v)| (q - v) * (q - v)).sum();
+                assert!(
+                    (fused - naive).abs() <= 1e-3 * naive.max(1.0),
+                    "kernel parity"
+                );
+            }
         }
     }
 
     #[test]
     fn select_partitions_eps_zero_selects_nearest() {
-        let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
+        let centroids = qcs(&[vec![0.0f32; 4], vec![10.0f32; 4]]);
         let query = vec![0.5f32; 4];
         let qb = encode_f32(&query);
         assert_eq!(
@@ -1886,7 +1933,7 @@ mod tests {
         // Regression: a full scan (`eps = INF`) must select every partition even when the query sits
         // exactly on a centroid (`best == 0`). The old `(1 + INF) * best = INF * 0 = NaN` threshold
         // filtered out all partitions, returning an empty scan.
-        let centroids = vec![vec![2.5f32; 4], vec![0.5f32; 4], vec![4.5f32; 4]];
+        let centroids = qcs(&[vec![2.5f32; 4], vec![0.5f32; 4], vec![4.5f32; 4]]);
         let qb = encode_f32(&[2.5f32; 4]);
         assert_eq!(
             select_partitions(&centroids, &qb, VectorMetric::L2Squared, 4, f32::INFINITY),
@@ -1899,7 +1946,7 @@ mod tests {
     fn select_partitions_eps_threshold_boundary() {
         // Query exactly at centroid 0: threshold = 0, so only partition 0 is selected even with a
         // large eps_query.
-        let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
+        let centroids = qcs(&[vec![0.0f32; 4], vec![10.0f32; 4]]);
         let qb = encode_f32(&[0.0f32; 4]);
         assert_eq!(
             select_partitions(&centroids, &qb, VectorMetric::L2Squared, 4, 1.0),
@@ -1912,12 +1959,12 @@ mod tests {
         // Unit centroids along the axes. A query with a large magnitude exposes the raw-query artifact:
         // its big ‖q‖² constant makes a moderate eps threshold include (almost) all partitions.
         // Normalizing makes L2² = 2 − 2cos, so a moderate eps prunes to the cosine-nearest subset.
-        let centroids = vec![
+        let centroids = qcs(&[
             vec![1.0f32, 0.0, 0.0, 0.0],
             vec![0.0, 1.0, 0.0, 0.0],
             vec![0.0, 0.0, 1.0, 0.0],
             vec![0.0, 0.0, 0.0, 1.0],
-        ];
+        ]);
         let qb = encode_f32(&[100.0f32, 1.0, 1.0, 1.0]);
         let all = select_partitions(&centroids, &qb, VectorMetric::Cosine, 4, f32::INFINITY);
         assert_eq!(all.len(), 4);
@@ -2231,19 +2278,19 @@ mod tests {
 
     #[test]
     fn assign_partition_nearest_centroid_and_tie_break() {
-        let centroids = vec![vec![10.0f32; 4], vec![0.0f32; 4]];
+        let centroids = qcs(&[vec![10.0f32; 4], vec![0.0f32; 4]]);
         // Value 0 is nearest to centroid 1 (distance 0), value 10 to centroid 0.
         assert_eq!(assign_partition(&centroids, &row(&[0.0f32; 4])), 1);
         assert_eq!(assign_partition(&centroids, &row(&[10.0f32; 4])), 0);
         // Exact tie keeps the lowest partition id.
-        let tie = vec![vec![3.0f32; 4], vec![3.0f32; 4]];
+        let tie = qcs(&[vec![3.0f32; 4], vec![3.0f32; 4]]);
         assert_eq!(assign_partition(&tie, &row(&[3.0f32; 4])), 0);
     }
 
     #[test]
     fn assign_partition_early_exit_matches_full_scan() {
         // Many centroids; the early exit skips far ones but must find the same nearest as a full scan.
-        let centroids: Vec<Vec<f32>> = (0..8).map(|c| vec![c as f32 * 10.0; 4]).collect();
+        let centroids = qcs(&(0..8).map(|c| vec![c as f32 * 10.0; 4]).collect::<Vec<_>>());
         // Value 0 is nearest to centroid 0 (distance 0).
         assert_eq!(assign_partition(&centroids, &row(&[0.0f32; 4])), 0);
         // Value 25 is equidistant to centroids 2 and 3; the lowest id wins.

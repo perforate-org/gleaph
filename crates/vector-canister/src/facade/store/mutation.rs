@@ -28,8 +28,8 @@ use crate::records::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
-    VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError,
+    QuantizedI8Vector, VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind,
+    VectorMetric, VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError,
     binarize_f32_bytes_to_binary_bytes, encode_f32_bytes_to_bf16_bytes,
     encode_f32_bytes_to_f16_bytes, quantize_f32_to_i8, quantize_f32_to_u8,
 };
@@ -894,10 +894,10 @@ struct ShadowCentroidHoist {
     /// Fine branching factor of the cached shadow generation (`1` = flat; a two-level generation
     /// caches its **coarse** set and reads child ranges per assignment).
     target_nlist_fine: u32,
-    /// Decoded shadow-version centroid set (the full set when flat, the coarse set when
+    /// Quantized shadow-version centroid set (the full set when flat, the coarse set when
     /// two-level), or `None` when the set is missing/incomplete (the same fail-soft
     /// `read_centroids_at` outcome the per-row read produced).
-    centroids: Option<Vec<Vec<f32>>>,
+    centroids: Option<Vec<QuantizedI8Vector>>,
     /// Cached `(base, target, fine, tier) -> shaped` shadow definition (Slice 6 SSOT): one
     /// [`shape_def_for`] derivation per `(index_id, target)` chunk instead of one per row. The
     /// base def is compared by value (`Copy`), so any definition change invalidates the entry.

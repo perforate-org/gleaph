@@ -1,11 +1,12 @@
 //! Transient heap centroid cache for `ivf_flat` search and mutation assignment (ADR 0031 Slice 9).
 //!
 //! Scoring a query against an index's `0..nlist` centroids and assigning an upsert to its nearest
-//! partition both need the decoded top-level centroid set of one generation — the leaf set of a
+//! partition both need the quantized top-level centroid set of one generation — the leaf set of a
 //! flat index, the level-0 coarse set of a two-level one. Reading it from `IVF_CENTROIDS` (a
-//! `StableBTreeMap`) and decoding `f32` bytes on every call is pure, repeatable work; this module
-//! keeps the decoded set resident on the heap as a shared handle so warmed consumers skip both the
-//! stable read and the decode without ever duplicating payload bytes.
+//! `StableBTreeMap`) and splitting payload + scale on every call is pure, repeatable work; this
+//! module keeps the quantized set resident on the heap as a shared handle so warmed consumers skip
+//! both the stable read and the split without ever duplicating payload bytes. Scoring consumes the
+//! quantized form directly via the fused I8 kernel, so no centroid f32 is ever materialized.
 //!
 //! **Shared payloads.** Each entry stores its decoded set behind an [`Arc`] ([`CentroidSet`]).
 //! [`lookup`] hands out clones of that handle (a pointer bump), and consumers score against the
@@ -40,7 +41,9 @@ use super::search::read_centroids_at;
 use crate::facade::stable::{IVF_CENTROID_META, definition_store};
 use crate::records::VectorIndexDef;
 use candid::Principal;
-use gleaph_graph_kernel::vector_index::{VectorCanisterError, VectorCentroidCacheStatus};
+use gleaph_graph_kernel::vector_index::{
+    QuantizedI8Vector, VectorCanisterError, VectorCentroidCacheStatus,
+};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -50,9 +53,10 @@ use std::sync::Arc;
 /// sets at typical dims, while still bounding worst-case heap growth across many warmed indexes.
 const MAX_CENTROID_CACHE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Shared handle to one decoded centroid set. Cloning copies the `Arc` pointer only; consumers score
-/// against the borrowed payloads, so resident centroid bytes are never duplicated.
-pub(super) type CentroidSet = Arc<Vec<Vec<f32>>>;
+/// Shared handle to one quantized centroid set. Cloning copies the `Arc` pointer only; consumers
+/// score against the borrowed payloads via the fused I8 kernel, so resident centroid bytes are
+/// never duplicated and no f32 is materialized.
+pub(super) type CentroidSet = Arc<Vec<QuantizedI8Vector>>;
 
 /// One warmed centroid set, with the generation key it was read at and its accounted heap bytes.
 struct CachedCentroids {
@@ -74,13 +78,11 @@ thread_local! {
     static CENTROID_CACHE: RefCell<CentroidCache> = RefCell::new(CentroidCache::default());
 }
 
-/// Accounted heap bytes of a decoded centroid set: the `f32` payloads plus the per-`Vec` headers.
-fn centroid_bytes(centroids: &[Vec<f32>]) -> u64 {
-    let payload: u64 = centroids
-        .iter()
-        .map(|c| (c.len() * size_of::<f32>()) as u64)
-        .sum();
-    payload + centroids.len() as u64 * size_of::<Vec<f32>>() as u64
+/// Accounted heap bytes of a quantized centroid set: the I8 payloads plus the per-entry headers
+/// (the scale rides inline in [`QuantizedI8Vector`], so it needs no heap of its own).
+fn centroid_bytes(centroids: &[QuantizedI8Vector]) -> u64 {
+    let payload: u64 = centroids.iter().map(|c| c.bytes.len() as u64).sum();
+    payload + centroids.len() as u64 * size_of::<QuantizedI8Vector>() as u64
 }
 
 /// Returns a shared handle to the warmed centroid set for `(index_id, version, nlist, dims)`, or

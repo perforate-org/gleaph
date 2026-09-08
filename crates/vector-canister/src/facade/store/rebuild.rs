@@ -28,8 +28,8 @@
 use super::authorization::assert_router_caller;
 use super::mutation::{append_slot_batch, insert_subject_entry, shape_def_for, tombstone_slot};
 use super::search::{
-    assign_partition, decode_centroid_i8, decode_f32, encode_centroid_i8, encode_f32,
-    read_centroids_at, read_coarse_centroids_at, read_leaf_children_at, stored_to_f32_bytes,
+    assign_partition, decode_f32, encode_centroid_i8, encode_f32, read_centroids_at,
+    read_coarse_centroids_at, read_leaf_children_at, split_centroid_i8, stored_to_f32_bytes,
 };
 use super::{
     MAX_LEAVES, MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STEP_VECTOR_BYTES,
@@ -50,10 +50,11 @@ use crate::records::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_EPS_BPS, VECTOR_EPS_BPS_INFINITY, VectorCanisterError, VectorEncoding,
-    VectorMaintenancePolicy, VectorMaintenanceRecommendation, VectorMetric,
+    MAX_VECTOR_EPS_BPS, QuantizedI8Vector, VECTOR_EPS_BPS_INFINITY, VectorCanisterError,
+    VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceRecommendation, VectorMetric,
     VectorPartitionHealthStep, VectorPartitionHealthSummary, VectorPartitionPageHealth,
     VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats, VectorSlabStatsStep, VectorSubject,
+    decode_i8_to_f32,
 };
 use ic_stable_linear_hash_map::{SLOTS_PER_BUCKET, ScanError};
 use ic_stable_structures::Storable;
@@ -1422,9 +1423,9 @@ pub(super) fn complete_subtree_leaf_centroids(
 
 /// Reads one centroid (canonical f32 components) at an exact partition key, rejecting a
 /// wrong-width payload. The key carries the full `(index_id, version, partition)` scope.
-fn read_single_centroid(key: PartitionKey, dims: u16) -> Option<Vec<f32>> {
+fn read_single_centroid(key: PartitionKey, dims: u16) -> Option<QuantizedI8Vector> {
     let bytes = IVF_CENTROIDS.with_borrow(|m| m.get(&key))?;
-    decode_centroid_i8(&bytes, dims as usize)
+    split_centroid_i8(bytes, dims as usize)
 }
 
 /// Writes one subtree's `f` leaf centroids into `IVF_CENTROIDS` at the packed leaf ids
@@ -1596,7 +1597,7 @@ fn assign_pool_coarse_ids(
     nlist_coarse: u32,
 ) -> Result<(), VectorCanisterError> {
     let centroid_stride = u32::from(def.dims) * 4;
-    let coarse: Vec<Vec<f32>> = (0..nlist_coarse)
+    let coarse: Vec<QuantizedI8Vector> = (0..nlist_coarse)
         .map(|p| {
             read_single_centroid(
                 PartitionKey::coarse(index_id, target_index_version, p),
@@ -1746,7 +1747,13 @@ fn train_fine_step(
                 def.dims,
             )
             .ok_or(VectorCanisterError::RebuildIncomplete)?;
-            let encoded = encode_f32(&coarse_centroid);
+            // Empty-subtree rule replicates the coarse centroid; decode it back to the f32
+            // work-area form the leaf writer quantizes on publish.
+            let encoded = encode_f32(&decode_i8_to_f32(
+                &coarse_centroid.bytes,
+                coarse_centroid.scale,
+                def.dims as usize,
+            ));
             write_subtree_leaf_centroids(
                 index_id,
                 target_index_version,

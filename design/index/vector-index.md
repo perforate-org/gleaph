@@ -565,10 +565,11 @@ family: inverted index + uncompressed vectors + exact rerank).
   so the partition selection bounds the scanned rows.
 - The `dot + norms` formulation (FMA inner loop, precomputed `‖v‖²`) remains an opt-in alternative.
 - SIMD is `f32x4` with multi-accumulator batching; the scratch is 16-byte aligned and decoded by
-  direct reinterpretation (no per-row `Vec<f32>` allocation). Partition routing (`assign_partition`),
-  ε₂ partition selection (`select_partitions`, over the encoded query bytes), and the rebuild
-  `Training` assignment all score with the same SIMD `l2_squared_f32(bytes, centroid)` kernel (no
-  `decode_f32` allocation), sharing one tie-break rule (lowest id); there is no remaining scalar
+  direct reinterpretation (no per-row `Vec<f32>` allocation). Partition routing (`assign_partition`)
+  and ε₂ partition selection (`select_partitions`, over the encoded query bytes) score the quantized
+  centroids with the fused `l2_squared_i8_f32` kernel (no centroid f32 materialization; the query
+  decodes once per call), sharing one tie-break rule (lowest id); the rebuild `Training` assignment
+  still scores f32 work-area centroids with `l2_squared_f32_early_exit`. There is no remaining scalar
   f32×f32 L2 in the vector canister.
 
 ### Partition selection
@@ -629,11 +630,11 @@ two-level generation stores its coarse set inside `IVF_CENTROIDS` under the coar
 
 ### Search path
 
-1. Heap centroid cache (query path is read-only; a miss reads stable for that call only). A
-   two-level generation caches its **level-0 coarse set only**; fine child sets are always
-   stable-read per use.
-2. Query × centroids of the active generation's scoring set (SIMD; `nlist <= MAX_NLIST` per level):
-   the leaf set for flat, the coarse set for `levels = 2`.
+1. Heap centroid cache (query path is read-only; a miss reads stable for that call only) holding
+   the **quantized** set (I8 payload + scale, ~1/4 the f32 heap). A two-level generation caches its
+   **level-0 coarse set only**; fine child sets are always stable-read per use.
+2. Query × quantized centroids of the active generation's scoring set (fused I8 SIMD;
+   `nlist <= MAX_NLIST` per level): the leaf set for flat, the coarse set for `levels = 2`.
 3. ε₂ partition selection. Two-level (`levels = 2`): ε₂-select coarse subtrees with
    `def.eps_query_bps`, then read each selected subtree's contiguous leaf range `[c·f, (c+1)·f)`
    and ε₂-select within it with `def.eps_fine_bps` (Slice 9: per-level ε₂ pruning), returning

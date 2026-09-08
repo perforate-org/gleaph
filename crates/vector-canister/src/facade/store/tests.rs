@@ -1706,15 +1706,18 @@ fn cosine_rebuild_succeeds_with_spherical_kmeans() {
     admin_start_vector_rebuild(router(), INDEX_ID, 2, 100).expect("cosine rebuild starts");
     let status = drive_steps(INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
-    // Spherical k-means stores unit-normalized centroids.
+    // Spherical k-means stores unit-normalized centroids; persistence quantizes to I8, so the
+    // decoded centroids are approximately unit (I8 step `s/127` perturbs the norm² by ~1e-2).
     let centroids =
         super::search::read_centroids_at(INDEX_ID, TARGET_V, 2, DIMS).expect("centroids");
     assert_eq!(centroids.len(), 2);
     for c in &centroids {
-        let norm_sq: f32 = c.iter().map(|x| x * x).sum();
+        let raw = [c.bytes.clone(), c.scale.to_le_bytes().to_vec()].concat();
+        let dec = super::search::decode_centroid_i8(&raw, DIMS as usize).expect("decode");
+        let norm_sq: f32 = dec.iter().map(|x| x * x).sum();
         assert!(
-            (norm_sq - 1.0).abs() < 1e-4,
-            "centroid is unit, got {norm_sq}"
+            (norm_sq - 1.0).abs() < 2e-2,
+            "centroid is approximately unit, got {norm_sq}"
         );
     }
     // Every live subject got a shadow slot at the target version.
@@ -3875,10 +3878,11 @@ fn centroid_cache_lookup_shares_one_allocation_across_calls() {
 #[test]
 fn warm_all_restores_ready_indexes_and_evicts_over_budget() {
     fresh_store();
-    // Two ~4.2 MiB sets cannot share the 8 MiB cap; a third small ready set must survive alongside
-    // the newest large one.
-    seed_ready_centroids_only(1, 1024, 1024);
-    seed_ready_centroids_only(2, 1024, 1024);
+    // Two ~4.0 MiB quantized sets cannot share the 8 MiB cap; a third small ready set must
+    // survive alongside the newest large one. (dims 4096: the I8 layout needs ~4x the dims for
+    // the same pressure the f32 layout applied at dims 1024.)
+    seed_ready_centroids_only(1, 1024, 4096);
+    seed_ready_centroids_only(2, 1024, 4096);
     seed_ivf_for_test(
         3,
         VectorEncoding::F32,
@@ -3899,8 +3903,8 @@ fn warm_all_restores_ready_indexes_and_evicts_over_budget() {
         status.entries, 2,
         "the newest large set and the small set are resident; the lowest-id set was evicted"
     );
-    assert!(lookup(1, INITIAL_INDEX_VERSION, 1024, 1024).is_none());
-    assert!(lookup(2, INITIAL_INDEX_VERSION, 1024, 1024).is_some());
+    assert!(lookup(1, INITIAL_INDEX_VERSION, 1024, 4096).is_none());
+    assert!(lookup(2, INITIAL_INDEX_VERSION, 1024, 4096).is_some());
     assert!(lookup(3, INITIAL_INDEX_VERSION, 2, DIMS).is_some());
     assert!(status.bytes <= status.max_bytes);
 }
