@@ -222,8 +222,28 @@ fn search_req_metric_value(
     }
 }
 
+/// A stored-encoding search request (Model Y: the query bytes are canonical F32; `encoding` names
+/// the stored/index encoding so the canister selects the matching scoring kernel).
+fn search_req_encoding_value(
+    dims: u16,
+    top_k: u32,
+    value: f32,
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(dims, value),
+        encoding,
+        dims,
+        metric,
+        top_k,
+        candidate_subjects: None,
+    }
+}
+
 /// An `I8`-index search request (Model Y: the query bytes are canonical F32; `encoding` names the
-/// stored/index encoding so the canister selects the fused i8×f32 kernels).
+/// stored/index encoding so the canister selects the fused i8×f32 kernels.
 fn i8_search_req_metric_value(
     dims: u16,
     top_k: u32,
@@ -370,6 +390,14 @@ fn cvec(dims: u16, value: f32) -> Vec<f32> {
 /// populated clusters.
 #[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
 fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) {
+    setup_partitioned_store_with_encoding(dims, n, nlist, VectorEncoding::F32);
+}
+
+/// Encoding-parameterized variant of [`setup_partitioned_store`]: identical clustered fixture
+/// (same centroids/vectors/query), only the stored encoding differs, so scan-bench deltas isolate
+/// the per-row scoring cost (upcast alloc for I8/U8/F16/Bf16, Hamming popcount for Binary).
+#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+fn setup_partitioned_store_with_encoding(dims: u16, n: u32, nlist: u32, encoding: VectorEncoding) {
     reset_for_test_or_bench(&VectorCanisterInitArgs {
         router_canister: router(),
         definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
@@ -393,7 +421,7 @@ fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) {
             )
         })
         .collect();
-    seed_ivf_for_test(INDEX_ID, VectorEncoding::F32, dims, &centroids, &vectors);
+    seed_ivf_for_test(INDEX_ID, encoding, dims, &centroids, &vectors);
 }
 
 /// A deterministic varied-direction raw f32 vector (values in `[-1, 1]`) for cosine partitioned
@@ -533,6 +561,117 @@ partitioned_bench!(bench_ivf_d1536_nlist64_eps1, 1536, 64, 1.0);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps0, 1536, 256, 0.0);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps05, 1536, 256, 0.5);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps1, 1536, 256, 1.0);
+
+/// Encoding sweep at the design target (`d = 1536`, `nlist = 64`, `eps_query = 0.0`): the fixture
+/// (clusters, vectors, query) is identical to `bench_ivf_d1536_nlist64_eps0` (F32 baseline), only
+/// the stored encoding differs, so deltas isolate per-row scoring cost — upcast alloc for
+/// I8/U8/F16/Bf16, Hamming popcount for Binary.
+macro_rules! partitioned_encoding_bench {
+    ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr, $encoding:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            setup_partitioned_store_with_encoding($dims, SCAN_N, $nlist, $encoding);
+            let req = search_req_encoding_value(
+                $dims,
+                10,
+                SWEEP_QUERY,
+                VectorMetric::L2Squared,
+                $encoding,
+            );
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = vector_search_tuned(
+                    black_box(&req),
+                    SearchTuning {
+                        eps_query: $eps_query,
+                    },
+                )
+                .expect("vector_search_tuned");
+                black_box(result);
+            })
+        }
+    };
+}
+
+partitioned_encoding_bench!(
+    bench_ivf_d1536_i8_nlist64_eps0,
+    1536,
+    64,
+    0.0,
+    VectorEncoding::I8
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_u8_nlist64_eps0,
+    1536,
+    64,
+    0.0,
+    VectorEncoding::U8
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_f16_nlist64_eps0,
+    1536,
+    64,
+    0.0,
+    VectorEncoding::F16
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_bf16_nlist64_eps0,
+    1536,
+    64,
+    0.0,
+    VectorEncoding::Bf16
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_binary_nlist64_eps0,
+    1536,
+    64,
+    0.0,
+    VectorEncoding::Binary
+);
+
+/// F32 full-scan control for the encoding epsinf sweep (no `nlist64 + INF` F32 bench exists in the
+/// eps sweep; without it the encoding deltas have no same-shape baseline).
+partitioned_bench!(bench_ivf_d1536_nlist64_epsinf, 1536, 64, f32::INFINITY);
+
+/// Encoding sweep at full-partition scan (`eps_query = INF`): every partition is scanned, so
+/// per-partition selection variance drops out and deltas isolate the per-row kernel cost plus the
+/// row-level early-exit behavior (heap thresholds still vary with quantized distances — see the
+/// eps0 sweep note). Pair with the eps0 sweep to separate selection cost from row cost.
+partitioned_encoding_bench!(
+    bench_ivf_d1536_i8_nlist64_epsinf,
+    1536,
+    64,
+    f32::INFINITY,
+    VectorEncoding::I8
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_u8_nlist64_epsinf,
+    1536,
+    64,
+    f32::INFINITY,
+    VectorEncoding::U8
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_f16_nlist64_epsinf,
+    1536,
+    64,
+    f32::INFINITY,
+    VectorEncoding::F16
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_bf16_nlist64_epsinf,
+    1536,
+    64,
+    f32::INFINITY,
+    VectorEncoding::Bf16
+);
+partitioned_encoding_bench!(
+    bench_ivf_d1536_binary_nlist64_epsinf,
+    1536,
+    64,
+    f32::INFINITY,
+    VectorEncoding::Binary
+);
 
 /// Cosine ε₂ sweep over a partitioned cosine index (unit centroids make L2 selection cosine-ordered):
 /// a smaller `eps_query` scans fewer populated clusters, so `eps_query = INF` is the exact-parity
