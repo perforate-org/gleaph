@@ -34,7 +34,8 @@ use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexEqualSpec, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageForLabelRequest, MAX_INDEX_VALUE_KEY_BYTES,
+    LookupRangeIntersectionPageForLabelRequest, MAX_EQUALITY_INTERSECTION_ARMS,
+    MAX_INDEX_VALUE_KEY_BYTES,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
@@ -650,9 +651,6 @@ enum SearchFilter {
     /// shared bounded candidate collector.
     Disjunction(Vec<SearchFilterDisjunctionArm>),
 }
-
-/// Maximum number of `AND`-connected equality arms the Property Index intersection path admits.
-const MAX_EQUALITY_INTERSECTION_ARMS: usize = 16;
 
 /// Maximum number of `OR`-connected comparison arms the Router will execute as a bounded union of
 /// Property Index sources. This is a single Router-owned fan-out bound for equality, range, and
