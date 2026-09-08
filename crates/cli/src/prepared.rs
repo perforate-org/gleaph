@@ -1780,6 +1780,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         }
     }
 
@@ -1953,6 +1954,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         };
         assert_eq!(
             render_rows_table(&count_only).expect("count-only table"),
@@ -1964,6 +1966,7 @@ mod tests {
             phase: None,
             token: None,
             truncated: None,
+            search_chain_receipt: None,
         };
         assert_eq!(
             render_rows_table(&empty_rows).expect("empty table"),
