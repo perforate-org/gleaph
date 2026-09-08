@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Encoding of a stored vertex embedding.
 ///
-/// Only fixed-dimension encodings are supported. New variants (`Bf16`, `U8`, `Binary`) must
+/// Only fixed-dimension encodings are supported. New variants (`U8`, `Binary`) must
 /// update every exhaustive `match` on this enum, which is the intended compile-time gate before
 /// an `UnsupportedEncoding`-style runtime branch is introduced.
 #[derive(
@@ -37,6 +37,8 @@ pub enum VectorEncoding {
     I8,
     /// IEEE-754 little-endian `f16` components; byte width is `dims * 2`. No per-row aux.
     F16,
+    /// Brain-float `bf16` components; byte width is `dims * 2`. No per-row aux.
+    Bf16,
 }
 
 impl VectorEncoding {
@@ -45,7 +47,7 @@ impl VectorEncoding {
         match self {
             Self::F32 => 4,
             Self::I8 => 1,
-            Self::F16 => 2,
+            Self::F16 | Self::Bf16 => 2,
         }
     }
 
@@ -60,6 +62,7 @@ impl VectorEncoding {
             Self::F32 => 0,
             Self::I8 => 1,
             Self::F16 => 2,
+            Self::Bf16 => 3,
         }
     }
 
@@ -69,6 +72,7 @@ impl VectorEncoding {
             0 => Some(Self::F32),
             1 => Some(Self::I8),
             2 => Some(Self::F16),
+            3 => Some(Self::Bf16),
             _ => None,
         }
     }
@@ -158,6 +162,47 @@ pub fn decode_f16_to_f32(bytes: &[u8], dims: usize) -> Vec<f32> {
         .iter()
         .take(dims)
         .map(|c| half::f16::from_bits(u16::from_le_bytes(*c)).to_f32())
+        .collect()
+}
+
+/// Encodes `f32` components to little-endian `bf16` bytes (`dims * 2` bytes). Caller must have
+/// validated finiteness; non-finite inputs encode to inf/NaN bits and are rejected upstream.
+pub fn encode_f32_to_bf16_bytes(vector: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vector.len() * 2);
+    for v in vector {
+        out.extend_from_slice(&half::bf16::from_f32(*v).to_bits().to_le_bytes());
+    }
+    out
+}
+
+/// Encodes contiguous little-endian `f32` bytes to little-endian `bf16` bytes. Returns `Err` on
+/// non-finite components or a byte-length mismatch.
+pub fn encode_f32_bytes_to_bf16_bytes(
+    bytes: &[u8],
+    dims: usize,
+) -> Result<Vec<u8>, VectorCanisterError> {
+    if bytes.len() != dims * 4 {
+        return Err(VectorCanisterError::ByteWidthMismatch);
+    }
+    let mut out = Vec::with_capacity(dims * 2);
+    for chunk in bytes.as_chunks::<4>().0 {
+        let x = f32::from_le_bytes(*chunk);
+        if !x.is_finite() {
+            return Err(VectorCanisterError::InvalidQueryVector);
+        }
+        out.extend_from_slice(&half::bf16::from_f32(x).to_bits().to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// Decodes little-endian `bf16` bytes back to `f32` components. Reads the first `dims` components.
+pub fn decode_bf16_to_f32(bytes: &[u8], dims: usize) -> Vec<f32> {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take(dims)
+        .map(|c| half::bf16::from_bits(u16::from_le_bytes(*c)).to_f32())
         .collect()
 }
 
@@ -1289,6 +1334,34 @@ mod tests {
         assert_eq!(VectorEncoding::from_u8(1), Some(VectorEncoding::I8));
         assert_eq!(VectorEncoding::F16.component_bytes(), 2);
         assert_eq!(VectorEncoding::F16.stride_bytes(1536), 3072);
+    }
+
+    #[test]
+    fn bf16_roundtrip_preserves_values_within_brain_float_precision() {
+        let v = vec![1.0f32, -2.5, 0.0, 3.25];
+        let bytes = encode_f32_bytes_to_bf16_bytes(&encode_f32_test(&v), v.len()).expect("encode");
+        assert_eq!(bytes.len(), v.len() * 2);
+        let back = decode_bf16_to_f32(&bytes, v.len());
+        for (got, want) in back.iter().zip(&v) {
+            assert!((got - want).abs() < 0.02, "bf16 {got} vs f32 {want}");
+        }
+        assert_eq!(VectorEncoding::Bf16.as_u8(), 3);
+        assert_eq!(VectorEncoding::from_u8(3), Some(VectorEncoding::Bf16));
+        assert_eq!(VectorEncoding::Bf16.component_bytes(), 2);
+        assert_eq!(VectorEncoding::Bf16.stride_bytes(1536), 3072);
+    }
+
+    #[test]
+    fn bf16_rejects_non_finite_and_wrong_width() {
+        let nan = vec![f32::NAN, 1.0];
+        assert_eq!(
+            encode_f32_bytes_to_bf16_bytes(&encode_f32_test(&nan), 2),
+            Err(VectorCanisterError::InvalidQueryVector)
+        );
+        assert_eq!(
+            encode_f32_bytes_to_bf16_bytes(&encode_f32_test(&[1.0f32]), 2),
+            Err(VectorCanisterError::ByteWidthMismatch)
+        );
     }
 
     #[test]

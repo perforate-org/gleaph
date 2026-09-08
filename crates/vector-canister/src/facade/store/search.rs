@@ -31,7 +31,7 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VECTOR_EPS_BPS_INFINITY,
     VectorCanisterError, VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest,
-    VectorSearchResult, VectorSubject, decode_f16_to_f32, decode_i8_to_f32,
+    VectorSearchResult, VectorSubject, decode_bf16_to_f32, decode_f16_to_f32, decode_i8_to_f32,
 };
 use ic_stable_vector_page_store::kernel::{
     dot_f32_early_exit, dot_i8_f32_early_exit, l2_squared_f32, l2_squared_f32_early_exit,
@@ -147,10 +147,14 @@ fn score_row(
             VectorEncoding::F32 => l2_squared_f32_early_exit(bytes, query, threshold),
             VectorEncoding::I8 => l2_squared_i8_f32_early_exit(bytes, scale, query, threshold),
             VectorEncoding::F16 => {
-                // Minimal F16 slice: upcast to f32 bytes once per row, then reuse the exact
-                // f32 kernel (stored precision = upcast F16 values; no f32 materialization
-                // at rest). A native f16 kernel can replace this alloc later.
+                // Minimal F16/Bf16 slice: upcast to f32 bytes once per row, then reuse the exact
+                // f32 kernel (stored precision = upcast values; no f32 materialization
+                // at rest). A native half-precision kernel can replace this alloc later.
                 let f32bytes = encode_f32(&decode_f16_to_f32(bytes, query.len()));
+                l2_squared_f32_early_exit(&f32bytes, query, threshold)
+            }
+            VectorEncoding::Bf16 => {
+                let f32bytes = encode_f32(&decode_bf16_to_f32(bytes, query.len()));
                 l2_squared_f32_early_exit(&f32bytes, query, threshold)
             }
         },
@@ -187,24 +191,29 @@ fn score_row(
                     let f32bytes = encode_f32(&decode_f16_to_f32(bytes, query.len()));
                     dot_f32_early_exit(&f32bytes, query, suffix_norm, dot_threshold)?
                 }
+                VectorEncoding::Bf16 => {
+                    let dot_threshold = q_norm * (1.0 - threshold);
+                    let f32bytes = encode_f32(&decode_bf16_to_f32(bytes, query.len()));
+                    dot_f32_early_exit(&f32bytes, query, suffix_norm, dot_threshold)?
+                }
             };
             Some(1.0 - dot / q_norm)
         }
     }
 }
 
-/// Reads the per-row quantization scale from `info` for an `I8` row (`0.0` for F32/F16, which carry no
+/// Reads the per-row quantization scale from `info` for an `I8` row (`0.0` for F32/F16/Bf16, which carry no
 /// scale in aux). The page store keeps aux opaque; only the search layer interprets it.
 fn row_scale(encoding: VectorEncoding, info: &RowInfo) -> f32 {
     match encoding {
-        VectorEncoding::F32 | VectorEncoding::F16 => 0.0,
+        VectorEncoding::F32 | VectorEncoding::F16 | VectorEncoding::Bf16 => 0.0,
         VectorEncoding::I8 => f32::from_le_bytes(info.aux[0..4].try_into().expect("4-byte scale")),
     }
 }
 
 /// Dequantizes stored row bytes to the canonical f32 encoding used for partition assignment and
 /// centroid comparison. F32 rows pass through; I8 rows are dequantized with their aux scale;
-/// F16 rows are upcast. Used by the rebuild build path so its partition assignment is in the
+/// F16/Bf16 rows are upcast. Used by the rebuild build path so its partition assignment is in the
 /// same f32 space as upsert.
 pub(super) fn stored_to_f32_bytes(def: &VectorIndexDef, bytes: &[u8], aux: &[u8; 8]) -> Vec<u8> {
     match def.encoding {
@@ -214,6 +223,7 @@ pub(super) fn stored_to_f32_bytes(def: &VectorIndexDef, bytes: &[u8], aux: &[u8;
             encode_f32(&decode_i8_to_f32(bytes, scale, def.dims as usize))
         }
         VectorEncoding::F16 => encode_f32(&decode_f16_to_f32(bytes, def.dims as usize)),
+        VectorEncoding::Bf16 => encode_f32(&decode_bf16_to_f32(bytes, def.dims as usize)),
     }
 }
 
@@ -1234,10 +1244,12 @@ fn search_impl(
     // Conservative upper bound on the stored row norm for the quantized cosine early exit (I8 rows are
     // only approximately unit-normalized: per-component quantization error <= 1/(2*127), so
     // `norm(v) <= 1 + sqrt(dims)/(2*127)`). F32 rows are exactly unit-normalized (`1.0`).
-    // F16 reuses the I8 bound (safe overestimate; F16 rounding error is far smaller).
+    // F16/Bf16 reuse the I8 bound (safe overestimate; half-precision rounding error is far smaller).
     let max_norm = if req.metric == VectorMetric::Cosine
-        && matches!(req.encoding, VectorEncoding::I8 | VectorEncoding::F16)
-    {
+        && matches!(
+            req.encoding,
+            VectorEncoding::I8 | VectorEncoding::F16 | VectorEncoding::Bf16
+        ) {
         1.0 + (req.dims as f32).sqrt() / (2.0 * 127.0)
     } else {
         1.0

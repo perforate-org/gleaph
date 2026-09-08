@@ -629,6 +629,7 @@ fn parse_vector_option(
                 "f32" => VectorEncoding::F32,
                 "i8" => VectorEncoding::I8,
                 "f16" => VectorEncoding::F16,
+                "bf16" => VectorEncoding::Bf16,
                 _ => {
                     return Err(VectorIndexDdlParseError::InvalidOptionValue { option, value });
                 }
