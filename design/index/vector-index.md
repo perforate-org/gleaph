@@ -458,7 +458,9 @@ pub struct EncodingRecord {
 - **Scoring** uses fused kernels over the stored bytes. `I8` is **implemented** (Slice 0242): rows are
   quantized once at write with a **per-row scale** (`i8_i = clamp(round(127·x_i/s))`, `s = max|x_i|`,
   scale in row-meta aux 4) and scored with a fused i8×f32 kernel (`v_i = i8_i·scale/127`), with **no
-  page-level f32 materialization**. `F16`/`Bf16` are implemented (minimal slices 2026-09-08: half-precision
+  page-level f32 materialization**. `F16` is implemented (minimal slice 2026-09-08: half-precision
+  storage, F32 wire query, no aux; fused f16×f32 kernel since 2026-09-09, on-the-fly widening,
+  no f32 materialization). `Bf16` is implemented (minimal slice 2026-09-08: half-precision
   storage, F32 wire query, upcast scoring via the exact f32 kernels, no aux). `U8` is implemented
   (minimal slice 2026-09-08: symmetric offset-unsigned twin of `I8`, per-row scale in aux 4;
   fused u8×f32 kernel since 2026-09-09, `v_i = (byte_i − 128)·scale/127`, no f32 materialization). `Binary` is implemented (minimal slice 2026-09-08:
@@ -528,7 +530,7 @@ generation whose rows carry, behind the original bytes on the same page, a per-r
 | F32 × L2 (default)           | 0         | sub-square SIMD + early exit; no norm, no bound |
 | F32 × cosine (default)       | 0         | normalized dot only                             |
 | I8 (implemented, Slice 0242) | 4         | per-row quantization scale (max-abs)            |
-| F16 (implemented, 2026-09-08)  | 0         | none (upcast at score time)                     |
+| F16 (implemented, 2026-09-08)  | 0         | none (fused widening at score time)             |
 | Bf16 (implemented, 2026-09-08) | 0         | none (upcast at score time)                     |
 | U8 (implemented, 2026-09-08)   | 4         | per-row quantization scale (max-abs, offset 128) |
 | Binary (implemented, 2026-09-08) | 0       | none (sign bits; Hamming scoring)               |

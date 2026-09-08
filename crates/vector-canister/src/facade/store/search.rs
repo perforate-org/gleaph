@@ -132,6 +132,57 @@ fn compute_suffix_norms(query: &[f32]) -> Vec<f32> {
 /// bound is below `q_norm * (1 - threshold)` the row cannot be in the top-k. For both L2 and cosine,
 /// finiteness is fused into the kernel result (a non-finite component makes the sum / dot / norm
 /// non-finite), so there is no separate `row_is_finite` pre-scan.
+/// Squared L2 with early exit over `f16` stored bytes, fused (no f32 materialization): each
+/// component is widened on the fly with the identical conversion `decode_f16_to_f32` uses and
+/// accumulated in query order, so host results are bit-identical to the former upcast path.
+/// Otherwise the exact [`l2_squared_f32_early_exit`] contract: monotone partial sums make the exit
+/// exact; a non-finite row never triggers the exit and is skipped.
+fn l2_f16_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) -> Option<f32> {
+    let mut sum = 0.0;
+    for (chunk, q) in bytes.as_chunks::<2>().0.iter().zip(query.iter().copied()) {
+        let v = half::f16::from_bits(u16::from_le_bytes(*chunk)).to_f32();
+        let d = v - q;
+        sum += d * d;
+        if sum > threshold {
+            return None;
+        }
+    }
+    if !sum.is_finite() {
+        return None;
+    }
+    Some(sum)
+}
+
+/// Dot product with the exact Cauchy-Schwarz early exit over `f16` stored bytes, fused like above.
+/// Mirrors [`dot_f32_early_exit`]'s unit-row contract (F16 cosine rows are stored normalized; the
+/// former upcast path used the f32 kernel unchanged), so the bound is `partial + suffix_norm[j+1]`
+/// with no `max_norm` factor.
+fn dot_f16_f32_early_exit(
+    bytes: &[u8],
+    query: &[f32],
+    suffix_norm: &[f32],
+    dot_threshold: f32,
+) -> Option<f32> {
+    let mut sum = 0.0;
+    for (j, (chunk, q)) in bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(query.iter().copied())
+        .enumerate()
+    {
+        let v = half::f16::from_bits(u16::from_le_bytes(*chunk)).to_f32();
+        sum += v * q;
+        if sum + suffix_norm[j + 1] < dot_threshold {
+            return None;
+        }
+    }
+    if !sum.is_finite() {
+        return None;
+    }
+    Some(sum)
+}
+
 fn score_row(
     metric: VectorMetric,
     encoding: VectorEncoding,
@@ -147,13 +198,7 @@ fn score_row(
         VectorMetric::L2Squared => match encoding {
             VectorEncoding::F32 => l2_squared_f32_early_exit(bytes, query, threshold),
             VectorEncoding::I8 => l2_squared_i8_f32_early_exit(bytes, scale, query, threshold),
-            VectorEncoding::F16 => {
-                // Minimal F16/Bf16 slice: upcast to f32 bytes once per row, then reuse the exact
-                // f32 kernel (stored precision = upcast values; no f32 materialization
-                // at rest). A native half-precision kernel can replace this alloc later.
-                let f32bytes = encode_f32(&decode_f16_to_f32(bytes, query.len()));
-                l2_squared_f32_early_exit(&f32bytes, query, threshold)
-            }
+            VectorEncoding::F16 => l2_f16_f32_early_exit(bytes, query, threshold),
             VectorEncoding::Bf16 => {
                 let f32bytes = encode_f32(&decode_bf16_to_f32(bytes, query.len()));
                 l2_squared_f32_early_exit(&f32bytes, query, threshold)
@@ -195,8 +240,7 @@ fn score_row(
                 }
                 VectorEncoding::F16 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
-                    let f32bytes = encode_f32(&decode_f16_to_f32(bytes, query.len()));
-                    dot_f32_early_exit(&f32bytes, query, suffix_norm, dot_threshold)?
+                    dot_f16_f32_early_exit(bytes, query, suffix_norm, dot_threshold)?
                 }
                 VectorEncoding::Bf16 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
@@ -1611,6 +1655,50 @@ mod tests {
         assert_eq!(eps_query_from_bps(5_000), 0.5);
         // The documented cap yields the ε₂ factor `100.0` (threshold factor `1 + 100 = 101`).
         assert_eq!(eps_query_from_bps(MAX_VECTOR_EPS_BPS), 100.0);
+    }
+
+    #[test]
+    fn f16_fused_kernels_match_upcast_path() {
+        // Fused kernels widen on the fly with the identical conversion and accumulate in the same
+        // order, so host results equal the former upcast-then-exact-kernel path bit-for-bit.
+        use gleaph_graph_kernel::vector_index::encode_f32_bytes_to_f16_bytes;
+        let q = vec![1.0f32, -2.0, 3.0, -4.0, 0.5];
+        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5];
+        let f16bytes = encode_f32_bytes_to_f16_bytes(&encode_f32(&v), v.len()).expect("encode");
+        let f32bytes = encode_f32(&decode_f16_to_f32(&f16bytes, v.len()));
+        // L2 agrees, both under the threshold (full distance) and over it (early exit).
+        assert_eq!(
+            l2_f16_f32_early_exit(&f16bytes, &q, f32::INFINITY),
+            l2_squared_f32_early_exit(&f32bytes, &q, f32::INFINITY)
+        );
+        assert_eq!(
+            l2_f16_f32_early_exit(&f16bytes, &q, 0.0),
+            l2_squared_f32_early_exit(&f32bytes, &q, 0.0)
+        );
+        // Cosine dot agrees, both with a never-triggering threshold and an always-exit one.
+        let sn = compute_suffix_norms(&q);
+        assert_eq!(
+            dot_f16_f32_early_exit(&f16bytes, &q, &sn, f32::NEG_INFINITY),
+            dot_f32_early_exit(&f32bytes, &q, &sn, f32::NEG_INFINITY)
+        );
+        assert_eq!(
+            dot_f16_f32_early_exit(&f16bytes, &q, &sn, f32::INFINITY),
+            dot_f32_early_exit(&f32bytes, &q, &sn, f32::INFINITY)
+        );
+        // Non-finite rows are skipped by both paths (the encoder rejects NaN fail-closed, so
+        // poison one stored component's bits directly).
+        let base = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let mut bad16 =
+            encode_f32_bytes_to_f16_bytes(&encode_f32(&base), base.len()).expect("encode");
+        bad16[0..2].copy_from_slice(&half::f16::from_f32(f32::NAN).to_bits().to_le_bytes());
+        let bad32 = encode_f32(&decode_f16_to_f32(&bad16, base.len()));
+        assert_eq!(l2_f16_f32_early_exit(&bad16, &q, f32::INFINITY), None);
+        assert_eq!(l2_squared_f32_early_exit(&bad32, &q, f32::INFINITY), None);
+        assert_eq!(
+            dot_f16_f32_early_exit(&bad16, &q, &sn, f32::NEG_INFINITY),
+            None
+        );
+        assert_eq!(dot_f32_early_exit(&bad32, &q, &sn, f32::NEG_INFINITY), None);
     }
 
     #[test]
