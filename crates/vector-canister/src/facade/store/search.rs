@@ -32,7 +32,7 @@ use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VECTOR_EPS_BPS_INFINITY,
     VectorCanisterError, VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest,
     VectorSearchResult, VectorSubject, decode_bf16_to_f32, decode_binary_to_f32, decode_f16_to_f32,
-    decode_i8_to_f32, decode_u8_to_f32, hamming_f32_vs_binary,
+    decode_i8_to_f32, decode_u8_to_f32, hamming_f32_vs_binary, quantize_f32_to_i8,
 };
 use ic_stable_vector_page_store::kernel::{
     dot_f32_early_exit, dot_i8_f32_early_exit, dot_u8_f32_early_exit, l2_squared_f32,
@@ -357,6 +357,35 @@ pub(super) fn encode_f32(vector: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out
+}
+
+/// Canonical `IVF_CENTROIDS` value layout (centroid I8 quantization, 2026-09-09): `dims` I8 bytes
+/// followed by the 4-byte little-endian per-centroid scale (`s = max|x|`, `v_i ≈ byte_i * s / 127`),
+/// i.e. `dims + 4` bytes total — roughly a quarter of the former `dims * 4` f32 payload. This is the
+/// single canonical layout (pre-production: fresh state required, no legacy f32 decoder). Training
+/// works in f32 and quantizes only at publish; every reader decodes through [`decode_centroid_i8`].
+/// Rejects non-finite components fail-closed via [`quantize_f32_to_i8`].
+pub(super) fn encode_centroid_i8(centroid: &[f32]) -> Result<Vec<u8>, VectorCanisterError> {
+    let f32bytes = encode_f32(centroid);
+    let q = quantize_f32_to_i8(&f32bytes, centroid.len())?;
+    let mut out = q.bytes;
+    out.extend_from_slice(&q.scale.to_le_bytes());
+    Ok(out)
+}
+
+/// Decodes one canonical centroid value to `dims` f32 components, returning `None` on any
+/// wrong-width payload or non-finite scale (a partial/stale set is not ready, same as before).
+/// A zero scale (zero centroid) decodes to all-zero components via [`decode_i8_to_f32`].
+pub(super) fn decode_centroid_i8(bytes: &[u8], dims: usize) -> Option<Vec<f32>> {
+    if bytes.len() != dims + 4 {
+        return None;
+    }
+    let scale = f32::from_le_bytes(bytes[dims..dims + 4].try_into().ok()?);
+    if !scale.is_finite() || scale < 0.0 {
+        return None;
+    }
+    let centroid = decode_i8_to_f32(&bytes[..dims], scale, dims);
+    (centroid.len() == dims).then_some(centroid)
 }
 
 /// Returns the unit-normalized encoding of the first `dims` f32 components of `bytes`, or `None` when
@@ -1080,11 +1109,7 @@ pub(super) fn read_centroids_at(
     IVF_CENTROIDS.with_borrow(|m| {
         for p in 0..nlist {
             let bytes = m.get(&PartitionKey::new(index_id, version, p))?;
-            let centroid = decode_f32(&bytes);
-            if centroid.len() != dims as usize {
-                return None;
-            }
-            centroids.push(centroid);
+            centroids.push(decode_centroid_i8(&bytes, dims as usize)?);
         }
         Some(())
     })?;
@@ -1106,11 +1131,7 @@ pub(super) fn read_coarse_centroids_at(
     IVF_CENTROIDS.with_borrow(|m| {
         for p in 0..nlist {
             let bytes = m.get(&PartitionKey::coarse(index_id, version, p))?;
-            let centroid = decode_f32(&bytes);
-            if centroid.len() != dims as usize {
-                return None;
-            }
-            centroids.push(centroid);
+            centroids.push(decode_centroid_i8(&bytes, dims as usize)?);
         }
         Some(())
     })?;
@@ -1132,11 +1153,7 @@ pub(super) fn read_leaf_children_at(
     IVF_CENTROIDS.with_borrow(|m| {
         for rel in 0..nlist_fine {
             let bytes = m.get(&PartitionKey::new(index_id, version, base + rel))?;
-            let centroid = decode_f32(&bytes);
-            if centroid.len() != dims as usize {
-                return None;
-            }
-            children.push(centroid);
+            children.push(decode_centroid_i8(&bytes, dims as usize)?);
         }
         Some(())
     })?;
@@ -1781,6 +1798,72 @@ mod tests {
             None
         );
         assert_eq!(dot_f32_early_exit(&bad32, &q, &sn, f32::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn centroid_codec_roundtrip_layout_and_fail_closed() {
+        // Canonical layout: `dims` I8 bytes + 4-byte LE scale.
+        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5];
+        let bytes = encode_centroid_i8(&v).expect("encode");
+        assert_eq!(bytes.len(), v.len() + 4);
+        assert_eq!(
+            f32::from_le_bytes(bytes[v.len()..v.len() + 4].try_into().expect("scale")),
+            3.0,
+            "scale is max|x|"
+        );
+        let dec = decode_centroid_i8(&bytes, v.len()).expect("decode");
+        assert_eq!(dec.len(), v.len());
+        // I8 rounding error is at most half a step (`scale / 127 / 2`).
+        for (d, x) in dec.iter().zip(&v) {
+            assert!((d - x).abs() <= 3.0 / 127.0, "within one I8 step");
+        }
+        // Zero centroid: all-zero codes + scale 0 decode back to zeros.
+        let zero = encode_centroid_i8(&[0.0; 4]).expect("encode zero");
+        assert_eq!(zero, vec![0u8; 4 + 4]);
+        assert_eq!(
+            decode_centroid_i8(&zero, 4).expect("decode zero"),
+            vec![0.0; 4]
+        );
+        // Fail-closed: wrong width, truncated scale, non-finite scale all reject.
+        assert_eq!(decode_centroid_i8(&bytes[..v.len()], v.len()), None);
+        assert_eq!(decode_centroid_i8(&bytes, v.len() + 1), None);
+        let mut bad_scale = bytes.clone();
+        bad_scale[v.len()..v.len() + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(decode_centroid_i8(&bad_scale, v.len()), None);
+        assert!(encode_centroid_i8(&[1.0, f32::NAN, 2.0]).is_err());
+        assert!(encode_centroid_i8(&[1.0, f32::INFINITY, 2.0]).is_err());
+    }
+
+    #[test]
+    fn centroid_quantization_preserves_assignment_on_separated_clusters() {
+        // The read path decodes quantized centroids, so assignment must agree with the f32
+        // centroids on well-separated clusters (quantization error cannot cross the gap).
+        let centroids = vec![
+            vec![0.0f32, 0.0, 0.0, 0.0],
+            vec![10.0f32, 10.0, 10.0, 10.0],
+            vec![20.0f32, 0.0, 20.0, 0.0],
+        ];
+        let quantized: Vec<Vec<f32>> = centroids
+            .iter()
+            .map(|c| {
+                let bytes = encode_centroid_i8(c).expect("encode");
+                assert_eq!(bytes.len(), 4 + 4);
+                decode_centroid_i8(&bytes, 4).expect("decode")
+            })
+            .collect();
+        for (query, want) in [
+            (vec![0.5f32, -0.5, 0.5, -0.5], 0),
+            (vec![10.5f32, 9.5, 10.5, 9.5], 1),
+            (vec![19.5f32, 0.5, 19.5, 0.5], 2),
+        ] {
+            let qb = encode_f32(&query);
+            assert_eq!(assign_partition(&centroids, &qb), want);
+            assert_eq!(
+                assign_partition(&quantized, &qb),
+                want,
+                "quantized assignment agrees on separated clusters"
+            );
+        }
     }
 
     #[test]

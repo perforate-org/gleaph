@@ -3227,14 +3227,17 @@ fn publish_succeeds_with_an_empty_partition() {
 
     // Physical subject-map scan order is not a partition-id contract. Locate the specific centroid
     // whose only source was removed, then prove its partition has no materialized head while the
-    // remaining centroid partitions retain their two live rows each.
-    let removed_centroid = vec_bytes(5.0);
+    // remaining centroid partitions retain their two live rows each. Centroids persist in the
+    // canonical I8 layout, so compare the decoded values (5.0 quantizes exactly: 127 * 5 / 127).
     let empty_partition = IVF_CENTROIDS
         .with_borrow(|centroids| {
             (0..3).find(|&partition| {
                 centroids
                     .get(&PartitionKey::new(INDEX_ID, TARGET_V, partition))
-                    .is_some_and(|centroid| centroid.as_slice() == removed_centroid.as_slice())
+                    .is_some_and(|centroid| {
+                        super::search::decode_centroid_i8(&centroid, DIMS as usize)
+                            == Some(vec![5.0; DIMS as usize])
+                    })
             })
         })
         .expect("removed vector remains a target centroid");
@@ -3298,7 +3301,11 @@ fn training_produces_nlist_valid_centroids() {
             let bytes = m
                 .get(&PartitionKey::new(INDEX_ID, TARGET_V, p))
                 .expect("centroid present");
-            assert_eq!(bytes.len(), STRIDE, "centroid {p} is dims-valid");
+            assert_eq!(
+                bytes.len(),
+                DIMS as usize + 4,
+                "centroid {p} is dims-valid (canonical I8 layout)"
+            );
         }
     });
 }
@@ -3802,7 +3809,7 @@ fn seed_ready_centroids_only(index_id: u32, nlist: u32, dims: u16) {
         for p in 0..nlist {
             m.insert(
                 PartitionKey::new(index_id, INITIAL_INDEX_VERSION, p),
-                super::search::encode_f32(&value),
+                super::search::encode_centroid_i8(&value).expect("seed centroid finite"),
             );
         }
     });
@@ -5756,6 +5763,11 @@ mod two_level_tests {
         super::search::encode_f32(vector)
     }
 
+    /// Canonical centroid bytes for direct `IVF_CENTROIDS` fixtures (I8 layout, 2026-09-09).
+    fn encode_centroid(vector: &[f32]) -> Vec<u8> {
+        super::search::encode_centroid_i8(vector).expect("fixture centroid finite")
+    }
+
     /// Coarse count / branching factor of the deterministic fixture.
     const C: u32 = 2;
     const F: u32 = 2;
@@ -5907,27 +5919,27 @@ mod two_level_tests {
         IVF_CENTROIDS.with_borrow_mut(|m| {
             m.insert(
                 PartitionKey::coarse(INDEX_ID, active, 0),
-                encode_f32(&[0.0, 0.0, 0.0, 0.0]),
+                encode_centroid(&[0.0, 0.0, 0.0, 0.0]),
             );
             m.insert(
                 PartitionKey::coarse(INDEX_ID, active, 1),
-                encode_f32(&[100.0, 100.0, 100.0, 100.0]),
+                encode_centroid(&[100.0, 100.0, 100.0, 100.0]),
             );
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 0),
-                encode_f32(&[0.0, 0.0, 0.0, 0.0]),
+                encode_centroid(&[0.0, 0.0, 0.0, 0.0]),
             );
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 1),
-                encode_f32(&[1.0, 1.0, 1.0, 1.0]),
+                encode_centroid(&[1.0, 1.0, 1.0, 1.0]),
             );
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 2),
-                encode_f32(&[100.0, 100.0, 100.0, 100.0]),
+                encode_centroid(&[100.0, 100.0, 100.0, 100.0]),
             );
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 3),
-                encode_f32(&[101.0, 101.0, 101.0, 101.0]),
+                encode_centroid(&[101.0, 101.0, 101.0, 101.0]),
             );
         });
         IVF_CENTROID_META.with_borrow_mut(|meta| {
@@ -6076,28 +6088,28 @@ mod two_level_tests {
         IVF_CENTROIDS.with_borrow_mut(|m| {
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 0),
-                encode_f32(&[0.0, 0.0, 0.0, 0.0]),
+                encode_centroid(&[0.0, 0.0, 0.0, 0.0]),
             );
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 1),
-                encode_f32(&[20.0, 20.0, 20.0, 20.0]),
+                encode_centroid(&[20.0, 20.0, 20.0, 20.0]),
             );
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 2),
-                encode_f32(&[10.0, 10.0, 10.0, 10.0]),
+                encode_centroid(&[10.0, 10.0, 10.0, 10.0]),
             );
             // Duplicate of leaf 2: same centroid, higher id.
             m.insert(
                 PartitionKey::new(INDEX_ID, active, 3),
-                encode_f32(&[10.0, 10.0, 10.0, 10.0]),
+                encode_centroid(&[10.0, 10.0, 10.0, 10.0]),
             );
             m.insert(
                 PartitionKey::coarse(INDEX_ID, active, 0),
-                encode_f32(&[5.0, 5.0, 5.0, 5.0]),
+                encode_centroid(&[5.0, 5.0, 5.0, 5.0]),
             );
             m.insert(
                 PartitionKey::coarse(INDEX_ID, active, 1),
-                encode_f32(&[15.0, 15.0, 15.0, 15.0]),
+                encode_centroid(&[15.0, 15.0, 15.0, 15.0]),
             );
         });
         IVF_CENTROID_META.with_borrow_mut(|meta| {

@@ -28,8 +28,8 @@
 use super::authorization::assert_router_caller;
 use super::mutation::{append_slot_batch, insert_subject_entry, shape_def_for, tombstone_slot};
 use super::search::{
-    assign_partition, decode_f32, encode_f32, read_centroids_at, read_coarse_centroids_at,
-    read_leaf_children_at, stored_to_f32_bytes,
+    assign_partition, decode_centroid_i8, decode_f32, encode_centroid_i8, encode_f32,
+    read_centroids_at, read_coarse_centroids_at, read_leaf_children_at, stored_to_f32_bytes,
 };
 use super::{
     MAX_LEAVES, MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STEP_VECTOR_BYTES,
@@ -1298,8 +1298,14 @@ fn training_step(
     let iteration = iteration + 1;
 
     if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
+        // Publish quantizes the f32 work-area centroids to the canonical I8 layout; a
+        // non-finite centroid fails the rebuild closed rather than persisting garbage.
+        let quantized: Vec<Vec<u8>> = centroids
+            .iter()
+            .map(|c| encode_centroid_i8(&decode_f32(c)))
+            .collect::<Result<Vec<_>, _>>()?;
         IVF_CENTROIDS.with_borrow_mut(|m| {
-            for (p, bytes) in centroids.iter().enumerate() {
+            for (p, bytes) in quantized.iter().enumerate() {
                 m.insert(
                     PartitionKey::new(index_id, target_index_version, p as u32),
                     bytes.clone(),
@@ -1418,28 +1424,32 @@ pub(super) fn complete_subtree_leaf_centroids(
 /// wrong-width payload. The key carries the full `(index_id, version, partition)` scope.
 fn read_single_centroid(key: PartitionKey, dims: u16) -> Option<Vec<f32>> {
     let bytes = IVF_CENTROIDS.with_borrow(|m| m.get(&key))?;
-    let centroid = decode_f32(&bytes);
-    (centroid.len() == dims as usize).then_some(centroid)
+    decode_centroid_i8(&bytes, dims as usize)
 }
 
 /// Writes one subtree's `f` leaf centroids into `IVF_CENTROIDS` at the packed leaf ids
-/// `[coarse * f, (coarse + 1) * f)`.
+/// `[coarse * f, (coarse + 1) * f)`, quantizing the f32 work-area bytes to the canonical I8 layout.
 fn write_subtree_leaf_centroids(
     index_id: u32,
     version: u64,
     nlist_fine: u32,
     coarse: u32,
     leaves: &[Vec<u8>],
-) {
+) -> Result<(), VectorCanisterError> {
     let base = coarse * nlist_fine;
+    let quantized: Vec<Vec<u8>> = leaves
+        .iter()
+        .map(|c| encode_centroid_i8(&decode_f32(c)))
+        .collect::<Result<Vec<_>, _>>()?;
     IVF_CENTROIDS.with_borrow_mut(|m| {
-        for (rel, bytes) in leaves.iter().enumerate() {
+        for (rel, bytes) in quantized.iter().enumerate() {
             m.insert(
                 PartitionKey::new(index_id, version, base + rel as u32),
                 bytes.clone(),
             );
         }
     });
+    Ok(())
 }
 
 /// Two-level `TrainCoarse` step (Slice 5): k-means over the whole candidate pool at the coarse
@@ -1521,8 +1531,13 @@ fn train_coarse_step(
     let iteration = iteration + 1;
 
     if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
+        // Publish quantizes the f32 work-area centroids to the canonical I8 layout.
+        let quantized: Vec<Vec<u8>> = centroids
+            .iter()
+            .map(|c| encode_centroid_i8(&decode_f32(c)))
+            .collect::<Result<Vec<_>, _>>()?;
         IVF_CENTROIDS.with_borrow_mut(|m| {
-            for (p, bytes) in centroids.iter().enumerate() {
+            for (p, bytes) in quantized.iter().enumerate() {
                 m.insert(
                     PartitionKey::coarse(index_id, target_index_version, p as u32),
                     bytes.clone(),
@@ -1738,7 +1753,7 @@ fn train_fine_step(
                 nlist_fine,
                 coarse_cursor,
                 &vec![encoded; nlist_fine as usize],
-            );
+            )?;
             return advance_after_subtree(
                 target_index_version,
                 nlist,
@@ -1781,7 +1796,7 @@ fn train_fine_step(
             nlist_fine,
             coarse_cursor,
             &leaves,
-        );
+        )?;
         rebuild_pool::reset_centroids(
             index_id,
             def.pad_stride_bytes,

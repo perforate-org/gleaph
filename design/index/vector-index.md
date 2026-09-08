@@ -689,7 +689,10 @@ triggers for this driver are deferred with the maintenance trust-model work.
 Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
 `Sampling` freezes each candidate in its **native stored form** (row bytes + aux scale, deduped on
 the pair; an `I8` row is never expanded to f32). f32 exists transiently inside centroid
-seeding/training, and the trained centroids are canonical f32 end to end.
+seeding/training; since 2026-09-09 the published `IVF_CENTROIDS` values are canonical I8
+(`dims` I8 bytes + 4-byte LE per-centroid scale, `dims + 4` bytes — roughly a quarter of the
+former `dims * 4` f32 payload), quantized once at publish and decoded on every read (single
+canonical layout; fresh state required, no legacy f32 decoder).
 
 The frozen candidate pool and the Training centroid work area live in a dedicated **single-tenant
 raw region** (`VECTOR_REBUILD_POOL`, MemoryId 18; ADR 0033 implementation), not in the lifecycle

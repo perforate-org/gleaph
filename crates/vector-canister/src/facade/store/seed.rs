@@ -13,7 +13,7 @@
 //! seeded partitioned index.
 
 use super::mutation::append_slot;
-use super::search::encode_f32;
+use super::search::{encode_centroid_i8, encode_f32};
 use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION};
 use crate::encoding::EncodingRecord;
 use crate::facade::stable::definition_store;
@@ -103,12 +103,12 @@ pub(crate) fn seed_ivf_with_metric_for_test(
 
     let active = INITIAL_INDEX_VERSION;
 
-    // Centroids + ready metadata.
+    // Centroids (canonical I8 layout) + ready metadata.
     IVF_CENTROIDS.with_borrow_mut(|m| {
         for (p, centroid) in centroids.iter().enumerate() {
             m.insert(
                 PartitionKey::new(index_id, active, p as u32),
-                encode_f32(centroid),
+                encode_centroid_i8(centroid).expect("seed centroid finite"),
             );
         }
     });
