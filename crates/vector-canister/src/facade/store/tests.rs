@@ -5163,6 +5163,129 @@ mod i8_tests {
     }
 }
 
+/// F16 tests: half-precision storage with F32 wire query; `VectorEncoding::F16`.
+mod f16_tests {
+    use super::*;
+    use crate::facade::stable::definition_store;
+
+    const F16_INDEX: u32 = 10;
+
+    fn f16_bytes(values: &[f32]) -> Vec<u8> {
+        assert_eq!(values.len(), DIMS as usize, "component count mismatch");
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn f16_upsert(index_id: u32, vertex_id: u32, stamp: u64, values: &[f32], metric: VectorMetric) {
+        vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id,
+                embedding_name_id: 0,
+                subject: subject(vertex_id),
+                mutation_id: stamp,
+                encoding: VectorEncoding::F16,
+                dims: DIMS,
+                metric,
+                bytes: f16_bytes(values),
+                remove: false,
+            },
+        )
+        .expect("f16 upsert");
+    }
+
+    fn f16_search(index_id: u32, values: &[f32], metric: VectorMetric, top_k: u32) -> Vec<u32> {
+        let res = vector_search(&VectorSearchRequest {
+            index_id,
+            query: f16_bytes(values),
+            encoding: VectorEncoding::F16,
+            dims: DIMS,
+            metric,
+            top_k,
+            candidate_subjects: None,
+        })
+        .expect("f16 search");
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn f16_ingest_and_search_parity_with_f32() {
+        fresh_store();
+        let vectors: Vec<Vec<f32>> = vec![
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![4.0, 3.0, 2.0, 1.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![2.0, 2.0, 2.0, 0.0],
+        ];
+        for (i, v) in vectors.iter().enumerate() {
+            vector_upsert(
+                shard_canister(),
+                &upsert_vec_from((i + 1) as u32, 1, v, VectorMetric::L2Squared),
+            )
+            .unwrap();
+            f16_upsert(F16_INDEX, (i + 1) as u32, 1, v, VectorMetric::L2Squared);
+        }
+        let q = [2.0f32, 2.0, 2.0, 2.0];
+        let f32_top = vector_search(&VectorSearchRequest {
+            index_id: INDEX_ID,
+            query: f16_bytes(&q),
+            encoding: VectorEncoding::F32,
+            dims: DIMS,
+            metric: VectorMetric::L2Squared,
+            top_k: 4,
+            candidate_subjects: None,
+        })
+        .unwrap();
+        let f32_order: Vec<u32> = f32_top
+            .hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect();
+        let f16_order = f16_search(F16_INDEX, &q, VectorMetric::L2Squared, 4);
+        assert_eq!(f32_order, f16_order, "F16 top-k ordering matches F32");
+    }
+
+    #[test]
+    fn f16_def_uses_no_aux_and_rejects_non_finite() {
+        fresh_store();
+        f16_upsert(
+            F16_INDEX,
+            1,
+            1,
+            &[1.0, 2.0, 3.0, 4.0],
+            VectorMetric::L2Squared,
+        );
+        let def = definition_store::get(F16_INDEX)
+            .expect("definition store available")
+            .expect("def");
+        assert_eq!(def.encoding, VectorEncoding::F16);
+        assert_eq!(def.stride_bytes, DIMS as u32 * 2);
+        assert_eq!(def.meta_stride_bytes, 4);
+        let err = vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id: F16_INDEX,
+                embedding_name_id: 0,
+                subject: subject(2),
+                mutation_id: 1,
+                encoding: VectorEncoding::F16,
+                dims: DIMS,
+                metric: VectorMetric::L2Squared,
+                bytes: f16_bytes(&[f32::NAN, 0.0, 0.0, 0.0]),
+                remove: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, VectorCanisterError::InvalidQueryVector);
+    }
+}
+
 /// Two-level (`levels = 2`) hierarchy coverage (Slice 5). The flat lifecycle above is untouched by
 /// every change these tests pin; each test drives the public facade only.
 mod two_level_tests {

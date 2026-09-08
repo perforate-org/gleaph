@@ -19,6 +19,7 @@ pocket-ic-e2e = []
 candid.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-message-sizing.workspace = true
+half.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-linear-hash-map.workspace = true

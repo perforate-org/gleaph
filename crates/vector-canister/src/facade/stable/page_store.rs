@@ -1620,6 +1620,15 @@ impl VectorSlabStore {
                     .sum();
                 scale * scale * sum_sq as f32
             }
+            VectorEncoding::F16 => bytes[..dims as usize * 2]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| {
+                    let x = half::f16::from_bits(u16::from_le_bytes(*c)).to_f32();
+                    x * x
+                })
+                .sum(),
         }
     }
 

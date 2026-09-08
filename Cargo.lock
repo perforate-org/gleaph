@@ -4025,6 +4025,7 @@ dependencies = [
  "candid",
  "gleaph-graph-kernel",
  "gleaph-message-sizing",
+ "half 2.7.1",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-linear-hash-map",

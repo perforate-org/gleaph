@@ -78,9 +78,10 @@ impl EncodingRecord {
         let (aux_bytes, kernel) = match encoding {
             // F32: default formulations need no per-row aux (sub-square + early exit for L2;
             // normalized-dot only for cosine). I8 carries a mandatory 4-byte per-row quantization
-            // scale and an upcast/fused scoring kernel.
+            // scale and an upcast/fused scoring kernel. F16 needs no aux (upcast at score time).
             VectorEncoding::F32 => (0, ScoringKernel::F32Dot),
             VectorEncoding::I8 => (4, ScoringKernel::UpcastF32Dot),
+            VectorEncoding::F16 => (0, ScoringKernel::UpcastF32Dot),
         };
         let record = Self {
             encoding,
@@ -122,6 +123,8 @@ impl EncodingRecord {
             (VectorEncoding::F32, _) => return Err(EncodingError::KernelMismatch),
             (VectorEncoding::I8, ScoringKernel::UpcastF32Dot) => {}
             (VectorEncoding::I8, _) => return Err(EncodingError::KernelMismatch),
+            (VectorEncoding::F16, ScoringKernel::UpcastF32Dot) => {}
+            (VectorEncoding::F16, _) => return Err(EncodingError::KernelMismatch),
         }
         // The default aux widths do not depend on the metric; metric-dependent pruning aux is
         // opt-in and validated at configuration time, not here.
@@ -152,6 +155,17 @@ mod tests {
         assert_eq!(record.aux_bytes, 0);
         assert_eq!(record.meta_stride(), 4);
         assert_eq!(record.kernel, ScoringKernel::F32Dot);
+    }
+
+    #[test]
+    fn d1536_f16_widths() {
+        // d = 1536: stride = 2·1536 = 3072; pad = align16(3072) = 3072; meta 4 (no aux).
+        let record = EncodingRecord::from_parts(VectorEncoding::F16, 1536).expect("valid");
+        assert_eq!(record.stride_bytes, 3072);
+        assert_eq!(record.pad_stride_bytes, 3072);
+        assert_eq!(record.aux_bytes, 0);
+        assert_eq!(record.meta_stride(), 4);
+        assert_eq!(record.kernel, ScoringKernel::UpcastF32Dot);
     }
 
     #[test]

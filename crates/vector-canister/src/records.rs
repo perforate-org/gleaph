@@ -2003,6 +2003,7 @@ pub(crate) mod test_support {
         let stride_bytes = match encoding {
             VectorEncoding::F32 => u32::from(dims) * 4,
             VectorEncoding::I8 => u32::from(dims),
+            VectorEncoding::F16 => u32::from(dims) * 2,
         };
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
         let code_stride_bytes = VectorIndexDef::canonical_code_stride_bytes(dims);

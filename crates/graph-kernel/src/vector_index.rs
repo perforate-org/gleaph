@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Encoding of a stored vertex embedding.
 ///
-/// Only fixed-dimension `F32` is supported in the first slice. New variants (`F16`, `I8`) must
+/// Only fixed-dimension encodings are supported. New variants (`Bf16`, `U8`, `Binary`) must
 /// update every exhaustive `match` on this enum, which is the intended compile-time gate before
 /// an `UnsupportedEncoding`-style runtime branch is introduced.
 #[derive(
@@ -35,6 +35,8 @@ pub enum VectorEncoding {
     /// Signed `i8` components quantized with a per-row scale (`x_i ≈ i8_i * scale / 127`); the
     /// scale is stored in row-meta aux. Byte width is `dims`.
     I8,
+    /// IEEE-754 little-endian `f16` components; byte width is `dims * 2`. No per-row aux.
+    F16,
 }
 
 impl VectorEncoding {
@@ -43,6 +45,7 @@ impl VectorEncoding {
         match self {
             Self::F32 => 4,
             Self::I8 => 1,
+            Self::F16 => 2,
         }
     }
 
@@ -56,6 +59,7 @@ impl VectorEncoding {
         match self {
             Self::F32 => 0,
             Self::I8 => 1,
+            Self::F16 => 2,
         }
     }
 
@@ -64,6 +68,7 @@ impl VectorEncoding {
         match v {
             0 => Some(Self::F32),
             1 => Some(Self::I8),
+            2 => Some(Self::F16),
             _ => None,
         }
     }
@@ -113,6 +118,47 @@ pub fn quantize_f32_to_i8(
         out.push(q.clamp(-127, 127) as i8 as u8);
     }
     Ok(QuantizedI8Vector { bytes: out, scale })
+}
+
+/// Encodes `f32` components to little-endian `f16` bytes (`dims * 2` bytes). Caller must have
+/// validated finiteness; non-finite inputs encode to inf/NaN bits and are rejected upstream.
+pub fn encode_f32_to_f16_bytes(vector: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vector.len() * 2);
+    for v in vector {
+        out.extend_from_slice(&half::f16::from_f32(*v).to_bits().to_le_bytes());
+    }
+    out
+}
+
+/// Encodes contiguous little-endian `f32` bytes to little-endian `f16` bytes. Returns `Err` on
+/// non-finite components or a byte-length mismatch.
+pub fn encode_f32_bytes_to_f16_bytes(
+    bytes: &[u8],
+    dims: usize,
+) -> Result<Vec<u8>, VectorCanisterError> {
+    if bytes.len() != dims * 4 {
+        return Err(VectorCanisterError::ByteWidthMismatch);
+    }
+    let mut out = Vec::with_capacity(dims * 2);
+    for chunk in bytes.as_chunks::<4>().0 {
+        let x = f32::from_le_bytes(*chunk);
+        if !x.is_finite() {
+            return Err(VectorCanisterError::InvalidQueryVector);
+        }
+        out.extend_from_slice(&half::f16::from_f32(x).to_bits().to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// Decodes little-endian `f16` bytes back to `f32` components. Reads the first `dims` components.
+pub fn decode_f16_to_f32(bytes: &[u8], dims: usize) -> Vec<f32> {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take(dims)
+        .map(|c| half::f16::from_bits(u16::from_le_bytes(*c)).to_f32())
+        .collect()
 }
 
 /// Decodes an `I8`-quantized vector back to `f32` components: `x_i ≈ bytes[i] as i8 as f32 * scale / 127`.
@@ -1225,6 +1271,37 @@ mod tests {
         assert_eq!(qz.scale, 0.0);
         assert_eq!(qz.bytes, vec![0, 0, 0]);
         assert_eq!(decode_i8_to_f32(&qz.bytes, qz.scale, 3), vec![0.0; 3]);
+    }
+
+    #[test]
+    fn f16_roundtrip_preserves_values_within_half_precision() {
+        let v = vec![1.0f32, -2.5, 0.0, 3.25];
+        let bytes = encode_f32_bytes_to_f16_bytes(&encode_f32_test(&v), v.len()).expect("encode");
+        assert_eq!(bytes.len(), v.len() * 2);
+        let back = decode_f16_to_f32(&bytes, v.len());
+        for (got, want) in back.iter().zip(&v) {
+            assert!((got - want).abs() < 0.001, "f16 {got} vs f32 {want}");
+        }
+        // from_u8/as_u8 stable discriminant: F16 is 2, F32/I8 unchanged.
+        assert_eq!(VectorEncoding::F16.as_u8(), 2);
+        assert_eq!(VectorEncoding::from_u8(2), Some(VectorEncoding::F16));
+        assert_eq!(VectorEncoding::from_u8(0), Some(VectorEncoding::F32));
+        assert_eq!(VectorEncoding::from_u8(1), Some(VectorEncoding::I8));
+        assert_eq!(VectorEncoding::F16.component_bytes(), 2);
+        assert_eq!(VectorEncoding::F16.stride_bytes(1536), 3072);
+    }
+
+    #[test]
+    fn f16_rejects_non_finite_and_wrong_width() {
+        let nan = vec![f32::NAN, 1.0];
+        assert_eq!(
+            encode_f32_bytes_to_f16_bytes(&encode_f32_test(&nan), 2),
+            Err(VectorCanisterError::InvalidQueryVector)
+        );
+        assert_eq!(
+            encode_f32_bytes_to_f16_bytes(&encode_f32_test(&[1.0f32]), 2),
+            Err(VectorCanisterError::ByteWidthMismatch)
+        );
     }
 
     #[test]

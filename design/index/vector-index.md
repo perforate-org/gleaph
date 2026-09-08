@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-08-22
-Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
+Last updated: 2026-09-08
+Anchor timestamp: 2026-09-08 13:39:34 UTC +0000
 
 ## Status
 
@@ -445,7 +445,7 @@ vector canister):
 
 ```rust
 pub struct EncodingRecord {
-    pub encoding: VectorEncoding,          // implemented: F32 | I8 (F16/Bf16/U8/Binary are future)
+    pub encoding: VectorEncoding,          // implemented: F32 | I8 | F16 (Bf16/U8/Binary are future)
     pub dims: u16,
     pub stride_bytes: u32,                 // stored stride, minimal per encoding
     pub pad_stride_bytes: u32,             // scoring scratch stride = align16(component_bytes × dims)
@@ -458,9 +458,11 @@ pub struct EncodingRecord {
 - **Scoring** uses fused kernels over the stored bytes. `I8` is **implemented** (Slice 0242): rows are
   quantized once at write with a **per-row scale** (`i8_i = clamp(round(127·x_i/s))`, `s = max|x_i|`,
   scale in row-meta aux 4) and scored with a fused i8×f32 kernel (`v_i = i8_i·scale/127`), with **no
-  page-level f32 materialization**. `F16`/`Bf16`/`U8`/`Binary` are future encodings, each landing with
-  its own scoring-kernel slice (the unconstructible `BinaryConvention`/popcount kernel stack was
-  removed in a dead-state sweep; a `Binary` encoding returns with it).
+  page-level f32 materialization**. `F16` is implemented (minimal slice 2026-09-08: half-precision
+  storage, F32 wire query, upcast scoring via the exact f32 kernels, no aux). `Bf16`/`U8`/`Binary`
+  are future encodings, each landing with its own scoring-kernel slice (the unconstructible
+  `BinaryConvention`/popcount kernel stack was removed in a dead-state sweep; a `Binary` encoding
+  returns with it).
 - **Wire query contract (Model Y)**: `encoding` in the op/request/definition means the **stored/index
   encoding**; wire embedding and query bytes are **always canonical F32 (`dims*4`)**. The canister
   quantizes internally; a separate `query_encoding` field is not needed unless an I8-on-wire query
@@ -525,6 +527,7 @@ generation whose rows carry, behind the original bytes on the same page, a per-r
 | F32 × L2 (default)           | 0         | sub-square SIMD + early exit; no norm, no bound |
 | F32 × cosine (default)       | 0         | normalized dot only                             |
 | I8 (implemented, Slice 0242) | 4         | per-row quantization scale (max-abs)            |
+| F16 (implemented, 2026-09-08)  | 0         | none (upcast at score time)                     |
 | opt-in row-level pruning     | +4        | L2 bound `dist(v, c_p)` (sub-square path)       |
 | opt-in row-level pruning     | 8         | cosine `(s_v, t_v)` or norm + bound             |
 
