@@ -5,7 +5,7 @@ Anchor timestamp: 2026-07-27 04:17:32 UTC +0000
 
 ## Status
 
-**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status). N-way vertex equality intersection for `SEARCH ... WHERE` (ADR 0034 Slice 13) supports 2..=8 arms with deterministic walk-arm selection. One to eight equality arms combined with a single numeric range on a distinct property for `SEARCH ... WHERE` (ADR 0034 Slice 14) are executed through the streamed `lookup_range_intersection_page` path, which walks the finite encoded range one page at a time and sieves each page against every equality arm server-side while preserving the range cursor.
+**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status). N-way vertex equality intersection for `SEARCH ... WHERE` (ADR 0034 Slice 13) supports 2..=16 arms with deterministic walk-arm selection. One to sixteen equality arms combined with a single numeric range on a distinct property for `SEARCH ... WHERE` (ADR 0034 Slice 14) are executed through the streamed `lookup_range_intersection_page` path, which walks the finite encoded range one page at a time and sieves each page against every equality arm server-side while preserving the range cursor.
 
 ## Purpose
 
@@ -109,7 +109,7 @@ paths use these variants so label filtering does not add a second inter-canister
 
 `lookup_intersection_page` returns an empty terminal page for fewer than two specs, and an explicit
 [`IndexError::TooManyEqualityIntersectionArms`] for more than
-`MAX_EQUALITY_INTERSECTION_ARMS` (8) specs; it also returns an empty terminal page for any non-vertex
+`MAX_EQUALITY_INTERSECTION_ARMS` (16) specs; it also returns an empty terminal page for any non-vertex
 spec. Callers guard with `all_vertex_specs` and fall back to the materializing `lookup_intersection`
 otherwise. The walk arm is selected by canonical `(property_id, encoded_value)` order so that paging is
 deterministic regardless of how the caller ordered the specs. `filter_hits_by_equal` remains an internal
@@ -153,14 +153,15 @@ or several arms became empty mid-intersection, so they did not compare arm count
 
 The scattered 8-way shape (only one vertex survives across all arms and the walk hits are far apart)
 measures the point-lookup fallback path at 201.64 M instructions; this is intentionally separate from
-the dense series because it exercises a different code path inside `filter_hits_by_equal`.
+the dense series because it exercises a different code path inside `filter_hits_by_equal`. The execution
+bound has since moved to 16 arms; the 8-arm benches above remain the closest actually measured shape.
 
 ### Validation
 
 - `specs.len() < 2` → return an empty terminal page (callers must use `lookup_equal_page` for one
   arm and `lookup_intersection` for non-vertex arms).
-- `specs.len() > 8` → return [`IndexError::TooManyEqualityIntersectionArms`] (callers must reject
-  nine-or-more equality arms before calling).
+- `specs.len() > 16` → return [`IndexError::TooManyEqualityIntersectionArms`] (callers must reject
+  seventeen-or-more equality arms before calling).
 - Unknown `property_id` is not an error; empty posting list for that arm yields empty intersection.
 
 ## Index invariants and tombstones
