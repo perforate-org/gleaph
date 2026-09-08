@@ -976,7 +976,8 @@ impl Parser<'_> {
     /// Grammar:
     /// ```text
     /// GRANT privilege ON GRAPH objectName resourceSelector [condition] TO subject
-    /// GRANT EXECUTE ON PREPARED QUERY ident TO subject
+    /// GRANT EXECUTE ON PREPARED QUERY <kebab-name> TO subject (bare ADR 0061
+    /// names join `Ident (- segment)*`; double-quoted names stay exact)
     /// GRANT READ_METADATA ON (GRAPH objectName | CONTROL PLANE) TO subject   (ADR 0080 §5)
     /// privilege      := MATCH | TRAVERSE [OUTGOING | INCOMING] | READ | CREATE | UPDATE | DELETE
     /// resourceSelector := (NODES | VERTICES) ident [ "{" ident ("," ident)* "}" ]
@@ -998,7 +999,7 @@ impl Parser<'_> {
             self.expect_keyword("ON")?;
             self.expect_keyword("PREPARED")?;
             self.expect_keyword("QUERY")?;
-            let name = self.expect_ident()?.to_owned();
+            let name = self.expect_prepared_query_name()?;
             self.expect_keyword("TO")?;
             let subject = self.parse_grant_subject_literal()?;
             return Ok(GrantStatement {
@@ -1039,6 +1040,7 @@ impl Parser<'_> {
     }
 
     /// Parses `EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> [BY PRINCIPAL '<text>']`
+    /// (`<name>` shares the bare kebab-case production with GRANT/REVOKE)
     /// ([ADR 0084] §1). Omitting `BY` selects self mode (the asker explains their own
     /// coverage); `BY` selects owner mode and requires the grant-grammar principal
     /// spelling. Malformed shapes fail with distinct errors.
@@ -1054,7 +1056,7 @@ impl Parser<'_> {
         self.expect_keyword("FOR")?;
         self.expect_keyword("PREPARED")?;
         self.expect_keyword("QUERY")?;
-        let query_name = self.expect_ident()?.to_owned();
+        let query_name = self.expect_prepared_query_name()?;
         let by_principal = if self.eat_keyword("BY") {
             self.expect_keyword("PRINCIPAL")?;
             match self.peek() {
@@ -1084,7 +1086,7 @@ impl Parser<'_> {
             self.expect_keyword("ON")?;
             self.expect_keyword("PREPARED")?;
             self.expect_keyword("QUERY")?;
-            let name = self.expect_ident()?.to_owned();
+            let name = self.expect_prepared_query_name()?;
             self.expect_keyword("FROM")?;
             let subject = self.parse_grant_subject_literal()?;
             return Ok(RevokeStatement {
@@ -2858,6 +2860,90 @@ mod grant_parser_tests {
             }
         );
         assert_eq!(stmt.subject, GrantSubjectLiteral::Public);
+    }
+
+    #[test]
+    fn parse_prepared_query_name_accepts_bare_kebab_digits_and_quoted() {
+        // Multi-segment kebab-case (GAP-2026-08-24-005): the lexer splits at
+        // `-`, the parser rejoins to the exact registration spelling.
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT EXECUTE ON PREPARED QUERY variable-length-reach TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::PreparedQuery {
+                name: "variable-length-reach".to_string()
+            }
+        );
+
+        // Digit-led segments lex partially as integers (`phase-2-rollout` puts
+        // `2` in `Int`; `op-2fa` splits further into `Int(2)` + `Ident(fa)`).
+        // The spelling must round-trip exactly.
+        for bare in ["phase-2-rollout", "op-2fa"] {
+            let SimpleQueryStatement::Grant(stmt) =
+                parse_valid(&format!("GRANT EXECUTE ON PREPARED QUERY {bare} TO PUBLIC"))
+            else {
+                panic!("expected Grant");
+            };
+            assert_eq!(
+                stmt.target,
+                GrantTarget::PreparedQuery {
+                    name: bare.to_string()
+                }
+            );
+            let SimpleQueryStatement::Revoke(stmt) = parse_valid(&format!(
+                "REVOKE EXECUTE ON PREPARED QUERY {bare} FROM PUBLIC"
+            )) else {
+                panic!("expected Revoke");
+            };
+            assert_eq!(
+                stmt.target,
+                GrantTarget::PreparedQuery {
+                    name: bare.to_string()
+                }
+            );
+        }
+
+        // A name ending in a terminator word keeps it: `find-to` followed by
+        // TO must not swallow the keyword.
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT EXECUTE ON PREPARED QUERY find-to TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::PreparedQuery {
+                name: "find-to".to_string()
+            }
+        );
+
+        // The double-quoted CLI workaround keeps parsing to the identical name.
+        let SimpleQueryStatement::Grant(stmt) =
+            parse_valid("GRANT EXECUTE ON PREPARED QUERY \"find-users\" TO PUBLIC")
+        else {
+            panic!("expected Grant");
+        };
+        assert_eq!(
+            stmt.target,
+            GrantTarget::PreparedQuery {
+                name: "find-users".to_string()
+            }
+        );
+
+        // EXPLAIN shares the production, with and without the BY PRINCIPAL tail.
+        assert!(
+            crate::parser::parse("EXPLAIN AUTHORIZATION FOR PREPARED QUERY variable-length-reach")
+                .is_ok()
+        );
+        assert!(
+            crate::parser::parse(
+                "EXPLAIN AUTHORIZATION FOR PREPARED QUERY citation-reach BY PRINCIPAL 'w7x7r'"
+            )
+            .is_ok()
+        );
     }
 
     #[test]

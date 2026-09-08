@@ -240,6 +240,82 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Consumes an ADR 0061 prepared-query name (`[a-z][a-z0-9-]*`) in a
+    /// `PREPARED QUERY` position (GAP-2026-08-24-005).
+    ///
+    /// The lexer splits bare kebab-case at `-` (`Token::Minus`), so a single
+    /// [`Self::expect_ident`] cannot address hyphenated operations. This helper
+    /// joins `Ident (- segment)*` where each post-hyphen segment is an `Ident`
+    /// or integer token: digit-led segments such as `phase-2-rollout` lex the
+    /// leading digits as `Int`, and `op-2fa` lexes as `Int(2)` + `Ident(fa)`,
+    /// so integer segments are accepted and a directly adjacent trailing
+    /// `Ident` (judged by span adjacency) is glued on. A double-quoted name
+    /// takes the exact `QuotedIdent` arm (the CLI `publication_statement`
+    /// spelling). Full charset validation stays with prepared registration;
+    /// the parser only reconstructs the spelling so the Router can resolve it.
+    pub fn expect_prepared_query_name(&mut self) -> Result<String, GqlError> {
+        if let Some(Token::QuotedIdent(s)) = self.peek() {
+            let s = s.clone();
+            self.pos += 1;
+            return Ok(s);
+        }
+        let first = match self.peek() {
+            Some(Token::Ident(s)) => {
+                let s = s.clone();
+                self.pos += 1;
+                s
+            }
+            _ => return Err(self.expected("identifier")),
+        };
+        let mut name = first;
+        while self.at_token(&Token::Minus) {
+            let segment = match self.peek_ahead(1) {
+                Some(Token::Ident(seg)) => {
+                    let seg = seg.clone();
+                    self.pos += 2;
+                    seg
+                }
+                Some(Token::QuotedIdent(seg)) => {
+                    let seg = seg.clone();
+                    self.pos += 2;
+                    seg
+                }
+                Some(Token::Int(n)) => {
+                    let n = *n;
+                    self.pos += 2;
+                    let mut seg = n.to_string();
+                    if let Some(Token::Ident(tail)) = self.peek() {
+                        let prev_end = self.tokens[self.pos - 1].span.end;
+                        let cur_start = self.tokens[self.pos].span.start;
+                        if cur_start == prev_end {
+                            seg.push_str(tail);
+                            self.pos += 1;
+                        }
+                    }
+                    seg
+                }
+                Some(Token::BigInt(raw)) => {
+                    let raw = raw.clone();
+                    self.pos += 2;
+                    let mut seg = raw;
+                    if let Some(Token::Ident(tail)) = self.peek() {
+                        let prev_end = self.tokens[self.pos - 1].span.end;
+                        let cur_start = self.tokens[self.pos].span.start;
+                        if cur_start == prev_end {
+                            seg.push_str(tail);
+                            self.pos += 1;
+                        }
+                    }
+                    seg
+                }
+                _ => return Err(self.expected("identifier")),
+            };
+            name.push('-');
+            name.push_str(&segment);
+        }
+        Ok(name)
+    }
+
     /// Consumes an identifier that is NOT a reserved keyword.
     /// Quoted identifiers always pass.
     pub fn expect_ident_non_reserved(&mut self) -> Result<String, GqlError> {

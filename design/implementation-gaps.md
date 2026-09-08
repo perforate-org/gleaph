@@ -222,9 +222,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-005 — ADR 0074 grant statements cannot address hyphenated prepared-query names
 
-- **Status:** Open — blocks `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC` for every
-  hyphenated prepared operation (ADR 0061 names are `[a-z][a-z0-9-]*`, so most real names,
-  e.g. the knowledge demo's `variable-length-reach`, are affected)
+- **Status:** Resolved 2026-09-08 (uncommitted working-tree fix; no commit per primary-owns-commits) — `Parser::expect_prepared_query_name` (helpers.rs) joins bare `Ident (- segment)*` with `Int`/`BigInt` digit-led segments plus span-adjacent tail glue, and keeps the exact `QuotedIdent` arm; GRANT/REVOKE `PREPARED QUERY` plus `EXPLAIN AUTHORIZATION FOR PREPARED QUERY` share the production. Previously blocked `GRANT EXECUTE ON PREPARED QUERY <name> TO PUBLIC` for every hyphenated prepared operation (ADR 0061 names are `[a-z][a-z0-9-]*`, so most real names, e.g. the knowledge demo's `variable-length-reach`, were affected)
   **Live-reproduction + red-test addendum (2026-08-24, plan 0296 quickstart):** the rejection is
   no longer PocketIC-only. On a real demo-local network, `gleaph prepared publish citation-reach`
   fails with `InvalidArgument("parse error: expected 'TO', got '-'")` (Router wasm built from the
@@ -234,7 +232,7 @@ defect from being rediscovered without its prior reasoning.
   `parse_grant_execute_on_prepared_query_to_public_and_principal` and
   `parse_revoke_execute_on_prepared_query_mirrors_grant` both panic with the same lexer error.
   `statement.rs` sits in the owning pane's uncommitted edit set. **Operational workaround until
-  the grammar fix:** emit the op name as a double-quoted identifier — the lexer produces
+  this fix (retained as the canonical CLI spelling):** emit the op name as a double-quoted identifier — the lexer produces
   `Token::QuotedIdent` (`crates/gql/src/lexer.rs:628`) and grant-target `expect_ident` accepts it
   (`crates/gql/src/parser/helpers.rs:232`) — adopted by the CLI's
   `prepared::publication_statement` with parser-acceptance unit tests.
@@ -249,6 +247,15 @@ defect from being rediscovered without its prior reasoning.
   or quoted identifiers), or restrict prepared names to one grammar shared by both sides; a
   lexer extension needs an ADR 0074 §5 amendment note. No correctness gap; default-deny stays
   intact.
+  **Resolution 2026-09-08 (option A, parser-only, no lexer change):** `Parser::expect_prepared_query_name`
+  accepts the ADR 0061 spelling in the three `PREPARED QUERY` positions (GRANT `TO`, REVOKE `FROM`,
+  EXPLAIN AUTHORIZATION name + `BY PRINCIPAL` tail unchanged); full charset validation stays with
+  prepared registration/Router resolution. Regression: `parse_prepared_query_name_accepts_bare_kebab_digits_and_quoted`
+  (`variable-length-reach`, `phase-2-rollout`, `op-2fa`, `find-to` terminator guard, quoted `find-users`,
+  EXPLAIN bare + BY PRINCIPAL). Validation: `gleaph-gql --features gleaph --lib` 567 passed / 0 failed,
+  default `--lib` 524 passed / 0 failed, `cargo fmt -p gleaph-gql -- --check` clean, `git diff --check` clean.
+  The previously-red `parse_grant_execute_on_prepared_query_to_public_and_principal` and
+  `parse_revoke_execute_on_prepared_query_mirrors_grant` pass unmodified (no test weakening).
 
 ### GAP-2026-08-24-007 — Committed HEAD does not build `gleaph-router`: `auth::require_admin` callers landed before their auth definitions
 
@@ -2545,8 +2552,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
 
 ### GAP-2026-08-25-001 — Pre-existing gleaph-gql parser failures: dashed prepared-query names fail `expect_ident` in EXECUTE publication forms
 
-- **Status:** Open (discovered 2026-08-25 during plan 0304 / ADR 0080 implementation; not
-  caused by that slice — reproduced on a pristine HEAD worktree).
+- **Status:** Resolved 2026-09-08 (same uncommitted fix as GAP-2026-08-24-005; discovered 2026-08-25 during plan 0304 / ADR 0080 implementation; not caused by that slice — reproduced on a pristine HEAD worktree).
 - **Owner:** `crates/gql` tokenizer/identifier grammar and prepared-query naming contract.
 - **Observed behavior:** `cargo test -p gleaph-gql --features gleaph --lib` fails
   `parse_grant_execute_on_prepared_query_to_public_and_principal` and
@@ -2559,11 +2565,11 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   via GQL; the two failing tests document the intended contract (`find-users`), so the suite
   is red independent of any in-flight slice. Blocks a green `gleaph-gql` test run for every
   concurrent session.
-- **Needed behavior:** Either the identifier grammar admits `-` inside idents used for
-  prepared-query names, or prepared-name validation rejects dashes at registration so the
-  tests are updated to the enforced contract. Decision needed from the gql owner.
-- **Next decision:** fix tokenization vs. restrict the name charset; either way the same
-  commit updates both failing tests.
+- **Needed behavior:** Met 2026-09-08 — the `PREPARED QUERY` positions accept bare ADR 0061 kebab-case
+  (`expect_prepared_query_name`) alongside the quoted form; no registration-side charset change.
+- **Next decision:** None — both previously-red tests pass unmodified plus the new
+  `parse_prepared_query_name_accepts_bare_kebab_digits_and_quoted` regression; same validation as
+  GAP-2026-08-24-005 (567 gleaph / 524 default passed, fmt + diff-check clean).
 
 ### GAP-2026-08-25-002 — Catalog steady-state schema resolve rebuilds the full property schema on every call (heap-cache candidate)
 
