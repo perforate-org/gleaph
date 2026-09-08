@@ -208,68 +208,6 @@ impl CodeRegionGeometry {
     }
 }
 
-/// ADR 0093 verification byte-streaming counters (Stage A / Stage B attribution for the canbench
-/// targets, gated off the production build per the ADR's landing review).
-#[cfg(feature = "canbench")]
-#[derive(Clone, Copy)]
-pub(crate) struct A1ByteStats {
-    pub(crate) stage_a_bytes: u64,
-    pub(crate) stage_b_bytes: u64,
-    pub(crate) stage_a_pages: u64,
-    pub(crate) stage_b_pages: u64,
-    pub(crate) shortlist_rows: u64,
-}
-
-#[cfg(feature = "canbench")]
-thread_local! {
-    static A1_BYTES: std::cell::Cell<A1ByteStats> = const {
-        std::cell::Cell::new(A1ByteStats {
-            stage_a_bytes: 0,
-            stage_b_bytes: 0,
-            stage_a_pages: 0,
-            stage_b_pages: 0,
-            shortlist_rows: 0,
-        })
-    };
-}
-
-/// Resets the byte-streaming counters (verification benches).
-#[cfg(feature = "canbench")]
-pub(crate) fn a1_reset_byte_stats() {
-    A1_BYTES.set(A1ByteStats {
-        stage_a_bytes: 0,
-        stage_b_bytes: 0,
-        stage_a_pages: 0,
-        stage_b_pages: 0,
-        shortlist_rows: 0,
-    });
-}
-
-/// Snapshot of the byte-streaming counters (verification benches).
-#[cfg(feature = "canbench")]
-pub(crate) fn a1_byte_stats() -> A1ByteStats {
-    A1_BYTES.get()
-}
-
-#[cfg(feature = "canbench")]
-pub(crate) fn a1_note(read_bytes: u64, stage_a: bool, page: bool, shortlist_rows: u64) {
-    let mut s = A1_BYTES.get();
-    if stage_a {
-        s.stage_a_bytes += read_bytes;
-        s.stage_a_pages += u64::from(page);
-    } else {
-        s.stage_b_bytes += read_bytes;
-        s.stage_b_pages += u64::from(page);
-    }
-    s.shortlist_rows += shortlist_rows;
-    A1_BYTES.set(s);
-}
-
-/// Production builds compile the accounting away entirely (no hot-loop cost).
-#[cfg(not(feature = "canbench"))]
-#[inline(always)]
-pub(crate) fn a1_note(_read_bytes: u64, _stage_a: bool, _page: bool, _shortlist_rows: u64) {}
-
 /// Physical base address of block `seq`.
 fn block_offset(seq: u32) -> u64 {
     SLAB_HEADER_SIZE as u64 + u64::from(seq) * BLOCK_LEN
@@ -499,10 +437,6 @@ pub(crate) struct PageScratch {
     /// run `i`, so runs tile `[0, last]` contiguously. Built once per `load` (O(runs), at most
     /// `MAX_RUNS` entries).
     run_prefix: Vec<u32>,
-    /// ADR 0093: which scan pass the current load belongs to (byte accounting only, consumed by
-    /// the canbench-gated counters).
-    #[cfg_attr(not(feature = "canbench"), allow(dead_code))]
-    pub(crate) a1_pass: bool,
     /// ADR 0093: resident columnar code span (Stage A), loaded separately from row pages.
     code_buf: Vec<u8>,
     code_span_offset: u32,
@@ -519,7 +453,6 @@ impl PageScratch {
             run_count: 0,
             row_count: 0,
             run_prefix: Vec::new(),
-            a1_pass: true,
             code_buf: Vec::new(),
             code_span_offset: 0,
             code_span_stride: 0,
@@ -532,8 +465,6 @@ impl PageScratch {
         let layout = PageLayout::new(header).expect("valid page layout");
         self.buf.resize(layout.page_len(), 0);
         slab.read(base, &mut self.buf[..layout.page_len()]);
-        // ADR 0093 verification byte accounting: attribute the streamed page to the tagged pass.
-        a1_note(layout.page_len() as u64, self.a1_pass, true, 0);
         self.layout = layout;
         self.run_count = header.run_count;
         self.row_count = row_count;
@@ -574,7 +505,6 @@ impl PageScratch {
         );
         self.code_span_offset = offset;
         self.code_span_stride = code_stride;
-        a1_note(span as u64, self.a1_pass, false, 0);
     }
 
     /// Zero-copy slice of one code entry of the resident code-page span (relative index).
@@ -618,7 +548,6 @@ impl PageScratch {
                 .expect("run prefix overflow");
             self.run_prefix.push(end);
         }
-        a1_note(meta_prefix as u64, self.a1_pass, false, 0);
     }
 
     /// Number of written rows in the loaded page; slots `>= row_count` are uninitialized. Page-level

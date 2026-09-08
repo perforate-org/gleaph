@@ -1704,53 +1704,6 @@ tier_search_bench!(bench_code_tier_on_d1536_k10_epsinf, 1536, 10, true);
 tier_search_bench!(bench_code_tier_off_d1536_k100_epsinf, 1536, 100, false);
 tier_search_bench!(bench_code_tier_on_d1536_k100_epsinf, 1536, 100, true);
 
-/// ADR 0093 landing verification: byte-streaming report for the tier-on d1536 search (panics
-/// with the counters — not a failure). Streams Stage A `[header|run|meta|code]` and the Stage B
-/// original pages, per the ADR's measured targets.
-macro_rules! adr0093_byte_report_bench {
-    ($name:ident, $top_k:expr) => {
-        #[bench(raw)]
-        fn $name() -> canbench_rs::BenchResult {
-            setup_partitioned_store(1536, SCAN_N, 16);
-            run_rebuild_to_publish(16, None, true);
-            let req = search_req_value(1536, $top_k, SWEEP_QUERY);
-            crate::facade::stable::page_store::a1_reset_byte_stats();
-            let result = vector_search_tuned(
-                black_box(&req),
-                SearchTuning {
-                    eps_query: f32::INFINITY,
-                },
-            )
-            .expect("tier-on ADR 0093 search");
-            let stats = crate::facade::stable::page_store::a1_byte_stats();
-            let hits: Vec<_> = result
-                .hits
-                .iter()
-                .map(|h| match h.subject {
-                    VectorSubject::Vertex {
-                        shard_id,
-                        vertex_id,
-                    } => (shard_id.raw(), vertex_id),
-                })
-                .collect();
-            panic!(
-                "ADR 0093 byte report (not a failure): k={} hits={:?} stage_a_bytes={} \
-                 stage_a_pages={} stage_b_bytes={} stage_b_pages={} shortlist={}",
-                $top_k,
-                hits,
-                stats.stage_a_bytes,
-                stats.stage_a_pages,
-                stats.stage_b_bytes,
-                stats.stage_b_pages,
-                stats.shortlist_rows,
-            );
-        }
-    };
-}
-
-adr0093_byte_report_bench!(bench_adr0093_byte_report_d1536_k10, 10);
-adr0093_byte_report_bench!(bench_adr0093_byte_report_d1536_k100, 100);
-
 /// Query-side rotation + binarization cost in isolation (`QueryCode::prepare` at the d1536 design
 /// target): paid once per search when the active generation carries codes.
 #[bench(raw)]

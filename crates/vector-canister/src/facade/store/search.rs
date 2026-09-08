@@ -902,7 +902,6 @@ pub(super) fn scan_partitions_code_tier_with_cap(
                     .as_ref()
                     .map(|(_, seq)| *seq)
                     .expect("resolved");
-                scratch.a1_pass = true;
                 if !store.load_page_stage_a(page_key, &geometry, code_page_seq, &mut scratch) {
                     // A tier-on row page that fails to resolve mid-chain is corruption.
                     panic!(
@@ -936,7 +935,6 @@ pub(super) fn scan_partitions_code_tier_with_cap(
             }
         }
         let shortlist: Vec<GlobalEstimateCandidate> = stage_a.into_sorted_vec();
-        crate::facade::stable::page_store::a1_note(0, false, false, shortlist.len() as u64);
         // ---- Stage B pass: exact rerank over the original pages of the shortlist ----
         let mut current_page: Option<PageKey> = None;
         for entry in &shortlist {
@@ -957,7 +955,6 @@ pub(super) fn scan_partitions_code_tier_with_cap(
                 entry.page_id,
             );
             if current_page != Some(page_key) {
-                scratch.a1_pass = false;
                 if !store.load_page(page_key, &mut scratch) {
                     panic!(
                         "vector search: tier-on row page {} of partition ({},{},{}) vanished \
