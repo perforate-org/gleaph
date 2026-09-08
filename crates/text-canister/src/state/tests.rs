@@ -1290,25 +1290,37 @@ fn read_region(region: &VectorMemory, len: u64) -> Vec<u8> {
 }
 
 /// Splits `raw` into N INDEPENDENT zstd frames (level 19, the catalog artifact level), each
-/// ≤ [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] compressed, using the plan's adaptive slice-to-cap
-/// recipe (grow a raw window until the frame's compressed size would exceed the cap, then
-/// emit the frame). Returns the frames. `None` when the dictionary resources haven't been
-/// fetched (skip-loudly, like `mecab_container`).
+/// ≤ [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] compressed, using the plan's ADAPTIVE slice-to-cap
+/// recipe (grow a raw window until the frame's compressed size would exceed the cap, then emit
+/// the largest window that fit). Returns the frames. `None` when the dictionary resources
+/// haven't been fetched (skip-loudly, like `mecab_container`).
 fn framed_container(raw: &[u8]) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     let mut start = 0usize;
-    // Start with a raw window that compresses to ~the cap at level 19 (ipadic ~9 MB raw →
-    // ~1.8 MB compressed); shrink on overshoot.
-    let mut window = 9 * 1024 * 1024;
     while start < raw.len() {
-        let end = (start + window).min(raw.len());
-        let frame = zstd::stream::encode_all(&raw[start..end], 19).expect("zstd level-19 encode");
-        if frame.len() > MAX_DICT_COMPRESSED_CHUNK_BYTES && window > 1 {
-            window /= 2;
-            continue;
+        // Grow the raw window (doubling) until the frame's compressed size would exceed the
+        // cap, then emit the largest window that fit. Resets per frame so each frame is as
+        // large as the local compressibility allows (minimizes cross-slice context loss).
+        let mut window = 1usize;
+        let mut best_end = start;
+        let mut best_frame = None;
+        loop {
+            let end = (start + window).min(raw.len());
+            let frame =
+                zstd::stream::encode_all(&raw[start..end], 19).expect("zstd level-19 encode");
+            if frame.len() > MAX_DICT_COMPRESSED_CHUNK_BYTES {
+                break;
+            }
+            best_end = end;
+            best_frame = Some(frame);
+            if end == raw.len() {
+                break;
+            }
+            window *= 2;
         }
+        let frame = best_frame.expect("at least one window fits");
         frames.push(frame);
-        start = end;
+        start = best_end;
     }
     frames
 }
@@ -1484,41 +1496,73 @@ fn corrupt_but_decodable_frame_caught_by_final_raw_digest() {
         eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
         return;
     };
-    // Corrupt one frame's bytes; pass its NEW digest so the per-frame check passes. zstd
-    // frames carry no content checksum, so the frame may still decode (to wrong bytes) —
-    // caught at finalize by the raw-digest pin — or fail to decode — caught at upload.
-    // Either way the dictionary is never finalized.
-    let mut corrupt = frames[2].clone();
-    let mid = corrupt.len() / 2;
-    corrupt[mid] ^= 0xFF;
+    // Build a corrupt-but-decodable frame deterministically: decode frame 2, flip one raw
+    // byte, re-encode as a NEW valid frame (level 19). It decodes to the SAME length but
+    // WRONG bytes, and its digest differs from the original — so the per-frame check passes
+    // (the new digest matches the received bytes) and the finalize's accumulated raw digest
+    // over region 16 catches the wrong bytes.
+    let mut decoder = ruzstd::StreamingDecoder::new(&frames[2][..]).expect("decode frame 2");
+    let mut raw2 = Vec::new();
+    let mut buf = vec![0u8; MAX_DICT_CHUNK_BYTES];
+    loop {
+        let n = decoder.read(&mut buf).expect("frame 2 decode read");
+        if n == 0 {
+            break;
+        }
+        raw2.extend_from_slice(&buf[..n]);
+    }
+    let flip = raw2.len() / 2;
+    raw2[flip] ^= 0xFF;
+    let corrupt = zstd::stream::encode_all(&raw2[..], 19).expect("re-encode corrupt frame");
     let corrupt_digest = xxh3_128(&corrupt);
     let regions = fresh_regions();
     let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
-    upload_frames(&mut stores, &frames[..2], raw.len() as u64);
-    let upload = stores.upload_dict_chunk(
-        corrupt.clone(),
-        Some(CompressedDictUpload {
-            frame_digest: corrupt_digest,
-            raw_len: raw.len() as u64,
-        }),
-    );
-    if upload.is_ok() {
-        // The corrupt frame decoded (to wrong bytes). Finalize with the TRUE raw digest:
-        // the accumulated raw digest over region 16 differs → reject.
-        let err = stores
-            .finalize_dict_upload(
-                xxh3_128(raw),
-                Some(CompressedDictFinalize {
-                    raw_digest: xxh3_128(raw),
+    // Upload ALL frames except frame 2, then the corrupt frame 2, so the accumulated raw
+    // offset reaches raw.len() and the finalize reaches the digest check (the corrupt frame
+    // decodes to the same length, so the length gate passes).
+    for (i, frame) in frames.iter().enumerate() {
+        if i == 2 {
+            continue;
+        }
+        stores
+            .upload_dict_chunk(
+                frame.clone(),
+                Some(CompressedDictUpload {
+                    frame_digest: xxh3_128(frame),
                     raw_len: raw.len() as u64,
                 }),
             )
-            .expect_err("corrupt-but-decodable frame must fail the final raw digest");
-        assert!(
-            err.contains("accumulated raw digest mismatch"),
-            "unexpected: {err}"
-        );
+            .expect("frame upload");
     }
+    let received = stores
+        .upload_dict_chunk(
+            corrupt.clone(),
+            Some(CompressedDictUpload {
+                frame_digest: corrupt_digest,
+                raw_len: raw.len() as u64,
+            }),
+        )
+        .expect("corrupt frame decodes and appends");
+    assert_eq!(
+        received,
+        raw.len() as u64,
+        "all frames (incl. the corrupt one) reach raw.len()"
+    );
+    // Finalize with the TRUE raw digest: the accumulated raw digest over region 16 (with the
+    // corrupt frame's wrong bytes) differs → reject.
+    let err = stores
+        .finalize_dict_upload(
+            xxh3_128(raw),
+            Some(CompressedDictFinalize {
+                raw_digest: xxh3_128(raw),
+                raw_len: raw.len() as u64,
+            }),
+        )
+        .expect_err("corrupt-but-decodable frame must fail the final raw digest");
+    assert!(
+        err.contains("accumulated raw digest mismatch"),
+        "unexpected: {err}"
+    );
     assert_eq!(
         stores.dict_status().state,
         crate::DictState::Uploading,
@@ -1810,5 +1854,77 @@ fn framed_upload_decode_heap_peak() {
         region16.as_slice(),
         raw.as_slice(),
         "region-16 end state equals the raw container"
+    );
+}
+
+/// Plan 0342 gate: artifact size delta on the REAL container basis. The framed artifact
+/// (N independent zstd frames, level 19, adaptive slice-to-cap) is slightly larger than a
+/// single-frame encode of the same raw container (cross-slice context loss). The plan
+/// expects +0.62% (10,968,491 B vs 10,900,552 B); record the actual. Prints the per-frame
+/// sizes and the delta; asserts the delta is small (< 2%) so the framing stays cheap.
+#[test]
+fn framed_artifact_size_delta_on_real_container() {
+    let Some((raw, frames)) = dict_fixture() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    let framed_total: usize = frames.iter().map(|f| f.len()).sum();
+    let single = zstd::stream::encode_all(&raw[..], 19).expect("zstd level-19 single-frame encode");
+    let delta = framed_total as f64 / single.len() as f64 - 1.0;
+    println!(
+        "plan-0342 artifact size delta: raw={} B, single-frame={} B, framed_total={} B ({} frames: {:?}), delta=+{:.2}%",
+        raw.len(),
+        single.len(),
+        framed_total,
+        frames.len(),
+        frames.iter().map(|f| f.len()).collect::<Vec<_>>(),
+        delta * 100.0,
+    );
+    assert!(
+        delta < 0.02,
+        "framed artifact is {:.2}% larger than single-frame — exceeds the expected small delta",
+        delta * 100.0
+    );
+}
+
+/// Plan 0342 gate: per-frame DECOMPRESSION cost, measured natively (pure ruzstd decode of
+/// one frame — no region append, no re-hash). The plan expects ~1/6 of the old 4.81B
+/// single-finalize spike ≈ 850M wasm cycles/call; the PocketIC first-frame upload call
+/// (which adds the small first-frame re-hash) is the wasm-cycle proxy, this is the pure
+/// decode. Prints the decode time per frame; asserts the decode is bounded (a single frame
+/// decodes in well under a second natively).
+#[test]
+fn framed_decode_cycles_per_frame() {
+    let Some((_raw, frames)) = dict_fixture() else {
+        eprintln!("SKIPPED (ipadic dictionary not fetched; see pocket-ic-tests resources)");
+        return;
+    };
+    let mut total = std::time::Duration::ZERO;
+    let mut max = std::time::Duration::ZERO;
+    for frame in frames {
+        let start = std::time::Instant::now();
+        let mut decoder =
+            ruzstd::StreamingDecoder::new(&frame[..]).expect("frame decodes as a valid zstd frame");
+        let mut buf = vec![0u8; MAX_DICT_CHUNK_BYTES];
+        loop {
+            let n = decoder.read(&mut buf).expect("frame decode read");
+            if n == 0 {
+                break;
+            }
+        }
+        let elapsed = start.elapsed();
+        total += elapsed;
+        max = max.max(elapsed);
+    }
+    println!(
+        "plan-0342 per-frame decode (native, pure ruzstd): {} frames, total {:.1} ms, max {:.1} ms, avg {:.1} ms",
+        frames.len(),
+        total.as_secs_f64() * 1000.0,
+        max.as_secs_f64() * 1000.0,
+        (total / frames.len() as u32).as_secs_f64() * 1000.0,
+    );
+    assert!(
+        max < std::time::Duration::from_secs(1),
+        "a single frame decode took {max:?} natively — unexpectedly slow"
     );
 }

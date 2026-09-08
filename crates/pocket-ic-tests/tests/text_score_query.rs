@@ -771,22 +771,23 @@ fn get_dict_status(env: &Env, canister: candid::Principal) -> text_canister::Dic
     Decode!(&bytes, text_canister::DictStatus).expect("decode status")
 }
 
-/// Plan 0335 todo-4 fixture leg: seeds the Provision dictionary catalog with the
-/// ZSTD-compressed REAL MPD container (level 19, the pinned catalog artifact level) so
-/// the post-install relay (`relay_dict_catalog`, todo 3) auto-finalizes every
-/// dictionary-required text canister this test provisions. MUST run before the first
-/// `CREATE TEXT INDEX`; the management's size correction is load-bearing here: the
-/// catalog's `raw_len`/`raw_digest` pin the FULL `container::build` output
-/// (52,931,159 B = image sum + 236 B framing), not the four-image sum. Returns the
-/// (compressed, raw) pair for the manual raw-mode legs to reuse without re-reading.
-fn seed_dictionary_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
-    let raw = fetch_mecab_container();
-    let compressed = zstd::stream::encode_all(&raw[..], 19).expect("zstd-19 catalog encode");
+/// Plan 0342 todo-4 fixture leg: seeds the Provision dictionary catalog with the FRAMED
+/// REAL MPD container (N independent zstd frames, level 19, adaptive slice-to-cap so each
+/// frame fits the kernel relay cap) so the post-install relay (`relay_dict_catalog`, todo 3)
+/// auto-finalizes every dictionary-required text canister this test provisions. MUST run
+/// before the first `CREATE TEXT INDEX`; the management's size correction is load-bearing
+/// here: the catalog's `raw_len`/`raw_digest` pin the FULL `container::build` output
+/// (52,931,159 B = image sum + 236 B framing), not the four-image sum. Frame i = catalog
+/// row i = relay call i; each row's `frame_digest` is verified at upload time. Returns the
+/// (frames, raw) pair for the manual framed-mode legs to reuse without re-reading.
+/// The (raw, frames) pair MUST be computed BEFORE the PocketIC server boots (the zstd-19
+/// framing takes ~85 s, longer than the server idle TTL) and passed in here.
+fn seed_dictionary_catalog(env: &Env, raw: &[u8], frames: &[Vec<u8>]) {
     let key = gleaph_provision::types::DictCatalogKey {
         kind: "ipadic".to_owned(),
         version: "2.7.0".to_owned(),
     };
-    for (chunk_index, chunk) in compressed.chunks(1024 * 1024).enumerate() {
+    for (chunk_index, frame) in frames.iter().enumerate() {
         let bytes = env
             .fed
             .pic
@@ -797,7 +798,8 @@ fn seed_dictionary_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
                 Encode!(&gleaph_provision::types::DictCatalogUploadChunkArgs {
                     key: key.clone(),
                     chunk_index: chunk_index as u32,
-                    bytes: chunk.to_vec(),
+                    frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
+                    bytes: frame.clone(),
                 })
                 .expect("encode catalog chunk"),
             )
@@ -813,7 +815,7 @@ fn seed_dictionary_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
             >
         )
         .expect("decode catalog upload reply");
-        status.expect("catalog chunk accepted");
+        status.expect("catalog frame accepted");
     }
     let bytes = env
         .fed
@@ -824,8 +826,7 @@ fn seed_dictionary_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
             "admin_finalize_dict_catalog",
             Encode!(&gleaph_provision::types::DictCatalogFinalizeArgs {
                 key: key.clone(),
-                compressed_digest: xxhash_rust::xxh3::xxh3_128(&compressed),
-                raw_digest: xxhash_rust::xxh3::xxh3_128(&raw),
+                raw_digest: xxhash_rust::xxh3::xxh3_128(raw),
                 raw_len: raw.len() as u64,
             })
             .expect("encode catalog finalize"),
@@ -848,7 +849,6 @@ fn seed_dictionary_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
         gleaph_provision::types::DictCatalogState::Finalized,
         "catalog must be Finalized before provisioning"
     );
-    (compressed, raw)
 }
 
 const MECAB_INDEX_NAME: &str = "text_score_mecab_idx";
@@ -856,6 +856,10 @@ const MECAB_MIGRATION_ID: &str = "000104_text_score_mecab";
 
 #[test]
 fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
+    // Framed container FIRST: zstd-19 framing idles ~85 s, past the PocketIC server idle
+    // TTL, so the bytes must exist before the server boots.
+    let raw = fetch_mecab_container();
+    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
@@ -870,18 +874,18 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     seed_text_vertex(&env, "走った走った走った");
     seed_text_vertex(&env, "unrelated zebra");
 
-    // LEG 0 — catalog seeding (plan 0335 todo 4): compress the REAL MPD container once and
+    // LEG 0 — catalog seeding (plan 0342 todo 4): frame the REAL MPD container once and
     // pin it in the Provision catalog; the post-install relay then auto-finalizes the
     // dictionary on every dictionary-required text canister this test provisions.
-    let (compressed, raw) = seed_dictionary_catalog(&env);
+    seed_dictionary_catalog(&env, &raw, &frames);
 
-    // LEG 0b — gate-2 measurement (plan 0335): the COMPRESSED finalize is ONE update call
-    // (verify compressed digest → ruzstd stream decompress of the ~10.9 MB container into
-    // region 16 → raw digest → MPD validation → pin). The relayed canister is born
-    // Finalized, so the single-call cost is measured on a bare id-2 canister (installed
-    // directly, no relay) driven through the compressed path manually — the exact code
-    // path the relay invokes, in one call. The cycle delta of that ONE call is the
-    // gate-2 number (update-call budget ~10B instructions).
+    // LEG 0b — gate-2 measurement (plan 0342): the framed path decodes EACH frame on its own
+    // upload call (verify frame digest → ruzstd-decode THIS frame → append to region 16),
+    // so the single-call decompression spike is gone. The relayed canister is born
+    // Finalized, so the per-call cost is measured on a bare id-2 canister (installed
+    // directly, no relay) driven through the framed path manually — the exact code path the
+    // relay invokes. The MAX per-frame upload call's cycle delta is the gate-2 number, and
+    // the finalize (one-pass region-16 hash under 案A) is recorded separately.
     let bare = env.fed.pic.create_canister();
     env.fed.pic.add_cycles(bare, 50_000_000_000_000);
     env.fed.pic.install_canister(
@@ -898,7 +902,12 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     use gleaph_graph_kernel::provisioning::dictionary::{
         CompressedDictFinalize, CompressedDictUpload,
     };
-    for chunk in compressed.chunks(1_945_600) {
+    let raw_len = raw.len() as u64;
+    let stable_before = env.fed.pic.get_stable_memory(bare).len();
+    let mut max_frame_cycles = 0u128;
+    let mut first_frame_cycles = 0u128;
+    for (i, frame) in frames.iter().enumerate() {
+        let cycles_before = env.fed.pic.cycle_balance(bare);
         let bytes = env
             .fed
             .pic
@@ -907,20 +916,25 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
                 env.fed.router,
                 "admin_upload_dict_chunk",
                 Encode!(
-                    &chunk.to_vec(),
+                    &frame.clone(),
                     &Some(CompressedDictUpload {
-                        compressed_len: compressed.len() as u64,
+                        frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
+                        raw_len,
                     })
                 )
-                .expect("encode compressed chunk"),
+                .expect("encode framed chunk"),
             )
             .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
         let total: u64 = Decode!(&bytes, Result<u64, String>)
             .expect("decode upload reply")
-            .expect("compressed chunk ok");
-        assert!(total > 0, "compressed staging appends");
+            .expect("framed chunk ok");
+        assert!(total > 0, "framed decode appends raw bytes");
+        let call_cycles = cycles_before.saturating_sub(env.fed.pic.cycle_balance(bare));
+        if i == 0 {
+            first_frame_cycles = call_cycles;
+        }
+        max_frame_cycles = max_frame_cycles.max(call_cycles);
     }
-    let compressed_digest = xxhash_rust::xxh3::xxh3_128(&compressed);
     let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
     let cycles_before_finalize = env.fed.pic.cycle_balance(bare);
     let bytes = env
@@ -933,27 +947,43 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
             Encode!(
                 &raw_digest,
                 &Some(CompressedDictFinalize {
-                    compressed_digest,
                     raw_digest,
-                    raw_len: raw.len() as u64,
+                    raw_len,
                 })
             )
-            .expect("encode compressed finalize"),
+            .expect("encode framed finalize"),
         )
         .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
     let finalized: text_canister::DictStatus =
         Decode!(&bytes, Result<text_canister::DictStatus, String>)
             .expect("decode finalize reply")
-            .expect("compressed finalize ok");
+            .expect("framed finalize ok");
     let finalize_cycles = cycles_before_finalize.saturating_sub(env.fed.pic.cycle_balance(bare));
     println!(
-        "plan-0335 gate-2: single compressed finalize call (digest verify + 10.9MB ruzstd stream + validation + pin) cycles: {finalize_cycles}"
+        "plan-0342 gate-2 (案A): first-frame upload call cycles {first_frame_cycles}; max per-frame upload call cycles {max_frame_cycles}; finalize (one-pass region-16 hash + validation + pin) cycles {finalize_cycles}"
     );
     assert_eq!(finalized.state, text_canister::DictState::Finalized);
-    // Gate 2: the whole streaming finalize must fit ONE update message (~10B instructions).
+    // Gate 2: each per-frame decode call must fit ONE update message (~10B instructions).
     assert!(
-        finalize_cycles < 10_000_000_000,
-        "single compressed finalize took {finalize_cycles} cycles — exceeds the update-message budget; per-chunk decompression fallback required"
+        max_frame_cycles < 10_000_000_000,
+        "a per-frame decode call took {max_frame_cycles} cycles — exceeds the update-message budget"
+    );
+    // Stable-write volume (plan 0342 gate): the framed path writes ONLY the raw container to
+    // region 16 (no compressed staging — region 17 is gone). Stable memory is bucketed
+    // (MemoryManager grows in 128-page = 8 MiB buckets, one bucket minimum per touched
+    // memory), so the absolute size (~176 MB) is bucket overhead, not data. The regression
+    // signal is the DELTA across the upload: raw bytes + at most one trailing partial
+    // bucket. A resurrected 10.9 MB compressed staging copy would cost ~2 extra buckets
+    // and fail this bound.
+    let stable_bytes = env.fed.pic.get_stable_memory(bare).len();
+    println!(
+        "plan-0342 stable-write volume: bare id-2 canister stable memory after framed dictionary upload = {stable_bytes} B ({:.1} MB; raw container {:.1} MB + non-dict regions)",
+        stable_bytes as f64 / (1024.0 * 1024.0),
+        raw.len() as f64 / (1024.0 * 1024.0),
+    );
+    assert!(
+        stable_bytes.saturating_sub(stable_before) < raw.len() + 8 * 1024 * 1024,
+        "stable-memory delta exceeds raw + one bucket — compressed staging may have been resurrected"
     );
 
     // LEG 1 — GQL-surface admission with the ANALYZER clause: the provisioned canister
@@ -999,9 +1029,10 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         "unexpected admission error: {err}"
     );
 
-    // LEG 3 — the post-install RELAY (plan 0335 todo 3): provisioning a
-    // dictionary-required analyzer auto-relayed the catalog's compressed container and
-    // finalized it — no manual dictionary steps. Assert the full observable end state.
+    // LEG 3 — the post-install RELAY (plan 0342 todo 3): provisioning a
+    // dictionary-required analyzer auto-relayed the catalog's frames (one frame per call,
+    // each decoded immediately) and finalized it — no manual dictionary steps. Assert the
+    // full observable end state.
     let status = get_dict_status(&env, canister);
     assert_eq!(
         status.state,
@@ -1019,10 +1050,6 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         status.len,
         dict.len() as u64,
         "raw length matches the container"
-    );
-    assert_eq!(
-        status.compressed, None,
-        "compressed staging is deactivated after the relayed finalize"
     );
     // The relay caller (Provision) is authorized on the relay endpoints; a THIRD
     // principal is not (plan 0335 §5-2 guard scoping — exercised through the real wasm
@@ -1049,8 +1076,8 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
         err.reject_message
     );
 
-    // LEG 4 — post_upgrade rebind on the relayed canister (the plan 0335 invariant: the
-    // compressed path must NOT touch open/upgrade). The dictionary is already Finalized,
+    // LEG 4 — post_upgrade rebind on the relayed canister (the plan 0342 invariant: the
+    // framed path must NOT touch open/upgrade). The dictionary is already Finalized,
     // so this upgrade exercises the 0334 rebind: structural validation + resident memcpy,
     // NO decode. The install-overhead BASELINE is measured IN THIS RUN on a bare id-1
     // canister (same wasm, no dictionary → the open path skips the rebind), so the delta
@@ -1187,6 +1214,9 @@ const COMPOSITE_MIGRATION_ID: &str = "000105_text_score_composite";
 /// DICT_REQUIRED gate is shared).
 #[test]
 fn multilingual_composite_default_recalls_across_languages() {
+    // Framed container FIRST (see mecab leg): zstd-19 framing outlasts the server idle TTL.
+    let raw = fetch_mecab_container();
+    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
@@ -1208,7 +1238,7 @@ fn multilingual_composite_default_recalls_across_languages() {
 
     // LEG 0 — catalog seeding (plan 0335 todo 4): the relay (todo 3) then auto-finalizes
     // the id-0 canister's dictionary during provisioning.
-    seed_dictionary_catalog(&env);
+    seed_dictionary_catalog(&env, &raw, &frames);
 
     // LEG 1 — DEFAULT admission: the bare admin endpoint carries NO analyzer
     // argument; the absent clause must resolve to the composite (id 0).
@@ -1346,6 +1376,9 @@ const IVS_DOC: &str = "葛\u{E0100}区";
 ///       unified to ケ, so the か月 doc is absent from the ケ月 candidate set.
 #[test]
 fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
+    // Framed container FIRST (see mecab leg): zstd-19 framing outlasts the server idle TTL.
+    let raw = fetch_mecab_container();
+    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
@@ -1363,7 +1396,7 @@ fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
 
     // Catalog seeding (plan 0335 todo 4): the relay auto-finalizes the dictionary on
     // the provisioned mecab canister — ZERO manual dict steps.
-    seed_dictionary_catalog(&env);
+    seed_dictionary_catalog(&env, &raw, &frames);
 
     // Declare via the GQL DDL surface with ANALYZER mecab (id 2).
     let statement = format!(

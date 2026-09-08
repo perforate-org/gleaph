@@ -3324,6 +3324,44 @@ pub fn upgrade_fixture_query() -> &'static str {
     UPGRADE_FIXTURE_QUERY
 }
 
+/// Splits `raw` into N INDEPENDENT zstd frames (level 19, the pinned catalog artifact level),
+/// each ≤ [`gleaph_graph_kernel::provisioning::dictionary::MAX_DICT_COMPRESSED_CHUNK_BYTES`]
+/// compressed, using the plan-0342 ADAPTIVE slice-to-cap recipe (grow a raw window until the
+/// frame's compressed size would exceed the cap, then emit the largest window that fit). Frame
+/// boundaries are part of the artifact identity: frame i = catalog row i = relay call i.
+pub fn framed_container(raw: &[u8]) -> Vec<Vec<u8>> {
+    use gleaph_graph_kernel::provisioning::dictionary::MAX_DICT_COMPRESSED_CHUNK_BYTES;
+    let cap = MAX_DICT_COMPRESSED_CHUNK_BYTES;
+    let mut frames = Vec::new();
+    let mut start = 0usize;
+    while start < raw.len() {
+        // Grow the raw window (doubling) until the frame's compressed size would exceed the
+        // cap, then emit the largest window that fit. Resets per frame so each frame is as
+        // large as the local compressibility allows (minimizes cross-slice context loss).
+        let mut window = 1usize;
+        let mut best_end = start;
+        let mut best_frame = None;
+        loop {
+            let end = (start + window).min(raw.len());
+            let frame =
+                zstd::stream::encode_all(&raw[start..end], 19).expect("zstd level-19 encode");
+            if frame.len() > cap {
+                break;
+            }
+            best_end = end;
+            best_frame = Some(frame);
+            if end == raw.len() {
+                break;
+            }
+            window *= 2;
+        }
+        let frame = best_frame.expect("at least one window fits");
+        frames.push(frame);
+        start = best_end;
+    }
+    frames
+}
+
 #[cfg(test)]
 mod pocket_ic_server_binary_tests {
     use super::validate_pocket_ic_server_binary;

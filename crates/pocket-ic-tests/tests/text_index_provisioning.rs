@@ -521,27 +521,24 @@ fn fetch_mecab_container() -> Vec<u8> {
     morph_dict::container::build(images)
 }
 
-/// The pinned catalog compression level (plan 0335 gate 1: level 19 = 10,900,552 B on the
-/// real container; `compressed_digest` pins the exact bytes, so the level is contract).
-const CATALOG_ZSTD_LEVEL: i32 = 19;
-
-/// Plan 0335 todo 4: seeds the Provision dictionary catalog with the ZSTD-compressed REAL
-/// MPD container. Size correction (management-verified): the container is the FULL
+/// Plan 0342 todo 4: seeds the Provision dictionary catalog with the FRAMED REAL MPD
+/// container (N independent zstd frames, level 19, adaptive slice-to-cap so each frame fits
+/// the kernel relay cap). Size correction (management-verified): the container is the FULL
 /// `morph_dict::container::build` output — 52,931,159 B = image sum 52,930,923 + 236 B
 /// framing (header + entry table) — so `raw_len`/`raw_digest` pin the full bytes, not the
-/// four-image sum. Rows are ≤ 1 MiB per `MAX_DICT_CATALOG_CHUNK_LEN`.
-fn seed_dict_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
+/// four-image sum. Frame i = catalog row i = relay call i; each row's `frame_digest` is
+/// verified at upload time. Returns `raw` for the digest assertions.
+/// The (raw, frames) pair MUST be computed BEFORE `bootstrap()` (zstd-19 framing idles
+/// ~85 s, past the PocketIC server idle TTL) and passed in here.
+fn seed_dict_catalog(env: &Env, raw: &[u8], frames: &[Vec<u8>]) -> Vec<u8> {
     use gleaph_provision::types::{
         DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs,
     };
-    let raw = fetch_mecab_container();
-    let compressed =
-        zstd::stream::encode_all(&raw[..], CATALOG_ZSTD_LEVEL).expect("zstd-19 catalog encode");
     let key = DictCatalogKey {
         kind: "ipadic".to_owned(),
         version: "2.7.0".to_owned(),
     };
-    for (chunk_index, chunk) in compressed.chunks(1024 * 1024).enumerate() {
+    for (chunk_index, frame) in frames.iter().enumerate() {
         let bytes = env
             .pic
             .update_call(
@@ -551,7 +548,8 @@ fn seed_dict_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
                 Encode!(&DictCatalogUploadChunkArgs {
                     key: key.clone(),
                     chunk_index: chunk_index as u32,
-                    bytes: chunk.to_vec(),
+                    frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
+                    bytes: frame.clone(),
                 })
                 .expect("encode catalog chunk"),
             )
@@ -577,8 +575,7 @@ fn seed_dict_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
             "admin_finalize_dict_catalog",
             Encode!(&DictCatalogFinalizeArgs {
                 key: key.clone(),
-                compressed_digest: xxhash_rust::xxh3::xxh3_128(&compressed),
-                raw_digest: xxhash_rust::xxh3::xxh3_128(&raw),
+                raw_digest: xxhash_rust::xxh3::xxh3_128(raw),
                 raw_len: raw.len() as u64,
             })
             .expect("encode catalog finalize"),
@@ -601,7 +598,7 @@ fn seed_dict_catalog(env: &Env) -> (Vec<u8>, Vec<u8>) {
         gleaph_provision::types::DictCatalogState::Finalized,
         "catalog must be Finalized before provisioning"
     );
-    (compressed, raw)
+    raw.to_vec()
 }
 
 fn admin_flush_as(env: &Env, from: Principal) -> text_canister::FlushReport {
@@ -696,6 +693,10 @@ fn apply_retrying_busy(
 /// One bootstrap serves all three scenarios in order.
 #[test]
 fn text_index_provisions_replays_and_guards() {
+    // Framed container FIRST: zstd-19 framing idles ~85 s, past the PocketIC server idle
+    // TTL, so the bytes must exist before the server boots.
+    let raw = fetch_mecab_container();
+    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
     let env = bootstrap();
     activate_release(&env);
     register_graph(&env);
@@ -753,13 +754,10 @@ fn text_index_provisions_replays_and_guards() {
         "unexpected unseeded error: {unseeded_err:?}"
     );
 
-    // One chunk uploaded but NOT finalized → the relay must still refuse (entry is not
+    // One frame uploaded but NOT finalized → the relay must still refuse (entry is not
     // Finalized); the main seeding then completes over the same key.
     {
         use gleaph_provision::types::{DictCatalogKey, DictCatalogUploadChunkArgs};
-        let raw = fetch_mecab_container();
-        let compressed =
-            zstd::stream::encode_all(&raw[..], CATALOG_ZSTD_LEVEL).expect("zstd-19 catalog encode");
         let key = DictCatalogKey {
             kind: "ipadic".to_owned(),
             version: "2.7.0".to_owned(),
@@ -773,7 +771,8 @@ fn text_index_provisions_replays_and_guards() {
                 Encode!(&DictCatalogUploadChunkArgs {
                     key: key.clone(),
                     chunk_index: 0,
-                    bytes: compressed[..1024 * 1024].to_vec(),
+                    frame_digest: xxhash_rust::xxh3::xxh3_128(&frames[0]),
+                    bytes: frames[0].clone(),
                 })
                 .expect("encode catalog chunk"),
             )
@@ -789,11 +788,11 @@ fn text_index_provisions_replays_and_guards() {
             >
         )
         .expect("decode catalog upload reply");
-        let status = status.expect("first chunk accepted");
+        let status = status.expect("first frame accepted");
         assert_eq!(
             status.state,
             gleaph_provision::types::DictCatalogState::Uploading,
-            "catalog entry with one chunk is Uploading, not Finalized"
+            "catalog entry with one frame is Uploading, not Finalized"
         );
         let not_finalized_err = create_text_index(
             &env,
@@ -810,9 +809,9 @@ fn text_index_provisions_replays_and_guards() {
     }
 
     // --- (a) issue → canister created with Text kind + definition registered + born Backfilling ---
-    let (_compressed, raw) = seed_dict_catalog(&env);
-    // Gate-2 measurement (plan 0335): the provision canister executes the relay (catalog
-    // streaming + the text canister's compressed finalize). Its cycle delta across
+    let raw = seed_dict_catalog(&env, &raw, &frames);
+    // Gate-2 measurement (plan 0342): the provision canister executes the relay (catalog
+    // streaming + the text canister's per-frame decode + finalize). Its cycle delta across
     // create_text_index isolates the relayed work end-to-end (inter-canister send costs
     // included; the raw-path finalize measured 275,016,142 cycles in 0334 for scale).
     let provision_cycles_before = env.pic.cycle_balance(env.provision);
@@ -821,7 +820,7 @@ fn text_index_provisions_replays_and_guards() {
     let canister = info.canister.expect("provisioned canister attached");
     let relay_cycles = provision_cycles_before.saturating_sub(env.pic.cycle_balance(env.provision));
     println!(
-        "plan-0335 relay cost (provision-side: catalog streaming + relay calls incl. the text canister's compressed finalize) cycles: {relay_cycles}"
+        "plan-0342 relay cost (provision-side: catalog streaming + relay calls incl. the text canister's per-frame decode + finalize) cycles: {relay_cycles}"
     );
     assert_ne!(canister, Principal::anonymous());
     // ADR 0059: a provisioned text definition is born Backfilling (planner-invisible) and flips
@@ -897,9 +896,9 @@ fn text_index_provisions_replays_and_guards() {
     // --- (a.1) plan 0335 todo 4: the RELAY-driven dictionary path --------------------
     // The catalog was seeded before issuance; the default CREATE TEXT INDEX path (id 0,
     // dictionary-required) provisioned its canister and the post-install relay streamed
-    // the catalog's compressed container and finalized the dictionary — ZERO manual
-    // dictionary operations (the former manual raw upload is superseded; raw correctness
-    // is pinned by the text-canister unit tests).
+    // the catalog's frames (one frame per call, each decoded immediately) and finalized the
+    // dictionary — ZERO manual dictionary operations (the former manual raw upload is
+    // superseded; raw correctness is pinned by the text-canister unit tests).
     let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
     env.pic.add_cycles(canister, 50_000_000_000_000);
     let status_bytes = env
@@ -927,10 +926,6 @@ fn text_index_provisions_replays_and_guards() {
         relayed.len as usize,
         raw.len(),
         "raw length matches the full container (the 52,931,159 B correction)"
-    );
-    assert_eq!(
-        relayed.compressed, None,
-        "compressed staging is deactivated after the relayed finalize"
     );
 
     // Fail-closed (positive asserts): a THIRD principal is rejected by the relay guard
@@ -1077,10 +1072,6 @@ fn text_index_provisions_replays_and_guards() {
             Decode!(&dict_status_bytes, text_canister::DictStatus).expect("decode status");
         assert_eq!(dict_status.state, text_canister::DictState::Finalized);
         assert_eq!(dict_status.digest, Some(raw_digest));
-        assert_eq!(
-            dict_status.compressed, None,
-            "re-provision must not resurrect the compressed staging"
-        );
     }
 
     // --- (c) anonymous caller rejected per guard conventions ---

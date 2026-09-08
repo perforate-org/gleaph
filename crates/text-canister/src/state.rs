@@ -285,9 +285,6 @@ struct TextMeta {
     /// Framed-mode progress (plan 0342): raw bytes appended to region 16 so far during the
     /// provision relay (0 in raw mode and after a compressed finalize).
     dict_raw_received_len: u64,
-    /// Framed-mode progress (plan 0342): the accumulated xxh3_128 over the raw bytes appended
-    /// to region 16 so far (0 in raw mode and after a compressed finalize).
-    dict_raw_digest: u128,
 }
 
 /// Dictionary lifecycle states of [`TextMeta::dict_state`].
@@ -309,7 +306,6 @@ impl Default for TextMeta {
             dict_len: 0,
             dict_state: DICT_STATE_ABSENT,
             dict_raw_received_len: 0,
-            dict_raw_digest: 0,
         }
     }
 }
@@ -986,6 +982,7 @@ where
             Some(upload) => upload,
         };
         // -- Framed mode: verify THIS frame's digest, decode it, append raw bytes to 16. --
+
         if meta.dict_len > 0 {
             return Err(
                 "dictionary upload started in raw mode; framed chunks are rejected".to_string(),
@@ -1015,13 +1012,13 @@ where
         let max_total = upload.raw_len.min(MAX_DICT_TOTAL_BYTES);
         let decoded = self.decode_frame_append(&bytes, &self.dict_region, raw_offset, max_total)?;
         let new_raw_len = raw_offset + decoded;
-        // Accumulate the raw streaming digest over the received region-16 prefix (windowed,
-        // no full materialization) and record the new raw offset.
-        let raw_digest = self.stream_hash_region(&self.dict_region, new_raw_len);
+        // Record the new raw offset only (案A: the per-call accumulated raw digest re-hash is
+        // removed — the raw digest is verified ONCE at finalize via a one-pass streaming hash
+        // over the whole region 16, avoiding the O(N) per-call re-hash that made the total
+        // hash work O(N²/2)).
         let mut meta = meta.clone();
         meta.dict_state = DICT_STATE_UPLOADING;
         meta.dict_raw_received_len = new_raw_len;
-        meta.dict_raw_digest = raw_digest;
         self.meta.set(meta);
         Ok(new_raw_len)
     }
@@ -1042,13 +1039,13 @@ where
     /// Finalized match; a mismatch rejects WITHOUT touching state.
     ///
     /// FRAMED mode (plan 0342): the frames were decoded into region 16 on arrival, so this
-    /// call verifies the ACCUMULATED raw digest (streamed over region 16 during upload)
-    /// against the argument, verifies the total raw length against the declared raw_len
-    /// (the final truncation gate), then runs the existing structural MPD validation +
-    /// resident-set materialization. Every failure path leaves TextMeta non-Finalized and
-    /// RESETS the framed progress (region 16 + frame counter) so a retry re-streams from
-    /// frame 0. A Finalized exact replay (same raw digest) is an idempotent no-op in both
-    /// modes. NO deactivate step — region 17 no longer exists.
+    /// call verifies the total raw length against the declared raw_len (the final truncation
+    /// gate), then verifies the raw digest via a ONE-PASS streaming hash over the whole
+    /// region 16 (案A: the per-call accumulated re-hash is removed), then runs the existing
+    /// structural MPD validation + resident-set materialization. Every failure path leaves
+    /// TextMeta non-Finalized and RESETS the framed progress (region 16 + frame counter) so
+    /// a retry re-streams from frame 0. A Finalized exact replay (same raw digest) is an
+    /// idempotent no-op in both modes. NO deactivate step — region 17 no longer exists.
     pub fn finalize_dict_upload(
         &mut self,
         expected_digest: u128,
@@ -1101,11 +1098,11 @@ where
             }
             Some(expected) => expected,
         };
-        // -- Framed mode: verify accumulated digest + total length → validate → pin. ------
-        // Read the accumulated progress into locals so the reset calls below don't fight
+        // -- Framed mode: verify total length + one-pass raw digest → validate → pin. -----
+
+        // Read the accumulated progress into a local so the reset calls below don't fight
         // the immutable `meta` borrow.
         let raw_received_len = meta.dict_raw_received_len;
-        let raw_digest = meta.dict_raw_digest;
         if raw_received_len == 0 {
             return Err("no framed dictionary chunks uploaded".to_string());
         }
@@ -1142,15 +1139,18 @@ where
                 expected.raw_len
             ));
         }
-        // Verify the ACCUMULATED raw digest (streamed over region 16 during upload) against
-        // the argument. A mismatch means a corrupt-but-decodable frame slipped through the
-        // per-frame digest — the final raw digest is the ultimate authority. Reject and
-        // reset so a retry re-streams from frame 0.
-        if raw_digest != expected_digest {
+        // Verify the raw digest via a ONE-PASS streaming hash over the whole region 16 (案A:
+        // the per-call accumulated re-hash is removed, so the digest is computed once here at
+        // finalize — O(N) total hash work instead of O(N²/2)). A mismatch means a
+        // corrupt-but-decodable frame slipped through the per-frame digest — the final raw
+        // digest is the ultimate authority. Reject and reset so a retry re-streams from
+        // frame 0.
+        let digest = self.stream_hash_region(&self.dict_region, raw_received_len);
+        if digest != expected_digest {
             self.reset_framed_progress();
             return Err(format!(
                 "accumulated raw digest mismatch: region hashes {:#032x}, expected {:#032x}",
-                raw_digest, expected_digest
+                digest, expected_digest
             ));
         }
         // Structural validation + resident-set materialization over the durable region —
@@ -1172,13 +1172,12 @@ where
     }
 
     /// Resets the framed-mode progress (plan 0342): region 16 + frame counter re-stream
-    /// from frame 0 after a failed finalize. The recorded raw offset and accumulated digest
-    /// clear so the next upload appends at offset 0 (stale region-16 bytes beyond the new
-    /// offset stay unreachable — the recorded length only pins on success).
+    /// from frame 0 after a failed finalize. The recorded raw offset clears so the next
+    /// upload appends at offset 0 (stale region-16 bytes beyond the new offset stay
+    /// unreachable — the recorded length only pins on success).
     fn reset_framed_progress(&mut self) {
         let mut meta = self.meta.get().clone();
         meta.dict_raw_received_len = 0;
-        meta.dict_raw_digest = 0;
         self.meta.set(meta);
     }
 
@@ -1186,8 +1185,8 @@ where
     /// the cumulative raw offset (progress) in both modes — raw mode tracks it in `dict_len`,
     /// framed mode in `dict_raw_received_len`; mode mixing is rejected, so exactly one is
     /// non-zero. On `Finalized`, `len` is the pinned raw container length. There is no
-    /// separate compressed progress field (region 17 is gone; the accumulated raw digest is
-    /// internal and verified at finalize).
+    /// separate compressed progress field (region 17 is gone; the raw digest is computed
+    /// once at finalize via a one-pass streaming hash over region 16).
     pub fn dict_status(&self) -> DictStatus {
         let meta = self.meta.get();
         let state = match meta.dict_state {

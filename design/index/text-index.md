@@ -1,6 +1,6 @@
 # Text index
 
-Last updated: 2026-09-07 (plan 0340 docs-sync)
+Last updated: 2026-09-07 (plan 0342 docs-sync + 案A)
 Status: **Implemented (v1)** — engine accepted ([ADR 0077](../adr/0077-text-index-engine.md));
 canister wired and lifecycle-verified on PocketIC (plan 0294, 2026-08-24); density-matched hot
 stores + whole-path term-search bench (plan 0295); driver economics closed (plan 0296). Plan
@@ -133,22 +133,29 @@ landings + plan 0332 default promotion):
   parameterized by the Japanese `DictionaryProfile`, then the kana counter-variant fold
   (ヶ/ヵ → ケ) applied to the EMITTED units only. Deterministic and strict-idempotent;
   100% unit-sequence parity with the previous vibrato engine (plan 0333 gate). The dictionary is
-  NOT in the wasm (1,797,134 B after plan 0335 re-added ruzstd, +157 KB): stable region 16 carries the MPD container
+  NOT in the wasm (1,790,448 B after plan 0342 removed region 17 and added the framed path,
+  −6,686 B): stable region 16 carries the MPD container
   (52,931,159 bytes total — the four images sum to 52,930,923: sys.dic 49,199,027 + unk.dic
   5,684 + matrix.bin 3,463,716 + char.bin 262,496 — plus the 8-byte MPD header and the
   228-byte entry table; about $0.058/month), uploaded via relay-guarded `admin_upload_dict_chunk` in two
-  transport modes (plan 0335): RAW (≤ 1 MiB/call, raw contiguous appends into region 16;
+  transport modes (plan 0335; framed mode per plan 0342): RAW (≤ 1 MiB/call, raw contiguous appends into region 16;
   the manual path for directly-installed canisters — unreachable from provisioning targets,
-  whose relay auto-finalizes — byte-identical to the pre-0335 shape) and COMPRESSED (~1.9 MiB/call
-  under the shared `MAX_DICT_COMPRESSED_CHUNK_BYTES = 1,945,600` cap, the cross-subnet 2 MiB
-  inter-canister payload limit minus Candid/envelope headroom; zstd container bytes staged
-  into region 17 during the provision relay, ~6 calls for the 10.9 MB zstd-19 artifact).
-  `admin_finalize_dict_upload` accepts the same trailing mode: RAW verifies one xxh3_128 over
-  the container (exact replay idempotent); COMPRESSED verifies the streaming compressed digest
-  over region 17 FIRST (fail-closed before any mutation), streams ruzstd decompression into
-  region 16 (bounded windows — no materialization), checks the declared raw length + raw
-  digest, then runs the same structural validation + resident-set materialization — the end
-  state is byte-identical to the raw path. The provision relay caller is a SECOND authorized
+  whose relay auto-finalizes — byte-identical to the pre-0335 shape) and FRAMED (plan 0342:
+  the catalog artifact is N INDEPENDENT zstd frames, each ≤ `MAX_DICT_COMPRESSED_CHUNK_BYTES = 1,945,600`
+  compressed — the cross-subnet 2 MiB inter-canister payload limit minus Candid/envelope
+  headroom; the relay sends ONE FRAME PER CALL (~8 calls for the 11.0 MB zstd-19 framed
+  artifact, +0.56% vs single-frame), the text canister verifies THAT frame's digest
+  (xxh3_128 over the received bytes == the record's `frame_digest`) and decompresses IT
+  immediately into region 16 — compressed bytes are NEVER persisted, region 17 is deleted).
+  `admin_finalize_dict_upload` accepts the same trailing mode: RAW verifies one streaming
+  xxh3_128 over region 16 (bounded windows — no full-container copy; exact replay
+  idempotent); FRAMED verifies the total raw length against the declared record (the final
+  truncation/bomb gate) then the raw digest via a ONE-PASS streaming hash over the whole
+  region 16 (案A: the per-call accumulated re-hash is removed — O(N) once at finalize, not
+  O(N²/2) across upload calls), then runs the same structural validation + resident-set
+  materialization — the end state is byte-identical to the raw path. Decompression is spread
+  across the relay calls (each frame decoded on its own call), so the single-finalize
+  decompression budget gate is gone; the finalize is an O(N) one-pass hash + validation. The provision relay caller is a SECOND authorized
   principal on exactly these two endpoints (plan 0335 §5-2: init arg `dict_relay_caller`,
   durable region 18; all other `admin_*` endpoints keep controller-only guards;
   `admin_get_dict_status` is an unguarded read-only query). Shared wire shapes and the
@@ -299,12 +306,12 @@ doc-key slots · doc-key→docid linear hash map (`u64→u32`) · tombstone cont
 cell · pending-ops FIFO deque (payloads in the shared blob arena) · merge-cursor cell ·
 controller cell · shared fixed-chunk blob arena · term-entry vector — plus the plan 0297 additions:
 backfill registration cell + resumable cursor cell (MemoryIds 14/15, bound by the backfill
-module through `state::region()`) — plus the 0331 addition: the analyzer-2 ZSTD dictionary
-blob (MemoryId 16, bounded 1 MiB chunk slots; upload/finalize contract in the analyzer section)
-— plus the plan 0335 additions: the compressed MPD staging region (MemoryId 17, plain zstd
-container bytes during the provision relay, streamed-decompressed into 16 at compressed
-finalize then logically deactivated) and the provision relay caller cell (MemoryId 18,
-`Cell<Principal>`; the second authorized principal on the two relay endpoints).
+module through `state::region()`) — plus the 0331 addition: the analyzer-2 dictionary blob (MemoryId 16, RAW contiguous appends
+or FRAMED per-frame decode — plan 0342; upload/finalize contract in the analyzer section) and
+the provision relay caller cell (MemoryId 18, `Cell<Principal>`; the second authorized
+principal on the two relay endpoints). Plan 0342 DELETED the compressed MPD staging region
+(MemoryId 17, plan 0335) — compressed bytes are never persisted; each relay frame is decoded
+immediately into region 16.
 
 ## Budgets and capacity
 
@@ -313,11 +320,13 @@ m3/top-10 query 15.78 M (tf-scored 17.25 M), storage 141–193 KB logical bytes.
 worked examples, and the soft/hard split thresholds (350/400/450 GiB) carry over from
 [capacity-planning.md](capacity-planning.md); TEXT region growth rows are recorded there.
 
-Analyzer-2 landing costs (plan 0331, measured): text-canister wasm 1,745,232 B (pocket-ic build)
-/ 1,851,074 B (canbench build) — inside the ~2 MB gate with NO dictionary bytes embedded;
-dictionary finalize (8.0 MB zstd decode + tokenizer build) measured 4,752,264,345 cycles on
-PocketIC, inside the 300B install budget; heap-resident dictionary after load ~52 MB; transient
-decode peak ~675 MB (plan 0330 spike).
+Analyzer-2 landing costs (plan 0331, measured): text-canister wasm 1,790,448 B (pocket-ic build,
+plan 0342 + 案A) — inside the ~2 MB gate with NO dictionary bytes embedded; the OLD
+single-finalize zstd decode + tokenizer build measured 4,752,264,345 cycles on PocketIC (plan
+0331), but plan 0342 removes the single-call decompression spike by decoding each frame on its
+own relay call; the finalize is now an O(N) one-pass region-16 hash (案A) + structural
+validation + resident-set materialization. Heap-resident dictionary after load ~52 MB; the per-frame decode transient is bounded
+(one frame's ruzstd window, ≪ the 0331 675 MB eager-decode peak).
 
 ## Non-goals (v1)
 
