@@ -77,10 +77,10 @@ impl EncodingRecord {
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
         let (aux_bytes, kernel) = match encoding {
             // F32: default formulations need no per-row aux (sub-square + early exit for L2;
-            // normalized-dot only for cosine). I8 carries a mandatory 4-byte per-row quantization
+            // normalized-dot only for cosine). I8/U8 carry a mandatory 4-byte per-row quantization
             // scale and an upcast/fused scoring kernel. F16/Bf16 need no aux (upcast at score time).
             VectorEncoding::F32 => (0, ScoringKernel::F32Dot),
-            VectorEncoding::I8 => (4, ScoringKernel::UpcastF32Dot),
+            VectorEncoding::I8 | VectorEncoding::U8 => (4, ScoringKernel::UpcastF32Dot),
             VectorEncoding::F16 | VectorEncoding::Bf16 => (0, ScoringKernel::UpcastF32Dot),
         };
         let record = Self {
@@ -127,6 +127,8 @@ impl EncodingRecord {
             (VectorEncoding::F16, _) => return Err(EncodingError::KernelMismatch),
             (VectorEncoding::Bf16, ScoringKernel::UpcastF32Dot) => {}
             (VectorEncoding::Bf16, _) => return Err(EncodingError::KernelMismatch),
+            (VectorEncoding::U8, ScoringKernel::UpcastF32Dot) => {}
+            (VectorEncoding::U8, _) => return Err(EncodingError::KernelMismatch),
         }
         // The default aux widths do not depend on the metric; metric-dependent pruning aux is
         // opt-in and validated at configuration time, not here.
@@ -157,6 +159,17 @@ mod tests {
         assert_eq!(record.aux_bytes, 0);
         assert_eq!(record.meta_stride(), 4);
         assert_eq!(record.kernel, ScoringKernel::F32Dot);
+    }
+
+    #[test]
+    fn d1536_u8_widths() {
+        // d = 1536: stride = pad = align16(1·1536) = 1536; meta = 4 + 4 (scale) = 8.
+        let record = EncodingRecord::from_parts(VectorEncoding::U8, 1536).expect("valid");
+        assert_eq!(record.stride_bytes, 1536);
+        assert_eq!(record.pad_stride_bytes, 1536);
+        assert_eq!(record.aux_bytes, 4);
+        assert_eq!(record.meta_stride(), 8);
+        assert_eq!(record.kernel, ScoringKernel::UpcastF32Dot);
     }
 
     #[test]

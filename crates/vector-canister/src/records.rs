@@ -2002,7 +2002,7 @@ pub(crate) mod test_support {
     pub(crate) fn tier_def(dims: u16, encoding: VectorEncoding) -> VectorIndexDef {
         let stride_bytes = match encoding {
             VectorEncoding::F32 => u32::from(dims) * 4,
-            VectorEncoding::I8 => u32::from(dims),
+            VectorEncoding::I8 | VectorEncoding::U8 => u32::from(dims),
             VectorEncoding::F16 | VectorEncoding::Bf16 => u32::from(dims) * 2,
         };
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;

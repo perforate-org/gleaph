@@ -5415,6 +5415,140 @@ mod bf16_tests {
     }
 }
 
+/// U8 tests: offset-unsigned storage with F32 wire query; `VectorEncoding::U8`.
+mod u8_tests {
+    use super::*;
+    use crate::facade::stable::{PAGE_STORE, definition_store};
+
+    const U8_INDEX: u32 = 12;
+
+    fn u8_bytes(values: &[f32]) -> Vec<u8> {
+        assert_eq!(values.len(), DIMS as usize, "component count mismatch");
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn u8_upsert(index_id: u32, vertex_id: u32, stamp: u64, values: &[f32], metric: VectorMetric) {
+        vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id,
+                embedding_name_id: 0,
+                subject: subject(vertex_id),
+                mutation_id: stamp,
+                encoding: VectorEncoding::U8,
+                dims: DIMS,
+                metric,
+                bytes: u8_bytes(values),
+                remove: false,
+            },
+        )
+        .expect("u8 upsert");
+    }
+
+    fn u8_search(index_id: u32, values: &[f32], metric: VectorMetric, top_k: u32) -> Vec<u32> {
+        let res = vector_search(&VectorSearchRequest {
+            index_id,
+            query: u8_bytes(values),
+            encoding: VectorEncoding::U8,
+            dims: DIMS,
+            metric,
+            top_k,
+            candidate_subjects: None,
+        })
+        .expect("u8 search");
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn u8_ingest_and_search_parity_with_f32() {
+        fresh_store();
+        let vectors: Vec<Vec<f32>> = vec![
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![4.0, 3.0, 2.0, 1.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![2.0, 2.0, 2.0, 0.0],
+        ];
+        for (i, v) in vectors.iter().enumerate() {
+            vector_upsert(
+                shard_canister(),
+                &upsert_vec_from((i + 1) as u32, 1, v, VectorMetric::L2Squared),
+            )
+            .unwrap();
+            u8_upsert(U8_INDEX, (i + 1) as u32, 1, v, VectorMetric::L2Squared);
+        }
+        let q = [2.0f32, 2.0, 2.0, 2.0];
+        let f32_top = vector_search(&VectorSearchRequest {
+            index_id: INDEX_ID,
+            query: u8_bytes(&q),
+            encoding: VectorEncoding::F32,
+            dims: DIMS,
+            metric: VectorMetric::L2Squared,
+            top_k: 4,
+            candidate_subjects: None,
+        })
+        .unwrap();
+        let f32_order: Vec<u32> = f32_top
+            .hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect();
+        let u8_order = u8_search(U8_INDEX, &q, VectorMetric::L2Squared, 4);
+        assert_eq!(f32_order, u8_order, "U8 top-k ordering matches F32");
+    }
+
+    #[test]
+    fn u8_def_uses_scale_aux_and_rejects_non_finite() {
+        fresh_store();
+        u8_upsert(
+            U8_INDEX,
+            1,
+            1,
+            &[1.0, 2.0, 3.0, 4.0],
+            VectorMetric::L2Squared,
+        );
+        let def = definition_store::get(U8_INDEX)
+            .expect("definition store available")
+            .expect("def");
+        assert_eq!(def.encoding, VectorEncoding::U8);
+        assert_eq!(def.stride_bytes, DIMS as u32);
+        assert_eq!(def.meta_stride_bytes, 8);
+        // Stored bytes are offset-unsigned: 1.0 with scale 4.0 -> round(127*1/4)+128 = 160.
+        let slot = subject_entry_for_test(U8_INDEX, subject(1))
+            .unwrap()
+            .slot
+            .expect("slot");
+        let (stored, aux) = PAGE_STORE
+            .with_borrow(|s| s.read_row_bytes(U8_INDEX, slot))
+            .map(|(_, b, a)| (b, a))
+            .expect("row");
+        assert_eq!(stored[0], 160);
+        assert_eq!(f32::from_le_bytes(aux[0..4].try_into().unwrap()), 4.0);
+        let err = vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id: U8_INDEX,
+                embedding_name_id: 0,
+                subject: subject(2),
+                mutation_id: 1,
+                encoding: VectorEncoding::U8,
+                dims: DIMS,
+                metric: VectorMetric::L2Squared,
+                bytes: u8_bytes(&[f32::NAN, 0.0, 0.0, 0.0]),
+                remove: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, VectorCanisterError::InvalidQueryVector);
+    }
+}
+
 /// Two-level (`levels = 2`) hierarchy coverage (Slice 5). The flat lifecycle above is untouched by
 /// every change these tests pin; each test drives the public facade only.
 mod two_level_tests {

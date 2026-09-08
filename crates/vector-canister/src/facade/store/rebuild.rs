@@ -1143,11 +1143,14 @@ fn kmeans_lite_iteration(
         for cand in candidates {
             // Each candidate is decoded from its frozen stored form exactly once per iteration;
             // the assignment scores canonical f32 bytes against the f32 centroids. An `F32` row
-            // already is canonical f32, so its bytes are borrowed without a copy; only a quantized (`I8`/`F16`/`Bf16`)
+            // already is canonical f32, so its bytes are borrowed without a copy; only a quantized (`I8`/`F16`/`Bf16`/`U8`)
             // row materializes a transient dequantized buffer.
             let v = match def.encoding {
                 VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
-                VectorEncoding::I8 | VectorEncoding::F16 | VectorEncoding::Bf16 => {
+                VectorEncoding::I8
+                | VectorEncoding::F16
+                | VectorEncoding::Bf16
+                | VectorEncoding::U8 => {
                     Cow::Owned(stored_to_f32_bytes(def, &cand.stored, &cand.aux))
                 }
             };
@@ -1349,9 +1352,10 @@ pub(super) fn member_mean_bytes(
     for cand in candidates {
         let v = match def.encoding {
             VectorEncoding::F32 => Cow::Borrowed(cand.stored.as_slice()),
-            VectorEncoding::I8 | VectorEncoding::F16 | VectorEncoding::Bf16 => {
-                Cow::Owned(stored_to_f32_bytes(def, &cand.stored, &cand.aux))
-            }
+            VectorEncoding::I8
+            | VectorEncoding::F16
+            | VectorEncoding::Bf16
+            | VectorEncoding::U8 => Cow::Owned(stored_to_f32_bytes(def, &cand.stored, &cand.aux)),
         };
         for (acc, x) in sums.iter_mut().zip(v.as_chunks::<4>().0) {
             *acc += f32::from_le_bytes(*x);
@@ -1586,9 +1590,10 @@ fn assign_pool_coarse_ids(
     rebuild_pool::for_each_row(def.pad_stride_bytes, |_row_index, stored, aux| {
         let v = match def.encoding {
             VectorEncoding::F32 => Cow::Borrowed(stored),
-            VectorEncoding::I8 | VectorEncoding::F16 | VectorEncoding::Bf16 => {
-                Cow::Owned(stored_to_f32_bytes(def, stored, &aux))
-            }
+            VectorEncoding::I8
+            | VectorEncoding::F16
+            | VectorEncoding::Bf16
+            | VectorEncoding::U8 => Cow::Owned(stored_to_f32_bytes(def, stored, &aux)),
         };
         ids.push(assign_partition(&coarse, &v));
     })

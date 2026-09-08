@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Encoding of a stored vertex embedding.
 ///
-/// Only fixed-dimension encodings are supported. New variants (`U8`, `Binary`) must
+/// Only fixed-dimension encodings are supported. New variants (`Binary`) must
 /// update every exhaustive `match` on this enum, which is the intended compile-time gate before
 /// an `UnsupportedEncoding`-style runtime branch is introduced.
 #[derive(
@@ -39,6 +39,10 @@ pub enum VectorEncoding {
     F16,
     /// Brain-float `bf16` components; byte width is `dims * 2`. No per-row aux.
     Bf16,
+    /// Unsigned `u8` components quantized with a per-row scale (`x_i ≈ (u8_i - 128) * scale / 127`);
+    /// symmetric offset twin of `I8` so signed embeddings round-trip without a zero-point.
+    /// The scale is stored in row-meta aux. Byte width is `dims`.
+    U8,
 }
 
 impl VectorEncoding {
@@ -46,7 +50,7 @@ impl VectorEncoding {
     pub const fn component_bytes(self) -> u32 {
         match self {
             Self::F32 => 4,
-            Self::I8 => 1,
+            Self::I8 | Self::U8 => 1,
             Self::F16 | Self::Bf16 => 2,
         }
     }
@@ -63,6 +67,7 @@ impl VectorEncoding {
             Self::I8 => 1,
             Self::F16 => 2,
             Self::Bf16 => 3,
+            Self::U8 => 4,
         }
     }
 
@@ -73,6 +78,7 @@ impl VectorEncoding {
             1 => Some(Self::I8),
             2 => Some(Self::F16),
             3 => Some(Self::Bf16),
+            4 => Some(Self::U8),
             _ => None,
         }
     }
@@ -213,6 +219,69 @@ pub fn decode_i8_to_f32(bytes: &[u8], scale: f32, dims: usize) -> Vec<f32> {
         .iter()
         .take(dims)
         .map(|b| (*b as i8 as f32) * scale / 127.0)
+        .collect()
+}
+
+/// A vector quantized to `U8` with a per-row scale. `bytes` holds `dims` offset-`u8` patterns
+/// (`u8_i = clamp(round(127 * x_i / s) + 128)`); `scale` is `max_i |x_i|` so decoding recovers
+/// `x_i ≈ (bytes[i] as i16 - 128) as f32 * scale / 127`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuantizedU8Vector {
+    /// `dims` offset-`u8` patterns (the stored payload).
+    pub bytes: Vec<u8>,
+    /// Per-row quantization scale (`max_i |x_i|`).
+    pub scale: f32,
+}
+
+/// Quantizes an f32 vector (contiguous little-endian bytes) to `U8` with a per-row scale:
+/// `s = max_i |x_i|`, `u8_i = clamp(round(127 * x_i / s) + 128, 0, 255)`. Returns `Err` on
+/// non-finite components or a byte-length mismatch. A zero vector (scale 0) maps to all-`128`
+/// (decoding recovers the zero vector).
+pub fn quantize_f32_to_u8(
+    bytes: &[u8],
+    dims: usize,
+) -> Result<QuantizedU8Vector, VectorCanisterError> {
+    if bytes.len() != dims * 4 {
+        return Err(VectorCanisterError::ByteWidthMismatch);
+    }
+    let chunks = bytes.as_chunks::<4>().0;
+    let mut scale = 0.0f32;
+    for chunk in chunks {
+        let x = f32::from_le_bytes(*chunk);
+        if !x.is_finite() {
+            return Err(VectorCanisterError::InvalidQueryVector);
+        }
+        scale = scale.max(x.abs());
+    }
+    let mut out = Vec::with_capacity(dims);
+    for chunk in chunks {
+        let x = f32::from_le_bytes(*chunk);
+        let q = if scale == 0.0 {
+            128i32
+        } else {
+            (127.0 * x / scale).round() as i32 + 128
+        };
+        out.push(q.clamp(0, 255) as u8);
+    }
+    Ok(QuantizedU8Vector { bytes: out, scale })
+}
+
+/// Encodes contiguous little-endian `f32` bytes to offset-`u8` bytes. Returns `Err` on non-finite
+/// components or a byte-length mismatch.
+pub fn encode_f32_bytes_to_u8_bytes(
+    bytes: &[u8],
+    dims: usize,
+) -> Result<Vec<u8>, VectorCanisterError> {
+    Ok(quantize_f32_to_u8(bytes, dims)?.bytes)
+}
+
+/// Decodes an `U8`-quantized vector back to `f32` components:
+/// `x_i ≈ (bytes[i] as i16 - 128) as f32 * scale / 127`. Reads the first `dims` bytes.
+pub fn decode_u8_to_f32(bytes: &[u8], scale: f32, dims: usize) -> Vec<f32> {
+    bytes
+        .iter()
+        .take(dims)
+        .map(|b| ((*b as i16 - 128) as f32) * scale / 127.0)
         .collect()
 }
 
@@ -1373,6 +1442,40 @@ mod tests {
         );
         assert_eq!(
             encode_f32_bytes_to_f16_bytes(&encode_f32_test(&[1.0f32]), 2),
+            Err(VectorCanisterError::ByteWidthMismatch)
+        );
+    }
+
+    #[test]
+    fn quantize_u8_symmetric_offset_roundtrip_and_zero_vector() {
+        let v = vec![1.0f32, -2.0, 4.0];
+        let q = quantize_f32_to_u8(&encode_f32_test(&v), 3).expect("quantize");
+        assert_eq!(q.scale, 4.0);
+        assert_eq!(q.bytes, vec![160u8, 64u8, 255u8]);
+        let back = decode_u8_to_f32(&q.bytes, q.scale, 3);
+        for (got, want) in back.iter().zip(&v) {
+            assert!((got - want).abs() < 0.05, "u8 {got} vs f32 {want}");
+        }
+        let zero = vec![0.0f32, 0.0, 0.0];
+        let qz = quantize_f32_to_u8(&encode_f32_test(&zero), 3).expect("zero quantize");
+        assert_eq!(qz.scale, 0.0);
+        assert_eq!(qz.bytes, vec![128, 128, 128]);
+        assert_eq!(decode_u8_to_f32(&qz.bytes, qz.scale, 3), vec![0.0; 3]);
+        assert_eq!(VectorEncoding::U8.as_u8(), 4);
+        assert_eq!(VectorEncoding::from_u8(4), Some(VectorEncoding::U8));
+        assert_eq!(VectorEncoding::U8.component_bytes(), 1);
+        assert_eq!(VectorEncoding::U8.stride_bytes(1536), 1536);
+    }
+
+    #[test]
+    fn quantize_u8_rejects_non_finite_and_wrong_width() {
+        let nan = vec![f32::NAN, 1.0, 2.0];
+        assert_eq!(
+            quantize_f32_to_u8(&encode_f32_test(&nan), 3),
+            Err(VectorCanisterError::InvalidQueryVector)
+        );
+        assert_eq!(
+            quantize_f32_to_u8(&encode_f32_test(&[1.0f32, 2.0]), 3),
             Err(VectorCanisterError::ByteWidthMismatch)
         );
     }

@@ -1638,6 +1638,17 @@ impl VectorSlabStore {
                     x * x
                 })
                 .sum(),
+            VectorEncoding::U8 => {
+                let scale = f32::from_le_bytes(aux[0..4].try_into().expect("4-byte scale"));
+                let sum_sq: i64 = bytes[..dims as usize]
+                    .iter()
+                    .map(|b| {
+                        let c = *b as i16 - 128;
+                        (c * c) as i64
+                    })
+                    .sum();
+                scale * scale * sum_sq as f32 / (127.0 * 127.0)
+            }
         }
     }
 
