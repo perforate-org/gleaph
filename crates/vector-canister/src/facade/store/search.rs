@@ -183,6 +183,53 @@ fn dot_f16_f32_early_exit(
     Some(sum)
 }
 
+/// Squared L2 with early exit over `bf16` stored bytes, fused (no f32 materialization): the exact
+/// F16 counterpart with the `bf16` widening conversion. Host results are bit-identical to the
+/// former upcast path; otherwise the [`l2_squared_f32_early_exit`] contract.
+fn l2_bf16_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) -> Option<f32> {
+    let mut sum = 0.0;
+    for (chunk, q) in bytes.as_chunks::<2>().0.iter().zip(query.iter().copied()) {
+        let v = half::bf16::from_bits(u16::from_le_bytes(*chunk)).to_f32();
+        let d = v - q;
+        sum += d * d;
+        if sum > threshold {
+            return None;
+        }
+    }
+    if !sum.is_finite() {
+        return None;
+    }
+    Some(sum)
+}
+
+/// Dot product with the exact Cauchy-Schwarz early exit over `bf16` stored bytes, fused like above.
+/// Mirrors [`dot_f32_early_exit`]'s unit-row contract, identically to the F16 kernel.
+fn dot_bf16_f32_early_exit(
+    bytes: &[u8],
+    query: &[f32],
+    suffix_norm: &[f32],
+    dot_threshold: f32,
+) -> Option<f32> {
+    let mut sum = 0.0;
+    for (j, (chunk, q)) in bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(query.iter().copied())
+        .enumerate()
+    {
+        let v = half::bf16::from_bits(u16::from_le_bytes(*chunk)).to_f32();
+        sum += v * q;
+        if sum + suffix_norm[j + 1] < dot_threshold {
+            return None;
+        }
+    }
+    if !sum.is_finite() {
+        return None;
+    }
+    Some(sum)
+}
+
 fn score_row(
     metric: VectorMetric,
     encoding: VectorEncoding,
@@ -199,10 +246,7 @@ fn score_row(
             VectorEncoding::F32 => l2_squared_f32_early_exit(bytes, query, threshold),
             VectorEncoding::I8 => l2_squared_i8_f32_early_exit(bytes, scale, query, threshold),
             VectorEncoding::F16 => l2_f16_f32_early_exit(bytes, query, threshold),
-            VectorEncoding::Bf16 => {
-                let f32bytes = encode_f32(&decode_bf16_to_f32(bytes, query.len()));
-                l2_squared_f32_early_exit(&f32bytes, query, threshold)
-            }
+            VectorEncoding::Bf16 => l2_bf16_f32_early_exit(bytes, query, threshold),
             VectorEncoding::U8 => l2_squared_u8_f32_early_exit(bytes, scale, query, threshold),
             VectorEncoding::Binary => {
                 // `Signs` Hamming: ±1 rows give L2² = 4·H exactly (no early exit; popcount is cheap).
@@ -244,8 +288,7 @@ fn score_row(
                 }
                 VectorEncoding::Bf16 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
-                    let f32bytes = encode_f32(&decode_bf16_to_f32(bytes, query.len()));
-                    dot_f32_early_exit(&f32bytes, query, suffix_norm, dot_threshold)?
+                    dot_bf16_f32_early_exit(bytes, query, suffix_norm, dot_threshold)?
                 }
                 VectorEncoding::U8 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
@@ -1696,6 +1739,45 @@ mod tests {
         assert_eq!(l2_squared_f32_early_exit(&bad32, &q, f32::INFINITY), None);
         assert_eq!(
             dot_f16_f32_early_exit(&bad16, &q, &sn, f32::NEG_INFINITY),
+            None
+        );
+        assert_eq!(dot_f32_early_exit(&bad32, &q, &sn, f32::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn bf16_fused_kernels_match_upcast_path() {
+        // Same contract as the F16 test with the `bf16` conversion.
+        use gleaph_graph_kernel::vector_index::encode_f32_bytes_to_bf16_bytes;
+        let q = vec![1.0f32, -2.0, 3.0, -4.0, 0.5];
+        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5];
+        let bf16bytes = encode_f32_bytes_to_bf16_bytes(&encode_f32(&v), v.len()).expect("encode");
+        let f32bytes = encode_f32(&decode_bf16_to_f32(&bf16bytes, v.len()));
+        assert_eq!(
+            l2_bf16_f32_early_exit(&bf16bytes, &q, f32::INFINITY),
+            l2_squared_f32_early_exit(&f32bytes, &q, f32::INFINITY)
+        );
+        assert_eq!(
+            l2_bf16_f32_early_exit(&bf16bytes, &q, 0.0),
+            l2_squared_f32_early_exit(&f32bytes, &q, 0.0)
+        );
+        let sn = compute_suffix_norms(&q);
+        assert_eq!(
+            dot_bf16_f32_early_exit(&bf16bytes, &q, &sn, f32::NEG_INFINITY),
+            dot_f32_early_exit(&f32bytes, &q, &sn, f32::NEG_INFINITY)
+        );
+        assert_eq!(
+            dot_bf16_f32_early_exit(&bf16bytes, &q, &sn, f32::INFINITY),
+            dot_f32_early_exit(&f32bytes, &q, &sn, f32::INFINITY)
+        );
+        let base = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let mut bad16 =
+            encode_f32_bytes_to_bf16_bytes(&encode_f32(&base), base.len()).expect("encode");
+        bad16[0..2].copy_from_slice(&half::bf16::from_f32(f32::NAN).to_bits().to_le_bytes());
+        let bad32 = encode_f32(&decode_bf16_to_f32(&bad16, base.len()));
+        assert_eq!(l2_bf16_f32_early_exit(&bad16, &q, f32::INFINITY), None);
+        assert_eq!(l2_squared_f32_early_exit(&bad32, &q, f32::INFINITY), None);
+        assert_eq!(
+            dot_bf16_f32_early_exit(&bad16, &q, &sn, f32::NEG_INFINITY),
             None
         );
         assert_eq!(dot_f32_early_exit(&bad32, &q, &sn, f32::NEG_INFINITY), None);
