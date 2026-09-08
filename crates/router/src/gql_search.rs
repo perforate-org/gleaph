@@ -8,11 +8,11 @@
 //! distinct properties, one same-binding numeric range `SEARCH ... WHERE` predicate, exactly two
 //! same-binding numeric range predicates on the same property forming one lower (`>`/`>=`) and one
 //! upper (`<`/`<=`) bound, one equality arm plus one one-sided range arm on distinct properties,
-//! one equality arm plus two same-property range arms on a distinct property, two to eight
-//! `OR`-connected same-binding same-property equality predicates, two to eight
+//! one equality arm plus two same-property range arms on a distinct property, two to sixteen
+//! `OR`-connected same-binding same-property equality predicates, two to sixteen
 //! `OR`-connected same-binding pure equality predicates where property names may repeat or differ,
-//! two to eight `OR`-connected same-binding same-property or cross-property one-sided numeric range
-//! predicates, and two to eight `OR`-connected same-binding heterogeneous equality/range predicates
+//! two to sixteen `OR`-connected same-binding same-property or cross-property one-sided numeric range
+//! predicates, and two to sixteen `OR`-connected same-binding heterogeneous equality/range predicates
 //! where each leaf is independently an equality or a one-sided numeric range comparison
 //! (Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19). All unsupported shapes are rejected
 //! with explicit `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail
@@ -641,11 +641,11 @@ enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
     Range(Vec<SearchFilterRange>),
     Mixed(Vec<SearchFilterArm>, Vec<SearchFilterRange>),
-    /// ADR 0034 Slices 15, 16, 17, 18 and 19: a same-binding disjunction of two to eight
+    /// ADR 0034 Slices 15, 16, 17, 18 and 19: a same-binding disjunction of two to sixteen
     /// comparison arms. Each leaf is independently either an equality comparison or a one-sided
     /// numeric range comparison; property names may repeat or differ across arms and across
     /// comparison kinds. The planner accepts any number of OR-connected comparison arms; the
-    /// router enforces the 2..=8 execution bound, proves an active index per arm, normalizes
+    /// router enforces the 2..=16 execution bound, proves an active index per arm, normalizes
     /// equality sources and range intervals per property id, and executes the union through the
     /// shared bounded candidate collector.
     Disjunction(Vec<SearchFilterDisjunctionArm>),
@@ -659,7 +659,7 @@ const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
 /// heterogeneous disjunctions, independent from the Property Index intersection limit. Source
 /// normalization may reduce the number of distinct sources actually walked, but the syntactic arm
 /// count is bounded here before normalization.
-const MAX_SEARCH_FILTER_DISJUNCTION_ARMS: usize = 8;
+const MAX_SEARCH_FILTER_DISJUNCTION_ARMS: usize = 16;
 
 #[derive(Debug)]
 struct SearchShape {
@@ -4580,7 +4580,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_filter_rejects_nine_arm_disjunction() {
+    fn extract_search_filter_accepts_nine_arm_disjunction() {
         let arms: Vec<Expr> = (0..9)
             .map(|i| {
                 if i % 2 == 0 {
@@ -4591,11 +4591,83 @@ mod tests {
             })
             .collect();
         let filter = filter_or_n(arms);
-        let err =
-            extract_search_filter("d", &filter).expect_err("nine-arm disjunction must be rejected");
+        let f = extract_search_filter("d", &filter)
+            .expect("nine-arm disjunction must be accepted below the 16-arm bound");
+        assert!(
+            matches!(f, SearchFilter::Disjunction(ref extracted) if extracted.len() == 9),
+            "expected Disjunction with nine arms"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_sixteen_arm_heterogeneous_disjunction() {
+        let arms: Vec<Expr> = (0..16)
+            .map(|i| {
+                if i % 2 == 0 {
+                    filter_eq_expr("category", Value::Int64(i))
+                } else {
+                    filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(i))
+                }
+            })
+            .collect();
+        let filter = filter_or_n(arms);
+        let f = extract_search_filter("d", &filter)
+            .expect("sixteen-arm heterogeneous disjunction must be accepted at the bound");
+        let extracted = match f {
+            SearchFilter::Disjunction(arms) => arms,
+            _ => panic!("expected Disjunction"),
+        };
+        assert_eq!(extracted.len(), 16);
+        let equalities = extracted
+            .iter()
+            .filter(|a| matches!(a, SearchFilterDisjunctionArm::Equality(_)))
+            .count();
+        let ranges = extracted
+            .iter()
+            .filter(|a| matches!(a, SearchFilterDisjunctionArm::Range(_)))
+            .count();
+        assert_eq!(equalities, 8);
+        assert_eq!(ranges, 8);
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_sixteen_arm_range_disjunction() {
+        let arms: Vec<Expr> = (0..16)
+            .map(|i| filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(i)))
+            .collect();
+        let filter = filter_or_n(arms);
+        let f = extract_search_filter("d", &filter)
+            .expect("sixteen-arm range disjunction must be accepted at the bound");
+        let extracted = match f {
+            SearchFilter::Disjunction(arms) => arms,
+            _ => panic!("expected Disjunction"),
+        };
+        assert_eq!(extracted.len(), 16);
+        assert!(
+            extracted
+                .iter()
+                .all(|a| matches!(a, SearchFilterDisjunctionArm::Range(_))),
+            "all sixteen arms must be range arms"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_seventeen_arm_disjunction() {
+        let arms: Vec<Expr> = (0..17)
+            .map(|i| {
+                if i % 2 == 0 {
+                    filter_eq_expr("category", Value::Int64(i))
+                } else {
+                    filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(i))
+                }
+            })
+            .collect();
+        let filter = filter_or_n(arms);
+        let err = extract_search_filter("d", &filter)
+            .expect_err("seventeen-arm disjunction must be rejected");
         assert!(
             err.to_string().contains("disjunction supports at most")
-                || err.to_string().contains("at most 8"),
+                && err.to_string().contains("at most 16"),
             "unexpected error: {err}"
         );
     }
@@ -4625,7 +4697,7 @@ mod tests {
             .expect_err("range disjunction with >MAX arms must fail");
         assert!(
             err.to_string().contains("disjunction supports at most")
-                || err.to_string().contains("at most 8"),
+                && err.to_string().contains("at most 16"),
             "unexpected error: {err}"
         );
     }
@@ -4645,7 +4717,7 @@ mod tests {
             .expect_err("disjunction with >MAX arms must fail");
         assert!(
             err.to_string().contains("disjunction supports at most")
-                || err.to_string().contains("at most 8"),
+                && err.to_string().contains("at most 16"),
             "unexpected error: {err}"
         );
     }
