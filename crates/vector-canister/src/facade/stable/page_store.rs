@@ -1649,6 +1649,8 @@ impl VectorSlabStore {
                     .sum();
                 scale * scale * sum_sq as f32 / (127.0 * 127.0)
             }
+            // `Binary` rows are ±1 per component, so ‖v‖² = dims exactly.
+            VectorEncoding::Binary => dims as f32,
         }
     }
 

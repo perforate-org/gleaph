@@ -31,8 +31,8 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VECTOR_EPS_BPS_INFINITY,
     VectorCanisterError, VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest,
-    VectorSearchResult, VectorSubject, decode_bf16_to_f32, decode_f16_to_f32, decode_i8_to_f32,
-    decode_u8_to_f32,
+    VectorSearchResult, VectorSubject, decode_bf16_to_f32, decode_binary_to_f32, decode_f16_to_f32,
+    decode_i8_to_f32, decode_u8_to_f32, hamming_f32_vs_binary,
 };
 use ic_stable_vector_page_store::kernel::{
     dot_f32_early_exit, dot_i8_f32_early_exit, l2_squared_f32, l2_squared_f32_early_exit,
@@ -164,6 +164,11 @@ fn score_row(
                 let f32bytes = encode_f32(&decode_u8_to_f32(bytes, scale, query.len()));
                 l2_squared_f32_early_exit(&f32bytes, query, threshold)
             }
+            VectorEncoding::Binary => {
+                // `Signs` Hamming: ±1 rows give L2² = 4·H exactly (no early exit; popcount is cheap).
+                let h = hamming_f32_vs_binary(query, bytes, query.len()) as f32;
+                Some(4.0 * h)
+            }
         },
         VectorMetric::Cosine => {
             // Stored rows are unit-normalized (cosine indexes store unit vectors), so cosine distance
@@ -208,17 +213,27 @@ fn score_row(
                     let f32bytes = encode_f32(&decode_u8_to_f32(bytes, scale, query.len()));
                     dot_f32_early_exit(&f32bytes, query, suffix_norm, dot_threshold)?
                 }
+                VectorEncoding::Binary => {
+                    // `Signs` Hamming: ±1 rows have norm √d. The outer `1 − dot/‖q‖` expects a
+                    // unit-row-domain dot, so return the √d-normalized dot `(d − 2·H)/√d`.
+                    let dims = query.len();
+                    let h = hamming_f32_vs_binary(query, bytes, dims) as f32;
+                    (dims as f32 - 2.0 * h) / (dims as f32).sqrt()
+                }
             };
             Some(1.0 - dot / q_norm)
         }
     }
 }
 
-/// Reads the per-row quantization scale from `info` for an `I8`/`U8` row (`0.0` for F32/F16/Bf16,
+/// Reads the per-row quantization scale from `info` for an `I8`/`U8` row (`0.0` for F32/F16/Bf16/Binary,
 /// which carry no scale in aux). The page store keeps aux opaque; only the search layer interprets it.
 fn row_scale(encoding: VectorEncoding, info: &RowInfo) -> f32 {
     match encoding {
-        VectorEncoding::F32 | VectorEncoding::F16 | VectorEncoding::Bf16 => 0.0,
+        VectorEncoding::F32
+        | VectorEncoding::F16
+        | VectorEncoding::Bf16
+        | VectorEncoding::Binary => 0.0,
         VectorEncoding::I8 | VectorEncoding::U8 => {
             f32::from_le_bytes(info.aux[0..4].try_into().expect("4-byte scale"))
         }
@@ -227,8 +242,8 @@ fn row_scale(encoding: VectorEncoding, info: &RowInfo) -> f32 {
 
 /// Dequantizes stored row bytes to the canonical f32 encoding used for partition assignment and
 /// centroid comparison. F32 rows pass through; I8/U8 rows are dequantized with their aux scale;
-/// F16/Bf16 rows are upcast. Used by the rebuild build path so its partition assignment is in the
-/// same f32 space as upsert.
+/// F16/Bf16 rows are upcast; Binary rows decode sign bits to ±1.0. Used by the rebuild build path
+/// so its partition assignment is in the same f32 space as upsert.
 pub(super) fn stored_to_f32_bytes(def: &VectorIndexDef, bytes: &[u8], aux: &[u8; 8]) -> Vec<u8> {
     match def.encoding {
         VectorEncoding::F32 => bytes.to_vec(),
@@ -242,6 +257,7 @@ pub(super) fn stored_to_f32_bytes(def: &VectorIndexDef, bytes: &[u8], aux: &[u8;
             let scale = f32::from_le_bytes(aux[0..4].try_into().expect("4-byte scale"));
             encode_f32(&decode_u8_to_f32(bytes, scale, def.dims as usize))
         }
+        VectorEncoding::Binary => encode_f32(&decode_binary_to_f32(bytes, def.dims as usize)),
     }
 }
 

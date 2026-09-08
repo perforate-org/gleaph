@@ -5549,6 +5549,198 @@ mod u8_tests {
     }
 }
 
+/// Binary tests: `Signs` sign-bit storage with F32 wire query; `VectorEncoding::Binary`.
+mod binary_tests {
+    use super::*;
+    use crate::facade::stable::{PAGE_STORE, definition_store};
+    use gleaph_graph_kernel::vector_index::VectorSearchResult;
+
+    const BINARY_INDEX: u32 = 13;
+
+    fn binary_bytes(values: &[f32]) -> Vec<u8> {
+        assert_eq!(values.len(), DIMS as usize, "component count mismatch");
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn binary_upsert(
+        index_id: u32,
+        vertex_id: u32,
+        stamp: u64,
+        values: &[f32],
+        metric: VectorMetric,
+    ) {
+        vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id,
+                embedding_name_id: 0,
+                subject: subject(vertex_id),
+                mutation_id: stamp,
+                encoding: VectorEncoding::Binary,
+                dims: DIMS,
+                metric,
+                bytes: binary_bytes(values),
+                remove: false,
+            },
+        )
+        .expect("binary upsert");
+    }
+
+    fn binary_search(
+        index_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+        top_k: u32,
+    ) -> VectorSearchResult {
+        vector_search(&VectorSearchRequest {
+            index_id,
+            query: binary_bytes(values),
+            encoding: VectorEncoding::Binary,
+            dims: DIMS,
+            metric,
+            top_k,
+            candidate_subjects: None,
+        })
+        .expect("binary search")
+    }
+
+    fn order_of(res: &VectorSearchResult) -> Vec<u32> {
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn binary_l2_scores_hamming_order() {
+        fresh_store();
+        // Sign bits (LSB-first): v1=1111, v2=0111, v3=0011, v4=0000.
+        binary_upsert(
+            BINARY_INDEX,
+            1,
+            1,
+            &[1.0, 1.0, 1.0, 1.0],
+            VectorMetric::L2Squared,
+        );
+        binary_upsert(
+            BINARY_INDEX,
+            2,
+            1,
+            &[1.0, 1.0, 1.0, -1.0],
+            VectorMetric::L2Squared,
+        );
+        binary_upsert(
+            BINARY_INDEX,
+            3,
+            1,
+            &[1.0, 1.0, -1.0, -1.0],
+            VectorMetric::L2Squared,
+        );
+        binary_upsert(
+            BINARY_INDEX,
+            4,
+            1,
+            &[-1.0, -1.0, -1.0, -1.0],
+            VectorMetric::L2Squared,
+        );
+        let res = binary_search(
+            BINARY_INDEX,
+            &[1.0, 1.0, 1.0, 1.0],
+            VectorMetric::L2Squared,
+            4,
+        );
+        assert_eq!(order_of(&res), vec![1, 2, 3, 4]);
+        // L2² = 4·H: H = 0,1,2,4 -> 0,4,8,16.
+        let dists: Vec<f32> = res.hits.iter().map(|h| h.distance).collect();
+        assert_eq!(dists, vec![0.0, 4.0, 8.0, 16.0]);
+    }
+
+    #[test]
+    fn binary_cosine_scores_hamming_order() {
+        fresh_store();
+        binary_upsert(
+            BINARY_INDEX,
+            1,
+            1,
+            &[1.0, 1.0, 1.0, 1.0],
+            VectorMetric::Cosine,
+        );
+        binary_upsert(
+            BINARY_INDEX,
+            2,
+            1,
+            &[1.0, 1.0, 1.0, -1.0],
+            VectorMetric::Cosine,
+        );
+        binary_upsert(
+            BINARY_INDEX,
+            3,
+            1,
+            &[1.0, 1.0, -1.0, -1.0],
+            VectorMetric::Cosine,
+        );
+        binary_upsert(
+            BINARY_INDEX,
+            4,
+            1,
+            &[-1.0, -1.0, -1.0, -1.0],
+            VectorMetric::Cosine,
+        );
+        let res = binary_search(BINARY_INDEX, &[1.0, 1.0, 1.0, 1.0], VectorMetric::Cosine, 4);
+        assert_eq!(order_of(&res), vec![1, 2, 3, 4]);
+        // Cosine distance = 2·H/d (d=4): 0, 0.5, 1.0, 2.0.
+        let dists: Vec<f32> = res.hits.iter().map(|h| h.distance).collect();
+        assert_eq!(dists, vec![0.0, 0.5, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn binary_def_uses_no_aux_and_rejects_non_finite() {
+        fresh_store();
+        binary_upsert(
+            BINARY_INDEX,
+            1,
+            1,
+            &[1.0, -2.0, 3.0, -4.0],
+            VectorMetric::L2Squared,
+        );
+        let def = definition_store::get(BINARY_INDEX)
+            .expect("definition store available")
+            .expect("def");
+        assert_eq!(def.encoding, VectorEncoding::Binary);
+        assert_eq!(def.stride_bytes, 1);
+        assert_eq!(def.meta_stride_bytes, 4);
+        // Stored bits: [+, -, +, -] -> 0b0101 (row bytes are pad-stride wide; only byte 0 carries bits).
+        let slot = subject_entry_for_test(BINARY_INDEX, subject(1))
+            .unwrap()
+            .slot
+            .expect("slot");
+        let (stored, _aux) = PAGE_STORE
+            .with_borrow(|s| s.read_row_bytes(BINARY_INDEX, slot))
+            .map(|(_, b, a)| (b, a))
+            .expect("row");
+        assert_eq!(stored[0], 0b0101u8);
+        assert!(stored[1..].iter().all(|b| *b == 0));
+        let err = vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id: BINARY_INDEX,
+                embedding_name_id: 0,
+                subject: subject(2),
+                mutation_id: 1,
+                encoding: VectorEncoding::Binary,
+                dims: DIMS,
+                metric: VectorMetric::L2Squared,
+                bytes: binary_bytes(&[f32::NAN, 0.0, 0.0, 0.0]),
+                remove: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, VectorCanisterError::InvalidQueryVector);
+    }
+}
+
 /// Two-level (`levels = 2`) hierarchy coverage (Slice 5). The flat lifecycle above is untouched by
 /// every change these tests pin; each test drives the public facade only.
 mod two_level_tests {

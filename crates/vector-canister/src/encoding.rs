@@ -16,6 +16,8 @@ pub enum ScoringKernel {
     F32Dot,
     /// Stored bytes are `f16`/`bf16`/`i8`/`u8`; upcast to `f32` once per page read.
     UpcastF32Dot,
+    /// Stored bytes are `Binary` sign bits; score Hamming order directly (no upcast).
+    BinaryHamming,
 }
 
 /// Fail-closed encoding record error.
@@ -23,15 +25,14 @@ pub enum ScoringKernel {
 pub enum EncodingError {
     /// `dims` is zero.
     ZeroDims,
-    /// The minimal stride does not match `component_bytes × dims`.
+    /// The minimal stride does not match the encoding's stored width.
     StrideMismatch {
         /// Derived minimal stride.
         expected: u32,
         /// Recorded stride.
         actual: u32,
     },
-    /// The SIMD scratch stride is not a multiple of 16 or does not match
-    /// `align16(component_bytes × dims)`.
+    /// The SIMD scratch stride is not a multiple of 16 or does not match `align16(stride)`.
     PadStrideMismatch(u32),
     /// `aux_bytes` is not one of 0 | 4 | 8.
     InvalidAuxBytes(u32),
@@ -48,9 +49,9 @@ pub struct EncodingRecord {
     pub encoding: VectorEncoding,
     /// Number of components.
     pub dims: u16,
-    /// Stored stride, minimal per encoding (`component_bytes × dims`).
+    /// Stored stride, minimal per encoding (`component_bytes × dims`, `ceil(dims / 8)` for `Binary`).
     pub stride_bytes: u32,
-    /// Scoring scratch stride `align16(component_bytes × dims)` (16-byte aligned for SIMD; the
+    /// Scoring scratch stride `align16(stride)` (16-byte aligned for SIMD; the
     /// page store's `row_stride`).
     pub pad_stride_bytes: u32,
     /// Row-meta aux width: 0 | 4 | 8 (encoding/metric-dependent; see the design's `RowAux`).
@@ -68,12 +69,9 @@ impl EncodingRecord {
         if dims == 0 {
             return Err(EncodingError::ZeroDims);
         }
-        let stride_bytes = encoding
-            .component_bytes()
-            .checked_mul(u32::from(dims))
-            .ok_or(EncodingError::WidthOverflow)?;
+        let stride_bytes = encoding.stride_bytes(dims);
         // SIMD scratch stride: the stored stride aligned up to a 16-byte boundary. Valid
-        // `(component_bytes, dims)` widths cannot overflow here (`4 × u16::MAX << u32::MAX`).
+        // `(encoding, dims)` widths cannot overflow here (`4 × u16::MAX << u32::MAX`).
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
         let (aux_bytes, kernel) = match encoding {
             // F32: default formulations need no per-row aux (sub-square + early exit for L2;
@@ -82,6 +80,7 @@ impl EncodingRecord {
             VectorEncoding::F32 => (0, ScoringKernel::F32Dot),
             VectorEncoding::I8 | VectorEncoding::U8 => (4, ScoringKernel::UpcastF32Dot),
             VectorEncoding::F16 | VectorEncoding::Bf16 => (0, ScoringKernel::UpcastF32Dot),
+            VectorEncoding::Binary => (0, ScoringKernel::BinaryHamming),
         };
         let record = Self {
             encoding,
@@ -100,11 +99,7 @@ impl EncodingRecord {
         if self.dims == 0 {
             return Err(EncodingError::ZeroDims);
         }
-        let expected_stride = self
-            .encoding
-            .component_bytes()
-            .checked_mul(u32::from(self.dims))
-            .ok_or(EncodingError::WidthOverflow)?;
+        let expected_stride = self.encoding.stride_bytes(self.dims);
         if self.stride_bytes != expected_stride {
             return Err(EncodingError::StrideMismatch {
                 expected: expected_stride,
@@ -129,6 +124,8 @@ impl EncodingRecord {
             (VectorEncoding::Bf16, _) => return Err(EncodingError::KernelMismatch),
             (VectorEncoding::U8, ScoringKernel::UpcastF32Dot) => {}
             (VectorEncoding::U8, _) => return Err(EncodingError::KernelMismatch),
+            (VectorEncoding::Binary, ScoringKernel::BinaryHamming) => {}
+            (VectorEncoding::Binary, _) => return Err(EncodingError::KernelMismatch),
         }
         // The default aux widths do not depend on the metric; metric-dependent pruning aux is
         // opt-in and validated at configuration time, not here.
@@ -149,6 +146,26 @@ impl EncodingRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn d1536_binary_widths() {
+        // d = 1536: stride = ceil(1536/8) = 192; pad = align16(192) = 192; meta 4 (no aux).
+        let record = EncodingRecord::from_parts(VectorEncoding::Binary, 1536).expect("valid");
+        assert_eq!(record.stride_bytes, 192);
+        assert_eq!(record.pad_stride_bytes, 192);
+        assert_eq!(record.aux_bytes, 0);
+        assert_eq!(record.meta_stride(), 4);
+        assert_eq!(record.kernel, ScoringKernel::BinaryHamming);
+    }
+
+    #[test]
+    fn d10_binary_widths_pad_to_16_byte_boundary() {
+        // d = 10: stride = ceil(10/8) = 2; pad = align16(2) = 16.
+        let record = EncodingRecord::from_parts(VectorEncoding::Binary, 10).expect("valid");
+        assert_eq!(record.stride_bytes, 2);
+        assert_eq!(record.pad_stride_bytes, 16);
+        assert!(record.pad_stride_bytes.is_multiple_of(16));
+    }
 
     #[test]
     fn d1536_f32_widths() {

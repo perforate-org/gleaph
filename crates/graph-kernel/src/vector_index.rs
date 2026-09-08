@@ -23,9 +23,10 @@ use serde::{Deserialize, Serialize};
 
 /// Encoding of a stored vertex embedding.
 ///
-/// Only fixed-dimension encodings are supported. New variants (`Binary`) must
-/// update every exhaustive `match` on this enum, which is the intended compile-time gate before
-/// an `UnsupportedEncoding`-style runtime branch is introduced.
+/// Only fixed-dimension encodings are supported. All variants are implemented
+/// (`F32`/`I8`/`F16`/`Bf16`/`U8`/`Binary`); adding a variant must update every exhaustive
+/// `match` on this enum, which is the intended compile-time gate before an
+/// `UnsupportedEncoding`-style runtime branch is introduced.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
 )]
@@ -43,21 +44,31 @@ pub enum VectorEncoding {
     /// symmetric offset twin of `I8` so signed embeddings round-trip without a zero-point.
     /// The scale is stored in row-meta aux. Byte width is `dims`.
     U8,
+    /// 1-bit sign sketch (`Signs` convention): bit `i` (LSB-first) is set iff `x_i >= 0.0`.
+    /// Byte width is `ceil(dims / 8)`; trailing bits of the last byte are always zero.
+    /// No per-row aux. Both metrics score Hamming order (`L2² = 4·H`, cosine distance `= 2·H/d`).
+    Binary,
 }
 
 impl VectorEncoding {
-    /// Byte width of one component for this encoding.
+    /// Byte width of one component for this encoding (`Binary` is bit-packed and has no
+    /// meaningful per-component byte width; returns 1 so the value stays a valid byte count
+    /// — use [`Self::stride_bytes`] for the stored width).
     pub const fn component_bytes(self) -> u32 {
         match self {
             Self::F32 => 4,
-            Self::I8 | Self::U8 => 1,
+            Self::I8 | Self::U8 | Self::Binary => 1,
             Self::F16 | Self::Bf16 => 2,
         }
     }
 
-    /// Byte width (`stride`) of a full vector with `dims` components.
+    /// Byte width (`stride`) of a full vector with `dims` components (`ceil(dims / 8)` for
+    /// bit-packed `Binary`, `component_bytes × dims` otherwise).
     pub const fn stride_bytes(self, dims: u16) -> u32 {
-        self.component_bytes() * dims as u32
+        match self {
+            Self::Binary => (dims as u32).div_ceil(8),
+            _ => self.component_bytes() * dims as u32,
+        }
     }
 
     /// Stable-storage discriminant.
@@ -68,6 +79,7 @@ impl VectorEncoding {
             Self::F16 => 2,
             Self::Bf16 => 3,
             Self::U8 => 4,
+            Self::Binary => 5,
         }
     }
 
@@ -79,6 +91,7 @@ impl VectorEncoding {
             2 => Some(Self::F16),
             3 => Some(Self::Bf16),
             4 => Some(Self::U8),
+            5 => Some(Self::Binary),
             _ => None,
         }
     }
@@ -283,6 +296,61 @@ pub fn decode_u8_to_f32(bytes: &[u8], scale: f32, dims: usize) -> Vec<f32> {
         .take(dims)
         .map(|b| ((*b as i16 - 128) as f32) * scale / 127.0)
         .collect()
+}
+
+/// Binarizes an f32 vector (contiguous little-endian bytes) to `Binary` sign bits (`Signs`
+/// convention): bit `i` (LSB-first) is set iff `x_i >= 0.0`. Returns `ceil(dims / 8)` bytes with
+/// trailing bits zeroed. Returns `Err` on non-finite components or a byte-length mismatch.
+pub fn binarize_f32_bytes_to_binary_bytes(
+    bytes: &[u8],
+    dims: usize,
+) -> Result<Vec<u8>, VectorCanisterError> {
+    if bytes.len() != dims * 4 {
+        return Err(VectorCanisterError::ByteWidthMismatch);
+    }
+    let mut out = vec![0u8; dims.div_ceil(8)];
+    for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let x = f32::from_le_bytes(*chunk);
+        if !x.is_finite() {
+            return Err(VectorCanisterError::InvalidQueryVector);
+        }
+        if x >= 0.0 {
+            out[i / 8] |= 1 << (i % 8);
+        }
+    }
+    Ok(out)
+}
+
+/// Decodes `Binary` sign bits back to `f32` components (bit set → `+1.0`, clear → `-1.0`).
+/// Reads the first `dims` bits; trailing bits are ignored.
+pub fn decode_binary_to_f32(bytes: &[u8], dims: usize) -> Vec<f32> {
+    (0..dims)
+        .map(|i| {
+            if bytes.get(i / 8).unwrap_or(&0) >> (i % 8) & 1 == 1 {
+                1.0
+            } else {
+                -1.0
+            }
+        })
+        .collect()
+}
+
+/// Hamming distance between an f32 query slice and `Binary` stored bits: counts dims where
+/// `sign(query[i]) != stored bit i` (`query bit = query[i] >= 0.0`). Reads the first `dims` bits.
+/// Non-finite query components count as mismatches against either stored value is wrong — callers
+/// must reject non-finite queries before scoring (the search path does); this helper treats them
+/// by their sign bit so the result stays total without masking a scoring-side defect.
+pub fn hamming_f32_vs_binary(query: &[f32], stored: &[u8], dims: usize) -> u32 {
+    query
+        .iter()
+        .take(dims)
+        .enumerate()
+        .filter(|(i, x)| {
+            let qbit = **x >= 0.0;
+            let vbit = stored.get(i / 8).unwrap_or(&0) >> (i % 8) & 1 == 1;
+            qbit != vbit
+        })
+        .count() as u32
 }
 
 /// Physical index structure for a derived vector index.
@@ -1476,6 +1544,45 @@ mod tests {
         );
         assert_eq!(
             quantize_f32_to_u8(&encode_f32_test(&[1.0f32, 2.0]), 3),
+            Err(VectorCanisterError::ByteWidthMismatch)
+        );
+    }
+
+    #[test]
+    fn binary_sign_binarize_hamming_and_stride() {
+        // dims=4: [1.0, -2.0, 0.0, -0.5] -> bits 0 and 2 set (0.0 counts positive) = 0b0101.
+        let v = vec![1.0f32, -2.0, 0.0, -0.5];
+        let bits = binarize_f32_bytes_to_binary_bytes(&encode_f32_test(&v), 4).expect("binarize");
+        assert_eq!(bits, vec![0b0101u8]);
+        // Trailing bits zeroed: dims=10 uses 2 bytes, upper 6 bits of byte 1 are zero.
+        let v10 = vec![1.0f32; 10];
+        let bits10 =
+            binarize_f32_bytes_to_binary_bytes(&encode_f32_test(&v10), 10).expect("binarize10");
+        assert_eq!(bits10.len(), 2);
+        assert_eq!(bits10[0], 0xFF);
+        assert_eq!(bits10[1] & 0b1111_1100, 0);
+        // Decode maps set -> +1, clear -> -1.
+        assert_eq!(
+            decode_binary_to_f32(&[0b0101u8], 4),
+            vec![1.0, -1.0, 1.0, -1.0]
+        );
+        // Hamming: query [1,-1,1,-1] vs stored 0b0101 is distance 0; vs 0b0000 is 2.
+        let q = vec![1.0f32, -1.0, 1.0, -1.0];
+        assert_eq!(hamming_f32_vs_binary(&q, &[0b0101u8], 4), 0);
+        assert_eq!(hamming_f32_vs_binary(&q, &[0b0000u8], 4), 2);
+        // Stride/discriminant: Binary is 5, stride is ceil(dims/8).
+        assert_eq!(VectorEncoding::Binary.as_u8(), 5);
+        assert_eq!(VectorEncoding::from_u8(5), Some(VectorEncoding::Binary));
+        assert_eq!(VectorEncoding::Binary.stride_bytes(1536), 192);
+        assert_eq!(VectorEncoding::Binary.stride_bytes(10), 2);
+        // Rejects.
+        let nan = vec![f32::NAN, 1.0];
+        assert_eq!(
+            binarize_f32_bytes_to_binary_bytes(&encode_f32_test(&nan), 2),
+            Err(VectorCanisterError::InvalidQueryVector)
+        );
+        assert_eq!(
+            binarize_f32_bytes_to_binary_bytes(&encode_f32_test(&[1.0f32]), 2),
             Err(VectorCanisterError::ByteWidthMismatch)
         );
     }

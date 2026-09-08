@@ -55,7 +55,8 @@
 
 use crate::records::VectorIndexDef;
 use gleaph_graph_kernel::vector_index::{
-    VectorEncoding, decode_bf16_to_f32, decode_f16_to_f32, decode_i8_to_f32, decode_u8_to_f32,
+    VectorEncoding, decode_bf16_to_f32, decode_binary_to_f32, decode_f16_to_f32, decode_i8_to_f32,
+    decode_u8_to_f32,
 };
 use ic_stable_vector_page_store::kernel::popcount_xnor_words;
 
@@ -139,7 +140,7 @@ fn pack_sign_bits(rotated: &[f32], out: &mut [u8]) {
 /// estimator and the exact kernels score in). `F32` passes the raw LE components through; `I8`/`U8`
 /// dequantize with the row's aux scale (`I8: x_i = byte_i as i8 · scale/127`;
 /// `U8: x_i = (byte_i - 128) · scale/127`) — the identical dequantization the search-side
-/// upcast path uses; `F16`/`Bf16` upcast.
+/// upcast path uses; `F16`/`Bf16` upcast; `Binary` decodes sign bits to ±1.0.
 fn stored_to_f32(encoding: VectorEncoding, stored: &[u8], aux: &[u8; 8], dims: u16) -> Vec<f32> {
     match encoding {
         VectorEncoding::F32 => {
@@ -160,6 +161,7 @@ fn stored_to_f32(encoding: VectorEncoding, stored: &[u8], aux: &[u8; 8], dims: u
             let scale = f32::from_le_bytes(aux[0..4].try_into().expect("4-byte scale"));
             decode_u8_to_f32(stored, scale, dims as usize)
         }
+        VectorEncoding::Binary => decode_binary_to_f32(stored, dims as usize),
     }
 }
 

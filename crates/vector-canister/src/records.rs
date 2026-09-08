@@ -352,7 +352,7 @@ pub struct VectorIndexDef {
     /// also the leaf count.
     pub nlist: u32,
     pub active_index_version: u64,
-    /// Logical stored width per component: `component_bytes × dims` (the wire `bytes` length).
+    /// Logical stored width: `component_bytes × dims` (`ceil(dims / 8)` for bit-packed `Binary`).
     pub stride_bytes: u32,
     /// Page row width: 16-byte-aligned `pad_stride_bytes` (the stored `vector_bytes` stride).
     pub pad_stride_bytes: u32,
@@ -2000,11 +2000,7 @@ pub(crate) mod test_support {
     /// page capacity so fixtures that exercise page layout stay consistent with the real
     /// derivation.
     pub(crate) fn tier_def(dims: u16, encoding: VectorEncoding) -> VectorIndexDef {
-        let stride_bytes = match encoding {
-            VectorEncoding::F32 => u32::from(dims) * 4,
-            VectorEncoding::I8 | VectorEncoding::U8 => u32::from(dims),
-            VectorEncoding::F16 | VectorEncoding::Bf16 => u32::from(dims) * 2,
-        };
+        let stride_bytes = encoding.stride_bytes(dims);
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
         let code_stride_bytes = VectorIndexDef::canonical_code_stride_bytes(dims);
         let slots_per_page = ic_stable_vector_page_store::layout::PageLayout::max_capacity_for(

@@ -445,12 +445,12 @@ vector canister):
 
 ```rust
 pub struct EncodingRecord {
-    pub encoding: VectorEncoding,          // implemented: F32 | I8 | F16 | Bf16 | U8 (Binary is future)
+    pub encoding: VectorEncoding,          // implemented: F32 | I8 | F16 | Bf16 | U8 | Binary
     pub dims: u16,
     pub stride_bytes: u32,                 // stored stride, minimal per encoding
-    pub pad_stride_bytes: u32,             // scoring scratch stride = align16(component_bytes × dims)
+    pub pad_stride_bytes: u32,             // scoring scratch stride = align16(stored stride)
     pub aux_bytes: u32,                    // 0 | 4 | 8
-    pub kernel: ScoringKernel,             // F32Dot | UpcastF32Dot
+    pub kernel: ScoringKernel,             // F32Dot | UpcastF32Dot | BinaryHamming
 }
 ```
 
@@ -461,10 +461,9 @@ pub struct EncodingRecord {
   page-level f32 materialization**. `F16`/`Bf16` are implemented (minimal slices 2026-09-08: half-precision
   storage, F32 wire query, upcast scoring via the exact f32 kernels, no aux). `U8` is implemented
   (minimal slice 2026-09-08: symmetric offset-unsigned twin of `I8`, per-row scale in aux 4,
-  upcast scoring via the exact f32 kernels). `Binary` is the remaining future encoding, landing
-  with its own scoring-kernel slice (the unconstructible
-  `BinaryConvention`/popcount kernel stack was removed in a dead-state sweep; a `Binary` encoding
-  returns with it).
+  upcast scoring via the exact f32 kernels). `Binary` is implemented (minimal slice 2026-09-08:
+  `Signs` sign-bit convention, stride `ceil(dims/8)`, no aux, Hamming scoring — `L2² = 4·H`,
+  cosine via the √d-normalized dot `(d − 2·H)/√d` through the shared `1 − dot/‖q‖` conversion).
 - **Wire query contract (Model Y)**: `encoding` in the op/request/definition means the **stored/index
   encoding**; wire embedding and query bytes are **always canonical F32 (`dims*4`)**. The canister
   quantizes internally; a separate `query_encoding` field is not needed unless an I8-on-wire query
@@ -473,10 +472,10 @@ pub struct EncodingRecord {
   I8 recall@10/recall@100 vs F32 exact-scan ground truth is **~0.99** for both L2-Gaussian
   (0.9906 / 0.9934) and cosine-unit-sphere (0.9906 / 0.9947). Operators should still measure recall
   on their own embedding distribution before adopting I8 (adoption is an operator decision).
-- **Binary cosine (future, not implemented)**: `Bits01` → `n11·rq·rv` (`n11 = Σ popcnt(q∧v)`,
-  per-row `rv = 1/√popcnt(v)`); `Signs` → `1 − 2H/d` (`H = Σ popcnt(q⊕v)`, cosine ≡ Hamming order,
-  no sqrt). The convention is a per-model property; the convention/kernel plumbing ships with the
-  future `Binary` encoding slice.
+- **Binary cosine (implemented, 2026-09-08, `Signs` convention)**: `H = Σ(qbit⊕vbit)` over signs
+  (`bit = x ≥ 0.0`); cosine distance `= 1 − (d − 2·H)/(‖q‖·√d)` ≡ Hamming order. The `Bits01`
+  variant (`n11·rq·rv` with per-row `rv`) remains unimplemented — the convention is a per-model
+  property and only `Signs` ships in this slice.
 - **Stored precision = search precision (revised by ADR 0079, Slice 6, 2026-08-24)**: the
   original tier (`F32` | `I8`) defines the advertised result quality and stays the only source
   of exact scores, idempotency comparison, and rebuild carry-forward. A generation may
@@ -532,6 +531,7 @@ generation whose rows carry, behind the original bytes on the same page, a per-r
 | F16 (implemented, 2026-09-08)  | 0         | none (upcast at score time)                     |
 | Bf16 (implemented, 2026-09-08) | 0         | none (upcast at score time)                     |
 | U8 (implemented, 2026-09-08)   | 4         | per-row quantization scale (max-abs, offset 128) |
+| Binary (implemented, 2026-09-08) | 0       | none (sign bits; Hamming scoring)               |
 | opt-in row-level pruning     | +4        | L2 bound `dist(v, c_p)` (sub-square path)       |
 | opt-in row-level pruning     | 8         | cosine `(s_v, t_v)` or norm + bound             |
 

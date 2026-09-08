@@ -29,7 +29,8 @@ use crate::records::{
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
-    VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError, encode_f32_bytes_to_bf16_bytes,
+    VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError,
+    binarize_f32_bytes_to_binary_bytes, encode_f32_bytes_to_bf16_bytes,
     encode_f32_bytes_to_f16_bytes, quantize_f32_to_i8, quantize_f32_to_u8,
 };
 use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
@@ -128,6 +129,10 @@ fn prepare_for_metric(
             let mut aux = [0u8; 8];
             aux[0..4].copy_from_slice(&q.scale.to_le_bytes());
             Ok((q.bytes, aux))
+        }
+        VectorEncoding::Binary => {
+            let bytes = binarize_f32_bytes_to_binary_bytes(&normalized, def.dims as usize)?;
+            Ok((bytes, [0u8; 8]))
         }
     }
 }
