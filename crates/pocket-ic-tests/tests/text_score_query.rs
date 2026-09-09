@@ -783,9 +783,23 @@ fn get_dict_status(env: &Env, canister: candid::Principal) -> text_canister::Dic
 /// The (raw, frames) pair MUST be computed BEFORE the PocketIC server boots (the zstd-19
 /// framing takes ~85 s, longer than the server idle TTL) and passed in here.
 fn seed_dictionary_catalog(env: &Env, raw: &[u8], frames: &[Vec<u8>]) {
+    seed_dictionary_catalog_for(env, "ipadic", "2.7.0", raw, frames)
+}
+
+/// Plan 0341 todo 3: key-parameterized catalog seeding — the korean leg pins the
+/// mecab-ko-dic 2.1.1-20180720 entry (the provision-side
+/// `dict_catalog_key_for_analyzer(3)` mapping) while every older leg keeps the
+/// ipadic entry through the wrapper above (zero behavior change there).
+fn seed_dictionary_catalog_for(
+    env: &Env,
+    kind: &str,
+    version: &str,
+    raw: &[u8],
+    frames: &[Vec<u8>],
+) {
     let key = gleaph_provision::types::DictCatalogKey {
-        kind: "ipadic".to_owned(),
-        version: "2.7.0".to_owned(),
+        kind: kind.to_owned(),
+        version: version.to_owned(),
     };
     for (chunk_index, frame) in frames.iter().enumerate() {
         let bytes = env
@@ -851,8 +865,43 @@ fn seed_dictionary_catalog(env: &Env, raw: &[u8], frames: &[Vec<u8>]) {
     );
 }
 
+/// Returns the KO-DIC container bytes (the region-16 payload for analyzer 3) from the
+/// gitignored `crates/pocket-ic-tests/resources/mecab-ko-dic/` build outputs (plan 0341
+/// todo 1 artifact pipeline: sys.dic + unk.dic + matrix.bin + char.bin). FAIL-CLOSED:
+/// absent images abort with build instructions — the korean leg never silently skips.
+/// Size pins (plan 0341 gates): FULL `container::build` output 101,411,116 B; zstd-19
+/// framed total ~20.3 MB (20.0%), within the 32 MiB provision cap.
+fn fetch_ko_container() -> Vec<u8> {
+    const IMAGES: [&str; 4] = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("mecab-ko-dic");
+    for name in IMAGES {
+        assert!(
+            dir.join(name).exists(),
+            "missing ko-dic image {name} under crates/pocket-ic-tests/resources/mecab-ko-dic/ — \
+             build it per plan 0341 todo 1 (mecab-dict-index -f utf-8 -t utf-8 over mecab-ko-dic-2.1.1-20180720)"
+        );
+    }
+    let images: Vec<(String, Vec<u8>)> = IMAGES
+        .iter()
+        .map(|n| {
+            (
+                n.to_string(),
+                std::fs::read(dir.join(n)).unwrap_or_else(|e| panic!("read {n}: {e}")),
+            )
+        })
+        .collect();
+    morph_dict::container::build(images)
+}
+
 const MECAB_INDEX_NAME: &str = "text_score_mecab_idx";
 const MECAB_MIGRATION_ID: &str = "000104_text_score_mecab";
+const KOREAN_INDEX_NAME: &str = "text_score_korean_idx";
+const KOREAN_PROBE_INDEX_NAME: &str = "text_score_korean_unseeded_probe_idx";
+const KOREAN_MIGRATION_ID: &str = "000105_text_score_korean";
+const KOREAN_CATALOG_KIND: &str = "korean";
+const KOREAN_CATALOG_VERSION: &str = "2.1.1-20180720";
 
 #[test]
 fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
@@ -1152,6 +1201,327 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     // The unrelated doc stays out of the candidate set under a discriminating term.
     let zebra = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("zebra", 10));
     assert_eq!(zebra.row_count, 1, "zebra still matches its own doc");
+}
+
+/// Plan 0341 todo 3 — ko-dic relay E2E leg. Flow: hoisted ko container + level-19
+/// adaptive framing BEFORE bootstrap (idle-TTL rule) → provision-wired federation →
+/// corpus → analyzer-3 DDL against an UNSEEDED korean catalog fails closed with no
+/// definition row → seed the korean catalog entry via FRAMED ingress → redefined
+/// budget gate on the 101.4 MB container (bare id-3 canister: MAX per-frame upload
+/// cycles + finalize one-pass hash cycles) → `ANALYZER korean` DDL → relay
+/// auto-supplies ko-dic (ZERO manual dict steps) → Ready → backfill → GQL recall
+/// (학교 → both docs, 공부 → one doc, zebra discriminates) → re-provision
+/// idempotence → relay/resident/stable-$ figures.
+#[test]
+fn korean_analyzer_recalls_through_gql_via_relay() {
+    // Hoist FIRST: the ko container is 101.4 MB raw (~20.3 MB framed); zstd-19 framing
+    // idles minutes, far past the PocketIC server idle TTL, so the bytes must exist
+    // before the server boots.
+    let raw = fetch_ko_container();
+    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
+    let framed_total: usize = frames.iter().map(|frame| frame.len()).sum();
+    println!(
+        "plan-0341 ko-dic container: raw {} B ({:.1} MB) -> zstd-19 {} frames, {} B total ({:.1}%)",
+        raw.len(),
+        raw.len() as f64 / (1024.0 * 1024.0),
+        frames.len(),
+        framed_total,
+        100.0 * framed_total as f64 / raw.len() as f64,
+    );
+    assert!(
+        framed_total < 32 * 1024 * 1024,
+        "framed ko-dic {framed_total} B must fit the 32 MiB provision cap"
+    );
+    let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
+    let env = Env {
+        provision,
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    // Corpus: two 학교 docs and one unrelated (ids ascend with insertion).
+    seed_text_vertex(&env, "학교에서 공부했다");
+    seed_text_vertex(&env, "친구와 학교에 갔다");
+    seed_text_vertex(&env, "unrelated zebra");
+
+    // LEG F — fail-closed: analyzer-3 DDL with the korean catalog UNSEEDED must fail
+    // (the relay has no Finalized entry to stream) and leave NO definition row. The
+    // probe name is distinct so the failed job can never collide with the real index.
+    let probe_statement = format!(
+        "CREATE TEXT INDEX {KOREAN_PROBE_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean"
+    );
+    let probe_err = gleaph_pocket_ic_tests::gql_mutate_as_admin_expect_err(
+        &env.fed,
+        &probe_statement,
+        "korean-ddl-unseeded",
+    );
+    assert!(
+        !probe_err.to_string().is_empty(),
+        "unseeded korean provisioning must surface an error"
+    );
+    let probe_lookup = env
+        .fed
+        .pic
+        .query_call(
+            env.fed.router,
+            env.fed.admin,
+            "get_text_index",
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &KOREAN_PROBE_INDEX_NAME.to_string()
+            )
+            .expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("get_text_index call: {e:?}"));
+    let probe_info: Result<TextIndexInfo, RouterError> =
+        Decode!(&probe_lookup, Result<TextIndexInfo, RouterError>).expect("decode get_text_index");
+    assert!(
+        probe_info.is_err(),
+        "failed unseeded provisioning must leave no definition row"
+    );
+
+    // LEG 0 — seed the KOREAN catalog entry via FRAMED ingress (frame i = row i +
+    // frame_digest, verified per upload; raw_digest + raw_len pinned at finalize).
+    seed_dictionary_catalog_for(
+        &env,
+        KOREAN_CATALOG_KIND,
+        KOREAN_CATALOG_VERSION,
+        &raw,
+        &frames,
+    );
+
+    // LEG 0b — REDEFINED budget gate (post-0342 amendment: NOT the old single-finalize
+    // gate): MAX per-frame upload cycles + finalize one-pass hash cycles on the
+    // 101.4 MB container, measured on a bare id-3 canister through the exact framed
+    // path the relay invokes. Surface bounds: any frame >~10B or hash >~5B fails.
+    let bare = env.fed.pic.create_canister();
+    env.fed.pic.add_cycles(bare, 50_000_000_000_000);
+    env.fed.pic.install_canister(
+        bare,
+        text_wasm(),
+        Encode!(&text_canister::TextCanisterInitArgs {
+            controller: Some(env.fed.router),
+            analyzer_id: Some(text_canister::ANALYZER_KOREAN),
+            dict_relay_caller: None,
+        })
+        .expect("encode bare id-3 init"),
+        None,
+    );
+    use gleaph_graph_kernel::provisioning::dictionary::{
+        CompressedDictFinalize, CompressedDictUpload,
+    };
+    let raw_len = raw.len() as u64;
+    let stable_before = env.fed.pic.get_stable_memory(bare).len();
+    let mut max_frame_cycles = 0u128;
+    let mut first_frame_cycles = 0u128;
+    for (i, frame) in frames.iter().enumerate() {
+        let cycles_before = env.fed.pic.cycle_balance(bare);
+        let bytes = env
+            .fed
+            .pic
+            .update_call(
+                bare,
+                env.fed.router,
+                "admin_upload_dict_chunk",
+                Encode!(
+                    &frame.clone(),
+                    &Some(CompressedDictUpload {
+                        frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
+                        raw_len,
+                    })
+                )
+                .expect("encode framed chunk"),
+            )
+            .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
+        let total: u64 = Decode!(&bytes, Result<u64, String>)
+            .expect("decode upload reply")
+            .expect("framed chunk ok");
+        assert!(total > 0, "framed decode appends raw bytes");
+        let call_cycles = cycles_before.saturating_sub(env.fed.pic.cycle_balance(bare));
+        if i == 0 {
+            first_frame_cycles = call_cycles;
+        }
+        max_frame_cycles = max_frame_cycles.max(call_cycles);
+    }
+    let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
+    let cycles_before_finalize = env.fed.pic.cycle_balance(bare);
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            bare,
+            env.fed.router,
+            "admin_finalize_dict_upload",
+            Encode!(
+                &raw_digest,
+                &Some(CompressedDictFinalize {
+                    raw_digest,
+                    raw_len,
+                })
+            )
+            .expect("encode framed finalize"),
+        )
+        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
+    let finalized: text_canister::DictStatus =
+        Decode!(&bytes, Result<text_canister::DictStatus, String>)
+            .expect("decode finalize reply")
+            .expect("framed finalize ok");
+    let finalize_cycles = cycles_before_finalize.saturating_sub(env.fed.pic.cycle_balance(bare));
+    println!(
+        "plan-0341 budget gate (101.4 MB ko-dic): first-frame upload call cycles {first_frame_cycles}; max per-frame upload call cycles {max_frame_cycles}; finalize (one-pass region-16 hash + validation + pin) cycles {finalize_cycles}"
+    );
+    assert_eq!(finalized.state, text_canister::DictState::Finalized);
+    assert!(
+        max_frame_cycles < 10_000_000_000,
+        "a ko-dic per-frame decode call took {max_frame_cycles} cycles — exceeds the ~10B surface bound"
+    );
+    assert!(
+        finalize_cycles < 5_000_000_000,
+        "the ko-dic one-pass finalize hash took {finalize_cycles} cycles — exceeds the ~5B surface bound"
+    );
+    // Stable-write volume (0342 discipline): ONLY the raw container lands in region 16.
+    let stable_bytes = env.fed.pic.get_stable_memory(bare).len();
+    println!(
+        "plan-0341 stable-write volume: bare id-3 stable memory after framed ko-dic upload = {stable_bytes} B ({:.1} MB; raw {:.1} MB)",
+        stable_bytes as f64 / (1024.0 * 1024.0),
+        raw.len() as f64 / (1024.0 * 1024.0),
+    );
+    assert!(
+        stable_bytes.saturating_sub(stable_before) < raw.len() + 8 * 1024 * 1024,
+        "stable-memory delta exceeds raw + one bucket — compressed staging may have been resurrected"
+    );
+
+    // LEG 1 — GQL-surface admission with `ANALYZER korean`: the provisioned canister
+    // pins analyzer 3, and the post-install relay streams the KOREAN catalog entry's
+    // frames and finalizes — ZERO manual dictionary steps on this canister (no
+    // admin_upload_dict_chunk call below touches it before the assertions).
+    let statement = format!(
+        "CREATE TEXT INDEX {KOREAN_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean"
+    );
+    let provision_cycles_before = env.fed.pic.cycle_balance(env.provision);
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "korean-ddl");
+    let relay_cycles =
+        provision_cycles_before.saturating_sub(env.fed.pic.cycle_balance(env.provision));
+    println!("plan-0341 relay cost (provision-side cycle delta across korean DDL): {relay_cycles}");
+    let info = {
+        let bytes = env
+            .fed
+            .pic
+            .query_call(
+                env.fed.router,
+                env.fed.admin,
+                "get_text_index",
+                Encode!(&GRAPH_NAME.to_string(), &KOREAN_INDEX_NAME.to_string()).expect("encode"),
+            )
+            .unwrap_or_else(|e| panic!("get_text_index on router: {e:?}"));
+        Decode!(&bytes, Result<TextIndexInfo, RouterError>)
+            .expect("decode get_text_index")
+            .expect("definition exists")
+    };
+    assert_eq!(info.analyzer_id, 3, "the ANALYZER korean clause pins id 3");
+    let canister = info.canister.expect("provisioned canister attached");
+    env.fed.pic.add_cycles(canister, 50_000_000_000_000);
+    let status = get_dict_status(&env, canister);
+    assert_eq!(
+        status.state,
+        text_canister::DictState::Finalized,
+        "the relay must finalize the ko-dic dictionary during provisioning"
+    );
+    assert_eq!(
+        status.digest,
+        Some(raw_digest),
+        "relay pins the ko-dic raw digest"
+    );
+    assert_eq!(
+        status.len,
+        raw.len() as u64,
+        "raw length matches the ko-dic container"
+    );
+
+    // LEG 2 — drive the migration lane to Ready, flush, then RECALL through GQL:
+    // query 학교 recalls both 학교 docs (조사 stripped at index AND query time),
+    // query 공부 recalls only the 공부했다 doc, zebra stays discriminating, and the
+    // replay is deterministic.
+    let args = migration_args(
+        KOREAN_MIGRATION_ID,
+        &format!(
+            "CREATE TEXT INDEX {KOREAN_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean"
+        ),
+    );
+    drive_to_ready_for(&env, &args, KOREAN_INDEX_NAME);
+    assert_eq!(
+        get_text_index_named(&env, KOREAN_INDEX_NAME).status,
+        TextIndexStatusView::Ready
+    );
+    flush_until_done_for(&env, KOREAN_INDEX_NAME);
+    let hakgyo = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("학교", 10));
+    assert_eq!(hakgyo.row_count, 2, "both 학교 docs recall under 학교");
+    let hakgyo_rows = scored_rows(&hakgyo);
+    assert!(
+        hakgyo_rows[0].1 >= hakgyo_rows[1].1,
+        "scores arrive descending"
+    );
+    assert!(hakgyo_rows.iter().all(|(_, score)| *score > 0.0));
+    let replay = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("학교", 10));
+    assert_eq!(
+        scored_rows(&replay),
+        hakgyo_rows,
+        "recall must be deterministic"
+    );
+    let gongbu = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("공부", 10));
+    assert_eq!(
+        gongbu.row_count, 1,
+        "only the 공부했다 doc recalls under 공부"
+    );
+    let zebra = gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("zebra", 10));
+    assert_eq!(zebra.row_count, 1, "zebra still matches its own doc");
+
+    // LEG 3 — re-provision idempotence: the SAME registration replays without
+    // re-appending the dictionary (relay short-circuit: Finalized + matching digest).
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "korean-ddl-replay");
+    let replayed = get_text_index_named(&env, KOREAN_INDEX_NAME);
+    assert_eq!(replayed.canister, Some(canister), "same canister id");
+    assert_eq!(replayed.status, TextIndexStatusView::Ready);
+    let status_after = get_dict_status(&env, canister);
+    assert_eq!(status_after.state, text_canister::DictState::Finalized);
+    assert_eq!(status_after.digest, Some(raw_digest));
+    let catalog_bytes = env
+        .fed
+        .pic
+        .query_call(
+            env.provision,
+            env.fed.admin,
+            "admin_get_dict_catalog_status",
+            Encode!(&gleaph_provision::types::DictCatalogKey {
+                kind: KOREAN_CATALOG_KIND.to_owned(),
+                version: KOREAN_CATALOG_VERSION.to_owned(),
+            })
+            .expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("admin_get_dict_catalog_status: {e:?}"));
+    let catalog: Option<gleaph_provision::types::DictCatalogStatus> = Decode!(
+        &catalog_bytes,
+        Option<gleaph_provision::types::DictCatalogStatus>
+    )
+    .expect("decode catalog status");
+    assert_eq!(
+        catalog.expect("seeded korean entry").state,
+        gleaph_provision::types::DictCatalogState::Finalized
+    );
+
+    // LEG 4 — figures: relay cycles (LEG 1), on-canister stable footprint, and the
+    // stable-memory $/month at the design-doc rate ($0.058/month per 52,931,159 B).
+    let memory_size = env
+        .fed
+        .pic
+        .canister_status(canister, Some(env.fed.admin))
+        .expect("relayed canister status")
+        .memory_size;
+    let monthly_usd = raw.len() as f64 * 0.058 / 52_931_159.0;
+    println!(
+        "plan-0341 figures: relay provision-side cycles {relay_cycles}; relayed analyzer-3 canister memory_size {memory_size} B; ko-dic stable $/month ~${monthly_usd:.3} (native resident set ~64.3 MB, feature region lazy)"
+    );
 }
 
 #[test]

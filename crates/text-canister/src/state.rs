@@ -153,9 +153,10 @@ pub(crate) const MAX_UNITS_PER_DOC: usize = 4_096;
 pub(crate) const MAX_KEYS_PER_DELETE: usize = 1_000;
 /// Upper bound on bytes per `admin_upload_dict_chunk` call (ADR 0087 chunk analogy).
 pub const MAX_DICT_CHUNK_BYTES: usize = 1024 * 1024;
-/// Upper bound on the total dictionary blob length (fail-closed runaway guard; the pinned
-/// artifact is 8,045,952 bytes, so 16 MiB leaves comfortable headroom).
-pub(crate) const MAX_DICT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// Upper bound on the total dictionary blob length (fail-closed runaway guard; plan 0341
+/// widens 64 MiB -> 128 MiB: the ko-dic container is 101,411,116 B raw while the 32 MiB
+/// provision cap constrains the COMPRESSED frames, so the raw bomb gate must admit it).
+pub(crate) const MAX_DICT_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 /// Pending ops applied per `admin_flush` call; repeat until [`FlushReport::done`].
 pub(crate) const FLUSH_OPS_BUDGET: u64 = 512;
 /// Terms reclaimed per `admin_merge_step` call (budget parameter clamps to this).

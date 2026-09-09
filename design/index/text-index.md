@@ -182,7 +182,17 @@ landings + plan 0332 default promotion):
   bounds check followed the index formula's stride dimension (was invisible for square
   ipadic 1316x1316). DDL `ANALYZER korean` admission + provision analyzer→catalog
   mapping are provision/Router-owned (pH); the text side only widens its open gate and
-  dispatch.
+  dispatch. Raw bomb gate widened 64 → 128 MiB (text-owned `MAX_DICT_TOTAL_BYTES`):
+  the 32 MiB provision cap constrains COMPRESSED frames, so the raw gate must admit
+  the 101.4 MB container. Todo-3 relay leg (E2E, `text_score_query`): korean catalog
+  entry seeded via framed ingress (13 frames, 20,296,693 B total), `ANALYZER korean`
+  DDL → relay auto-supplies ko-dic → Ready with zero manual dict steps → GQL recall
+  (학교 → 2 docs, 공부 → 1, zebra discriminates); unseeded analyzer-3 DDL fails closed
+  with no definition row; re-provision replays idempotently. Budget (redefined,
+  post-0342): max per-frame upload 4.87B (< 10B), finalize one-pass hash 0.56B
+  (< 5B); relay provision-side delta ~1.53T cycles; relayed canister memory_size
+  ~381 MB (stable ~235 MB incl. buckets); stable $/month ~$0.111 at the $0.058-per-
+  52.9 MB rate.
 
 ### Shared normalization + Japanese folding (plan 0339, ported to morph-dict in plan 0340)
 
