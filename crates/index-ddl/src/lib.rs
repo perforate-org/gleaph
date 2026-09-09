@@ -79,6 +79,11 @@ pub struct IndexTarget {
 
 /// Gleaph-specific vertex vector-index DDL.
 ///
+/// `DROP VECTOR INDEX <name> [IF EXISTS]` removes a targetless `Registered` definition (v1
+/// fail-closed bounds live at the Router admission: a provisioned/attached target, an
+/// activation-gated active definition, pending direct-ingestion intents, or an in-flight
+/// build rejects the drop).
+///
 /// This is deliberately separate from [`IndexDdlStatement`]: property-index migration consumers
 /// must not accidentally acquire vector catalog semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +92,10 @@ pub enum VectorIndexDdlStatement {
         index_name: String,
         if_not_exists: bool,
         target: VectorIndexTarget,
+    },
+    Drop {
+        index_name: String,
+        if_exists: bool,
     },
 }
 
@@ -193,7 +202,7 @@ pub fn try_parse(query: &str) -> Option<Result<Vec<IndexDdlStatement>, IndexDdlP
     Some(parse(&parse_input))
 }
 
-/// Returns `None` when the query is not `CREATE VECTOR INDEX` DDL.
+/// Returns `None` when the query is not `CREATE VECTOR INDEX` / `DROP VECTOR INDEX` DDL.
 ///
 /// Vector DDL has its own AST because its target names a vertex embedding field and its complete
 /// physical shape, rather than an ordinary property-index target.
@@ -205,7 +214,7 @@ pub fn try_parse_vector(
     // do not make an otherwise valid vector declaration look like ordinary GQL.
     let stripped = strip_vector_comments(query);
     let trimmed = stripped.input.trim();
-    if !starts_with_vector_create(trimmed) {
+    if !starts_with_vector_ddl(trimmed) {
         return None;
     }
     if stripped.unterminated_block_comment {
@@ -362,9 +371,9 @@ struct StrippedVectorComments {
     unterminated_block_comment: bool,
 }
 
-fn starts_with_vector_create(input: &str) -> bool {
+fn starts_with_vector_ddl(input: &str) -> bool {
     let mut cur = Cursor::new(input);
-    cur.consume_ascii_ci("CREATE")
+    (cur.consume_ascii_ci("CREATE") || cur.consume_ascii_ci("DROP"))
         && cur.consume_ascii_ci("VECTOR")
         && cur.consume_ascii_ci("INDEX")
 }
@@ -462,6 +471,21 @@ fn parse(query: &str) -> Result<Vec<IndexDdlStatement>, IndexDdlParseError> {
 fn parse_vector(query: &str) -> Result<VectorIndexDdlStatement, VectorIndexDdlParseError> {
     let mut cur = Cursor::new(query);
     cur.skip_ws();
+    if cur.consume_ascii_ci("DROP") {
+        cur.expect_ascii_ci("VECTOR")?;
+        cur.expect_ascii_ci("INDEX")?;
+        let index_name = cur.parse_ident()?;
+        let if_exists = cur.try_consume_ascii_ci("IF EXISTS");
+        cur.try_consume(';');
+        cur.skip_ws();
+        if !cur.is_eof() {
+            return Err(VectorIndexDdlParseError::TrailingInput);
+        }
+        return Ok(VectorIndexDdlStatement::Drop {
+            index_name,
+            if_exists,
+        });
+    }
     cur.expect_ascii_ci("CREATE")?;
     cur.expect_ascii_ci("VECTOR")?;
     cur.expect_ascii_ci("INDEX")?;
@@ -1312,7 +1336,10 @@ mod tests {
             index_name,
             if_not_exists,
             ..
-        } = statement;
+        } = statement
+        else {
+            panic!("expected CREATE vector statement: {statement:?}");
+        };
         assert_eq!(index_name, "document_embedding");
         assert!(if_not_exists);
     }
@@ -1322,6 +1349,43 @@ mod tests {
         assert!(try_parse_vector("MATCH (n) RETURN n").is_none());
         assert!(try_parse_vector("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
         assert!(try_parse_vector("CREATE VECTOR INDEXED x").is_none());
+        assert!(try_parse_vector("DROP VECTOR INDEXED x").is_none());
+    }
+
+    #[test]
+    fn vector_index_parses_drop_with_and_without_if_exists() {
+        let parsed = try_parse_vector("DROP VECTOR INDEX docs IF EXISTS;").expect("vector DDL");
+        assert_eq!(
+            parsed.expect("parse"),
+            VectorIndexDdlStatement::Drop {
+                index_name: "docs".into(),
+                if_exists: true,
+            }
+        );
+        assert_eq!(
+            try_parse_vector("drop vector index docs")
+                .expect("vector DDL")
+                .expect("parse"),
+            VectorIndexDdlStatement::Drop {
+                index_name: "docs".into(),
+                if_exists: false,
+            }
+        );
+    }
+
+    #[test]
+    fn vector_index_drop_rejects_trailing_garbage() {
+        let trailing = try_parse_vector("DROP VECTOR INDEX docs EXTRA")
+            .expect("recognized")
+            .expect_err("trailing input");
+        assert_eq!(trailing, VectorIndexDdlParseError::TrailingInput);
+        let missing_name = try_parse_vector("DROP VECTOR INDEX")
+            .expect("recognized")
+            .expect_err("missing name");
+        assert!(matches!(
+            missing_name,
+            VectorIndexDdlParseError::Expected(_)
+        ));
     }
 
     #[test]

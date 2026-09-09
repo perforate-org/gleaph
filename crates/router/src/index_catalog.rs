@@ -65,6 +65,10 @@ pub(crate) async fn execute_vector_index_ddl_for_graph(
             if_not_exists: _,
             target,
         } => create_vector_index(graph_id, &index_name, &target).await,
+        VectorIndexDdlStatement::Drop {
+            index_name,
+            if_exists,
+        } => drop_vector_index(graph_id, &index_name, if_exists),
     }
 }
 
@@ -196,6 +200,67 @@ async fn create_vector_index(
             .attach_live_shards_to_vector_target(graph_id, canister)
             .await?;
     }
+    Ok(())
+}
+
+/// Execute Router-owned `DROP VECTOR INDEX [IF EXISTS]` (ADR 0065 v1): remove the vector
+/// catalog definition row for a targetless `Registered` definition. Fail-closed everywhere else:
+///
+/// - unknown logical name, or a name owned by another index kind (property/TEXT), is simply not
+///   a vector definition: suppressed by `IF EXISTS`, `NotFound` otherwise, never silently
+///   unowned from its actual catalog (mirrors the TEXT drop lane);
+/// - a provisioned/attached target rejects with `Conflict`: detaching shards and cleaning up the
+///   remote vector canister is an explicit ADR 0065 non-goal, so v1 never silently detaches;
+/// - an activation-gated active definition (effective `DispatchEnabled`) rejects with `Conflict`;
+/// - pending MemoryId 53 direct-ingestion intents for the definition's target reject with
+///   `Conflict`: outbox rows key on the target principal, never on the logical name, so dropping
+///   mid-flight would orphan durable work;
+/// - no vector backfill/build tracker exists in v1 (backfill is deferred per ADR 0065): the
+///   target + activation gates above subsume every in-flight shape a targetless definition can
+///   hold, so there is no build record to orphan.
+///
+/// All gates run before the first destructive statement; a rejection leaves the definition, the
+/// allocator cursor, and both name catalogs intact. The interned logical name is shared
+/// vocabulary and survives (TEXT-lane precedent); removing the definition row frees the name for
+/// reuse via [`ensure_vector_index_name_available`].
+pub(crate) fn drop_vector_index(
+    graph_id: GraphId,
+    index_name: &str,
+    if_exists: bool,
+) -> Result<(), RouterError> {
+    let Some(name_id) = lookup_index_name_id(graph_id, index_name) else {
+        if if_exists {
+            return Ok(());
+        }
+        return Err(RouterError::NotFound(index_name.to_owned()));
+    };
+    let Some(def) = vector_index_catalog::get_vector_index_by_name_id(graph_id, name_id) else {
+        if if_exists {
+            return Ok(());
+        }
+        return Err(RouterError::NotFound(index_name.to_owned()));
+    };
+    if let Some(target) = def.target
+        && crate::facade::stable::vector_ingest_outbox::has_pending_for_target(target.canister)
+    {
+        return Err(RouterError::Conflict(format!(
+            "vector index {index_name} has pending direct-ingestion intents; drop is rejected until they drain"
+        )));
+    }
+    if def.target.is_some() {
+        return Err(RouterError::Conflict(format!(
+            "vector index {index_name} has a provisioned target; remote detach and cleanup are deferred (ADR 0065 non-goals)"
+        )));
+    }
+    let dispatch_ready = RouterStore::new().graph_vector_dispatch_ready(graph_id);
+    if vector_index_catalog::effective_activation_state(def.activation_state, dispatch_ready)
+        == vector_index_catalog::VectorIndexActivationState::DispatchEnabled
+    {
+        return Err(RouterError::Conflict(format!(
+            "vector index {index_name} is activation-gated active; drop is rejected while dispatching"
+        )));
+    }
+    vector_index_catalog::remove_vector_index(graph_id, def.index_id);
     Ok(())
 }
 
@@ -1633,6 +1698,210 @@ mod tests {
         ))
         .expect("drop after build release");
         assert!(text_index_info_by_name(graph_id, "doc_gate_text_idx").is_err());
+    }
+
+    #[test]
+    fn drop_vector_index_removes_definition_and_honors_if_exists() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.drop";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        let drop_statement = |index_name: &str, if_exists: bool| VectorIndexDdlStatement::Drop {
+            index_name: index_name.to_owned(),
+            if_exists,
+        };
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("doc_drop_vec_idx", "embedding", 768, false),
+        ))
+        .expect("create");
+        let cursor_before =
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
+        let name_id = lookup_index_name_id(graph_id, "doc_drop_vec_idx").expect("name interned");
+        let def = vector_index_catalog::get_vector_index_by_name_id(graph_id, name_id)
+            .expect("definition");
+
+        let err = futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            drop_statement("no_such_idx", false),
+        ))
+        .expect_err("absent drop without IF EXISTS must fail closed");
+        assert!(matches!(err, RouterError::NotFound(_)));
+
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            drop_statement("no_such_idx", true),
+        ))
+        .expect("IF EXISTS suppresses the absent-name error");
+
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            drop_statement("doc_drop_vec_idx", false),
+        ))
+        .expect("drop removes the definition");
+        assert!(vector_index_catalog::get_vector_index_by_name_id(graph_id, name_id).is_none());
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "drop must not touch the id allocator"
+        );
+        assert_eq!(
+            lookup_index_name_id(graph_id, "doc_drop_vec_idx"),
+            Some(name_id),
+            "the interned logical name is shared vocabulary and survives"
+        );
+        assert!(
+            vector_index_catalog::get_vector_index(graph_id, def.index_id).is_none(),
+            "dropped definition must leave the vector catalog"
+        );
+        ensure_vector_index_name_available(graph_id, "doc_drop_vec_idx")
+            .expect("dropped name is free for reuse");
+
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            drop_statement("doc_drop_vec_idx", true),
+        ))
+        .expect("re-drop under IF EXISTS is a no-op");
+    }
+
+    #[test]
+    fn drop_vector_index_treats_other_kind_names_as_absent() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.dropkind";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "bio",
+        );
+        futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_kind_text_idx",
+            "Document",
+            "bio",
+            false,
+            None,
+        ))
+        .expect("create text index");
+        let text_name_id =
+            lookup_index_name_id(graph_id, "doc_kind_text_idx").expect("name interned");
+
+        let err = futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            VectorIndexDdlStatement::Drop {
+                index_name: "doc_kind_text_idx".into(),
+                if_exists: false,
+            },
+        ))
+        .expect_err("a TEXT-owned name is not a vector definition");
+        assert!(matches!(err, RouterError::NotFound(_)));
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            VectorIndexDdlStatement::Drop {
+                index_name: "doc_kind_text_idx".into(),
+                if_exists: true,
+            },
+        ))
+        .expect("IF EXISTS suppresses the cross-kind absent error");
+        assert!(
+            crate::facade::stable::text_index_catalog::get_text_index_by_name_id(
+                graph_id,
+                text_name_id
+            )
+            .is_some(),
+            "rejected vector drop must never unown another kind's definition"
+        );
+    }
+
+    #[test]
+    fn drop_vector_index_fails_closed_on_target_activation_and_intents() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.dropgate";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("doc_gate_vec_idx", "embedding", 384, false),
+        ))
+        .expect("create");
+        let name_id = lookup_index_name_id(graph_id, "doc_gate_vec_idx").expect("name interned");
+        let def = vector_index_catalog::get_vector_index_by_name_id(graph_id, name_id)
+            .expect("definition");
+        let target = candid::Principal::from_slice(&[7; 29]);
+
+        // Pending MemoryId 53 intents for the definition's target reject first, even under
+        // IF EXISTS, and leave pre-state intact.
+        let intent = crate::facade::stable::vector_ingest_outbox::intent_for_test(
+            crate::facade::stable::vector_ingest_outbox::NewVectorIngestIntent {
+                graph_id,
+                graph_target: candid::Principal::management_canister(),
+                vector_target: target,
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId::from(1u32),
+                spec: gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec {
+                    embedding_name_id: def.embedding_name_id.raw(),
+                    index_id: def.index_id,
+                    kind: def.kind,
+                    metric: def.metric,
+                    encoding: def.encoding,
+                    dims: def.dims,
+                    labels: def.labels.clone(),
+                },
+                bytes: vec![0; usize::from(def.dims) * 4],
+            },
+            71,
+            crate::facade::stable::vector_ingest_outbox::VectorIngestIntentPhase::AwaitingVector,
+        );
+        crate::facade::stable::vector_ingest_outbox::insert_intents_for_test(&[intent])
+            .expect("seed pending intent");
+        vector_index_catalog::set_vector_index_target(
+            graph_id,
+            def.index_id,
+            vector_index_catalog::VectorIndexTarget { canister: target },
+        )
+        .expect("assign target");
+        let err = futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            VectorIndexDdlStatement::Drop {
+                index_name: "doc_gate_vec_idx".into(),
+                if_exists: true,
+            },
+        ))
+        .expect_err("pending intents must reject the drop");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            vector_index_catalog::get_vector_index(graph_id, def.index_id)
+                .map(|current| current.target),
+            Some(Some(vector_index_catalog::VectorIndexTarget {
+                canister: target
+            })),
+            "rejected drop must leave the targeted definition intact"
+        );
+
+        // Draining the outbox exposes the next gate: the provisioned target itself rejects
+        // (remote detach/cleanup deferred per ADR 0065 non-goals).
+        crate::facade::stable::vector_ingest_outbox::clear_for_test();
+        let err = futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            VectorIndexDdlStatement::Drop {
+                index_name: "doc_gate_vec_idx".into(),
+                if_exists: false,
+            },
+        ))
+        .expect_err("provisioned target must reject the drop");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            vector_index_catalog::get_vector_index(graph_id, def.index_id).is_some(),
+            "rejected drop must leave the definition intact"
+        );
     }
 
     #[test]

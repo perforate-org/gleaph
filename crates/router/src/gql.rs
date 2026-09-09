@@ -6532,6 +6532,51 @@ mod tests {
         )
         .expect("definition created");
         assert!(def.target.is_none());
+
+        // DROP routes through the same interception path: unknown names fail closed unless
+        // IF EXISTS suppresses, and a targetless definition is removed with no allocator
+        // or name-catalog side effects beyond the definition row.
+        let drop_missing = futures::executor::block_on(super::try_execute_vector_index_ddl(
+            "DROP VECTOR INDEX no_such_vec_idx",
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("drop detected")
+        .expect_err("missing drop without IF EXISTS must fail closed");
+        assert!(matches!(drop_missing, RouterError::NotFound(_)));
+
+        futures::executor::block_on(super::try_execute_vector_index_ddl(
+            "DROP VECTOR INDEX no_such_vec_idx IF EXISTS",
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("drop detected")
+        .expect("IF EXISTS suppresses the absent-name error");
+
+        futures::executor::block_on(super::try_execute_vector_index_ddl(
+            "DROP VECTOR INDEX document_embedding_idx",
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || index_admin,
+            |_| Ok(graph_id),
+        ))
+        .expect("drop detected")
+        .expect("drop removes the definition");
+        assert!(
+            crate::facade::stable::vector_index_catalog::get_vector_index_by_name_id(
+                graph_id,
+                index_name_id
+            )
+            .is_none(),
+            "dropped definition must leave the vector catalog"
+        );
     }
 
     #[test]

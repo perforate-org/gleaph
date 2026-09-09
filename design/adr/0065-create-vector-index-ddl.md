@@ -1,7 +1,7 @@
 # 0065. `CREATE VECTOR INDEX` as Router-owned semantic DDL
 
 Date: 2026-08-11
-Status: proposed contract (v1 parser, Router registration, logical-index-name resolution, and migration-path provisioning landed; focused PocketIC ingress E2E passed; activated ANN success and `DROP VECTOR INDEX` deferred)
+Status: proposed contract (v1 parser, Router registration, logical-index-name resolution, migration-path provisioning, and v1 `DROP VECTOR INDEX` for the targetless case landed; focused PocketIC ingress E2E passed; activated ANN success and targeted-definition remote cleanup deferred)
 Last revised: 2026-08-21
 Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
@@ -29,7 +29,7 @@ format, and diff checks pass, and the focused PocketIC ingress test
 `gql_create_vector_index_nested_options_is_idempotent_and_fail_closed` passed (1 passed, 0 failed,
 6 filtered). Migration-path provisioning (ADR 0071) now routes a `CREATE VECTOR INDEX` migration
 through the same `create_vector_index` provisioning/registration logic; activated ANN success and
-`DROP VECTOR INDEX` remain deferred. The statement is owned by
+`DROP VECTOR INDEX` of targeted definitions (remote detach/cleanup) remain deferred. The statement is owned by
 `crates/index-ddl` and intercepted by Router before generic GQL parsing; generic `gleaph-gql` and
 `gleaph-gql-planner` remain provider-neutral.
 
@@ -111,7 +111,7 @@ also cannot backfill bytes under the active vector ownership contract. It is def
 
 Adopt Alternative B as a proposed, narrow semantic DDL contract. The v1 code and focused PocketIC
 ingress validation have landed; remote provisioning, backfill, activated ANN success, and `DROP
-VECTOR INDEX` remain deferred.
+VECTOR INDEX` remote detach/cleanup for targeted definitions remain deferred.
 
 ### Syntax
 
@@ -193,7 +193,8 @@ compatibility reader; any production migration remains a later gate.
 
 ### Explicit non-goals
 
-This decision does not implement `DROP VECTOR INDEX`, rebuild, health, multi-label/fan-out indexes,
+This decision does not implement `DROP VECTOR INDEX` remote detach/cleanup for targeted
+definitions, rebuild, health, multi-label/fan-out indexes,
 a standalone embedding-schema catalog, vector-canister provisioning, or Graph backfill. The
 metadata-only stamp boundary is implemented by ADR 0064; a successful CREATE response still must
 not imply any of these deferred capabilities.
@@ -236,7 +237,7 @@ Accepted costs:
 
 - `design/gql/extension-syntax.md`: records the landed v1 shape and links this ADR; keep status
   Partially Implemented because the focused ingress E2E has passed but remote provisioning, backfill,
-  activated ANN success, and `DROP VECTOR INDEX` remain deferred.
+  activated ANN success, and targeted-definition `DROP VECTOR INDEX` remote cleanup remain deferred.
 - `design/adr/README.md`: add this proposed ADR.
 - `design/storage/stable-memory-inventory.md`: documents the V2 vector record and MemoryId 52 allocator.
 - `design/index/vector-index.md` and ADR 0064: synchronize implementation status and the stamp-path

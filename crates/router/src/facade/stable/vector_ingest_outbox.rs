@@ -619,6 +619,15 @@ pub(crate) fn has_pending_for_target_shard(vector_target: Principal, shard_id: S
     })
 }
 
+/// Return whether bounded direct-ingestion work remains for an exact Vector target across all
+/// shards. `DROP VECTOR INDEX` uses this gate so a definition whose target still owns durable
+/// MemoryId 53 intent rows can never be removed mid-flight (the rows key on the target principal,
+/// never on the logical index name, so they would otherwise survive their definition).
+pub(crate) fn has_pending_for_target(vector_target: Principal) -> bool {
+    ROUTER_VECTOR_INGEST_OUTBOX
+        .with_borrow(|table| table.keys().any(|key| key.vector_target == vector_target))
+}
+
 /// Return whether any direct-ingestion suffix remains. Graph unregister uses this conservative
 /// final purge gate because a suffix row is durable work that must not be orphaned by catalog purge.
 pub(crate) fn has_pending() -> bool {

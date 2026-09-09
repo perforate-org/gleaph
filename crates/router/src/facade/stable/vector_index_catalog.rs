@@ -542,6 +542,22 @@ pub(crate) fn get_vector_index_by_name_id(
         .find(|def| def.index_name_id == index_name_id)
 }
 
+/// Removes one vector definition row. The caller owns every precondition: the drop path
+/// rejects while the definition carries a provisioned/attached target, is activation-gated
+/// active, or has pending direct-ingestion intents, so no dispatch, frontier-lane, or remote
+/// state can be orphaned here. The interned logical name is shared catalog vocabulary and
+/// survives, exactly like the TEXT lane (`index_name_catalog` owns no release API); removing
+/// the definition row is what frees the name for reuse via
+/// `ensure_vector_index_name_available`. Returns the removed record; `None` means the key was
+/// already absent.
+pub(crate) fn remove_vector_index(
+    graph_id: GraphId,
+    index_id: u32,
+) -> Option<VectorIndexDefRecord> {
+    ROUTER_VECTOR_INDEXES
+        .with_borrow_mut(|map| map.remove(&VectorIndexKey::new(graph_id, index_id)))
+}
+
 /// Fail closed unless the dynamic per-graph vector dispatch gate is satisfied for `def`.
 ///
 /// The gate is `global activation flag ON && every live shard of the graph vector-attached`. This
