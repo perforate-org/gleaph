@@ -443,7 +443,9 @@ fn tier_on_rebuild_preserves_search_ordering_and_distances() {
             .collect()
     }
 
-    let off = published_hits(None);
+    // `Some(false)` keeps the tier-off generation explicit: a bare `None` now resolves to the
+    // Router tier-on default at snapshot time, which would make this comparison vacuous.
+    let off = published_hits(Some(false));
     let on = published_hits(Some(true));
     assert!(!off.is_empty(), "tier-off run returns hits after publish");
     assert_eq!(

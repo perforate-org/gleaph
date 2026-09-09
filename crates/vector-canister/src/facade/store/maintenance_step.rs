@@ -196,7 +196,9 @@ pub(crate) fn admin_vector_maintenance_step(
             // `nlist=1` indexes must pass an explicit `target_nlist`; otherwise default to the
             // current `nlist` (rejected by the rebuild start when degenerate). The Slice 9 tuning
             // selections (two-level fan-in, code tier, per-level ε₂ pruning) are forwarded from the
-            // Router's policy snapshot; `None` keeps the previous behavior (flat, tier off, eps = 0).
+            // Router's policy snapshot; `None` keeps flat / eps = 0, while a `None` code tier
+            // arrives pre-resolved to the Router default (tier on) — a direct `None` still
+            // means tier off (manual path contract).
             let nlist = req.target_nlist.unwrap_or(def.nlist);
             match admin_start_vector_rebuild_with_fine(
                 caller,

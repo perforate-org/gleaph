@@ -47,7 +47,8 @@ pub(crate) struct VectorMaintenancePolicyRecord {
     /// rebuild start; `None` keeps the flat lifecycle (Slice 9).
     pub target_fine_nlist: Option<u32>,
     /// Target-generation RaBitQ code tier forwarded to the policy-driven rebuild start; `None`
-    /// keeps the tier off (Slice 9).
+    /// resolves to the Router recommended default (tier on) at snapshot time, `Some(false)`
+    /// explicitly opts out.
     pub code_tier: Option<bool>,
     /// Target-generation coarse-stage ε₂ pruning in basis points (`0` = nearest-partition-only,
     /// [`VECTOR_EPS_BPS_INFINITY`] = full scan); `None` = `0` (Slice 9).

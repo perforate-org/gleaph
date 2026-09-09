@@ -99,6 +99,11 @@ Adopt a **two-tier precision contract**:
     45.80M, k10 d1536) because the page-directory arithmetic reduced tier-off streaming while
     the inline code bytes add pure streaming. The resolution path is ADR 0093 (columnar code
     region + global shortlist).
+  - **Default flip (2026-09-09):** ADR 0093 + fused kernels + centroid I8 restored the tier-on
+    win (k10 epsinf d1536 tier-on 24.14M vs tier-off 45.72M, −47%; recall-invariant via exact
+    Stage B rerank, locked by `tier_on_rebuild_preserves_search_ordering_and_distances`).
+    Policy-driven rebuilds now default tier on (Router snapshot `None` → `Some(true)`);
+    the manual rebuild path keeps `None` = off.
 
 ## References
 

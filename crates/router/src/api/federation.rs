@@ -623,10 +623,12 @@ async fn advance_vector_maintenance(
         rebuild_max_subjects: policy.rebuild_max_subjects,
         cleanup_max_work: policy.cleanup_max_work,
         // Slice 9: the maintenance policy record now owns these tuning selections, so the step
-        // snapshots them into the forwarded request. `None` keeps the previous behavior (flat,
-        // tier off, eps = 0).
+        // snapshots them into the forwarded request. `None` keeps flat / eps = 0; a `None`
+        // code tier resolves to the Router recommended default (tier on) so policy-driven
+        // rebuilds carry the RaBitQ first stage unless the operator explicitly opts out with
+        // `Some(false)`. The manual `start_vector_rebuild` path is unaffected (`None` = off).
         target_fine_nlist: policy.target_fine_nlist,
-        code_tier: policy.code_tier,
+        code_tier: policy.code_tier.or(Some(true)),
         eps_query_bps: policy.eps_query_bps,
         eps_fine_bps: policy.eps_fine_bps,
     };
