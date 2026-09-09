@@ -217,6 +217,10 @@ fn tombstone_required_policy() -> VectorMaintenancePolicy {
 }
 
 fn policy_args(enabled: bool) -> SetVectorMaintenancePolicyArgs {
+    policy_args_with_tier(enabled, None)
+}
+
+fn policy_args_with_tier(enabled: bool, code_tier: Option<bool>) -> SetVectorMaintenancePolicyArgs {
     SetVectorMaintenancePolicyArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         index_id: INDEX_ID,
@@ -229,7 +233,7 @@ fn policy_args(enabled: bool) -> SetVectorMaintenancePolicyArgs {
         rebuild_max_subjects: 4,
         cleanup_max_work: 8,
         target_fine_nlist: None,
-        code_tier: None,
+        code_tier,
         eps_query_bps: None,
         eps_fine_bps: None,
     }
@@ -402,6 +406,54 @@ fn router_push_drives_to_awaiting_publish_then_explicit_publish() {
         }
     }
     assert!(reached_healthy, "the compacted index is judged healthy");
+}
+
+#[test]
+fn tier_on_rebuild_preserves_search_ordering_and_distances() {
+    // Tier recall-invariance contract (ADR 0079 + ADR 0093): a tier-on generation must return the
+    // identical hit ordering and exact distances as the tier-off generation over the same rows
+    // (Stage B exact rerank). Both runs rebuild (nlist 2) and publish the same seeded rows; the
+    // only difference is the policy `code_tier` flag. Path divergence itself is proven by the
+    // tier-on/off canbench pair (24.14M vs 45.72M ins); this test locks the recall half.
+    fn published_hits(code_tier: Option<bool>) -> Vec<(VectorSubject, f32)> {
+        let env = install_federation();
+        ensure_user_graph_type(&env);
+        let _vector = ready_activated_vector_with_tombstone(&env);
+        set_policy(&env, &policy_args_with_tier(true, code_tier)).expect("enable policy");
+        let mut awaiting_publish = false;
+        for _ in 0..MAX_STEPS {
+            match maintenance_step(&env, env.admin).expect("step") {
+                VectorMaintenanceStepOutcome::Stepped(
+                    VectorMaintenanceStepResult::AwaitingPublish(status),
+                ) => {
+                    assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+                    awaiting_publish = true;
+                    break;
+                }
+                VectorMaintenanceStepOutcome::Stepped(_) => {}
+                VectorMaintenanceStepOutcome::Disabled => panic!("policy is enabled"),
+            }
+        }
+        assert!(awaiting_publish, "rebuild reached ReadyToPublish");
+        publish(&env).expect("publish");
+        router_vector_search(&env, 9.0, 10)
+            .hits
+            .into_iter()
+            .map(|h| (h.subject, h.distance))
+            .collect()
+    }
+
+    let off = published_hits(None);
+    let on = published_hits(Some(true));
+    assert!(!off.is_empty(), "tier-off run returns hits after publish");
+    assert_eq!(
+        on, off,
+        "tier-on generation returns identical ordering and distances"
+    );
+    assert!(
+        on.windows(2).all(|w| w[0].1 <= w[1].1),
+        "hits stay distance-ordered under the tier-on generation"
+    );
 }
 
 #[test]
