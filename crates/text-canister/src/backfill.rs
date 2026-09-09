@@ -236,6 +236,7 @@ pub(crate) fn with_cells<R>(f: impl FnOnce(&mut BackfillCells<state::Memory>) ->
 fn validate_request(
     request: &RegisterTextBackfillRequest,
     dict_finalized: bool,
+    kinds: &[gleaph_graph_kernel::provisioning::dictionary::DictKind],
 ) -> Result<(), String> {
     if request.text_index_id.raw() == 0 {
         return Err("text index id 0 is reserved".to_string());
@@ -252,22 +253,28 @@ fn validate_request(
     if request.scope.label_id == 0 || request.scope.property_id.raw() == 0 {
         return Err("text scope needs a non-zero label and property id".to_string());
     }
-    if crate::analyzer::dict_required(request.scope.analyzer_id) {
+    if crate::analyzer::dict_required(request.scope.analyzer_id, kinds) {
         // Dictionary-carrying registration additionally requires the finalized
-        // dictionary (plan 0331, plan 0332 widening to id 0): the gate is a
-        // recorded hold, never a silent skip — the migration driver surfaces the
-        // rejection as retryable progress and replays the SAME registration
-        // idempotently once the dictionary lands.
+        // dictionary (plan 0331, plan 0332 widening to id 0, plan 0343 kinds-aware
+        // predicate): the gate is a recorded hold, never a silent skip — the
+        // migration driver surfaces the rejection as retryable progress and replays
+        // the SAME registration idempotently once the dictionary lands.
         if !dict_finalized {
             return Err(
-                "backfill registration holds until the ipadic dictionary is \
+                "backfill registration holds until the pinned dictionary is \
                  finalized (admin_finalize_dict_upload)"
                     .to_string(),
             );
         }
-    } else if request.scope.analyzer_id != crate::analyzer::ANALYZER_UNICODE_BIGRAM {
+    } else if request.scope.analyzer_id != crate::analyzer::ANALYZER_MULTILINGUAL
+        && request.scope.analyzer_id != crate::analyzer::ANALYZER_UNICODE_BIGRAM
+        && request.scope.analyzer_id != crate::analyzer::ANALYZER_MECAB
+        && request.scope.analyzer_id != crate::analyzer::ANALYZER_KOREAN
+    {
+        // Plan 0343: dict-less koine (0, no kinds) reaches this branch — pre-0343 id 0
+        // always required a dictionary, so the old (1, 3)-only allowlist never saw it.
         return Err(format!(
-            "unknown analyzer {} (this canister serves analyzers 0, 1, and 2)",
+            "unknown analyzer {} (this canister serves analyzers 0, 1, 2, and 3)",
             request.scope.analyzer_id
         ));
     }
@@ -347,8 +354,9 @@ pub(crate) fn register_text_backfill<M: ic_stable_structures::Memory>(
     cells: &mut BackfillCells<M>,
     request: RegisterTextBackfillRequest,
     dict_finalized: bool,
+    kinds: &[gleaph_graph_kernel::provisioning::dictionary::DictKind],
 ) -> Result<TextBackfillStatus, String> {
-    validate_request(&request, dict_finalized)?;
+    validate_request(&request, dict_finalized, kinds)?;
     if let Some(existing) = cells.registration() {
         // An aborted identity is terminal evidence: its namespace is never reused, so
         // even an otherwise-exact re-registration fails closed (Router issues fresh,
@@ -737,7 +745,7 @@ mod tests {
     }
 
     fn register_ok(cells: &mut BackfillCells<VectorMemory>) -> TextBackfillStatus {
-        register_text_backfill(cells, request(TEXT_ID), true).expect("valid registration")
+        register_text_backfill(cells, request(TEXT_ID), true, &[]).expect("valid registration")
     }
 
     // -- Registration ----------------------------------------------------------------------
@@ -803,7 +811,7 @@ mod tests {
         for (case, label) in invalid_registrations() {
             let mut cells = cells();
             assert!(
-                register_text_backfill(&mut cells, case, true)
+                register_text_backfill(&mut cells, case, true, &[])
                     .err()
                     .unwrap_or_else(|| panic!("{label} case must reject"))
                     .contains(label),
@@ -817,19 +825,56 @@ mod tests {
     }
 
     #[test]
+    fn dict_less_and_dictionary_carrying_registrations_follow_dict_required() {
+        use gleaph_graph_kernel::provisioning::dictionary::DictKind;
+        // Plan 0343: dict-less koine (0, []) and bigram (1, []) register with NO
+        // finalized dictionary — the stale (1, 3)-only allowlist rejected id 0 here
+        // and stalled the E2E migration driver on Busy; this pins the fix.
+        for analyzer in [
+            crate::analyzer::ANALYZER_MULTILINGUAL,
+            crate::analyzer::ANALYZER_UNICODE_BIGRAM,
+        ] {
+            let mut cells = cells();
+            let req = RegisterTextBackfillRequest {
+                scope: TextBackfillScope {
+                    analyzer_id: analyzer,
+                    ..scope()
+                },
+                ..request(TEXT_ID)
+            };
+            register_text_backfill(&mut cells, req, false, &[])
+                .expect("dict-less registers while Absent");
+        }
+        // Dictionary-carrying (2, [Japanese]) holds until finalize lands.
+        let mut cells = cells();
+        let req = RegisterTextBackfillRequest {
+            scope: TextBackfillScope {
+                analyzer_id: crate::analyzer::ANALYZER_MECAB,
+                ..scope()
+            },
+            ..request(TEXT_ID)
+        };
+        let err = register_text_backfill(&mut cells, req.clone(), false, &[DictKind::Japanese])
+            .expect_err("dictionary-carrying holds while Absent");
+        assert!(err.contains("holds until"), "unexpected hold reason: {err}");
+        register_text_backfill(&mut cells, req, true, &[DictKind::Japanese])
+            .expect("registers once Finalized");
+    }
+
+    #[test]
     fn conflicting_registration_preserves_the_original_build() {
         let mut cells = cells();
         let original = register_ok(&mut cells);
         let mut conflict = request(TEXT_ID);
         conflict.scope.property_id = PropertyId::from_raw(99);
         assert_eq!(
-            register_text_backfill(&mut cells, conflict, true)
+            register_text_backfill(&mut cells, conflict, true, &[])
                 .expect_err("conflicting identity must reject"),
             "text index id 77 already registered with a different build identity"
         );
         // Exact replay converges; the original survives unchanged.
         assert_eq!(
-            register_text_backfill(&mut cells, request(TEXT_ID), true).expect("exact replay"),
+            register_text_backfill(&mut cells, request(TEXT_ID), true, &[]).expect("exact replay"),
             original
         );
         assert_eq!(text_backfill_status(&cells), Some(original));
@@ -1213,7 +1258,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            register_text_backfill(&mut cells, request(TEXT_ID), true)
+            register_text_backfill(&mut cells, request(TEXT_ID), true, &[])
                 .expect_err("aborted identities are never reused")
                 .contains("never be reused")
         );
@@ -1236,7 +1281,7 @@ mod tests {
         futures_block_on(async {
             let control = control(EPOCH);
             with_cells(|cells| {
-                register_text_backfill(cells, request(TEXT_ID), true).expect("register");
+                register_text_backfill(cells, request(TEXT_ID), true, &[]).expect("register");
             });
             assert!(
                 super::advance_text_backfill_with(control, 0, unreachable_fetch)
@@ -1269,7 +1314,7 @@ mod tests {
         futures_block_on(async {
             let control = control(EPOCH);
             with_cells(|cells| {
-                register_text_backfill(cells, request(TEXT_ID), true).expect("register");
+                register_text_backfill(cells, request(TEXT_ID), true, &[]).expect("register");
             });
             let before = with_cells(|cells| text_backfill_status(cells)).unwrap();
             let failed: Result<Result<CanonicalExportPage, CanonicalExportError>, ()> = Err(());
@@ -1313,7 +1358,7 @@ mod tests {
         futures_block_on(async {
             let control = control(EPOCH);
             with_cells(|cells| {
-                register_text_backfill(cells, request(TEXT_ID), true).expect("register");
+                register_text_backfill(cells, request(TEXT_ID), true, &[]).expect("register");
             });
             let mut remaining = std::collections::VecDeque::from([
                 page_reply(vec![text_fact(1, "one")], Some(vec![1]), false),

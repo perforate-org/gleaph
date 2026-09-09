@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facade::stable::{ROUTER_NEXT_TEXT_INDEX_ID, ROUTER_TEXT_INDEXES};
 use crate::state::RouterError;
+use gleaph_graph_kernel::provisioning::dictionary::DictKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TextIndexKey {
@@ -68,6 +69,10 @@ pub(crate) struct TextIndexDefRecord {
     pub property_id: PropertyId,
     /// Analyzer pipeline identity pinned at creation (ADR 0077 v0 production pipeline = 1).
     pub analyzer_id: u32,
+    /// Selected dictionary kinds pinned at creation (plan 0343): canonical sorted
+    /// `DictKind` vec, empty = no dictionary (the default). Validated against the
+    /// (analyzer, kinds) strict matrix at registration; replay equality covers it.
+    pub kinds: Vec<DictKind>,
     /// `None` while `Registered`; always non-anonymous when set.
     pub target: Option<Principal>,
     pub status: TextIndexStatus,
@@ -78,6 +83,7 @@ pub(crate) struct TextIndexDefRecord {
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum TextIndexDefStableRecord {
     V1(TextIndexDefRecord),
+    V2(TextIndexDefRecord),
 }
 
 impl Storable for TextIndexKey {
@@ -120,12 +126,17 @@ impl Storable for TextIndexDefRecord {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&TextIndexDefStableRecord::V1(self)).expect("encode text index def")
+        Encode!(&TextIndexDefStableRecord::V2(self)).expect("encode text index def")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), TextIndexDefStableRecord).expect("decode text index def") {
-            TextIndexDefStableRecord::V1(v1) => v1,
+            // Pre-0343 rows carry no kinds selection: fresh-state reinstall is required
+            // (pre-production simplicity — no migrations for layout changes).
+            TextIndexDefStableRecord::V1(_) => panic!(
+                "text index def V1 bytes require a fresh-state reinstall (plan 0343 kinds selection)"
+            ),
+            TextIndexDefStableRecord::V2(v2) => v2,
         }
     }
 }
@@ -164,6 +175,44 @@ fn next_available_text_index_id() -> Result<u32, RouterError> {
     }
 }
 
+/// Validates one (analyzer, kinds) pair against the plan-0343 strict matrix (the
+/// admission mirror of the provision/kernel `dict_required` predicate):
+///
+/// - id 1 (unicode-bigram) is dictionary-free: any non-empty kinds rejects;
+/// - id 2 (japanese) requires exactly kinds == [Japanese];
+/// - id 3 (korean) requires exactly kinds == [Korean];
+/// - id 0 (koine) takes any SUBSET of {Japanese, Korean} (empty = dict-less koine).
+///
+/// Multi-kind selections PASS admission here (they are representable and
+/// comparable); the relay preflight (provision) and the canister open reject the
+/// actual multi-container load until the layout is decided.
+pub(crate) fn validate_analyzer_kinds(
+    analyzer_id: u32,
+    kinds: &[DictKind],
+) -> Result<(), RouterError> {
+    use DictKind::{Japanese, Korean};
+    let valid = match analyzer_id {
+        // 0 = ANALYZER_MULTILINGUAL (koine): any subset of {Japanese, Korean}.
+        0 => kinds.iter().all(|kind| matches!(kind, Japanese | Korean)),
+        // 1 = ANALYZER_UNICODE_BIGRAM: dictionary-free.
+        1 => kinds.is_empty(),
+        // 2 = ANALYZER_MECAB (japanese): exactly [Japanese].
+        2 => kinds == [Japanese],
+        // 3 = ANALYZER_KOREAN (korean): exactly [Korean].
+        3 => kinds == [Korean],
+        // Unregistered ids are rejected by the caller before reaching here.
+        _ => false,
+    };
+    if valid {
+        return Ok(());
+    }
+    Err(RouterError::InvalidArgument(format!(
+        "analyzer {analyzer_id} does not admit dictionary kinds {kinds:?} \
+         (strict matrix: 1 takes none, 2 takes [Japanese], 3 takes [Korean], \
+         0 takes any subset of {{Japanese, Korean}})"
+    )))
+}
+
 /// Register one TEXT index definition after full validation. The caller has already interned
 /// `index_name_id` and resolved `label_id`/`property_id`; this function owns the durable insert
 /// and every conflict check against existing definitions (cross-kind name reuse, duplicate
@@ -178,6 +227,7 @@ pub(crate) fn register_text_index(
     label_id: VertexLabelId,
     property_id: PropertyId,
     analyzer_id: u32,
+    kinds: Vec<DictKind>,
     target: Option<Principal>,
     if_not_exists: bool,
 ) -> Result<bool, RouterError> {
@@ -195,6 +245,14 @@ pub(crate) fn register_text_index(
             "unregistered text analyzer id {analyzer_id} (admitted set: 0, 1, 2, 3)"
         )));
     }
+    // Plan 0343: the (analyzer, kinds) strict matrix — the SAME predicate the
+    // provision/kernel `dict_required` enforces, re-checked at the admission
+    // boundary so an invalid pair fails before any durable or remote effect.
+    // Canonical order for the durable row (DDL input order normalized here).
+    let mut kinds = kinds;
+    kinds.sort();
+    kinds.dedup();
+    validate_analyzer_kinds(analyzer_id, &kinds)?;
 
     let key = TextIndexKey::new(graph_id, text_index_id);
     if ROUTER_TEXT_INDEXES.with_borrow(|map| map.contains_key(&key)) {
@@ -250,6 +308,7 @@ pub(crate) fn register_text_index(
         label_id,
         property_id,
         analyzer_id,
+        kinds,
         target,
         status: resolve_status(target.is_some()),
     };
@@ -583,6 +642,7 @@ mod tests {
             VertexLabelId::from_raw(label),
             PropertyId::from_raw(property),
             1,
+            Vec::new(),
             target,
             false,
         )
@@ -600,6 +660,7 @@ mod tests {
             label_id: VertexLabelId::from_raw(2),
             property_id: PropertyId::from_raw(6),
             analyzer_id: 1,
+            kinds: Vec::new(),
             target: Some(Principal::management_canister()),
             status: TextIndexStatus::Ready,
         };
@@ -685,6 +746,7 @@ mod tests {
                 VertexLabelId::from_raw(1),
                 PropertyId::from_raw(11),
                 1,
+                Vec::new(),
                 Some(Principal::management_canister()),
                 false
             )
@@ -708,6 +770,7 @@ mod tests {
             VertexLabelId::from_raw(1),
             PropertyId::from_raw(10),
             1,
+            Vec::new(),
             Some(Principal::anonymous()),
             false,
         )
@@ -728,6 +791,7 @@ mod tests {
                 VertexLabelId::from_raw(1),
                 PropertyId::from_raw(10),
                 3,
+                vec![DictKind::Korean],
                 None,
                 false,
             )
@@ -746,6 +810,7 @@ mod tests {
             VertexLabelId::from_raw(1),
             PropertyId::from_raw(11),
             4,
+            Vec::new(),
             None,
             false,
         )
@@ -767,6 +832,7 @@ mod tests {
             VertexLabelId::from_raw(1),
             PropertyId::from_raw(10),
             1,
+            Vec::new(),
             None,
             false,
         )
@@ -790,6 +856,7 @@ mod tests {
                 VertexLabelId::from_raw(1),
                 PropertyId::from_raw(10),
                 1,
+                Vec::new(),
                 None,
                 false,
             )
@@ -803,6 +870,7 @@ mod tests {
                 VertexLabelId::from_raw(1),
                 PropertyId::from_raw(11),
                 1,
+                Vec::new(),
                 None,
                 false,
             ),
@@ -817,6 +885,7 @@ mod tests {
                 VertexLabelId::from_raw(1),
                 PropertyId::from_raw(11),
                 1,
+                Vec::new(),
                 None,
                 true,
             )
@@ -841,12 +910,40 @@ mod tests {
             VertexLabelId::from_raw(1),
             PropertyId::from_raw(10),
             1,
+            Vec::new(),
             None,
             false,
         )
         .expect_err("unmapped name id must fail closed");
         assert!(matches!(err, RouterError::InvalidArgument(_)));
         assert!(get_text_index(graph, 1).is_none());
+    }
+
+    /// Plan 0343: the (analyzer, kinds) strict matrix pins the whole truth table —
+    /// the admission mirror of the kernel `dict_required` predicate.
+    #[test]
+    fn analyzer_kinds_strict_matrix() {
+        use DictKind::{Japanese, Korean};
+        // (1, _) → false: the bigram pipeline is dictionary-free.
+        assert!(validate_analyzer_kinds(1, &[]).is_ok());
+        assert!(validate_analyzer_kinds(1, &[Japanese]).is_err());
+        // (2, [Japanese]) → true, everything else false.
+        assert!(validate_analyzer_kinds(2, &[Japanese]).is_ok());
+        assert!(validate_analyzer_kinds(2, &[]).is_err());
+        assert!(validate_analyzer_kinds(2, &[Korean]).is_err());
+        assert!(validate_analyzer_kinds(2, &[Japanese, Korean]).is_err());
+        // (3, [Korean]) → true, everything else false.
+        assert!(validate_analyzer_kinds(3, &[Korean]).is_ok());
+        assert!(validate_analyzer_kinds(3, &[]).is_err());
+        assert!(validate_analyzer_kinds(3, &[Japanese]).is_err());
+        assert!(validate_analyzer_kinds(3, &[Japanese, Korean]).is_err());
+        // (0, _) → any subset incl. empty (dict-less koine).
+        assert!(validate_analyzer_kinds(0, &[]).is_ok());
+        assert!(validate_analyzer_kinds(0, &[Japanese]).is_ok());
+        assert!(validate_analyzer_kinds(0, &[Korean]).is_ok());
+        assert!(validate_analyzer_kinds(0, &[Japanese, Korean]).is_ok());
+        // Unregistered ids never validate.
+        assert!(validate_analyzer_kinds(4, &[]).is_err());
     }
 
     #[test]
@@ -860,6 +957,7 @@ mod tests {
             VertexLabelId::from_raw(1),
             PropertyId::from_raw(10),
             1,
+            Vec::new(),
             None,
             false,
         )

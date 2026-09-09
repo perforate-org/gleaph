@@ -1093,7 +1093,16 @@ fn analyzer2_dict_upload_finalize_and_gates() {
         dict_blob: regions.dict_blob.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
     };
-    let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_MECAB));
+    let mut stores = TextStores::init_with_analyzer(
+        clone_regions(),
+        Some(ANALYZER_MECAB),
+        vec![DictKind::Japanese],
+    );
+
+    // Plan 0343 follow-up: a post-upgrade reopen carries NO install-arg selection
+    // (heap statics do not survive upgrade, `post_upgrade` reads no args), so the
+    // empty selection must reopen against the persisted kinds instead of trapping.
+    let _reopened = TextStores::init_with_analyzer(clone_regions(), None, Vec::new());
 
     // Pre-finalize fail-closed gates.
     assert!(
@@ -1151,7 +1160,8 @@ fn analyzer2_dict_upload_finalize_and_gates() {
     );
 
     // Reopen rebuilds the tokenizer eagerly from the finalized region.
-    let mut reopened = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut reopened =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     assert!(crate::analyzer_mecab::dictionary_loaded());
     let hits = reopened.search("走った", 10).expect("post-reopen search");
     // (no documents ingested — the assertion is that analysis did not trap)
@@ -1184,14 +1194,14 @@ fn analyzer1_rejects_dict_upload_and_search_serves_without_dictionary() {
 fn init_rejects_unregistered_analyzer_id() {
     // Plan 0341 registers id 3 (ANALYZER_KOREAN); the first unregistered id is now 4.
     let result = std::panic::catch_unwind(|| {
-        TextStores::init_with_analyzer(fresh_regions(), Some(ANALYZER_KOREAN + 1))
+        TextStores::init_with_analyzer(fresh_regions(), Some(ANALYZER_KOREAN + 1), Vec::new())
     });
     assert!(
         result.is_err(),
         "analyzer id 4 is unregistered and must fail the open"
     );
     // Id 3 opens (fresh regions carry no dictionary, so no rebind is attempted).
-    TextStores::init_with_analyzer(fresh_regions(), Some(ANALYZER_KOREAN));
+    TextStores::init_with_analyzer(fresh_regions(), Some(ANALYZER_KOREAN), Vec::new());
 }
 
 #[test]
@@ -1219,7 +1229,11 @@ fn analyzer0_dict_gates_and_composite_recall() {
         dict_blob: regions.dict_blob.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
     };
-    let mut stores = TextStores::init_with_analyzer(clone_regions(), Some(ANALYZER_MULTILINGUAL));
+    let mut stores = TextStores::init_with_analyzer(
+        clone_regions(),
+        Some(ANALYZER_MULTILINGUAL),
+        vec![DictKind::Japanese],
+    );
 
     // Pre-finalize fail-closed gates (the DICT_REQUIRED gate covers id 0).
     assert!(
@@ -1264,7 +1278,11 @@ fn analyzer0_dict_gates_and_composite_recall() {
 
     // Reopen rebuilds the resident dictionary eagerly for id 0 (the plan 0332
     // open-rebind widening) and the composite analysis works post-reopen.
-    let mut reopened = TextStores::init_with_analyzer(regions, Some(ANALYZER_MULTILINGUAL));
+    let mut reopened = TextStores::init_with_analyzer(
+        regions,
+        Some(ANALYZER_MULTILINGUAL),
+        vec![DictKind::Japanese],
+    );
     assert!(crate::analyzer_mecab::dictionary_loaded());
     assert!(reopened.enqueue_ingest(vec![doc(4, "走った")]).is_ok());
     flush_all(&mut reopened);
@@ -1381,7 +1399,8 @@ fn framed_round_trip_matches_raw_end_state() {
     );
     let raw_digest = xxh3_128(raw);
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
 
     // Framed relay: one frame per call, each with its own digest.
     let received = upload_frames(&mut stores, frames, raw.len() as u64);
@@ -1463,7 +1482,8 @@ fn frame_digest_mismatch_rejects_without_state_change() {
         return;
     };
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     // Upload the first frame validly, then a frame with a WRONG digest.
     upload_frames(&mut stores, &frames[..1], raw.len() as u64);
     let before = stores.dict_status();
@@ -1520,7 +1540,8 @@ fn corrupt_but_decodable_frame_caught_by_final_raw_digest() {
     let corrupt = zstd::stream::encode_all(&raw2[..], 19).expect("re-encode corrupt frame");
     let corrupt_digest = xxh3_128(&corrupt);
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     // Upload ALL frames except frame 2, then the corrupt frame 2, so the accumulated raw
     // offset reaches raw.len() and the finalize reaches the digest check (the corrupt frame
     // decodes to the same length, so the length gate passes).
@@ -1583,7 +1604,8 @@ fn truncated_frame_sequence_rejected_at_finalize() {
         return;
     };
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     // Upload all but the last frame.
     upload_frames(&mut stores, &frames[..frames.len() - 1], raw.len() as u64);
     let err = stores
@@ -1612,7 +1634,8 @@ fn bomb_overrun_across_frames_rejected() {
         return;
     };
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     upload_frames(&mut stores, frames, raw.len() as u64);
     // Declare a raw_len SMALLER than the actual total: the cumulative raw offset exceeds it.
     let too_small = raw.len() as u64 - 1;
@@ -1647,7 +1670,8 @@ fn retry_after_failed_finalize_re_streams_from_frame_0() {
     };
     let raw_digest = xxh3_128(raw);
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     upload_frames(&mut stores, frames, raw.len() as u64);
     // Finalize with a WRONG raw digest → reject AND reset the framed progress.
     let err = stores
@@ -1705,7 +1729,8 @@ fn framed_mode_gates() {
     // Oversized frame rejects without mutation.
     {
         let regions = fresh_regions();
-        let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+        let mut stores =
+            TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
         let oversized = vec![0u8; MAX_DICT_COMPRESSED_CHUNK_BYTES + 1];
         assert!(
             stores
@@ -1736,7 +1761,8 @@ fn framed_mode_gates() {
     // Raw-then-framed mixing rejects symmetrically.
     {
         let regions = fresh_regions();
-        let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+        let mut stores =
+            TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
         stores
             .upload_dict_chunk(vec![1; 16], None)
             .expect("raw chunk");
@@ -1803,7 +1829,8 @@ fn framed_upload_decode_heap_peak() {
         return;
     };
     let regions = fresh_regions();
-    let mut stores = TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB));
+    let mut stores =
+        TextStores::init_with_analyzer(regions, Some(ANALYZER_MECAB), vec![DictKind::Japanese]);
     // Upload all but the last frame so the measured call is the LAST frame's decode (the
     // largest raw offset, exercising the region-16 grow path).
     upload_frames(&mut stores, &frames[..frames.len() - 1], raw.len() as u64);

@@ -34,8 +34,9 @@
 //!
 //! ## Dictionary region (plan 0331, container swap plan 0334, plan 0332 widening to id 0)
 //!
-//! The dictionary-carrying analyzers (ids 0 and 2 — the `dict_required` set) keep their
-//! ipadic dictionary OUT of the wasm: region 16 is a PLAIN
+//! The dictionary-carrying (analyzer, kinds) pairs — the kernel `dict_required` set
+//! (2+[Japanese], 3+[Korean], 0+any non-empty kinds subset) — keep their dictionary OUT
+//! of the wasm: region 16 is a PLAIN
 //! byte string carrying the MPD container (magic + layout version + entry table {name, offset,
 //! len, sha256} + the four MeCab-format images: sys.dic + unk.dic + matrix.bin +
 //! char.bin, 52,930,923 bytes for ipadic 2.7.0 utf8), appended in controller-supplied
@@ -44,7 +45,7 @@
 //! re-read at `admin_finalize_dict_upload` (a ~53 MB transient copy at finalize ONLY)
 //! and pinned in [`TextMeta`] with the declared length. States: `Absent` (fresh open),
 //! `Uploading` (append-only, interrupted uploads fail the open loudly), `Finalized`.
-//! With `dict_required(analyzer_id) == true` the open rebinds WITHOUT decode: structural container
+//! With `dict_required(analyzer_id, &kinds)` true the open rebinds WITHOUT decode: structural container
 //! validation + resident-set memcpy over batched stable reads (~21 MB: matrix.bin +
 //! char.bin + unk.dic + sys.dic trie/word-params); the feature-string region stays lazy
 //! over stable memory via the ic-morph-dict `StableImage` (eager rebind, NOT lazy
@@ -125,7 +126,8 @@ use crate::analyzer::{
 };
 use crate::{FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
 use gleaph_graph_kernel::provisioning::dictionary::{
-    CompressedDictFinalize, CompressedDictUpload, DictStatus, MAX_DICT_COMPRESSED_CHUNK_BYTES,
+    CompressedDictFinalize, CompressedDictUpload, DictKind, DictStatus,
+    MAX_DICT_COMPRESSED_CHUNK_BYTES,
 };
 
 use arena::{BlobArena, BlobRef};
@@ -274,6 +276,11 @@ struct TextMeta {
     magic: u64,
     layout_version: u32,
     analyzer_id: u32,
+    /// Selected dictionary kinds pinned at creation (plan 0343): canonical sorted
+    /// `DictKind` vec, empty = no dictionary (the default — koine falls back to bigram
+    /// on CJK paths). Recorded alongside `analyzer_id`; every `dict_required` gate
+    /// reads this pair. Layout changes require fresh state (pre-production).
+    kinds: Vec<DictKind>,
     next_docid: u32,
     next_term_id: u32,
     /// Analyzer-2 dictionary identity: xxh3_128 over the concatenated region-16 chunk
@@ -302,6 +309,7 @@ impl Default for TextMeta {
             magic: MAGIC,
             layout_version: LAYOUT_VERSION,
             analyzer_id: ANALYZER_UNICODE_BIGRAM,
+            kinds: Vec::new(),
             next_docid: 0,
             next_term_id: 0,
             dict_digest: 0,
@@ -584,20 +592,35 @@ where
     /// pipeline (the pre-0331 open shape; production binds the install arg instead).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn init(memories: TextMemories<M>) -> Self {
-        Self::init_with_analyzer(memories, None)
+        Self::init_with_analyzer(memories, None, Vec::new())
     }
 
-    /// [`init`](Self::init) with the install-arg analyzer id (validated ∈ {0, 1, 2};
+    /// [`init`](Self::init) with the install-arg analyzer id (validated ∈ {0, 1, 2, 3};
     /// plan 0332 widens the registered set to include the multilingual composite
     /// ANALYZER_ID=0 — the DEFAULT for any absent `ANALYZER` clause. The init default
     /// stays `ANALYZER_UNICODE_BIGRAM` for the bare-wasm-install path (canbench +
     /// diagnostics) — the production default is set by the Router's `register_provisioned_graph`
     /// install-arg, NOT by an open-time fallback here.
-    pub fn init_with_analyzer(memories: TextMemories<M>, init_analyzer: Option<u32>) -> Self {
+    ///
+    /// `init_kinds` (plan 0343) is the install-arg kinds selection: normalized
+    /// (sorted + deduped) defensively and recorded into fresh meta. A reopen with
+    /// mismatching kinds fails loudly, like a mismatching analyzer id. More than one
+    /// kind fails the open (multi-container layout undecided — plan 0343 answer B).
+    pub fn init_with_analyzer(
+        memories: TextMemories<M>,
+        init_analyzer: Option<u32>,
+        init_kinds: Vec<DictKind>,
+    ) -> Self {
+        let mut kinds = init_kinds;
+        kinds.sort();
+        kinds.dedup();
+        // Normalized once for both the fresh-meta record and the reopen match check.
+        let init_kinds_normalized = kinds.clone();
         let meta = Cell::init(
             memories.meta,
             TextMeta {
                 analyzer_id: init_analyzer.unwrap_or(ANALYZER_UNICODE_BIGRAM),
+                kinds,
                 ..TextMeta::default()
             },
         );
@@ -624,7 +647,33 @@ where
                 header.analyzer_id
             );
         }
-        if dict_required(header.analyzer_id) && header.dict_state == DICT_STATE_UPLOADING {
+        // Plan 0343: the pinned kinds are creation-fixed like the analyzer id — a
+        // reopen with a different NON-EMPTY selection fails loudly (`kinds` is the
+        // normalized init selection from the top of this function). An empty
+        // selection skips the check: post-upgrade reopens leave the install-arg
+        // statics `None` (heap statics do not survive upgrade, and `post_upgrade`
+        // reads no args), so the persisted meta stays the kinds SSOT — mirroring
+        // the analyzer's `if let Some(requested)` discipline. The skip direction is
+        // fail-safe: kinds can never be silently shrunk, only kept.
+        if !init_kinds_normalized.is_empty() {
+            assert!(
+                init_kinds_normalized == header.kinds,
+                "init kinds {:?} do not match the persisted meta kinds {:?}",
+                init_kinds_normalized,
+                header.kinds
+            );
+        }
+        // Plan 0343 answer B: more than one kind fails the open — two kinds need two
+        // containers and the multi-container layout is undecided. Fail BEFORE any
+        // dictionary effect (the eager rebind below).
+        assert!(
+            header.kinds.len() <= 1,
+            "multi-kind dictionary selection {:?} needs the undecided multi-container layout — re-install with fresh state",
+            header.kinds
+        );
+        if dict_required(header.analyzer_id, &header.kinds)
+            && header.dict_state == DICT_STATE_UPLOADING
+        {
             panic!(
                 "analyzer-{} dictionary upload was interrupted (state Uploading); \
                  the canister cannot open — re-install with fresh state",
@@ -656,22 +705,24 @@ where
                 .segments
                 .insert(ACTIVE_SEGMENT_ID, SegmentRow { active: true });
         }
-        // Eager dictionary rebind (plan 0334, plan 0332 widening to id 0): a
-        // finalized region is validated structurally and the resident set
+        // Eager dictionary rebind (plan 0334, plan 0332 widening to id 0, plan 0343
+        // kinds): a finalized region is validated structurally and the resident set
         // materialized NOW — the query budget never pays dictionary construction.
         // Corrupt bytes fail the open loudly — the canister cannot operate on a
         // broken dictionary. No decode, no full-container copy: the feature region
         // stays lazy over stable memory. The mecab analyzer is the SHARED resident
-        // token surface for both id 0 and id 2 (id 0 dispatches `{kanji∪kana}` runs
-        // through it via the composite; id 2 dispatches the whole text through it).
-        if dict_required(stores.meta.get().analyzer_id)
+        // token surface for the selected kind (id 0 dispatches per language path on
+        // the loaded kind via the composite; ids 2/3 dispatch the whole text).
+        if dict_required(stores.meta.get().analyzer_id, &stores.meta.get().kinds)
             && stores.meta.get().dict_state == DICT_STATE_FINALIZED
         {
-            crate::analyzer_mecab::load_dictionary_from_image(
+            let kind = crate::analyzer_mecab::dict_kind_for(
                 stores.meta.get().analyzer_id,
-                stores.dict_container_image(),
+                &stores.meta.get().kinds,
             )
-            .unwrap_or_else(|error| panic!("dictionary open failed: {error}"));
+            .unwrap_or_else(|error| panic!("{error}"));
+            crate::analyzer_mecab::load_dictionary_from_image(kind, stores.dict_container_image())
+                .unwrap_or_else(|error| panic!("dictionary open failed: {error}"));
         }
         stores
     }
@@ -938,10 +989,10 @@ where
         mode: Option<CompressedDictUpload>,
     ) -> Result<u64, String> {
         let meta = self.meta.get();
-        if !dict_required(meta.analyzer_id) {
+        if !dict_required(meta.analyzer_id, &meta.kinds) {
             return Err(format!(
-                "dictionary upload requires a dictionary-carrying analyzer (ids 0 or 2), this index pins analyzer {}",
-                meta.analyzer_id
+                "dictionary upload requires a dictionary-carrying analyzer (ids 0 or 2), this index pins analyzer {} kinds {:?}",
+                meta.analyzer_id, meta.kinds
             ));
         }
         if meta.dict_state == DICT_STATE_FINALIZED {
@@ -1058,10 +1109,10 @@ where
         mode: Option<CompressedDictFinalize>,
     ) -> Result<DictStatus, String> {
         let meta = self.meta.get();
-        if !dict_required(meta.analyzer_id) {
+        if !dict_required(meta.analyzer_id, &meta.kinds) {
             return Err(format!(
-                "dictionary finalize requires a dictionary-carrying analyzer (ids 0 or 2), this index pins analyzer {}",
-                meta.analyzer_id
+                "dictionary finalize requires a dictionary-carrying analyzer (ids 0 or 2), this index pins analyzer {} kinds {:?}",
+                meta.analyzer_id, meta.kinds
             ));
         }
         if meta.dict_state == DICT_STATE_FINALIZED {
@@ -1095,9 +1146,13 @@ where
                 }
                 // Structural validation + resident-set materialization FIRST; a corrupt
                 // artifact must not persist Finalized state.
-                crate::analyzer_mecab::load_dictionary_from_image(
-                    meta.analyzer_id,
-                    self.dict_container_image(),
+                crate::analyzer_mecab::dict_kind_for(meta.analyzer_id, &meta.kinds).and_then(
+                    |kind| {
+                        crate::analyzer_mecab::load_dictionary_from_image(
+                            kind,
+                            self.dict_container_image(),
+                        )
+                    },
                 )?;
                 let mut meta = meta.clone();
                 meta.dict_state = DICT_STATE_FINALIZED;
@@ -1166,7 +1221,8 @@ where
         // the exact open path the raw mode uses, so the end state is byte-identical.
         let image =
             ic_morph_dict::CanisterStableImage::new(self.dict_region.clone(), expected.raw_len);
-        if let Err(e) = crate::analyzer_mecab::load_dictionary_from_image(meta.analyzer_id, image) {
+        let kind = crate::analyzer_mecab::dict_kind_for(meta.analyzer_id, &meta.kinds)?;
+        if let Err(e) = crate::analyzer_mecab::load_dictionary_from_image(kind, image) {
             self.reset_framed_progress();
             return Err(e);
         }
@@ -1188,6 +1244,15 @@ where
         let mut meta = self.meta.get().clone();
         meta.dict_raw_received_len = 0;
         self.meta.set(meta);
+    }
+
+    /// Backfill hold inputs (plan 0343): whether the dictionary is finalized plus the
+    /// pinned kinds selection. The hold predicate is kinds-aware, and the LOCAL meta
+    /// is the authority for both (the backfill scope carries the Router's analyzer
+    /// claim, not the kinds).
+    pub(crate) fn backfill_hold_inputs(&self) -> (bool, Vec<DictKind>) {
+        let meta = self.meta.get();
+        (meta.dict_state == DICT_STATE_FINALIZED, meta.kinds.clone())
     }
 
     /// Read-only dictionary status (state / raw digest+len). During `Uploading`, `len` is
@@ -1231,7 +1296,7 @@ where
         // dictionary is finalized. The `DICT_REQUIRED` gate is the single source of
         // truth (ids {0, 2} both carry the dictionary; id 1 is dictionary-free).
         let meta = self.meta.get();
-        if dict_required(meta.analyzer_id) && meta.dict_state != DICT_STATE_FINALIZED {
+        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DICT_STATE_FINALIZED {
             return Err(
                 "dictionary is not finalized; ingestion is rejected until finalize".to_string(),
             );
@@ -1502,7 +1567,7 @@ where
         // query analysis without a finalized dictionary. The `DICT_REQUIRED` gate
         // is the single source of truth (ids {0, 2} both carry the dictionary).
         let meta = self.meta.get();
-        if dict_required(meta.analyzer_id) && meta.dict_state != DICT_STATE_FINALIZED {
+        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DICT_STATE_FINALIZED {
             return Err("dictionary is not finalized; the index cannot serve queries".to_string());
         }
 
@@ -2043,6 +2108,9 @@ thread_local! {
     /// lazily-opened store reads it. `None` = default unicode-bigram; post-upgrade
     /// reopens leave it `None` (the persisted meta is the pinned analyzer SSOT).
     static INIT_ANALYZER: RefCell<Option<u32>> = const { RefCell::new(None) };
+    /// Install-arg kinds selection recorded by the init handler alongside
+    /// `INIT_ANALYZER` (plan 0343): `None` = field omitted = no dictionary.
+    static INIT_KINDS: RefCell<Option<Vec<DictKind>>> = const { RefCell::new(None) };
 }
 
 /// Records the install-arg analyzer id for the first open (the init handler must call
@@ -2051,15 +2119,22 @@ pub(crate) fn set_init_analyzer(analyzer_id: Option<u32>) {
     INIT_ANALYZER.with(|slot| *slot.borrow_mut() = analyzer_id);
 }
 
+/// Records the install-arg kinds selection for the first open (the init handler must
+/// call it before any `with_stores`; plan 0343).
+pub(crate) fn set_init_kinds(kinds: Option<Vec<DictKind>>) {
+    INIT_KINDS.with(|slot| *slot.borrow_mut() = kinds);
+}
+
 /// Runs `f` against the lazily-opened production store. First use performs the one
 /// `MemoryManager::init` and the layout validation; upgrade reopen reuses the same path
 /// (the persisted meta stays the pinned analyzer SSOT on reopen).
 pub(crate) fn with_stores<R>(f: impl FnOnce(&mut TextStores<Memory>) -> R) -> R {
     let init_analyzer = INIT_ANALYZER.with(|slot| *slot.borrow());
+    let init_kinds = INIT_KINDS.with(|slot| slot.borrow().clone().unwrap_or_default());
     STORES.with(|slot| {
         let mut slot = slot.borrow_mut();
         let stores = slot.get_or_insert_with(|| {
-            TextStores::init_with_analyzer(TextMemories::production(), init_analyzer)
+            TextStores::init_with_analyzer(TextMemories::production(), init_analyzer, init_kinds)
         });
         f(stores)
     })

@@ -96,15 +96,16 @@ document records the steady-state contract those imply.
 
 ## Analyzers
 
-Three registered pipelines (creation-fixed per index definition; plan 0330 spike + 0331/0334
-landings + plan 0332 default promotion):
+Four registered pipelines (creation-fixed per index definition; plan 0330 spike + 0331/0334
+landings + plan 0332 default promotion + plan 0341 korean + plan 0343 per-index opt-in):
 
 - **`multilingual` (id 0, DEFAULT — plan 0332, branded koine)** — the script-dispatched
   composite: whole-text NFKC + lowercase pre-pass → UAX #29 segmentation → deterministic
   codepoint-range script classification (NO statistical language detection) → per-run layers:
-  {kanji∪kana} runs through the mecab engine (id 2's analyzer, the MPD container — the same
-  `DICT_REQUIRED` gate as id 2), pure-Han runs through v1 bigram (zh/ja ambiguity: bigram is
-  correct for both), Hangul runs through the 조사/어미 closed-class suffix strip (받침
+  {kanji∪kana} runs through the mecab engine when kind `Japanese` is loaded (else bigram
+  fallback — plan 0343), pure-Han runs through v1 bigram (zh/ja ambiguity: bigram is
+  correct for both), Hangul runs through the mecab engine when kind `Korean` is loaded
+  (else the 조사/어미 closed-class suffix strip — plan 0343), with 받침
   allomorphy, surface+stem dual emission), Latin words through surface+Porter stem (non-English
   Latin over-stem accepted and recorded). Its {kanji∪kana} layer delegates to the id-2 mecab
   analyzer, so it inherits the plan 0339 variation-selector strip and the kana counter-variant
@@ -114,10 +115,10 @@ landings + plan 0332 default promotion):
   of the joined units preserves every unit). Module: `analyzer_multilingual.rs`; DDL identifier
   stays `multilingual` (the Meilisearch precedent: crate charabia, config field descriptive).
   The ABSENT `ANALYZER` clause, the provision default, and the DDL admission default all
-  resolve to 0 — the breaking V1-fresh-install consequence is that the DEFAULT index path now
-  requires the dictionary (the same MPD container as id 2), which the Provision canister now
-  supplies automatically through the plan 0335 catalog + relay — a newly provisioned
-  dictionary-carrying index reaches Ready with ZERO manual dictionary steps. Per-doc analysis
+  resolve to 0 with NO kinds selection (plan 0343) — the default index path is dict-less
+  koine and requires no dictionary; the Provision canister supplies a dictionary
+  automatically only when the definition pins kinds through `WITH DICTIONARY` — a newly
+  provisioned dictionary-carrying index reaches Ready with ZERO manual dictionary steps. Per-doc analysis
   cycles (canbench, ASCII fixture): composite 131.3K vs bigram 113.2K instructions (~16%
   Latin-layer overhead; the Japanese mecab layer rides the id-2 engine cost).
 - **`unicode_bigram` (id 1, non-default)** — Unicode segmentation + per-segment shared
@@ -126,7 +127,7 @@ landings + plan 0332 default promotion):
   over folded chars and non-CJK tokens emit folded; CJK character runs expand to overlapping
   bigrams (lone characters stay unigrams); ASCII words whole; NO rule layers (no Porter
   stem, no 조사 strip). Trigram indexing is a separate future index kind, not part of v1.
-- **`mecab` (ANALYZER_ID=2, plan 0334)**: MeCab-format ipadic 2.7.0 Viterbi lemma units over the
+- **`japanese` (ANALYZER_ID=2, plan 0334; renamed from `mecab` in plan 0343, id unchanged)**: MeCab-format ipadic 2.7.0 Viterbi lemma units over the
   `morph-dict` byte-image engine (derived from MeCrab, MIT OR Apache-2.0) — whole-text shared
   pre-pass (NFKC + lowercase + variation-selector strip), per-line bounded common-prefix search + Viterbi, ipadic base-form
   (基本形, feature column 6) for content words with particles/auxiliaries/symbols dropped, all
@@ -193,6 +194,46 @@ landings + plan 0332 default promotion):
   (< 5B); relay provision-side delta ~1.53T cycles; relayed canister memory_size
   ~381 MB (stable ~235 MB incl. buckets); stable $/month ~$0.111 at the $0.058-per-
   52.9 MB rate.
+
+### Per-index dictionary opt-in (plan 0343)
+
+Dictionaries are opt-in PER INDEX, not per canister-fleet: `CREATE TEXT INDEX ...
+[ANALYZER <name>] [WITH DICTIONARY <japanese|korean> [, ...]]`. The kinds selection
+is creation-fixed like the analyzer (the migration statement must pin the same kinds
+or fail closed). Topology is per-index: one `TextIndex` definition issues one
+`TextCanister` with a singleton `TextMeta{analyzer_id, kinds}` and an isolated
+region-16 container — no cross-canister dictionary sharing, so no multi-index layout
+decision was needed.
+
+- **Wire**: `TextCanisterInitArgs.kinds: Option<Vec<DictKind>>` (`None` = empty =
+  no-dict default; Candid fills only missing-optional, keeping old senders decodable).
+  `DictKind{Japanese, Korean}` is kernel-owned (`graph-kernel/.../dictionary.rs`);
+  canonical kind strings `japanese`/`korean` are locked; kinds ride to the canister
+  through the provision kinds→init-args packing (provision-stream owned).
+- **Strict matrix** (kernel `dict_required(analyzer, kinds)` SSOT, mirrored at Router
+  admission): 1 takes none; 2 takes exactly `[Japanese]`; 3 takes exactly `[Korean]`;
+  0 takes any SUBSET of `{Japanese, Korean}` (empty = dict-less koine). The Router
+  definition row pins the validated kinds (`TextIndexDefRecord.kinds`, V2 envelope —
+  V1 bytes panic fresh-reinstall, pre-production no-migration rule).
+- **Kind-driven load**: the single global `(Analyzer, DictKind)` slot resolves the
+  profile once at open/finalize from the KIND (`profile_for_kind`), not the id — the
+  old id-driven dispatch is gone. Multi-kind selections pass admission (representable)
+  but fail closed at the relay preflight (before the first upload) and at the canister
+  open (`len > 1`) until the single-container layout for two dictionaries is decided.
+- **Koine per-path fallback**: `loaded_kind()` drives each script path — Japanese
+  runs need `Japanese` loaded (else bigram fallback), Hangul runs need `Korean`
+  loaded (else the legacy 조사/어미 strip); dict-less koine (id 0, no kinds) analyzes
+  without any dictionary and no longer panics.
+- **E2E status**: kinds ride the provision args into `TextCanisterInitArgs.kinds`
+  (`ProvisionGraphArgs.text_kinds: Option<Vec<DictKind>>` — `Option` because Candid
+  only fills missing optional fields, per the kernel `init_args.rs:107` precedent;
+  empty/`None` keeps the pre-0343 init wire and relays zero calls). Relay E2E is green
+  on the strict surface: `ANALYZER japanese WITH DICTIONARY japanese`,
+  `ANALYZER korean WITH DICTIONARY korean`, and the single-kind composite
+  `ANALYZER multilingual WITH DICTIONARY japanese` (Korean recall runs the legacy
+  strip path; the multi-kind composite awaits the undecided multi-container layout).
+  Post-upgrade reopens carry no install-arg selection, so the persisted meta stays
+  the kinds SSOT (empty selection skips the match — fail-safe direction).
 
 ### Shared normalization + Japanese folding (plan 0339, ported to morph-dict in plan 0340)
 

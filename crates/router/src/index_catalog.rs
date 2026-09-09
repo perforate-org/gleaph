@@ -287,6 +287,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         owner: caller,
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
+        text_kinds: None,
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -320,19 +321,37 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
 pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 0;
 
 /// Resolves an `ANALYZER <name>` clause to its registered pipeline id (plan 0331,
-/// plan 0332 widening). Names are implementation names (MySQL `WITH PARSER
-/// ngram/mecab` precedent); ids stay internal. Unknown names fail closed at admission
-/// with this recorded wording.
+/// plan 0332 widening, plan 0343 rename `mecab` → `japanese`). Names are implementation
+/// names (MySQL `WITH PARSER ngram` precedent); ids stay internal. Unknown names fail
+/// closed at admission with this recorded wording (the old `mecab` name rejects here
+/// with the new wording — pre-production rename is free, no alias).
 pub(crate) fn resolve_analyzer_name(name: &str) -> Result<u32, RouterError> {
     // Ids mirror `text_canister::ANALYZER_MULTILINGUAL` / `ANALYZER_UNICODE_BIGRAM` /
     // `ANALYZER_MECAB` / `ANALYZER_KOREAN` (the Router does not depend on the canister crate).
     match name {
         "multilingual" => Ok(0),
         "unicode_bigram" => Ok(1),
-        "mecab" => Ok(2),
+        "japanese" => Ok(2),
         "korean" => Ok(3),
         other => Err(RouterError::InvalidArgument(format!(
-            "unknown ANALYZER name `{other}` (admitted set: multilingual, unicode_bigram, mecab, korean)"
+            "unknown ANALYZER name `{other}` (admitted set: multilingual, unicode_bigram, japanese, korean)"
+        ))),
+    }
+}
+
+/// Resolves one `WITH DICTIONARY <lang>` element to its kernel `DictKind` (plan 0343).
+/// The index-ddl parser already restricts the surface to the closed lowercase set;
+/// this re-normalizes defensively (trim + lowercase) and fails closed on anything
+/// outside {japanese, korean} HERE before any durable or remote effect.
+pub(crate) fn resolve_dict_kind(
+    name: &str,
+) -> Result<gleaph_graph_kernel::provisioning::dictionary::DictKind, RouterError> {
+    use gleaph_graph_kernel::provisioning::dictionary::DictKind;
+    match name.trim().to_lowercase().as_str() {
+        "japanese" => Ok(DictKind::Japanese),
+        "korean" => Ok(DictKind::Korean),
+        other => Err(RouterError::InvalidArgument(format!(
+            "unknown DICTIONARY kind `{other}` (admitted set: japanese, korean)"
         ))),
     }
 }
@@ -350,6 +369,7 @@ pub(crate) async fn execute_text_index_ddl_for_graph(
             label,
             property,
             analyzer,
+            dictionaries,
         } => {
             execute_create_text_index(
                 graph_id,
@@ -358,6 +378,7 @@ pub(crate) async fn execute_text_index_ddl_for_graph(
                 &property,
                 if_not_exists,
                 analyzer.as_deref(),
+                &dictionaries,
             )
             .await
         }
@@ -388,6 +409,7 @@ pub(crate) async fn execute_create_text_index(
     property: &str,
     if_not_exists: bool,
     analyzer: Option<&str>,
+    dictionaries: &[String],
 ) -> Result<(), RouterError> {
     use crate::facade::stable::text_index_catalog;
     use gleaph_graph_kernel::federation::TextIndexId;
@@ -404,6 +426,21 @@ pub(crate) async fn execute_create_text_index(
         None => TEXT_INDEX_ANALYZER_V0,
         Some(name) => resolve_analyzer_name(name)?,
     };
+    // Plan 0343: the kinds selection resolves element-wise (unknown kinds fail
+    // closed here); the (analyzer, kinds) strict matrix is enforced inside
+    // `register_text_index` before any durable or remote effect. The RESOLVED kinds
+    // ride to the canister init args through `provision_text_canister` →
+    // `ProvisionGraphArgs.text_kinds` → `build_install_args_with_router`
+    // (`TextCanisterInitArgs.kinds`, field name per the landed kernel `init_args.rs`); the
+    // definition row pins the same kinds, so admission, catalog, and init agree.
+    let mut kinds = dictionaries
+        .iter()
+        .map(|name| resolve_dict_kind(name))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Canonical order for replay equality (the DDL preserves input order; the
+    // catalog row is sorted — `register_text_index` re-normalizes defensively).
+    kinds.sort();
+    kinds.dedup();
     let store = RouterStore::new();
     let label_id = store.lookup_vertex_label_id(graph_id, vertex_label)?;
     let property_id = store.lookup_property_id(graph_id, property)?;
@@ -426,7 +463,8 @@ pub(crate) async fn execute_create_text_index(
         {
             let exact = existing.label_id == label_id
                 && existing.property_id == property_id
-                && existing.analyzer_id == analyzer_id;
+                && existing.analyzer_id == analyzer_id
+                && existing.kinds == kinds;
             if !exact {
                 return Err(RouterError::Conflict(format!(
                     "text index already exists with a different declaration: {index_name}"
@@ -445,7 +483,10 @@ pub(crate) async fn execute_create_text_index(
     let raw_id = text_index_catalog::allocate_text_index_id()?;
 
     let target = if crate::provisioning::config::get().is_some() {
-        Some(provision_text_canister(graph_id, TextIndexId::new(raw_id), analyzer_id).await?)
+        Some(
+            provision_text_canister(graph_id, TextIndexId::new(raw_id), analyzer_id, &kinds)
+                .await?,
+        )
     } else {
         None
     };
@@ -457,6 +498,7 @@ pub(crate) async fn execute_create_text_index(
         label_id,
         property_id,
         analyzer_id,
+        kinds,
         target,
         if_not_exists,
     )?;
@@ -520,6 +562,7 @@ async fn provision_text_canister(
     graph_id: GraphId,
     text_index_id: gleaph_graph_kernel::federation::TextIndexId,
     analyzer_id: u32,
+    kinds: &[gleaph_graph_kernel::provisioning::dictionary::DictKind],
 ) -> Result<candid::Principal, RouterError> {
     use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
@@ -538,6 +581,15 @@ async fn provision_text_canister(
         owner: caller,
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: analyzer_id,
+        // Plan 0343: admission-canonical (sorted, deduped) kinds ride the provision
+        // args into the canister init; `None` (not empty vec) marks the dict-less
+        // default at the source — `build_install_args_with_router` maps both to a
+        // kinds-less init wire, and the relay streams zero calls.
+        text_kinds: if kinds.is_empty() {
+            None
+        } else {
+            Some(kinds.to_vec())
+        },
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -892,6 +944,7 @@ async fn provision_index_canisters(
         owner: caller,
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
+        text_kinds: None,
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -1311,14 +1364,14 @@ mod tests {
     fn analyzer_names_resolve_to_registered_ids() {
         assert_eq!(resolve_analyzer_name("multilingual").expect("composite"), 0);
         assert_eq!(resolve_analyzer_name("unicode_bigram").expect("bigram"), 1);
-        assert_eq!(resolve_analyzer_name("mecab").expect("mecab"), 2);
+        assert_eq!(resolve_analyzer_name("japanese").expect("japanese"), 2);
         assert_eq!(resolve_analyzer_name("korean").expect("korean"), 3);
         let err = resolve_analyzer_name("nonsense").expect_err("unknown name");
         match err {
             RouterError::InvalidArgument(message) => {
                 assert!(
                     message.contains("unknown ANALYZER name `nonsense`")
-                        && message.contains("multilingual, unicode_bigram, mecab, korean"),
+                        && message.contains("multilingual, unicode_bigram, japanese, korean"),
                     "unexpected wording: {message}"
                 );
             }
@@ -1357,6 +1410,7 @@ mod tests {
             label_id,
             property_id,
             7,
+            vec![],
             None,
             false,
         )
@@ -1397,6 +1451,7 @@ mod tests {
             "title",
             false,
             None,
+            &[],
         ))
         .expect("create text index");
         let info =
@@ -1415,6 +1470,7 @@ mod tests {
             "title",
             false,
             None,
+            &[],
         ))
         .expect("exact replay");
         assert_eq!(
@@ -1436,6 +1492,7 @@ mod tests {
             "body",
             false,
             None,
+            &[],
         ))
         .expect_err("differing re-declaration must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
@@ -1465,6 +1522,7 @@ mod tests {
             "title",
             false,
             None,
+            &[],
         ))
         .expect_err("unknown label must fail closed");
         assert!(matches!(unknown_label, RouterError::NotFound(_)));
@@ -1485,7 +1543,13 @@ mod tests {
         ))
         .expect("create property index");
         let err = futures::executor::block_on(execute_create_text_index(
-            graph_id, name, "Document", "title", false, None,
+            graph_id,
+            name,
+            "Document",
+            "title",
+            false,
+            None,
+            &[],
         ))
         .expect_err("property-index-owned name must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
@@ -1516,6 +1580,7 @@ mod tests {
             label: "Document".into(),
             property: property.into(),
             analyzer: None,
+            dictionaries: Vec::new(),
         };
 
         futures::executor::block_on(execute_text_index_ddl_for_graph(
@@ -1579,6 +1644,7 @@ mod tests {
             "bio",
             false,
             None,
+            &[],
         ))
         .expect("create");
         let cursor_before =
@@ -1643,6 +1709,7 @@ mod tests {
             "bio",
             false,
             None,
+            &[],
         ))
         .expect("create");
         let name_id = lookup_index_name_id(graph_id, "doc_gate_text_idx").expect("name interned");
@@ -1783,6 +1850,7 @@ mod tests {
             "bio",
             false,
             None,
+            &[],
         ))
         .expect("create text index");
         let text_name_id =

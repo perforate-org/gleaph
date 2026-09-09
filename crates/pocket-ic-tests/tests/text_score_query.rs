@@ -688,7 +688,7 @@ fn text_score_compound_threshold_topk_lowers_and_ranks() {
     );
 }
 
-// -- Plan 0331: ANALYZER mecab (ANALYZER_ID=2) + stable-resident ipadic dictionary -----
+// -- Plan 0331: ANALYZER japanese (ANALYZER_ID=2, plan 0343 rename mecab -> japanese) + stable-resident ipadic dictionary -----
 
 /// The pinned ipadic artifact source (plan 0334): the immutable PyPI `ipadic 1.0.0`
 /// sdist — the compiled MeCab-format 2.7.0 utf8 four-image set. (The Debian snapshot
@@ -944,6 +944,11 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
             controller: Some(env.fed.router),
             analyzer_id: Some(text_canister::ANALYZER_MECAB),
             dict_relay_caller: None,
+            // Plan 0343: the bare id-2 budget leg pins kinds=[Japanese] explicitly
+            // (dict_required(2, [Japanese]) is the only true pair for id 2).
+            kinds: Some(vec![
+                gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese,
+            ]),
         })
         .expect("encode bare init"),
         None,
@@ -1038,7 +1043,7 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     // LEG 1 — GQL-surface admission with the ANALYZER clause: the provisioned canister
     // pins analyzer 2 (install-arg flow through Provision).
     let statement = format!(
-        "CREATE TEXT INDEX {MECAB_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER mecab"
+        "CREATE TEXT INDEX {MECAB_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER japanese WITH DICTIONARY japanese"
     );
     gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "mecab-ddl");
     let info = {
@@ -1056,7 +1061,10 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
             .expect("decode get_text_index")
             .expect("definition exists")
     };
-    assert_eq!(info.analyzer_id, 2, "the ANALYZER mecab clause pins id 2");
+    assert_eq!(
+        info.analyzer_id, 2,
+        "the ANALYZER japanese clause pins id 2"
+    );
     let canister = info.canister.expect("provisioned canister attached");
     env.fed.pic.add_cycles(canister, 50_000_000_000_000);
     env.fed
@@ -1145,6 +1153,8 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
             controller: Some(env.fed.admin),
             analyzer_id: Some(text_canister::ANALYZER_UNICODE_BIGRAM),
             dict_relay_caller: None,
+            // Plan 0343: dict-less bigram baseline (kinds omitted = no dict).
+            kinds: None,
         })
         .expect("encode bare id-1 init"),
         None,
@@ -1178,7 +1188,7 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     let args = migration_args(
         MECAB_MIGRATION_ID,
         &format!(
-            "CREATE TEXT INDEX {MECAB_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER mecab"
+            "CREATE TEXT INDEX {MECAB_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER japanese WITH DICTIONARY japanese"
         ),
     );
     drive_to_ready_for(&env, &args, MECAB_INDEX_NAME);
@@ -1249,7 +1259,7 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
     // (the relay has no Finalized entry to stream) and leave NO definition row. The
     // probe name is distinct so the failed job can never collide with the real index.
     let probe_statement = format!(
-        "CREATE TEXT INDEX {KOREAN_PROBE_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean"
+        "CREATE TEXT INDEX {KOREAN_PROBE_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean WITH DICTIONARY korean"
     );
     let probe_err = gleaph_pocket_ic_tests::gql_mutate_as_admin_expect_err(
         &env.fed,
@@ -1304,6 +1314,11 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
             controller: Some(env.fed.router),
             analyzer_id: Some(text_canister::ANALYZER_KOREAN),
             dict_relay_caller: None,
+            // Plan 0343: the bare id-3 budget leg pins kinds=[Korean] explicitly
+            // (dict_required(3, [Korean]) is the only true pair for id 3).
+            kinds: Some(vec![
+                gleaph_graph_kernel::provisioning::dictionary::DictKind::Korean,
+            ]),
         })
         .expect("encode bare id-3 init"),
         None,
@@ -1397,7 +1412,7 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
     // frames and finalizes — ZERO manual dictionary steps on this canister (no
     // admin_upload_dict_chunk call below touches it before the assertions).
     let statement = format!(
-        "CREATE TEXT INDEX {KOREAN_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean"
+        "CREATE TEXT INDEX {KOREAN_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean WITH DICTIONARY korean"
     );
     let provision_cycles_before = env.fed.pic.cycle_balance(env.provision);
     gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "korean-ddl");
@@ -1446,7 +1461,7 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
     let args = migration_args(
         KOREAN_MIGRATION_ID,
         &format!(
-            "CREATE TEXT INDEX {KOREAN_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean"
+            "CREATE TEXT INDEX {KOREAN_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER korean WITH DICTIONARY korean"
         ),
     );
     drive_to_ready_for(&env, &args, KOREAN_INDEX_NAME);
@@ -1610,30 +1625,19 @@ fn multilingual_composite_default_recalls_across_languages() {
     // the id-0 canister's dictionary during provisioning.
     seed_dictionary_catalog(&env, &raw, &frames);
 
-    // LEG 1 — DEFAULT admission: the bare admin endpoint carries NO analyzer
-    // argument; the absent clause must resolve to the composite (id 0).
-    let bytes = env
-        .fed
-        .pic
-        .update_call(
-            env.fed.router,
-            env.fed.admin,
-            "create_text_index",
-            Encode!(
-                &GRAPH_NAME.to_string(),
-                &INDEX_NAME.to_string(),
-                &LABEL.to_string(),
-                &PROPERTY.to_string()
-            )
-            .expect("encode create_text_index"),
-        )
-        .unwrap_or_else(|e| panic!("create_text_index on router: {e:?}"));
-    let info: TextIndexInfo = Decode!(&bytes, Result<TextIndexInfo, RouterError>)
-        .expect("decode create_text_index")
-        .expect("provisioned definition created");
+    // LEG 1 — plan 0343 single-kind composite: the GQL DDL surface with
+    // `ANALYZER multilingual WITH DICTIONARY japanese` resolves to (0, [Japanese])
+    // (id 0 takes any subset of {Japanese, Korean}; the multi-kind composite awaits
+    // the undecided multi-container layout). The bare-endpoint dict-less default is
+    // pinned by the text_index_provisioning E2E instead.
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER multilingual WITH DICTIONARY japanese"
+    );
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "composite-ddl");
+    let info = get_text_index_named(&env, INDEX_NAME);
     assert_eq!(
         info.analyzer_id, 0,
-        "the ABSENT clause must pin the multilingual composite (id 0)"
+        "the ANALYZER multilingual clause pins id 0"
     );
     let canister = info.canister.expect("provisioned canister attached");
     env.fed.pic.add_cycles(canister, 50_000_000_000_000);
@@ -1641,10 +1645,11 @@ fn multilingual_composite_default_recalls_across_languages() {
         .pic
         .add_cycles(env.fed.graph_source, 20_000_000_000_000);
 
-    // LEG 2 — the post-install RELAY covers id 0 (the plan 0332 widening: ids {0, 2}
-    // share the dictionary machinery): the provisioned canister's dictionary is
-    // already relay-Finalized, and the backfill registration that used to HOLD now
-    // proceeds (fail-closed → success is the observable widening).
+    // LEG 2 — the post-install RELAY covers the selected kind: the provisioned
+    // canister's dictionary is already relay-Finalized (ipadic), and the backfill
+    // registration proceeds with no hold. Korean recall in LEG 5/6 runs the legacy
+    // strip path (as in the 0332 era); ko-dic lemma quality is pinned by the
+    // dedicated korean leg instead.
     let status = get_dict_status(&env, canister);
     assert_eq!(status.state, text_canister::DictState::Finalized);
     let dict = fetch_mecab_container();
@@ -1652,9 +1657,11 @@ fn multilingual_composite_default_recalls_across_languages() {
     assert_eq!(status.digest, Some(digest));
     assert_eq!(status.len, dict.len() as u64);
 
-    // LEG 4 — the SAME registration that held now replays idempotently; the
-    // migration statement carries the ABSENT clause (the default IS id 0).
-    let statement = format!("CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY})");
+    // LEG 4 — the migration statement carries the SAME (analyzer, kinds) selection
+    // (the kinds-match gate compares statement kinds against the pinned row).
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER multilingual WITH DICTIONARY japanese"
+    );
     let args = migration_args(COMPOSITE_MIGRATION_ID, &statement);
     drive_to_ready_for(&env, &args, INDEX_NAME);
     assert_eq!(
@@ -1736,7 +1743,7 @@ const FOLDING_MIGRATION_ID: &str = "000106_text_score_folding";
 const IVS_DOC: &str = "葛\u{E0100}区";
 
 /// One leg proving the plan 0339 folding contract end-to-end through provisioning +
-/// backfill + GQL on the ANALYZER mecab (id 2) pipeline (the dictionary is supplied
+/// backfill + GQL on the ANALYZER japanese (id 2, plan 0343 rename mecab -> japanese) pipeline (the dictionary is supplied
 /// automatically by the plan 0335 catalog relay — ZERO manual dict steps):
 ///   (a) an IVS-bearing doc is recalled by the bare-base query (and by its own
 ///       IVS-literal query — the strip is side-symmetric);
@@ -1768,13 +1775,17 @@ fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
     // the provisioned mecab canister — ZERO manual dict steps.
     seed_dictionary_catalog(&env, &raw, &frames);
 
-    // Declare via the GQL DDL surface with ANALYZER mecab (id 2).
+    // Declare via the GQL DDL surface with ANALYZER japanese (id 2) + the strict
+    // WITH DICTIONARY japanese selection (plan 0343: id 2 admits exactly [Japanese]).
     let statement = format!(
-        "CREATE TEXT INDEX {FOLDING_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER mecab"
+        "CREATE TEXT INDEX {FOLDING_INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER japanese WITH DICTIONARY japanese"
     );
     gleaph_pocket_ic_tests::gql_mutate_as_admin(&env.fed, &statement, "folding-ddl");
     let info = get_text_index_named(&env, FOLDING_INDEX_NAME);
-    assert_eq!(info.analyzer_id, 2, "the ANALYZER mecab clause pins id 2");
+    assert_eq!(
+        info.analyzer_id, 2,
+        "the ANALYZER japanese clause pins id 2"
+    );
     let canister = info.canister.expect("provisioned canister attached");
     env.fed.pic.add_cycles(canister, 50_000_000_000_000);
     env.fed

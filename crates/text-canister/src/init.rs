@@ -1,6 +1,7 @@
 //! Candid-shaped init args for the text index canister.
 
 use candid::{CandidType, Principal};
+use gleaph_graph_kernel::provisioning::dictionary::DictKind;
 use serde::{Deserialize, Serialize};
 
 /// Init args for the text index canister. `None` / omitted fields (or bare wasm installs
@@ -22,4 +23,10 @@ pub struct TextCanisterInitArgs {
     /// in addition to the stored controller (Router). `None`/anonymous denies everyone on
     /// those endpoints. Mirrors the shared `graph_kernel::provisioning::init_args` field.
     pub dict_relay_caller: Option<Principal>,
+    /// Selected dictionary kinds (plan 0343): mirrors the shared
+    /// `graph_kernel::provisioning::init_args` field exactly. `None` (or an omitted field
+    /// from a pre-0343 sender — Candid fills missing optionals) = no dictionary (the new
+    /// default; koine falls back to bigram on CJK paths). Validated fail-closed at the
+    /// open against the (analyzer, kinds) strict matrix and recorded into `TextMeta`.
+    pub kinds: Option<Vec<DictKind>>,
 }

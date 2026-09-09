@@ -26,8 +26,9 @@ pub enum IndexDdlStatement {
 /// Gleaph-specific `CREATE TEXT INDEX` / `DROP TEXT INDEX` DDL (plan 0297 `backfill-pull`;
 /// ADR 0059 §Text build kind).
 ///
-/// Grammar (recorded decision, 2026-08-26; analyzer clause per plan 0331):
-/// `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>) [ ANALYZER <ident> ]`
+/// Grammar (recorded decision, 2026-08-26; analyzer clause per plan 0331; dictionary
+/// clause per plan 0343):
+/// `CREATE TEXT INDEX [IF NOT EXISTS] <name> FOR (<var>:<Label>) ON (<same var>.<prop>) [ ANALYZER <ident> [WITH DICTIONARY <lang>[, ...]] ]`
 /// and `DROP TEXT INDEX <name> [IF EXISTS]`. The optional analyzer clause parses after
 /// the ON group, case-insensitive keyword, identifier token (implementation name, never
 /// a numeric id). An absent clause is `None` = the default analyzer — plan 0332
@@ -43,13 +44,21 @@ pub enum TextIndexDdlStatement {
         if_not_exists: bool,
         label: String,
         property: String,
-        /// Implementation analyzer name pinned at creation (e.g. `mecab`);
+        /// Implementation analyzer name pinned at creation (e.g. `japanese`);
         /// `None` = the default analyzer (plan 0332: the multilingual composite,
         /// id 0); the parse accepts any identifier — names resolve at admission.
         /// the default unicode-bigram pipeline, byte-identical to pre-0331 behavior.
         /// Name → id resolution (and unknown-name rejection) is admission-owned, never
         /// parser-owned: the parser only accepts a bare identifier.
         analyzer: Option<String>,
+        /// Selected dictionary kinds pinned at creation (plan 0343): lowercase-normalized
+        /// `japanese` / `korean` tokens in order of appearance; empty = no dictionary
+        /// (the default — koine falls back to bigram on CJK paths). The parser validates
+        /// the closed kind set, rejects duplicates, and requires the ANALYZER clause:
+        /// a bare `WITH DICTIONARY` without `ANALYZER` is a parse error (STRICT —
+        /// no implied cost). (Analyzer, kinds) strict-matrix validation is
+        /// admission-owned, never parser-owned.
+        dictionaries: Vec<String>,
     },
     Drop {
         index_name: String,
@@ -67,6 +76,12 @@ pub enum TextIndexDdlParseError {
     VariableMismatch,
     #[error("edge patterns are not supported in CREATE TEXT INDEX")]
     EdgePatternUnsupported,
+    #[error("unknown DICTIONARY kind `{0}` (admitted set: japanese, korean)")]
+    UnknownDictionaryKind(String),
+    #[error("duplicate DICTIONARY kind `{0}`")]
+    DuplicateDictionaryKind(String),
+    #[error("WITH DICTIONARY requires an ANALYZER clause (no implied dictionary cost)")]
+    DictionaryClauseWithoutAnalyzer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -259,11 +274,40 @@ fn parse_text(query: &str) -> Result<TextIndexDdlStatement, TextIndexDdlParseErr
         }
         // Optional ANALYZER clause (plan 0331): a bare identifier after the ON group;
         // anything not followed by the keyword stays ordinary trailing-input handling.
+        // Optional WITH DICTIONARY clause (plan 0343): only after ANALYZER (STRICT —
+        // a bare WITH DICTIONARY without ANALYZER is a parse error, no implied cost).
         let analyzer = if cur.try_consume_ascii_ci("ANALYZER") {
             cur.skip_ws();
             Some(cur.parse_ident()?)
         } else {
             None
+        };
+        let dictionaries = if cur.try_consume_ascii_ci("WITH") {
+            cur.skip_ws();
+            cur.expect_ascii_ci("DICTIONARY")?;
+            let Some(_) = analyzer else {
+                return Err(TextIndexDdlParseError::DictionaryClauseWithoutAnalyzer);
+            };
+            let mut kinds = Vec::new();
+            loop {
+                cur.skip_ws();
+                let raw = cur.parse_ident()?;
+                let kind = raw.to_ascii_lowercase();
+                if kind != "japanese" && kind != "korean" {
+                    return Err(TextIndexDdlParseError::UnknownDictionaryKind(raw));
+                }
+                if kinds.contains(&kind) {
+                    return Err(TextIndexDdlParseError::DuplicateDictionaryKind(kind));
+                }
+                kinds.push(kind);
+                cur.skip_ws();
+                if !cur.try_consume(',') {
+                    break;
+                }
+            }
+            kinds
+        } else {
+            Vec::new()
         };
         cur.try_consume(';');
         cur.skip_ws();
@@ -276,6 +320,7 @@ fn parse_text(query: &str) -> Result<TextIndexDdlStatement, TextIndexDdlParseErr
             label,
             property,
             analyzer,
+            dictionaries,
         })
     } else if cur.consume_ascii_ci("DROP") {
         cur.expect_ascii_ci("TEXT")?;
@@ -1667,6 +1712,7 @@ mod tests {
                 label: "Person".into(),
                 property: "bio".into(),
                 analyzer: None,
+                dictionaries: Vec::new(),
             }
         );
         // Case-insensitive keywords, optional semicolon.
@@ -1700,6 +1746,7 @@ mod tests {
                 label: "Person".into(),
                 property: "bio".into(),
                 analyzer: None,
+                dictionaries: Vec::new(),
             }
         );
     }
@@ -1709,7 +1756,7 @@ mod tests {
     #[test]
     fn text_ddl_parses_analyzer_clause_after_on_group() {
         let parsed =
-            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER mecab;")
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER japanese;")
                 .expect("text DDL")
                 .expect("parse");
         assert_eq!(
@@ -1719,7 +1766,8 @@ mod tests {
                 if_not_exists: false,
                 label: "Person".into(),
                 property: "bio".into(),
-                analyzer: Some("mecab".into()),
+                analyzer: Some("japanese".into()),
+                dictionaries: Vec::new(),
             }
         );
         // Case-insensitive keyword; case-preserving identifier (admission resolves it).
@@ -1736,6 +1784,7 @@ mod tests {
                 label: "person".into(),
                 property: "bio".into(),
                 analyzer: Some("UNICODE_BIGRAM".into()),
+                dictionaries: Vec::new(),
             }
         );
         // Plan 0332: the composite's DDL identifier parses like any other name
@@ -1754,6 +1803,7 @@ mod tests {
                 label: "Person".into(),
                 property: "bio".into(),
                 analyzer: Some("multilingual".into()),
+                dictionaries: Vec::new(),
             }
         );
         // Plan 0341: the Korean DDL identifier parses like any other name
@@ -1770,6 +1820,7 @@ mod tests {
                 label: "Person".into(),
                 property: "bio".into(),
                 analyzer: Some("korean".into()),
+                dictionaries: Vec::new(),
             }
         );
     }
@@ -1782,10 +1833,11 @@ mod tests {
             .expect_err("numeric analyzer id");
         assert!(matches!(numeric, TextIndexDdlParseError::Expected(_)));
         // Trailing input after the clause still rejects.
-        let trailing =
-            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER mecab EXTRA")
-                .expect("recognized")
-                .expect_err("trailing input");
+        let trailing = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER japanese EXTRA",
+        )
+        .expect("recognized")
+        .expect_err("trailing input");
         assert_eq!(trailing, TextIndexDdlParseError::TrailingInput);
     }
 
@@ -1821,5 +1873,92 @@ mod tests {
             .expect("text DDL")
             .expect_err("edge pattern");
         assert_eq!(edge, TextIndexDdlParseError::EdgePatternUnsupported);
+    }
+
+    // -- WITH DICTIONARY clause (plan 0343) --------------------------------------------------
+
+    #[test]
+    fn text_ddl_parses_with_dictionary_matrix() {
+        // Absent clause = empty (the default: no dictionary).
+        let no_clause =
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER japanese")
+                .expect("text DDL")
+                .expect("parse");
+        assert_eq!(
+            no_clause,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "Person".into(),
+                property: "bio".into(),
+                analyzer: Some("japanese".into()),
+                dictionaries: Vec::new(),
+            }
+        );
+        // Single kind.
+        let single = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER japanese WITH DICTIONARY japanese;",
+        )
+        .expect("text DDL")
+        .expect("parse");
+        assert_eq!(
+            single,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "Person".into(),
+                property: "bio".into(),
+                analyzer: Some("japanese".into()),
+                dictionaries: vec!["japanese".to_string()],
+            }
+        );
+        // Multi-kind keeps order of appearance; keywords case-insensitive, kinds
+        // lowercase-normalized.
+        let multi = try_parse_text(
+            "create text index docs for (v:person) on (v.bio) analyzer multilingual with dictionary KOREAN, japanese",
+        )
+        .expect("text DDL")
+        .expect("parse");
+        assert_eq!(
+            multi,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "person".into(),
+                property: "bio".into(),
+                analyzer: Some("multilingual".into()),
+                dictionaries: vec!["korean".to_string(), "japanese".to_string()],
+            }
+        );
+        // Unknown kind => parse error (closed set).
+        let unknown = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER multilingual WITH DICTIONARY chinese",
+        )
+        .expect("text DDL")
+        .expect_err("unknown kind");
+        assert_eq!(
+            unknown,
+            TextIndexDdlParseError::UnknownDictionaryKind("chinese".into())
+        );
+        // Duplicates rejected (case-insensitively: normalization precedes the check).
+        let dup = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER multilingual WITH DICTIONARY japanese, JAPANESE",
+        )
+        .expect("text DDL")
+        .expect_err("duplicate kind");
+        assert_eq!(
+            dup,
+            TextIndexDdlParseError::DuplicateDictionaryKind("japanese".into())
+        );
+        // STRICT: bare WITH DICTIONARY without ANALYZER is a parse error.
+        let bare = try_parse_text(
+            "CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) WITH DICTIONARY japanese",
+        )
+        .expect("text DDL")
+        .expect_err("bare WITH DICTIONARY");
+        assert_eq!(
+            bare,
+            TextIndexDdlParseError::DictionaryClauseWithoutAnalyzer
+        );
     }
 }

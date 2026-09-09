@@ -80,9 +80,10 @@ fn install_text_canister(pic: &PocketIc, controller: Option<Principal>) -> Princ
         Encode!(&text_canister::TextCanisterInitArgs {
             controller,
             // Plan 0331: the bare lifecycle probe stays on the default unicode-bigram
-            // pipeline (no dictionary needed).
+            // pipeline (no dictionary needed). Plan 0343: kinds omitted = no dict.
             analyzer_id: Some(text_canister::ANALYZER_UNICODE_BIGRAM),
             dict_relay_caller: None,
+            kinds: None,
         })
         .expect("encode text init"),
         None,

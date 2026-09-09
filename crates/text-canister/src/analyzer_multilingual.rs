@@ -212,7 +212,17 @@ fn flush_cjk_to_layers(cjk_run: &mut String, out: &mut Vec<String>) {
         // Hand the whole CJK run to the mecab layer (one whole-text Viterbi call).
         // The layer is the same id-2 analyzer, so its emission is the documented
         // Japanese DictionaryProfile lemma set.
-        out.extend(crate::analyzer_mecab::analyze(cjk_run));
+        // Plan 0343: the Japanese path needs the Japanese dictionary. Without it
+        // the run falls back to v1 bigram expansion (deterministic per the bigram
+        // contract) — dict-less koine is a supported configuration, so the old
+        // fail-closed panic is gone.
+        if crate::analyzer_mecab::loaded_kind()
+            == Some(gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese)
+        {
+            out.extend(crate::analyzer_mecab::analyze(cjk_run));
+        } else {
+            emit_bigrams(cjk_run, out);
+        }
     } else {
         // Pure-Han run: v1 bigram expansion (the fundamental zh/ja ambiguity:
         // bigram is correct for both; dual-emission of mecab+bigram units is the
@@ -592,13 +602,21 @@ fn match_josa(chars: &[char]) -> Option<usize> {
     best
 }
 
-/// Korean layer: surface+stem dual emission. Strips one maximal 어미 (then 조사,
-/// when no 어미 matched) suffix and emits both the surface and the stem. The
-/// surface keeps the eojeol recall (a query for the eojeol itself); the stem adds
+/// Korean layer: dictionary-or-strip dispatch (plan 0343). When the Korean dictionary
+/// is loaded the run goes through the pinned mecab analyzer (ko-dic lemma units — the
+/// same emission as the dedicated id-3 pipeline); otherwise the legacy surface+stem
+/// dual emission below applies (closed-class strip, dict-free).
+/// The surface keeps the eojeol recall (a query for the eojeol itself); the stem adds
 /// the base-form recall (a query for the root word matches the eojeol via the
 /// stem unit). The strip is approximate (closed class, no dictionary stem
 /// reconstruction); the surface unit makes the layer recall-safe regardless.
 fn layer_hangul(run: &str, out: &mut Vec<String>) {
+    if crate::analyzer_mecab::loaded_kind()
+        == Some(gleaph_graph_kernel::provisioning::dictionary::DictKind::Korean)
+    {
+        out.extend(crate::analyzer_mecab::analyze(run));
+        return;
+    }
     let chars: Vec<char> = run.chars().collect();
     if chars.is_empty() {
         return;
@@ -975,17 +993,23 @@ mod tests {
     }
 
     #[test]
-    fn japanese_layer_requires_dictionary() {
-        // The Japanese layer delegates to the mecab analyzer; without the
-        // dictionary loaded, analyzing Japanese text panics (the same fail-closed
-        // contract as id 2). Pure-Han text does NOT need the dictionary.
-        let pure_han = analyze("数据库");
-        assert_eq!(pure_han, vec!["数据", "据库"]);
+    fn japanese_layer_falls_back_to_bigram_without_dictionary() {
+        // Plan 0343: dict-less koine is a supported configuration. The Japanese
+        // path needs the Japanese dictionary; without it kana-bearing runs fall
+        // back to v1 bigram expansion (deterministic per the bigram contract).
+        // Pure-Han text never needed the dictionary.
+        crate::analyzer_mecab::reset();
+        let pure_han = analyze("\u{6570}\u{636e}\u{5e93}");
+        assert_eq!(pure_han, vec!["\u{6570}\u{636e}", "\u{636e}\u{5e93}"]);
 
-        // Japanese with kana needs the dictionary; if the dictionary is absent the
-        // analyzer panics (we do not test the panic here — id 0 operations gate
-        // through the state.rs open validation that ensures the dictionary is
-        // loaded for id-0 indexes).
+        // Kana-bearing run without a loaded dictionary: bigram fallback. Note the
+        // run segmenter splits kana out of the CJK run (は = U+306F is its own
+        // single-char run), so 日本語 bigrams and は stays a unigram.
+        let kana = analyze("\u{65e5}\u{672c}\u{8a9e}\u{306f}");
+        assert_eq!(
+            kana,
+            vec!["\u{65e5}\u{672c}", "\u{672c}\u{8a9e}", "\u{306f}"]
+        );
     }
 
     #[test]

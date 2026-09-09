@@ -44,15 +44,16 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
     auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_CATALOG)?;
     let ApplySchemaMigrationArgs::V1(args) = args;
 
-    let (index_name, label, property, analyzer) =
+    let (index_name, label, property, analyzer, dictionaries) =
         match crate::index_ddl::try_parse_text(&args.statement) {
             Some(Ok(crate::index_ddl::TextIndexDdlStatement::Create {
                 index_name,
                 label,
                 property,
                 analyzer,
+                dictionaries,
                 if_not_exists: _,
-            })) => (index_name, label, property, analyzer),
+            })) => (index_name, label, property, analyzer, dictionaries),
             Some(Ok(crate::index_ddl::TextIndexDdlStatement::Drop { .. })) => {
                 return Err(RouterError::InvalidArgument(
                     "TEXT backfill migrations only accept CREATE TEXT INDEX statements".into(),
@@ -154,6 +155,21 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
         return Err(RouterError::InvalidArgument(format!(
             "CREATE TEXT INDEX analyzer {} does not match the pinned definition analyzer {}              (analyzer changes require a new index + re-backfill)",
             statement_analyzer_id, def.analyzer_id
+        )));
+    }
+    // Plan 0343: the kinds selection is creation-fixed like the analyzer — the
+    // migration statement must pin the SAME kinds (canonical order) as the
+    // definition row.
+    let mut statement_kinds = dictionaries
+        .iter()
+        .map(|name| crate::index_catalog::resolve_dict_kind(name))
+        .collect::<Result<Vec<_>, _>>()?;
+    statement_kinds.sort();
+    statement_kinds.dedup();
+    if def.kinds != statement_kinds {
+        return Err(RouterError::InvalidArgument(format!(
+            "CREATE TEXT INDEX dictionaries {statement_kinds:?} do not match the pinned definition kinds {:?} (kinds changes require a new index + re-backfill)",
+            def.kinds
         )));
     }
 

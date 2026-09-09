@@ -13,6 +13,13 @@
 //! then the migration lane drives it to Applied/Ready; (b) identical re-issue → same canister
 //! id, no second creation; (c) anonymous caller rejected.
 //!
+//! Plan 0343: dictionaries are per-index opt-in, so the DEFAULT (dict-less koine, no kinds)
+//! provisions with NO catalog seeding — the 0335-era catalog legs (unseeded fail-closed,
+//! non-Finalized refusal, relay-finalized asserts) encoded the old analyzer-only
+//! `dict_required = {0,2,3}` contract and are removed here. The dictionary-carrying
+//! fail-closed E2E (kinds-pinned row + unseeded catalog → relay refuses) awaits the
+//! provision-stream kinds→init-args packing plus the `WITH DICTIONARY` E2E legs.
+//!
 //! Run note: when `POCKET_IC_SKIP_FEDERATION_WASM=1` is set (federation sources mid-change),
 //! this target self-builds the router/provision wasms in an isolated target dir, mirroring the
 //! `text_index_lifecycle` escape hatch. Artifact paths may be supplied via
@@ -472,134 +479,13 @@ fn get_text_index(
 }
 
 /// Controller-guarded `admin_flush` on the provisioned canister, called as `from`.
-// -- Plan 0332: the id-0 default requires the finalized dictionary -------------------------
+// -- Plan 0343: no catalog seeding ------------------------------------------------------
 
-/// Returns the MORPHDICT1 container bytes (identical source discipline to the
-/// text_score_query legs: the pinned PyPI ipadic 1.0.0 four-image set, fail-closed).
-fn fetch_mecab_container() -> Vec<u8> {
-    const IMAGES: [&str; 4] = ["sys.dic", "unk.dic", "matrix.bin", "char.bin"];
-    const MECAB_DICT_URL: &str = "https://files.pythonhosted.org/packages/e7/4e/c459f94d62a0bef89f866857bc51b9105aff236b83928618315b41a26b7b/ipadic-1.0.0.tar.gz";
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join("mecrab");
-    if !dir.join("sys.dic").exists() {
-        std::fs::create_dir_all(&dir).expect("create resources/mecrab");
-        let tarball = dir.join("ipadic-1.0.0.tar.gz");
-        let status = Command::new("curl")
-            .args(["-sL", "-o"])
-            .arg(&tarball)
-            .arg(MECAB_DICT_URL)
-            .status()
-            .expect("spawn curl for the ipadic dictionary");
-        assert!(status.success(), "curl fetch of {MECAB_DICT_URL} failed");
-        let extracted = Command::new("tar")
-            .args(["-xzf"])
-            .arg(&tarball)
-            .arg("-C")
-            .arg(&dir)
-            .status()
-            .expect("spawn tar");
-        assert!(
-            extracted.success(),
-            "tar extract of the ipadic tarball failed"
-        );
-        let dicdir = dir.join("ipadic-1.0.0").join("ipadic").join("dicdir");
-        for name in IMAGES {
-            std::fs::copy(dicdir.join(name), dir.join(name))
-                .unwrap_or_else(|e| panic!("move {name} into place: {e}"));
-        }
-        std::fs::remove_dir_all(dir.join("ipadic-1.0.0")).expect("remove extracted tree");
-        std::fs::remove_file(&tarball).expect("remove tarball");
-    }
-    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
-    for name in IMAGES {
-        images.push((
-            name.to_string(),
-            std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}")),
-        ));
-    }
-    morph_dict::container::build(images)
-}
-
-/// Plan 0342 todo 4: seeds the Provision dictionary catalog with the FRAMED REAL MPD
-/// container (N independent zstd frames, level 19, adaptive slice-to-cap so each frame fits
-/// the kernel relay cap). Size correction (management-verified): the container is the FULL
-/// `morph_dict::container::build` output — 52,931,159 B = image sum 52,930,923 + 236 B
-/// framing (header + entry table) — so `raw_len`/`raw_digest` pin the full bytes, not the
-/// four-image sum. Frame i = catalog row i = relay call i; each row's `frame_digest` is
-/// verified at upload time. Returns `raw` for the digest assertions.
-/// The (raw, frames) pair MUST be computed BEFORE `bootstrap()` (zstd-19 framing idles
-/// ~85 s, past the PocketIC server idle TTL) and passed in here.
-fn seed_dict_catalog(env: &Env, raw: &[u8], frames: &[Vec<u8>]) -> Vec<u8> {
-    use gleaph_provision::types::{
-        DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs,
-    };
-    let key = DictCatalogKey {
-        kind: "ipadic".to_owned(),
-        version: "2.7.0".to_owned(),
-    };
-    for (chunk_index, frame) in frames.iter().enumerate() {
-        let bytes = env
-            .pic
-            .update_call(
-                env.provision,
-                env.admin,
-                "admin_upload_dict_catalog_chunk",
-                Encode!(&DictCatalogUploadChunkArgs {
-                    key: key.clone(),
-                    chunk_index: chunk_index as u32,
-                    frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
-                    bytes: frame.clone(),
-                })
-                .expect("encode catalog chunk"),
-            )
-            .unwrap_or_else(|e| panic!("admin_upload_dict_catalog_chunk: {e:?}"));
-        let status: Result<
-            gleaph_provision::types::DictCatalogStatus,
-            gleaph_provision::types::DictCatalogError,
-        > = Decode!(
-            &bytes,
-            Result<
-                gleaph_provision::types::DictCatalogStatus,
-                gleaph_provision::types::DictCatalogError,
-            >
-        )
-        .expect("decode catalog upload reply");
-        status.expect("catalog chunk accepted");
-    }
-    let bytes = env
-        .pic
-        .update_call(
-            env.provision,
-            env.admin,
-            "admin_finalize_dict_catalog",
-            Encode!(&DictCatalogFinalizeArgs {
-                key: key.clone(),
-                raw_digest: xxhash_rust::xxh3::xxh3_128(raw),
-                raw_len: raw.len() as u64,
-            })
-            .expect("encode catalog finalize"),
-        )
-        .unwrap_or_else(|e| panic!("admin_finalize_dict_catalog: {e:?}"));
-    let status: Result<
-        gleaph_provision::types::DictCatalogStatus,
-        gleaph_provision::types::DictCatalogError,
-    > = Decode!(
-        &bytes,
-        Result<
-            gleaph_provision::types::DictCatalogStatus,
-            gleaph_provision::types::DictCatalogError,
-        >
-    )
-    .expect("decode catalog finalize reply");
-    let status = status.expect("catalog finalize accepted");
-    assert_eq!(
-        status.state,
-        gleaph_provision::types::DictCatalogState::Finalized,
-        "catalog must be Finalized before provisioning"
-    );
-    raw.to_vec()
-}
+/// The default (dict-less koine) path needs no dictionary catalog: the relay skips
+/// `dict_required(0, []) == false` pairs, so `fetch_mecab_container` / `seed_dict_catalog`
+/// (0332/0342-era) are deleted. Catalog upload/finalize paths stay covered by the
+/// provision-crate tests; dictionary-carrying relay E2E returns with the
+/// `WITH DICTIONARY` legs once the provision stream packs kinds into the init args.
 
 fn admin_flush_as(env: &Env, from: Principal) -> text_canister::FlushReport {
     let bytes = env
@@ -693,10 +579,8 @@ fn apply_retrying_busy(
 /// One bootstrap serves all three scenarios in order.
 #[test]
 fn text_index_provisions_replays_and_guards() {
-    // Framed container FIRST: zstd-19 framing idles ~85 s, past the PocketIC server idle
-    // TTL, so the bytes must exist before the server boots.
-    let raw = fetch_mecab_container();
-    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
+    // Plan 0343: no dictionary bytes are needed (dict-less koine relays nothing), so the
+    // 0342-era fetch+frame hoist is gone — bootstrap directly.
     let env = bootstrap();
     activate_release(&env);
     register_graph(&env);
@@ -743,85 +627,21 @@ fn text_index_provisions_replays_and_guards() {
     ensure_vertex_label(&env, "Document");
     ensure_property(&env, "title");
 
-    // --- (a.0) fail-closed POSITIVE legs (plan 0335 todo 4): provisioning a
-    // dictionary-required text index without a Finalized catalog entry must fail closed
-    // with the relay's internal reason — never a silently dictionary-less canister.
-    // Distinct index names keep the failed jobs clear of the main INDEX_NAME flow.
-    let unseeded_err = create_text_index(&env, env.admin, "unseeded_text_idx", "Document", "title")
-        .expect_err("provisioning without a seeded catalog must fail closed");
-    assert!(
-        matches!(unseeded_err, RouterError::Internal(ref m) if m.contains("missing from created_resources")),
-        "unexpected unseeded error: {unseeded_err:?}"
-    );
+    // Plan 0343: no separate unseeded probe — the main (a) issuance below IS the
+    // new-contract proof (dict-less koine provisions with no catalog, born Backfilling).
+    // A second Backfilling index would halve the migration driver's bounded-step budget.
 
-    // One frame uploaded but NOT finalized → the relay must still refuse (entry is not
-    // Finalized); the main seeding then completes over the same key.
-    {
-        use gleaph_provision::types::{DictCatalogKey, DictCatalogUploadChunkArgs};
-        let key = DictCatalogKey {
-            kind: "ipadic".to_owned(),
-            version: "2.7.0".to_owned(),
-        };
-        let bytes = env
-            .pic
-            .update_call(
-                env.provision,
-                env.admin,
-                "admin_upload_dict_catalog_chunk",
-                Encode!(&DictCatalogUploadChunkArgs {
-                    key: key.clone(),
-                    chunk_index: 0,
-                    frame_digest: xxhash_rust::xxh3::xxh3_128(&frames[0]),
-                    bytes: frames[0].clone(),
-                })
-                .expect("encode catalog chunk"),
-            )
-            .unwrap_or_else(|e| panic!("admin_upload_dict_catalog_chunk: {e:?}"));
-        let status: Result<
-            gleaph_provision::types::DictCatalogStatus,
-            gleaph_provision::types::DictCatalogError,
-        > = Decode!(
-            &bytes,
-            Result<
-                gleaph_provision::types::DictCatalogStatus,
-                gleaph_provision::types::DictCatalogError,
-            >
-        )
-        .expect("decode catalog upload reply");
-        let status = status.expect("first frame accepted");
-        assert_eq!(
-            status.state,
-            gleaph_provision::types::DictCatalogState::Uploading,
-            "catalog entry with one frame is Uploading, not Finalized"
-        );
-        let not_finalized_err = create_text_index(
-            &env,
-            env.admin,
-            "unfinalized_catalog_text_idx",
-            "Document",
-            "title",
-        )
-        .expect_err("provisioning against a non-Finalized catalog must fail closed");
-        assert!(
-            matches!(not_finalized_err, RouterError::Internal(ref m) if m.contains("missing from created_resources")),
-            "unexpected non-Finalized error: {not_finalized_err:?}"
-        );
-    }
+    // Plan 0343: the non-Finalized-catalog refusal leg is removed with the catalog
+    // seeding — the relay never runs for the default path, so catalog state is
+    // irrelevant here. Refusal for dictionary-carrying pairs stays unit-covered
+    // (kernel `dict_required` + relay preflight) until the WITH DICTIONARY E2E lands.
 
     // --- (a) issue → canister created with Text kind + definition registered + born Backfilling ---
-    let raw = seed_dict_catalog(&env, &raw, &frames);
-    // Gate-2 measurement (plan 0342): the provision canister executes the relay (catalog
-    // streaming + the text canister's per-frame decode + finalize). Its cycle delta across
-    // create_text_index isolates the relayed work end-to-end (inter-canister send costs
-    // included; the raw-path finalize measured 275,016,142 cycles in 0334 for scale).
-    let provision_cycles_before = env.pic.cycle_balance(env.provision);
+    // Plan 0343: no catalog seeding — the default path relays nothing (the 0342 gate-2
+    // relay-cost measurement lives on in the text_score_query dictionary legs).
     let info = create_text_index(&env, env.admin, INDEX_NAME, "Document", "title")
         .expect("issue must succeed");
     let canister = info.canister.expect("provisioned canister attached");
-    let relay_cycles = provision_cycles_before.saturating_sub(env.pic.cycle_balance(env.provision));
-    println!(
-        "plan-0342 relay cost (provision-side: catalog streaming + relay calls incl. the text canister's per-frame decode + finalize) cycles: {relay_cycles}"
-    );
     assert_ne!(canister, Principal::anonymous());
     // ADR 0059: a provisioned text definition is born Backfilling (planner-invisible) and flips
     // to Ready only after the migration ledger's convergence proof (scan-done AND flushed
@@ -893,13 +713,10 @@ fn text_index_provisions_replays_and_guards() {
         denied.reject_message
     );
 
-    // --- (a.1) plan 0335 todo 4: the RELAY-driven dictionary path --------------------
-    // The catalog was seeded before issuance; the default CREATE TEXT INDEX path (id 0,
-    // dictionary-required) provisioned its canister and the post-install relay streamed
-    // the catalog's frames (one frame per call, each decoded immediately) and finalized the
-    // dictionary — ZERO manual dictionary operations (the former manual raw upload is
-    // superseded; raw correctness is pinned by the text-canister unit tests).
-    let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
+    // --- (a.1) plan 0343: the provisioned canister is DICT-LESS --------------------
+    // No relay ran (`dict_required(0, []) == false`), so the canister holds no dictionary:
+    // the old relay-finalized asserts (0335/0342-era) are removed; relay behavior for
+    // dictionary-carrying pairs returns with the WITH DICTIONARY E2E legs.
     env.pic.add_cycles(canister, 50_000_000_000_000);
     let status_bytes = env
         .pic
@@ -914,22 +731,14 @@ fn text_index_provisions_replays_and_guards() {
         Decode!(&status_bytes, text_canister::DictStatus).expect("decode status");
     assert_eq!(
         relayed.state,
-        text_canister::DictState::Finalized,
-        "the relay must finalize the dictionary during provisioning"
+        text_canister::DictState::Absent,
+        "no relay ran: the dict-less canister stays Absent (never silently dictionary-ful)"
     );
-    assert_eq!(
-        relayed.digest,
-        Some(raw_digest),
-        "relay pins the catalog's raw digest"
-    );
-    assert_eq!(
-        relayed.len as usize,
-        raw.len(),
-        "raw length matches the full container (the 52,931,159 B correction)"
-    );
+    assert_eq!(relayed.digest, None, "absent dictionary pins no digest");
 
     // Fail-closed (positive asserts): a THIRD principal is rejected by the relay guard
     // (plan 0335 §5-2), and a wrong digest cannot masquerade as the catalog identity.
+    let raw_digest = xxhash_rust::xxh3::xxh3_128(&[0u8; 32]);
     let outsider = Principal::from_slice(&[0x3E; 29]);
     let err = env
         .pic
@@ -951,7 +760,8 @@ fn text_index_provisions_replays_and_guards() {
         err.reject_message
     );
 
-    // Post-finalize uploads reject in both modes (idempotence of the pinned identity).
+    // Dict-less uploads reject: `dict_required(0, []) == false`, so even the controller
+    // cannot stage dictionary bytes on a kinds-less canister (no silent dictionary).
     let rejected_upload: Result<u64, String> = {
         let bytes = env
             .pic
@@ -968,7 +778,7 @@ fn text_index_provisions_replays_and_guards() {
             .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
         Decode!(&bytes, Result<u64, String>).expect("decode upload reply")
     };
-    assert!(rejected_upload.is_err(), "post-finalize upload must reject");
+    assert!(rejected_upload.is_err(), "dict-less upload must reject");
 
     // --- (a.2) drive the migration lane to convergence: Backfilling → Ready ---
     // The definition is planner-invisible until the migration ledger reaches Applied (scan-done
@@ -1034,31 +844,9 @@ fn text_index_provisions_replays_and_guards() {
         "no second creation: the original row survives unchanged"
     );
 
-    // (b.1) plan 0335 todo 4 idempotence: the re-provision replay must NOT re-append the
-    // dictionary — the relay's short-circuit (Finalized + matching digest) leaves both the
-    // catalog rows and the canister's staged bytes untouched.
+    // (b.1) plan 0343 idempotence: the re-provision replay streams nothing and the
+    // canister stays dict-less — no dictionary silently appears across replays.
     {
-        use gleaph_provision::types::{DictCatalogKey, DictCatalogState};
-        let status_bytes = env
-            .pic
-            .query_call(
-                env.provision,
-                env.admin,
-                "admin_get_dict_catalog_status",
-                Encode!(&DictCatalogKey {
-                    kind: "ipadic".to_owned(),
-                    version: "2.7.0".to_owned(),
-                })
-                .expect("encode catalog status"),
-            )
-            .unwrap_or_else(|e| panic!("admin_get_dict_catalog_status: {e:?}"));
-        let catalog: Option<gleaph_provision::types::DictCatalogStatus> = Decode!(
-            &status_bytes,
-            Option<gleaph_provision::types::DictCatalogStatus>
-        )
-        .expect("decode catalog status");
-        let catalog = catalog.expect("seeded catalog entry");
-        assert_eq!(catalog.state, DictCatalogState::Finalized);
         let dict_status_bytes = env
             .pic
             .query_call(
@@ -1070,8 +858,12 @@ fn text_index_provisions_replays_and_guards() {
             .unwrap_or_else(|e| panic!("admin_get_dict_status: {e:?}"));
         let dict_status: text_canister::DictStatus =
             Decode!(&dict_status_bytes, text_canister::DictStatus).expect("decode status");
-        assert_eq!(dict_status.state, text_canister::DictState::Finalized);
-        assert_eq!(dict_status.digest, Some(raw_digest));
+        assert_eq!(
+            dict_status.state,
+            text_canister::DictState::Absent,
+            "replay must not materialize a dictionary on the dict-less canister"
+        );
+        assert_eq!(dict_status.digest, None);
     }
 
     // --- (c) anonymous caller rejected per guard conventions ---

@@ -2957,10 +2957,19 @@ pub struct ProvisionGraphArgs {
     /// Additional graph admins seeded at registration.
     pub admins: BTreeSet<Principal>,
     /// Analyzer id baked into the install args of a provisioned TEXT canister
-    /// (plan 0334): 1 = unicode-bigram, 2 = mecab. Ignored for other resource kinds;
+    /// (plan 0334; plan 0343 renames the DDL identifier `mecab` to `japanese`, id
+    /// unchanged): 1 = unicode-bigram, 2 = japanese. Ignored for other resource kinds;
     /// absent/0 semantics are not part of the contract — the issuer always sets it.
     #[serde(default)]
     pub text_analyzer_id: u32,
+    /// Dictionary kinds selected via `WITH DICTIONARY` (plan 0343), in admission
+    /// canonical order (sorted, deduped). `None` and `Some(vec![])` both mean no
+    /// dictionary (the new default); ignored for other resource kinds. The kernel
+    /// `init_args.rs:107` precedent applies: Candid only fills missing OPTIONAL fields,
+    /// so this must stay `Option` — a bare `Vec` breaks pre-0343 senders with a
+    /// subtyping error (pinned by the legacy leg of `test_provision_graph_args_roundtrip`).
+    #[serde(default)]
+    pub text_kinds: Option<Vec<gleaph_graph_kernel::provisioning::dictionary::DictKind>>,
 }
 
 /// Router ingress response for `provision_graph`: a mirror of `ProvisionAcceptResponse`.
@@ -3016,11 +3025,44 @@ mod outbound_tests {
             owner: Principal::from_slice(&[0xAB; 29]),
             admins: std::collections::BTreeSet::new(),
             text_analyzer_id: 1,
+            text_kinds: Some(vec![
+                gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese,
+            ]),
         };
         let bytes = Encode!(&args).expect("encode ProvisionGraphArgs");
         let decoded: ProvisionGraphArgs =
             Decode!(&bytes, ProvisionGraphArgs).expect("decode ProvisionGraphArgs");
         assert_eq!(decoded, args);
+        // Pre-0343 senders omit the field on the wire: a legacy-shaped record
+        // (no `text_kinds` field) must still decode to the dict-less default.
+        #[derive(candid::CandidType, serde::Serialize, serde::Deserialize)]
+        struct LegacyProvisionGraphArgs {
+            deployment_id: String,
+            graph_name: String,
+            requested_resources: Vec<crate::types::ProvisionableResource>,
+            authorized_caller: candid::Principal,
+            release_id: String,
+            owner: candid::Principal,
+            admins: std::collections::BTreeSet<candid::Principal>,
+            text_analyzer_id: u32,
+        }
+        let legacy_bytes = Encode!(&LegacyProvisionGraphArgs {
+            deployment_id: args.deployment_id.clone(),
+            graph_name: args.graph_name.clone(),
+            requested_resources: args.requested_resources.clone(),
+            authorized_caller: args.authorized_caller,
+            release_id: args.release_id.clone(),
+            owner: args.owner,
+            admins: args.admins.clone(),
+            text_analyzer_id: args.text_analyzer_id,
+        })
+        .expect("encode legacy ProvisionGraphArgs");
+        let legacy_decoded: ProvisionGraphArgs =
+            Decode!(&legacy_bytes, ProvisionGraphArgs).expect("decode legacy args");
+        assert_eq!(
+            legacy_decoded.text_kinds, None,
+            "missing text_kinds must decode to the dict-less default"
+        );
     }
 
     #[test]

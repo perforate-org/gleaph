@@ -253,6 +253,7 @@ pub(crate) async fn create_graph_admission(
         owner: caller,
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
+        text_kinds: None,
     };
     create_graph_admission_with(
         caller,
@@ -600,6 +601,12 @@ fn build_install_args_with_router(
                     // The Provision canister is authorized to drive the dictionary relay
                     // (plan 0335); the text side fails closed if this is None/anonymous.
                     dict_relay_caller,
+                    // Plan 0343: the (analyzer, kinds) selection resolved at admission
+                    // rides the install args into `TextCanisterInitArgs.kinds` (field
+                    // name per the landed kernel `init_args.rs`). Empty means no
+                    // dictionary (the new default): `None` keeps the pre-0343 wire
+                    // shape for the dict-less path, and the relay streams zero calls.
+                    kinds: args.text_kinds.clone().filter(|kinds| !kinds.is_empty()),
                 };
                 Encode!(&init).expect("encode TextCanisterInitArgs")
             }
@@ -702,6 +709,7 @@ mod tests {
             owner: Principal::from_slice(&[1; 29]),
             admins: Default::default(),
             text_analyzer_id: 1,
+            text_kinds: None,
         }
     }
 
@@ -761,6 +769,43 @@ mod tests {
         assert_eq!(init.controller, Some(router));
         assert_eq!(init.analyzer_id, Some(1));
         assert_eq!(init.dict_relay_caller, Some(provision));
+        assert_eq!(
+            init.kinds, None,
+            "kinds-less args keep the pre-0343 wire shape"
+        );
+    }
+
+    #[test]
+    fn text_index_install_args_carry_kinds() {
+        use candid::Decode;
+        use gleaph_graph_kernel::federation::TextIndexId;
+        use gleaph_graph_kernel::provisioning::dictionary::DictKind;
+        use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
+
+        let router = Principal::from_slice(&[0x41; 29]);
+        let provision = Principal::from_slice(&[0x42; 29]);
+        let base = graph_args(
+            "dep-1",
+            "tenant.main",
+            vec![ProvisionableResource {
+                logical_resource: LogicalResource::TextIndex(TextIndexId::new(0)),
+            }],
+        );
+        let args = crate::types::ProvisionGraphArgs {
+            text_analyzer_id: 2,
+            text_kinds: Some(vec![DictKind::Japanese]),
+            ..base
+        };
+        let install_args = build_install_args_with_router(&args, router, Some(provision));
+        assert_eq!(install_args.len(), 1);
+        let init: TextCanisterInitArgs = Decode!(install_args[0].as_slice(), TextCanisterInitArgs)
+            .expect("decode TextCanisterInitArgs");
+        assert_eq!(init.analyzer_id, Some(2));
+        assert_eq!(
+            init.kinds,
+            Some(vec![DictKind::Japanese]),
+            "admission-resolved kinds ride the install args"
+        );
     }
 
     #[test]
@@ -1479,6 +1524,7 @@ mod tests {
                 owner: admin,
                 admins: BTreeSet::new(),
                 text_analyzer_id: 1,
+                text_kinds: None,
             };
             let graph_canister = Principal::from_slice(&[0x50; 29]);
             let created = vec![CreatedResource {

@@ -473,6 +473,7 @@ async fn register_provisioned_graph(
         // Plan 0332: the provision default is the multilingual composite (id 0).
         // Canisters provisioning vector-only resources never consult this field.
         text_analyzer_id: 0,
+        text_kinds: None,
     };
     let response = crate::provisioning::graph::provision_graph_flow(caller, provision_args).await?;
     // Accepted (fresh), Replay (already admitted), and Completed (already acked) all mean the
@@ -562,8 +563,10 @@ async fn create_text_index(
         // The bare admin endpoint stays byte-compatible with the pre-0331 surface:
         // no clause = the plan 0332 default: the multilingual composite (id 0). The
         // `ANALYZER <name>` clause flows through the GQL DDL surface
-        // (execute_text_index_ddl_for_graph).
+        // (execute_text_index_ddl_for_graph). No `WITH DICTIONARY` clause either
+        // (plan 0343) = dict-less koine.
         None,
+        &[],
     )
     .await?;
     crate::index_catalog::text_index_info_by_name(graph_id, &index_name)

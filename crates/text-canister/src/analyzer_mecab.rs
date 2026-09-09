@@ -2,7 +2,7 @@
 //! landing; plan 0341 widens to id 3): MeCab-format Viterbi lemma units over the
 //! `morph-dict` engine with the `ic-morph-dict` stable-memory adapter. Id 2 runs the
 //! ipadic profile; id 3 (`ANALYZER_KOREAN`) runs the mecab-ko-dic profile — the profile
-//! is bound once at load (`profile_for`), the resident `Analyzer` carries it, and
+//! is bound once at load (`profile_for_kind`), the resident `Analyzer` carries it, and
 //! dispatch needs no per-call branch.
 //!
 //! Pipeline: whole-text pre-pass (the shared [`morph_dict::normalize`] module: NFKC +
@@ -34,30 +34,49 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use gleaph_graph_kernel::provisioning::dictionary::DictKind;
 use morph_dict::DictionaryProfile;
 #[cfg(test)]
 use morph_dict::byteimage::{ByteImage, HeapImage};
 
 thread_local! {
-    /// The pinned analyzer over the finalized MeCab-format container. `None` until the
-    /// stable dictionary is finalized (and loaded); analyzer 2 operations fail closed
-    /// before that point.
-    static ANALYZER: RefCell<Option<morph_dict::Analyzer>> = const { RefCell::new(None) };
+    /// The pinned analyzer over the finalized MeCab-format container, paired with the
+    /// loaded dictionary kind. `None` until the stable dictionary is finalized (and
+    /// loaded); dictionary pipelines fail closed before that point. The kind rides the
+    /// same bind-once slot as the profile (plan 0343): koine dispatches per language
+    /// path on it (Japanese path needs `Japanese`, Hangul path needs `Korean`).
+    static ANALYZER: RefCell<Option<(morph_dict::Analyzer, DictKind)>> =
+        const { RefCell::new(None) };
 }
 
-/// Unit-emission profile for a dictionary-carrying analyzer id (plan 0341): ids 0
-/// and 2 share the ipadic container/profile; id 3 (`ANALYZER_KOREAN`) carries the
-/// mecab-ko-dic container under the Korean profile. Unknown ids fail closed — callers
-/// validate the id at the open/admission boundaries before reaching here.
-pub fn profile_for(analyzer_id: u32) -> DictionaryProfile {
-    match analyzer_id {
-        crate::analyzer::ANALYZER_KOREAN => DictionaryProfile::korean_mecab_ko_dic(),
-        crate::analyzer::ANALYZER_MULTILINGUAL | crate::analyzer::ANALYZER_MECAB => {
-            DictionaryProfile::japanese_ipadic()
-        }
-        other => panic!(
-            "mecab profile requested for unregistered analyzer id {other} — broken invariant"
-        ),
+/// Unit-emission profile for a dictionary KIND (plan 0343): the load binds the profile
+/// by kind, never by analyzer id — an id-0 koine index with kinds=[Japanese] loads the
+/// ipadic container, with kinds=[Korean] the ko-dic container.
+pub fn profile_for_kind(kind: DictKind) -> DictionaryProfile {
+    match kind {
+        DictKind::Japanese => DictionaryProfile::japanese_ipadic(),
+        DictKind::Korean => DictionaryProfile::korean_mecab_ko_dic(),
+    }
+}
+
+/// Resolves the single loadable dictionary kind for one (analyzer, kinds) pair
+/// (plan 0343). Exactly one kind must be selected (the open already fails multi-kind
+/// before any load; this is the defense-in-depth backstop), and the dedicated
+/// pipelines additionally pin their kind (id 2 = Japanese, id 3 = Korean — admission
+/// guarantees it, the load re-checks). Id 0 accepts whichever single kind is pinned.
+pub fn dict_kind_for(analyzer_id: u32, kinds: &[DictKind]) -> Result<DictKind, String> {
+    let [kind] = kinds else {
+        return Err(format!(
+            "analyzer-{analyzer_id} dictionary load needs exactly one pinned kind, got {kinds:?} — multi-container layout undecided"
+        ));
+    };
+    match (analyzer_id, kind) {
+        (crate::analyzer::ANALYZER_MECAB, DictKind::Japanese)
+        | (crate::analyzer::ANALYZER_KOREAN, DictKind::Korean)
+        | (crate::analyzer::ANALYZER_MULTILINGUAL, _) => Ok(*kind),
+        _ => Err(format!(
+            "analyzer-{analyzer_id} cannot load dictionary kind {kind:?} (dedicated pipelines pin their kind)"
+        )),
     }
 }
 
@@ -69,16 +88,16 @@ pub fn profile_for(analyzer_id: u32) -> DictionaryProfile {
 /// Fails closed on any validation miss — the caller must not record Finalized state
 /// (and must not open) for bytes that fail validation.
 pub fn load_dictionary_from_image<M>(
-    analyzer_id: u32,
+    kind: DictKind,
     region_image: ic_morph_dict::CanisterStableImage<M>,
 ) -> Result<(), String>
 where
     M: ic_stable_structures::Memory + 'static,
 {
-    let analyzer = morph_dict::Analyzer::open(Arc::new(region_image), profile_for(analyzer_id))
+    let analyzer = morph_dict::Analyzer::open(Arc::new(region_image), profile_for_kind(kind))
         .map_err(|error| format!("mecab dictionary load failed (corrupt artifact): {error:?}"))?;
     ANALYZER.with(|slot| {
-        *slot.borrow_mut() = Some(analyzer);
+        *slot.borrow_mut() = Some((analyzer, kind));
     });
     Ok(())
 }
@@ -86,29 +105,23 @@ where
 /// Builds the pinned analyzer from an in-memory container (test path, ipadic profile).
 #[cfg(test)]
 pub fn load_dictionary_bytes(container: &[u8]) -> Result<(), String> {
-    load_dictionary_bytes_for(crate::analyzer::ANALYZER_MECAB, container)
+    load_dictionary_bytes_for(DictKind::Japanese, container)
 }
 
-/// Builds the pinned analyzer from an in-memory container under an explicit analyzer
-/// id (tests — the plan-0341 Korean path binds the ko-dic profile at load).
+/// Builds the pinned analyzer from an in-memory container under an explicit dictionary
+/// kind (tests — the plan-0341 Korean path binds the ko-dic profile at load).
 #[cfg(test)]
-pub fn load_dictionary_bytes_for(analyzer_id: u32, container: &[u8]) -> Result<(), String> {
-    load_dictionary_from_heap(
-        analyzer_id,
-        Arc::new(HeapImage::from_vec(container.to_vec())),
-    )
+pub fn load_dictionary_bytes_for(kind: DictKind, container: &[u8]) -> Result<(), String> {
+    load_dictionary_from_heap(kind, Arc::new(HeapImage::from_vec(container.to_vec())))
 }
 
-/// Variant taking any heap-backed image under an explicit analyzer id (tests).
+/// Variant taking any heap-backed image under an explicit dictionary kind (tests).
 #[cfg(test)]
-pub fn load_dictionary_from_heap(
-    analyzer_id: u32,
-    image: Arc<dyn ByteImage>,
-) -> Result<(), String> {
-    let analyzer = morph_dict::Analyzer::open(image, profile_for(analyzer_id))
+pub fn load_dictionary_from_heap(kind: DictKind, image: Arc<dyn ByteImage>) -> Result<(), String> {
+    let analyzer = morph_dict::Analyzer::open(image, profile_for_kind(kind))
         .map_err(|error| format!("mecab dictionary load failed (corrupt artifact): {error:?}"))?;
     ANALYZER.with(|slot| {
-        *slot.borrow_mut() = Some(analyzer);
+        *slot.borrow_mut() = Some((analyzer, kind));
     });
     Ok(())
 }
@@ -119,6 +132,13 @@ pub fn load_dictionary_from_heap(
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn dictionary_loaded() -> bool {
     ANALYZER.with(|slot| slot.borrow().is_some())
+}
+
+/// The loaded dictionary kind, if the pinned analyzer is resident (plan 0343). Koine
+/// dispatches per language path on this: the Japanese path needs `Some(Japanese)`,
+/// the Hangul path needs `Some(Korean)`; any other shape falls back deterministically.
+pub fn loaded_kind() -> Option<DictKind> {
+    ANALYZER.with(|slot| slot.borrow().as_ref().map(|(_, kind)| *kind))
 }
 
 /// Drops the resident analyzer (test helper; production reloads only at finalize/open).
@@ -140,7 +160,7 @@ pub fn analyze(text: &str) -> Vec<String> {
     );
     ANALYZER.with(|slot| {
         let slot = slot.borrow();
-        let analyzer = slot.as_ref().expect("checked above");
+        let (analyzer, _) = slot.as_ref().expect("checked above");
         analyze_with(analyzer, text)
     })
 }
@@ -227,7 +247,7 @@ mod tests {
             images.push((n.to_string(), bytes));
         }
         let container = morph_dict::container::build(images);
-        load_dictionary_bytes_for(crate::analyzer::ANALYZER_KOREAN, &container)
+        load_dictionary_bytes_for(DictKind::Korean, &container)
             .expect("ko-dic container loads under the Korean profile");
         // Headline: 학교 from 학교에서 (조사 에서 dropped by the PREFIX drop set);
         // the dispatch arm routes id 3 through this same entry point.
@@ -235,6 +255,10 @@ mod tests {
             crate::analyzer::analyze_pinned(crate::analyzer::ANALYZER_KOREAN, "학교에서"),
             vec!["학교"]
         );
+        // Thread-local hygiene: this test binds the GLOBAL pinned slot (Korean).
+        // Reset so sibling-module tests on this thread observe the dict-less
+        // fallback paths they pin (koine fallback parity).
+        reset();
     }
 
     // -- Plan 0339: IVS-strip safety + emitted-unit fold fidelity ----------------------------
@@ -296,7 +320,7 @@ mod tests {
             .with(|slot| {
                 slot.borrow()
                     .as_ref()
-                    .map(|analyzer| analyzer.analyze_tokens("三ヶ月"))
+                    .map(|(analyzer, _)| analyzer.analyze_tokens("三ヶ月"))
             })
             .expect("dictionary resident");
         assert_eq!(

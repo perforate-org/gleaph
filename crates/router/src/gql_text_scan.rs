@@ -1296,6 +1296,7 @@ mod tests {
             label_id,
             property_id,
             crate::index_catalog::TEXT_INDEX_ANALYZER_V0,
+            vec![],
             Some(candid::Principal::management_canister()),
             false,
         )

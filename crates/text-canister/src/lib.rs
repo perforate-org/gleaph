@@ -140,7 +140,9 @@ fn init() {
     // Plan 0331: the pinned analyzer id rides the init args, validated fail-closed at
     // the open (∈ {1, 2}); an unset/omitted field defaults to the unicode-bigram
     // pipeline (bare wasm installs such as canbench keep working unchanged).
+    // Plan 0343: the kinds selection rides alongside; omitted = no dictionary.
     state::set_init_analyzer(args.as_ref().and_then(|a| a.analyzer_id));
+    state::set_init_kinds(args.as_ref().and_then(|a| a.kinds.clone()));
     state::with_stores(|stores| {
         stores.set_controller(args.as_ref().and_then(|a| a.controller));
         // Plan 0335 §5-2: the Provision relay caller rides the init args; `None`/anonymous
@@ -255,9 +257,10 @@ fn admin_register_text_backfill(
 ) -> Result<TextBackfillStatus, String> {
     backfill::with_cells(|cells| {
         // Plan 0331: analyzer-2 registrations hold until the dictionary is finalized.
-        let dict_finalized =
-            state::with_stores(|stores| stores.dict_status().state == crate::DictState::Finalized);
-        backfill::register_text_backfill(cells, registration, dict_finalized)
+        // Plan 0343: the hold predicate is kinds-aware — the LOCAL meta kinds are the
+        // authority (the scope carries the Router's analyzer claim, not the kinds).
+        let (dict_finalized, kinds) = state::with_stores(|stores| stores.backfill_hold_inputs());
+        backfill::register_text_backfill(cells, registration, dict_finalized, &kinds)
     })
 }
 
