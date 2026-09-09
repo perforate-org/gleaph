@@ -373,7 +373,7 @@ pub struct VectorIndexDef {
     /// tier). Chosen at rebuild start; the public `VectorEncoding` never changes.
     pub code_tier: bool,
     /// Frozen per-row code-segment width of the active generation (`0` when
-    /// [`Self::code_tier`] is off; otherwise `[code_aux 8B][codes ceil(P/64)*8B]` with
+    /// [`Self::code_tier`] is off; otherwise `[code_aux 4B][codes ceil(P/64)*8B]` with
     /// `P = next_pow2(dims)` — see [`Self::canonical_code_stride_bytes`]). Frozen so stored pages
     /// stay decodable even if a future encoder changes the derivation.
     pub code_stride_bytes: u32,
@@ -401,11 +401,11 @@ impl VectorIndexDef {
     }
 
     /// Canonical v1 (1-bit RaBitQ) per-row code-segment width for `dims`:
-    /// `[code_aux 8B][codes ceil(P/64)*8B]` over the power-of-two rotation domain
-    /// (`P = next_pow2(dims)`), e.g. d1536 → P=2048 → 264 B, d768 → P=1024 → 136 B.
+    /// `[code_aux 4B][codes ceil(P/64)*8B]` over the power-of-two rotation domain
+    /// (`P = next_pow2(dims)`), e.g. d1536 → P=2048 → 260 B, d768 → P=1024 → 132 B.
     pub(crate) fn canonical_code_stride_bytes(dims: u16) -> u32 {
         let words = Self::code_padded_dims(dims).div_ceil(64);
-        8 + words * 8
+        4 + words * 8
     }
 
     /// Deterministic rotation seed derived from the index id (splitmix64 finalizer). Frozen into
@@ -1995,7 +1995,7 @@ pub(crate) mod test_support {
     use super::*;
 
     /// A minimal valid `ivf_flat` def with the code tier **on** at the canonical v1 shape:
-    /// `code_stride_bytes = 8 + ceil(P/64)*8` for `P = next_pow2(dims)` and the deterministic
+    /// `code_stride_bytes = 4 + ceil(P/64)*8` for `P = next_pow2(dims)` and the deterministic
     /// `rotation_seed_for(index_id)` seed. Geometry fields (`slots_per_page`) reflect the tier-on
     /// page capacity so fixtures that exercise page layout stay consistent with the real
     /// derivation.
@@ -2167,15 +2167,15 @@ mod tests {
     #[test]
     fn canonical_code_stride_matches_v1_shape() {
         // The WHT rotation needs a power-of-two domain, so `P = next_pow2(dims)`.
-        // d1536: P = 2048, 32 words -> aux 8 + 256 = 264. d768 -> P = 1024 -> 136.
-        // A non-power-of-two dims pads up: d17 -> P = 32, one word -> 16. d1 -> one word -> 16.
+        // d1536: P = 2048, 32 words -> aux 4 + 256 = 260. d768 -> P = 1024 -> 132.
+        // A non-power-of-two dims pads up: d17 -> P = 32, one word -> 12. d1 -> one word -> 12.
         assert_eq!(
             VectorIndexDef::canonical_code_stride_bytes(1536),
-            8 + 32 * 8
+            4 + 32 * 8
         );
-        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(768), 8 + 16 * 8);
-        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(17), 8 + 8);
-        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(1), 8 + 8);
+        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(768), 4 + 16 * 8);
+        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(17), 4 + 8);
+        assert_eq!(VectorIndexDef::canonical_code_stride_bytes(1), 4 + 8);
     }
 
     #[test]

@@ -39,7 +39,13 @@ Adopt a **two-tier precision contract**:
    the original bytes on the same page:
 
    ```text
-   code segment = [code_aux 8B: ‖x‖² f32 | φ_x f32][codes ceil(P/64)·8B],  P = next_pow2(dims)
+   code segment = [code_aux 4B: rms_x f16 | φ_x f16][codes ceil(P/64)·8B],  P = next_pow2(dims),
+   rms_x = √(‖x‖²/P)
+   (2026-09-09: 8B→4B f16 aux; the RMS lane (not ‖x‖²) keeps the f16 range covering component
+   magnitudes up to 65504 — a direct ‖x‖² lane saturates past ‖x‖ = 256, collapsing far-row
+   estimates into the shortlist (measured tier-on k100 33M→100M on the 1000-spaced fixture).
+   The reported lower bound carries a row-aware quantization margin `(‖x‖²+2‖q‖‖x‖)/512` so
+   the never-undercut guarantee survives; the point estimate stays uncompensated)
    ```
 
    The codes are the sign bits of the seeded randomized Walsh–Hadamard rotation of the row

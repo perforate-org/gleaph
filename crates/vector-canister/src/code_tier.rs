@@ -4,13 +4,24 @@
 //! **Contract** (design principles #4 as revised by ADR 0078): the original tier (`F32` | `I8`)
 //! defines the advertised result quality; the compressed code tier only accelerates the
 //! first-stage scan. Rows of a generation built with `def.code_tier = true` carry, behind their
-//! original vector bytes, one code segment `[code_aux 8B][codes ceil(P/64)*8B]` with
+//! original vector bytes, one code segment `[code_aux 4B][codes ceil(P/64)*8B]` with
 //! `P = next_pow2(dims)`:
 //!
 //! ```text
-//! code_aux = [‖x‖² f32 LE][φ_x f32 LE]
+//! code_aux = [rms_x f16 LE][φ_x f16 LE],   rms_x = √(‖x‖²/P)
 //! codes    = P packed sign bits of the rotated normalized direction x̃ (LSB-first per byte)
 //! ```
+//!
+//! The aux pair is f16-quantized (code_aux 8B→4B): the norm lane stores the root-mean-square
+//! (not the squared norm) so the f16 range covers component magnitudes up to 65504 — a direct
+//! f16 `‖x‖²` lane would saturate for any row with `‖x‖ > 256`, collapsing far-row estimates
+//! into the shortlist and destroying Stage B pruning (measured: tier-on k100 33M→100M
+//! instructions on the 1000-spaced tier-pair fixture). The point estimate is ranking-only so its
+//! rounding noise is recall-measured (contract tests ①–④), while the reported lower bound
+//! carries an explicit scale-aware quantization margin ([`CODE_AUX_QUANT_MARGIN_BITS`]) so the
+//! never-undercut guarantee survives the quantization. RMS overflow saturates to f16::MAX
+//! (capped down: far rows rank better, rescoring grows, skips shrink — the recall-safe
+//! direction).
 //!
 //! The rotation is the randomized Walsh–Hadamard transform of the zero-padded vector: zero-pad
 //! `dims → P`, apply seeded per-coordinate sign flips, then the unnormalized WHT followed by one
@@ -60,8 +71,18 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_stable_vector_page_store::kernel::popcount_xnor_words;
 
-/// Width of the leading code-aux block: `[‖x‖² f32][φ_x f32]`.
-pub(crate) const CODE_AUX_BYTES: usize = 8;
+/// Width of the leading code-aux block: `[rms f16 LE][φ_x f16 LE]`, `rms = √(‖x‖²/P)`.
+pub(crate) const CODE_AUX_BYTES: usize = 4;
+
+/// Lower-bound quantization guard: the reported bound is deflated by
+/// `(‖x‖²' + 2·‖q‖·‖x‖') / 2^CODE_AUX_QUANT_MARGIN_BITS`. The lane error is row-driven — the
+/// RMS lane doubles to `2^-10` relative on `‖x‖²`, and the span term `2·‖q‖·‖x‖` carries
+/// `2^-11` — so a uniform `(‖q‖² + ‖x‖²)` margin would over-cover near rows by `‖q‖/2‖x‖`
+/// (1000x on the 1000-spaced tier-pair fixture) and destroy Stage B pruning. The row-aware form
+/// covers both lane terms with 2x headroom plus a 2x lump for the phi lane (the `cos_upper ≤ 1`
+/// clamp contains the degenerate corners). The point estimate carries no margin — it only
+/// ranks the shortlist.
+const CODE_AUX_QUANT_MARGIN_BITS: u32 = 9;
 
 /// splitmix64 finalizer: the sole mixing primitive behind the deterministic flip pattern (and the
 /// def-level seed derivation in [`VectorIndexDef::rotation_seed_for`]).
@@ -199,9 +220,10 @@ impl CodeEncoder {
     }
 
     /// Encodes one stored row's full code segment into `out`
-    /// (`out.len() == def.code_stride_bytes`): `[code_aux 8B][codes]`. The aux records the
-    /// canonical-space squared norm and the sketch correlation `φ_x = ⟨sign(x̃)/√P, x̂⟩`
-    /// (`x̂` = rotated **unit** direction), so Stage A scoring never touches the original bytes.
+    /// (`out.len() == def.code_stride_bytes`): `[code_aux 4B][codes]`. The aux records the
+    /// canonical-space root-mean-square and the sketch correlation `φ_x = ⟨sign(x̃)/√P, x̂⟩`
+    /// (`x̂` = rotated **unit** direction) as f16 lanes, so Stage A scoring never touches the
+    /// original bytes.
     pub(crate) fn encode_segment(&mut self, stored: &[u8], aux: &[u8; 8], out: &mut [u8]) {
         debug_assert_eq!(out.len(), CODE_AUX_BYTES + self.code_bytes);
         let comps = stored_to_f32(self.encoding, stored, aux, self.dims);
@@ -221,8 +243,18 @@ impl CodeEncoder {
         } else {
             0.0
         };
-        out[..4].copy_from_slice(&norm_sq.to_le_bytes());
-        out[4..CODE_AUX_BYTES].copy_from_slice(&phi_x.to_le_bytes());
+        // RMS lane: √(‖x‖²/P) keeps component magnitudes up to f16::MAX in range (a direct
+        // ‖x‖² lane would saturate for ‖x‖ > 256). Saturate the absurd remainder to f16::MAX
+        // (recall-safe: capping down ranks far rows better, growing rescoring and shrinking
+        // skips). φ_x ∈ [0, 1] never overflows.
+        let rms = (norm_sq / self.padded_dims as f32).sqrt();
+        let rms_lane = if rms > half::f16::MAX.to_f32() {
+            half::f16::MAX
+        } else {
+            half::f16::from_f32(rms)
+        };
+        out[..2].copy_from_slice(&rms_lane.to_bits().to_le_bytes());
+        out[2..CODE_AUX_BYTES].copy_from_slice(&half::f16::from_f32(phi_x).to_bits().to_le_bytes());
         pack_sign_bits(&self.buf, &mut out[CODE_AUX_BYTES..]);
     }
 }
@@ -235,6 +267,9 @@ pub(crate) struct QueryCode {
     q_norm_sq: f32,
     q_norm: f32,
     padded_dims: u32,
+    /// `√P`, hoisted out of the per-row hot loop: the aux RMS lane decodes to
+    /// `row_norm = rms · √P` with one multiply (no per-row `sqrt`).
+    sqrt_padded: f32,
 }
 
 impl QueryCode {
@@ -267,6 +302,7 @@ impl QueryCode {
             q_norm_sq,
             q_norm,
             padded_dims,
+            sqrt_padded: (padded_dims as f32).sqrt(),
         }
     }
 
@@ -276,14 +312,28 @@ impl QueryCode {
     /// around the raw projection, and the interval's upper endpoint converts into a distance the
     /// true squared distance can never undercut. See the module-level rationale.
     pub(crate) fn score_row(&self, segment: &[u8]) -> RowEstimate {
-        let norm_sq = f32::from_le_bytes(segment[0..4].try_into().expect("row norm"));
-        let phi_x = f32::from_le_bytes(segment[4..CODE_AUX_BYTES].try_into().expect("row phi"));
-        if !norm_sq.is_finite() || !phi_x.is_finite() {
+        let rms = half::f16::from_bits(u16::from_le_bytes(
+            segment[0..2].try_into().expect("row rms"),
+        ))
+        .to_f32();
+        let phi_x = half::f16::from_bits(u16::from_le_bytes(
+            segment[2..4].try_into().expect("row phi"),
+        ))
+        .to_f32();
+        if !rms.is_finite() || !phi_x.is_finite() {
             return RowEstimate {
                 distance: f32::INFINITY,
                 lower_bound: f32::INFINITY,
             };
         }
+        // The RMS lane decodes to the canonical norm with one multiply (no per-row sqrt).
+        // Row-aware quantization guard for the never-undercut lower bound (see
+        // CODE_AUX_QUANT_MARGIN_BITS): computed AFTER the decode, from decoded lanes.
+        let row_norm = rms * self.sqrt_padded;
+        let norm_sq = row_norm * row_norm;
+        // Quantization guard for the never-undercut lower bound (see CODE_AUX_QUANT_MARGIN_BITS).
+        let quant_margin = (norm_sq + 2.0 * self.q_norm * row_norm)
+            / ((1u32 << CODE_AUX_QUANT_MARGIN_BITS) as f32);
         let matched_raw = popcount_xnor_words(&self.codes, &segment[CODE_AUX_BYTES..]) as f32;
         let p = self.padded_dims as f32;
         // Both sides zero their word-granular pad bits, so every pad bit counts as a match in the
@@ -293,7 +343,6 @@ impl QueryCode {
         // s = ⟨x̄, q̄⟩ ∈ [−1, 1]; dividing by the sketch correlations recovers the cosine.
         let s = (2.0 * matched - p) / p;
         let denom = self.phi_q * phi_x;
-        let row_norm = norm_sq.max(0.0).sqrt();
         if denom > 0.0 {
             // Rigorous residual slack. Substituting both sketch decompositions
             // (`x̄ = φ_x·x̂ + r_x`, `‖r_x‖ = √(1−φ_x²)`) into `s = ⟨x̄,q̄⟩` leaves
@@ -310,15 +359,15 @@ impl QueryCode {
             let span = 2.0 * self.q_norm * row_norm;
             RowEstimate {
                 distance: base - span * cos_est,
-                lower_bound: base - span * cos_upper,
+                lower_bound: base - span * cos_upper - quant_margin,
             }
         } else {
-            // Degenerate sketch (all-zero row): orthogonal fallback. `(‖q‖ − ‖x‖)²` is then exact,
-            // so it doubles as its own lower bound.
+            // Degenerate sketch (all-zero row): orthogonal fallback. `(‖q‖ − ‖x‖)²` is then exact
+            // up to aux quantization, so the lower bound still carries the guard.
             let d = self.q_norm_sq + norm_sq;
             RowEstimate {
                 distance: d,
-                lower_bound: d,
+                lower_bound: d - quant_margin,
             }
         }
     }
@@ -561,14 +610,18 @@ mod tests {
         let mut seg8 = vec![0u8; i8_def.code_stride_bytes as usize];
         enc8.encode_segment(&bytes, &aux, &mut seg8);
 
-        // Aux: both record ≈1 squared norm (unit vectors).
-        let n32 = f32::from_le_bytes(seg32[0..4].try_into().unwrap());
-        let n8 = f32::from_le_bytes(seg8[0..4].try_into().unwrap());
-        assert!((n32 - 1.0).abs() < 1e-3);
+        // Aux: both record the unit-vector RMS lane (decoded norm² ≈ 1).
+        let sqrt_p = (VectorIndexDef::code_padded_dims(dims) as f32).sqrt();
+        let r32 =
+            half::f16::from_bits(u16::from_le_bytes(seg32[0..2].try_into().unwrap())).to_f32();
+        let r8 = half::f16::from_bits(u16::from_le_bytes(seg8[0..2].try_into().unwrap())).to_f32();
+        let n32 = (r32 * sqrt_p) * (r32 * sqrt_p);
+        let n8 = (r8 * sqrt_p) * (r8 * sqrt_p);
+        assert!((n32 - 1.0).abs() < 2e-3);
         assert!((n8 - 1.0).abs() < 0.02, "I8 dequantized norm {n8}");
 
         // The two codes agree on nearly every sign (same underlying direction).
-        let matched = popcount_xnor_words(&seg32[8..], &seg8[8..]);
+        let matched = popcount_xnor_words(&seg32[4..], &seg8[4..]);
         assert!(
             matched as f32 > 0.97 * VectorIndexDef::code_padded_dims(dims) as f32,
             "sign agreement {matched}/{}",

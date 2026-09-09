@@ -30,7 +30,12 @@ pub const PAGE_HEADER_SIZE: usize = 32;
 /// Smallest allowed per-row code-segment width: off (`no code table`) or an 8-byte-aligned
 /// `[code_aux 8B][codes …]` pair (`RaBitQ v1`: aux 8 B + whole 64-bit words).
 pub const MIN_CODE_STRIDE: u32 = 0;
-const CODE_STRIDE_ALIGN: u32 = 8;
+// 4-byte alignment: every code-region consumer is byte-offset based (`u64::from_le_bytes`, memcpy),
+// so the stride only needs to keep the f16 aux lanes aligned. Word granularity of the bit grid
+// itself is enforced where it matters — the codes sub-slice past the aux keeps `words * 8` bytes
+// (the XNOR kernel debug-asserts word granularity) — while the 4-byte f16 aux makes the full
+// stride 4-mod-8 by construction.
+const CODE_STRIDE_ALIGN: u32 = 4;
 
 /// Fail-closed header validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +62,7 @@ pub enum HeaderError {
     ZeroCapacity,
     /// `run_capacity` is zero or exceeds [`MAX_RUNS`].
     InvalidRunCapacity(u32),
-    /// Invalid `code_stride`: not off (`0`) and not a multiple of 8.
+    /// Invalid `code_stride`: not off (`0`) and not a multiple of 4.
     InvalidCodeStride(u32),
     /// `run_count` exceeds `run_capacity`.
     RunCountExceedsCapacity {
@@ -348,6 +353,8 @@ mod tests {
             PageHeader::with_code_stride(1024, 6144, 4, 8, 7).expect_err("unaligned code stride"),
             HeaderError::InvalidCodeStride(7)
         );
+        // The 4-byte f16 aux makes the canonical v1 stride 4-mod-8 (d1536 → 260).
+        PageHeader::with_code_stride(1024, 6144, 4, 8, 4 + 32 * 8).expect("4-aligned stride");
     }
 
     #[test]

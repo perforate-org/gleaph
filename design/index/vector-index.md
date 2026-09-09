@@ -494,7 +494,7 @@ A rebuild started with `admin_start_vector_rebuild(code_tier = Some(true))` publ
 generation whose rows carry, behind the original bytes on the same page, a per-row code segment:
 
 ```text
-[code_aux 8B = ‖x‖² f32 | φ_x f32][codes ceil(P/64)·8B],   P = next_pow2(dims)
+[code_aux 4B = rms_x f16 | φ_x f16][codes ceil(P/64)·8B],   P = next_pow2(dims), rms_x = √(‖x‖²/P)   (2026-09-09: 8B→4B; RMS lane keeps component magnitudes ≤ 65504 in range — a direct ‖x‖² lane saturates past ‖x‖ = 256; the lower bound carries a row-aware quantization margin, the point estimate is ranking-only)
 ```
 
 - **Sketch**: sign bits of the randomized Walsh–Hadamard rotation of the row — zero-pad `dims`
