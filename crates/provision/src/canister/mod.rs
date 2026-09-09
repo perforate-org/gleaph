@@ -6,7 +6,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::dictionary::{
-    CompressedDictFinalize, CompressedDictUpload, DictState, DictStatus,
+    CompressedDictFinalize, CompressedDictUpload, DictKind, DictState, DictStatus,
     MAX_DICT_COMPRESSED_CHUNK_BYTES, dict_required,
 };
 use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
@@ -585,40 +585,54 @@ async fn dict_relay_finalize_call(
     }
 }
 
-/// Provision-owned policy mapping: a dictionary-required analyzer id resolves to the catalog
-/// entry carrying its MPD container. The dict-required gate itself stays the kernel predicate
-/// (`dict_required`), checked by the relay before this mapping runs, so unreachable ids never
-/// arrive here. Per-analyzer pins (plan 0341): id 3 korean resolves to the pinned
-/// mecab-ko-dic 2.1.1-20180720 container; every other id falls back to ipadic 2.7.0 (0/2).
-fn dict_catalog_key_for_analyzer(analyzer_id: u32) -> DictCatalogKey {
-    match analyzer_id {
-        3 => DictCatalogKey {
-            kind: "korean".to_owned(),
-            version: "2.1.1-20180720".to_owned(),
-        },
-        _ => DictCatalogKey {
+/// Provision-owned policy mapping: a selected dictionary kind resolves to the catalog entry
+/// carrying its MPD container (plan 0343: one entry per kind). Total over `DictKind`, so no
+/// fallback arm exists — an unmapped kind is a compile error, not a silent default.
+fn dict_catalog_key_for_kind(kind: DictKind) -> DictCatalogKey {
+    match kind {
+        DictKind::Japanese => DictCatalogKey {
             kind: "ipadic".to_owned(),
             version: "2.7.0".to_owned(),
+        },
+        DictKind::Korean => DictCatalogKey {
+            kind: "korean".to_owned(),
+            version: "2.1.1-20180720".to_owned(),
         },
     }
 }
 
 /// Relay the Finalized compressed dictionary container from the catalog to a freshly
-/// installed text canister (plan 0335 todo 3). Skipped for analyzer ids without dictionary
-/// requirements and short-circuited when the target is already Finalized with the catalog's
+/// installed text canister (plan 0335 todo 3; plan 0343: ONLY the selected kinds stream,
+/// one catalog entry per kind). Skipped when the (analyzer, kinds) pair selects no
+/// dictionary and short-circuited when the target is already Finalized with the catalog's
 /// raw digest (re-provision replay). Any call, decode, or catalog failure is fail-closed:
 /// the caller records one terminal `Failed { reason }` and the relay never retries.
 async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Result<(), String> {
-    // Decode the Router-built init args to resolve the pinned analyzer id. Fail-closed on
-    // decode; an absent analyzer id means the 0332 koine default (0).
+    // Decode the Router-built init args to resolve the pinned analyzer id and the selected
+    // dictionary kinds. Fail-closed on decode; an absent analyzer id means the 0332 koine
+    // default (0); a missing kinds field means no dictionary (the plan 0343 default).
     let init: TextCanisterInitArgs = Decode!(install_args, TextCanisterInitArgs)
         .map_err(|e| format!("dictionary relay decode of install args failed: {e}"))?;
     let analyzer_id = init.analyzer_id.unwrap_or(0);
-    if !dict_required(analyzer_id) {
+    // Defensive normalization: admission pins canonical (sorted, deduped) order, and treats
+    // None and Some([]) identically as no dictionary. The relay re-normalizes so a
+    // non-canonical sender cannot change the streamed set.
+    let mut kinds: Vec<DictKind> = init.kinds.unwrap_or_default();
+    kinds.sort();
+    kinds.dedup();
+    if !dict_required(analyzer_id, &kinds) {
         return Ok(());
     }
+    // Multi-container layout is undecided (plan 0343案b): fail this canister's relay in
+    // preflight, BEFORE any text-canister call — a partial single-kind stream followed by
+    // failure is prohibited.
+    if kinds.len() > 1 {
+        return Err(
+            "dictionary relay: multi-container layout undecided (kinds.len() > 1)".to_owned(),
+        );
+    }
 
-    let catalog_key = dict_catalog_key_for_analyzer(analyzer_id);
+    let catalog_key = dict_catalog_key_for_kind(kinds[0]);
     let dict_store = crate::stable::dict_catalog::ProvisionDictCatalogStore::new();
     let entry = dict_store
         .get_entry(&catalog_key)

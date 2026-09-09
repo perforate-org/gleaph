@@ -21,13 +21,48 @@ use serde::{Deserialize, Serialize};
 /// same-subnet 9.5 MiB branch — the fixed cap is the single operating point.
 pub const MAX_DICT_COMPRESSED_CHUNK_BYTES: usize = 1_945_600;
 
-/// True for analyzer ids that carry the stable-resident MPD dictionary container
-/// (plan 0332: id 0 multilingual and id 2 mecab both go through the same dictionary
-/// machinery; plan 0341: id 3 korean mecab-ko-dic joins them; id 1 unicode-bigram is
-/// dictionary-free). Unknown ids are NOT treated as dictionary-carrying; admission
-/// validation of the analyzer id set stays with the Router.
-pub const fn dict_required(analyzer_id: u32) -> bool {
-    matches!(analyzer_id, 0 | 2 | 3)
+/// Dictionary kind selected per index via `WITH DICTIONARY` (plan 0343). The DDL
+/// identifiers (`japanese`, `korean`) map to these variants at Router admission; the
+/// canonical order is the variant order. `Ord` supports the admission-side `BTreeSet`
+/// normal form; the relay iterates the normalized kinds in this order.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, CandidType, Serialize, Deserialize,
+)]
+pub enum DictKind {
+    /// Japanese: ipadic 2.7.0 container.
+    Japanese,
+    /// Korean: mecab-ko-dic 2.1.1-20180720 container.
+    Korean,
+}
+
+/// True when the dictionary machinery engages for one (analyzer, kinds) pair
+/// (plan 0343: required-AND-selected). Admission owns validity (id 2 requires exactly
+/// {Japanese}, id 3 exactly {Korean}, id 1 requires empty, id 0 any subset); this
+/// predicate re-checks so both the relay skip gate and the text-side fail-closed gates
+/// share one truth table:
+///
+/// | analyzer | kinds            | result |
+/// |----------|------------------|--------|
+/// | 1        | _                | false  |
+/// | 2        | [Japanese]       | true   |
+/// | 2        | _                | false  |
+/// | 3        | [Korean]         | true   |
+/// | 3        | _                | false  |
+/// | 0        | []               | false  |
+/// | 0        | non-empty subset | true   |
+/// | other    | _                | false  |
+///
+/// In particular (0, []) is false: a dictionary-less koine index provisions with zero
+/// dict calls and stays Ready on the bigram fallback. Unknown ids are NOT treated as
+/// dictionary-carrying; admission validation of the analyzer id set stays with the Router.
+pub const fn dict_required(analyzer_id: u32, kinds: &[DictKind]) -> bool {
+    match analyzer_id {
+        1 => false,
+        2 => matches!(kinds, [DictKind::Japanese]),
+        3 => matches!(kinds, [DictKind::Korean]),
+        0 => !kinds.is_empty(),
+        _ => false,
+    }
 }
 
 /// Per-frame metadata for one `admin_upload_dict_chunk` call in framed streaming mode
@@ -84,12 +119,37 @@ mod tests {
 
     #[test]
     fn dict_required_boundaries() {
-        assert!(dict_required(0));
-        assert!(dict_required(2));
-        assert!(dict_required(3));
-        assert!(!dict_required(1));
-        assert!(!dict_required(4));
-        assert!(!dict_required(u32::MAX));
+        use DictKind::{Japanese as J, Korean as K};
+        // Analyzer 1 never; unknown ids never.
+        for kinds in [&[][..], &[J][..], &[K][..], &[J, K][..]] {
+            assert!(!dict_required(1, kinds));
+            assert!(!dict_required(4, kinds));
+            assert!(!dict_required(u32::MAX, kinds));
+        }
+        // Analyzer 2 requires exactly {Japanese}; 3 exactly {Korean}.
+        assert!(dict_required(2, &[J]));
+        assert!(!dict_required(2, &[]));
+        assert!(!dict_required(2, &[K]));
+        assert!(!dict_required(2, &[J, K]));
+        assert!(dict_required(3, &[K]));
+        assert!(!dict_required(3, &[]));
+        assert!(!dict_required(3, &[J]));
+        assert!(!dict_required(3, &[J, K]));
+        // Analyzer 0: any non-empty subset; empty means dictionary-less (plan 0343).
+        assert!(!dict_required(0, &[]));
+        assert!(dict_required(0, &[J]));
+        assert!(dict_required(0, &[K]));
+        assert!(dict_required(0, &[J, K]));
+    }
+
+    #[test]
+    fn dict_kind_candid_roundtrip_canonical_order() {
+        let mut kinds = vec![DictKind::Korean, DictKind::Japanese];
+        kinds.sort();
+        assert_eq!(kinds, vec![DictKind::Japanese, DictKind::Korean]);
+        let bytes = encode_args((kinds.clone(),)).unwrap();
+        let decoded: (Vec<DictKind>,) = decode_args(&bytes).unwrap();
+        assert_eq!(decoded.0, kinds);
     }
 
     #[test]

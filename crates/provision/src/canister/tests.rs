@@ -5,11 +5,11 @@ use super::{
     ProvisionResult, ProvisionResultOutcome, accept_envelope_with_caller,
     admin_finalize_dict_catalog_with_caller, admin_upload_dict_catalog_chunk_with_caller,
     artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    build_record_from_request, complete_graph_registration_with_caller,
-    dict_catalog_key_for_analyzer, dict_relay_call_log_for_test, query_job_with_caller,
-    record_to_result, release_activate_with_caller, release_get_active,
-    release_install_with_caller, release_publish_with_caller, reset_dict_relay_script_for_test,
-    script_dict_relay_call, upsert_deployment_grant_with_caller,
+    build_record_from_request, complete_graph_registration_with_caller, dict_catalog_key_for_kind,
+    dict_relay_call_log_for_test, query_job_with_caller, record_to_result,
+    release_activate_with_caller, release_get_active, release_install_with_caller,
+    release_publish_with_caller, reset_dict_relay_script_for_test, script_dict_relay_call,
+    upsert_deployment_grant_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -29,7 +29,7 @@ use crate::types::{
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
 use gleaph_graph_kernel::provisioning::dictionary::{
-    DictState, DictStatus, MAX_DICT_COMPRESSED_CHUNK_BYTES,
+    DictKind, DictState, DictStatus, MAX_DICT_COMPRESSED_CHUNK_BYTES,
 };
 use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
 use std::future::Future;
@@ -2291,12 +2291,25 @@ fn seed_finalized_catalog_with_key(key: &DictCatalogKey, chunks: &[&[u8]]) -> (u
 }
 
 /// Router-shaped text install args: controller = issuing Router, Provision pinned as the
-/// dictionary-relay caller (plan 0335 authorization).
+/// dictionary-relay caller (plan 0335 authorization), admission-canonical kinds
+/// (plan 0343): 0/2 carry [Japanese], 3 carries [Korean], 1/None carry nothing.
+/// Tests needing non-canonical kinds use `text_install_args_with_kinds`.
 fn text_install_args(analyzer_id: Option<u32>) -> Vec<u8> {
+    let kinds = match analyzer_id {
+        Some(0) | Some(2) => Some(vec![DictKind::Japanese]),
+        Some(3) => Some(vec![DictKind::Korean]),
+        _ => None,
+    };
+    text_install_args_with_kinds(analyzer_id, kinds)
+}
+
+/// Non-canonical kinds path: explicit kind selection for opt-in edge legs.
+fn text_install_args_with_kinds(analyzer_id: Option<u32>, kinds: Option<Vec<DictKind>>) -> Vec<u8> {
     Encode!(&TextCanisterInitArgs {
         controller: Some(router_principal()),
         analyzer_id,
         dict_relay_caller: Some(pid(200)),
+        kinds,
     })
     .expect("encode TextCanisterInitArgs")
 }
@@ -2739,13 +2752,104 @@ fn dict_relay_requires_finalized_catalog_entry() {
     assert!(dict_relay_call_log_for_test().is_empty());
 }
 
-/// (7) Plan 0341: analyzer→catalog-key mapping — 0/2 resolve to the pinned ipadic 2.7.0
-/// container, 3 resolves to the pinned mecab-ko-dic 2.1.1-20180720 container.
+/// (7) Plan 0343: kind→catalog-key mapping — Japanese resolves to the pinned ipadic 2.7.0
+/// container, Korean to the pinned mecab-ko-dic 2.1.1-20180720 container. Total over
+/// `DictKind`: no fallback arm exists.
 #[test]
-fn dict_catalog_key_mapping_per_analyzer() {
-    assert_eq!(dict_catalog_key_for_analyzer(0), relay_catalog_key());
-    assert_eq!(dict_catalog_key_for_analyzer(2), relay_catalog_key());
-    assert_eq!(dict_catalog_key_for_analyzer(3), korean_catalog_key());
+fn dict_catalog_key_mapping_per_kind() {
+    assert_eq!(
+        dict_catalog_key_for_kind(DictKind::Japanese),
+        relay_catalog_key()
+    );
+    assert_eq!(
+        dict_catalog_key_for_kind(DictKind::Korean),
+        korean_catalog_key()
+    );
+}
+
+/// (9) Plan 0343: an analyzer-0 resource with no selected kinds (None and Some([])
+/// alike) streams ZERO dict calls and completes — the dictionary-less default.
+#[test]
+fn dict_relay_skipped_for_empty_kinds() {
+    for kinds in [None, Some(vec![])] {
+        reset_all_maps();
+        reset_dict_relay_script_for_test();
+        seed_finalized_catalog(&[&[0xA0; 300]]);
+        seed_active_release();
+
+        // No script armed: any relay seam call would fail the job; a correct skip
+        // completes it.
+        let (deployment_store, store) = init_and_grant(deployment_issuer());
+        let req = relay_request(
+            vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+                0,
+            )))],
+            vec![text_install_args_with_kinds(Some(0), kinds)],
+        );
+        let result = block_on(accept_envelope_with_caller(
+            router_principal(),
+            &store,
+            &deployment_store,
+            req,
+            600,
+        ))
+        .unwrap();
+        match result {
+            ProvisionAcceptResponse::Accepted {
+                created_resources, ..
+            } => {
+                assert_eq!(created_resources.len(), 1);
+            }
+            _ => panic!("expected Accepted"),
+        }
+        assert!(dict_relay_call_log_for_test().is_empty());
+        assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+    }
+}
+
+/// (10) Plan 0343案b: multi-kind selection fails the relay in preflight, BEFORE any
+/// text-canister call — no partial single-kind stream is emitted.
+#[test]
+fn dict_relay_multi_kind_fails_preflight_with_zero_calls() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_finalized_catalog_with_key(&korean_catalog_key(), &[&[0xE0; 300]]);
+    seed_active_release();
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args_with_kinds(
+            Some(0),
+            Some(vec![DictKind::Japanese, DictKind::Korean]),
+        )],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert!(created_resources.is_empty());
+        }
+        _ => panic!("expected Accepted with an empty created list"),
+    }
+    assert_eq!(
+        relay_job_state(&store),
+        JobState::Failed {
+            reason: "dictionary relay failed for resource 0".to_owned()
+        }
+    );
+    assert!(dict_relay_call_log_for_test().is_empty());
 }
 
 /// (8) Plan 0341: an analyzer-3 text resource relays the korean frames (its own digests)

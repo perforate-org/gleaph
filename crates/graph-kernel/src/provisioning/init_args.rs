@@ -7,6 +7,7 @@
 
 use candid::{CandidType, Deserialize, Principal};
 
+use super::dictionary::DictKind;
 use crate::federation::ShardId;
 
 /// Candid init args for a Router canister issued by Provision.
@@ -63,9 +64,10 @@ pub struct VectorCanisterInitArgs {
 }
 
 /// Candid init args for a Text canister issued by Provision (plan 0297; analyzer id per
-/// plan 0331). The Candid shape mirrors `text_canister::TextCanisterInitArgs` exactly
-/// (`controller`, `analyzer_id`, `dict_relay_caller`); this module only fixes the wire shape
-/// so Router-built install args decode in the text canister's init handler.
+/// plan 0331; dictionary kinds per plan 0343). The Candid shape mirrors
+/// `text_canister::TextCanisterInitArgs` exactly (`controller`, `analyzer_id`,
+/// `dict_relay_caller`, `kinds`); this module only fixes the wire shape so Router-built
+/// install args decode in the text canister's init handler.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct TextCanisterInitArgs {
     /// Controller allowed to call the text canister's admin endpoints (`admin_flush`,
@@ -80,6 +82,11 @@ pub struct TextCanisterInitArgs {
     /// Provision canister principal by the Router at build time. `None` (or anonymous) is
     /// fail-closed on the text side: no relay caller is authorized.
     pub dict_relay_caller: Option<Principal>,
+    /// Dictionary kinds selected via `WITH DICTIONARY` (plan 0343), in admission canonical
+    /// order. `None` and `Some(vec![])` both mean no dictionary (the new default): a
+    /// missing field decodes to `None`, so pre-0343 senders transparently select nothing
+    /// and the relay streams zero calls.
+    pub kinds: Option<Vec<DictKind>>,
 }
 
 #[cfg(test)]
@@ -89,17 +96,27 @@ mod tests {
 
     #[test]
     fn text_canister_init_args_candid_roundtrip() {
-        for dict_relay_caller in [None, Some(Principal::from_slice(&[0x42; 29]))] {
-            let args = TextCanisterInitArgs {
-                controller: Some(Principal::from_slice(&[0x41; 29])),
-                analyzer_id: Some(2),
-                dict_relay_caller,
-            };
-            let bytes = encode_args((args.clone(),)).unwrap();
-            let decoded: (TextCanisterInitArgs,) = decode_args(&bytes).unwrap();
-            assert_eq!(decoded.0.controller, args.controller);
-            assert_eq!(decoded.0.analyzer_id, args.analyzer_id);
-            assert_eq!(decoded.0.dict_relay_caller, args.dict_relay_caller);
+        use crate::provisioning::dictionary::DictKind;
+        for kinds in [
+            None,
+            Some(vec![]),
+            Some(vec![DictKind::Japanese]),
+            Some(vec![DictKind::Japanese, DictKind::Korean]),
+        ] {
+            for dict_relay_caller in [None, Some(Principal::from_slice(&[0x42; 29]))] {
+                let args = TextCanisterInitArgs {
+                    controller: Some(Principal::from_slice(&[0x41; 29])),
+                    analyzer_id: Some(2),
+                    dict_relay_caller,
+                    kinds: kinds.clone(),
+                };
+                let bytes = encode_args((args.clone(),)).unwrap();
+                let decoded: (TextCanisterInitArgs,) = decode_args(&bytes).unwrap();
+                assert_eq!(decoded.0.controller, args.controller);
+                assert_eq!(decoded.0.analyzer_id, args.analyzer_id);
+                assert_eq!(decoded.0.dict_relay_caller, args.dict_relay_caller);
+                assert_eq!(decoded.0.kinds, args.kinds);
+            }
         }
     }
 
@@ -124,5 +141,7 @@ mod tests {
         );
         assert_eq!(decoded.0.analyzer_id, Some(0));
         assert_eq!(decoded.0.dict_relay_caller, None);
+        // A pre-0343 sender that omits `kinds` decodes to None = no dictionary.
+        assert_eq!(decoded.0.kinds, None);
     }
 }
