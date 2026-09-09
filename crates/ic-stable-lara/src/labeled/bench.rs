@@ -1562,6 +1562,162 @@ fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
     })
 }
 
+/// Plan 0342: drive a default-label bypass row into the overflow-log regime.
+///
+/// Inserts distinct edges on a tail vertex until `bypass_overflow_log_head() >= 0`
+/// (checked every `DEFAULT_MAX_LOG_ENTRIES`-scale stride). Returns
+/// `(vid, dsts, burst_inserts)`. No maintenance runs during the burst, so the
+/// lara-level fold cannot drain the log before the probe observes it.
+fn burst_slab_bypass_row(
+    graph: &DeferredBidirectionalLabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+) -> (VertexId, Vec<VertexId>) {
+    // Burst (2048) + churn spare (6 alternating rounds x 64) + delete-only tail (256).
+    const POOL: usize = 2048 + 6 * 64 + 256;
+    const BURST: usize = 2048;
+    let dsts: Vec<VertexId> = (0..POOL as u32)
+        .map(|_| graph.push_vertex().expect("vertex"))
+        .collect();
+    // Push the source LAST so it is the tail (bypass-eligible).
+    let vid = graph.push_vertex().expect("source (tail)");
+    let default = BucketLabelKey::from_raw(1); // deferred_bench_graph default
+    for (k, dst) in dsts.iter().enumerate().take(BURST) {
+        graph
+            .insert_directed_edge(
+                vid,
+                *dst,
+                default,
+                BenchEdge(k as u32),
+                BenchEdge(0),
+                EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert");
+    }
+    (vid, dsts)
+}
+
+/// Plan 0342: bypass-row overflow-regime probe (Plan 0341 v1-boundary verdict).
+///
+/// Attempts to drive a default-label bypass row into the overflow-log regime with a
+/// 2048-append burst (12x `DEFAULT_MAX_LOG_ENTRIES = 170`), then applies delete-heavy
+/// churn — alternating remove/insert rounds plus a delete-only tail, each remove side
+/// followed by a full maintenance drain — recording per-round `(stored, degree,
+/// log_head)` via `eprintln!` for the trajectory table.
+///
+/// Empirical deviation from the plan sketch: honest tail appends never enter the
+/// log-backed regime (a 6000-append burst keeps `bypass_overflow_log_head() == -1`;
+/// the tail slab window absorbs appends), so the fixture asserts the slab-absorbed
+/// state as a tripwire and measures the churn trajectory there instead of on a
+/// log-backed row.
+#[bench(raw)]
+fn bench_remove_churn_bypass_log_regime_probe() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = deferred_bench_graph(8192);
+        const BURST: usize = 2048;
+        let (vid, dsts) = burst_slab_bypass_row(&graph);
+        let v0 = graph.forward().vertices().get(vid);
+        eprintln!(
+            "0342 burst_inserts={BURST} stored={} degree={} head={}",
+            v0.stored_slots,
+            v0.degree,
+            v0.bypass_overflow_log_head()
+        );
+        assert!(
+            v0.bypass_overflow_log_head() < 0,
+            "0342 tripwire: burst entered the log-backed regime (head >= 0); \
+             the DONE verdict below no longer holds — re-cut the probe slice",
+        );
+        assert_eq!(
+            (v0.stored_slots, v0.degree),
+            (BURST as u32, BURST as u32),
+            "burst must land fully on the slab with no tombstones"
+        );
+        // Live-edge ledger: (dst pool index, edge tag). The tag doubles as the
+        // `neighbor_vid` match key (`edge_matches_remove_target` requires
+        // `candidate.neighbor_vid() == dst`), so every tag must equal its dst id.
+        let mut live: Vec<(usize, u32)> = (0..BURST).map(|i| (i, u32::from(dsts[i]))).collect();
+        let mut next_dst = BURST;
+        let drain = || {
+            graph
+                .maintenance(MaintenanceBudget {
+                    max_instructions: 0,
+                    reserve_instructions: 0,
+                    checkpoint_every: 1,
+                    max_work_items: None,
+                    max_segments: None,
+                    max_delete_edge_steps: None,
+                })
+                .expect("drain");
+        };
+        let record = |label: &str, live_len: usize| {
+            let vertex = graph.forward().vertices().get(vid);
+            eprintln!(
+                "0342 {label} stored={} degree={} head={} live={live_len}",
+                vertex.stored_slots,
+                vertex.degree,
+                vertex.bypass_overflow_log_head(),
+            );
+            black_box((vertex.stored_slots, vertex.degree));
+        };
+        for round in 0..6 {
+            for _ in 0..64 {
+                if let Some((di, tag)) = live.pop() {
+                    assert!(
+                        graph
+                            .remove_directed_deferred(vid, dsts[di], BenchEdge(tag))
+                            .expect("remove"),
+                        "churn remove must match a live edge"
+                    );
+                }
+            }
+            drain();
+            record(&format!("alt_round{round}_post_remove"), live.len());
+            for _ in 0..64 {
+                let di = next_dst;
+                next_dst += 1;
+                let tag = u32::from(dsts[di]);
+                graph
+                    .insert_directed_edge(
+                        vid,
+                        dsts[di],
+                        BucketLabelKey::from_raw(1),
+                        BenchEdge(tag),
+                        BenchEdge(0),
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .expect("re-insert");
+                live.push((di, tag));
+            }
+            record(&format!("alt_round{round}_post_insert"), live.len());
+        }
+        for _ in 0..256 {
+            if let Some((di, tag)) = live.pop() {
+                assert!(
+                    graph
+                        .remove_directed_deferred(vid, dsts[di], BenchEdge(tag))
+                        .expect("remove"),
+                    "tail remove must match a live edge"
+                );
+            }
+        }
+        drain();
+        record("delete_only_tail", live.len());
+        let drained = graph.forward().vertices().get(vid);
+        assert!(
+            drained.bypass_overflow_log_head() < 0,
+            "churn must not push the bypass row into the log-backed regime"
+        );
+        // 6 alternating rounds x 64 tombstones + 256 delete-only tail = 640.
+        // Each round's removes sit below the remove-side hysteresis gate
+        // (tombstones <= stored/2), so no compaction fires and the slack grows
+        // linearly; the existing 0341 gate caps it once tombstones exceed degree.
+        assert_eq!(
+            drained.stored_slots.saturating_sub(drained.degree),
+            6 * 64 + 256,
+            "sub-hysteresis churn must accumulate exactly one tombstone per remove"
+        );
+    })
+}
+
 /// ADR 0016: inline property attach over hybrid slab + 8 B inline property overflow log.
 #[bench(raw)]
 fn bench_l_ip_log_8b_of() -> canbench_rs::BenchResult {
