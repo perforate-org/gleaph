@@ -586,12 +586,20 @@ async fn dict_relay_finalize_call(
 }
 
 /// Provision-owned policy mapping: a dictionary-required analyzer id resolves to the catalog
-/// entry carrying its MPD container. The dict-required gate itself stays the kernel predicate;
-/// the initial catalog pins the ipadic 2.7.0 container for every dictionary-required analyzer.
-fn dict_catalog_key_for_analyzer(_analyzer_id: u32) -> DictCatalogKey {
-    DictCatalogKey {
-        kind: "ipadic".to_owned(),
-        version: "2.7.0".to_owned(),
+/// entry carrying its MPD container. The dict-required gate itself stays the kernel predicate
+/// (`dict_required`), checked by the relay before this mapping runs, so unreachable ids never
+/// arrive here. Per-analyzer pins (plan 0341): id 3 korean resolves to the pinned
+/// mecab-ko-dic 2.1.1-20180720 container; every other id falls back to ipadic 2.7.0 (0/2).
+fn dict_catalog_key_for_analyzer(analyzer_id: u32) -> DictCatalogKey {
+    match analyzer_id {
+        3 => DictCatalogKey {
+            kind: "korean".to_owned(),
+            version: "2.1.1-20180720".to_owned(),
+        },
+        _ => DictCatalogKey {
+            kind: "ipadic".to_owned(),
+            version: "2.7.0".to_owned(),
+        },
     }
 }
 

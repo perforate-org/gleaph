@@ -2305,3 +2305,63 @@ fn dict_relay_fails_closed_on_missing_catalog_row() {
             .is_none()
     );
 }
+
+/// Plan 0341: ipadic + korean entries coexist — independent framed ingress, independent
+/// finalize, independent per-frame digests with no interference.
+#[test]
+fn dict_catalog_two_entries_coexist_independently() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+    let caller = release_test_principal();
+    let ipadic = dict_key("ipadic", "2.7.0");
+    let korean = dict_key("korean", "2.1.1-20180720");
+    let ipadic_chunks = [vec![0xA0; 300], vec![0xB1; 200]];
+    let korean_chunks = [vec![0xE0; 300], vec![0xE1; 200], vec![0xE2; 100]];
+
+    // Interleaved framed ingress: ipadic frame 0, korean frame 0, ipadic frame 1, ...
+    dict_upload_chunk(caller, &ipadic, 0, ipadic_chunks[0].clone()).unwrap();
+    dict_upload_chunk(caller, &korean, 0, korean_chunks[0].clone()).unwrap();
+    dict_upload_chunk(caller, &ipadic, 1, ipadic_chunks[1].clone()).unwrap();
+    dict_upload_chunk(caller, &korean, 1, korean_chunks[1].clone()).unwrap();
+    dict_upload_chunk(caller, &korean, 2, korean_chunks[2].clone()).unwrap();
+
+    let ipadic_final = dict_finalize(caller, &ipadic, 0xAAAA, 1000).unwrap();
+    let korean_final = dict_finalize(caller, &korean, 0xBBBB, 2000).unwrap();
+
+    assert_eq!(ipadic_final.state, DictCatalogState::Finalized);
+    assert_eq!(korean_final.state, DictCatalogState::Finalized);
+    // Per-frame digests are independent per entry.
+    let ipadic_digests: Vec<u128> = ipadic_chunks
+        .iter()
+        .map(|c| xxhash_rust::xxh3::xxh3_128(c))
+        .collect();
+    let korean_digests: Vec<u128> = korean_chunks
+        .iter()
+        .map(|c| xxhash_rust::xxh3::xxh3_128(c))
+        .collect();
+    assert_eq!(ipadic_final.per_frame_digests, ipadic_digests);
+    assert_eq!(korean_final.per_frame_digests, korean_digests);
+    assert_eq!(ipadic_final.raw_digest, Some(0xAAAA));
+    assert_eq!(korean_final.raw_digest, Some(0xBBBB));
+
+    // Stored rows are independent: each entry's frames read back byte-exact.
+    let store = ProvisionDictCatalogStore::new();
+    for (i, chunk) in ipadic_chunks.iter().enumerate() {
+        let row = store
+            .get_chunk(&DictChunkKey {
+                catalog_key: ipadic.clone(),
+                chunk_index: i as u32,
+            })
+            .expect("ipadic row");
+        assert_eq!(&row.bytes, chunk);
+    }
+    for (i, chunk) in korean_chunks.iter().enumerate() {
+        let row = store
+            .get_chunk(&DictChunkKey {
+                catalog_key: korean.clone(),
+                chunk_index: i as u32,
+            })
+            .expect("korean row");
+        assert_eq!(&row.bytes, chunk);
+    }
+}

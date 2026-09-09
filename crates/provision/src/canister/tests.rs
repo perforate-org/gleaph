@@ -6,10 +6,10 @@ use super::{
     admin_finalize_dict_catalog_with_caller, admin_upload_dict_catalog_chunk_with_caller,
     artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     build_record_from_request, complete_graph_registration_with_caller,
-    dict_relay_call_log_for_test, query_job_with_caller, record_to_result,
-    release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, reset_dict_relay_script_for_test, script_dict_relay_call,
-    upsert_deployment_grant_with_caller,
+    dict_catalog_key_for_analyzer, dict_relay_call_log_for_test, query_job_with_caller,
+    record_to_result, release_activate_with_caller, release_get_active,
+    release_install_with_caller, release_publish_with_caller, reset_dict_relay_script_for_test,
+    script_dict_relay_call, upsert_deployment_grant_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -2245,15 +2245,28 @@ fn relay_catalog_key() -> DictCatalogKey {
     }
 }
 
+fn korean_catalog_key() -> DictCatalogKey {
+    DictCatalogKey {
+        kind: "korean".to_owned(),
+        version: "2.1.1-20180720".to_owned(),
+    }
+}
+
 /// Seed a Finalized dictionary catalog entry holding `chunks` (one independent frame per
 /// row, each digest-verified on upload); returns (raw_digest, raw_len).
 fn seed_finalized_catalog(chunks: &[&[u8]]) -> (u128, u64) {
+    seed_finalized_catalog_with_key(&relay_catalog_key(), chunks)
+}
+
+/// Key-parameterized seeding: same framed ingress path for any catalog entry, so the
+/// ipadic + korean coexistence legs share one helper (plan 0341).
+fn seed_finalized_catalog_with_key(key: &DictCatalogKey, chunks: &[&[u8]]) -> (u128, u64) {
     seed_bootstrap();
     for (i, chunk) in chunks.iter().enumerate() {
         admin_upload_dict_catalog_chunk_with_caller(
             gov(),
             DictCatalogUploadChunkArgs {
-                key: relay_catalog_key(),
+                key: key.clone(),
                 chunk_index: i as u32,
                 frame_digest: xxhash_rust::xxh3::xxh3_128(chunk),
                 bytes: chunk.to_vec(),
@@ -2267,7 +2280,7 @@ fn seed_finalized_catalog(chunks: &[&[u8]]) -> (u128, u64) {
     admin_finalize_dict_catalog_with_caller(
         gov(),
         DictCatalogFinalizeArgs {
-            key: relay_catalog_key(),
+            key: key.clone(),
             raw_digest,
             raw_len,
         },
@@ -2724,6 +2737,82 @@ fn dict_relay_requires_finalized_catalog_entry() {
         }
     );
     assert!(dict_relay_call_log_for_test().is_empty());
+}
+
+/// (7) Plan 0341: analyzer→catalog-key mapping — 0/2 resolve to the pinned ipadic 2.7.0
+/// container, 3 resolves to the pinned mecab-ko-dic 2.1.1-20180720 container.
+#[test]
+fn dict_catalog_key_mapping_per_analyzer() {
+    assert_eq!(dict_catalog_key_for_analyzer(0), relay_catalog_key());
+    assert_eq!(dict_catalog_key_for_analyzer(2), relay_catalog_key());
+    assert_eq!(dict_catalog_key_for_analyzer(3), korean_catalog_key());
+}
+
+/// (8) Plan 0341: an analyzer-3 text resource relays the korean frames (its own digests)
+/// and never touches the ipadic entry.
+#[test]
+fn dict_relay_analyzer_3_streams_korean_frames_only() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    let ipadic_chunks: [&[u8]; 1] = [&[0xA0; 300]];
+    let korean_chunks: [&[u8]; 2] = [&[0xE0; 300], &[0xE1; 200]];
+    seed_finalized_catalog_with_key(&relay_catalog_key(), &ipadic_chunks);
+    let (raw_digest, raw_len) =
+        seed_finalized_catalog_with_key(&korean_catalog_key(), &korean_chunks);
+    seed_active_release();
+
+    script_dict_relay_call(scripted_status(DictState::Absent, None));
+    for chunk in &korean_chunks {
+        script_dict_relay_call(Some(
+            Encode!(&Ok::<u64, String>(chunk.len() as u64)).unwrap(),
+        ));
+    }
+    script_dict_relay_call(Some(
+        Encode!(&Ok::<DictStatus, String>(DictStatus {
+            state: DictState::Finalized,
+            digest: Some(raw_digest),
+            len: raw_len,
+        }))
+        .unwrap(),
+    ));
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args(Some(3))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
+        }
+        _ => panic!("expected Accepted"),
+    }
+    assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+    assert_eq!(
+        dict_relay_call_log_for_test(),
+        vec![
+            DictRelayCall::Status,
+            DictRelayCall::Upload {
+                bytes: korean_chunks[0].to_vec()
+            },
+            DictRelayCall::Upload {
+                bytes: korean_chunks[1].to_vec()
+            },
+            DictRelayCall::Finalize,
+        ]
+    );
 }
 
 /// (6) Undecodable text install args fail the relay closed before any call.

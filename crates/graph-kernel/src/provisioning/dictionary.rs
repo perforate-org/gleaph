@@ -6,10 +6,11 @@
 //! other's implementation. The text canister imports/re-exports these directly; no copy
 //! or compatibility wrapper is kept.
 //!
-//! Provision stores and verifies the ZSTD-compressed container only; the text canister
-//! decompresses once at finalize. Both digests are pinned end-to-end: `compressed_digest`
-//! (transfer integrity, verified before decompression) and `raw_digest` (content identity
-//! in the text canister's `TextMeta`).
+//! Provision stores and verifies the ZSTD-compressed container only; frames decode
+//! per relay call on arrival at the text canister, and finalize runs a one-pass
+//! region-16 raw hash as the authority. Both digests are pinned end-to-end:
+//! per-frame `frame_digest` values (transfer integrity, verified before decode) and
+//! `raw_digest` (content identity in the text canister's `TextMeta`).
 
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
@@ -22,10 +23,11 @@ pub const MAX_DICT_COMPRESSED_CHUNK_BYTES: usize = 1_945_600;
 
 /// True for analyzer ids that carry the stable-resident MPD dictionary container
 /// (plan 0332: id 0 multilingual and id 2 mecab both go through the same dictionary
-/// machinery; id 1 unicode-bigram is dictionary-free). Unknown ids are NOT treated as
-/// dictionary-carrying; admission validation of the analyzer id set stays with the Router.
+/// machinery; plan 0341: id 3 korean mecab-ko-dic joins them; id 1 unicode-bigram is
+/// dictionary-free). Unknown ids are NOT treated as dictionary-carrying; admission
+/// validation of the analyzer id set stays with the Router.
 pub const fn dict_required(analyzer_id: u32) -> bool {
-    matches!(analyzer_id, 0 | 2)
+    matches!(analyzer_id, 0 | 2 | 3)
 }
 
 /// Per-frame metadata for one `admin_upload_dict_chunk` call in framed streaming mode
@@ -84,8 +86,9 @@ mod tests {
     fn dict_required_boundaries() {
         assert!(dict_required(0));
         assert!(dict_required(2));
+        assert!(dict_required(3));
         assert!(!dict_required(1));
-        assert!(!dict_required(3));
+        assert!(!dict_required(4));
         assert!(!dict_required(u32::MAX));
     }
 
