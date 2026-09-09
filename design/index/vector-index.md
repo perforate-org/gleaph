@@ -684,8 +684,14 @@ above the append-only kernel:
   reclaims to the dense prefix, while post-start appends above the range keep the tail up.
 
 Free-run reuse (Slice 8) already returns torn-down blocks to service before the tail grows;
-row-level defragmentation inside partially-live pages remains out of scope, and automatic policy
-triggers for this driver are deferred with the maintenance trust-model work.
+row-level defragmentation inside partially-live pages remains out of scope. Since plan 0343
+(2026-09-09) the driver is policy-gated on the Router: `advance_vector_slab_compact` starts it
+only when `estimated_unreferenced_bytes >= compact_dead_bytes_threshold` (`None` disables the
+driver) and then runs one bounded step per call with the policy budgets; the dead-space
+estimate counts sealed code-table blocks plus head-resident mutable code pages as referenced
+(row-oriented scope counters stay excluded per ADR 0093), so a finalized tier-on index reads
+zero. The rebuild-recommendation path is independent: tombstone row-ratio never triggers
+compaction.
 
 Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
 `Sampling` freezes each candidate in its **native stored form** (row bytes + aux scale, deduped on

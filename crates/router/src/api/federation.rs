@@ -550,6 +550,9 @@ fn set_vector_maintenance_policy(
         code_tier: args.code_tier,
         eps_query_bps: args.eps_query_bps,
         eps_fine_bps: args.eps_fine_bps,
+        compact_dead_bytes_threshold: args.compact_dead_bytes_threshold,
+        compact_max_pages: args.compact_max_pages,
+        compact_max_bytes: args.compact_max_bytes,
     })
 }
 
@@ -636,6 +639,64 @@ async fn advance_vector_maintenance(
         .await
         .map(types::VectorMaintenanceStepOutcome::Stepped)
         .map_err(RouterError::Internal)
+}
+
+/// Drive one bounded slab-compaction unit on the activated vector target (plan 0343).
+///
+/// Status-driven: reads the canister compaction status; when `Idle`, reads the full slab stats
+/// and starts the plan-0278 driver only if `estimated_unreferenced_bytes >=
+/// compact_dead_bytes_threshold`; then runs one bounded step with the policy budgets.
+/// `Disabled` when no (or a disabled) policy exists or the threshold is `None` (driver disarmed).
+/// The rebuild recommendation path is untouched: tombstone row-ratio never triggers this driver,
+/// because compaction reclaims slab bytes, not live-page tombstone rows.
+#[update]
+async fn advance_vector_slab_compact(
+    graph_name: String,
+    index_id: u32,
+) -> Result<types::VectorSlabCompactOutcome, RouterError> {
+    use gleaph_graph_kernel::vector_index::VectorSlabCompactionPhase;
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let graph_id = RouterStore::new().resolve_graph_id(&graph_name)?;
+    let policy = crate::facade::stable::vector_maintenance_policy::get_policy(graph_id, index_id);
+    let Some(policy) = policy.filter(|p| p.enabled) else {
+        return Ok(types::VectorSlabCompactOutcome::Disabled);
+    };
+    let Some(threshold) = policy.compact_dead_bytes_threshold else {
+        return Ok(types::VectorSlabCompactOutcome::Disabled);
+    };
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    let status = crate::vector_sync::forward_admin_vector_slab_compact_status(target)
+        .await
+        .map_err(RouterError::Internal)?;
+    if status.phase == VectorSlabCompactionPhase::Idle {
+        let stats = crate::vector_sync::forward_admin_vector_slab_stats(target, Some(index_id))
+            .await
+            .map_err(RouterError::Internal)?;
+        let dead = stats.slab.estimated_unreferenced_bytes;
+        if dead < threshold {
+            return Ok(types::VectorSlabCompactOutcome::BelowThreshold {
+                estimated_unreferenced_bytes: dead,
+            });
+        }
+        if let Err(e) = crate::vector_sync::forward_admin_start_vector_slab_compact(target).await {
+            // Lost a start race after the `Idle` read (a concurrent operator started first):
+            // re-read once; step when another driver is active, fail otherwise.
+            let retry = crate::vector_sync::forward_admin_vector_slab_compact_status(target)
+                .await
+                .map_err(RouterError::Internal)?;
+            if retry.phase != VectorSlabCompactionPhase::Compacting {
+                return Err(RouterError::Internal(e));
+            }
+        }
+    }
+    let stepped = crate::vector_sync::forward_admin_vector_slab_compact_step(
+        target,
+        policy.compact_max_pages,
+        policy.compact_max_bytes,
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    Ok(types::VectorSlabCompactOutcome::Advanced(stepped))
 }
 
 /// Router policy/readiness plus forwarded vector-canister maintenance + rebuild state.

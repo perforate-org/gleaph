@@ -12,14 +12,14 @@ use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy,
     VectorMaintenanceRecommendation, VectorMaintenanceStepResult, VectorMetric, VectorRebuildPhase,
-    VectorSearchResult, VectorSubject,
+    VectorSearchResult, VectorSlabCompactionPhase, VectorSlabStats, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ensure_user_graph_type, install_federation, install_vector_canister,
 };
 use gleaph_router::types::{
     RegisterVectorIndexArgs, SetVectorMaintenancePolicyArgs, VectorMaintenanceStateView,
-    VectorMaintenanceStatusView, VectorMaintenanceStepOutcome,
+    VectorMaintenanceStatusView, VectorMaintenanceStepOutcome, VectorSlabCompactOutcome,
 };
 
 const EMBEDDING_NAME: &str = "adr0031_maint_vec";
@@ -236,7 +236,159 @@ fn policy_args_with_tier(enabled: bool, code_tier: Option<bool>) -> SetVectorMai
         code_tier,
         eps_query_bps: None,
         eps_fine_bps: None,
+        // Plan 0343: compaction driver stays disabled in the rebuild-orchestration fixtures.
+        compact_dead_bytes_threshold: None,
+        compact_max_pages: 0,
+        compact_max_bytes: 0,
     }
+}
+
+fn policy_args_with_compaction(enabled: bool) -> SetVectorMaintenancePolicyArgs {
+    let mut args = policy_args_with_tier(enabled, None);
+    // Plan 0343: arm the compaction driver with a 1-byte threshold so any dead slab space
+    // triggers; budgets mirror the small fixture scale.
+    args.compact_dead_bytes_threshold = Some(1);
+    args.compact_max_pages = 8;
+    args.compact_max_bytes = 1 << 20;
+    args
+}
+
+fn compact_step(
+    env: &FederationEnv,
+    sender: Principal,
+) -> Result<VectorSlabCompactOutcome, RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            sender,
+            "advance_vector_slab_compact",
+            Encode!(&GRAPH_NAME.to_string(), &INDEX_ID).expect("encode compact args"),
+        )
+        .expect("advance_vector_slab_compact call");
+    Decode!(&bytes, Result<VectorSlabCompactOutcome, RouterError>).expect("decode compact outcome")
+}
+
+fn slab_dead_bytes(env: &FederationEnv) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "get_vector_slab_stats",
+            Encode!(&GRAPH_NAME.to_string(), &Some(INDEX_ID)).expect("encode slab stats args"),
+        )
+        .expect("get_vector_slab_stats call");
+    Decode!(&bytes, Result<VectorSlabStats, RouterError>)
+        .expect("decode slab stats")
+        .expect("slab stats ok")
+        .slab
+        .estimated_unreferenced_bytes
+}
+
+#[test]
+fn router_driven_compaction_reclaims_dead_space_with_identical_recall() {
+    let env = install_federation();
+    ensure_user_graph_type(&env);
+    let _vector = ready_activated_vector_with_tombstone(&env);
+
+    // Driver disarmed by default: with no policy yet, the compact advance is a clean no-op
+    // (wrong-impl guard: it must not touch the canister).
+    assert_eq!(
+        compact_step(&env, env.admin).expect("compact step"),
+        VectorSlabCompactOutcome::Disabled,
+        "no policy -> Disabled no-op"
+    );
+    // RBAC mirrors the maintenance step: a non-admin caller is forbidden.
+    let stranger = Principal::from_slice(&[0x42; 29]);
+    assert!(matches!(
+        compact_step(&env, stranger),
+        Err(RouterError::Forbidden)
+    ));
+
+    set_policy(&env, &policy_args_with_compaction(true)).expect("enable policy");
+
+    // Drive the rebuild path to publish, then keep pushing until cleanup drains and the fresh
+    // scan judges the index healthy: the superseded generation's pages are now dead slab space.
+    let mut awaiting_publish = false;
+    for _ in 0..MAX_STEPS {
+        match maintenance_step(&env, env.admin).expect("step") {
+            VectorMaintenanceStepOutcome::Stepped(
+                VectorMaintenanceStepResult::AwaitingPublish(_),
+            ) => {
+                awaiting_publish = true;
+                break;
+            }
+            VectorMaintenanceStepOutcome::Stepped(_) => {}
+            VectorMaintenanceStepOutcome::Disabled => panic!("policy is enabled"),
+        }
+    }
+    assert!(awaiting_publish, "rebuild reached ReadyToPublish");
+    publish(&env).expect("publish");
+    let mut reached_healthy = false;
+    for _ in 0..MAX_STEPS {
+        match maintenance_step(&env, env.admin).expect("step") {
+            VectorMaintenanceStepOutcome::Stepped(VectorMaintenanceStepResult::Healthy) => {
+                reached_healthy = true;
+                break;
+            }
+            VectorMaintenanceStepOutcome::Stepped(_) => {}
+            VectorMaintenanceStepOutcome::Disabled => panic!("policy still enabled"),
+        }
+    }
+    assert!(reached_healthy, "cleanup drained after publish");
+
+    // The fixture must actually contain dead space, or the trigger below would be vacuous.
+    let dead_before = slab_dead_bytes(&env);
+    assert!(
+        dead_before > 0,
+        "superseded generation leaves dead slab space"
+    );
+    let before: Vec<(VectorSubject, f32)> = router_vector_search(&env, 9.0, 10)
+        .hits
+        .into_iter()
+        .map(|h| (h.subject, h.distance))
+        .collect();
+    assert!(!before.is_empty(), "search returns hits before compaction");
+
+    // Drive the Router advance to finalize: start (dead >= 1-byte threshold) + bounded steps.
+    let mut saw_finalize = false;
+    for _ in 0..MAX_STEPS {
+        match compact_step(&env, env.admin).expect("compact step") {
+            VectorSlabCompactOutcome::Disabled => panic!("compaction is armed"),
+            VectorSlabCompactOutcome::BelowThreshold { .. } => {
+                panic!("dead space must trigger the armed driver")
+            }
+            VectorSlabCompactOutcome::Advanced(status) => {
+                if status.phase == VectorSlabCompactionPhase::Idle {
+                    assert!(status.pages_moved > 0, "finalize moved at least one page");
+                    saw_finalize = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_finalize,
+        "compaction finalized through the Router driver"
+    );
+
+    // Tail rewound: the next advance observes zero dead bytes and starts nothing.
+    assert_eq!(
+        compact_step(&env, env.admin).expect("compact step"),
+        VectorSlabCompactOutcome::BelowThreshold {
+            estimated_unreferenced_bytes: 0
+        },
+        "no dead space remains after finalize"
+    );
+
+    // Recall-invariant: identical ordering and distances after the page moves.
+    let after: Vec<(VectorSubject, f32)> = router_vector_search(&env, 9.0, 10)
+        .hits
+        .into_iter()
+        .map(|h| (h.subject, h.distance))
+        .collect();
+    assert_eq!(after, before, "compaction preserves search recall");
 }
 
 fn set_policy(

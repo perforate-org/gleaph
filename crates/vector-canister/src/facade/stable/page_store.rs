@@ -364,7 +364,16 @@ impl SlabStatsAcc {
         }
     }
 
-    /// Observes one page of `(key.index_id, key.index_version)` with `row_count` written rows of
+    /// Counts code-page blocks as globally referenced without touching row-oriented scope
+    /// counters (ADR 0093 exclusion retained). Code pages are live slab residents the
+    /// compaction driver relocates (finalize asserts them out of the reclaimed gap), so
+    /// omitting them here would pin `estimated_unreferenced_bytes` above zero on every
+    /// tier-on index and retrigger any driver gated on that estimate (plan 0343).
+    fn observe_code_blocks(&mut self, blocks: u64) {
+        self.referenced_global = self
+            .referenced_global
+            .saturating_add(blocks.saturating_mul(BLOCK_LEN));
+    }
     /// which `live_count` are live (tombstoned rows are derived; reopen validation enforces
     /// `live_count <= row_count`). The page contributes exactly one [`BLOCK_LEN`] footprint.
     fn observe(&mut self, key: &PageKey, row_count: u32, live_count: u32) {
@@ -3029,6 +3038,12 @@ impl VectorSlabStore {
                         head.mutable_rows,
                         head.mutable_live,
                     );
+                    // The head-owned mutable code page is a second live block (mirrors the
+                    // `mutable_code_seq != 0` compaction candidate); the row `observe` above
+                    // covers only the mutable row page.
+                    if head.mutable_code_seq != 0 {
+                        acc.observe_code_blocks(1);
+                    }
                 }
                 PartitionHeadRecord::Head(_) => {}
                 PartitionHeadRecord::Table(table) => {
@@ -3048,8 +3063,12 @@ impl VectorSlabStore {
                     }
                 }
                 // ADR 0093: code pages are excluded from the row-oriented stats (row_count/live
-                // semantics); their block footprint is reclaimed by compaction enumeration.
-                PartitionHeadRecord::Code(_) => {}
+                // semantics); their block footprint counts as globally referenced (plan 0343)
+                // because compaction relocates them and the dead-space estimate must return to
+                // zero on tier-on indexes after finalize.
+                PartitionHeadRecord::Code(table) => {
+                    acc.observe_code_blocks(table.entries.len() as u64);
+                }
             }
         }
         let (scope, versions, referenced_global) = acc.finish();
@@ -4502,6 +4521,22 @@ mod tests {
             SLAB_HEADER_SIZE as u64 + 2 * BLOCK_LEN
         );
         assert_eq!(live_rows(&reopened, 1, 2), live_before);
+    }
+
+    #[test]
+    fn code_blocks_count_as_referenced_without_row_scope() {
+        // Plan 0343: code pages are live slab residents the compaction driver relocates, so
+        // they must count as referenced in the global dead-space estimate — while staying out
+        // of the ADR 0093 row-oriented scope counters. Wrong-impl guard: dropping the
+        // `observe_code_blocks` call pins `estimated_unreferenced_bytes` at one block.
+        let mut acc = SlabStatsAcc::new(None);
+        let key = PageKey::new(1, 1, 0, 0);
+        acc.observe(&key, 10, 8);
+        acc.observe_code_blocks(1);
+        assert_eq!(acc.referenced_global, 2 * BLOCK_LEN);
+        assert_eq!(acc.scope_pages, 1, "code blocks stay out of row scope");
+        assert_eq!(acc.scope_rows, 10);
+        assert_eq!(acc.scope_live, 8);
     }
 
     #[test]

@@ -56,12 +56,44 @@ pub(crate) struct VectorMaintenancePolicyRecord {
     /// Target-generation leaf-stage ε₂ pruning in basis points (same unit/sentinel as
     /// `eps_query_bps`); `None` = `0` (Slice 9).
     pub eps_fine_bps: Option<u32>,
+    /// Slab-compaction trigger: start the plan-0278 driver when
+    /// `estimated_unreferenced_bytes >= threshold`; `None` disables the driver (plan 0343).
+    /// Tombstone row-ratio (the rebuild recommendation signal) is NOT what compaction fixes,
+    /// so this gate is deliberately independent of the rebuild thresholds.
+    pub compact_dead_bytes_threshold: Option<u64>,
+    /// Per-step compaction budgets forwarded to `admin_vector_slab_compact_step` (plan 0343).
+    /// Validated nonzero only when the threshold is `Some` (a `None` threshold leaves the
+    /// driver disabled, so migrated V1 records keep zero budgets without failing validation).
+    pub compact_max_pages: u32,
+    pub compact_max_bytes: u64,
 }
 
 /// Versioned stable envelope (ADR 0007) so the record schema can evolve across upgrades.
+///
+/// `V1` must keep decoding forever: pre-0343 records (no compaction fields) map to a disabled
+/// driver (`compact_dead_bytes_threshold: None`, zero budgets).
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum VectorMaintenancePolicyStableRecord {
-    V1(VectorMaintenancePolicyRecord),
+    V1(VectorMaintenancePolicyRecordV1),
+    V2(VectorMaintenancePolicyRecord),
+}
+
+/// Pre-0343 policy shape (no slab-compaction fields).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+struct VectorMaintenancePolicyRecordV1 {
+    pub graph_id: GraphId,
+    pub index_id: u32,
+    pub enabled: bool,
+    pub policy: VectorMaintenancePolicy,
+    pub target_nlist: Option<u32>,
+    pub sample_limit: u32,
+    pub scan_max_pages: u32,
+    pub rebuild_max_subjects: u32,
+    pub cleanup_max_work: u32,
+    pub target_fine_nlist: Option<u32>,
+    pub code_tier: Option<bool>,
+    pub eps_query_bps: Option<u32>,
+    pub eps_fine_bps: Option<u32>,
 }
 
 impl Storable for VectorMaintenancePolicyRecord {
@@ -69,13 +101,13 @@ impl Storable for VectorMaintenancePolicyRecord {
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Owned(
-            Encode!(&VectorMaintenancePolicyStableRecord::V1(*self))
+            Encode!(&VectorMaintenancePolicyStableRecord::V2(*self))
                 .expect("encode vector maintenance policy"),
         )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&VectorMaintenancePolicyStableRecord::V1(self))
+        Encode!(&VectorMaintenancePolicyStableRecord::V2(self))
             .expect("encode vector maintenance policy")
     }
 
@@ -83,7 +115,26 @@ impl Storable for VectorMaintenancePolicyRecord {
         match Decode!(bytes.as_ref(), VectorMaintenancePolicyStableRecord)
             .expect("decode vector maintenance policy")
         {
-            VectorMaintenancePolicyStableRecord::V1(v1) => v1,
+            // Pre-0343 records never drove compaction: keep the driver disabled.
+            VectorMaintenancePolicyStableRecord::V1(v1) => VectorMaintenancePolicyRecord {
+                graph_id: v1.graph_id,
+                index_id: v1.index_id,
+                enabled: v1.enabled,
+                policy: v1.policy,
+                target_nlist: v1.target_nlist,
+                sample_limit: v1.sample_limit,
+                scan_max_pages: v1.scan_max_pages,
+                rebuild_max_subjects: v1.rebuild_max_subjects,
+                cleanup_max_work: v1.cleanup_max_work,
+                target_fine_nlist: v1.target_fine_nlist,
+                code_tier: v1.code_tier,
+                eps_query_bps: v1.eps_query_bps,
+                eps_fine_bps: v1.eps_fine_bps,
+                compact_dead_bytes_threshold: None,
+                compact_max_pages: 0,
+                compact_max_bytes: 0,
+            },
+            VectorMaintenancePolicyStableRecord::V2(record) => record,
         }
     }
 }
@@ -130,6 +181,24 @@ fn validate(record: &VectorMaintenancePolicyRecord) -> Result<(), RouterError> {
             "vector index {}",
             record.index_id
         )));
+    }
+    // Compaction gate (plan 0343): a `Some` threshold arms the driver, so the step budgets
+    // must be nonzero and the threshold itself must be non-trivial (`0` would start a
+    // compaction on every advance even with no dead space). `None` disables the driver and
+    // skips the budget checks (migrated V1 records carry zero budgets).
+    match record.compact_dead_bytes_threshold {
+        None => {}
+        Some(0) => {
+            return Err(RouterError::InvalidArgument(
+                "compact_dead_bytes_threshold must be >= 1 when set".to_owned(),
+            ));
+        }
+        Some(_) if record.compact_max_pages == 0 || record.compact_max_bytes == 0 => {
+            return Err(RouterError::InvalidArgument(
+                "compact_max_pages/compact_max_bytes must be nonzero when the compaction threshold is set".to_owned(),
+            ));
+        }
+        Some(_) => {}
     }
     Ok(())
 }
@@ -233,6 +302,9 @@ mod tests {
             code_tier: None,
             eps_query_bps: None,
             eps_fine_bps: None,
+            compact_dead_bytes_threshold: None,
+            compact_max_pages: 0,
+            compact_max_bytes: 0,
         }
     }
 
@@ -350,6 +422,68 @@ mod tests {
         assert!(delete_policy(graph, 1));
         assert!(!delete_policy(graph, 1));
         assert!(get_policy(graph, 1).is_none());
+    }
+
+    #[test]
+    fn compaction_gate_validation() {
+        let graph = GraphId::from_raw(930_007);
+        register_def(graph, 1);
+        // Disabled driver (None): zero budgets pass (V1-migrated shape).
+        set_policy(record(graph, 1)).expect("disabled compaction passes");
+        // Armed driver: nonzero budgets pass.
+        let mut armed = record(graph, 1);
+        armed.compact_dead_bytes_threshold = Some(65_536);
+        armed.compact_max_pages = 8;
+        armed.compact_max_bytes = 1 << 20;
+        set_policy(armed).expect("armed compaction passes");
+        // Zero threshold: degenerate always-start, rejected.
+        let mut zero_threshold = record(graph, 1);
+        zero_threshold.compact_dead_bytes_threshold = Some(0);
+        zero_threshold.compact_max_pages = 8;
+        zero_threshold.compact_max_bytes = 1 << 20;
+        assert!(matches!(
+            set_policy(zero_threshold),
+            Err(RouterError::InvalidArgument(_))
+        ));
+        // Armed but zero budgets: rejected (wrong-impl guard: budgets must gate the driver).
+        let mut zero_budgets = record(graph, 1);
+        zero_budgets.compact_dead_bytes_threshold = Some(65_536);
+        assert!(matches!(
+            set_policy(zero_budgets),
+            Err(RouterError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn v1_stable_bytes_migrate_to_disabled_compaction() {
+        let rec = record(GraphId::from_raw(7), 3);
+        let v1 = VectorMaintenancePolicyRecordV1 {
+            graph_id: rec.graph_id,
+            index_id: rec.index_id,
+            enabled: rec.enabled,
+            policy: rec.policy,
+            target_nlist: rec.target_nlist,
+            sample_limit: rec.sample_limit,
+            scan_max_pages: rec.scan_max_pages,
+            rebuild_max_subjects: rec.rebuild_max_subjects,
+            cleanup_max_work: rec.cleanup_max_work,
+            target_fine_nlist: rec.target_fine_nlist,
+            code_tier: rec.code_tier,
+            eps_query_bps: rec.eps_query_bps,
+            eps_fine_bps: rec.eps_fine_bps,
+        };
+        let bytes: Cow<'_, [u8]> = Cow::Owned(
+            Encode!(&VectorMaintenancePolicyStableRecord::V1(v1)).expect("encode V1 envelope"),
+        );
+        let migrated = VectorMaintenancePolicyRecord::from_bytes(bytes);
+        assert_eq!(migrated.compact_dead_bytes_threshold, None);
+        assert_eq!(migrated.compact_max_pages, 0);
+        assert_eq!(migrated.compact_max_bytes, 0);
+        let mut without_compaction = rec;
+        without_compaction.compact_dead_bytes_threshold = None;
+        without_compaction.compact_max_pages = 0;
+        without_compaction.compact_max_bytes = 0;
+        assert_eq!(migrated, without_compaction);
     }
 
     #[test]

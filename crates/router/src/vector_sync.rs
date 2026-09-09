@@ -16,8 +16,8 @@ use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult};
 use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
-    VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabStats,
-    VectorSlabStatsStep, VectorSyncBatchOutcome,
+    VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabCompactionStatus,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome,
 };
 use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 
@@ -746,4 +746,26 @@ forward_vector!(
     unbounded_wait,
     (index_id: u32),
     ()
+);
+// Plan 0343: Router-driven slab-compaction driver (plan-0278 canister endpoints).
+forward_vector!(
+    forward_admin_start_vector_slab_compact,
+    "admin_start_vector_slab_compact",
+    unbounded_wait,
+    (),
+    ()
+);
+forward_vector!(
+    forward_admin_vector_slab_compact_step,
+    "admin_vector_slab_compact_step",
+    unbounded_wait,
+    (max_pages: u32, max_bytes: u64),
+    VectorSlabCompactionStatus
+);
+forward_vector!(
+    forward_admin_vector_slab_compact_status,
+    "admin_vector_slab_compact_status",
+    unbounded_wait,
+    (),
+    VectorSlabCompactionStatus
 );

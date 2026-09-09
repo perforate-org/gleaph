@@ -20,6 +20,7 @@ pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentK
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
     VectorMaintenanceStepResult, VectorMetric, VectorPartitionPageHealth, VectorRebuildStatus,
+    VectorSlabCompactionStatus,
 };
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use sha2::{Digest, Sha256};
@@ -1908,6 +1909,13 @@ pub struct SetVectorMaintenancePolicyArgs {
     pub eps_query_bps: Option<u32>,
     /// Target-generation leaf-stage ε₂ pruning in basis points; `None` = `0` (Slice 9).
     pub eps_fine_bps: Option<u32>,
+    /// Slab-compaction trigger in dead bytes (`estimated_unreferenced_bytes >= threshold`
+    /// starts the plan-0278 driver); `None` disables the driver (plan 0343).
+    pub compact_dead_bytes_threshold: Option<u64>,
+    /// Max pages moved per bounded compaction step; required nonzero when the threshold is set.
+    pub compact_max_pages: u32,
+    /// Max bytes moved per bounded compaction step; required nonzero when the threshold is set.
+    pub compact_max_bytes: u64,
 }
 
 /// Operator-facing view of a stored vector maintenance policy (ADR 0031 Slice 10).
@@ -1926,6 +1934,9 @@ pub struct VectorMaintenancePolicyView {
     pub code_tier: Option<bool>,
     pub eps_query_bps: Option<u32>,
     pub eps_fine_bps: Option<u32>,
+    pub compact_dead_bytes_threshold: Option<u64>,
+    pub compact_max_pages: u32,
+    pub compact_max_bytes: u64,
 }
 
 impl From<VectorMaintenancePolicyRecord> for VectorMaintenancePolicyView {
@@ -1944,6 +1955,9 @@ impl From<VectorMaintenancePolicyRecord> for VectorMaintenancePolicyView {
             code_tier: record.code_tier,
             eps_query_bps: record.eps_query_bps,
             eps_fine_bps: record.eps_fine_bps,
+            compact_dead_bytes_threshold: record.compact_dead_bytes_threshold,
+            compact_max_pages: record.compact_max_pages,
+            compact_max_bytes: record.compact_max_bytes,
         }
     }
 }
@@ -1956,6 +1970,20 @@ pub enum VectorMaintenanceStepOutcome {
     Disabled,
     /// The vector canister advanced one bounded maintenance unit.
     Stepped(VectorMaintenanceStepResult),
+}
+
+/// Outcome of one Router-driven slab-compaction advance (plan 0343). `Disabled` is a Router-level
+/// no-op (absent/disabled policy, or a disarmed `None` compaction threshold); `BelowThreshold`
+/// reports the live dead-byte count without starting the driver; otherwise one bounded compact
+/// unit ran and the resulting driver status is relayed.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum VectorSlabCompactOutcome {
+    /// No policy exists, it is disabled, or the compaction threshold is `None`.
+    Disabled,
+    /// Driver idle and `estimated_unreferenced_bytes` under threshold; nothing started.
+    BelowThreshold { estimated_unreferenced_bytes: u64 },
+    /// One bounded compact step ran (covers start-then-step and step-only).
+    Advanced(VectorSlabCompactionStatus),
 }
 
 /// Cursor-redacted projection of the vector canister's [`VectorMaintenanceState`] for the Router
