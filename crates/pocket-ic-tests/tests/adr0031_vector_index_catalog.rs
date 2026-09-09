@@ -249,6 +249,114 @@ fn gql_create_vector_index_nested_options_is_idempotent_and_fail_closed() {
 }
 
 #[test]
+fn gql_drop_vector_index_removes_targetless_definition_and_fails_closed_on_unknown() {
+    let env = install_single_shard_federation();
+    ensure_user_graph_type(&env);
+
+    let create = gql_vector_index_ddl(GQL_EMBEDDING_FIELD);
+    assert_eq!(
+        gql_mutate_as_admin(&env, &create, "adr0065_vector_drop_create"),
+        0,
+        "CREATE VECTOR INDEX is a rowless DDL mutation"
+    );
+    let after_create = list(&env).expect("list after CREATE VECTOR INDEX");
+    assert_eq!(after_create.len(), 1, "one vector definition was created");
+    let created = &after_create[0];
+    assert!(
+        created.target.is_none(),
+        "GQL creation must not choose a vector-canister target"
+    );
+    assert_eq!(
+        created.activation_state,
+        VectorIndexActivationStateView::Registered,
+        "targetless GQL creation remains Registered"
+    );
+    let old_index_id = created.index_id;
+
+    // DROP of an unknown logical name fails closed without touching the catalog.
+    let unknown_err = gql_mutate_as_admin_expect_err(
+        &env,
+        "DROP VECTOR INDEX no_such_vec_idx",
+        "adr0065_vector_drop_unknown",
+    );
+    assert!(
+        matches!(unknown_err, RouterError::NotFound(_)),
+        "an unknown DROP without IF EXISTS must fail closed, got {unknown_err:?}"
+    );
+    assert_eq!(
+        list(&env).expect("list after unknown DROP"),
+        after_create,
+        "a rejected unknown DROP must leave no catalog side effect"
+    );
+
+    // DROP ... IF EXISTS on an unknown name is a rowless no-op.
+    assert_eq!(
+        gql_mutate_as_admin(
+            &env,
+            "DROP VECTOR INDEX no_such_vec_idx IF EXISTS",
+            "adr0065_vector_drop_unknown_if_exists"
+        ),
+        0,
+        "IF EXISTS suppresses the absent-name error"
+    );
+    assert_eq!(
+        list(&env).expect("list after unknown DROP IF EXISTS"),
+        after_create,
+        "an unknown DROP IF EXISTS must leave no catalog side effect"
+    );
+
+    // DROP removes the targetless definition.
+    assert_eq!(
+        gql_mutate_as_admin(
+            &env,
+            &format!("DROP VECTOR INDEX {GQL_LOGICAL_INDEX_NAME}"),
+            "adr0065_vector_drop"
+        ),
+        0,
+        "DROP VECTOR INDEX is a rowless DDL mutation"
+    );
+    assert!(
+        list(&env).expect("list after DROP VECTOR INDEX").is_empty(),
+        "the dropped definition must leave the vector catalog"
+    );
+
+    // SEARCH on the dropped logical name fails closed with no scan fallback.
+    let dropped_search = gql_vector_search_query(GQL_LOGICAL_INDEX_NAME);
+    let dropped_err = gql_query_as_admin_expect_err(&env, &dropped_search);
+    assert!(
+        matches!(dropped_err, RouterError::NotFound(_)),
+        "the dropped logical name must not resolve, got {dropped_err:?}"
+    );
+
+    // Re-DROP under IF EXISTS is a no-op, and the freed logical name is reusable with a fresh
+    // physical id (allocator monotonicity end to end).
+    assert_eq!(
+        gql_mutate_as_admin(
+            &env,
+            &format!("DROP VECTOR INDEX {GQL_LOGICAL_INDEX_NAME} IF EXISTS"),
+            "adr0065_vector_drop_redrop"
+        ),
+        0,
+        "re-DROP under IF EXISTS is a rowless no-op"
+    );
+    assert_eq!(
+        gql_mutate_as_admin(&env, &create, "adr0065_vector_drop_recreate"),
+        0,
+        "re-CREATE after DROP is a rowless DDL mutation"
+    );
+    let after_recreate = list(&env).expect("list after re-CREATE");
+    assert_eq!(
+        after_recreate.len(),
+        1,
+        "one vector definition was recreated"
+    );
+    assert_ne!(
+        after_recreate[0].index_id, old_index_id,
+        "the id allocator must not rewind across DROP"
+    );
+}
+
+#[test]
 fn dense_embedding_name_allocation_is_isolated_for_rejected_registrations() {
     let env = install_federation();
     ensure_user_graph_type(&env);
