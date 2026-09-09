@@ -728,7 +728,7 @@ stride (`align16(component_bytes × dims)`),
 | Store                         | Growth                            | Bound / lever                                              |
 | ----------------------------- | --------------------------------- | ---------------------------------------------------------- |
 | `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy |
-| `VECTOR_ROW_SLAB` (code tier, ADR 0079) | `+ N × c` per tier-on generation | `c = 8 + ceil(P/64)·8` with `P = next_pow2(dims)` (d1536 → P=2048 → **264 B/row**, +4.3% vs F32; d768 → 136 B); page capacity shrinks under the fixed byte budget (`slots_per_page` rederived by `shape_def_for`) |
+| `VECTOR_ROW_SLAB` (code tier, ADR 0079) | `+ N × c` per tier-on generation | `c = 4 + ceil(P/64)·8` with `P = next_pow2(dims)` (d1536 → P=2048 → **260 B/row**, +4.2% vs F32; d768 → 132 B); page capacity shrinks under the fixed byte budget (`slots_per_page` rederived by `shape_def_for`) |
 | `VECTOR_SUBJECT_TO_ID`        | `G × ~60B × η` while deleted clocks are retained | Every fully attached catalog lane uses `min(graph_watermark, router_watermark)` after frontier publication, including markerless Graph-only lanes; no finite-time or global bound is claimed |
 | `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy; opt-in bounded slab compaction reclaims drained spans (plan 0278) |
 | heads + sealed-table chunks   | O(N / slots per page), O(nlist)   | negligible                                                 |
