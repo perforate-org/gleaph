@@ -78,7 +78,11 @@ impl ConnectionMatrix {
         let rc = right_id as usize;
         let lc = left_id as usize;
 
-        if rc >= self.rsize || lc >= self.lsize {
+        // Bounds follow the index formula (MeCab `matrix_[rcAttr + lsize_ * lcAttr]`):
+        // rc ranges over the stride dimension (lsize), lc over rsize. (The swapped
+        // form was invisible for square ipadic 1316x1316; ko-dic 3822x2693 exposed
+        // it — valid right ids up to 3813 were rejected as i16::MAX.)
+        if rc >= self.lsize || lc >= self.rsize {
             return i16::MAX;
         }
 

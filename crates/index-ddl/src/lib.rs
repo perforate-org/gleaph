@@ -1692,6 +1692,22 @@ mod tests {
                 analyzer: Some("multilingual".into()),
             }
         );
+        // Plan 0341: the Korean DDL identifier parses like any other name
+        // (admission maps `korean` → id 3).
+        let korean =
+            try_parse_text("CREATE TEXT INDEX docs FOR (v:Person) ON (v.bio) ANALYZER korean")
+                .expect("text DDL")
+                .expect("parse");
+        assert_eq!(
+            korean,
+            TextIndexDdlStatement::Create {
+                index_name: "docs".into(),
+                if_not_exists: false,
+                label: "Person".into(),
+                property: "bio".into(),
+                analyzer: Some("korean".into()),
+            }
+        );
     }
 
     #[test]

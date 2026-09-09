@@ -120,7 +120,8 @@ use std::io::Read as _;
 use xxhash_rust::xxh3::{xxh3_128, xxh3_128_with_seed};
 
 use crate::analyzer::{
-    ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM, analyze_pinned, dict_required,
+    ANALYZER_KOREAN, ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM,
+    analyze_pinned, dict_required,
 };
 use crate::{FlushReport, MergeStepReport, TextDoc, TextHit, TextIndexStats};
 use gleaph_graph_kernel::provisioning::dictionary::{
@@ -609,7 +610,7 @@ where
         assert!(
             matches!(
                 header.analyzer_id,
-                ANALYZER_MULTILINGUAL | ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB
+                ANALYZER_MULTILINGUAL | ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB | ANALYZER_KOREAN
             ),
             "text index meta carries unregistered analyzer id {}",
             header.analyzer_id
@@ -624,8 +625,9 @@ where
         }
         if dict_required(header.analyzer_id) && header.dict_state == DICT_STATE_UPLOADING {
             panic!(
-                "analyzer-2 dictionary upload was interrupted (state Uploading); \
-                 the canister cannot open — re-install with fresh state"
+                "analyzer-{} dictionary upload was interrupted (state Uploading); \
+                 the canister cannot open — re-install with fresh state",
+                header.analyzer_id
             );
         }
 
@@ -664,8 +666,11 @@ where
         if dict_required(stores.meta.get().analyzer_id)
             && stores.meta.get().dict_state == DICT_STATE_FINALIZED
         {
-            crate::analyzer_mecab::load_dictionary_from_image(stores.dict_container_image())
-                .unwrap_or_else(|error| panic!("dictionary open failed: {error}"));
+            crate::analyzer_mecab::load_dictionary_from_image(
+                stores.meta.get().analyzer_id,
+                stores.dict_container_image(),
+            )
+            .unwrap_or_else(|error| panic!("dictionary open failed: {error}"));
         }
         stores
     }
@@ -1089,7 +1094,10 @@ where
                 }
                 // Structural validation + resident-set materialization FIRST; a corrupt
                 // artifact must not persist Finalized state.
-                crate::analyzer_mecab::load_dictionary_from_image(self.dict_container_image())?;
+                crate::analyzer_mecab::load_dictionary_from_image(
+                    meta.analyzer_id,
+                    self.dict_container_image(),
+                )?;
                 let mut meta = meta.clone();
                 meta.dict_state = DICT_STATE_FINALIZED;
                 meta.dict_digest = digest;
@@ -1157,7 +1165,7 @@ where
         // the exact open path the raw mode uses, so the end state is byte-identical.
         let image =
             ic_morph_dict::CanisterStableImage::new(self.dict_region.clone(), expected.raw_len);
-        if let Err(e) = crate::analyzer_mecab::load_dictionary_from_image(image) {
+        if let Err(e) = crate::analyzer_mecab::load_dictionary_from_image(meta.analyzer_id, image) {
             self.reset_framed_progress();
             return Err(e);
         }

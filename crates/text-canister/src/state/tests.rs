@@ -1182,12 +1182,16 @@ fn analyzer1_rejects_dict_upload_and_search_serves_without_dictionary() {
 
 #[test]
 fn init_rejects_unregistered_analyzer_id() {
-    let result =
-        std::panic::catch_unwind(|| TextStores::init_with_analyzer(fresh_regions(), Some(3)));
+    // Plan 0341 registers id 3 (ANALYZER_KOREAN); the first unregistered id is now 4.
+    let result = std::panic::catch_unwind(|| {
+        TextStores::init_with_analyzer(fresh_regions(), Some(ANALYZER_KOREAN + 1))
+    });
     assert!(
         result.is_err(),
-        "analyzer id 3 is unregistered and must fail the open"
+        "analyzer id 4 is unregistered and must fail the open"
     );
+    // Id 3 opens (fresh regions carry no dictionary, so no rebind is attempted).
+    TextStores::init_with_analyzer(fresh_regions(), Some(ANALYZER_KOREAN));
 }
 
 #[test]

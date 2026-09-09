@@ -1,6 +1,9 @@
-//! ANALYZER_ID=2 pipeline: MeCab-format ipadic Viterbi lemma units (plan 0330 decision B,
-//! plan 0333 proof, plan 0334 landing) over the `morph-dict` engine with the
-//! `ic-morph-dict` stable-memory adapter.
+//! Dictionary-analyzer engine (plan 0330 decision B, plan 0333 proof, plan 0334
+//! landing; plan 0341 widens to id 3): MeCab-format Viterbi lemma units over the
+//! `morph-dict` engine with the `ic-morph-dict` stable-memory adapter. Id 2 runs the
+//! ipadic profile; id 3 (`ANALYZER_KOREAN`) runs the mecab-ko-dic profile — the profile
+//! is bound once at load (`profile_for`), the resident `Analyzer` carries it, and
+//! dispatch needs no per-call branch.
 //!
 //! Pipeline: whole-text pre-pass (the shared [`morph_dict::normalize`] module: NFKC +
 //! Unicode lowercase + variation-selector strip — the v1 analyzer's normalization order,
@@ -42,8 +45,20 @@ thread_local! {
     static ANALYZER: RefCell<Option<morph_dict::Analyzer>> = const { RefCell::new(None) };
 }
 
-fn profile() -> DictionaryProfile {
-    DictionaryProfile::japanese_ipadic()
+/// Unit-emission profile for a dictionary-carrying analyzer id (plan 0341): ids 0
+/// and 2 share the ipadic container/profile; id 3 (`ANALYZER_KOREAN`) carries the
+/// mecab-ko-dic container under the Korean profile. Unknown ids fail closed — callers
+/// validate the id at the open/admission boundaries before reaching here.
+pub fn profile_for(analyzer_id: u32) -> DictionaryProfile {
+    match analyzer_id {
+        crate::analyzer::ANALYZER_KOREAN => DictionaryProfile::korean_mecab_ko_dic(),
+        crate::analyzer::ANALYZER_MULTILINGUAL | crate::analyzer::ANALYZER_MECAB => {
+            DictionaryProfile::japanese_ipadic()
+        }
+        other => panic!(
+            "mecab profile requested for unregistered analyzer id {other} — broken invariant"
+        ),
+    }
 }
 
 /// Builds the pinned analyzer from a container IMAGE (the durable region 16, addressed
@@ -54,12 +69,13 @@ fn profile() -> DictionaryProfile {
 /// Fails closed on any validation miss — the caller must not record Finalized state
 /// (and must not open) for bytes that fail validation.
 pub fn load_dictionary_from_image<M>(
+    analyzer_id: u32,
     region_image: ic_morph_dict::CanisterStableImage<M>,
 ) -> Result<(), String>
 where
     M: ic_stable_structures::Memory + 'static,
 {
-    let analyzer = morph_dict::Analyzer::open(Arc::new(region_image), profile())
+    let analyzer = morph_dict::Analyzer::open(Arc::new(region_image), profile_for(analyzer_id))
         .map_err(|error| format!("mecab dictionary load failed (corrupt artifact): {error:?}"))?;
     ANALYZER.with(|slot| {
         *slot.borrow_mut() = Some(analyzer);
@@ -67,16 +83,29 @@ where
     Ok(())
 }
 
-/// Builds the pinned analyzer from an in-memory container (test path).
+/// Builds the pinned analyzer from an in-memory container (test path, ipadic profile).
 #[cfg(test)]
 pub fn load_dictionary_bytes(container: &[u8]) -> Result<(), String> {
-    load_dictionary_from_heap(Arc::new(HeapImage::from_vec(container.to_vec())))
+    load_dictionary_bytes_for(crate::analyzer::ANALYZER_MECAB, container)
 }
 
-/// Variant taking any heap-backed image (tests).
+/// Builds the pinned analyzer from an in-memory container under an explicit analyzer
+/// id (tests — the plan-0341 Korean path binds the ko-dic profile at load).
 #[cfg(test)]
-pub fn load_dictionary_from_heap(image: Arc<dyn ByteImage>) -> Result<(), String> {
-    let analyzer = morph_dict::Analyzer::open(image, profile())
+pub fn load_dictionary_bytes_for(analyzer_id: u32, container: &[u8]) -> Result<(), String> {
+    load_dictionary_from_heap(
+        analyzer_id,
+        Arc::new(HeapImage::from_vec(container.to_vec())),
+    )
+}
+
+/// Variant taking any heap-backed image under an explicit analyzer id (tests).
+#[cfg(test)]
+pub fn load_dictionary_from_heap(
+    analyzer_id: u32,
+    image: Arc<dyn ByteImage>,
+) -> Result<(), String> {
+    let analyzer = morph_dict::Analyzer::open(image, profile_for(analyzer_id))
         .map_err(|error| format!("mecab dictionary load failed (corrupt artifact): {error:?}"))?;
     ANALYZER.with(|slot| {
         *slot.borrow_mut() = Some(analyzer);
@@ -176,6 +205,36 @@ mod tests {
         // Proper-noun-style tokens with an unassigned base form keep their surface.
         let units = analyze("富士山");
         assert_eq!(units, vec!["富士山"]);
+    }
+
+    /// Plan 0341 todo 2 (text side): the Korean path binds the ko-dic profile at load
+    /// and recalls through the same `analyze` entry point. SKIPs loudly when the
+    /// ko-dic images are absent (same fetch-once pattern as the ipadic cache).
+    #[test]
+    fn korean_profile_recalls_headline_through_canister_entry_point() {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../pocket-ic-tests/resources/mecab-ko-dic"
+        ));
+        let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+        for n in ["sys.dic", "unk.dic", "matrix.bin", "char.bin"] {
+            let Ok(bytes) = std::fs::read(dir.join(n)) else {
+                eprintln!(
+                    "SKIPPED (ko-dic images not built; see pocket-ic-tests/resources/mecab-ko-dic)"
+                );
+                return;
+            };
+            images.push((n.to_string(), bytes));
+        }
+        let container = morph_dict::container::build(images);
+        load_dictionary_bytes_for(crate::analyzer::ANALYZER_KOREAN, &container)
+            .expect("ko-dic container loads under the Korean profile");
+        // Headline: 학교 from 학교에서 (조사 에서 dropped by the PREFIX drop set);
+        // the dispatch arm routes id 3 through this same entry point.
+        assert_eq!(
+            crate::analyzer::analyze_pinned(crate::analyzer::ANALYZER_KOREAN, "학교에서"),
+            vec!["학교"]
+        );
     }
 
     // -- Plan 0339: IVS-strip safety + emitted-unit fold fidelity ----------------------------

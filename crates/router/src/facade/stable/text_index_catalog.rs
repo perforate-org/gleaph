@@ -186,12 +186,13 @@ pub(crate) fn register_text_index(
             "text index target canister must not be the anonymous principal".to_owned(),
         ));
     }
-    // Catalog pin lift (plan 0331, plan 0332 widening): the creation-pinned analyzer
-    // must be one of the admitted set — ids mirror text_canister::{ANALYZER_MULTILINGUAL,
-    // ANALYZER_UNICODE_BIGRAM, ANALYZER_MECAB}; id 0 is the DEFAULT (absent clause).
-    if analyzer_id > 2 {
+    // Catalog pin lift (plan 0331, plan 0332 widening, plan 0341 id 3): the
+    // creation-pinned analyzer must be one of the admitted set — ids mirror
+    // text_canister::{ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM, ANALYZER_MECAB,
+    // ANALYZER_KOREAN}; id 0 is the DEFAULT (absent clause).
+    if analyzer_id > 3 {
         return Err(RouterError::InvalidArgument(format!(
-            "unregistered text analyzer id {analyzer_id} (admitted set: 0, 1, 2)"
+            "unregistered text analyzer id {analyzer_id} (admitted set: 0, 1, 2, 3)"
         )));
     }
 
@@ -713,6 +714,46 @@ mod tests {
         .expect_err("anonymous target must fail closed");
         assert!(matches!(err, RouterError::InvalidArgument(_)));
         assert!(get_text_index(graph, 1).is_none());
+    }
+
+    #[test]
+    fn analyzer_id_3_korean_registers() {
+        // Plan 0341: id 3 (korean) is admitted; the first unregistered id is now 4.
+        let graph = GraphId::from_raw(930_009);
+        assert!(
+            register_text_index(
+                graph,
+                1,
+                test_index_name_id(graph, 101),
+                VertexLabelId::from_raw(1),
+                PropertyId::from_raw(10),
+                3,
+                None,
+                false,
+            )
+            .expect("analyzer id 3 must register"),
+            "id 3 (korean) must be admitted"
+        );
+        assert_eq!(
+            get_text_index(graph, 1).expect("row").analyzer_id,
+            3,
+            "pinned id must round-trip"
+        );
+        let err = register_text_index(
+            graph,
+            2,
+            test_index_name_id(graph, 102),
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(11),
+            4,
+            None,
+            false,
+        )
+        .expect_err("analyzer id 4 must reject");
+        assert!(
+            err.to_string().contains("unregistered text analyzer id 4"),
+            "unexpected wording: {err}"
+        );
     }
 
     #[test]

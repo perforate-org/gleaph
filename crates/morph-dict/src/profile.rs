@@ -19,6 +19,10 @@ pub struct DictionaryProfile {
     /// Feature column 0 (品詞1) values dropped from the output (ipadic: 助詞/助動詞/記号/
     /// 接頭辞/接尾辞/フィラー).
     pub drop_categories: Vec<String>,
+    /// Additive PREFIX drop set over the first '+'-separated subtag of feature column 0
+    /// (plan 0341: ko-dic compound tags VV+EC, ETM+NNG+JC make exact-match unusable —
+    /// 700+ combos; empty for ipadic = zero behavior change).
+    pub drop_prefixes: Vec<String>,
     /// Common-prefix search bound in bytes: the trie walk never consumes more than this
     /// many bytes of the remaining input per position (MeCab-equivalent bounded lookup;
     /// also the O(n²)→O(n·k) long-line guard). Must end on a UTF-8 char boundary — the
@@ -44,6 +48,29 @@ impl DictionaryProfile {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            drop_prefixes: Vec::new(),
+            max_lookup_bytes: 64,
+            unk_max_group_bytes: 64,
+            max_line_bytes: 1024 * 1024,
+        }
+    }
+    /// The Korean mecab-ko-dic profile (plan 0341): feature layout
+    /// `POS,semantic,jongseong,lemma,Compound/Inflect,POS2,POS3,analysis` (8 cols, no
+    /// 基本形; verbs stored as stems) so `lemma_column: Some(3)`; keeps
+    /// NNG/NNP/NNB/NNBC/NR/NP/VV/VA/VX/VCP/VCN/MAG/MAJ/MM/IC/XR/SL/SH (SL/SH kept:
+    /// 외국어/한자 are content-bearing), drops J/E/XSN/XSV/XSA/SF/SE/SC/SSC/SSO/SP/SY/SW/
+    /// UNA/NA prefixes.
+    pub fn korean_mecab_ko_dic() -> Self {
+        Self {
+            lemma_column: Some(3),
+            drop_categories: Vec::new(),
+            drop_prefixes: [
+                "J", "E", "XSN", "XSV", "XSA", "SF", "SE", "SC", "SSC", "SSO", "SP", "SY", "SW",
+                "UNA", "NA",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             max_lookup_bytes: 64,
             unk_max_group_bytes: 64,
             max_line_bytes: 1024 * 1024,
@@ -52,8 +79,14 @@ impl DictionaryProfile {
 }
 
 impl DictionaryProfile {
-    /// Whether the 品詞1 category is dropped under this profile.
+    /// Whether the 品詞1 category is dropped under this profile: exact-match on
+    /// `drop_categories` OR prefix-match of the first '+'-separated subtag against
+    /// `drop_prefixes`.
     pub fn drops(&self, category: &str) -> bool {
-        self.drop_categories.iter().any(|c| c == category)
+        if self.drop_categories.iter().any(|c| c == category) {
+            return true;
+        }
+        let subtag = category.split('+').next().unwrap_or(category);
+        self.drop_prefixes.iter().any(|p| subtag.starts_with(p))
     }
 }

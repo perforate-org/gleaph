@@ -260,13 +260,14 @@ pub(crate) const TEXT_INDEX_ANALYZER_V0: u32 = 0;
 /// with this recorded wording.
 pub(crate) fn resolve_analyzer_name(name: &str) -> Result<u32, RouterError> {
     // Ids mirror `text_canister::ANALYZER_MULTILINGUAL` / `ANALYZER_UNICODE_BIGRAM` /
-    // `ANALYZER_MECAB` (the Router does not depend on the canister crate).
+    // `ANALYZER_MECAB` / `ANALYZER_KOREAN` (the Router does not depend on the canister crate).
     match name {
         "multilingual" => Ok(0),
         "unicode_bigram" => Ok(1),
         "mecab" => Ok(2),
+        "korean" => Ok(3),
         other => Err(RouterError::InvalidArgument(format!(
-            "unknown ANALYZER name `{other}` (admitted set: multilingual, unicode_bigram, mecab)"
+            "unknown ANALYZER name `{other}` (admitted set: multilingual, unicode_bigram, mecab, korean)"
         ))),
     }
 }
@@ -1246,12 +1247,13 @@ mod tests {
         assert_eq!(resolve_analyzer_name("multilingual").expect("composite"), 0);
         assert_eq!(resolve_analyzer_name("unicode_bigram").expect("bigram"), 1);
         assert_eq!(resolve_analyzer_name("mecab").expect("mecab"), 2);
+        assert_eq!(resolve_analyzer_name("korean").expect("korean"), 3);
         let err = resolve_analyzer_name("nonsense").expect_err("unknown name");
         match err {
             RouterError::InvalidArgument(message) => {
                 assert!(
                     message.contains("unknown ANALYZER name `nonsense`")
-                        && message.contains("multilingual, unicode_bigram, mecab"),
+                        && message.contains("multilingual, unicode_bigram, mecab, korean"),
                     "unexpected wording: {message}"
                 );
             }

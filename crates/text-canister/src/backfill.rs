@@ -788,7 +788,7 @@ mod tests {
             (
                 RegisterTextBackfillRequest {
                     scope: TextBackfillScope {
-                        analyzer_id: crate::analyzer::ANALYZER_MECAB + 1,
+                        analyzer_id: crate::analyzer::ANALYZER_KOREAN + 1,
                         ..scope()
                     },
                     ..request(TEXT_ID)

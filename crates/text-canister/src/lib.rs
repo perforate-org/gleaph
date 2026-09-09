@@ -38,7 +38,9 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 
 #[allow(deprecated)] // deprecated alias kept for the v1 test references across the workspace
-pub use analyzer::{ANALYZER_ID, ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM};
+pub use analyzer::{
+    ANALYZER_ID, ANALYZER_KOREAN, ANALYZER_MECAB, ANALYZER_MULTILINGUAL, ANALYZER_UNICODE_BIGRAM,
+};
 pub use backfill::{
     RegisterTextBackfillRequest, TextBackfillControl, TextBackfillPhase, TextBackfillScope,
     TextBackfillSealProof, TextBackfillStatus,

@@ -36,6 +36,11 @@ pub const ANALYZER_UNICODE_BIGRAM: u32 = 1;
 /// plan 0333 proof, plan 0334 landing). Requires the stable-resident MeCab-format
 /// dictionary container to be finalized before any analyze-touching operation.
 pub const ANALYZER_MECAB: u32 = 2;
+/// Registered identity of the MeCab-format Korean lemma pipeline (plan 0341): the same
+/// `analyzer_mecab` engine over the mecab-ko-dic container under the Korean
+/// `DictionaryProfile` (lemma column 3, PREFIX drop set). DDL identifier: `korean`.
+/// Requires the ko-dic container finalized, exactly like id 2 requires ipadic.
+pub const ANALYZER_KOREAN: u32 = 3;
 /// Deprecated alias of [`ANALYZER_UNICODE_BIGRAM`] kept for the v1 references across
 /// meta defaults, backfill scope validation, and the Router's v0 admission constant.
 #[deprecated(since = "0.1.0", note = "use ANALYZER_UNICODE_BIGRAM or the dispatch")]
@@ -48,7 +53,7 @@ pub fn analyze_pinned(id: u32, text: &str) -> Vec<String> {
     match id {
         ANALYZER_MULTILINGUAL => crate::analyzer_multilingual::analyze(text),
         ANALYZER_UNICODE_BIGRAM => analyze(text),
-        ANALYZER_MECAB => crate::analyzer_mecab::analyze(text),
+        ANALYZER_MECAB | ANALYZER_KOREAN => crate::analyzer_mecab::analyze(text),
         other => unreachable!(
             "unregistered analyzer id {other} passed open validation — broken invariant"
         ),
@@ -286,6 +291,15 @@ mod tests {
             assert!(
                 result.is_err(),
                 "id-2 without the dictionary must fail closed"
+            );
+            // Id 3 shares the same resident: without a finalized dictionary it fails
+            // closed identically (whichever container — ipadic or ko-dic — would be
+            // resident, the profile is bound at load, not at dispatch).
+            let result_ko =
+                std::panic::catch_unwind(|| analyze_pinned(ANALYZER_KOREAN, "학교에서"));
+            assert!(
+                result_ko.is_err(),
+                "id-3 without the dictionary must fail closed"
             );
             return;
         }

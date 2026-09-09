@@ -169,6 +169,20 @@ landings + plan 0332 default promotion):
   4,752,264,345-cycle eager-decode baseline (79x). Native throughput 0.5-0.6x vibrato
   (bounded-lookup engine); the DDL clause contract lives in
   [extension-syntax.md](../gql/extension-syntax.md).
+- **`korean` (id 3, plan 0341)**: the same `analyzer_mecab` engine over the mecab-ko-dic
+  2.1.1-20180720 container under the Korean `DictionaryProfile` (lemma = feature column 3;
+  PREFIX drop set over the first `+`-separated subtag of column 0 — ko-dic compound tags
+  like `VV+EC`/`ETM+NNG+JC` make exact-match unusable; SL/SH kept as content-bearing).
+  The profile binds once at load (`profile_for`); dispatch shares the id-2 entry point.
+  Region 16 carries the ko-dic MPD container (101,411,116 B → zstd-19 20,268,014 B, ~19.3
+  MiB, within the 32 MiB provision cap); resident set ~64.3 MB (sys.dic prefix 43.5 +
+  matrix 20.6 + char 262 KiB + unk 4 KiB; feature region lazy). Headline recall:
+  학교에서 → [학교] (MeCab-CLI parity). `dict_required` = {0, 2, 3} (kernel SSOT).
+  Engine fix exposed by the asymmetric ko-dic matrix (3822x2693): the connection-cost
+  bounds check followed the index formula's stride dimension (was invisible for square
+  ipadic 1316x1316). DDL `ANALYZER korean` admission + provision analyzer→catalog
+  mapping are provision/Router-owned (pH); the text side only widens its open gate and
+  dispatch.
 
 ### Shared normalization + Japanese folding (plan 0339, ported to morph-dict in plan 0340)
 
@@ -249,7 +263,7 @@ is the quality option at ~2× Han postings). Consistency holds because index-tim
 query-time run the same composite; per-chunk dispatch loses sentence context across script
 boundaries (accepted, same as charabia). Implementation deltas vs the pure-rule composite:
 generalize the region-16 dictionary machinery from id-2-specific to the shared `DICT_REQUIRED`
-gate ({0, 2}) and include the morph-dict engine (getrandom-free — verified). The
+gate ({0, 2, 3} since plan 0341) and include the morph-dict engine (getrandom-free — verified). The
 id-2 pure-Japanese analyzer coexists: the composite is the multilingual single-index answer;
 per-language indexes remain the precision-maximal shape (the ES multi-fields pattern is the
 N-index equivalent).
