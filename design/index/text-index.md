@@ -47,7 +47,9 @@ docs-sync unless noted):
   unchanged. Focused canbench arm `bench_query_term_candidates_capped` (same dense
   fixture as the top-100 arm, first 256 live keys): 2.79M instructions vs 4.00M for the
   global top-100 whole-path — the restricted set short-circuits the full-list walk.
-  Not persisted to `canbench_results.yml` (gate measurement, not a committed baseline).
+  Baseline persisted to `canbench_results.yml` (2,792,076 instructions, heap/stable
+  delta 0); the unfiltered `--persist` remeasurement left the four existing arms
+  unchanged (sub-significance noise reverted, new-arm addition only).
 - Compound lowering (plan 0329): a combined `WHERE text_score(v.prop, $q) cmp t` +
   `ORDER BY text_score(v.prop, $q) DESC LIMIT k` predicate fuses into ONE
   `TextScan { mode: ThresholdTopK }` when both halves reference the same
