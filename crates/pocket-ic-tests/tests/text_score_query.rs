@@ -2439,6 +2439,114 @@ const CANDIDATE_COMPOUND_NOSCORE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:
      MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
      RETURN d.rank AS rank ORDER BY text_score(d.bio,$q) DESC LIMIT 5";
 
+const CANDIDATE_TOPK_OFFSET_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 10 OFFSET 5";
+const CANDIDATE_TOPK_OFFSET_ZERO_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 10 OFFSET 0";
+const CANDIDATE_TOPK_OFFSET_PAST_END_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 10 OFFSET 100";
+const CANDIDATE_COMPOUND_OFFSET_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 5 OFFSET 3";
+
+#[test]
+fn non_leading_text_candidate_offset_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+
+    // Calibration frame: the threshold-only barrier returns every candidate in
+    // Router ranking order, so an offset query must equal the sliced frame.
+    let frame = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    ));
+    assert_eq!(frame.len(), 42, "full candidate frame");
+    let params = encode_gql_params_blob(vec![
+        ("user_id".to_string(), Value::Int64(CANDIDATE_USER_ID)),
+        ("q".to_string(), Value::Text("wombat".to_string())),
+    ])
+    .expect("encode params");
+
+    // LIMIT 10 OFFSET 5: exactly the frame slice — an offset-ignoring
+    // misimplementation would return the first 10 rows, and a limit-before-cut
+    // misimplementation only 5.
+    let offset = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_TOPK_OFFSET_SCORED_QUERY,
+        params.clone(),
+    );
+    assert_eq!(offset.row_count, 10, "skip-then-take keeps 10 rows");
+    assert_eq!(
+        offset.truncated,
+        Some(false),
+        "exact offset never truncates"
+    );
+    let expected: Vec<(i64, f64)> = frame.iter().skip(5).take(10).copied().collect();
+    assert_eq!(
+        threshold_scored_rows(&offset),
+        expected,
+        "offset query equals the sliced frame"
+    );
+
+    // OFFSET 0 is the offset-free head.
+    let zero = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_TOPK_OFFSET_ZERO_QUERY,
+        params.clone(),
+    ));
+    assert_eq!(
+        zero,
+        frame.iter().take(10).copied().collect::<Vec<_>>(),
+        "OFFSET 0 keeps the head"
+    );
+
+    // OFFSET past the end: the exact empty set, not an error.
+    let past = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_TOPK_OFFSET_PAST_END_QUERY,
+        params.clone(),
+    );
+    assert_eq!(past.row_count, 0, "no rows survive the past-end skip");
+    assert_eq!(past.truncated, Some(false), "empty skip never truncates");
+
+    // Compound with offset: threshold first, then skip-then-take on the filtered
+    // frame. The interior bound from the threshold lifecycle leaves 20+ rows
+    // above it, so rows 3..8 exist.
+    let mut distinct: Vec<f64> = frame.iter().map(|(_, score)| *score).collect();
+    distinct.sort_by(|a, b| a.total_cmp(b));
+    distinct.dedup();
+    let bound = distinct[(distinct.len() - 1) / 2];
+    let filtered: Vec<(i64, f64)> = frame
+        .iter()
+        .filter(|(_, score)| *score > bound)
+        .copied()
+        .collect();
+    assert!(filtered.len() >= 8, "calibration must clear skip + limit");
+    let compound = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_COMPOUND_OFFSET_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    );
+    assert_eq!(compound.row_count, 5);
+    assert_eq!(
+        threshold_scored_rows(&compound),
+        filtered.iter().skip(3).take(5).copied().collect::<Vec<_>>(),
+        "compound offset slices the filtered frame"
+    );
+
+    // Determinism on the offset query.
+    let replay = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_TOPK_OFFSET_SCORED_QUERY,
+        params,
+    ));
+    assert_eq!(replay, expected, "offset frame is deterministic");
+}
+
 fn compound_rank_rows(result: &GqlQueryResult) -> Vec<i64> {
     let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
     let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");

@@ -1061,8 +1061,14 @@ Contract:
   exact with `truncated=false` — unlike the leading compound, whose bounded canister window
   can mark truncation. The LIMIT cap (1..=1024) is reapplied to the compound limit.
   Overflow, incomplete prefix, payload excess, or TEXT failure
-  fails closed — never a silent partial top-k. Multi-shard,
-  `DISTINCT`/offset/ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
+  fails closed — never a silent partial top-k. A fused `OFFSET n` rides in the top-k
+  and compound forms: the planner consumes `TopK{k, offset:n}` into a `k + n` ranking
+  window plus a pure trailing skip-`Limit`, and the Router skips after ranking (never
+  before) — exact with `truncated=false`; a skip past the end is the exact empty set.
+  The `k + n` window reuses the 1..=1024 row LIMIT gate. `OFFSET` without `LIMIT`, a
+  parameterized or negative offset, and an offset after a threshold-only barrier stay
+  unsupported and fail closed. Multi-shard,
+  `DISTINCT`/ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either
   mode: the seed binds the alias as a Float64 column so ordinary plan machinery projects it.
 - Non-leading/nested placements and aggregates over scores remain deferred until their

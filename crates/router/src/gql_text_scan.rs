@@ -242,6 +242,9 @@ struct CandidateBarrierShape {
     query: ScanValue,
     /// Ranking mode: row-capped top-k, or uncapped threshold filtering.
     mode: CandidateBarrierMode,
+    /// Rows to skip after ranking (a fused OFFSET parked as a trailing pure
+    /// skip-`Limit` by the planner). Zero when the query carries no offset.
+    skip: u32,
     /// Trailing-`Project` column index holding the residual score call, when the
     /// `RETURN` projects one. A threshold-only `RETURN` carries no score column.
     score_col_idx: Option<usize>,
@@ -327,18 +330,40 @@ fn analyze_candidate_barrier_shape(
             "the candidate prefix must be cap-free and mention-free",
         ));
     }
-    // The tail must be exactly the late-projected RETURN.
-    let [
-        PlanOp::Project {
-            columns,
-            distinct: false,
-        },
-    ] = &plan.ops[scan_idx + 1..]
-    else {
-        return Err(unsupported(
-            "only a single non-distinct trailing Project is supported",
-        ));
+    // The tail must be the late-projected RETURN, optionally followed by the
+    // planner-parked pure skip-`Limit` of a fused OFFSET. Anything else — a row
+    // count, a non-literal offset, a parameter — fails closed.
+    let (columns, skip) = match &plan.ops[scan_idx + 1..] {
+        [
+            PlanOp::Project {
+                columns,
+                distinct: false,
+            },
+        ] => (columns, 0),
+        [
+            PlanOp::Project {
+                columns,
+                distinct: false,
+            },
+            PlanOp::Limit {
+                count: None,
+                offset: Some(offset),
+            },
+        ] => (columns, resolve_skip_offset(offset)?),
+        _ => {
+            return Err(unsupported(
+                "only a single non-distinct trailing Project, optionally followed by a pure skip Limit, is supported",
+            ));
+        }
     };
+    // A skip after a threshold barrier stays unsupported in this slice: the
+    // threshold lowering carries no TopK to fuse an OFFSET through, so no
+    // planner path produces this shape — only a hand-built plan could.
+    if skip > 0 && matches!(mode, CandidateBarrierMode::Threshold { .. }) {
+        return Err(unsupported(
+            "offset after a threshold barrier stays unsupported in this slice",
+        ));
+    }
     let mut score_col_idx = None;
     for (idx, col) in columns.iter().enumerate() {
         if !expr_mentions_text_score(&col.expr) {
@@ -364,6 +389,7 @@ fn analyze_candidate_barrier_shape(
         property: property.to_string(),
         query: query.clone(),
         mode,
+        skip,
         score_col_idx,
         user_col_count,
     })
@@ -683,7 +709,13 @@ async fn try_execute_candidate_text_scan(
         // Threshold keeps every surviving row: filtering already happened above.
         CandidateBarrierMode::Threshold { .. } => usize::MAX,
     };
-    let ranked = rank_candidate_rows(prefix_rows, &scores, row_cap);
+    // The skip applies AFTER ranking on the fully ordered rows (never before):
+    // the barrier scan already carries the inflated `k + skip` window, and scoring
+    // is all-match, so skipping here yields exactly rows `skip..skip + k`.
+    let ranked: Vec<(u32, CandidatePrefixRow)> = rank_candidate_rows(prefix_rows, &scores, row_cap)
+        .into_iter()
+        .skip(barrier.skip as usize)
+        .collect();
     // Output names follow the original trailing Project order (score included).
     if plan.output.columns.len() != columns.len() {
         return Err(RouterError::Internal(
@@ -1089,6 +1121,22 @@ fn positive_u64(value: &gleaph_gql::Value) -> Option<u64> {
         gleaph_gql::Value::Uint64(x) if *x > 0 => Some(*x),
         _ => None,
     }
+}
+
+/// Resolve a trailing skip-`Limit` offset: a non-negative integer literal only.
+/// Parameters, negative values, and non-literals fail closed (parity with the
+/// planner, which lowers literal offsets and leaves anything else residual).
+fn resolve_skip_offset(offset: &Expr) -> Result<u32, RouterError> {
+    let unsupported = |detail: &str| {
+        RouterError::InvalidArgument(format!("candidate text_score unsupported: {detail}"))
+    };
+    let ExprKind::Literal(gleaph_gql::Value::Int64(n)) = &offset.kind else {
+        return Err(unsupported(
+            "skip Limit offset must be a non-negative integer literal",
+        ));
+    };
+    u32::try_from(*n)
+        .map_err(|_| unsupported("skip Limit offset must be a non-negative integer literal"))
 }
 
 fn resolve_scan_limit(
@@ -2155,6 +2203,69 @@ mod candidate_barrier_tests {
                 "compound limit {bad_limit} must fail closed"
             );
         }
+    }
+
+    fn skip_limit_op(skip: i64) -> PlanOp {
+        PlanOp::Limit {
+            count: None,
+            offset: Some(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(skip)))),
+        }
+    }
+
+    #[test]
+    fn barrier_shape_accepts_trailing_skip_and_rejects_non_skip_limits() {
+        // A pure skip-Limit parks after the RETURN: the shape carries the skip.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(15),
+            tail_project(),
+            skip_limit_op(5),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.skip, 5);
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::TopK { limit: 15 }
+        ));
+        // A row count is a second cap, not a skip.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(15),
+            tail_project(),
+            PlanOp::Limit {
+                count: Some(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(5)))),
+                offset: Some(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(5)))),
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A parameterized offset fails closed (parity with the planner).
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(15),
+            tail_project(),
+            PlanOp::Limit {
+                count: None,
+                offset: Some(Expr::new(ExprKind::Parameter("$skip".into()))),
+            },
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A negative offset fails closed.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(15),
+            tail_project(),
+            skip_limit_op(-1),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        // A skip after a threshold barrier stays unsupported: the threshold
+        // lowering carries no TopK to fuse an OFFSET through.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_threshold(),
+            tail_project_no_score(),
+            skip_limit_op(5),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
     }
 
     #[test]

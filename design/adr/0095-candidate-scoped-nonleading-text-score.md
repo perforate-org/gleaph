@@ -125,3 +125,18 @@ the 1..=1024 row LIMIT gate, retains the threshold on the complete candidate hit
 first, then truncates ranking — the 0329 order, candidate-scoped — reporting
 exact `truncated=false`. The `property_projection` vertex-binding hook is mode-agnostic
 and needed no change. TEXT, wire, and caps are unchanged.
+
+## Addendum: candidate-scoped OFFSET (implemented)
+
+A fused `OFFSET n` in the top-k and compound forms lowers without any wire or TEXT
+change (D2: trailing skip-`Limit`). The planner consumes `TopK{k, offset:n}` into a
+`TextScan` carrying the checked `k + n` ranking window plus a pure
+`Limit{count:None, offset:n}` parked after the late-projected RETURN (`OFFSET 0`
+keeps the offset-free shape; literal-only offsets, parity with the limit). The Router
+accepts the `[Project]` / `[Project, Limit]` tail, reapplies the existing 1..=1024
+gate to the `k + n` window (no cap constant copied into the planner), and skips after
+ranking on the fully ordered rows — exact `truncated=false`, past-end skip yields the
+exact empty set. A skip after a threshold-only barrier, `OFFSET` without `LIMIT`, and
+parameterized/negative offsets fail closed. No post-lowering pass assumes a trailing
+`Project`: liveness/projection collectors treat `Limit` generically, and the Router
+prefix dispatch slices `ops[..scan_idx]`, so the skip-`Limit` never reaches Graph.

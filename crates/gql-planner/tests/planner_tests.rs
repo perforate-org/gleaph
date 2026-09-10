@@ -7550,20 +7550,21 @@ fn candidate_text_topk_rejects_unlabeled_variable() {
 
 #[test]
 fn candidate_text_topk_rejects_asc_order_and_offset() {
-    for query in [
-        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 5",
-        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC SKIP 3 LIMIT 5",
-    ] {
-        let plan = plan_query_with_stats(query, &text_coverage_stats());
-        assert!(
-            !plan
-                .ops
-                .iter()
-                .any(|op| matches!(op, PlanOp::TextScan { .. })),
-            "unsupported shape must not lower: {query}, got: {:?}",
-            plan.ops
-        );
-    }
+    // Intentional contract change: the SKIP/OFFSET case used to stay unlowered
+    // alongside ASC; the offset slice now fuses it into a `k + skip` window with
+    // a trailing skip-Limit (see
+    // `candidate_text_topk_offset_lowers_to_window_with_skip`). Only ASC still
+    // refuses to lower.
+    let query = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score ASC LIMIT 5";
+    let plan = plan_query_with_stats(query, &text_coverage_stats());
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "unsupported shape must not lower: {query}, got: {:?}",
+        plan.ops
+    );
 }
 
 #[test]
@@ -7803,6 +7804,161 @@ fn candidate_text_threshold_without_coverage_stays_unlowered() {
         "unlowered threshold filter must survive, got: {:?}",
         plan.ops
     );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Candidate-scoped OFFSET (trailing skip-Limit after the barrier)
+// ════════════════════════════════════════════════════════════════════════════════
+
+const CANDIDATE_TOPK_OFFSET_QUERY: &str = "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 10 OFFSET 5";
+
+#[test]
+fn candidate_text_topk_offset_lowers_to_window_with_skip() {
+    let plan = plan_query_with_stats(CANDIDATE_TOPK_OFFSET_QUERY, &text_coverage_stats());
+    // The barrier carries the inflated `k + skip` window …
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
+    assert!(
+        matches!(
+            &plan.ops[scan_idx],
+            PlanOp::TextScan {
+                variable,
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(15)),
+                },
+                ..
+            } if &**variable == "d"
+        ),
+        "barrier must carry the k + skip window, got: {:?}",
+        plan.ops
+    );
+    // … the RETURN Project survives as the tail …
+    assert!(
+        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    // … and a pure skip-Limit parks after it. No TopK/Sort may survive: the
+    // offset must not narrow the prefix through the barrier.
+    assert!(
+        matches!(
+            &plan.ops[scan_idx + 2],
+            PlanOp::Limit {
+                count: None,
+                offset: Some(expr),
+            } if matches!(&expr.kind, gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(5)))
+        ),
+        "trailing skip-Limit must park after the RETURN, got: {:?}",
+        plan.ops
+    );
+    assert_eq!(plan.ops.len(), scan_idx + 3);
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. } | PlanOp::TopK { .. })),
+        "no sort or row cap may survive offset lowering, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_compound_offset_lowers_to_window_with_skip() {
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 10 OFFSET 5",
+        &text_coverage_stats(),
+    );
+    let scans: Vec<_> = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::TextScan { .. }))
+        .collect();
+    assert_eq!(scans.len(), 1, "got: {:?}", plan.ops);
+    assert!(
+        matches!(
+            scans[0],
+            PlanOp::TextScan {
+                mode: TextScanMode::ThresholdTopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(15)),
+                    ..
+                },
+                ..
+            }
+        ),
+        "compound barrier must carry the k + skip window, got: {:?}",
+        plan.ops
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
+    assert!(
+        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(
+            &plan.ops[scan_idx + 2],
+            PlanOp::Limit {
+                count: None,
+                offset: Some(_),
+            }
+        ),
+        "trailing skip-Limit must park after the RETURN, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_offset_zero_lowers_to_offset_free_shape() {
+    // OFFSET 0 is a no-op skip: the plan keeps today's offset-free shape.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 10 OFFSET 0",
+        &text_coverage_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::TextScan {
+                mode: TextScanMode::TopK {
+                    limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+                },
+                ..
+            }
+        )),
+        "got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(op, PlanOp::Limit { .. })),
+        "no skip-Limit for OFFSET 0, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn candidate_text_offset_rejects_param_and_overflow() {
+    for query in [
+        // Parameterized offset: literal-only, like the limit.
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 10 OFFSET $skip",
+        // `k + skip` overflow must not lower.
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 9223372036854775800 OFFSET 100",
+    ] {
+        let plan = plan_query_with_stats(query, &text_coverage_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::TextScan { .. })),
+            "unsupported offset must not lower: {query}, got: {:?}",
+            plan.ops
+        );
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

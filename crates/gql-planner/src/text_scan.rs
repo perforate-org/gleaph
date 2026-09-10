@@ -400,12 +400,27 @@ fn proven_prefix_label(prefix: &[PlanOp], variable: &str) -> Option<String> {
 /// executes the fully authorized prefix first, scores only those candidates in TEXT,
 /// then applies the row LIMIT. Unlike the leading lowering, intervening traversal ops
 /// (`ExpandFilter`, …) are the point — but `Limit`/`TopK` inside the prefix, a second
-/// `TopK`, an offset, a non-`Project` tail, an unproved label, or missing TEXT coverage
+/// `TopK`, a non-`Project` tail, an unproved label, or missing TEXT coverage
 /// all refuse to lower so the residual mention fails closed downstream.
+///
+/// A fused OFFSET rides in the consumed `TopK`: the barrier scan carries the
+/// inflated `k + skip` ranking window and a pure trailing skip-`Limit` parks after
+/// the late-projected RETURN, so the Router skips after ranking (never before).
 ///
 /// The trailing `TopK` is consumed into the scan (no `Limit` survives in the plan), so
 /// limit pushdown — which runs before this pass and bails on `Sort` — cannot narrow the
 /// candidate prefix through the barrier.
+/// Trailing skip for a fused OFFSET: a pure `Limit { count: None, offset }` parked
+/// after the late-projected RETURN. The Router applies the skip after ranking; the
+/// barrier scan carries the inflated `k + skip` window so ranking stays exact.
+/// Emitted only for a positive skip — `OFFSET 0` lowers to today's offset-free shape.
+fn skip_limit_op(skip: i64) -> PlanOp {
+    PlanOp::Limit {
+        count: None,
+        offset: Some(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(skip)))),
+    }
+}
+
 /// Find the compound partner for a candidate TopK: exactly one single-predicate
 /// `PropertyFilter` in the prefix whose predicate extracts as a threshold on the
 /// same (variable, property, query) triple as the TopK score. Returns the filter
@@ -462,11 +477,11 @@ pub(crate) fn apply_candidate_text_topk_lowering(
     if topk_idx == 0 {
         return false;
     }
-    let (score, k) = {
+    let (score, window, skip) = {
         let PlanOp::TopK {
             order_by,
             k,
-            offset: None,
+            offset,
             ..
         } = &ops[topk_idx]
         else {
@@ -478,8 +493,22 @@ pub(crate) fn apply_candidate_text_topk_lowering(
         if k_value <= 0 {
             return false;
         }
+        // A fused OFFSET is literal-only (parity with the limit): negative,
+        // non-literal, or overflowing `k + skip` refuses to lower so the
+        // residual mention fails closed downstream. The 1024-row admission cap
+        // stays owned by the Router gate — no cap constant is copied here.
+        let skip_value = match offset {
+            None => 0,
+            Some(expr) => match const_int64(expr) {
+                Some(n) if n >= 0 => n,
+                _ => return false,
+            },
+        };
+        let Some(window) = k_value.checked_add(skip_value) else {
+            return false;
+        };
         match extract_topk_order(order_by) {
-            Some(score) => (score, k_value),
+            Some(score) => (score, window, skip_value),
             None => return false,
         }
     };
@@ -518,13 +547,17 @@ pub(crate) fn apply_candidate_text_topk_lowering(
             mode: TextScanMode::ThresholdTopK {
                 cmp,
                 bound,
-                limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+                limit: ScanValue::Literal(gleaph_gql::Value::Int64(window)),
             },
             property_projection: None,
         };
         ops.remove(filter_idx);
-        // The filter sat strictly before the TopK, so the barrier slides one slot.
+        // The filter sat strictly before the TopK, so the barrier slides one slot
+        // and the RETURN Project now sits at `topk_idx`; the skip parks after it.
         ops[topk_idx - 1] = text_scan;
+        if skip > 0 {
+            ops.insert(topk_idx + 1, skip_limit_op(skip));
+        }
         return true;
     }
     let prefix = &ops[..topk_idx];
@@ -550,11 +583,14 @@ pub(crate) fn apply_candidate_text_topk_lowering(
         property: score.property.as_str().into(),
         query: score.query.clone(),
         mode: TextScanMode::TopK {
-            limit: ScanValue::Literal(gleaph_gql::Value::Int64(k)),
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(window)),
         },
         property_projection: None,
     };
     ops[topk_idx] = text_scan;
+    if skip > 0 {
+        ops.insert(topk_idx + 2, skip_limit_op(skip));
+    }
     true
 }
 
