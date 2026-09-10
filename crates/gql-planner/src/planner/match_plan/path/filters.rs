@@ -279,6 +279,9 @@ pub(super) fn plan_edge_filter_fusion(
     // Text-prefix fusion mirrors the vertex contract and comes last (equality → IN →
     // range → prefix): one non-negated STARTS WITH on a range-indexed edge property
     // lowers into an encoded TEXT prefix interval while its predicate stays residual.
+    // A non-negated `e.prop LIKE <Text literal>` with a non-empty escape-resolved
+    // prefix anchors the same way (STARTS WITH wins when both match); the full
+    // LIKE pattern stays residual for rechecking.
     #[cfg(feature = "cypher")]
     if out.indexed_equality.is_none() && out.indexed_range.is_none() {
         let edge_label_binding = extract_simple_label(&edge.label);
@@ -289,7 +292,16 @@ pub(super) fn plan_edge_filter_fusion(
             edge_label,
             edge.direction,
             stats,
-        ) {
+        )
+        .or_else(|| {
+            find_first_indexed_edge_like_prefix_in_conjunctions(
+                where_conjuncts,
+                edge_var,
+                edge_label,
+                edge.direction,
+                stats,
+            )
+        }) {
             out.indexed_prefix = Some((prop.into(), pattern));
         } else if let Some(where_clause) = edge.where_clause.as_ref() {
             let conj = flatten_conjunction(where_clause);
@@ -299,7 +311,16 @@ pub(super) fn plan_edge_filter_fusion(
                 edge_label,
                 edge.direction,
                 stats,
-            ) {
+            )
+            .or_else(|| {
+                find_first_indexed_edge_like_prefix_in_conjunctions(
+                    &conj,
+                    edge_var,
+                    edge_label,
+                    edge.direction,
+                    stats,
+                )
+            }) {
                 out.indexed_prefix = Some((prop.into(), pattern));
             }
         }
@@ -548,6 +569,32 @@ pub(super) fn find_first_indexed_edge_prefix_in_conjunctions(
 ) -> Option<(String, ScanValue)> {
     for c in conjuncts {
         if let Some((v, p, pattern)) = anchor::extract_string_prefix_predicate(c)
+            && v == edge_var
+            && stats.is_edge_property_range_indexed_for(edge_label, &p, edge_direction)
+        {
+            return Some((p, pattern));
+        }
+    }
+    None
+}
+
+/// Find `e.prop LIKE <Text literal>` with a non-empty escape-resolved literal
+/// prefix on a range-indexed edge property. LIKE-dedicated sibling of
+/// [`find_first_indexed_edge_prefix_in_conjunctions`]: it reuses the shared
+/// [`anchor::like_literal_prefix`] extraction (never ILIKE / `$param` / NOT LIKE /
+/// leading-wildcard shapes) and applies the same variable, edge-label, and
+/// index-membership gates, so ambiguous labels and unindexed properties stay
+/// residual-only exactly like the STARTS WITH path.
+#[cfg(feature = "cypher")]
+pub(super) fn find_first_indexed_edge_like_prefix_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
+    stats: &dyn GraphStats,
+) -> Option<(String, ScanValue)> {
+    for c in conjuncts {
+        if let Some((v, p, pattern)) = anchor::extract_like_prefix_predicate(c)
             && v == edge_var
             && stats.is_edge_property_range_indexed_for(edge_label, &p, edge_direction)
         {

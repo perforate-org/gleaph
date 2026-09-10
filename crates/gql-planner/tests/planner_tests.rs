@@ -2747,6 +2747,30 @@ fn is_startswith_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
     matches!(&inner.kind, ExprKind::Variable(name) if name == var) && prop == property
 }
 
+/// True when `expr` is exactly `var.property LIKE <pattern>` (non-negated).
+#[cfg(feature = "cypher")]
+fn is_like_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
+    use gleaph_gql::ast::StringPredicateKind;
+
+    let ExprKind::StringPredicate {
+        expr: lhs,
+        kind: StringPredicateKind::Like,
+        negated: false,
+        ..
+    } = &expr.kind
+    else {
+        return false;
+    };
+    let ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &lhs.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, ExprKind::Variable(name) if name == var) && prop == property
+}
+
 #[test]
 #[cfg(feature = "cypher")]
 fn match_startswith_anchor_lowers_to_prefix_index_scan() {
@@ -3146,6 +3170,252 @@ fn match_edge_startswith_keeps_residual_filter() {
         )),
         "original edge STARTS WITH predicate must remain residual, got: {:?}",
         plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_like_literal_prefix_lowers_and_keeps_full_pattern_residual() {
+    for input in [
+        "MATCH (a:Person)-[e:REL WHERE e.name LIKE 'Str%']->(b:Person) RETURN a, b",
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE 'Str%' RETURN a, b",
+    ] {
+        let plan = plan_query_with_stats(input, &edge_prefix_stats());
+        // The derived escape-resolved prefix ('Str') anchors the interval.
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::EdgeIndexScan {
+                    property,
+                    value: ScanValue::TextPrefix(pattern),
+                    cmp: CmpOp::Eq,
+                    ..
+                } if &**property == "name"
+                    && **pattern == ScanValue::Literal(Value::Text("Str".into()))
+            )),
+            "expected TEXT prefix EdgeIndexScan on derived edge LIKE prefix for {input}, got: {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
+            "leading edge LIKE EdgeIndexScan must be followed by EdgeBindEndpoints for {input}, got: {:?}",
+            plan.ops
+        );
+        // The FULL original LIKE predicate stays residual for rechecking.
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::PropertyFilter { predicates, .. }
+                    if predicates.iter().any(|p| is_like_predicate_on(p, "e", "name"))
+            )),
+            "original edge LIKE predicate must remain residual for {input}, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_like_escaped_prefix_fuses_on_resolved_literal() {
+    // GQL text spells the LIKE escape as `\\`, since `\%` is not a GQL
+    // string escape: the interval narrows on `a%b`.
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE 'a\\\\%b%' RETURN a, b",
+        &edge_prefix_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::TextPrefix(pattern),
+                cmp: CmpOp::Eq,
+                ..
+            } if **pattern == ScanValue::Literal(Value::Text("a%b".into()))
+        )),
+        "expected TEXT prefix EdgeIndexScan on escape-resolved edge LIKE prefix, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_startswith_wins_over_like_on_same_property() {
+    // Vertex contract parity: STARTS WITH anchors first, LIKE is the fallback.
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name STARTS WITH 'Str' AND e.name LIKE 'Str%' RETURN a, b",
+        &edge_prefix_stats(),
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::TextPrefix(pattern),
+                cmp: CmpOp::Eq,
+                ..
+            } if **pattern == ScanValue::Literal(Value::Text("Str".into()))
+        )),
+        "expected prefix EdgeIndexScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_like_predicate_on(p, "e", "name"))
+        )),
+        "losing LIKE must stay residual, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_edge_unfusible_like_shapes_stay_residual_only() {
+    // Kill: NOT LIKE, ILIKE, `$param` patterns, leading `%`/`_`, the empty
+    // pattern, and unindexed edge properties never emit an EdgeIndexScan.
+    // The ambiguous-label kill uses directional stats (label-qualified
+    // membership): an unlabeled edge resolves `edge_label=None` and fails
+    // the membership gate.
+    let mut directional = TableStats::default();
+    directional.directional_edge_indexes.push((
+        "REL".to_owned(),
+        "name".to_owned(),
+        EdgeDirection::PointingRight,
+    ));
+    let unindexed = TableStats::default();
+    let cases: [(&str, &TableStats); 8] = [
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE NOT e.name LIKE 'Str%' RETURN a, b",
+            &directional,
+        ),
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name ILIKE 'Str%' RETURN a, b",
+            &directional,
+        ),
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE $pat RETURN a, b",
+            &directional,
+        ),
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE '%str' RETURN a, b",
+            &directional,
+        ),
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE '_tr' RETURN a, b",
+            &directional,
+        ),
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE '' RETURN a, b",
+            &directional,
+        ),
+        (
+            "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE 'Str%' RETURN a, b",
+            &unindexed,
+        ),
+        (
+            "MATCH (a:Person)-[e]->(b:Person) WHERE e.name LIKE 'Str%' RETURN a, b",
+            &directional,
+        ),
+    ];
+    for (input, stats) in cases {
+        let plan = plan_query_with_stats(input, stats);
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+            "{input} must not emit an EdgeIndexScan, got: {:?}",
+            plan.ops
+        );
+    }
+    // Control: the same directional stats DO fuse a labeled edge.
+    let fused = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.name LIKE 'Str%' RETURN a, b",
+        &directional,
+    );
+    assert!(
+        fused
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+        "labeled edge LIKE must fuse under directional stats, got: {:?}",
+        fused.ops
+    );
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn match_vertex_and_edge_like_prefixes_divide_labor() {
+    // Vertex/edge coexistence is exclusive: the leading-edge slot goes to at
+    // most one side (same as STARTS WITH). When the source vertex anchors, the
+    // edge LIKE stays residual; when the source is a full scan, the edge LIKE
+    // takes the leading slot and the vertex LIKE stays residual. Neither side
+    // loses its predicate.
+    let mut stats = string_prefix_stats();
+    stats.indexed_edge_properties.insert("tag".to_string());
+
+    // Source anchors → vertex wins, edge LIKE residual-only.
+    let vertex_wins = plan_query_with_stats(
+        "MATCH (n:User)-[e:REL]->(m:User) WHERE n.name LIKE 'A%' AND e.tag LIKE 'B%' RETURN n, m",
+        &stats,
+    );
+    assert!(
+        vertex_wins.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::IndexScan {
+                value: ScanValue::TextPrefix(pattern),
+                ..
+            } if **pattern == ScanValue::Literal(Value::Text("A".into()))
+        )),
+        "vertex LIKE prefix must anchor, got: {:?}",
+        vertex_wins.ops
+    );
+    assert!(
+        !vertex_wins
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
+        "anchored source must leave the edge LIKE residual-only, got: {:?}",
+        vertex_wins.ops
+    );
+    assert!(
+        vertex_wins.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_like_predicate_on(p, "e", "tag"))
+        )),
+        "losing edge LIKE must stay residual, got: {:?}",
+        vertex_wins.ops
+    );
+
+    // Full-scan source (uid is equality-only, never prefix-anchoring) → edge
+    // wins the leading slot, vertex LIKE residual.
+    let edge_wins = plan_query_with_stats(
+        "MATCH (n:User)-[e:REL]->(m:User) WHERE n.uid LIKE 'A%' AND e.tag LIKE 'B%' RETURN n, m",
+        &stats,
+    );
+    assert!(
+        edge_wins.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::EdgeIndexScan {
+                value: ScanValue::TextPrefix(pattern),
+                ..
+            } if **pattern == ScanValue::Literal(Value::Text("B".into()))
+        )),
+        "edge LIKE prefix must take the leading slot, got: {:?}",
+        edge_wins.ops
+    );
+    assert!(
+        edge_wins.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| is_like_predicate_on(p, "n", "uid"))
+                    && predicates.iter().any(|p| is_like_predicate_on(p, "e", "tag"))
+        )),
+        "both LIKE predicates must stay residual, got: {:?}",
+        edge_wins.ops
     );
 }
 

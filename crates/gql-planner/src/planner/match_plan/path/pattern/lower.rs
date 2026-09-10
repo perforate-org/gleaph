@@ -376,6 +376,18 @@ fn has_indexed_edge_bound(
     {
         return true;
     }
+    #[cfg(feature = "cypher")]
+    if super::super::filters::find_first_indexed_edge_like_prefix_in_conjunctions(
+        std::slice::from_ref(conjunct),
+        edge_var,
+        edge_label,
+        edge_direction,
+        stats,
+    )
+    .is_some()
+    {
+        return true;
+    }
     false
 }
 

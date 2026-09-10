@@ -1805,6 +1805,102 @@ fn plan_with_optional_edge_index_stats(input: &str, indexed_prop: Option<&str>) 
     .expect("plan should build")
 }
 
+/// True when `expr` is exactly `var.property LIKE <pattern>` (non-negated).
+fn is_edge_like_residual_on(expr: &gleaph_gql::ast::Expr, var: &str, property: &str) -> bool {
+    let gleaph_gql::ast::ExprKind::StringPredicate {
+        expr: lhs,
+        kind: gleaph_gql::ast::StringPredicateKind::Like,
+        negated: false,
+        ..
+    } = &expr.kind
+    else {
+        return false;
+    };
+    let gleaph_gql::ast::ExprKind::PropertyAccess {
+        expr: inner,
+        property: prop,
+    } = &lhs.kind
+    else {
+        return false;
+    };
+    matches!(&inner.kind, gleaph_gql::ast::ExprKind::Variable(name) if name == var)
+        && prop == property
+}
+
+#[test]
+#[cfg(feature = "cypher")]
+fn executes_cypher_edge_like_prefix_fusion_agrees_with_residual_only_scan() {
+    // Edge LIKE red proof: the fused plan (leading TEXT prefix EdgeIndexScan
+    // derived from the LIKE literal prefix + full LIKE residual) must return
+    // exactly the row set of the residual-only plan. `LIKE 'Str_w%'` proves
+    // the residual recheck: the `Str` interval also covers the bare `Str`
+    // edge, which the `_` wildcard rejects.
+    let _guard = crate::test_labels::enter_indexed_edge_property_named("name");
+    let (store, _) = edge_prefix_store();
+
+    let bound_b = |result: &crate::plan::query::executor::PlanQueryResult| {
+        let mut names = text_column(result, "b.name");
+        names.sort();
+        names
+    };
+    let run = |input: &str, indexed: bool| {
+        let plan = plan_with_optional_edge_index_stats(input, indexed.then_some("name"));
+        let has_scan = plan.ops.iter().any(|op| {
+            matches!(op, PlanOp::EdgeIndexScan {
+                property,
+                value: ScanValue::TextPrefix(_),
+                cmp: CmpOp::Eq,
+                ..
+            } if property.as_ref() == "name")
+        });
+        assert_eq!(
+            has_scan, indexed,
+            "indexed={indexed} must agree with EdgeIndexScan presence for {input}, got {:?}",
+            plan.ops
+        );
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::PropertyFilter { predicates, .. }
+                    if predicates.iter().any(|p| is_edge_like_residual_on(p, "e", "name"))
+            )),
+            "full edge LIKE predicate must stay residual for {input}, got: {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .unwrap_or_else(|err| panic!("execute {input}: {err:?}"));
+        bound_b(&result)
+    };
+
+    for input in [
+        "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name LIKE 'Str%' RETURN b.name",
+        "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel WHERE e.name LIKE 'Str%']->(b:EdgePrefixDst) RETURN b.name",
+    ] {
+        assert_eq!(
+            run(input, true),
+            vec!["Str".to_string(), "Straw".to_string()],
+            "fused LIKE must bind the prefix family for {input}"
+        );
+        assert_eq!(
+            run(input, true),
+            run(input, false),
+            "fusion must not change the row set for {input}"
+        );
+    }
+    let wildcard = "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name LIKE 'Str_w%' RETURN b.name";
+    assert_eq!(
+        run(wildcard, true),
+        vec!["Straw".to_string()],
+        "residual recheck must reject the bare prefix row"
+    );
+    assert_eq!(
+        run(wildcard, true),
+        run(wildcard, false),
+        "fusion must not change the wildcard row set"
+    );
+}
+
 #[test]
 fn executes_cypher_edge_startswith_pushdown_boundary_row_sets() {
     let _guard = crate::test_labels::enter_indexed_edge_property_named("name");

@@ -95,7 +95,12 @@ rejections.
 **Edge symmetry (implemented):** the same contract applies to edges. A non-negated
 `e.prop STARTS WITH` over a range-indexed edge property fuses after equality → IN → range in
 `EdgeFilterFusion.indexed_prefix`, lowers through the leading-edge bound chain into
-`PlanOp::EdgeIndexScan { value: TextPrefix, cmp: Eq }`, and keeps its predicate residual. The
+`PlanOp::EdgeIndexScan { value: TextPrefix, cmp: Eq }`, and keeps its predicate residual. A
+non-negated edge `e.prop LIKE <Text literal>` with a non-empty escape-resolved literal prefix
+anchors the same way (`STARTS WITH` wins when both match on one property; the leading-edge slot
+is exclusive, so a vertex-anchored source leaves the edge LIKE residual-only); the full LIKE
+pattern stays residual for rechecking. `$param` LIKE, ILIKE, NOT LIKE, leading-wildcard and
+empty-prefix LIKE, ambiguous edge labels, and unindexed properties never fuse. The
 executor intercepts TextPrefix before equality dispatch and reuses `lookup_edge_range_local`
 (interval identical to the vertex derivation, no `(shard, vertex)` dedup needed — edge range
 postings are already identity-deduplicated per physical namespace); a non-TEXT resolved pattern
