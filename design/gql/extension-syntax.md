@@ -1067,8 +1067,15 @@ Contract:
   before) — exact with `truncated=false`; a skip past the end is the exact empty set.
   The `k + n` window reuses the 1..=1024 row LIMIT gate. `OFFSET` without `LIMIT`, a
   parameterized or negative offset, and an offset after a threshold-only barrier stay
-  unsupported and fail closed. Multi-shard,
-  `DISTINCT`/ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
+  unsupported and fail closed. A `RETURN DISTINCT` tail is accepted in the top-k,
+  threshold, and compound forms alike: the Router dedups the fully projected rows
+  (whole-row equality, first occurrence wins, rank order preserved) after ranking
+  and before skip/take — a pre-dedup window is never exact, so a DISTINCT tail
+  bypasses the `k + n` ranking window and takes `window − skip` after dedup, still
+  exact with `truncated=false`. The dedup key is the whole projected row (a shared
+  title with different scores keeps both rows; only byte-identical rows collapse),
+  so no cap changes: rows only shrink. Multi-shard,
+  ASC, mismatched-triple halves, and unlabeled/uncovered scans stay unsupported.
   `ORDER BY` score `ASC` is deliberately deferred, not merely unimplemented: ascending top-k
   returns the *least* relevant candidates, and no demand for that shape exists today.
   Reopen if a concrete low-score-side use case lands (the carrier design is recorded in review).

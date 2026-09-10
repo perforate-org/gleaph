@@ -140,3 +140,17 @@ exact empty set. A skip after a threshold-only barrier, `OFFSET` without `LIMIT`
 parameterized/negative offsets fail closed. No post-lowering pass assumes a trailing
 `Project`: liveness/projection collectors treat `Limit` generically, and the Router
 prefix dispatch slices `ops[..scan_idx]`, so the skip-`Limit` never reaches Graph.
+
+## Addendum: candidate-scoped DISTINCT (implemented)
+
+A `RETURN DISTINCT` tail is accepted in the top-k, threshold, and compound forms
+with no planner, TEXT, wire, or cap change: the lowerings already ignore the
+`Project` distinct flag, so the Router shape gate was the only blocker. The shape
+carries `distinct: bool`; the execution adds one mode-agnostic stage —
+rank → dedup → skip → take. Dedup is whole-projected-row first-occurrence
+(`dedup_wire_rows`, mirroring Graph `dedup_rows`, O(n²) inside the 1024-row cap —
+no hash index), so a shared title with different scores keeps both rows and only
+byte-identical rows collapse. A DISTINCT tail bypasses the `k + n` ranking window
+(a pre-dedup window is never exact) and takes `window − skip` after dedup
+(`barrier_row_window`); threshold + DISTINCT opens together with no mode special
+case, while threshold + skip stays rejected. Exact with `truncated=false`.

@@ -245,6 +245,10 @@ struct CandidateBarrierShape {
     /// Rows to skip after ranking (a fused OFFSET parked as a trailing pure
     /// skip-`Limit` by the planner). Zero when the query carries no offset.
     skip: u32,
+    /// The trailing `Project` carried `DISTINCT`: the execution dedups the fully
+    /// projected rows (first occurrence wins, rank order preserved) before
+    /// skip/take. False for the plain `RETURN` shape.
+    distinct: bool,
     /// Trailing-`Project` column index holding the residual score call, when the
     /// `RETURN` projects one. A threshold-only `RETURN` carries no score column.
     score_col_idx: Option<usize>,
@@ -331,28 +335,21 @@ fn analyze_candidate_barrier_shape(
         ));
     }
     // The tail must be the late-projected RETURN, optionally followed by the
-    // planner-parked pure skip-`Limit` of a fused OFFSET. Anything else — a row
-    // count, a non-literal offset, a parameter — fails closed.
-    let (columns, skip) = match &plan.ops[scan_idx + 1..] {
+    // planner-parked pure skip-`Limit` of a fused OFFSET. A `DISTINCT` tail is
+    // accepted and carried as a flag for the execution dedup stage. Anything
+    // else — a row count, a non-literal offset, a parameter — fails closed.
+    let (columns, skip, distinct) = match &plan.ops[scan_idx + 1..] {
+        [PlanOp::Project { columns, distinct }] => (columns, 0, *distinct),
         [
-            PlanOp::Project {
-                columns,
-                distinct: false,
-            },
-        ] => (columns, 0),
-        [
-            PlanOp::Project {
-                columns,
-                distinct: false,
-            },
+            PlanOp::Project { columns, distinct },
             PlanOp::Limit {
                 count: None,
                 offset: Some(offset),
             },
-        ] => (columns, resolve_skip_offset(offset)?),
+        ] => (columns, resolve_skip_offset(offset)?, *distinct),
         _ => {
             return Err(unsupported(
-                "only a single non-distinct trailing Project, optionally followed by a pure skip Limit, is supported",
+                "only a single trailing Project, optionally followed by a pure skip Limit, is supported",
             ));
         }
     };
@@ -390,6 +387,7 @@ fn analyze_candidate_barrier_shape(
         query: query.clone(),
         mode,
         skip,
+        distinct,
         score_col_idx,
         user_col_count,
     })
@@ -439,6 +437,37 @@ struct CandidatePrefixRow {
     values: Vec<gleaph_gql_ic::GqlWireValue>,
 }
 
+/// Row window and post-dedup take for the barrier execution. A `DISTINCT` tail
+/// bypasses the `k + skip` window (dedup only shrinks rows, so a pre-dedup
+/// window is never exact) and takes after dedup → skip instead. The take is
+/// the fused window minus the parked skip (the planner fuses `LIMIT k OFFSET
+/// n` into a `k + n` window with a pure skip-`Limit`, so `window - skip` is
+/// exactly `k`; saturating for hand-built shapes). Pure: unit-tested without I/O.
+fn barrier_row_window(mode: &CandidateBarrierMode, distinct: bool, skip: u32) -> (usize, usize) {
+    let window = match mode {
+        CandidateBarrierMode::TopK { limit } | CandidateBarrierMode::Compound { limit, .. } => {
+            *limit as usize
+        }
+        // Threshold keeps every surviving row: filtering already happened above.
+        CandidateBarrierMode::Threshold { .. } => usize::MAX,
+    };
+    let take = window.saturating_sub(skip as usize);
+    let row_cap = if distinct { usize::MAX } else { window };
+    (row_cap, take)
+}
+
+/// First-occurrence dedup over fully projected wire rows, mirroring Graph
+/// `dedup_rows`: whole-row equality, rank order preserved. O(n²) over at most
+/// the 1024-row prefix cap, so no hash index. Pure: unit-tested without I/O.
+fn dedup_wire_rows(rows: &mut Vec<gleaph_gql_ic::GqlWireRow>) {
+    let mut unique = Vec::with_capacity(rows.len());
+    for row in rows.drain(..) {
+        if !unique.contains(&row) {
+            unique.push(row);
+        }
+    }
+    *rows = unique;
+}
 /// Join TEXT scores onto prefix rows and rank: keep rows whose key scored, order
 /// `(score desc, key asc)` (stable within identical pairs, preserving prefix order),
 /// truncate to the row limit. Pure: unit-tested without I/O.
@@ -703,18 +732,18 @@ async fn try_execute_candidate_text_scan(
         }
     }
 
-    let row_cap = match barrier.mode {
-        CandidateBarrierMode::TopK { limit } => limit as usize,
-        CandidateBarrierMode::Compound { limit, .. } => limit as usize,
-        // Threshold keeps every surviving row: filtering already happened above.
-        CandidateBarrierMode::Threshold { .. } => usize::MAX,
-    };
+    let (row_cap, take) = barrier_row_window(&barrier.mode, barrier.distinct, barrier.skip);
     // The skip applies AFTER ranking on the fully ordered rows (never before):
     // the barrier scan already carries the inflated `k + skip` window, and scoring
-    // is all-match, so skipping here yields exactly rows `skip..skip + k`.
+    // is all-match, so skipping here yields exactly rows `skip..skip + k`. A
+    // DISTINCT tail skips nothing here: dedup runs before skip/take below.
     let ranked: Vec<(u32, CandidatePrefixRow)> = rank_candidate_rows(prefix_rows, &scores, row_cap)
         .into_iter()
-        .skip(barrier.skip as usize)
+        .skip(if barrier.distinct {
+            0
+        } else {
+            barrier.skip as usize
+        })
         .collect();
     // Output names follow the original trailing Project order (score included).
     if plan.output.columns.len() != columns.len() {
@@ -740,6 +769,17 @@ async fn try_execute_candidate_text_scan(
             }
         }
         out_rows.push(gleaph_gql_ic::GqlWireRow { columns: out_cols });
+    }
+    if barrier.distinct {
+        // DISTINCT is a set op on the RETURN rows: dedup the fully ordered
+        // projection (first occurrence wins), then skip/take. The rank window
+        // was bypassed above, so this take is exact, never a pre-dedup cut.
+        dedup_wire_rows(&mut out_rows);
+        out_rows = out_rows
+            .into_iter()
+            .skip(barrier.skip as usize)
+            .take(take)
+            .collect();
     }
     let row_count = out_rows.len() as u64;
     let out_blob = gleaph_gql_ic::GqlWireRows { rows: out_rows }
@@ -2071,6 +2111,16 @@ mod candidate_barrier_tests {
         }
     }
 
+    fn tail_project_distinct() -> PlanOp {
+        let PlanOp::Project { columns, .. } = tail_project() else {
+            panic!("tail");
+        };
+        PlanOp::Project {
+            columns,
+            distinct: true,
+        }
+    }
+
     fn params() -> BTreeMap<String, gleaph_gql::Value> {
         BTreeMap::new()
     }
@@ -2266,6 +2316,175 @@ mod candidate_barrier_tests {
             skip_limit_op(5),
         ]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn barrier_shape_carries_distinct_across_modes() {
+        // A DISTINCT tail is accepted and carried as a flag; the plain tail
+        // stays flag-free.
+        let plan = test_plan(vec![node_scan_d(), barrier_scan(20), tail_project()]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(!shape.distinct);
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(20),
+            tail_project_distinct(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.distinct);
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::TopK { limit: 20 }
+        ));
+        // Threshold + DISTINCT opens together: the dedup stage is mode-agnostic.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_threshold(),
+            tail_project_no_score(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(!shape.distinct);
+        let mut scan = barrier_scan_threshold();
+        let PlanOp::Project { columns, .. } = tail_project_no_score() else {
+            panic!("tail");
+        };
+        let distinct_tail = PlanOp::Project {
+            columns,
+            distinct: true,
+        };
+        let plan = test_plan(vec![node_scan_d(), scan.clone(), distinct_tail]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.distinct);
+        assert!(matches!(shape.mode, CandidateBarrierMode::Threshold { .. }));
+        // Compound + DISTINCT opens through the same flag.
+        let PlanOp::TextScan { mode, .. } = &mut scan else {
+            panic!("scan");
+        };
+        *mode = TextScanMode::ThresholdTopK {
+            cmp: CmpOp::Gt,
+            bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+        };
+        let PlanOp::Project { columns, .. } = tail_project_no_score() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            scan,
+            PlanOp::Project {
+                columns,
+                distinct: true,
+            },
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.distinct);
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::Compound { limit: 10, .. }
+        ));
+        // DISTINCT + skip is accepted (dedup runs before skip); threshold +
+        // skip stays rejected with or without DISTINCT.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(15),
+            tail_project_distinct(),
+            skip_limit_op(5),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(shape.distinct);
+        assert_eq!(shape.skip, 5);
+        let PlanOp::Project { columns, .. } = tail_project_no_score() else {
+            panic!("tail");
+        };
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_threshold(),
+            PlanOp::Project {
+                columns,
+                distinct: true,
+            },
+            skip_limit_op(5),
+        ]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn barrier_row_window_bypasses_cap_for_distinct() {
+        // Plain tails keep the `k + skip` window as the row cap.
+        assert_eq!(
+            barrier_row_window(&CandidateBarrierMode::TopK { limit: 10 }, false, 0),
+            (10, 10)
+        );
+        // A DISTINCT tail ranks the full candidate set and takes after dedup.
+        assert_eq!(
+            barrier_row_window(&CandidateBarrierMode::TopK { limit: 10 }, true, 0),
+            (usize::MAX, 10)
+        );
+        // With a parked skip the take is the fused window minus the skip
+        // (LIMIT k OFFSET n fuses to a k + n window), never the window.
+        assert_eq!(
+            barrier_row_window(&CandidateBarrierMode::TopK { limit: 15 }, true, 5),
+            (usize::MAX, 10)
+        );
+        assert_eq!(
+            barrier_row_window(
+                &CandidateBarrierMode::Compound {
+                    cmp: CmpOp::Gt,
+                    bound: 0.5,
+                    limit: 15
+                },
+                true,
+                5
+            ),
+            (usize::MAX, 10)
+        );
+        // Threshold never windows, with or without DISTINCT.
+        for distinct in [false, true] {
+            assert_eq!(
+                barrier_row_window(
+                    &CandidateBarrierMode::Threshold {
+                        cmp: CmpOp::Gt,
+                        bound: 0.5
+                    },
+                    distinct,
+                    0
+                ),
+                (usize::MAX, usize::MAX)
+            );
+        }
+    }
+
+    #[test]
+    fn dedup_wire_rows_keeps_first_occurrence_on_whole_rows() {
+        use gleaph_gql_ic::{GqlWireRow, GqlWireValue};
+        let row = |title: &str, score: f64| GqlWireRow {
+            columns: vec![
+                ("title".to_string(), GqlWireValue::Text(title.into())),
+                ("s".to_string(), GqlWireValue::Float64(score)),
+            ],
+        };
+        let mut rows = vec![
+            row("a", 3.0),
+            row("b", 2.0),
+            row("a", 3.0),
+            // Same title, different score: a whole-row key keeps both.
+            // A document-identity dedup would wrongly collapse these.
+            row("a", 1.0),
+            row("b", 2.0),
+        ];
+        dedup_wire_rows(&mut rows);
+        assert_eq!(rows, vec![row("a", 3.0), row("b", 2.0), row("a", 1.0)]);
+        // NULL titles dedup together, matching the Graph whole-row contract.
+        let mut nulls = vec![
+            GqlWireRow {
+                columns: vec![("title".to_string(), GqlWireValue::Null)],
+            },
+            GqlWireRow {
+                columns: vec![("title".to_string(), GqlWireValue::Null)],
+            },
+        ];
+        dedup_wire_rows(&mut nulls);
+        assert_eq!(nulls.len(), 1);
     }
 
     #[test]

@@ -2547,6 +2547,192 @@ fn non_leading_text_candidate_offset_lifecycle() {
     assert_eq!(replay, expected, "offset frame is deterministic");
 }
 
+const CANDIDATE_DISTINCT_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN DISTINCT d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 42";
+const CANDIDATE_DISTINCT_SCORE_ONLY_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN DISTINCT text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 42";
+const CANDIDATE_DISTINCT_OFFSET_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) \
+     RETURN DISTINCT d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 10 OFFSET 5";
+const CANDIDATE_DISTINCT_THRESHOLD_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN DISTINCT d.rank AS rank";
+const CANDIDATE_DISTINCT_COMPOUND_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN DISTINCT d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 42";
+
+fn distinct_score_only_rows(result: &GqlQueryResult) -> Vec<f64> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            match columns.get("score").expect("score column present") {
+                GqlWireValue::Float64(score) => *score,
+                other => panic!("score must be Float64, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn non_leading_text_candidate_distinct_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+
+    // Calibration frame: every candidate in Router ranking order. The two-user
+    // fan-out yields each document twice as byte-identical projected rows.
+    let frame = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    ));
+    assert_eq!(frame.len(), 42, "full candidate frame");
+    let params = encode_gql_params_blob(vec![
+        ("user_id".to_string(), Value::Int64(CANDIDATE_USER_ID)),
+        ("q".to_string(), Value::Text("wombat".to_string())),
+    ])
+    .expect("encode params");
+
+    // kill-1 (count) + kill-2 (order): DISTINCT collapses the fan-out pairs
+    // and keeps rank order. A dedup-skipping misimplementation returns 42
+    // rows; a re-sorting one breaks the exact frame equality.
+    let mut deduped: Vec<(i64, f64)> = Vec::with_capacity(frame.len());
+    for row in &frame {
+        if !deduped.contains(row) {
+            deduped.push(*row);
+        }
+    }
+    assert_eq!(deduped.len(), 21, "each document fanned out exactly twice");
+    let distinct =
+        gql_query_with_params_as_admin(&env.fed, CANDIDATE_DISTINCT_SCORED_QUERY, params.clone());
+    assert_eq!(distinct.row_count, 21, "DISTINCT collapses fan-out pairs");
+    assert_eq!(
+        distinct.truncated,
+        Some(false),
+        "exact dedup never truncates"
+    );
+    assert_eq!(
+        threshold_scored_rows(&distinct),
+        deduped,
+        "DISTINCT keeps first occurrences in rank order"
+    );
+
+    // kill-3 (key): the score-only projection dedups on the whole row. Docs 0
+    // and 1 tie on score, so at least one pair collapses; a document-identity
+    // dedup would wrongly keep all 42 rows.
+    let mut distinct_scores: Vec<f64> = Vec::with_capacity(frame.len());
+    for (_, score) in &frame {
+        if !distinct_scores.contains(score) {
+            distinct_scores.push(*score);
+        }
+    }
+    assert!(
+        distinct_scores.len() < frame.len(),
+        "the engineered tie guarantees a collapse"
+    );
+    let score_only = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DISTINCT_SCORE_ONLY_QUERY,
+        params.clone(),
+    );
+    assert_eq!(
+        score_only.row_count as usize,
+        distinct_scores.len(),
+        "score-only DISTINCT collapses tied scores"
+    );
+    assert_eq!(
+        score_only.truncated,
+        Some(false),
+        "exact dedup never truncates"
+    );
+    assert_eq!(
+        distinct_score_only_rows(&score_only),
+        distinct_scores,
+        "score-only DISTINCT keeps rank order"
+    );
+
+    // kill-4 (DISTINCT + OFFSET): dedup runs before skip/take, so the result
+    // is the deduped-frame slice — never a pre-dedup window cut.
+    let offset =
+        gql_query_with_params_as_admin(&env.fed, CANDIDATE_DISTINCT_OFFSET_QUERY, params.clone());
+    assert_eq!(offset.row_count, 10);
+    assert_eq!(offset.truncated, Some(false));
+    assert_eq!(
+        threshold_scored_rows(&offset),
+        deduped.iter().skip(5).take(10).copied().collect::<Vec<_>>(),
+        "DISTINCT offset slices the deduped frame"
+    );
+
+    // Threshold + DISTINCT opens together: the 0.5 calibration passes every
+    // candidate, so 21 distinct ranks survive in frame order.
+    let threshold = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DISTINCT_THRESHOLD_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    );
+    assert_eq!(threshold.row_count, 21);
+    assert_eq!(threshold.truncated, Some(false));
+    assert_eq!(
+        compound_rank_rows(&threshold),
+        deduped.iter().map(|(rank, _)| *rank).collect::<Vec<_>>(),
+        "threshold DISTINCT keeps frame order"
+    );
+
+    // Compound + DISTINCT: retain-threshold first, then the same mode-agnostic
+    // dedup → take. The interior bound splits the frame, so a compound path
+    // that ignores the distinct flag returns the uncollapsed filtered count.
+    let mut ordered_bounds: Vec<f64> = frame.iter().map(|(_, score)| *score).collect();
+    ordered_bounds.sort_by(|a, b| a.total_cmp(b));
+    ordered_bounds.dedup();
+    let bound = ordered_bounds[(ordered_bounds.len() - 1) / 2];
+    let mut filtered_deduped: Vec<(i64, f64)> = Vec::new();
+    for row in frame.iter().filter(|(_, score)| *score > bound) {
+        if !filtered_deduped.contains(row) {
+            filtered_deduped.push(*row);
+        }
+    }
+    assert!(
+        filtered_deduped.len() < frame.iter().filter(|(_, score)| *score > bound).count(),
+        "the interior bound must leave collapsible duplicates"
+    );
+    let compound = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DISTINCT_COMPOUND_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    );
+    assert_eq!(
+        compound.row_count as usize,
+        filtered_deduped.len(),
+        "compound DISTINCT collapses the filtered frame"
+    );
+    assert_eq!(
+        compound.truncated,
+        Some(false),
+        "exact compound dedup never truncates"
+    );
+    assert_eq!(
+        threshold_scored_rows(&compound),
+        filtered_deduped,
+        "compound DISTINCT keeps filtered rank order"
+    );
+
+    // Determinism on the DISTINCT query.
+    let replay = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_DISTINCT_SCORED_QUERY,
+        params,
+    ));
+    assert_eq!(replay, deduped, "DISTINCT frame is deterministic");
+}
+
 fn compound_rank_rows(result: &GqlQueryResult) -> Vec<i64> {
     let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
     let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
