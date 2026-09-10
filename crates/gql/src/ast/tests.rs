@@ -654,6 +654,7 @@ fn string_predicate_kind_variants() {
     assert_eq!(StringPredicateKind::EndsWith, StringPredicateKind::EndsWith);
     assert_eq!(StringPredicateKind::Contains, StringPredicateKind::Contains);
     assert_eq!(StringPredicateKind::ILike, StringPredicateKind::ILike);
+    assert_eq!(StringPredicateKind::Like, StringPredicateKind::Like);
 }
 
 // ── LinearQueryStatement parts_only ─────────────────────────────

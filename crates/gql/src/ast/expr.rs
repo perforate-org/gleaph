@@ -533,6 +533,10 @@ pub enum StringPredicateKind {
     Contains,
     #[cfg(feature = "cypher")]
     ILike,
+    /// LIKE with SQL wildcard semantics (SQL-compat dialect extension,
+    /// case-sensitive; ILIKE is its case-insensitive counterpart).
+    #[cfg(feature = "cypher")]
+    Like,
 }
 
 /// When `cypher` is disabled, [`StringPredicateKind`] is an empty enum; rkyv cannot derive

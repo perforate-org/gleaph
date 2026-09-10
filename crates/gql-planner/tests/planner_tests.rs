@@ -2843,6 +2843,10 @@ fn match_negated_or_other_string_predicates_never_anchor_and_stay_residual() {
         "MATCH (n:User) WHERE n.name ENDS WITH 'rix' RETURN n",
         "MATCH (n:User) WHERE n.name CONTAINS 'tri' RETURN n",
         "MATCH (n:User) WHERE n.name ILIKE 'str%' RETURN n",
+        // LIKE/ILIKE wildcards never anchor: even a prefix-shaped pattern
+        // stays a residual filter (prefix-index fusion is a future slice).
+        "MATCH (n:User) WHERE n.name LIKE 'Str%' RETURN n",
+        "MATCH (n:User) WHERE NOT n.name LIKE 'Str%' RETURN n",
     ];
     for input in cases {
         let plan = plan_query_with_stats(input, &string_prefix_stats());

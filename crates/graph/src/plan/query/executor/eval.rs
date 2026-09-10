@@ -2906,13 +2906,15 @@ mod tests {
     #[test]
     fn string_predicate_truth_table_through_eval_expr() {
         // Unit truth table over QueryExprEvaluator::eval_expr itself:
-        // 4 kinds x {true, false, Null left, Null right} x negated. The same
+        // 5 kinds x {true, false, Null left, Null right} x negated. The same
         // text pair matches every kind and a disjoint pair matches none.
+        // (LIKE carries no wildcards here, so it behaves as equality.)
         for kind in [
             StringPredicateKind::StartsWith,
             StringPredicateKind::EndsWith,
             StringPredicateKind::Contains,
             StringPredicateKind::ILike,
+            StringPredicateKind::Like,
         ] {
             for (left, right, expected) in [
                 (

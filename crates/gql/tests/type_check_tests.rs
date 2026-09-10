@@ -1076,6 +1076,26 @@ fn string_predicate_strings_ok() {
     );
 }
 
+#[cfg(feature = "cypher")]
+#[test]
+fn like_and_not_like_parse_without_mismatch_warning() {
+    // LIKE is the case-sensitive SQL-wildcard predicate; NOT LIKE rides the
+    // existing `negated` flag. Neither may warn on string operands.
+    for query in [
+        "MATCH (n) WHERE 'hello' LIKE 'h%o' RETURN n",
+        "MATCH (n) WHERE 'hello' NOT LIKE 'h_z' RETURN n",
+        "MATCH (n) WHERE 'HELLO' ILIKE 'h%' RETURN n",
+    ] {
+        let warnings = parse_and_check(query);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.kind == WarningKind::ComparisonMismatch),
+            "unexpected ComparisonMismatch for {query}: {warnings:?}"
+        );
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 10. Temporal arithmetic (C)
 // ════════════════════════════════════════════════════════════════════════════

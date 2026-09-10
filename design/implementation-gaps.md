@@ -137,11 +137,11 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-24-009 — `ILIKE` evaluation deliberately ships without SQL LIKE wildcard semantics
 
-- **Status:** Open — contract note for the future SQL LIKE feature; current behavior is
-  intentional and tested
-- **Owner:** `crates/graph/src/plan/expr_evaluator.rs` (`eval_string_predicate_expr`) owns the
-  runtime semantics; a future SQL LIKE feature would own wildcard grammar and integration
-- **Observed behavior:** Phase 1 string-predicate execution (commit introducing
+- **Status:** Resolved — SQL LIKE slice A landed (LIKE new kind + ILIKE fold-then-match upgrade); GAP-010-style follow-ups (ESCAPE clause, LIKE prefix-index fusion) were not filed as blocking and remain future options
+- **Owner:** `crates/graph/src/plan/expr_evaluator.rs` (`eval_string_predicate_expr` + `sql_like_match`) owns the runtime semantics
+- **Resolution:** `StringPredicateKind::Like` added (AST tail variant, parser `eat_keyword("LIKE")`, `NOT LIKE` via the existing `negated` flag); `Like` runs SQL wildcard semantics over Unicode scalars (`%` any run, `_` one scalar, `\` escapes the next pattern scalar, trailing `\` literal); `ILike` folds both operands with `str::to_lowercase` and runs the same matcher. LIKE/ILIKE never fuse into an index anchor — residual filter only (`STARTS WITH` keeps the prefix-index path; planner regression `match_negated_or_other_string_predicates_never_anchor_and_stay_residual` extended with LIKE cases). Documented as a SQL-compat dialect extension in `design/gql/extension-syntax.md` (GQL core has no LIKE/ILIKE keywords).
+- **Migration contract (breaking for `%`/`_` ILIKE users):** `ILIKE` previously implemented whole-string equality with literal `%`/`_` (tested contract). Those patterns are wildcards now: `'100%'` matches the `100` prefix, `'a_b'` matches any one-scalar middle. Match literals with `'100\%'` / `'a\_b'`. `LIKE` itself is new (non-breaking). The old literal-semantics test (`ilike_treats_percent_and_underscore_as_literals`) was rewritten to the wildcard contract (`like_and_ilike_apply_sql_wildcard_semantics`); no dual-path code remains.
+- **Observed behavior (superseded):** Phase 1 string-predicate execution (commit introducing
   `ExprKind::StringPredicate` evaluation) implements `ILIKE` as plain Unicode case-insensitive
   whole-string equality: both operands are folded with `str::to_lowercase` and compared for exact
   equality. `%` and `_` are literal characters, not wildcards.
@@ -158,10 +158,7 @@ defect from being rediscovered without its prior reasoning.
   they require literal `%` in the data until a SQL LIKE feature defines wildcard semantics.
   Non-negated `STARTS WITH` TEXT-index pushdown (Phase 2) must preserve exactly these residual
   semantics for the non-indexed remainder.
-- **Next decision:** When a SQL LIKE feature is introduced, decide whether `LIKE` absorbs
-  wildcard grammar and whether `ILIKE` becomes its case-insensitive counterpart or stays a plain
-  case-insensitive equality. Update `eval_string_predicate_expr` and its truth-table tests from
-  this entry's contract.
+- **Next decision (decided):** `LIKE` absorbed the wildcard grammar and `ILIKE` became its case-insensitive counterpart (fold-then-match); plain case-insensitive equality did not survive — see migration contract above.
 
 ### GAP-2026-08-24-010 — Edge-side `STARTS WITH` TEXT-index pushdown (vertex-only slice)
 

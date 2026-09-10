@@ -1341,7 +1341,8 @@ impl Parser<'_> {
         }
     }
 
-    /// Try to parse a string predicate ([NOT] CONTAINS, [NOT] ILIKE).
+    /// Try to parse a string predicate ([NOT] STARTS WITH, [NOT] ENDS WITH,
+    /// [NOT] CONTAINS, [NOT] LIKE, [NOT] ILIKE).
     fn try_parse_string_predicate(
         &mut self,
         start: usize,
@@ -1357,6 +1358,8 @@ impl Parser<'_> {
         if kind.is_none() {
             if self.eat_keyword("ILIKE") {
                 kind = Some(StringPredicateKind::ILike);
+            } else if self.eat_keyword("LIKE") {
+                kind = Some(StringPredicateKind::Like);
             } else if self.eat_keyword("CONTAINS") {
                 kind = Some(StringPredicateKind::Contains);
             } else if self.at_keyword("STARTS") && self.at_keyword_ahead(1, "WITH") {
