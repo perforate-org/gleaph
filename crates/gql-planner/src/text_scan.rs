@@ -479,6 +479,91 @@ pub(crate) fn apply_candidate_text_topk_lowering(
     true
 }
 
+/// Post-pass candidate threshold lowering: rewrite
+/// `[prefix binding v, …, PropertyFilter { [text_score(v.prop, Q) cmp bound] }, Project]`
+/// into `[prefix, TextScan { mode: Threshold, … }, Project]`.
+///
+/// The symmetric counterpart of [`apply_candidate_text_topk_lowering`] for the
+/// non-leading `WHERE text_score(…) > t` shape: the barrier sits AFTER the
+/// traversal prefix, so TEXT scores only graph-qualified candidates. The single
+/// threshold predicate is consumed; compound filters, offsets, and score-ordered
+/// tails stay unsupported and fail closed. The trailing `Project` need not
+/// project the score call — a threshold-only `RETURN` keeps every surviving row
+/// without a residual score column.
+///
+/// The predicate arrives as a late-stage `PropertyFilter` (filter pushdown only
+/// absorbs `IsLabeled` into `ExpandFilter` destinations), so the barrier takes
+/// exactly one single-predicate `PropertyFilter` whose predicate extracts.
+pub(crate) fn apply_candidate_text_threshold_lowering(
+    ops: &mut [PlanOp],
+    stats: Option<&dyn GraphStats>,
+) -> bool {
+    let Some(stats) = stats else {
+        return false;
+    };
+    // The barrier candidate is a single-predicate `PropertyFilter` whose predicate
+    // extracts as a threshold (other single-predicate filters, such as the anchor
+    // equality, stay in the prefix). Exactly one must exist.
+    let filter_positions: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| match op {
+            PlanOp::PropertyFilter { predicates, .. } if predicates.len() == 1 => {
+                extract_threshold_predicate(&predicates[0]).is_some()
+            }
+            _ => false,
+        })
+        .map(|(idx, _)| idx)
+        .collect();
+    if filter_positions.len() != 1 {
+        return false;
+    }
+    let filter_idx = filter_positions[0];
+    if filter_idx == 0 {
+        return false;
+    }
+    let (score, cmp, bound) = {
+        let PlanOp::PropertyFilter { predicates, .. } = &ops[filter_idx] else {
+            unreachable!("checked above");
+        };
+        match extract_threshold_predicate(&predicates[0]) {
+            Some(seed) => seed,
+            None => return false,
+        }
+    };
+    // The tail after the barrier must be exactly the late-projected RETURN.
+    if ops.len() != filter_idx + 2 || !matches!(ops[filter_idx + 1], PlanOp::Project { .. }) {
+        return false;
+    }
+    let prefix = &ops[..filter_idx];
+    // The prefix must not contain a scan, a row cap, or any other score mention:
+    // candidate membership is the complete authorized prefix, never a window.
+    if prefix.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+        ) || op_mentions_text_score(op)
+    }) {
+        return false;
+    }
+    let Some(label) = proven_prefix_label(prefix, &score.variable) else {
+        return false;
+    };
+    if !stats.is_vertex_property_text_indexed_for(Some(&label), &score.property) {
+        return false;
+    }
+    let text_scan = PlanOp::TextScan {
+        variable: score.variable.as_str().into(),
+        label: label.as_str().into(),
+        property: score.property.as_str().into(),
+        query: score.query.clone(),
+        mode: TextScanMode::Threshold { cmp, bound },
+        property_projection: None,
+    };
+    ops[filter_idx] = text_scan;
+    true
+}
+
 fn const_int64(expr: &Expr) -> Option<i64> {
     match &expr.kind {
         ExprKind::Literal(gleaph_gql::Value::Int64(value)) => Some(*value),

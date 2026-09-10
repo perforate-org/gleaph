@@ -103,6 +103,47 @@ fn collect_search_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<Stri
     out
 }
 
+/// Collect scored variables of later `TextScan` operators. A candidate barrier
+/// (`TextScan` after a traversal prefix) is executed by keying TEXT candidates
+/// off `ELEMENT_ID(variable)`, so the prefix binding must remain a full vertex
+/// binding even when the original `RETURN` only reads properties — a projected
+/// record drops identity. Deliberately conservative like the collectors below:
+/// an extra member only forces full hydration for that slot, never changes
+/// results.
+fn collect_text_barrier_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    fn scan_physical(plan: &PhysicalPlan, out: &mut BTreeSet<String>) {
+        scan(&plan.ops, out);
+    }
+    fn scan(ops: &[PlanOp], out: &mut BTreeSet<String>) {
+        for op in ops {
+            if let PlanOp::TextScan { variable, .. } = op {
+                out.insert(variable.to_string());
+            }
+            match op {
+                PlanOp::OptionalMatch { sub_plan } => scan(sub_plan, out),
+                PlanOp::HashJoin { left, right, .. }
+                | PlanOp::CartesianProduct { left, right, .. } => {
+                    scan(left, out);
+                    scan(right, out);
+                }
+                PlanOp::SetOperation { right, .. } => scan_physical(right, out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => scan_physical(sub_plan, out),
+                PlanOp::UseGraph {
+                    sub_plan: Some(sub),
+                    ..
+                } => scan(sub, out),
+                _ => {}
+            }
+        }
+    }
+    scan(rest, &mut out);
+    for seg in tail {
+        scan(seg, &mut out);
+    }
+    out
+}
+
 /// Collect variables used as the source or destination of a later traversal
 /// (`Expand`, `ExpandFilter`, or `ShortestPath`). Those bindings must remain
 /// full vertex bindings so the executor can resolve them against the local CSR.
@@ -189,6 +230,7 @@ fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
         }
         let search_bindings = collect_search_bindings(&ops[i + 1..], tail);
         let traversal_source_bindings = collect_traversal_source_bindings(&ops[i + 1..], tail);
+        let text_barrier_bindings = collect_text_barrier_bindings(&ops[i + 1..], tail);
         let entity_used_bindings = collect_entity_used_bindings(&expr_refs);
         let patch = if projection_inference_may_be_needed(&ops[i], &expr_refs) {
             op_projection_patch(
@@ -196,6 +238,7 @@ fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
                 &expr_refs,
                 &search_bindings,
                 &traversal_source_bindings,
+                &text_barrier_bindings,
                 &entity_used_bindings,
             )
         } else {
@@ -291,11 +334,13 @@ fn op_projection_patch(
     exprs: &[&Expr],
     search_bindings: &BTreeSet<String>,
     traversal_source_bindings: &BTreeSet<String>,
+    text_barrier_bindings: &BTreeSet<String>,
     entity_used_bindings: &BTreeSet<String>,
 ) -> OpProjectionPatch {
     let must_remain_vertex = |var: &str| {
         search_bindings.contains(var)
             || traversal_source_bindings.contains(var)
+            || text_barrier_bindings.contains(var)
             || entity_used_bindings.contains(var)
     };
 

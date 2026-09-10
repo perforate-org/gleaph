@@ -1910,8 +1910,16 @@ fn candidate_rows(result: &GqlQueryResult) -> Vec<(i64, Vec<u8>, f64)> {
         .collect()
 }
 
-#[test]
-fn non_leading_text_candidate_topk_lifecycle() {
+/// Shared 21-reachable + 101-unreachable candidate fixture: two users sharing
+/// `uid = 7` fan every reachable document out to two prefix rows, while the 101
+/// unreachable documents carry strictly heavier term frequencies so no global
+/// top-100 window can hold a reachable row.
+struct CandidateFixture {
+    env: Env,
+    text_canister: Principal,
+}
+
+fn seed_candidate_fixture() -> CandidateFixture {
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
@@ -2034,6 +2042,14 @@ fn non_leading_text_candidate_topk_lifecycle() {
     drive_to_ready(&env, &args);
     assert_eq!(get_text_index(&env).status, TextIndexStatusView::Ready);
     flush_until_done(&env);
+    CandidateFixture { env, text_canister }
+}
+
+#[test]
+fn non_leading_text_candidate_topk_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+    let text_canister = fixture.text_canister;
 
     // POSITIVE: top-20 rows over graph-qualified candidates only.
     let result = gql_query_with_params_as_admin(
@@ -2249,4 +2265,169 @@ fn non_leading_text_candidate_topk_lifecycle() {
         candidate_query_params(CANDIDATE_USER_ID, "wombat"),
     ));
     assert_eq!(denied_replay, denied, "denied frame is deterministic");
+}
+
+// ──── Candidate-scoped non-leading threshold ────
+
+const CANDIDATE_THRESHOLD_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score";
+const CANDIDATE_THRESHOLD_SCORED_GE_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(p:Project) \
+     MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) >= $t \
+     RETURN d.rank AS rank, text_score(d.bio,$q) AS score";
+
+fn threshold_query_params(user_id: i64, query: &str, bound: f64) -> Vec<u8> {
+    encode_gql_params_blob(vec![
+        ("user_id".to_string(), Value::Int64(user_id)),
+        ("q".to_string(), Value::Text(query.to_string())),
+        ("t".to_string(), Value::Float64(bound)),
+    ])
+    .expect("encode params")
+}
+
+fn threshold_scored_rows(result: &GqlQueryResult) -> Vec<(i64, f64)> {
+    let rows_blob = result.rows_blob.as_ref().expect("rows blob present");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows");
+    wire.rows
+        .iter()
+        .map(|row| {
+            let columns: BTreeMap<String, GqlWireValue> = row
+                .columns
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let rank = match columns.get("rank").expect("rank column present") {
+                GqlWireValue::Int64(rank) => *rank,
+                other => panic!("rank must be Int64, got {other:?}"),
+            };
+            let score = match columns.get("score").expect("score column present") {
+                GqlWireValue::Float64(score) => *score,
+                other => panic!("score must be Float64, got {other:?}"),
+            };
+            (rank, score)
+        })
+        .collect()
+}
+
+#[test]
+fn non_leading_text_candidate_threshold_lifecycle() {
+    let fixture = seed_candidate_fixture();
+    let env = fixture.env;
+
+    // ALL-PASS calibration: a bound below every reachable score returns the full
+    // 42-row frame (21 documents × 2 anchor users). A global-window-then-filter
+    // execution could never return a reachable row — the global top-100 window
+    // holds only unreachable heavy docs — so a full reachable frame proves
+    // candidate-first scoring.
+    let all = gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", 0.5),
+    );
+    assert_eq!(all.row_count, 42, "every candidate passes the low bound");
+    assert_eq!(
+        all.truncated,
+        Some(false),
+        "exact filtering never truncates"
+    );
+    let rows = threshold_scored_rows(&all);
+    assert_eq!(rows.len(), 42);
+    assert!(
+        rows.iter().all(|(rank, _)| (0..21).contains(rank)),
+        "only reachable documents pass"
+    );
+    for window in rows.windows(2) {
+        assert!(
+            window[0].1 >= window[1].1,
+            "scores arrive descending: {} before {}",
+            window[0].1,
+            window[1].1
+        );
+    }
+    // Row multiplicity: every rank fans out through both anchor users.
+    let mut sorted: Vec<i64> = rows.iter().map(|(rank, _)| *rank).collect();
+    sorted.sort_unstable();
+    let mut expected = Vec::new();
+    for rank in 0..21 {
+        expected.push(rank);
+        expected.push(rank);
+    }
+    assert_eq!(sorted, expected, "each reachable rank passes twice");
+
+    // Boundary calibration from the observed frame (engine scores are exact
+    // integer-valued floats): split at an interior distinct score.
+    let mut distinct: Vec<f64> = rows.iter().map(|(_, score)| *score).collect();
+    distinct.sort_by(|a, b| a.total_cmp(b));
+    distinct.dedup();
+    assert!(distinct.len() >= 2, "frame must span scores");
+    let bound = distinct[(distinct.len() - 1) / 2];
+    let above: Vec<(i64, f64)> = rows
+        .iter()
+        .filter(|(_, score)| *score > bound)
+        .copied()
+        .collect();
+    let at: Vec<(i64, f64)> = rows
+        .iter()
+        .filter(|(_, score)| *score == bound)
+        .copied()
+        .collect();
+    assert!(!above.is_empty(), "bound must not be the frame maximum");
+    assert!(!at.is_empty(), "bound must hit the frame");
+
+    // Strict `>` drops the boundary rows; inclusive `>=` keeps exactly those.
+    let gt = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    ));
+    assert!(
+        gt.iter().all(|(_, score)| *score > bound),
+        "strict bound drops equality"
+    );
+    assert_eq!(gt.len(), above.len(), "strict frame matches calibration");
+    let ge = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_GE_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    ));
+    assert_eq!(
+        ge.len(),
+        above.len() + at.len(),
+        "inclusive frame adds exactly the boundary rows"
+    );
+    assert!(
+        ge.iter().all(|(_, score)| *score >= bound),
+        "inclusive bound keeps equality"
+    );
+
+    // Determinism on the inclusive frame.
+    let replay = threshold_scored_rows(&gql_query_with_params_as_admin(
+        &env.fed,
+        CANDIDATE_THRESHOLD_SCORED_GE_QUERY,
+        threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
+    ));
+    assert_eq!(replay, ge, "threshold frame is deterministic");
+
+    // LITERAL bound above every reachable score, threshold-only RETURN (no score
+    // column): the exact empty set, not an error. Scores are integer-valued, so
+    // `max + 0.5` sits strictly between the reachable maximum and the
+    // unreachable minimum (tf 21 vs tf ≤ 7).
+    let max = *distinct.last().expect("nonempty");
+    let high_query = format!(
+        "MATCH (u:User {{uid:$user_id}})-[:MEMBER_OF]->(p:Project) \
+         MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > {} \
+         RETURN d.rank AS rank",
+        max + 0.5
+    );
+    let high = gql_query_with_params_as_admin(
+        &env.fed,
+        &high_query,
+        candidate_query_params(CANDIDATE_USER_ID, "wombat"),
+    );
+    assert_eq!(high.row_count, 0, "no candidate clears the high bound");
+    assert_eq!(
+        high.truncated,
+        Some(false),
+        "empty filtering never truncates"
+    );
 }

@@ -213,6 +213,17 @@ pub(crate) async fn try_execute_gql_text_scan(
 // ════════════════════════════════════════════════════════════════════════════════
 
 /// Analyzed candidate barrier: everything the Router needs without catalog access.
+/// Barrier ranking mode: row-capped top-k, or uncapped threshold filtering.
+#[derive(Clone, Copy)]
+enum CandidateBarrierMode {
+    /// Deliver the `limit` highest-scoring rows (`TopK` scan mode).
+    TopK { limit: u32 },
+    /// Keep every row whose candidate score satisfies `cmp bound` (`Threshold`
+    /// scan mode). Candidate scoring is all-match, so filtering is complete and
+    /// the result is never truncated.
+    Threshold { cmp: CmpOp, bound: f64 },
+}
+
 struct CandidateBarrierShape {
     /// Index of the barrier `TextScan` in `plan.ops` (always > 0).
     scan_idx: usize,
@@ -223,18 +234,20 @@ struct CandidateBarrierShape {
     property: String,
     /// Scan query (literal or `$param`).
     query: ScanValue,
-    /// Requested row limit (resolved literal/parameter value).
-    limit: u32,
-    /// Trailing-`Project` column index holding the residual score call.
-    score_col_idx: usize,
+    /// Ranking mode: row-capped top-k, or uncapped threshold filtering.
+    mode: CandidateBarrierMode,
+    /// Trailing-`Project` column index holding the residual score call, when the
+    /// `RETURN` projects one. A threshold-only `RETURN` carries no score column.
+    score_col_idx: Option<usize>,
     /// Count of retained user columns (excludes the score column).
     user_col_count: usize,
 }
 
 /// Pure shape analysis for the candidate barrier (no catalog, no I/O): exactly one
-/// non-leading `TextScan` in `TopK` mode, a non-empty cap-free mention-free prefix,
-/// and exactly one trailing `Project` whose single residual `text_score` call names
-/// the scanned (variable, property, query). Anything else fails closed.
+/// non-leading `TextScan` in `TopK` or `Threshold` mode, a non-empty cap-free
+/// mention-free prefix, and exactly one trailing `Project` whose optional single
+/// residual `text_score` call names the scanned (variable, property, query).
+/// Anything else fails closed.
 fn analyze_candidate_barrier_shape(
     plan: &PhysicalPlan,
     params: &BTreeMap<String, gleaph_gql::Value>,
@@ -267,17 +280,26 @@ fn analyze_candidate_barrier_shape(
     else {
         unreachable!("position matched TextScan");
     };
-    let TextScanMode::TopK { limit } = mode else {
-        return Err(unsupported(
-            "only TopK mode executes after a prefix in this slice",
-        ));
+    let mode = match mode {
+        TextScanMode::TopK { limit } => {
+            let limit = resolve_scan_limit(limit, params)?;
+            if limit == 0 || limit as usize > MAX_CANDIDATE_PREFIX_ROWS {
+                return Err(unsupported(
+                    "row LIMIT must be within 1..=1024 in this slice",
+                ));
+            }
+            CandidateBarrierMode::TopK { limit }
+        }
+        TextScanMode::Threshold { cmp, bound } => {
+            let bound = resolve_scan_bound(bound, params)?;
+            CandidateBarrierMode::Threshold { cmp: *cmp, bound }
+        }
+        TextScanMode::ThresholdTopK { .. } => {
+            return Err(unsupported(
+                "compound threshold-top-k after a prefix stays unsupported in this slice",
+            ));
+        }
     };
-    let limit = resolve_scan_limit(limit, params)?;
-    if limit == 0 || limit as usize > MAX_CANDIDATE_PREFIX_ROWS {
-        return Err(unsupported(
-            "row LIMIT must be within 1..=1024 in this slice",
-        ));
-    }
     let prefix = &plan.ops[..scan_idx];
     if prefix.iter().any(|op| {
         matches!(
@@ -311,17 +333,12 @@ fn analyze_candidate_barrier_shape(
             || !residual_call_matches_scan(&col.expr, variable, property, query)
         {
             return Err(unsupported(
-                "the trailing Project must carry exactly one residual call on the scanned (variable, property, query)",
+                "the trailing Project carries at most one residual call on the scanned (variable, property, query)",
             ));
         }
         score_col_idx = Some(idx);
     }
-    let Some(score_col_idx) = score_col_idx else {
-        return Err(unsupported(
-            "the trailing Project must project the score call",
-        ));
-    };
-    let user_col_count = columns.len() - 1;
+    let user_col_count = columns.len() - usize::from(score_col_idx.is_some());
     if user_col_count > MAX_CANDIDATE_USER_COLUMNS {
         return Err(unsupported("at most 16 retained user columns"));
     }
@@ -331,7 +348,7 @@ fn analyze_candidate_barrier_shape(
         label: label.to_string(),
         property: property.to_string(),
         query: query.clone(),
-        limit,
+        mode,
         score_col_idx,
         user_col_count,
     })
@@ -467,7 +484,7 @@ async fn try_execute_candidate_text_scan(
     });
     let mut user_positions: Vec<usize> = Vec::with_capacity(barrier.user_col_count);
     for (idx, col) in columns.iter().enumerate() {
-        if idx == barrier.score_col_idx {
+        if Some(idx) == barrier.score_col_idx {
             continue;
         }
         user_positions.push(idx);
@@ -609,9 +626,14 @@ async fn try_execute_candidate_text_scan(
                 args.len()
             )));
         }
-        let hits = text_canister_search_candidates(target, query, keys.clone())
+        let mut hits = text_canister_search_candidates(target, query, keys.clone())
             .await
             .map_err(RouterError::Internal)?;
+        // Threshold mode filters here, on the complete candidate hit set: TEXT
+        // returns every candidate match, so retention is exact (never a window).
+        if let CandidateBarrierMode::Threshold { cmp, bound } = barrier.mode {
+            retain_threshold(&mut hits, cmp, bound);
+        }
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for hit in hits {
             if !seen.insert(hit.key) {
@@ -637,7 +659,12 @@ async fn try_execute_candidate_text_scan(
         }
     }
 
-    let ranked = rank_candidate_rows(prefix_rows, &scores, barrier.limit as usize);
+    let row_cap = match barrier.mode {
+        CandidateBarrierMode::TopK { limit } => limit as usize,
+        // Threshold keeps every surviving row: filtering already happened above.
+        CandidateBarrierMode::Threshold { .. } => usize::MAX,
+    };
+    let ranked = rank_candidate_rows(prefix_rows, &scores, row_cap);
     // Output names follow the original trailing Project order (score included).
     if plan.output.columns.len() != columns.len() {
         return Err(RouterError::Internal(
@@ -649,7 +676,7 @@ async fn try_execute_candidate_text_scan(
         let mut out_cols = Vec::with_capacity(columns.len());
         let mut user_iter = row.values.into_iter();
         for (idx, out_col) in plan.output.columns.iter().enumerate() {
-            if idx == barrier.score_col_idx {
+            if Some(idx) == barrier.score_col_idx {
                 out_cols.push((
                     out_col.name.to_string(),
                     gleaph_gql_ic::GqlWireValue::Float64(f64::from(score)),
@@ -1930,6 +1957,33 @@ mod candidate_barrier_tests {
         })
     }
 
+    fn barrier_scan_threshold() -> PlanOp {
+        PlanOp::TextScan {
+            variable: "d".into(),
+            label: NodeLabelRef::from("Document"),
+            property: "body".into(),
+            query: ScanValue::Literal(gleaph_gql::Value::Text("hello".into())),
+            mode: TextScanMode::Threshold {
+                cmp: CmpOp::Gt,
+                bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+            },
+            property_projection: None,
+        }
+    }
+
+    fn tail_project_no_score() -> PlanOp {
+        PlanOp::Project {
+            columns: vec![ProjectColumn {
+                expr: Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                    property: "title".into(),
+                }),
+                alias: None,
+            }],
+            distinct: false,
+        }
+    }
+
     fn tail_project() -> PlanOp {
         PlanOp::Project {
             columns: vec![
@@ -1959,8 +2013,11 @@ mod candidate_barrier_tests {
         let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
         assert_eq!(shape.scan_idx, 1);
         assert_eq!(shape.variable, "d");
-        assert_eq!(shape.limit, 20);
-        assert_eq!(shape.score_col_idx, 1);
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::TopK { limit: 20 }
+        ));
+        assert_eq!(shape.score_col_idx, Some(1));
         assert_eq!(shape.user_col_count, 1);
     }
 
@@ -1986,15 +2043,18 @@ mod candidate_barrier_tests {
     }
 
     #[test]
-    fn barrier_shape_rejects_score_mismatch_and_missing_score() {
-        // Residual call on a different property.
+    fn barrier_shape_rejects_score_mismatch_and_wrapped_score() {
+        // No score mention at all: accepted with no score column (threshold-only
+        // RETURN shape; the same layout holds for TopK).
         let mut project = tail_project();
         let PlanOp::Project { columns, .. } = &mut project else {
             panic!("project");
         };
         columns[1].expr = Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(1)));
         let plan = test_plan(vec![node_scan_d(), barrier_scan(20), project]);
-        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.score_col_idx, None);
+        assert_eq!(shape.user_col_count, 2);
         // Score call wrapped in arithmetic is not the entire expression.
         let mut project = tail_project();
         let PlanOp::Project { columns, .. } = &mut project else {
@@ -2006,6 +2066,48 @@ mod candidate_barrier_tests {
             right: Box::new(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(1)))),
         });
         let plan = test_plan(vec![node_scan_d(), barrier_scan(20), project]);
+        assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
+    }
+
+    #[test]
+    fn barrier_shape_accepts_threshold_with_and_without_score_column() {
+        // Threshold-only RETURN: no residual score column.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_threshold(),
+            tail_project_no_score(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(matches!(
+            shape.mode,
+            CandidateBarrierMode::Threshold { bound, .. } if bound == 0.5
+        ));
+        assert_eq!(shape.score_col_idx, None);
+        assert_eq!(shape.user_col_count, 1);
+        // Projected score alongside the threshold still resolves to the same barrier.
+        let plan = test_plan(vec![
+            node_scan_d(),
+            barrier_scan_threshold(),
+            tail_project(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert!(matches!(shape.mode, CandidateBarrierMode::Threshold { .. }));
+        assert_eq!(shape.score_col_idx, Some(1));
+        assert_eq!(shape.user_col_count, 1);
+    }
+
+    #[test]
+    fn barrier_shape_rejects_compound_after_prefix() {
+        let mut scan = barrier_scan_threshold();
+        let PlanOp::TextScan { mode, .. } = &mut scan else {
+            panic!("scan");
+        };
+        *mode = TextScanMode::ThresholdTopK {
+            cmp: CmpOp::Gt,
+            bound: ScanValue::Literal(gleaph_gql::Value::Float64(0.5)),
+            limit: ScanValue::Literal(gleaph_gql::Value::Int64(10)),
+        };
+        let plan = test_plan(vec![node_scan_d(), scan, tail_project_no_score()]);
         assert!(analyze_candidate_barrier_shape(&plan, &params()).is_err());
     }
 

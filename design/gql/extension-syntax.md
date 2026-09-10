@@ -1035,16 +1035,26 @@ Contract:
   score-ranked window and then truncates to the literal limit; disagreeing halves stay
   unfused and fail closed. Results rank by engine score descending with
   deterministic key tie-breaks `(score DESC, element-key ASC)`. The **candidate-scoped
-  non-leading** shape (plan 0344, ADR 0095) — one trailing `Project` carrying exactly one
+  non-leading** shape (plan 0344, ADR 0095) — one trailing `Project` carrying at most one
   residual `text_score` call on a prefix-bound `(variable, property, query)` — lowers to a
-  ranking barrier *after* the graph prefix. Execution is candidate-first: the authorized
+  ranking barrier *after* the graph prefix. The barrier also accepts the **threshold**
+  form (`WHERE text_score(...) > t` on the prefix-bound variable, no `ORDER BY`/`LIMIT`):
+  TEXT already returns every candidate match, so threshold filtering after the join is
+  exact and the result reports `truncated=false` — unlike the leading threshold scan,
+  whose bounded canister window can mark truncation. Threshold bounds resolve to `f64`
+  (`Int64` converts via `as f64`, exact within ±2^53; `NaN` matches nothing, yielding the
+  exact empty set), and the
+  `RETURN` may omit the score call entirely (threshold-only projection). The barrier keeps
+  the scored variable's vertex binding against projection pushdown (a projected record
+  drops the identity the Router's key projection needs). Execution is candidate-first: the authorized
   prefix runs through the canonical read pipeline (user LIMIT never pushed into it), the
   Router deduplicates document keys (row multiplicity preserved), TEXT scores only the
   bounded candidate set (`search_candidates`, all-match, same scoring), and the Router
   joins scores to retained rows, drops scoreless rows, orders `(score DESC, key ASC)`
   stable, and applies the row LIMIT. Admission caps: 256 distinct keys, 1024 prefix rows,
   1 MiB prefix plan/payload, 32 KiB candidate call, query ≤ 4096 B, LIMIT ≤ 1024, ≤ 16
-  retained user columns. Overflow, incomplete prefix, payload excess, or TEXT failure
+  retained user columns (the LIMIT cap applies to the top-k form only; threshold keeps
+  every surviving row). Overflow, incomplete prefix, payload excess, or TEXT failure
   fails closed — never a silent partial top-k. Multi-shard, compound threshold halves,
   `DISTINCT`/offset/ASC, and unlabeled/uncovered scans stay unsupported.
 - A projected aliased call (`RETURN ..., text_score(...) AS score`) rides along with either

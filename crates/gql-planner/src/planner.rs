@@ -522,6 +522,10 @@ fn build_plan_core(
     // prefix instead of a leading seed. Runs only when the leading lowering above
     // did not fire (it consumes the TopK it needs).
     crate::text_scan::apply_candidate_text_topk_lowering(&mut ops, stats);
+    // Candidate-scoped threshold: a non-leading `WHERE text_score(…) cmp bound`
+    // conjunct becomes a filtering barrier AFTER the prefix. Runs only when the
+    // top-k lowering above did not fire (that shape carries no Filter).
+    crate::text_scan::apply_candidate_text_threshold_lowering(&mut ops, stats);
     pushdown::apply_shortest_path_binding_pruning(&mut ops, &mut annotations);
     // Replace simple `Expand` cycles with a single `WorstCaseOptimalJoin` when safe.
     apply_wcoj_replacement(&mut ops, &mut annotations);

@@ -7607,3 +7607,200 @@ fn candidate_barrier_scan_wire_round_trip() {
         plans[0].ops
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Candidate-scoped non-leading text_score threshold
+// ════════════════════════════════════════════════════════════════════════════════
+
+const CANDIDATE_THRESHOLD_QUERY: &str = "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title";
+
+fn candidate_threshold_plan() -> PhysicalPlan {
+    plan_query_with_stats(CANDIDATE_THRESHOLD_QUERY, &text_coverage_stats())
+}
+
+#[test]
+fn candidate_text_threshold_lowers_to_barrier_scan() {
+    let plan = candidate_threshold_plan();
+    // The traversal prefix is preserved verbatim …
+    assert!(
+        matches!(plan.ops[0], PlanOp::NodeScan { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    // … the single threshold Filter is consumed into a non-leading barrier …
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
+    assert!(scan_idx > 0, "barrier must sit after the prefix");
+    assert!(
+        matches!(
+            &plan.ops[scan_idx],
+            PlanOp::TextScan {
+                variable,
+                label,
+                property,
+                mode: TextScanMode::Threshold {
+                    cmp: CmpOp::Gt,
+                    bound: ScanValue::Literal(gleaph_gql::Value::Float64(bound)),
+                },
+                ..
+            } if &**variable == "d" && &**label == "Document" && &**property == "body"
+                && *bound == 0.5
+        ),
+        "expected a candidate threshold barrier, got: {:?}",
+        plan.ops
+    );
+    // … the late-projected RETURN (without a score column) survives as the tail …
+    assert!(
+        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        "got: {:?}",
+        plan.ops
+    );
+    assert_eq!(plan.ops.len(), scan_idx + 2);
+    // … and no second scan, row cap, or standalone Filter survives anywhere
+    // (the anchor equality stays as a mention-free prefix PropertyFilter).
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::Filter { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
+        )),
+        "no filter or row cap may survive candidate lowering, got: {:?}",
+        plan.ops
+    );
+    assert_eq!(
+        plan.ops
+            .iter()
+            .filter(|op| matches!(op, PlanOp::TextScan { .. }))
+            .count(),
+        1,
+        "exactly one barrier scan, got: {:?}",
+        plan.ops
+    );
+    // The scored variable keeps its vertex binding: the barrier's terminal
+    // ELEMENT_ID(d) projection needs identity, which a projected Record drops.
+    let bound_d = plan.ops[..scan_idx]
+        .iter()
+        .find(|op| matches!(op, PlanOp::ExpandFilter { dst, .. } if &**dst == "d"))
+        .expect("prefix binds d");
+    assert!(
+        matches!(
+            bound_d,
+            PlanOp::ExpandFilter {
+                dst_property_projection: None,
+                ..
+            }
+        ),
+        "scored variable must keep its vertex binding, got: {:?}",
+        bound_d
+    );
+}
+
+#[test]
+fn candidate_text_topk_restores_vertex_binding_without_element_id() {
+    // Same latent shape without ELEMENT_ID in the RETURN: the barrier still
+    // needs identity for its terminal key projection.
+    let plan = plan_query_with_stats(
+        "MATCH (u:User {id:$user_id})-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 5",
+        &text_coverage_stats(),
+    );
+    let scan_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::TextScan { .. }))
+        .expect("barrier scan");
+    let bound_d = plan.ops[..scan_idx]
+        .iter()
+        .find(|op| matches!(op, PlanOp::ExpandFilter { dst, .. } if &**dst == "d"))
+        .expect("prefix binds d");
+    assert!(
+        matches!(
+            bound_d,
+            PlanOp::ExpandFilter {
+                dst_property_projection: None,
+                ..
+            }
+        ),
+        "scored variable must keep its vertex binding, got: {:?}",
+        bound_d
+    );
+}
+
+#[test]
+fn candidate_text_threshold_accepts_inclusive_and_reversed_forms() {
+    for (query, cmp) in [
+        (
+            "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') >= $t RETURN d.title",
+            CmpOp::Ge,
+        ),
+        (
+            "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE 0.5 < text_score(d.body,'hello') RETURN d.title",
+            CmpOp::Gt,
+        ),
+    ] {
+        let plan = plan_query_with_stats(query, &text_coverage_stats());
+        assert!(
+            plan.ops.iter().any(|op| matches!(
+                op,
+                PlanOp::TextScan {
+                    mode: TextScanMode::Threshold { cmp: found, .. },
+                    ..
+                } if *found == cmp
+            )),
+            "threshold form must lower: {query}, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+fn candidate_text_threshold_rejects_compound_filter_and_missing_shape() {
+    for query in [
+        // Compound WHERE: the threshold shares its Filter with another conjunct.
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') > 0.5 AND d.title = 'x' RETURN d.title",
+        // Unlabeled scored variable: no proven prefix label.
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d) WHERE text_score(d.body,'hello') > 0.5 RETURN d.title",
+        // Non-threshold comparison never lowers.
+        "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.body,'hello') = 0.5 RETURN d.title",
+    ] {
+        let plan = plan_query_with_stats(query, &text_coverage_stats());
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::TextScan { .. })),
+            "unsupported shape must not lower: {query}, got: {:?}",
+            plan.ops
+        );
+    }
+}
+
+#[test]
+fn candidate_text_threshold_without_coverage_stays_unlowered() {
+    let mut stats = text_coverage_stats();
+    stats
+        .text_indexed_vertex_properties
+        .remove(&("Document".to_string(), "body".to_string()));
+    let plan = plan_query_with_stats(CANDIDATE_THRESHOLD_QUERY, &stats);
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::TextScan { .. })),
+        "no barrier scan without confirmed coverage, got: {:?}",
+        plan.ops
+    );
+    // The unlowered threshold PropertyFilter survives so the Router rejects the
+    // residual mention.
+    assert!(
+        plan.ops.iter().any(|op| match op {
+            PlanOp::PropertyFilter { predicates, .. } if predicates.len() == 1 => {
+                format!("{:?}", predicates[0]).contains("text_score")
+            }
+            _ => false,
+        }),
+        "unlowered threshold filter must survive, got: {:?}",
+        plan.ops
+    );
+}
